@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Zucker Editor</title>
+    <link rel="stylesheet" href="/advanced.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Zucker Editor</h1>
+        <p id="projectSummary">No project open</p>
+      </div>
+      <nav class="tabs" aria-label="Workspace">
+        <button class="tab active" data-tab="project">Project</button>
+        <button class="tab" data-tab="inputs">Inputs</button>
+        <button class="tab" data-tab="pipeline">Pipeline</button>
+        <button class="tab" data-tab="sync">Sync Review</button>
+        <button class="tab" data-tab="edit">Edit</button>
+        <button class="tab" data-tab="export">Export</button>
+      </nav>
+    </header>
+
+    <main>
+      <section id="project" class="panel active">
+        <div class="form-grid">
+          <label>
+            Project name
+            <input id="projectName" placeholder="MyJam_2026-07-13" />
+          </label>
+          <label>
+            Project folder
+            <input id="projectFolder" placeholder="/path/to/MyJam_2026-07-13.zuckervid" />
+          </label>
+          <button id="createProject">Create</button>
+        </div>
+        <div class="form-grid">
+          <label>
+            Existing project folder
+            <input id="openFolder" placeholder="/path/to/project.zuckervid" />
+          </label>
+          <button id="openProject">Open</button>
+        </div>
+      </section>
+
+      <section id="inputs" class="panel">
+        <div class="input-hero">
+          <div>
+            <h2>Inbox</h2>
+            <p id="inboxPath">~/ZuckerVideos/Inbox</p>
+          </div>
+          <div class="input-actions">
+            <button id="revealInbox">Reveal in Finder</button>
+            <button id="rescanInbox">Rescan</button>
+          </div>
+        </div>
+        <div id="dropZone" class="drop-zone">
+          <strong>Drop files or folders here</strong>
+          <span id="dropMode">Desktop drops use local paths. Browser dev drops copy files into the project.</span>
+        </div>
+        <div id="dropProgress" class="drop-progress" hidden></div>
+        <div class="input-actions">
+          <button class="desktop-only" id="chooseMaster" title="available in the desktop app">Choose master...</button>
+          <button class="desktop-only" id="chooseSongs" title="available in the desktop app">Choose songs.json...</button>
+          <button class="desktop-only" id="addVideos" title="available in the desktop app">Add videos...</button>
+          <button class="desktop-only" id="addVideoFolder" title="available in the desktop app">Add video folder...</button>
+          <label class="toggle-line">
+            <input type="checkbox" id="copyIntoProject" />
+            Copy into project
+          </label>
+        </div>
+        <div id="songSuggestions" class="suggestions" hidden></div>
+        <div id="detectedInputs" class="detected-inputs"></div>
+        <div class="input-actions">
+          <button class="primary" id="useDetected">Use all detected</button>
+        </div>
+        <h2>Registered</h2>
+        <div id="registeredInputs" class="registered-inputs"></div>
+      </section>
+
+      <section id="pipeline" class="panel">
+        <div id="progress" class="progress" hidden>
+          <div id="progressBar"></div>
+          <span id="progressText"></span>
+        </div>
+        <div id="stageList" class="stage-list"></div>
+      </section>
+
+      <section id="sync" class="panel">
+        <div class="sync-toolbar">
+          <button id="refreshSync">Refresh Sync Map</button>
+        </div>
+        <div id="syncTimeline" class="timeline"></div>
+        <table>
+          <thead>
+            <tr>
+              <th>Frame</th>
+              <th>Clip</th>
+              <th>Position</th>
+              <th>Confidence</th>
+              <th>Badges</th>
+              <th>Controls</th>
+            </tr>
+          </thead>
+          <tbody id="syncTable"></tbody>
+        </table>
+        <video id="syncPreview" class="sync-preview" controls hidden></video>
+      </section>
+      <section id="edit" class="panel placeholder">Edit workspace placeholder</section>
+      <section id="export" class="panel placeholder">Export queue placeholder</section>
+    </main>
+
+    <div id="toast" class="toast" hidden></div>
+    <script src="/advanced.js"></script>
+  </body>
+</html>

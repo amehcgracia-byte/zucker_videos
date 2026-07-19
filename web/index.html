@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -7,110 +7,81 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <header class="topbar">
-      <div>
-        <h1>Zucker Editor</h1>
-        <p id="projectSummary">No project open</p>
-      </div>
-      <nav class="tabs" aria-label="Workspace">
-        <button class="tab active" data-tab="project">Project</button>
-        <button class="tab" data-tab="inputs">Inputs</button>
-        <button class="tab" data-tab="pipeline">Pipeline</button>
-        <button class="tab" data-tab="sync">Sync Review</button>
-        <button class="tab" data-tab="edit">Edit</button>
-        <button class="tab" data-tab="export">Export</button>
-      </nav>
-    </header>
-
-    <main>
-      <section id="project" class="panel active">
-        <div class="form-grid">
-          <label>
-            Project name
-            <input id="projectName" placeholder="MyJam_2026-07-13" />
-          </label>
-          <label>
-            Project folder
-            <input id="projectFolder" placeholder="/path/to/MyJam_2026-07-13.zuckervid" />
-          </label>
-          <button id="createProject">Create</button>
+    <main class="wizard">
+      <section class="step active" id="step1">
+        <div class="step-header">
+          <span>Paso 1 de 3</span>
+          <h1>Zucker Editor</h1>
         </div>
-        <div class="form-grid">
-          <label>
-            Existing project folder
-            <input id="openFolder" placeholder="/path/to/project.zuckervid" />
-          </label>
-          <button id="openProject">Open</button>
-        </div>
-      </section>
-
-      <section id="inputs" class="panel">
-        <div class="input-hero">
-          <div>
-            <h2>Inbox</h2>
-            <p id="inboxPath">~/ZuckerVideos/Inbox</p>
-          </div>
-          <div class="input-actions">
-            <button id="revealInbox">Reveal in Finder</button>
-            <button id="rescanInbox">Rescan</button>
-          </div>
-        </div>
+        <label class="name-field">
+          Nombre del vídeo
+          <input id="videoName" />
+        </label>
         <div id="dropZone" class="drop-zone">
-          <strong>Drop files or folders here</strong>
-          <span id="dropMode">Desktop drops use local paths. Browser dev drops copy files into the project.</span>
+          <div class="drop-copy">
+            <strong>Arrastra aquí tus archivos</strong>
+            <span>Vídeos, el audio master y (si lo tienes) el songs.json del Zucker Mixer</span>
+          </div>
+          <div id="chips" class="chips"></div>
         </div>
-        <div id="dropProgress" class="drop-progress" hidden></div>
-        <div class="input-actions">
-          <button class="desktop-only" id="chooseMaster" title="available in the desktop app">Choose master...</button>
-          <button class="desktop-only" id="chooseSongs" title="available in the desktop app">Choose songs.json...</button>
-          <button class="desktop-only" id="addVideos" title="available in the desktop app">Add videos...</button>
-          <button class="desktop-only" id="addVideoFolder" title="available in the desktop app">Add video folder...</button>
-          <label class="toggle-line">
-            <input type="checkbox" id="copyIntoProject" />
-            Copy into project
-          </label>
-        </div>
-        <div id="songSuggestions" class="suggestions" hidden></div>
-        <div id="detectedInputs" class="detected-inputs"></div>
-        <div class="input-actions">
-          <button class="primary" id="useDetected">Use all detected</button>
-        </div>
-        <h2>Registered</h2>
-        <div id="registeredInputs" class="registered-inputs"></div>
+        <p id="softRule" class="soft-rule">Falta el audio master</p>
+        <button id="confirmFiles" class="primary" disabled>Confirmar y seguir →</button>
       </section>
 
-      <section id="pipeline" class="panel">
-        <div id="progress" class="progress" hidden>
-          <div id="progressBar"></div>
-          <span id="progressText"></span>
+      <section class="step" id="step2">
+        <div class="step-header">
+          <span>Paso 2 de 3</span>
+          <h1>Elige el tipo de edición</h1>
         </div>
-        <div id="stageList" class="stage-list"></div>
+        <div class="platforms">
+          <button class="platform-card" data-platform="youtube">
+            <strong>YouTube</strong>
+            <span>Edición completa de la canción</span>
+          </button>
+          <button class="platform-card" data-platform="instagram">
+            <strong>Instagram</strong>
+            <span>Vídeo corto formato Instagram</span>
+          </button>
+          <button class="platform-card" data-platform="tiktok">
+            <strong>TikTok</strong>
+            <span>Aún más corto y dinámico</span>
+          </button>
+        </div>
+        <div id="songPicker" class="song-picker" hidden>
+          <h2>¿Qué canción?</h2>
+          <div id="songOptions"></div>
+        </div>
+        <button id="startWizard" class="primary" disabled>¡Hazlo! →</button>
       </section>
 
-      <section id="sync" class="panel">
-        <div class="sync-toolbar">
-          <button id="refreshSync">Refresh Sync Map</button>
+      <section class="step" id="step3">
+        <div class="step-header">
+          <span>Paso 3 de 3</span>
+          <h1 id="progressTitle">Creando tu vídeo</h1>
         </div>
-        <div id="syncTimeline" class="timeline"></div>
-        <table>
-          <thead>
-            <tr>
-              <th>Frame</th>
-              <th>Clip</th>
-              <th>Position</th>
-              <th>Confidence</th>
-              <th>Badges</th>
-              <th>Controls</th>
-            </tr>
-          </thead>
-          <tbody id="syncTable"></tbody>
-        </table>
-        <video id="syncPreview" class="sync-preview" controls hidden></video>
+        <div id="progressBox" class="progress-box">
+          <div class="progress-track"><div id="progressBar"></div></div>
+          <strong id="progressMessage">Preparando...</strong>
+          <span id="progressDetail"></span>
+        </div>
+        <div id="errorBox" class="error-box" hidden>
+          <p id="errorText"></p>
+          <details>
+            <summary>Ver detalles técnicos</summary>
+            <pre id="technicalDetails"></pre>
+          </details>
+          <button id="retryWizard">Reintentar</button>
+        </div>
+        <div id="resultBox" class="result-box" hidden>
+          <video id="resultVideo" controls></video>
+          <strong id="resultFilename"></strong>
+          <div class="result-actions">
+            <button id="showFinder">Mostrar en Finder</button>
+            <button id="again">Hacer otro</button>
+          </div>
+        </div>
       </section>
-      <section id="edit" class="panel placeholder">Edit workspace placeholder</section>
-      <section id="export" class="panel placeholder">Export queue placeholder</section>
     </main>
-
     <div id="toast" class="toast" hidden></div>
     <script src="/app.js"></script>
   </body>

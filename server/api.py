@@ -15,8 +15,9 @@ from werkzeug.exceptions import RequestEntityTooLarge
 from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
 from core.project import Project, ProjectError, create_project, load_project
 from core.stages.sync import clear_manual_override, generate_preview, generate_thumbnail, set_manual_override
-from server.inbox import classify_paths, load_global_config, register_selected_inputs, save_uploads, scan_inbox, suggest_songs_json
+from server.inbox import app_home, classify_paths, load_global_config, register_selected_inputs, save_uploads, scan_inbox, suggest_songs_json, unique_destination
 from server.media import send_file_with_range
+from server.wizard import WizardRunner, wizard_song_options
 
 LOGGER = logging.getLogger(__name__)
 BROWSER_UPLOAD_MAX_BYTES = 512 * 1024 * 1024
@@ -29,6 +30,7 @@ class AppState:
     engine: PipelineEngine
     project: Project | None = None
     dev: bool = False
+    wizard: WizardRunner | None = None
 
 
 def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
@@ -37,7 +39,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     app = Flask(__name__, static_folder=str(root / "web"), static_url_path="")
     app.config["MAX_CONTENT_LENGTH"] = BROWSER_UPLOAD_MAX_BYTES
     load_global_config()
-    state = AppState(engine=PipelineEngine(), dev=dev)
+    state = AppState(engine=PipelineEngine(), dev=dev, wizard=WizardRunner())
     if project_path:
         state.project = load_project(project_path)
     app.config["ZUCKER_STATE"] = state
@@ -57,6 +59,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.get("/")
     def index() -> Response:
         return send_from_directory(app.static_folder or "", "index.html")
+
+    @app.get("/advanced")
+    def advanced() -> Response:
+        return send_from_directory(app.static_folder or "", "advanced.html")
 
     @app.post("/api/v1/project")
     def api_create_project() -> tuple[Response, int] | Response:
@@ -168,6 +174,94 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         master = project.data.get("inputs", {}).get("master")
         master_path = master.get("path") if master else None
         return jsonify({"songs": suggest_songs_json(master_path)})
+
+    @app.post("/api/v1/wizard/upload")
+    def api_wizard_upload() -> Response:
+        max_bytes = int(app.config["MAX_CONTENT_LENGTH"])
+        if request.content_length and request.content_length > max_bytes:
+            limit_mb = max_bytes // (1024 * 1024)
+            return error_response(
+                "upload_too_large",
+                f"Browser uploads are limited to {limit_mb} MB. Put large videos in the Inbox or use the desktop folder picker.",
+                413,
+            )
+        files = list(request.files.getlist("files"))
+        if not files:
+            return error_response("bad_request", "multipart field files is required", 400)
+        upload_dir = app_home() / "WizardUploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        saved: list[str] = []
+        for storage in files:
+            filename = Path(storage.filename or "upload.bin").name
+            destination = unique_destination(upload_dir / filename)
+            storage.save(destination)
+            saved.append(str(destination.resolve()))
+        return jsonify(classify_paths(saved))
+
+    @app.post("/api/v1/wizard/songs")
+    def api_wizard_songs() -> Response:
+        body = _json_body()
+        songs_path = body.get("songs")
+        if songs_path is not None and not isinstance(songs_path, str):
+            return error_response("bad_request", "songs must be a string path", 400)
+        return jsonify({"songs": wizard_song_options(songs_path)})
+
+    @app.post("/api/v1/wizard/start")
+    def api_wizard_start() -> Response:
+        body = _json_body()
+        name = str(body.get("name") or "").strip()
+        platform = str(body.get("platform") or "").strip().lower()
+        master = str(body.get("master") or "").strip()
+        songs = str(body.get("songs") or "").strip() or None
+        videos = body.get("videos") or []
+        if platform not in {"youtube", "instagram", "tiktok"}:
+            return error_response("bad_request", "platform must be youtube, instagram, or tiktok", 400)
+        if not master:
+            return error_response("missing_master", "Falta el audio master", 400)
+        if not isinstance(videos, list) or not all(isinstance(path, str) for path in videos) or not videos:
+            return error_response("missing_video", "Falta al menos un vídeo", 400)
+        try:
+            job = state.wizard.start(
+                name=name or "Jam",
+                platform=platform,
+                song_choice=body.get("song_index", body.get("song_choice")),
+                master_path=master,
+                songs_path=songs,
+                video_paths=videos,
+            )
+            return jsonify(dict(job.__dict__)), 202
+        except RuntimeError as exc:
+            return error_response("wizard_busy", str(exc), 409)
+
+    @app.post("/api/v1/wizard/prepare")
+    def api_wizard_prepare() -> Response:
+        body = _json_body()
+        name = str(body.get("name") or "").strip()
+        master = str(body.get("master") or "").strip()
+        songs = str(body.get("songs") or "").strip() or None
+        videos = body.get("videos") or []
+        if not master:
+            return error_response("missing_master", "Falta el audio master", 400)
+        if not isinstance(videos, list) or not all(isinstance(path, str) for path in videos) or not videos:
+            return error_response("missing_video", "Falta al menos un vídeo", 400)
+        try:
+            job = state.wizard.prepare(name=name or "Jam", master_path=master, songs_path=songs, video_paths=videos)
+            return jsonify(dict(job.__dict__)), 202
+        except RuntimeError as exc:
+            return error_response("wizard_busy", str(exc), 409)
+
+    @app.get("/api/v1/wizard/status")
+    def api_wizard_status() -> Response:
+        return jsonify(state.wizard.status())
+
+    @app.get("/api/v1/wizard/result")
+    def api_wizard_result() -> Response:
+        status = state.wizard.status()
+        result = status.get("result") or {}
+        path = result.get("path")
+        if not path:
+            return error_response("not_found", "No hay vídeo exportado todavía", 404)
+        return send_file_with_range(str(path))
 
     @app.post("/api/v1/inputs/classify-paths")
     def api_classify_paths() -> Response:

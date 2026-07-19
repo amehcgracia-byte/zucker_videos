@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import time
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from server.api import create_app
 
@@ -125,6 +129,99 @@ def test_readiness_matrix_defers_master_and_songs_until_later_stages(tmp_path, m
     status = client.get("/api/v1/stages/status").get_json()
     assert status["readiness"]["cut"]["ready"] is False
     assert "sync is pending" in status["readiness"]["cut"]["reasons"]
+
+
+def test_wizard_start_soft_rules_require_video_and_master(tmp_path):
+    app = create_app()
+    client = app.test_client()
+    video = tmp_path / "clip.mov"
+    master = tmp_path / "master.wav"
+    video.write_bytes(b"video")
+    master.write_bytes(b"master")
+
+    response = client.post(
+        "/api/v1/wizard/start",
+        json={"name": "Jam", "platform": "youtube", "master": str(master), "videos": []},
+    )
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "missing_video"
+
+    response = client.post(
+        "/api/v1/wizard/start",
+        json={"name": "Jam", "platform": "youtube", "master": "", "videos": [str(video)]},
+    )
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "missing_master"
+
+
+@pytest.mark.slow
+def test_wizard_orchestration_exports_tiny_media(tmp_path, monkeypatch):
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not available")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    master = tmp_path / "master.wav"
+    video = tmp_path / "clip.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=2",
+            str(master),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=160x90:rate=15:duration=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(video),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    app = create_app()
+    client = app.test_client()
+    response = client.post(
+        "/api/v1/wizard/start",
+        json={"name": "WizardTest", "platform": "youtube", "master": str(master), "videos": [str(video)]},
+    )
+    assert response.status_code == 202
+
+    deadline = time.time() + 20
+    status = {}
+    while time.time() < deadline:
+        status = client.get("/api/v1/wizard/status").get_json()
+        if status["status"] in {"done", "failed"}:
+            break
+        time.sleep(0.1)
+
+    assert status["status"] == "done", status
+    export_path = Path(status["result"]["path"])
+    assert export_path.exists()
+    assert export_path.stat().st_size > 0
+    assert client.get("/api/v1/wizard/result", headers={"Range": "bytes=0-4"}).status_code == 206
 
 
 def test_api_error_envelope_without_open_project():

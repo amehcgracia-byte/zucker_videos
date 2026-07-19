@@ -1,10 +1,44 @@
 # Zucker Editor
 
-Stable application skeleton for turning Zucker Mixer outputs plus raw multi-camera clips into per-song videos.
+Simple three-step app for turning Zucker Mixer audio plus raw camera clips into a finished video.
 
-This version implements the architecture, persistence, pipeline contracts, Flask API, media range serving, a real audio-based sync stage, and a minimal frontend shell. It intentionally does not implement real cut, edit, or export algorithms yet.
+## Uso
 
-## Quick Start
+1. **Drop everything**
+   - Escribe `Nombre del vídeo`, or keep the default `Jam YYYY-MM-DD`.
+   - Drag videos, master audio, and optionally `songs.json` into `Arrastra aquí tus archivos`.
+   - Files already in `~/ZuckerVideos/Inbox/` are imported automatically.
+   - You can continue once there is at least one video and one master audio. Without `songs.json`, Zucker Editor makes one continuous video.
+
+2. **Choose edit type**
+   - `YouTube`: full-length 16:9 edit.
+   - `Instagram`: vertical 9:16 short, about 45 seconds.
+   - `TikTok`: vertical 9:16 short, about 20 seconds.
+   - If `songs.json` has multiple songs, choose the song. YouTube also allows `Todas`.
+
+3. **Wait for the result**
+   - The app runs ingest, sync, cut, edit, and export automatically.
+   - Progress is shown in plain Spanish.
+   - On success, preview the video, reveal it in Finder, or start another.
+   - On failure, use `Ver detalles técnicos` for the log tail.
+
+Placeholder creative logic in this version:
+
+- Video selection uses the first clip that covers the chosen song window, or the longest clip when there is no `songs.json`.
+- Instagram/TikTok use a center crop and fixed middle-duration extract.
+- There is no real multicam selection, highlight scoring, beat cutting, or creative pacing yet.
+
+The old technical UI is still available for debugging at:
+
+```text
+/advanced
+```
+
+## Development
+
+This version implements the architecture, persistence, pipeline contracts, Flask API, media range serving, a real audio-based sync stage, the three-step wizard, and a minimal ffmpeg export path.
+
+### Quick Start
 
 ```bash
 cd /Users/macbookair/zucker_videos
@@ -27,20 +61,6 @@ Open an existing project on startup:
 ```
 
 `--dev` runs Flask only with CORS enabled. It prefers port `5179` and falls back automatically if that port is already in use. Desktop mode binds an OS-assigned free port and passes the actual URL into pywebview.
-
-## How To Load A Jam In 10 Seconds
-
-1. Put the mastered audio, `songs.json`, and raw clips into:
-
-```text
-~/ZuckerVideos/Inbox/
-```
-
-2. Open or create a `.zuckervid` project.
-3. Go to Inputs.
-4. Confirm the detected master, songs, and videos.
-5. Click `Use all detected`.
-6. Go straight to Pipeline and run `sync`.
 
 The app creates `~/ZuckerVideos/Inbox/` on first launch. The path lives in the global config:
 
@@ -113,7 +133,8 @@ core/stages/*
   | Stage interface implementations
   | ingest is real validation/probe
   | sync is real onset-correlation matching
-  | cut/edit/export are stubs that write real JSON artifacts
+  | cut/export provide a simple placeholder wizard render
+  | edit is still a JSON placeholder
 
 server/media.py
   | Range-aware file serving for browser audio/video seeking
@@ -269,6 +290,12 @@ POST /api/v1/inbox/register
 POST /api/v1/inputs/upload
 POST /api/v1/inputs/classify-paths
 GET  /api/v1/inputs/suggestions/songs
+POST /api/v1/wizard/upload
+POST /api/v1/wizard/songs
+POST /api/v1/wizard/prepare
+POST /api/v1/wizard/start
+GET  /api/v1/wizard/status
+GET  /api/v1/wizard/result
 POST /api/v1/settings/inputs
 GET  /api/v1/app/config
 POST /api/v1/stages/{name}/run
@@ -355,18 +382,16 @@ Bundle smoke checklist:
 1. Launch `dist/Zucker Editor.app` from Finder, without a terminal.
 2. Confirm `~/ZuckerVideos/Inbox/` exists.
 3. Create or open a `.zuckervid` project.
-4. Drop a folder of videos into Inputs and confirm grouped detection.
-5. Register at least one video.
-6. Open Pipeline, confirm ingest is ready without master or songs, then run ingest.
-7. Register master audio and run sync.
-8. Register or accept a suggested `songs.json` before cut/export work.
-9. Open Sync Review and play a preview.
+4. Drop a folder of videos plus the master audio into the wizard.
+5. Confirm and pick YouTube, Instagram, or TikTok.
+6. Wait for the progress screen to finish.
+7. Play the exported preview.
 
 Troubleshooting:
 
 - If media probing fails immediately, install ffmpeg with `brew install ffmpeg`, then relaunch.
 - If Finder blocks a local unsigned build, rerun `codesign --force --deep -s - "dist/Zucker Editor.app"`.
 - If the UI opens but appears blank, verify the build command included `--add-data "$ROOT/web:web"` and rebuild.
-- If native picker buttons do nothing in the `.app`, open Inputs and wait for the window to finish loading. A missing bridge now shows a toast; rebuild with the current `app.py` if the toast says the desktop picker bridge is unavailable.
+- If native picker buttons do nothing in `/advanced`, wait for the window to finish loading. A missing bridge shows a toast; rebuild with the current `app.py` if the toast says the desktop picker bridge is unavailable.
 - If browser drag/drop reports the 512 MB limit, move large videos to `~/ZuckerVideos/Inbox/` and press Rescan, or use the bundled app's `Add video folder...` picker.
-- If Pipeline says `songs.json is not registered`, ingest and sync can still run when their own requirements are met. `songs.json` is only required for cut/edit/export and must come from Zucker Mixer with a top-level `songs` array.
+- In the wizard, `songs.json` is optional. Without it, Zucker Editor exports one continuous video. In `/advanced`, `songs.json` is only required for manual cut/edit/export debugging.
