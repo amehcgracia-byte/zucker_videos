@@ -32,6 +32,7 @@ def test_api_create_project_run_stub_stage_and_poll(tmp_path, monkeypatch):
         lambda path: valid_video_probe(),
     )
     monkeypatch.setattr("server.inbox.ffprobe", lambda path: valid_video_probe())
+    monkeypatch.setattr("core.stages.ingest.normalize_video_record", lambda project, record, progress: record.setdefault("normalized", {"path": record["path"]}))
     monkeypatch.setattr("core.stages.sync.load_or_compute_master_envelope", lambda project: [1, 2, 3])
     monkeypatch.setattr(
         "core.stages.sync.sync_clip",
@@ -101,6 +102,7 @@ def test_readiness_matrix_defers_master_and_songs_until_later_stages(tmp_path, m
         lambda path: valid_video_probe(),
     )
     monkeypatch.setattr("server.inbox.ffprobe", lambda path: valid_video_probe())
+    monkeypatch.setattr("core.stages.ingest.normalize_video_record", lambda project, record, progress: record.setdefault("normalized", {"path": record["path"]}))
     app = create_app()
     client = app.test_client()
     folder = tmp_path / "Matrix.zuckervid"
@@ -196,11 +198,15 @@ def test_wizard_orchestration_exports_tiny_media(tmp_path, monkeypatch):
             "-f",
             "lavfi",
             "-i",
-            "testsrc=size=321x241:rate=15:duration=3",
+            "testsrc=size=321x241:rate=30:duration=3",
             "-f",
             "lavfi",
             "-i",
             "sine=frequency=440:duration=3",
+            "-vf",
+            "select='not(eq(mod(n,5),0))'",
+            "-vsync",
+            "vfr",
             "-c:v",
             "libx264",
             "-pix_fmt",
@@ -239,6 +245,32 @@ def test_wizard_orchestration_exports_tiny_media(tmp_path, monkeypatch):
     assert (Path(status["result"]["project_path"]) / "cache" / "logs" / "ingest.log").exists()
     assert (Path(status["result"]["project_path"]) / "cache" / "logs" / "sync.log").exists()
     assert (Path(status["result"]["project_path"]) / "cache" / "logs" / "export.log").exists()
+    project_json = json.loads((Path(status["result"]["project_path"]) / "project.json").read_text(encoding="utf-8"))
+    normalized_path = Path(project_json["inputs"]["videos"][0]["normalized"]["path"])
+    assert normalized_path.exists()
+    normalized_metadata = json.loads(
+        subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
+                str(normalized_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    )
+    normalized_video = next(stream for stream in normalized_metadata["streams"] if stream["codec_type"] == "video")
+    assert normalized_video["codec_name"] == "h264"
+    assert normalized_video["pix_fmt"] == "yuv420p"
+    assert int(normalized_video["width"]) % 2 == 0
+    assert int(normalized_video["height"]) % 2 == 0
+    assert normalized_video["avg_frame_rate"] == normalized_video["r_frame_rate"]
     metadata = json.loads(
         subprocess.run(
             [
@@ -342,6 +374,7 @@ def test_register_status_run_ingest_end_to_end_regression(tmp_path, monkeypatch)
         lambda path: valid_video_probe("2.5"),
     )
     monkeypatch.setattr("server.inbox.ffprobe", lambda path: valid_video_probe("2.5"))
+    monkeypatch.setattr("core.stages.ingest.normalize_video_record", lambda project, record, progress: record.setdefault("normalized", {"path": record["path"]}))
     master = tmp_path / "master.wav"
     songs = tmp_path / "songs.json"
     video_a = tmp_path / "clip-a.mov"

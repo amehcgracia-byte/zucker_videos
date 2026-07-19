@@ -6,8 +6,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".mts", ".avi", ".mkv"}
+VIDEO_EXTENSIONS = {
+    ".mp4",
+    ".mov",
+    ".m4v",
+    ".mts",
+    ".m2ts",
+    ".avi",
+    ".mkv",
+    ".3gp",
+    ".3g2",
+    ".mpg",
+    ".mpeg",
+    ".ts",
+    ".mxf",
+}
 SIDE_CAR_REASONS = {
+    ".insv": "Vídeo 360 sin procesar — expórtalo primero con Insta360 Studio (Archivo → Exportar) y trae aquí el MP4",
+    ".insp": "Vídeo 360 sin procesar — expórtalo primero con Insta360 Studio (Archivo → Exportar) y trae aquí el MP4",
     ".lrv": "archivo auxiliar de la cámara (versión en baja resolución)",
     ".thm": "archivo auxiliar de la cámara",
     ".xml": "archivo auxiliar de la cámara",
@@ -46,8 +62,6 @@ def static_rejection_reason(path: Path) -> str | None:
         return "archivo oculto o del sistema"
     if suffix in SIDE_CAR_REASONS:
         return SIDE_CAR_REASONS[suffix]
-    if suffix not in VIDEO_EXTENSIONS:
-        return "tipo de archivo no compatible"
     return None
 
 
@@ -69,6 +83,10 @@ def validate_camera_video_metadata(metadata: dict[str, Any]) -> VideoValidation:
         "width": width,
         "height": height,
         "rotation": _rotation(video_stream or {}),
+        "fps": dominant_fps(video_stream or {}),
+        "projection": projection(metadata, width, height),
+        "bit_depth": bit_depth(video_stream or {}),
+        "hdr": is_hdr_video(video_stream or {}),
         "valid_video": False,
     }
     if not video_stream or codec not in SANE_VIDEO_CODECS:
@@ -100,6 +118,61 @@ def record_is_usable_camera_video(record: dict[str, Any]) -> bool:
         and height is not None
         and width >= MIN_VIDEO_WIDTH
         and height >= MIN_VIDEO_HEIGHT
+    )
+
+
+def record_media_path(record: dict[str, Any]) -> str:
+    """Return the normalized media path that downstream stages should consume."""
+    normalized = record.get("normalized") or {}
+    return str(normalized.get("path") or record["path"])
+
+
+def dominant_fps(stream: dict[str, Any]) -> float:
+    """Return the best available frame rate from ffprobe stream metadata."""
+    for key in ("avg_frame_rate", "r_frame_rate"):
+        fps = _parse_rate(stream.get(key))
+        if fps > 0:
+            return fps
+    return 30.0
+
+
+def projection(metadata: dict[str, Any], width: int | None, height: int | None) -> str | None:
+    """Detect equirectangular 360 exports by metadata or 2:1 geometry."""
+    text = str(metadata).lower()
+    if "equirectangular" in text or "spherical" in text:
+        return "equirect"
+    if width and height and height > 0:
+        ratio = width / height
+        if 1.95 <= ratio <= 2.05:
+            return "equirect"
+    return None
+
+
+def bit_depth(stream: dict[str, Any]) -> int | None:
+    """Infer bit depth from ffprobe stream metadata."""
+    bits = _int_or_none(stream.get("bits_per_raw_sample") or stream.get("bits_per_sample"))
+    if bits:
+        return bits
+    pix_fmt = str(stream.get("pix_fmt") or "")
+    for marker in ("12", "10"):
+        if marker in pix_fmt:
+            return int(marker)
+    if pix_fmt:
+        return 8
+    return None
+
+
+def is_hdr_video(stream: dict[str, Any]) -> bool:
+    """Return True for common HDR transfer/primaries/pixel-format hints."""
+    transfer = str(stream.get("color_transfer") or "").lower()
+    primaries = str(stream.get("color_primaries") or "").lower()
+    pix_fmt = str(stream.get("pix_fmt") or "").lower()
+    return (
+        transfer in {"smpte2084", "arib-std-b67"}
+        or primaries in {"bt2020", "bt2020nc"}
+        or "p10" in pix_fmt
+        or "10le" in pix_fmt
+        or "12le" in pix_fmt
     )
 
 
@@ -140,3 +213,20 @@ def _rotation(stream: dict[str, Any]) -> int:
         if "rotation" in item:
             return int(item["rotation"])
     return 0
+
+
+def _parse_rate(value: Any) -> float:
+    if not value:
+        return 0.0
+    text = str(value)
+    if "/" in text:
+        numerator, denominator = text.split("/", 1)
+        try:
+            denom = float(denominator)
+            return float(numerator) / denom if denom else 0.0
+        except ValueError:
+            return 0.0
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0

@@ -91,16 +91,20 @@ def _selected_window(songs: list[dict[str, Any]], song_choice: Any, sync_map: di
 
 
 def _usable_synced_clips(project: Project, sync_map: dict[str, Any]) -> list[dict[str, Any]]:
-    records_by_path = {
-        record.get("path"): record
-        for record in project.data.get("inputs", {}).get("videos", [])
-        if record.get("path")
-    }
+    records_by_path: dict[str, dict[str, Any]] = {}
+    for record in project.data.get("inputs", {}).get("videos", []):
+        if record.get("path"):
+            records_by_path[record["path"]] = record
+        normalized = record.get("normalized") or {}
+        if normalized.get("path"):
+            records_by_path[normalized["path"]] = record
     threshold = sync_confidence_threshold(project)
     usable: list[dict[str, Any]] = []
     for clip in (sync_map.get("clips") or {}).values():
-        path = clip.get("path")
+        path = clip.get("source_path") or clip.get("path")
         record = records_by_path.get(path)
+        if record is None and clip.get("path"):
+            record = records_by_path.get(clip["path"])
         confidence = _float_or_zero(clip.get("confidence"))
         if not record or not record_is_usable_camera_video(record):
             continue

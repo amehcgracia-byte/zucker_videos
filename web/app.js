@@ -1,23 +1,4 @@
 const detected = { master: [], songs: [], videos: [], ignored: [] };
-const uploadableDropExtensions = new Set([
-  ".mp4",
-  ".mov",
-  ".m4v",
-  ".mts",
-  ".avi",
-  ".mkv",
-  ".wav",
-  ".mp3",
-  ".flac",
-  ".aiff",
-  ".aif",
-  ".json",
-  ".txt",
-  ".lrv",
-  ".thm",
-  ".xml",
-  ".srt",
-]);
 let selectedPlatform = null;
 let selectedSong = null;
 let selectedMasterPath = null;
@@ -98,6 +79,7 @@ function renderChips() {
       (item) => `
         <span class="chip ${item.kind === "ignored" ? "muted" : ""}" title="${escapeHtml(item.path)}">
           ${iconFor(item)} ${escapeHtml(item.filename || filename(item.path))}
+          ${item.projection === "equirect" || item.probe?.projection === "equirect" ? "<small>360°</small>" : ""}
           ${item.source === "inbox" ? "<small>del Inbox</small>" : ""}
           ${item.kind === "ignored" ? `<small>${escapeHtml(item.note || "ignorado")}</small>` : ""}
         </span>`
@@ -155,8 +137,7 @@ async function loadInbox() {
 
 function supportedDropFile(file) {
   const name = file.name || "";
-  const suffix = name.includes(".") ? `.${name.split(".").pop().toLowerCase()}` : "";
-  return uploadableDropExtensions.has(suffix);
+  return Boolean(name) && !name.startsWith(".") && name !== ".DS_Store";
 }
 
 function readAllDirectoryEntries(reader) {

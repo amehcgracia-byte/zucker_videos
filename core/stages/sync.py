@@ -14,7 +14,7 @@ import numpy as np
 from scipy.signal import correlate
 
 from core.ffmpeg import ffprobe
-from core.media_validation import record_is_usable_camera_video
+from core.media_validation import record_is_usable_camera_video, record_media_path
 from core.project import Project
 from core.stages.base import ProgressCallback, Stage, artifact_path, file_signature, stable_fingerprint, write_artifact_json
 
@@ -163,7 +163,7 @@ def load_or_compute_master_envelope(project: Project) -> np.ndarray:
 
 def load_or_compute_clip_envelope(project: Project, record: dict[str, Any]) -> tuple[np.ndarray | None, str | None]:
     """Extract clip audio if needed, then load or compute its onset envelope."""
-    video_path = record["path"]
+    video_path = record_media_path(record)
     if not has_audio_stream(video_path):
         return None, None
     audio_path = clip_audio_path(project, record)
@@ -225,10 +225,12 @@ def atomic_save_npy(path: Path, array: np.ndarray) -> None:
 
 def sync_clip(project: Project, record: dict[str, Any], master_env: np.ndarray, threshold: float) -> dict[str, Any]:
     """Synchronize one clip record against the master envelope."""
-    duration = media_duration(record["path"])
+    media_path = record_media_path(record)
+    duration = media_duration(media_path)
     clip_env, audio_path = load_or_compute_clip_envelope(project, record)
     base = {
-        "path": record["path"],
+        "path": media_path,
+        "source_path": record["path"],
         "filename": Path(record["path"]).name,
         "duration_sec": duration,
         "source_signature": file_signature(record["path"]),
@@ -469,12 +471,13 @@ def generate_preview(project: Project, clip_id: str) -> Path:
 def generate_thumbnail(project: Project, clip_id: str) -> Path:
     """Generate or return a cached midpoint thumbnail for a clip."""
     record = record_for_clip_id(project, clip_id)
-    signature = file_signature(record["path"])
+    media_path = record_media_path(record)
+    signature = file_signature(media_path)
     thumb_path = project.cache_dir / "thumbnails" / f"{clip_id}-{signature['size']}-{int(signature['mtime'])}.jpg"
     thumb_path.parent.mkdir(parents=True, exist_ok=True)
     if thumb_path.exists():
         return thumb_path
-    duration = media_duration(record["path"])
+    duration = media_duration(media_path)
     midpoint = max(0.0, duration / 2.0)
     tmp_path = thumb_path.with_suffix(".tmp.jpg")
     command = [
@@ -483,7 +486,7 @@ def generate_thumbnail(project: Project, clip_id: str) -> Path:
         "-ss",
         f"{midpoint:.3f}",
         "-i",
-        record["path"],
+        media_path,
         "-frames:v",
         "1",
         "-q:v",

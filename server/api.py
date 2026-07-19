@@ -14,6 +14,7 @@ from werkzeug.exceptions import RequestEntityTooLarge
 
 from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
 from core.project import Project, ProjectError, create_project, load_project
+from core.media_validation import record_media_path
 from core.stages.sync import clear_manual_override, generate_preview, generate_thumbnail, set_manual_override
 from server.inbox import app_home, classify_paths, load_global_config, register_selected_inputs, save_uploads, scan_inbox, suggest_songs_json, unique_destination
 from server.media import send_file_with_range
@@ -431,7 +432,7 @@ def _require_project(state: AppState) -> Project:
 def _media_path(project: Project, kind: str, index: int) -> str:
     inputs = project.data["inputs"]
     if kind == "videos":
-        return inputs["videos"][index]["path"]
+        return record_media_path(inputs["videos"][index])
     if kind == "master":
         if index != 0 or not inputs.get("master"):
             raise ValueError("Master media is not registered")

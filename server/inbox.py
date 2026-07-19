@@ -138,18 +138,21 @@ def classify_file(path: Path) -> dict[str, Any]:
         item = _item(path, "master", "audio file")
         item["duration"] = audio_duration(path)
         return item
-    if suffix in VIDEO_EXTENSIONS:
-        try:
-            validation = validate_camera_video_metadata(ffprobe(str(path)))
-        except Exception:
-            return _item(path, "ignored", "no es un vídeo de cámara", checked=False)
-        item = _item(path, "videos", validation.reason) if validation.valid else _item(path, "ignored", validation.reason, checked=False)
-        item["probe"] = validation.summary
-        return item
     if suffix == ".json":
         if is_valid_songs_json(path):
             return _item(path, "songs", "valid songs.json")
         return _item(path, "ignored", "JSON ignored: missing songs array", checked=False)
+    if suffix in VIDEO_EXTENSIONS or static_video_rejection is None:
+        try:
+            validation = validate_camera_video_metadata(ffprobe(str(path)))
+        except Exception:
+            note = "tipo de archivo no compatible" if suffix not in VIDEO_EXTENSIONS else "no es un vídeo de cámara"
+            return _item(path, "ignored", note, checked=False)
+        item = _item(path, "videos", validation.reason) if validation.valid else _item(path, "ignored", validation.reason, checked=False)
+        item["probe"] = validation.summary
+        if validation.summary.get("projection"):
+            item["projection"] = validation.summary["projection"]
+        return item
     return _item(path, "ignored", static_rejection_reason(path) or "tipo de archivo no compatible", checked=False)
 
 

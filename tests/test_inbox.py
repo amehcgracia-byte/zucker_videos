@@ -41,7 +41,7 @@ def test_inbox_classification_extensions_and_invalid_songs(tmp_path, monkeypatch
     assert [item["filename"] for item in result["songs"]] == ["songs.json"]
     ignored_notes = {item["filename"]: item["note"] for item in result["ignored"]}
     assert ignored_notes["notes.json"] == "JSON ignored: missing songs array"
-    assert ignored_notes["readme.txt"] == "tipo de archivo no compatible"
+    assert ignored_notes["readme.txt"] == "no es un vídeo de cámara"
     assert ignored_notes["clip.lrv"] == "archivo auxiliar de la cámara (versión en baja resolución)"
 
 
@@ -56,7 +56,12 @@ def test_classifier_rejects_non_camera_video_files(tmp_path, monkeypatch):
     def fake_probe(path: str) -> dict:
         if path.endswith("audio-only.mov"):
             return {"format": {"duration": "10.0"}, "streams": [{"codec_type": "audio", "codec_name": "aac"}]}
-        return valid_video_probe()
+        if path.endswith("camera.mp4"):
+            return valid_video_probe()
+        return {
+            "format": {"duration": "3.0", "format_name": "tty"},
+            "streams": [{"codec_type": "video", "codec_name": "ansi", "width": 80, "height": 25}],
+        }
 
     monkeypatch.setattr("server.inbox.ffprobe", fake_probe)
 
@@ -64,9 +69,38 @@ def test_classifier_rejects_non_camera_video_files(tmp_path, monkeypatch):
 
     assert [item["filename"] for item in result["videos"]] == ["camera.mp4"]
     ignored = {item["filename"]: item["note"] for item in result["ignored"]}
-    assert ignored["mix_report.txt"] == "tipo de archivo no compatible"
+    assert ignored["mix_report.txt"] == "no es un vídeo de cámara"
     assert ignored["clip.lrv"] == "archivo auxiliar de la cámara (versión en baja resolución)"
     assert ignored["audio-only.mov"] == "no es un vídeo de cámara"
+
+
+def test_classifier_accepts_hevc_mts_and_marks_equirect(tmp_path, monkeypatch):
+    mts = tmp_path / "sony.mts"
+    sphere = tmp_path / "insta360-export.mp4"
+    raw = tmp_path / "raw.insv"
+    for path in (mts, sphere, raw):
+        path.write_bytes(b"x")
+
+    def fake_probe(path: str) -> dict:
+        if path.endswith("sony.mts"):
+            return {
+                "format": {"duration": "12.0", "format_name": "mpegts"},
+                "streams": [{"codec_type": "video", "codec_name": "hevc", "width": 3840, "height": 2160}],
+            }
+        return {
+            "format": {"duration": "12.0", "format_name": "mov,mp4"},
+            "streams": [{"codec_type": "video", "codec_name": "h264", "width": 3840, "height": 1920}],
+        }
+
+    monkeypatch.setattr("server.inbox.ffprobe", fake_probe)
+
+    result = classify_paths([str(mts), str(sphere), str(raw)])
+
+    videos = {item["filename"]: item for item in result["videos"]}
+    assert videos["sony.mts"]["probe"]["video_codec"] == "hevc"
+    assert videos["insta360-export.mp4"]["projection"] == "equirect"
+    ignored = {item["filename"]: item["note"] for item in result["ignored"]}
+    assert "Insta360 Studio" in ignored["raw.insv"]
 
 
 def test_shared_scan_function_recurses_nested_dirs(tmp_path):
@@ -86,7 +120,15 @@ def test_shared_scan_function_recurses_nested_dirs(tmp_path):
 
 
 def test_classify_paths_recurses_folder_paths_like_inbox(tmp_path, monkeypatch):
-    monkeypatch.setattr("server.inbox.ffprobe", lambda path: valid_video_probe())
+    monkeypatch.setattr(
+        "server.inbox.ffprobe",
+        lambda path: valid_video_probe()
+        if path.endswith("clip.mov")
+        else {
+            "format": {"duration": "3.0", "format_name": "tty"},
+            "streams": [{"codec_type": "video", "codec_name": "ansi", "width": 80, "height": 25}],
+        },
+    )
     root = tmp_path / "drop"
     nested = root / "nested"
     nested.mkdir(parents=True)

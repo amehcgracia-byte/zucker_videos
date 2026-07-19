@@ -80,11 +80,22 @@ Watched Inbox:
 - The scan runs on app launch, project open/create, the Inputs `Rescan` button, and every few seconds while the Inputs screen is visible.
 - `.wav`, `.mp3`, `.flac`, `.aiff`, and `.aif` are master candidates.
 - `.json` files are accepted as songs only when they contain a top-level `songs` array.
-- Only `.mp4`, `.mov`, `.m4v`, `.mts`, `.avi`, and `.mkv` can become video clips.
+- Only common camera containers (`.mp4`, `.mov`, `.m4v`, `.mts`, `.m2ts`, `.avi`, `.mkv`, `.3gp`, `.3g2`, `.mpg`, `.mpeg`, `.ts`, `.mxf`) can become video clips.
 - Video candidates must also pass `ffprobe` validation: a real camera-video codec, duration over 2 seconds, and at least 320x240 resolution.
 - `.txt`, `.lrv`, `.thm`, `.xml`, `.srt`, hidden files, and `.DS_Store` are ignored with a visible reason; `.lrv` is treated as a low-resolution camera sidecar, not a usable clip.
+- Raw `.insv`/`.insp` Insta360 files are ignored with instructions to export an MP4 from Insta360 Studio first.
+- 2:1 equirectangular MP4/MOV exports are accepted and prepared as a fixed 16:9 virtual camera view.
 - Unsupported files are shown under Ignored with a note.
 - When multiple master candidates are present, the wizard defaults to the longest audio file and shows a small selector so you can change it.
+
+Ingest normalization:
+
+- Ingest transcodes each valid camera clip once into `cache/normalized/{clip_id}.mp4`.
+- Downstream sync, thumbnails, previews, cut, and export consume only the normalized MP4 path.
+- Normalized video is H.264 `yuv420p`, even dimensions, constant frame rate at the detected dominant FPS, with rotation baked in.
+- Audio is normalized to AAC stereo 48 kHz.
+- HDR/10-bit sources use `zscale -> tonemap=hable -> bt709 -> yuv420p`; regular SDR sources use even-dimension scale plus `yuv420p`.
+- Equirectangular clips use ffmpeg `v360` equirect-to-flat with yaw `0`, pitch `0`, h_fov `100`, output `1920x1080`. TODO: expose per-clip yaw/pitch controls later.
 
 Native Pickers:
 
@@ -392,6 +403,7 @@ Troubleshooting:
 
 - If media probing fails immediately, install ffmpeg with `brew install ffmpeg`, then relaunch.
 - If a dropped file appears under Ignored, the note explains why. Text reports and camera sidecars are intentionally excluded from sync/export.
+- If a raw Insta360 file is ignored, export a normal MP4 from Insta360 Studio and drop that exported MP4 into Zucker Editor.
 - If Finder blocks a local unsigned build, rerun `codesign --force --deep -s - "dist/Zucker Editor.app"`.
 - If the UI opens but appears blank, verify the build command included `--add-data "$ROOT/web:web"` and rebuild.
 - If native picker buttons do nothing in `/advanced`, wait for the window to finish loading. A missing bridge shows a toast; rebuild with the current `app.py` if the toast says the desktop picker bridge is unavailable.
