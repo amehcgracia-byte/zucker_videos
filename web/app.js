@@ -4,6 +4,7 @@ let selectedPlatform = null;
 let selectedSong = null;
 let currentSongs = [];
 let latestResult = null;
+let latestStatus = null;
 let pollTimer = null;
 
 function todayName() {
@@ -241,6 +242,7 @@ async function startWizard() {
 
 async function pollStatus() {
   const status = await api("/wizard/status");
+  latestStatus = status;
   document.querySelector("#progressBar").style.width = `${status.progress || 0}%`;
   document.querySelector("#progressMessage").textContent = status.message || "Trabajando...";
   document.querySelector("#progressDetail").textContent = status.detail || "";
@@ -258,6 +260,22 @@ async function pollStatus() {
     document.querySelector("#resultVideo").src = `${latestResult.media_url}?t=${Date.now()}`;
     document.querySelector("#resultBox").hidden = false;
   }
+}
+
+async function openLogs() {
+  const path = latestResult?.logs_path || latestStatus?.logs_path;
+  if (window.pywebview?.api && path) {
+    await window.pywebview.api.reveal_in_finder(path);
+    return;
+  }
+  showToast("Abrir logs está disponible en la app de escritorio", true);
+}
+
+async function copyReport() {
+  const response = await fetch("/api/v1/wizard/report");
+  const text = await response.text();
+  await navigator.clipboard.writeText(text);
+  showToast("Informe copiado");
 }
 
 function escapeHtml(value) {
@@ -303,6 +321,12 @@ document.addEventListener("click", (event) => {
     document.querySelector("#resultBox").hidden = true;
     document.querySelector("#progressTitle").textContent = "Creando tu vídeo";
     setStep(1);
+  }
+  if (target.id === "openLogsSuccess" || target.id === "openLogsError") {
+    openLogs().catch((error) => showToast(error.message, true));
+  }
+  if (target.id === "copyReport") {
+    copyReport().catch((error) => showToast(error.message, true));
   }
   if (target.id === "showFinder") {
     if (window.pywebview?.api && latestResult?.path) window.pywebview.api.reveal_in_finder(latestResult.path);

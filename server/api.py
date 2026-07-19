@@ -17,7 +17,7 @@ from core.project import Project, ProjectError, create_project, load_project
 from core.stages.sync import clear_manual_override, generate_preview, generate_thumbnail, set_manual_override
 from server.inbox import app_home, classify_paths, load_global_config, register_selected_inputs, save_uploads, scan_inbox, suggest_songs_json, unique_destination
 from server.media import send_file_with_range
-from server.wizard import WizardRunner, wizard_song_options
+from server.wizard import WizardRunner, wizard_report, wizard_song_options
 
 LOGGER = logging.getLogger(__name__)
 BROWSER_UPLOAD_MAX_BYTES = 512 * 1024 * 1024
@@ -254,6 +254,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_wizard_status() -> Response:
         return jsonify(state.wizard.status())
 
+    @app.get("/api/v1/wizard/report")
+    def api_wizard_report() -> Response:
+        return Response(wizard_report(state.wizard.status()), mimetype="text/plain")
+
     @app.get("/api/v1/wizard/result")
     def api_wizard_result() -> Response:
         status = state.wizard.status()
@@ -261,7 +265,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         path = result.get("path")
         if not path:
             return error_response("not_found", "No hay vídeo exportado todavía", 404)
-        return send_file_with_range(str(path))
+        candidate = Path(path)
+        if candidate.suffix.lower() != ".mp4" or not candidate.exists():
+            return error_response("not_found", f"El resultado no es un MP4 exportado: {candidate}", 404)
+        return send_file_with_range(str(candidate))
 
     @app.post("/api/v1/inputs/classify-paths")
     def api_classify_paths() -> Response:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -222,6 +223,32 @@ def test_wizard_orchestration_exports_tiny_media(tmp_path, monkeypatch):
     assert export_path.exists()
     assert export_path.stat().st_size > 0
     assert client.get("/api/v1/wizard/result", headers={"Range": "bytes=0-4"}).status_code == 206
+    assert (Path(status["result"]["project_path"]) / "cache" / "logs" / "ingest.log").exists()
+    assert (Path(status["result"]["project_path"]) / "cache" / "logs" / "sync.log").exists()
+    assert (Path(status["result"]["project_path"]) / "cache" / "logs" / "export.log").exists()
+    metadata = json.loads(
+        subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
+                str(export_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    )
+    streams = metadata["streams"]
+    video_stream = next(stream for stream in streams if stream["codec_type"] == "video")
+    audio_stream = next(stream for stream in streams if stream["codec_type"] == "audio")
+    assert video_stream["codec_name"] == "h264"
+    assert audio_stream["codec_name"] == "aac"
+    assert float(metadata["format"]["duration"]) == pytest.approx(2.0, abs=0.5)
 
 
 def test_api_error_envelope_without_open_project():

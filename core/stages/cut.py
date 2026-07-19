@@ -64,7 +64,7 @@ class CutStage(Stage):
                 "segments": [segment],
             },
         )
-        progress_callback(100, "Cut stub complete")
+        progress_callback(100, "Plan de corte listo")
         return self.outputs(project)
 
 

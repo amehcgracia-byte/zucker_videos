@@ -20,13 +20,12 @@ class ExportStage(Stage):
     """
 
     name = "export"
-    dependencies = ["edit"]
+    dependencies = ["cut"]
 
     def inputs_fingerprint(self, project: Project) -> str:
-        """Fingerprint edit output and export settings."""
+        """Fingerprint cut output and export settings."""
         return stable_fingerprint(
             {
-                "edit": project.data["stages"]["edit"].get("fingerprint"),
                 "coverage": project.data["stages"]["cut"].get("fingerprint"),
                 "wizard": project.data["settings"].get("wizard", {}),
                 "settings": project.data["settings"].get(self.name, {}),
@@ -70,7 +69,7 @@ class ExportStage(Stage):
                 ],
             },
         )
-        progress_callback(100, "Export stub complete")
+        progress_callback(100, "Exportación lista")
         return self.outputs(project)
 
 

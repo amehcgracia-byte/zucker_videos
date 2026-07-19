@@ -17,7 +17,7 @@ Simple three-step app for turning Zucker Mixer audio plus raw camera clips into 
    - If `songs.json` has multiple songs, choose the song. YouTube also allows `Todas`.
 
 3. **Wait for the result**
-   - The app runs ingest, sync, cut, edit, and export automatically.
+   - The app runs ingest, sync, cut, and export automatically. The old edit stub is skipped until real edit logic exists.
    - Progress is shown in plain Spanish.
    - On success, preview the video, reveal it in Finder, or start another.
    - On failure, use `Ver detalles técnicos` for the log tail.
@@ -109,7 +109,7 @@ Input requirements by stage:
 
 - `ingest` needs at least one video. Master audio and `songs.json` are optional at this point.
 - `sync` needs ingest done and master audio registered.
-- `cut`, `edit`, and `export` need `songs.json`. Export it from Zucker Mixer; it must be JSON with a top-level `songs` array.
+- In `/advanced`, manual `cut`, `edit`, and `export` debugging expect `songs.json`. Export it from Zucker Mixer; it must be JSON with a top-level `songs` array.
 - When a master is registered, Zucker Editor scans the master's folder and the Inbox for valid songs JSON files and suggests candidates in the Inputs screen. Suggestions require one click; they are never registered silently.
 
 ## Architecture
