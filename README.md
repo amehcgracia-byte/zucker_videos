@@ -80,10 +80,11 @@ Watched Inbox:
 - The scan runs on app launch, project open/create, the Inputs `Rescan` button, and every few seconds while the Inputs screen is visible.
 - `.wav`, `.mp3`, `.flac`, `.aiff`, and `.aif` are master candidates.
 - `.json` files are accepted as songs only when they contain a top-level `songs` array.
-- `.mp4`, `.mov`, `.mts`, and `.m4v` are video clips.
-- Ambiguous extensions are classified with `ffprobe` when possible.
+- Only `.mp4`, `.mov`, `.m4v`, `.mts`, `.avi`, and `.mkv` can become video clips.
+- Video candidates must also pass `ffprobe` validation: a real camera-video codec, duration over 2 seconds, and at least 320x240 resolution.
+- `.txt`, `.lrv`, `.thm`, `.xml`, `.srt`, hidden files, and `.DS_Store` are ignored with a visible reason; `.lrv` is treated as a low-resolution camera sidecar, not a usable clip.
 - Unsupported files are shown under Ignored with a note.
-- Multiple master candidates require a manual radio selection.
+- When multiple master candidates are present, the wizard defaults to the longest audio file and shows a small selector so you can change it.
 
 Native Pickers:
 
@@ -390,6 +391,7 @@ Bundle smoke checklist:
 Troubleshooting:
 
 - If media probing fails immediately, install ffmpeg with `brew install ffmpeg`, then relaunch.
+- If a dropped file appears under Ignored, the note explains why. Text reports and camera sidecars are intentionally excluded from sync/export.
 - If Finder blocks a local unsigned build, rerun `codesign --force --deep -s - "dist/Zucker Editor.app"`.
 - If the UI opens but appears blank, verify the build command included `--add-data "$ROOT/web:web"` and rebuild.
 - If native picker buttons do nothing in `/advanced`, wait for the window to finish loading. A missing bridge shows a toast; rebuild with the current `app.py` if the toast says the desktop picker bridge is unavailable.

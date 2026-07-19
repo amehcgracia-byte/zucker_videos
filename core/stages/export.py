@@ -118,7 +118,9 @@ def _render_segment(segment: dict[str, Any], master_path: str, output_path: Path
         "-shortest",
     ]
     if platform in {"instagram", "tiktok"}:
-        command.extend(["-vf", "crop='min(iw,ih*9/16)':'min(ih,iw*16/9)'"])
+        command.extend(["-vf", "scale=-2:720,crop=404:720"])
+    else:
+        command.extend(["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2"])
     command.append(str(output_path))
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     if result.returncode != 0:

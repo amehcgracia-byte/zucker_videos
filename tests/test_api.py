@@ -8,17 +8,30 @@ from pathlib import Path
 
 import pytest
 
+from core.project import create_project, file_record
+from core.stages.base import write_artifact_json
+from core.stages.cut import CutStage
+from core.stages.ingest import IngestStage
+from core.stages.sync import SyncStage
 from server.api import create_app
+
+
+def valid_video_probe(duration: str = "3.0", width: int = 1280, height: int = 720) -> dict:
+    return {
+        "format": {"duration": duration, "format_name": "mov,mp4"},
+        "streams": [
+            {"codec_type": "video", "codec_name": "h264", "width": width, "height": height},
+            {"codec_type": "audio", "codec_name": "aac"},
+        ],
+    }
 
 
 def test_api_create_project_run_stub_stage_and_poll(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "core.stages.ingest.ffprobe",
-        lambda path: {
-            "format": {"duration": "1.0", "format_name": "mov"},
-            "streams": [{"codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080}],
-        },
+        lambda path: valid_video_probe(),
     )
+    monkeypatch.setattr("server.inbox.ffprobe", lambda path: valid_video_probe())
     monkeypatch.setattr("core.stages.sync.load_or_compute_master_envelope", lambda project: [1, 2, 3])
     monkeypatch.setattr(
         "core.stages.sync.sync_clip",
@@ -85,11 +98,9 @@ def test_api_create_project_run_stub_stage_and_poll(tmp_path, monkeypatch):
 def test_readiness_matrix_defers_master_and_songs_until_later_stages(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "core.stages.ingest.ffprobe",
-        lambda path: {
-            "format": {"duration": "1.0", "format_name": "mov"},
-            "streams": [{"codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080}],
-        },
+        lambda path: valid_video_probe(),
     )
+    monkeypatch.setattr("server.inbox.ffprobe", lambda path: valid_video_probe())
     app = create_app()
     client = app.test_client()
     folder = tmp_path / "Matrix.zuckervid"
@@ -160,6 +171,8 @@ def test_wizard_orchestration_exports_tiny_media(tmp_path, monkeypatch):
     if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
         pytest.skip("ffmpeg/ffprobe not available")
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("core.stages.sync.sync_confidence_threshold", lambda project: 0.0)
+    monkeypatch.setattr("core.stages.cut.sync_confidence_threshold", lambda project: 0.0)
     master = tmp_path / "master.wav"
     video = tmp_path / "clip.mp4"
     subprocess.run(
@@ -169,7 +182,7 @@ def test_wizard_orchestration_exports_tiny_media(tmp_path, monkeypatch):
             "-f",
             "lavfi",
             "-i",
-            "sine=frequency=440:duration=2",
+            "sine=frequency=440:duration=3",
             str(master),
         ],
         check=True,
@@ -183,15 +196,15 @@ def test_wizard_orchestration_exports_tiny_media(tmp_path, monkeypatch):
             "-f",
             "lavfi",
             "-i",
-            "testsrc=size=160x90:rate=15:duration=2",
+            "testsrc=size=321x241:rate=15:duration=3",
             "-f",
             "lavfi",
             "-i",
-            "sine=frequency=440:duration=2",
+            "sine=frequency=440:duration=3",
             "-c:v",
             "libx264",
             "-pix_fmt",
-            "yuv420p",
+            "yuv444p",
             "-c:a",
             "aac",
             "-shortest",
@@ -248,7 +261,9 @@ def test_wizard_orchestration_exports_tiny_media(tmp_path, monkeypatch):
     audio_stream = next(stream for stream in streams if stream["codec_type"] == "audio")
     assert video_stream["codec_name"] == "h264"
     assert audio_stream["codec_name"] == "aac"
-    assert float(metadata["format"]["duration"]) == pytest.approx(2.0, abs=0.5)
+    assert int(video_stream["width"]) % 2 == 0
+    assert int(video_stream["height"]) % 2 == 0
+    assert float(metadata["format"]["duration"]) == pytest.approx(3.0, abs=0.5)
 
 
 def test_api_error_envelope_without_open_project():
@@ -324,14 +339,9 @@ def test_sync_override_endpoint_persists_and_marks_downstream_stale(tmp_path):
 def test_register_status_run_ingest_end_to_end_regression(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "core.stages.ingest.ffprobe",
-        lambda path: {
-            "format": {"duration": "2.5", "format_name": "mov"},
-            "streams": [
-                {"codec_type": "video", "codec_name": "h264", "width": 1280, "height": 720},
-                {"codec_type": "audio", "codec_name": "aac"},
-            ],
-        },
+        lambda path: valid_video_probe("2.5"),
     )
+    monkeypatch.setattr("server.inbox.ffprobe", lambda path: valid_video_probe("2.5"))
     master = tmp_path / "master.wav"
     songs = tmp_path / "songs.json"
     video_a = tmp_path / "clip-a.mov"
@@ -378,3 +388,78 @@ def test_register_status_run_ingest_end_to_end_regression(tmp_path, monkeypatch)
     assert all(record["probe"]["video_codec"] == "h264" for record in videos)
     status = client.get("/api/v1/stages/status").get_json()
     assert status["readiness"]["sync"]["ready"] is True
+
+
+def test_ingest_demotes_registered_invalid_clip(tmp_path, monkeypatch):
+    project = create_project("Invalid", str(tmp_path / "Invalid.zuckervid"))
+    video = tmp_path / "mix_report.txt"
+    video.write_text("not video", encoding="utf-8")
+    project.data["inputs"]["videos"] = [file_record(str(video))]
+    monkeypatch.setattr(
+        "core.stages.ingest.ffprobe",
+        lambda path: {
+            "format": {"duration": "3.0", "format_name": "tty"},
+            "streams": [{"codec_type": "video", "codec_name": "ansi", "width": 80, "height": 25}],
+        },
+    )
+
+    IngestStage().run(project, lambda percent, message: None)
+
+    record = project.data["inputs"]["videos"][0]
+    assert record["status"] == "not_a_video"
+    assert record["not_a_video_reason"] == "no es un vídeo de cámara"
+    assert record["probe"]["valid_video"] is False
+
+
+def test_cut_fails_cleanly_when_no_valid_confident_clip(tmp_path):
+    project = create_project("NoClip", str(tmp_path / "NoClip.zuckervid"))
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"bad")
+    record = file_record(str(video))
+    record["status"] = "not_a_video"
+    record["not_a_video_reason"] = "no es un vídeo de cámara"
+    record["probe"] = {"valid_video": False, "video_codec": "ansi", "duration": 3.0, "width": 80, "height": 25}
+    project.data["inputs"]["videos"] = [record]
+    project.data["settings"]["wizard"] = {"platform": "youtube", "song_choice": None}
+    write_artifact_json(
+        project.artifacts_dir / "sync_map.json",
+        {
+            "schema_version": 1,
+            "confidence_threshold": 6.0,
+            "master_duration_sec": 30.0,
+            "clips": {
+                "bad": {
+                    "path": str(video),
+                    "filename": "clip.mp4",
+                    "offset_sec": 0.0,
+                    "duration_sec": 3.0,
+                    "confidence": 9.0,
+                    "low_confidence": False,
+                }
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="Ninguno de los archivos parece un vídeo de cámara utilizable"):
+        CutStage().run(project, lambda percent, message: None)
+
+
+def test_sync_skips_ingest_demoted_clip(tmp_path, monkeypatch):
+    project = create_project("SkipInvalid", str(tmp_path / "SkipInvalid.zuckervid"))
+    master = tmp_path / "master.wav"
+    video = tmp_path / "clip.mp4"
+    master.write_bytes(b"master")
+    video.write_bytes(b"bad")
+    project.data["inputs"]["master"] = file_record(str(master))
+    record = file_record(str(video))
+    record["status"] = "not_a_video"
+    record["not_a_video_reason"] = "no es un vídeo de cámara"
+    record["probe"] = {"valid_video": False, "video_codec": "ansi", "duration": 3.0, "width": 80, "height": 25}
+    project.data["inputs"]["videos"] = [record]
+    monkeypatch.setattr("core.stages.sync.load_or_compute_master_envelope", lambda project: [])
+    monkeypatch.setattr("core.stages.sync.media_duration", lambda path: 30.0)
+
+    SyncStage().run(project, lambda percent, message: None)
+
+    payload = json.loads((project.artifacts_dir / "sync_map.json").read_text(encoding="utf-8"))
+    assert payload["clips"] == {}

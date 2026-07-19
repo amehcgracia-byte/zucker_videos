@@ -14,6 +14,7 @@ import numpy as np
 from scipy.signal import correlate
 
 from core.ffmpeg import ffprobe
+from core.media_validation import record_is_usable_camera_video
 from core.project import Project
 from core.stages.base import ProgressCallback, Stage, artifact_path, file_signature, stable_fingerprint, write_artifact_json
 
@@ -54,7 +55,8 @@ class SyncStage(Stage):
         master_env = load_or_compute_master_envelope(project)
         master_duration = media_duration(master_record["path"])
         clips: dict[str, Any] = {}
-        videos = project.data["inputs"].get("videos", [])
+        all_videos = project.data["inputs"].get("videos", [])
+        videos = [record for record in all_videos if record_is_usable_camera_video(record)]
         threshold = sync_confidence_threshold(project)
         total = max(1, len(videos))
 

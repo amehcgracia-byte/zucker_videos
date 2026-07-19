@@ -146,6 +146,7 @@ class WizardRunner:
             project = _create_wizard_project(name)
             _attach_project(job, project)
             register_selected_inputs(project, master_path=master_path, songs_path=songs_path, video_paths=video_paths, append_videos=False)
+            _write_stage_log(project, "wizard", f"Audio master elegido: {Path(master_path).name}")
             project.data["settings"]["wizard"] = {
                 "platform": platform,
                 "song_choice": song_choice,
@@ -168,6 +169,7 @@ class WizardRunner:
             project = _create_wizard_project(name)
             _attach_project(job, project)
             register_selected_inputs(project, master_path=master_path, songs_path=songs_path, video_paths=video_paths, append_videos=False)
+            _write_stage_log(project, "wizard", f"Audio master elegido: {Path(master_path).name}")
             self._run_stage(job, project, IngestStage(), 0, 45, "Escuchando tus vídeos...")
             self._run_stage(job, project, SyncStage(), 45, 95, "Sincronizando con el audio...")
             with self._lock:

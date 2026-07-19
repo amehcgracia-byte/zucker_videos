@@ -137,6 +137,26 @@ h1 {
   opacity: 0.55;
 }
 
+.master-select-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: #eef9fc;
+  font-weight: 800;
+}
+
+.master-select-chip select {
+  max-width: min(360px, 58vw);
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+}
+
 .soft-rule {
   min-height: 24px;
   font-weight: 700;

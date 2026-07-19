@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from core.project import create_project
+from core.stages.ingest import IngestStage
 from core.stages.sync import (
     SYNC_HOP_LENGTH,
     SYNC_SAMPLE_RATE,
@@ -74,7 +75,7 @@ def test_sync_stage_with_tiny_generated_media_recovers_known_offset(tmp_path):
             "-f",
             "lavfi",
             "-i",
-            f"testsrc=size=160x90:rate=15:duration={clip_duration}",
+            f"testsrc=size=320x240:rate=15:duration={clip_duration}",
             "-i",
             str(clip_wav),
             "-c:v",
@@ -93,6 +94,7 @@ def test_sync_stage_with_tiny_generated_media_recovers_known_offset(tmp_path):
 
     project.set_master_and_songs(str(master), str(songs))
     project.set_videos([str(clip_mp4)])
+    IngestStage().run(project, lambda percent, message: None)
     SyncStage().run(project, lambda percent, message: None)
 
     sync_map = (project.artifacts_dir / "sync_map.json").read_text(encoding="utf-8")

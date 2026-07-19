@@ -6,9 +6,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+from core.media_validation import record_is_usable_camera_video
 from core.project import Project
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
-from core.stages.sync import load_song_boundaries, load_sync_map
+from core.stages.sync import load_song_boundaries, load_sync_map, sync_confidence_threshold
 
 
 class CutStage(Stage):
@@ -40,9 +41,9 @@ class CutStage(Stage):
         """Write a simple coverage plan consumed by export."""
         progress_callback(20, "Leyendo sincronización")
         sync_map = load_sync_map(project) or {}
-        clips = list((sync_map.get("clips") or {}).values())
+        clips = _usable_synced_clips(project, sync_map)
         if not clips:
-            raise ValueError("No hay vídeos sincronizados para cortar")
+            raise ValueError("Ninguno de los archivos parece un vídeo de cámara utilizable")
         wizard = project.data["settings"].get("wizard", {})
         platform = str(wizard.get("platform") or "youtube")
         songs = load_song_boundaries(project)
@@ -89,6 +90,28 @@ def _selected_window(songs: list[dict[str, Any]], song_choice: Any, sync_map: di
     return {"title": "Vídeo completo", "start_sec": 0.0, "duration_sec": duration}
 
 
+def _usable_synced_clips(project: Project, sync_map: dict[str, Any]) -> list[dict[str, Any]]:
+    records_by_path = {
+        record.get("path"): record
+        for record in project.data.get("inputs", {}).get("videos", [])
+        if record.get("path")
+    }
+    threshold = sync_confidence_threshold(project)
+    usable: list[dict[str, Any]] = []
+    for clip in (sync_map.get("clips") or {}).values():
+        path = clip.get("path")
+        record = records_by_path.get(path)
+        confidence = _float_or_zero(clip.get("confidence"))
+        if not record or not record_is_usable_camera_video(record):
+            continue
+        if clip.get("error") or clip.get("no_audio"):
+            continue
+        if confidence < threshold or clip.get("low_confidence"):
+            continue
+        usable.append(clip)
+    return usable
+
+
 def _first_covering_clip(clips: list[dict[str, Any]], window: dict[str, Any]) -> dict[str, Any] | None:
     start = float(window["start_sec"])
     end = start + float(window["duration_sec"])
@@ -102,6 +125,13 @@ def _first_covering_clip(clips: list[dict[str, Any]], window: dict[str, Any]) ->
 
 def _longest_clip(clips: list[dict[str, Any]]) -> dict[str, Any]:
     return max(clips, key=lambda clip: float(clip.get("duration_sec") or 0))
+
+
+def _float_or_zero(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _segment_for_platform(clip: dict[str, Any], window: dict[str, Any], platform: str) -> dict[str, Any]:

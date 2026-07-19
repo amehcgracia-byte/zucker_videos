@@ -3,7 +3,14 @@ from __future__ import annotations
 from server.api import create_app
 
 
-def test_media_range_request_returns_partial_content(tmp_path):
+def test_media_range_request_returns_partial_content(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "server.inbox.ffprobe",
+        lambda path: {
+            "format": {"duration": "3.0", "format_name": "mov"},
+            "streams": [{"codec_type": "video", "codec_name": "h264", "width": 1280, "height": 720}],
+        },
+    )
     media = tmp_path / "clip.mov"
     media.write_bytes(b"0123456789abcdef")
     folder = tmp_path / "Range.zuckervid"

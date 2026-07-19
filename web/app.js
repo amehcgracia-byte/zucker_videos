@@ -1,7 +1,26 @@
 const detected = { master: [], songs: [], videos: [], ignored: [] };
-const uploadableDropExtensions = new Set([".mp4", ".mov", ".mts", ".m4v", ".wav", ".mp3", ".flac", ".aiff", ".aif", ".json"]);
+const uploadableDropExtensions = new Set([
+  ".mp4",
+  ".mov",
+  ".m4v",
+  ".mts",
+  ".avi",
+  ".mkv",
+  ".wav",
+  ".mp3",
+  ".flac",
+  ".aiff",
+  ".aif",
+  ".json",
+  ".txt",
+  ".lrv",
+  ".thm",
+  ".xml",
+  ".srt",
+]);
 let selectedPlatform = null;
 let selectedSong = null;
+let selectedMasterPath = null;
 let currentSongs = [];
 let latestResult = null;
 let latestStatus = null;
@@ -50,7 +69,14 @@ function mergeDetected(result, source = "") {
       detected[key].push({ ...item, source });
     }
   }
+  chooseDefaultMaster();
   renderChips();
+}
+
+function chooseDefaultMaster() {
+  if (selectedMasterPath && detected.master.some((item) => item.path === selectedMasterPath)) return;
+  const sorted = [...detected.master].sort((a, b) => Number(b.duration || 0) - Number(a.duration || 0));
+  selectedMasterPath = sorted[0]?.path || null;
 }
 
 function iconFor(item) {
@@ -73,9 +99,28 @@ function renderChips() {
         <span class="chip ${item.kind === "ignored" ? "muted" : ""}" title="${escapeHtml(item.path)}">
           ${iconFor(item)} ${escapeHtml(item.filename || filename(item.path))}
           ${item.source === "inbox" ? "<small>del Inbox</small>" : ""}
+          ${item.kind === "ignored" ? `<small>${escapeHtml(item.note || "ignorado")}</small>` : ""}
         </span>`
     )
     .join("");
+  if (detected.master.length > 1) {
+    const selected = selectedMasterPath || detected.master[0].path;
+    root.insertAdjacentHTML(
+      "afterbegin",
+      `<label class="master-select-chip">🎵 Audio master
+        <select id="masterSelect">
+          ${detected.master
+            .map((item) => {
+              const duration = item.duration ? ` · ${formatDuration(item.duration)}` : "";
+              return `<option value="${escapeHtml(item.path)}" ${item.path === selected ? "selected" : ""}>${escapeHtml(
+                `${item.filename || filename(item.path)}${duration}`
+              )}</option>`;
+            })
+            .join("")}
+        </select>
+      </label>`
+    );
+  }
   const hasVideo = detected.videos.length > 0;
   const hasMaster = detected.master.length > 0;
   const hasSongs = detected.songs.length > 0;
@@ -90,10 +135,17 @@ function renderChips() {
 
 function selectedInputs() {
   return {
-    master: detected.master[0]?.path || "",
+    master: selectedMasterPath || detected.master[0]?.path || "",
     songs: detected.songs[0]?.path || "",
     videos: detected.videos.map((item) => item.path),
   };
+}
+
+function formatDuration(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  return `${minutes}:${String(rest).padStart(2, "0")}`;
 }
 
 async function loadInbox() {
@@ -331,6 +383,14 @@ document.addEventListener("click", (event) => {
   if (target.id === "showFinder") {
     if (window.pywebview?.api && latestResult?.path) window.pywebview.api.reveal_in_finder(latestResult.path);
     else showToast("Disponible en la app de escritorio");
+  }
+});
+
+document.addEventListener("change", (event) => {
+  const target = event.target;
+  if (target instanceof HTMLSelectElement && target.id === "masterSelect") {
+    selectedMasterPath = target.value;
+    renderChips();
   }
 });
 

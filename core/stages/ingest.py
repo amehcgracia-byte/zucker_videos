@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from core.ffmpeg import ffprobe
+from core.media_validation import validate_camera_video_metadata
 from core.project import Project
 from core.stages.base import ProgressCallback, Stage, stable_fingerprint
 
@@ -43,40 +44,14 @@ class IngestStage(Stage):
             if not Path(path).exists():
                 raise ValueError(f"Missing video file: {path}")
             metadata = ffprobe(path)
-            record["probe"] = _summarize_probe(metadata)
+            validation = validate_camera_video_metadata(metadata)
+            record["probe"] = validation.summary
+            if validation.valid:
+                record.pop("status", None)
+                record.pop("not_a_video_reason", None)
+            else:
+                record["status"] = "not_a_video"
+                record["not_a_video_reason"] = validation.reason
+                progress_callback(int(index / total * 90), f"Ignorando {Path(path).name}: {validation.reason}")
         progress_callback(100, "Ingest complete")
         return {}
-
-
-def _summarize_probe(metadata: dict[str, Any]) -> dict[str, Any]:
-    streams = metadata.get("streams", [])
-    video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), {})
-    audio_stream = next((stream for stream in streams if stream.get("codec_type") == "audio"), {})
-    fmt = metadata.get("format", {})
-    return {
-        "duration": _float_or_none(fmt.get("duration") or video_stream.get("duration")),
-        "format_name": fmt.get("format_name"),
-        "video_codec": video_stream.get("codec_name"),
-        "audio_codec": audio_stream.get("codec_name"),
-        "width": video_stream.get("width"),
-        "height": video_stream.get("height"),
-        "rotation": _rotation(video_stream),
-    }
-
-
-def _float_or_none(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _rotation(stream: dict[str, Any]) -> int:
-    tags = stream.get("tags") or {}
-    side_data = stream.get("side_data_list") or []
-    if "rotate" in tags:
-        return int(tags["rotate"])
-    for item in side_data:
-        if "rotation" in item:
-            return int(item["rotation"])
-    return 0

@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from core.ffmpeg import configure_tools, ffprobe
+from core.media_validation import VIDEO_EXTENSIONS, static_rejection_reason, validate_camera_video_metadata
 from core.project import STAGE_NAMES, Project, file_record
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".aiff", ".aif"}
-VIDEO_EXTENSIONS = {".mp4", ".mov", ".mts", ".m4v"}
 
 
 def app_home() -> Path:
@@ -129,22 +129,28 @@ def classify_paths(paths: list[str], inbox_path: str | None = None) -> dict[str,
 
 
 def classify_file(path: Path) -> dict[str, Any]:
-    """Classify one file by extension and ffprobe when useful."""
+    """Classify one file with strict extension and media validation."""
     suffix = path.suffix.lower()
+    static_video_rejection = static_rejection_reason(path)
+    if static_video_rejection == "archivo oculto o del sistema":
+        return _item(path, "ignored", static_video_rejection, checked=False)
     if suffix in AUDIO_EXTENSIONS:
-        return _item(path, "master", "audio file")
+        item = _item(path, "master", "audio file")
+        item["duration"] = audio_duration(path)
+        return item
     if suffix in VIDEO_EXTENSIONS:
-        return _item(path, "videos", "video file")
+        try:
+            validation = validate_camera_video_metadata(ffprobe(str(path)))
+        except Exception:
+            return _item(path, "ignored", "no es un vídeo de cámara", checked=False)
+        item = _item(path, "videos", validation.reason) if validation.valid else _item(path, "ignored", validation.reason, checked=False)
+        item["probe"] = validation.summary
+        return item
     if suffix == ".json":
         if is_valid_songs_json(path):
             return _item(path, "songs", "valid songs.json")
         return _item(path, "ignored", "JSON ignored: missing songs array", checked=False)
-    probed = probe_kind(path)
-    if probed == "audio":
-        return _item(path, "master", "audio detected by ffprobe")
-    if probed == "video":
-        return _item(path, "videos", "video detected by ffprobe")
-    return _item(path, "ignored", "unsupported file type", checked=False)
+    return _item(path, "ignored", static_rejection_reason(path) or "tipo de archivo no compatible", checked=False)
 
 
 def is_valid_songs_json(path: Path) -> bool:
@@ -157,18 +163,22 @@ def is_valid_songs_json(path: Path) -> bool:
     return isinstance(payload, dict) and isinstance(payload.get("songs"), list)
 
 
-def probe_kind(path: Path) -> str | None:
-    """Classify an ambiguous file by ffprobe streams."""
+def audio_duration(path: Path) -> float | None:
+    """Return an audio file duration when ffprobe can read it."""
     try:
         metadata = ffprobe(str(path))
     except Exception:
         return None
-    streams = metadata.get("streams", [])
-    if any(stream.get("codec_type") == "video" for stream in streams):
-        return "video"
-    if any(stream.get("codec_type") == "audio" for stream in streams):
-        return "audio"
-    return None
+    value = metadata.get("format", {}).get("duration")
+    if value is None:
+        for stream in metadata.get("streams", []):
+            if stream.get("codec_type") == "audio" and stream.get("duration") is not None:
+                value = stream["duration"]
+                break
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def register_selected_inputs(
