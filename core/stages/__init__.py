@@ -1,0 +1,1 @@
+"""Registered pipeline stage implementations."""

@@ -1,0 +1,8 @@
+flask>=3.0
+pywebview>=5.0
+numpy>=1.26
+scipy>=1.11
+llvmlite==0.45.1
+numba==0.62.1
+librosa>=0.11
+pytest>=8.0

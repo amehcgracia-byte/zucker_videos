@@ -1,0 +1,38 @@
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local runtime data and logs
+*.log
+logs/
+cache/
+~/ZuckerVideos/
+ZuckerVideos/
+
+# Project-generated media/cache outputs
+*.zuckervid/cache/
+*.zuckervid/exports/
+*.zuckervid/logs/
+
+# Build and packaging outputs
+build/
+dist/
+*.spec
+*.dmg
+
+# macOS/editor noise
+.DS_Store
+*.swp
+*.swo
+
+# Icon generation intermediates live under build/.
+# Keep assets/icon.icns tracked because it is the app bundle icon.
