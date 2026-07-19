@@ -60,6 +60,10 @@ class PipelineEngine:
     def submit(self, project: Project, stage_name: str) -> Future[None]:
         """Submit a stage run in the single background worker."""
         self._require_stage(stage_name)
+        readiness = self._readiness(project).get(stage_name, {})
+        if not readiness.get("ready", False):
+            reasons = "; ".join(readiness.get("reasons") or ["stage is not ready"])
+            raise StageBlockedError(f"{stage_name} is not ready: {reasons}")
         with self._lock:
             if self._current is not None:
                 raise RuntimeError("A stage is already running")
@@ -224,15 +228,19 @@ class PipelineEngine:
             reasons: list[str] = []
             if name == "ingest":
                 inputs = project.data.get("inputs", {})
-                if not inputs.get("master"):
-                    reasons.append("Master audio is not registered")
-                if not inputs.get("songs"):
-                    reasons.append("songs.json is not registered")
                 if not inputs.get("videos"):
                     reasons.append("No videos are registered")
+            if name == "sync":
+                inputs = project.data.get("inputs", {})
+                if not inputs.get("master"):
+                    reasons.append("Master audio is not registered")
+            if name in {"cut", "edit", "export"}:
+                inputs = project.data.get("inputs", {})
+                if not inputs.get("songs"):
+                    reasons.append("songs.json is not registered")
             for dependency in stage.dependencies:
                 status = project.data["stages"][dependency]["status"]
-                if status not in {"done", "stale"}:
+                if status != "done":
                     reasons.append(f"{dependency} is {status}")
             state = project.data["stages"][name]
             readiness[name] = {

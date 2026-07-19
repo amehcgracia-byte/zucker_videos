@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from core.ffmpeg import configure_tools, ffprobe
-from core.project import Project, file_record
+from core.project import STAGE_NAMES, Project, file_record
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".aiff", ".aif"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mts", ".m4v"}
@@ -57,6 +57,33 @@ def scan_inbox(root: str | None = None) -> dict[str, Any]:
     inbox = Path(root or load_global_config()["inbox_path"]).expanduser().resolve()
     inbox.mkdir(parents=True, exist_ok=True)
     return classify_paths([str(inbox)], inbox_path=str(inbox))
+
+
+def suggest_songs_json(master_path: str | None, inbox_path: str | None = None) -> list[dict[str, Any]]:
+    """Return plausible songs JSON files near the master and in the Inbox."""
+    roots: list[Path] = []
+    if master_path:
+        master = Path(master_path).expanduser()
+        if master.exists():
+            roots.append(master.resolve().parent)
+    inbox = Path(inbox_path or load_global_config()["inbox_path"]).expanduser()
+    if inbox.exists():
+        roots.append(inbox.resolve())
+
+    suggestions: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    for root in roots:
+        for candidate in sorted(root.rglob("*.json")):
+            if not candidate.is_file():
+                continue
+            resolved = candidate.resolve()
+            if resolved in seen or not is_valid_songs_json(resolved):
+                continue
+            seen.add(resolved)
+            item = _item(resolved, "songs", "valid songs.json candidate", checked=False)
+            item["source"] = "master folder" if root == resolved.parent else "inbox"
+            suggestions.append(item)
+    return suggestions
 
 
 def scan_input_paths(paths: list[str]) -> list[Path]:
@@ -153,19 +180,24 @@ def register_selected_inputs(
 ) -> dict[str, Any]:
     """Register selected input files, optionally copying them into the project."""
     copy_inputs = bool(project.data["settings"].setdefault("inputs", {}).get("copy_into_project", False))
+    earliest_stale_stage: str | None = None
     if master_path:
         registered_master = prepare_input_file(project, master_path, "master")
         project.data["inputs"]["master"] = file_record(str(registered_master))
+        earliest_stale_stage = _earliest_stage(earliest_stale_stage, "sync")
     if songs_path:
         registered_songs = prepare_input_file(project, songs_path, "songs")
         project.data["inputs"]["songs"] = file_record(str(registered_songs))
+        earliest_stale_stage = _earliest_stage(earliest_stale_stage, "cut")
     videos = list(project.data["inputs"].get("videos", [])) if append_videos else []
     for path in expand_video_paths(video_paths or []):
         registered_video = prepare_input_file(project, path, "video") if copy_inputs else Path(path).expanduser().resolve()
         videos.append(file_record(str(registered_video)))
     if video_paths is not None:
         project.data["inputs"]["videos"] = _dedupe_records(videos)
-    project.mark_all_stale_from("ingest")
+        earliest_stale_stage = _earliest_stage(earliest_stale_stage, "ingest")
+    if earliest_stale_stage:
+        project.mark_all_stale_from(earliest_stale_stage)
     project.save()
     return project.snapshot()
 
@@ -233,6 +265,12 @@ def _dedupe_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             seen.add(path)
             deduped.append(record)
     return deduped
+
+
+def _earliest_stage(current: str | None, candidate: str) -> str:
+    if current is None:
+        return candidate
+    return current if STAGE_NAMES.index(current) <= STAGE_NAMES.index(candidate) else candidate
 
 
 def _item(path: Path, kind: str, note: str, checked: bool = True) -> dict[str, Any]:

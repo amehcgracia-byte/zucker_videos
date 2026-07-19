@@ -47,6 +47,19 @@ def test_api_create_project_run_stub_stage_and_poll(tmp_path, monkeypatch):
     response = client.post("/api/v1/inputs/videos", json={"paths": [str(video)]})
     assert response.status_code == 200
 
+    response = client.post("/api/v1/stages/ingest/run")
+    assert response.status_code == 202
+
+    deadline = time.time() + 5
+    status = {}
+    while time.time() < deadline:
+        status = client.get("/api/v1/stages/status").get_json()
+        if not status["busy"] and status["stages"]["ingest"]["status"] == "done":
+            break
+        time.sleep(0.05)
+
+    assert status["stages"]["ingest"]["status"] == "done"
+
     response = client.post("/api/v1/stages/sync/run")
     assert response.status_code == 202
 
@@ -62,6 +75,56 @@ def test_api_create_project_run_stub_stage_and_poll(tmp_path, monkeypatch):
     artifact = client.get("/api/v1/artifacts/sync")
     assert artifact.status_code == 200
     assert artifact.get_json()["schema_version"] == 1
+
+
+def test_readiness_matrix_defers_master_and_songs_until_later_stages(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "core.stages.ingest.ffprobe",
+        lambda path: {
+            "format": {"duration": "1.0", "format_name": "mov"},
+            "streams": [{"codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080}],
+        },
+    )
+    app = create_app()
+    client = app.test_client()
+    folder = tmp_path / "Matrix.zuckervid"
+    video = tmp_path / "clip.mov"
+    master = tmp_path / "master.wav"
+    songs = tmp_path / "songs.json"
+    video.write_bytes(b"video")
+    master.write_bytes(b"master")
+    songs.write_text('{"songs": []}', encoding="utf-8")
+    assert client.post("/api/v1/project", json={"name": "Matrix", "folder": str(folder)}).status_code == 201
+
+    assert client.post("/api/v1/inputs/videos", json={"paths": [str(video)]}).status_code == 200
+    status = client.get("/api/v1/stages/status").get_json()
+    assert status["readiness"]["ingest"] == {"ready": True, "reasons": []}
+    assert status["readiness"]["sync"]["ready"] is False
+    assert "ingest is pending" in status["readiness"]["sync"]["reasons"]
+    assert "Master audio is not registered" in status["readiness"]["sync"]["reasons"]
+    assert "songs.json is not registered" in status["readiness"]["cut"]["reasons"]
+
+    assert client.post("/api/v1/stages/ingest/run").status_code == 202
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        status = client.get("/api/v1/stages/status").get_json()
+        if not status["busy"] and status["stages"]["ingest"]["status"] == "done":
+            break
+        time.sleep(0.05)
+    assert status["stages"]["ingest"]["status"] == "done"
+    assert status["readiness"]["sync"]["ready"] is False
+    assert status["readiness"]["sync"]["reasons"] == ["Master audio is not registered"]
+
+    assert client.post("/api/v1/inputs/master", json={"master": str(master)}).status_code == 200
+    status = client.get("/api/v1/stages/status").get_json()
+    assert status["readiness"]["sync"]["ready"] is True
+    assert status["readiness"]["cut"]["ready"] is False
+    assert "songs.json is not registered" in status["readiness"]["cut"]["reasons"]
+
+    assert client.post("/api/v1/inputs/master", json={"songs": str(songs)}).status_code == 200
+    status = client.get("/api/v1/stages/status").get_json()
+    assert status["readiness"]["cut"]["ready"] is False
+    assert "sync is pending" in status["readiness"]["cut"]["reasons"]
 
 
 def test_api_error_envelope_without_open_project():

@@ -69,6 +69,8 @@ Native Pickers:
 
 - Desktop mode exposes pywebview bridge methods for `Choose master...`, `Choose songs.json...`, `Add videos...`, `Add video folder...`, and `Reveal in Finder`.
 - These dialogs run in the app process, not through HTTP.
+- Picker buttons surface a toast if the pywebview bridge is missing, still loading, or returns an invalid result.
+- File type filters are intentionally not passed to pywebview; files are validated by the registration/classification path after selection. This avoids macOS/pywebview filter syntax failures that can make native dialogs silently fail.
 - In `--dev` browser mode, picker buttons are disabled and explain that they are desktop-only.
 
 Drag And Drop:
@@ -76,11 +78,19 @@ Drag And Drop:
 - The Inputs screen has one drop zone.
 - In desktop mode, dropped local paths are classified like inbox files; dropped folders are recursed.
 - In browser dev mode, dropped files and folder entries are recursively traversed with `webkitGetAsEntry()`, supported media/JSON files are uploaded to `inputs/uploads/` through `POST /api/v1/inputs/upload`, then classified.
+- Browser uploads show per-request progress and have a 512 MB per-file/server request limit. For large phone videos, put files in `~/ZuckerVideos/Inbox/` or use the desktop app's folder picker so the app registers local paths instead of uploading bytes through the browser.
 - Global drag/drop default navigation is prevented so stray drops do not navigate away.
 
 By default, inputs are referenced by absolute path plus size and mtime. Turn on `Copy into project` per project to copy selected files into `inputs/` before registering them.
 
 If a referenced file is later moved or deleted, `GET /api/v1/project` marks that input record with `missing: true`; the Inputs screen shows a missing-file badge instead of crashing.
+
+Input requirements by stage:
+
+- `ingest` needs at least one video. Master audio and `songs.json` are optional at this point.
+- `sync` needs ingest done and master audio registered.
+- `cut`, `edit`, and `export` need `songs.json`. Export it from Zucker Mixer; it must be JSON with a top-level `songs` array.
+- When a master is registered, Zucker Editor scans the master's folder and the Inbox for valid songs JSON files and suggests candidates in the Inputs screen. Suggestions require one click; they are never registered silently.
 
 ## Architecture
 
@@ -258,6 +268,7 @@ GET  /api/v1/inbox
 POST /api/v1/inbox/register
 POST /api/v1/inputs/upload
 POST /api/v1/inputs/classify-paths
+GET  /api/v1/inputs/suggestions/songs
 POST /api/v1/settings/inputs
 GET  /api/v1/app/config
 POST /api/v1/stages/{name}/run
@@ -286,7 +297,7 @@ Media endpoints support HTTP `Range` requests and return `206 Partial Content` w
 .venv/bin/python -m pytest -q
 ```
 
-Coverage includes project roundtrip and atomic-write behavior, engine dependency/cache/staleness/failure behavior, API project and stage polling, inbox classification, register-from-inbox, upload fallback, missing input detection, sync confidence and offset math, manual overrides, error envelopes, media `Range` responses, and a marked slow generated-media sync integration test.
+Coverage includes project roundtrip and atomic-write behavior, engine dependency/cache/staleness/failure behavior, API project and stage polling, the stage readiness matrix, inbox classification, register-from-inbox, upload fallback and upload-size errors, songs-json suggestions, missing input detection, sync confidence and offset math, manual overrides, error envelopes, media `Range` responses, and a marked slow generated-media sync integration test.
 
 ## Building The macOS App
 
@@ -345,13 +356,17 @@ Bundle smoke checklist:
 2. Confirm `~/ZuckerVideos/Inbox/` exists.
 3. Create or open a `.zuckervid` project.
 4. Drop a folder of videos into Inputs and confirm grouped detection.
-5. Register master, songs, and videos.
-6. Open Pipeline, confirm ingest is ready, then run ingest.
-7. Run sync.
-8. Open Sync Review and play a preview.
+5. Register at least one video.
+6. Open Pipeline, confirm ingest is ready without master or songs, then run ingest.
+7. Register master audio and run sync.
+8. Register or accept a suggested `songs.json` before cut/export work.
+9. Open Sync Review and play a preview.
 
 Troubleshooting:
 
 - If media probing fails immediately, install ffmpeg with `brew install ffmpeg`, then relaunch.
 - If Finder blocks a local unsigned build, rerun `codesign --force --deep -s - "dist/Zucker Editor.app"`.
 - If the UI opens but appears blank, verify the build command included `--add-data "$ROOT/web:web"` and rebuild.
+- If native picker buttons do nothing in the `.app`, open Inputs and wait for the window to finish loading. A missing bridge now shows a toast; rebuild with the current `app.py` if the toast says the desktop picker bridge is unavailable.
+- If browser drag/drop reports the 512 MB limit, move large videos to `~/ZuckerVideos/Inbox/` and press Rescan, or use the bundled app's `Add video folder...` picker.
+- If Pipeline says `songs.json is not registered`, ingest and sync can still run when their own requirements are met. `songs.json` is only required for cut/edit/export and must come from Zucker Mixer with a top-level `songs` array.

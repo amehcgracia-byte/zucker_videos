@@ -30,6 +30,8 @@ class CutStage(Stage):
 
     def run(self, project: Project, progress_callback: ProgressCallback) -> dict[str, Any]:
         """Write fake coverage data."""
+        if not project.data["inputs"].get("songs"):
+            raise ValueError("songs.json must be registered before cut")
         progress_callback(35, "Calculating placeholder coverage")
         path = artifact_path(project, "coverage.json")
         write_artifact_json(path, {"stage": self.name, "songs": [], "segments": []})

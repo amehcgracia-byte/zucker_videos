@@ -124,7 +124,7 @@ class Project:
         """Register master audio and songs JSON inputs."""
         self.data["inputs"]["master"] = file_record(master_path)
         self.data["inputs"]["songs"] = file_record(songs_path)
-        self.mark_all_stale_from("ingest")
+        self.mark_all_stale_from("sync")
         self.save()
 
     def set_videos(self, paths: list[str]) -> None:
@@ -136,15 +136,21 @@ class Project:
     def refresh_input_records(self) -> bool:
         """Refresh input size/mtime values and return True if any input changed."""
         changed = False
-        for key in ("master", "songs"):
-            record = self.data["inputs"].get(key)
-            if record and _refresh_record(record):
-                changed = True
+        earliest_stale_stage: str | None = None
+        master = self.data["inputs"].get("master")
+        if master and _refresh_record(master):
+            changed = True
+            earliest_stale_stage = _earliest_stage(earliest_stale_stage, "sync")
+        songs = self.data["inputs"].get("songs")
+        if songs and _refresh_record(songs):
+            changed = True
+            earliest_stale_stage = _earliest_stage(earliest_stale_stage, "cut")
         for record in self.data["inputs"].get("videos", []):
             if _refresh_record(record):
                 changed = True
-        if changed:
-            self.mark_all_stale_from("ingest")
+                earliest_stale_stage = _earliest_stage(earliest_stale_stage, "ingest")
+        if earliest_stale_stage:
+            self.mark_all_stale_from(earliest_stale_stage)
         return changed
 
     def mark_all_stale_from(self, stage_name: str) -> None:
@@ -174,6 +180,12 @@ def _refresh_record(record: dict[str, Any]) -> bool:
     record["mtime"] = new_mtime
     record["missing"] = False
     return changed
+
+
+def _earliest_stage(current: str | None, candidate: str) -> str:
+    if current is None:
+        return candidate
+    return current if STAGE_NAMES.index(current) <= STAGE_NAMES.index(candidate) else candidate
 
 
 def create_project(name: str, folder: str) -> Project:

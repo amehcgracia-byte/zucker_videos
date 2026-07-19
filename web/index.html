@@ -59,6 +59,7 @@
           <strong>Drop files or folders here</strong>
           <span id="dropMode">Desktop drops use local paths. Browser dev drops copy files into the project.</span>
         </div>
+        <div id="dropProgress" class="drop-progress" hidden></div>
         <div class="input-actions">
           <button class="desktop-only" id="chooseMaster" title="available in the desktop app">Choose master...</button>
           <button class="desktop-only" id="chooseSongs" title="available in the desktop app">Choose songs.json...</button>
@@ -69,6 +70,7 @@
             Copy into project
           </label>
         </div>
+        <div id="songSuggestions" class="suggestions" hidden></div>
         <div id="detectedInputs" class="detected-inputs"></div>
         <div class="input-actions">
           <button class="primary" id="useDetected">Use all detected</button>

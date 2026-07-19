@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import multiprocessing
 import subprocess
 import socket
 import threading
@@ -20,15 +21,15 @@ class DesktopApi:
 
     def pick_master(self) -> list[str]:
         """Open a native file dialog for master audio."""
-        return _open_file_dialog(["Audio files (*.wav;*.mp3;*.flac;*.aiff;*.aif)"], allow_multiple=False)
+        return _open_file_dialog(allow_multiple=False)
 
     def pick_songs(self) -> list[str]:
         """Open a native file dialog for songs.json."""
-        return _open_file_dialog(["JSON files (*.json)"], allow_multiple=False)
+        return _open_file_dialog(allow_multiple=False)
 
     def pick_videos(self) -> list[str]:
         """Open a native multi-file dialog for video clips."""
-        return _open_file_dialog(["Video files (*.mp4;*.mov;*.mts;*.m4v)"], allow_multiple=True)
+        return _open_file_dialog(allow_multiple=True)
 
     def pick_video_folder(self) -> list[str]:
         """Open a native folder dialog for a folder of video clips."""
@@ -68,6 +69,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     """Run Zucker Editor in desktop or dev-server mode."""
+    multiprocessing.freeze_support()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     args = parse_args()
     app = create_app(project_path=args.project, dev=args.dev)
@@ -98,7 +100,7 @@ def main() -> None:
     webview.start()
 
 
-def _open_file_dialog(file_types: list[str], allow_multiple: bool) -> list[str]:
+def _open_file_dialog(allow_multiple: bool) -> list[str]:
     import webview
 
     if not webview.windows:
@@ -106,7 +108,6 @@ def _open_file_dialog(file_types: list[str], allow_multiple: bool) -> list[str]:
     result = webview.windows[0].create_file_dialog(
         webview.OPEN_DIALOG,
         allow_multiple=allow_multiple,
-        file_types=file_types,
     )
     return [str(Path(path).resolve()) for path in (result or [])]
 

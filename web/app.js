@@ -3,21 +3,38 @@ let project = null;
 let syncMap = null;
 let appConfig = { dev: true, inbox_path: "~/ZuckerVideos/Inbox" };
 let detectedInputs = { inbox_path: null, master: [], songs: [], videos: [], ignored: [] };
+let songSuggestions = [];
+let desktopBridgeReady = Boolean(window.pywebview?.api);
+let dropStatusTimer = null;
 const uploadableDropExtensions = new Set([".mp4", ".mov", ".mts", ".m4v", ".wav", ".mp3", ".flac", ".aiff", ".aif", ".json"]);
+const maxBrowserUploadBytes = 512 * 1024 * 1024;
+const pickerMethods = {
+  chooseMaster: ["pick_master", "master"],
+  chooseSongs: ["pick_songs", "songs"],
+  addVideos: ["pick_videos", "videos"],
+  addVideoFolder: ["pick_video_folder", "folder"],
+};
+const stageRequirementHints = {
+  ingest: "needs at least one video",
+  sync: "needs ingest done + master",
+  cut: "needs sync done + songs.json from Zucker Mixer",
+  edit: "needs cut done + songs.json",
+  export: "needs edit done + songs.json",
+};
 
 async function api(path, options = {}) {
   const response = await fetch(`/api/v1${path}`, {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
-  const data = await response.json();
+  const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error?.message || "Request failed");
   return data;
 }
 
 async function apiForm(path, formData) {
   const response = await fetch(`/api/v1${path}`, { method: "POST", body: formData });
-  const data = await response.json();
+  const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error?.message || "Request failed");
   return data;
 }
@@ -34,6 +51,44 @@ function showToast(message, isError = false) {
 
 function showError(error) {
   showToast(error.message, true);
+}
+
+function setDropStatus(message, options = {}) {
+  const root = document.querySelector("#dropProgress");
+  if (dropStatusTimer) {
+    clearTimeout(dropStatusTimer);
+    dropStatusTimer = null;
+  }
+  if (!message) {
+    root.hidden = true;
+    root.innerHTML = "";
+    return;
+  }
+  const percent = options.percent;
+  root.hidden = false;
+  root.innerHTML = `
+    <strong>${escapeHtml(message)}</strong>
+    ${options.detail ? `<span>${escapeHtml(options.detail)}</span>` : ""}
+    ${Number.isFinite(percent) ? `<progress max="100" value="${Math.max(0, Math.min(100, percent))}"></progress>` : ""}
+  `;
+  if (options.autoHide) {
+    dropStatusTimer = setTimeout(() => setDropStatus(null), options.autoHide);
+  }
+}
+
+function setPickerAvailability() {
+  const desktopMode = !appConfig.dev;
+  const hasBridge = Boolean(window.pywebview?.api);
+  document.querySelectorAll(".desktop-only").forEach((button) => {
+    button.disabled = !desktopMode;
+    if (appConfig.dev) {
+      button.title = "Native pickers are available in the bundled desktop app. Use drag and drop or the Inbox in browser dev mode.";
+    } else if (hasBridge) {
+      button.title = "";
+    } else {
+      button.title = "Desktop bridge is not ready yet";
+    }
+  });
 }
 
 function escapeHtml(value) {
@@ -60,6 +115,17 @@ function formatTime(seconds) {
   return `${hours}:${minutes}:${secs}`;
 }
 
+function formatBytes(bytes) {
+  const units = ["B", "KB", "MB", "GB"];
+  let value = Number(bytes) || 0;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
 function parseOffset(value) {
   const trimmed = value.trim();
   if (trimmed.includes(":")) {
@@ -81,14 +147,10 @@ function setActiveTab(name) {
 async function loadAppConfig() {
   appConfig = await api("/app/config");
   document.querySelector("#inboxPath").textContent = appConfig.inbox_path;
-  const desktopAvailable = Boolean(window.pywebview?.api) && !appConfig.dev;
-  document.querySelectorAll(".desktop-only").forEach((button) => {
-    button.disabled = !desktopAvailable;
-    button.title = desktopAvailable ? "" : "available in the desktop app";
-  });
-  document.querySelector("#dropMode").textContent = desktopAvailable
+  setPickerAvailability();
+  document.querySelector("#dropMode").textContent = !appConfig.dev
     ? "Desktop drops use local paths. Folder drops recurse for video files."
-    : "Browser dev drops upload and copy files into the project.";
+    : "Browser dev drops upload smaller files. Put large videos in the Inbox or use the desktop app.";
 }
 
 function renderProject() {
@@ -103,14 +165,14 @@ function renderRegisteredInputs() {
   const root = document.querySelector("#registeredInputs");
   const inputs = project?.inputs || {};
   const groups = [
-    ["Master", inputs.master ? [inputs.master] : []],
-    ["Songs", inputs.songs ? [inputs.songs] : []],
-    ["Videos", inputs.videos || []],
+    ["Master", "needed for sync", inputs.master ? [inputs.master] : []],
+    ["Songs", "needed for cut", inputs.songs ? [inputs.songs] : []],
+    ["Videos", "needed for ingest", inputs.videos || []],
   ];
   root.innerHTML = groups
-    .map(([label, records]) => {
-      if (!records.length) return `<div class="registered-group"><h3>${label}</h3><p>None registered</p></div>`;
-      return `<div class="registered-group"><h3>${label}</h3>${records
+    .map(([label, hint, records]) => {
+      if (!records.length) return `<div class="registered-group"><h3>${label}<span>${hint}</span></h3><p>None registered</p></div>`;
+      return `<div class="registered-group"><h3>${label}<span>${hint}</span></h3>${records
         .map(
           (record) => `
             <div class="file-row ${record.missing ? "missing" : ""}" title="${escapeHtml(record.path)}">
@@ -175,6 +237,39 @@ function renderDetectedInputs() {
   }
 }
 
+async function refreshSongSuggestions() {
+  if (!project?.inputs?.master || project?.inputs?.songs) {
+    songSuggestions = [];
+    renderSongSuggestions();
+    return;
+  }
+  const result = await api("/inputs/suggestions/songs");
+  songSuggestions = result.songs || [];
+  renderSongSuggestions();
+}
+
+function renderSongSuggestions() {
+  const root = document.querySelector("#songSuggestions");
+  if (!songSuggestions.length || project?.inputs?.songs) {
+    root.hidden = true;
+    root.innerHTML = "";
+    return;
+  }
+  root.hidden = false;
+  root.innerHTML = `
+    <strong>Found songs.json candidates</strong>
+    ${songSuggestions
+      .map(
+        (item, index) => `
+          <div class="suggestion-row" title="${escapeHtml(item.path)}">
+            <span>${escapeHtml(item.filename)}<small>${escapeHtml(item.note)} · ${escapeHtml(secondaryPath(item.path))}</small></span>
+            <button data-use-song-suggestion="${index}">Use this</button>
+          </div>`
+      )
+      .join("")}
+  `;
+}
+
 function renderDetectedItem(group, item, index) {
   const inputType = group === "master" ? "radio" : "checkbox";
   const disabled = group === "ignored" ? "disabled" : "";
@@ -211,6 +306,7 @@ async function registerDetected() {
   renderProject();
   setActiveTab("pipeline");
   await refreshPipelineState();
+  if (selected.master && !selected.songs) await refreshSongSuggestions();
   const bits = [];
   if (selected.videos.length) bits.push(`${selected.videos.length} videos`);
   if (selected.master) bits.push("master");
@@ -234,6 +330,7 @@ async function registerPicked(paths, kind) {
   renderProject();
   setActiveTab("pipeline");
   await refreshPipelineState();
+  if (kind === "master") await refreshSongSuggestions();
   showToast(`${paths.length} item${paths.length === 1 ? "" : "s"} registered - ready to run`);
 }
 
@@ -286,22 +383,99 @@ async function browserDropFiles(dataTransfer) {
   return [...dataTransfer.files].filter(supportedDropFile);
 }
 
+function uploadFiles(files) {
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    for (const file of files) form.append("files", file, file.name);
+    const request = new XMLHttpRequest();
+    request.open("POST", "/api/v1/inputs/upload");
+    request.timeout = 10 * 60 * 1000;
+    request.upload.onprogress = (event) => {
+      if (!event.lengthComputable) {
+        setDropStatus("Uploading dropped files", { detail: `${files.length} file${files.length === 1 ? "" : "s"}` });
+        return;
+      }
+      const percent = Math.round((event.loaded / event.total) * 100);
+      setDropStatus("Uploading dropped files", {
+        detail: `${formatBytes(event.loaded)} of ${formatBytes(event.total)}`,
+        percent,
+      });
+    };
+    request.onload = () => {
+      let payload = {};
+      try {
+        payload = JSON.parse(request.responseText || "{}");
+      } catch {
+        payload = {};
+      }
+      if (request.status >= 200 && request.status < 300) {
+        resolve(payload);
+        return;
+      }
+      reject(new Error(payload.error?.message || `Upload failed with HTTP ${request.status}`));
+    };
+    request.onerror = () => reject(new Error("Upload failed because the network request failed"));
+    request.ontimeout = () => reject(new Error("Upload timed out. Put large videos in the Inbox or use the desktop app."));
+    request.send(form);
+  });
+}
+
+async function callPicker(buttonId) {
+  if (appConfig.dev) {
+    throw new Error("Native pickers are only available in the bundled desktop app. Use drag and drop or the Inbox in browser dev mode.");
+  }
+  const [methodName, kind] = pickerMethods[buttonId] || [];
+  if (!methodName || !kind) throw new Error(`Unknown picker: ${buttonId}`);
+  const bridge = window.pywebview?.api;
+  if (!bridge) {
+    throw new Error("Desktop picker bridge is not available yet. Wait for the app window to finish loading and try again.");
+  }
+  const method = bridge[methodName];
+  if (typeof method !== "function") {
+    throw new Error(`Desktop picker bridge is missing ${methodName}`);
+  }
+  let paths;
+  try {
+    paths = await method.call(bridge);
+  } catch (error) {
+    throw new Error(`Native picker failed: ${error?.message || error}`);
+  }
+  if (!Array.isArray(paths)) {
+    throw new Error(`Native picker returned an invalid result for ${methodName}`);
+  }
+  await registerPicked(paths, kind);
+}
+
 async function handleDrop(event) {
   event.preventDefault();
   document.querySelector("#dropZone").classList.remove("dragging");
+  setDropStatus("Reading dropped items");
   const paths = [...event.dataTransfer.files]
     .map((file) => file.path || file.webkitRelativePath)
     .filter(Boolean);
   if (paths.length) {
-    mergeDetected(await api("/inputs/classify-paths", { method: "POST", body: JSON.stringify({ paths }) }));
+    const result = await api("/inputs/classify-paths", { method: "POST", body: JSON.stringify({ paths }) });
+    mergeDetected(result);
+    const count = (result.master?.length || 0) + (result.songs?.length || 0) + (result.videos?.length || 0);
+    setDropStatus(`Classified ${count} dropped item${count === 1 ? "" : "s"}`, { autoHide: 3000 });
     return;
   }
   if (!project) throw new Error("Open or create a project before browser uploads");
   const files = await browserDropFiles(event.dataTransfer);
-  if (!files.length) return;
-  const form = new FormData();
-  for (const file of files) form.append("files", file, file.name);
-  mergeDetected(await apiForm("/inputs/upload", form));
+  if (!files.length) {
+    setDropStatus("No supported files found in the drop", { autoHide: 4000 });
+    showToast("No supported video, audio, or JSON files found in that drop", true);
+    return;
+  }
+  const tooLarge = files.filter((file) => file.size > maxBrowserUploadBytes);
+  if (tooLarge.length) {
+    const names = tooLarge.slice(0, 3).map((file) => `${file.name} (${formatBytes(file.size)})`).join(", ");
+    throw new Error(`Browser uploads are limited to ${formatBytes(maxBrowserUploadBytes)} per file. Use the Inbox or desktop folder picker for: ${names}`);
+  }
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+  setDropStatus("Preparing upload", { detail: `${files.length} file${files.length === 1 ? "" : "s"} · ${formatBytes(totalBytes)}` });
+  mergeDetected(await uploadFiles(files));
+  setDropStatus(`Uploaded and classified ${files.length} file${files.length === 1 ? "" : "s"}`, { percent: 100, autoHide: 3500 });
   showToast(`${files.length} dropped file${files.length === 1 ? "" : "s"} copied into project`);
 }
 
@@ -396,7 +570,8 @@ async function refreshStatus() {
   for (const name of stages) {
     const state = data.stages[name] || { status: "pending" };
     const readiness = data.readiness?.[name] || { ready: false, reasons: [] };
-    const readyText = readiness.ready ? "ready" : (readiness.reasons || []).join("; ");
+    const reasonText = (readiness.reasons || []).join("; ");
+    const readyText = readiness.ready ? `ready - ${stageRequirementHints[name]}` : `${reasonText} · ${stageRequirementHints[name]}`;
     const row = document.createElement("div");
     row.className = "stage-row";
     row.innerHTML = `<strong>${name}</strong><span class="chip ${state.status}">${state.status}</span><span>${escapeHtml(state.error || readyText)}</span><button data-run="${name}" ${readiness.ready ? "" : "disabled"}>Run</button>`;
@@ -427,6 +602,7 @@ document.addEventListener("drop", async (event) => {
   try {
     await handleDrop(event);
   } catch (error) {
+    setDropStatus(`Drop failed: ${error.message}`, { autoHide: 9000 });
     showError(error);
   }
 });
@@ -451,11 +627,13 @@ document.addEventListener("click", async (event) => {
       });
       renderProject();
       await scanInbox();
+      await refreshSongSuggestions();
     }
     if (target.id === "openProject") {
       project = await api("/project/open", { method: "POST", body: JSON.stringify({ folder: document.querySelector("#openFolder").value }) });
       renderProject();
       await scanInbox();
+      await refreshSongSuggestions();
       await refreshSyncMap();
     }
     if (target.id === "copyIntoProject") {
@@ -468,10 +646,14 @@ document.addEventListener("click", async (event) => {
     }
     if (target.id === "rescanInbox") await scanInbox();
     if (target.id === "useDetected") await registerDetected();
-    if (target.id === "chooseMaster") await registerPicked(await window.pywebview.api.pick_master(), "master");
-    if (target.id === "chooseSongs") await registerPicked(await window.pywebview.api.pick_songs(), "songs");
-    if (target.id === "addVideos") await registerPicked(await window.pywebview.api.pick_videos(), "videos");
-    if (target.id === "addVideoFolder") await registerPicked(await window.pywebview.api.pick_video_folder(), "folder");
+    if (pickerMethods[target.id]) await callPicker(target.id);
+    if (target.dataset.useSongSuggestion) {
+      const item = songSuggestions[Number(target.dataset.useSongSuggestion)];
+      if (!item) throw new Error("Song suggestion is no longer available");
+      await registerPicked([item.path], "songs");
+      songSuggestions = [];
+      renderSongSuggestions();
+    }
     if (target.dataset.run) {
       await api(`/stages/${target.dataset.run}/run`, { method: "POST", body: "{}" });
       await refreshStatus();
@@ -506,11 +688,14 @@ async function boot() {
   await loadAppConfig();
   await refreshProject();
   await scanInbox();
+  await refreshSongSuggestions();
   await refreshStatus();
   await refreshSyncMap();
 }
 
 document.addEventListener("pywebviewready", () => {
+  desktopBridgeReady = Boolean(window.pywebview?.api);
+  setPickerAvailability();
   loadAppConfig().catch(() => {});
 });
 

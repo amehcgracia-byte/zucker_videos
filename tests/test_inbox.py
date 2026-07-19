@@ -122,3 +122,50 @@ def test_upload_endpoint_saves_and_classifies(tmp_path):
     assert payload["videos"][0]["filename"] == "clip.mp4"
     uploaded = folder / "inputs" / "uploads" / "clip.mp4"
     assert uploaded.read_bytes() == b"abc"
+
+
+def test_upload_endpoint_returns_json_error_when_too_large(tmp_path):
+    app = create_app()
+    client = app.test_client()
+    folder = tmp_path / "Jam.zuckervid"
+    client.post("/api/v1/project", json={"name": "Jam", "folder": str(folder)})
+    app.config["MAX_CONTENT_LENGTH"] = 16
+
+    response = client.post(
+        "/api/v1/inputs/upload",
+        data={"files": (io.BytesIO(b"x" * 128), "clip.mp4")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 413
+    payload = response.get_json()
+    assert payload["error"]["code"] == "upload_too_large"
+    assert "Inbox" in payload["error"]["message"]
+
+
+def test_songs_suggestion_scans_master_folder_and_inbox(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inbox = tmp_path / "ZuckerVideos" / "Inbox"
+    inbox.mkdir(parents=True)
+    master_folder = tmp_path / "session"
+    master_folder.mkdir()
+    master = master_folder / "master.wav"
+    next_to_master = master_folder / "songs.json"
+    inbox_songs = inbox / "alt-songs.json"
+    invalid = master_folder / "notes.json"
+    master.write_bytes(b"master")
+    next_to_master.write_text(json.dumps({"songs": []}), encoding="utf-8")
+    inbox_songs.write_text(json.dumps({"songs": [{"title": "A"}]}), encoding="utf-8")
+    invalid.write_text(json.dumps({"clips": []}), encoding="utf-8")
+
+    app = create_app()
+    client = app.test_client()
+    folder = tmp_path / "Jam.zuckervid"
+    client.post("/api/v1/project", json={"name": "Jam", "folder": str(folder)})
+    client.post("/api/v1/inputs/master", json={"master": str(master)})
+
+    response = client.get("/api/v1/inputs/suggestions/songs")
+
+    assert response.status_code == 200
+    filenames = sorted(item["filename"] for item in response.get_json()["songs"])
+    assert filenames == ["alt-songs.json", "songs.json"]

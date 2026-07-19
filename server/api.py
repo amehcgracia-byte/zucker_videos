@@ -10,14 +10,16 @@ from pathlib import Path
 from typing import Any
 
 from flask import Flask, Response, jsonify, request, send_from_directory
+from werkzeug.exceptions import RequestEntityTooLarge
 
-from core.engine import PipelineEngine, StageNotFoundError
+from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
 from core.project import Project, ProjectError, create_project, load_project
 from core.stages.sync import clear_manual_override, generate_preview, generate_thumbnail, set_manual_override
-from server.inbox import classify_paths, load_global_config, register_selected_inputs, save_uploads, scan_inbox
+from server.inbox import classify_paths, load_global_config, register_selected_inputs, save_uploads, scan_inbox, suggest_songs_json
 from server.media import send_file_with_range
 
 LOGGER = logging.getLogger(__name__)
+BROWSER_UPLOAD_MAX_BYTES = 512 * 1024 * 1024
 
 
 @dataclass
@@ -33,6 +35,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     """Create and configure the Flask application."""
     root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
     app = Flask(__name__, static_folder=str(root / "web"), static_url_path="")
+    app.config["MAX_CONTENT_LENGTH"] = BROWSER_UPLOAD_MAX_BYTES
     load_global_config()
     state = AppState(engine=PipelineEngine(), dev=dev)
     if project_path:
@@ -41,6 +44,15 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     if dev:
         _enable_cors(app)
+
+    @app.errorhandler(RequestEntityTooLarge)
+    def api_upload_too_large(_: RequestEntityTooLarge) -> tuple[Response, int]:
+        limit_mb = app.config["MAX_CONTENT_LENGTH"] // (1024 * 1024)
+        return error_response(
+            "upload_too_large",
+            f"Browser uploads are limited to {limit_mb} MB. Put large videos in the Inbox or use the desktop folder picker.",
+            413,
+        )
 
     @app.get("/")
     def index() -> Response:
@@ -134,6 +146,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.post("/api/v1/inputs/upload")
     def api_inputs_upload() -> Response:
         project = _require_project(state)
+        max_bytes = int(app.config["MAX_CONTENT_LENGTH"])
+        if request.content_length and request.content_length > max_bytes:
+            limit_mb = max_bytes // (1024 * 1024)
+            return error_response(
+                "upload_too_large",
+                f"Browser uploads are limited to {limit_mb} MB. Put large videos in the Inbox or use the desktop folder picker.",
+                413,
+            )
         files = list(request.files.getlist("files"))
         if not files:
             return error_response("bad_request", "multipart field files is required", 400)
@@ -141,6 +161,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return jsonify(save_uploads(project, files))
         except OSError as exc:
             return error_response("upload_error", str(exc), 400)
+
+    @app.get("/api/v1/inputs/suggestions/songs")
+    def api_songs_suggestions() -> Response:
+        project = _require_project(state)
+        master = project.data.get("inputs", {}).get("master")
+        master_path = master.get("path") if master else None
+        return jsonify({"songs": suggest_songs_json(master_path)})
 
     @app.post("/api/v1/inputs/classify-paths")
     def api_classify_paths() -> Response:
@@ -174,6 +201,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return jsonify({"ok": True, "stage": name}), 202
         except StageNotFoundError as exc:
             return error_response("not_found", str(exc), 404)
+        except StageBlockedError as exc:
+            return error_response("stage_not_ready", str(exc), 409)
         except RuntimeError as exc:
             return error_response("busy", str(exc), 409)
 

@@ -20,7 +20,7 @@ class IngestStage(Stage):
         """Fingerprint registered input records and ingest settings."""
         return stable_fingerprint(
             {
-                "inputs": project.data["inputs"],
+                "videos": project.data["inputs"].get("videos", []),
                 "settings": project.data["settings"].get(self.name, {}),
             }
         )
@@ -32,12 +32,6 @@ class IngestStage(Stage):
     def run(self, project: Project, progress_callback: ProgressCallback) -> dict[str, Any]:
         """Validate inputs and probe each video with ffprobe."""
         inputs = project.data["inputs"]
-        if not inputs.get("master") or not inputs.get("songs"):
-            raise ValueError("Master audio and songs.json must be registered before ingest")
-        for key in ("master", "songs"):
-            if not Path(inputs[key]["path"]).exists():
-                raise ValueError(f"Missing input file: {inputs[key]['path']}")
-
         videos = inputs.get("videos", [])
         if not videos:
             raise ValueError("At least one video must be registered before ingest")

@@ -75,6 +75,11 @@ button:hover {
   border-color: var(--accent);
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .tab.active,
 button.primary {
   background: var(--accent);
@@ -155,6 +160,37 @@ main {
 .drop-zone.dragging {
   background: #e8f3f1;
   border-style: solid;
+}
+
+.drop-progress,
+.suggestions {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff;
+  color: var(--muted);
+}
+
+.drop-progress strong,
+.suggestions strong {
+  display: block;
+  color: var(--ink);
+  margin-bottom: 4px;
+}
+
+.drop-progress progress {
+  width: 100%;
+  height: 12px;
+  margin-top: 8px;
+}
+
+.suggestion-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding-top: 8px;
 }
 
 .detected-inputs {
@@ -491,7 +527,8 @@ small {
   .detected-inputs,
   .registered-inputs,
   .stage-row,
-  .sync-controls {
+    .sync-controls,
+    .suggestion-row {
     grid-template-columns: 1fr;
     display: grid;
     align-items: stretch;
