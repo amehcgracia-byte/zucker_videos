@@ -17,6 +17,7 @@ from core.stages.export import (
     _run_ffmpeg_progress,
     _render_plan,
     _render_segment,
+    _verify_moving_segment,
     _clip_fates,
     _segment_filtergraph,
     color_sample_commands,
@@ -107,6 +108,7 @@ def test_clip_fates_report_used_excluded_and_not_covering(tmp_path):
 def test_render_plan_fades_only_intro_and_outro_segments(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     project = create_project("Fades", str(tmp_path / "Fades.zuckervid"))
+    project.data["settings"]["export"]["verify_motion"] = False
     master = tmp_path / "master.wav"
     master.write_bytes(b"master")
     calls = []
@@ -181,6 +183,7 @@ def test_render_segment_uses_original_source_with_proxy_metadata(tmp_path, monke
     assert rendered_from == "original"
     assert str(source) in commands[0]
     assert str(proxy) not in commands[0]
+    assert "fps=24.000,setpts=PTS-STARTPTS" in commands[0][commands[0].index("-filter_complex") + 1]
 
 
 def test_render_segment_falls_back_to_proxy_when_original_decode_fails(tmp_path, monkeypatch):
@@ -261,6 +264,56 @@ def test_color_measure_timeout_returns_warning(monkeypatch):
 
 
 @pytest.mark.slow
+def test_compliant_skip_original_segment_renders_moving_video(tmp_path, monkeypatch):
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not available")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("core.stages.export._watermark_path", lambda: None)
+    monkeypatch.setattr("core.stages.export._ffmpeg_supports_filter", lambda name: False)
+    project = create_project("Moving", str(tmp_path / "Moving.zuckervid"))
+    source = tmp_path / "source.mp4"
+    master = tmp_path / "master.wav"
+    output = tmp_path / "segment.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=640x360:rate=24:duration=3",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", str(master)], check=True, capture_output=True, text=True)
+    record = file_record(str(source))
+    record["probe"] = {"valid_video": True, "video_codec": "h264", "duration": 3.0, "width": 640, "height": 360, "fps": 24.0, "cfr": True}
+    record["cache_key"] = "skip-key"
+    record["normalized"] = {"path": str(source), "cache_key": "skip-key", "kind": "original", "proxy_skipped": True}
+    project.data["inputs"]["master"] = file_record(str(master))
+    project.data["inputs"]["videos"] = [record]
+
+    rendered_from = _render_segment(
+        project,
+        {"clip_path": str(source), "source_path": str(source), "clip_start_sec": 0.2, "master_start_sec": 0.2, "duration_sec": 1.5},
+        str(master),
+        output,
+        "youtube",
+        4_000_000,
+    )
+
+    assert rendered_from == "original"
+    _verify_moving_segment(output, 1.5, "source.mp4", "test command")
+
+
+@pytest.mark.slow
 def test_two_segment_export_contains_bottom_right_watermark(tmp_path, monkeypatch):
     if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
         pytest.skip("ffmpeg/ffprobe not available")
@@ -273,7 +326,7 @@ def test_two_segment_export_contains_bottom_right_watermark(tmp_path, monkeypatc
     subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", str(master)], check=True, capture_output=True, text=True)
     for clip in (clip_a, clip_b):
         subprocess.run(
-            ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=black:size=640x360:rate=24:duration=1", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(clip)],
+            ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=1", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(clip)],
             check=True,
             capture_output=True,
             text=True,

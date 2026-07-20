@@ -285,6 +285,7 @@ def _short_form_segments_from_best_coverage(coverage: dict[str, Any]) -> list[di
             "clip_offset_sec": offset,
             "confidence": float(best.get("confidence") or 0.0),
             "filename": best.get("filename") or Path(str(best.get("path") or best.get("clip_path"))).name,
+            "projection": best.get("projection"),
         }
     ]
 
@@ -320,6 +321,7 @@ def _segment_from_source(source: dict[str, Any], start: float, end: float, title
         "clip_offset_sec": offset,
         "confidence": float(source.get("confidence") or 0.0),
         "filename": source.get("filename") or Path(str(source["path"])).name,
+        "projection": source.get("projection"),
     }
 
 

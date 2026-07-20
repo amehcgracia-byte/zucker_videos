@@ -342,6 +342,7 @@ def referenced_cache_keys(projects_root: Path | None = None) -> set[str]:
 def normalization_filter(probe: dict[str, Any], fps: float | None = None, proxy: bool = False) -> str:
     """Return the ffmpeg filter chain used for proxies or full-quality fragments."""
     target_fps = _bounded_fps(float(fps or probe.get("fps") or 30.0))
+    timing_filter = f"fps={target_fps:.3f},setpts=PTS-STARTPTS"
     if proxy:
         size_filter = f"scale={PROXY_MAX_WIDTH}:{PROXY_MAX_HEIGHT}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"
     else:
@@ -349,13 +350,13 @@ def normalization_filter(probe: dict[str, Any], fps: float | None = None, proxy:
     if probe.get("projection") == "equirect":
         width = PROXY_MAX_WIDTH if proxy else 1920
         height = PROXY_MAX_HEIGHT if proxy else 1080
-        equirect = f"v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w={width}:h={height},fps={target_fps:.3f},setpts=PTS-STARTPTS"
+        equirect = f"v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w={width}:h={height},{timing_filter}"
         if probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
             return f"{equirect},{SDR_TONEMAP_FILTER}"
         return f"{equirect},format=yuv420p"
     if probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
-        return f"{SDR_TONEMAP_FILTER},{size_filter}"
-    return f"{size_filter},format=yuv420p" if proxy else EVEN_SDR_FILTER
+        return f"{SDR_TONEMAP_FILTER},{size_filter},{timing_filter}"
+    return f"{size_filter},{timing_filter},format=yuv420p" if proxy else f"{EVEN_SDR_FILTER},{timing_filter}"
 
 
 def proxy_transcode_compliant(probe: dict[str, Any]) -> bool:

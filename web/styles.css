@@ -1,17 +1,27 @@
 :root {
   color-scheme: light;
-  --primary: #7fbf62;
-  --primary-dark: #4f8c3b;
-  --accent: #7ec8e3;
-  --accent-strong: #258fb6;
-  --bg: #f3fafc;
+  --green-900: #1e3f17;
+  --green-800: #315f25;
+  --green-700: #4f8c3b;
+  --green-600: #68a84e;
+  --green-500: #7fbf62;
+  --green-400: #9bd282;
+  --green-300: #bce6aa;
+  --green-200: #d7f1ce;
+  --green-100: #edf8e8;
+  --green-50: #f7fcf4;
+  --primary: var(--green-500);
+  --primary-dark: var(--green-700);
+  --accent: var(--green-400);
+  --accent-strong: var(--green-700);
+  --bg: var(--green-50);
   --text: #17242b;
   --muted: #667680;
-  --line: #d8e7ed;
-  --panel: #f5fbfd;
+  --line: #d9e8d2;
+  --panel: #fbfef9;
   --bad: #a43b3b;
-  --ok: #4f8c3b;
-  --shadow: 0 24px 80px rgba(37, 143, 182, 0.13);
+  --ok: var(--green-700);
+  --shadow: 0 24px 80px rgba(49, 95, 37, 0.13);
 }
 
 * {
@@ -22,7 +32,7 @@ body {
   margin: 0;
   min-height: 100vh;
   color: var(--text);
-  background: linear-gradient(180deg, var(--bg) 0, #fff 38%);
+  background: linear-gradient(180deg, var(--green-50) 0, #fbfef9 42%, #fff 100%);
   font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
@@ -44,10 +54,10 @@ input {
   justify-content: center;
   align-items: center;
   gap: 10px;
-  background: #113746;
-  color: #f2fbfe;
+  background: var(--green-800);
+  color: #f8fff5;
   font-weight: 800;
-  box-shadow: 0 6px 18px rgba(17, 55, 70, 0.16);
+  box-shadow: 0 6px 18px rgba(30, 63, 23, 0.16);
 }
 
 .status-strip[hidden] {
@@ -121,7 +131,7 @@ h1 {
   border-radius: 12px;
   padding: 14px 16px;
   color: var(--text);
-  background: #fff;
+  background: var(--panel);
 }
 
 .project-shelf {
@@ -163,7 +173,7 @@ h1 {
   border: 1px solid var(--line);
   border-radius: 16px;
   padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.82);
+  background: rgba(251, 254, 249, 0.88);
 }
 
 .project-row > div {
@@ -194,7 +204,7 @@ h1 {
   border: 2px dashed var(--accent);
   border-radius: 28px;
   padding: 32px;
-  background: rgba(255, 255, 255, 0.78);
+  background: rgba(251, 254, 249, 0.86);
   display: grid;
   align-content: center;
   gap: 24px;
@@ -202,7 +212,7 @@ h1 {
 }
 
 .drop-zone.dragging {
-  background: #e9f8fc;
+  background: var(--green-100);
   border-style: solid;
 }
 
@@ -243,7 +253,7 @@ h1 {
   border: 1px solid var(--line);
   border-radius: 14px;
   padding: 12px 14px;
-  background: #fff;
+  background: var(--panel);
 }
 
 .clip-fate > div {
@@ -272,7 +282,7 @@ h1 {
 
 .rescue-button {
   border-color: var(--accent);
-  background: #eef9fc;
+  background: var(--green-100);
   font-weight: 800;
 }
 
@@ -280,7 +290,7 @@ h1 {
   border: 1px solid var(--accent);
   border-radius: 18px;
   padding: 16px;
-  background: #f8fdff;
+  background: var(--green-50);
 }
 
 .rescue-panel[hidden] {
@@ -323,7 +333,7 @@ h1 {
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 8px 12px;
-  background: #fff;
+  background: #fdfffc;
   overflow-wrap: anywhere;
   font-size: 13px;
   font-weight: 750;
@@ -346,7 +356,7 @@ h1 {
   border: 1px solid var(--accent);
   border-radius: 999px;
   padding: 8px 12px;
-  background: #eef9fc;
+  background: var(--green-100);
   font-weight: 800;
 }
 
@@ -367,7 +377,7 @@ button {
   border: 1px solid var(--line);
   border-radius: 18px;
   padding: 14px 18px;
-  background: #fff;
+  background: #fdfffc;
   color: var(--text);
   cursor: pointer;
   transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease, border-color 160ms ease;
@@ -394,13 +404,13 @@ button:disabled {
   min-height: 56px;
   border-color: var(--accent);
   background: var(--primary);
-  color: #102113;
+  color: var(--green-900);
   font-weight: 800;
   box-shadow: 0 14px 30px rgba(79, 140, 59, 0.22);
 }
 
 .primary:hover:not(:disabled) {
-  background: #8ccd6f;
+  background: var(--green-400);
   border-color: var(--primary-dark);
 }
 
@@ -442,7 +452,7 @@ button:disabled {
   display: grid;
   place-items: center;
   border-radius: 18px;
-  background: #e8f7fc;
+  background: var(--green-100);
   color: var(--accent-strong);
 }
 
@@ -462,7 +472,7 @@ button:disabled {
 .platform-card.selected,
 .song-option.selected {
   border-color: var(--accent-strong);
-  background: #e5f7fc;
+  background: var(--green-100);
 }
 
 .song-picker {
@@ -484,20 +494,20 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 28px;
   padding: 26px;
-  background: #fff;
+  background: rgba(253, 255, 252, 0.92);
 }
 
 .progress-track {
   height: 18px;
   border-radius: 999px;
   overflow: hidden;
-  background: #e7f2f6;
+  background: var(--green-200);
 }
 
 #progressBar {
   height: 100%;
   width: 0;
-  background: linear-gradient(90deg, var(--primary), var(--accent));
+  background: linear-gradient(90deg, var(--green-700), var(--green-500));
   transition: width 240ms ease;
 }
 
@@ -540,7 +550,7 @@ button:disabled {
 .stage-checks span.done {
   color: var(--ok);
   border-color: rgba(79, 140, 59, 0.35);
-  background: #f0faec;
+  background: var(--green-100);
 }
 
 .stage-checks span.done::before {
@@ -592,7 +602,7 @@ pre {
   border: 1px solid var(--accent);
   border-radius: 14px;
   padding: 12px 14px;
-  background: #f3fbfd;
+  background: var(--green-50);
   color: var(--accent-strong);
 }
 

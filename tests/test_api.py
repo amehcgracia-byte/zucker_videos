@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from core.project import create_project, file_record
+from core.project import create_project, file_record, load_project
 from core.stages.base import write_artifact_json
 from core.stages.cut import CutStage
 from core.stages.export import ExportStage
@@ -598,6 +598,83 @@ def test_register_status_run_ingest_end_to_end_regression(tmp_path, monkeypatch)
     assert all(record["probe"]["video_codec"] == "h264" for record in videos)
     status = client.get("/api/v1/stages/status").get_json()
     assert status["readiness"]["sync"]["ready"] is True
+
+
+def test_master_replacement_preserves_clip_cache_and_marks_sync_stale(tmp_path, monkeypatch):
+    monkeypatch.setattr("server.inbox.ffprobe", lambda path: valid_video_probe("2.5"))
+    app = create_app()
+    client = app.test_client()
+    folder = tmp_path / "Jam.zuckervid"
+    master_a = tmp_path / "master-a.wav"
+    master_b = tmp_path / "master-b.wav"
+    video = tmp_path / "clip.mp4"
+    for path in (master_a, master_b, video):
+        path.write_bytes(b"media")
+    assert client.post("/api/v1/project", json={"name": "Jam", "folder": str(folder)}).status_code == 201
+    assert client.post("/api/v1/inbox/register", json={"master": str(master_a), "videos": [str(video)]}).status_code == 200
+    project = load_project(str(folder))
+    project.data["inputs"]["videos"][0]["cache_key"] = "global-key"
+    project.data["inputs"]["videos"][0]["normalized"] = {"path": "/cache/proxy.mp4", "cache_key": "global-key", "kind": "proxy"}
+    for stage in ("ingest", "sync", "cut", "edit", "export"):
+        project.data["stages"][stage]["status"] = "done"
+    project.save()
+    app.config["ZUCKER_STATE"].project = project
+
+    response = client.post("/api/v1/inputs/master", json={"master": str(master_b)})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["inputs"]["videos"][0]["cache_key"] == "global-key"
+    assert payload["stages"]["ingest"]["status"] == "done"
+    assert payload["stages"]["sync"]["status"] == "stale"
+
+
+def test_adding_video_only_marks_ingest_and_dedupes_existing_clip(tmp_path, monkeypatch):
+    monkeypatch.setattr("server.inbox.ffprobe", lambda path: valid_video_probe("2.5"))
+    app = create_app()
+    client = app.test_client()
+    folder = tmp_path / "Jam.zuckervid"
+    video_a = tmp_path / "a.mp4"
+    video_b = tmp_path / "b.mp4"
+    video_a.write_bytes(b"a")
+    video_b.write_bytes(b"b")
+    assert client.post("/api/v1/project", json={"name": "Jam", "folder": str(folder)}).status_code == 201
+    assert client.post("/api/v1/inputs/videos", json={"paths": [str(video_a)]}).status_code == 200
+    project = load_project(str(folder))
+    project.data["inputs"]["videos"][0]["cache_key"] = "a-key"
+    project.data["inputs"]["videos"][0]["normalized"] = {"path": "/cache/a.mp4", "cache_key": "a-key"}
+    project.data["stages"]["ingest"]["status"] = "done"
+    project.save()
+    app.config["ZUCKER_STATE"].project = project
+
+    response = client.post("/api/v1/inputs/videos", json={"paths": [str(video_a), str(video_b)], "append": True})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert [Path(record["path"]).name for record in payload["inputs"]["videos"]] == ["a.mp4", "b.mp4"]
+    assert payload["inputs"]["videos"][0]["cache_key"] == "a-key"
+    assert payload["stages"]["ingest"]["status"] == "stale"
+
+
+def test_missing_video_is_dropped_on_project_refresh(tmp_path, monkeypatch):
+    monkeypatch.setattr("server.inbox.ffprobe", lambda path: valid_video_probe("2.5"))
+    folder = tmp_path / "Jam.zuckervid"
+    project = create_project("Jam", str(folder))
+    video_a = tmp_path / "a.mp4"
+    video_b = tmp_path / "b.mp4"
+    video_a.write_bytes(b"a")
+    video_b.write_bytes(b"b")
+    project.data["inputs"]["videos"] = [file_record(str(video_a)), file_record(str(video_b))]
+    project.data["stages"]["ingest"]["status"] = "done"
+    project.save()
+    video_b.unlink()
+
+    app = create_app(project_path=str(folder))
+    client = app.test_client()
+    payload = client.get("/api/v1/project").get_json()
+
+    assert [Path(record["path"]).name for record in payload["inputs"]["videos"]] == ["a.mp4"]
+    assert payload["stages"]["ingest"]["status"] == "stale"
 
 
 def test_ingest_demotes_registered_invalid_clip(tmp_path, monkeypatch):

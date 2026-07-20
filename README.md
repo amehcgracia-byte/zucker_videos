@@ -306,7 +306,7 @@ Edit/export prototype:
 - Instagram/TikTok still use the current fixed middle excerpt as placeholder creative logic.
 - `export` renders per-segment MP4 intermediates with matching master-audio slices, concatenates them, and keeps output under 1.9 GB by computing a target bitrate from duration.
 - Export tries `h264_videotoolbox` first on macOS and falls back to `libx264` when hardware encoding is unavailable.
-- Export applies a bottom-right watermark from `assets/watermark.png` when present, otherwise `logo_editor_blue.png`.
+- Export applies a bottom-right watermark from `assets/watermark.png` when present, otherwise `logo_editor_green.png`.
 - Export color matching samples five short windows per clip and caches the profile globally under `~/ZuckerVideos/Cache/color/`; color-measure failures are warnings, not export failures.
 - Full-clip high-quality mezzanines are no longer required for export; segment renders seek into the original camera files and fall back to the analysis proxy only if an original fragment cannot be decoded.
 - Text overlays use `band_name` and `handle` from `~/ZuckerVideos/config.json`; if ffmpeg lacks `drawtext`, export skips text rather than failing.
@@ -383,7 +383,7 @@ cd /Users/macbookair/zucker_videos
 Icon generation:
 
 - Source/swap point: `assets/logo_mixer.png`
-- Generated blue logo: `assets/logo_editor_blue.png`
+- Generated green logo: `assets/logo_editor_green.png`
 - Generated app icon: `assets/icon.icns`
 
 Build:

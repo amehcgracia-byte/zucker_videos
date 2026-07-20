@@ -220,9 +220,11 @@ def register_selected_inputs(
 def reconcile_registered_inputs(project: Project) -> bool:
     """Reclassify registered project inputs and demote stale invalid video records."""
     changed = False
+    kept_videos: list[dict[str, Any]] = []
     for record in project.data.get("inputs", {}).get("videos", []):
         path = Path(record.get("path") or "").expanduser()
         if not path.exists():
+            changed = True
             continue
         item = classify_file(path)
         if item["kind"] == "videos":
@@ -237,13 +239,16 @@ def reconcile_registered_inputs(project: Project) -> bool:
                 record.pop("status", None)
                 record.pop("not_a_video_reason", None)
                 changed = True
+            kept_videos.append(record)
             continue
         if record.get("status") != "not_a_video" or record.get("not_a_video_reason") != item["note"]:
             record["status"] = "not_a_video"
             record["not_a_video_reason"] = item["note"]
             record.pop("normalized", None)
             changed = True
+        kept_videos.append(record)
     if changed:
+        project.data["inputs"]["videos"] = kept_videos
         project.mark_all_stale_from("ingest")
         project.save()
     return changed

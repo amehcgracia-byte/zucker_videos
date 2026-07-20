@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the Zucker Editor light-blue macOS icon from assets/logo_mixer.png."""
+"""Build the Zucker Editor green macOS icon from assets/logo_mixer.png."""
 
 from __future__ import annotations
 
@@ -11,15 +11,17 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "assets" / "logo_mixer.png"
-BLUE_LOGO = ROOT / "assets" / "logo_editor_blue.png"
+GREEN_LOGO = ROOT / "assets" / "logo_editor_green.png"
+WEB_LOGO = ROOT / "web" / "logo_editor_green.png"
 ICONSET = ROOT / "build" / "ZuckerEditor.iconset"
 ICNS = ROOT / "assets" / "icon.icns"
-TARGET_RGB = (0x7E, 0xC8, 0xE3)
+DMG_BACKGROUND = ROOT / "build" / "dmg_background.png"
+TARGET_RGB = (0x7F, 0xBF, 0x62)
 ICON_SIZES = (16, 32, 64, 128, 256, 512, 1024)
 
 
 def recolor_logo() -> Image.Image:
-    """Recolor non-transparent, saturated pixels toward Zucker Editor blue."""
+    """Recolor non-transparent, saturated pixels toward Zucker Editor green."""
     if not SOURCE.exists():
         raise FileNotFoundError(f"Missing {SOURCE}. Replace this swap point with the Mixer logo.")
     src = Image.open(SOURCE).convert("RGBA")
@@ -37,8 +39,10 @@ def recolor_logo() -> Image.Image:
             pixels.append((r, g, b, a))
     out = Image.new("RGBA", src.size)
     out.putdata(pixels)
-    BLUE_LOGO.parent.mkdir(parents=True, exist_ok=True)
-    out.save(BLUE_LOGO)
+    GREEN_LOGO.parent.mkdir(parents=True, exist_ok=True)
+    out.save(GREEN_LOGO)
+    WEB_LOGO.parent.mkdir(parents=True, exist_ok=True)
+    out.save(WEB_LOGO)
     return out
 
 
@@ -54,9 +58,22 @@ def save_iconset(image: Image.Image) -> None:
             resized.save(ICONSET / f"icon_{base}x{base}@2x.png")
 
 
+def save_dmg_background(image: Image.Image) -> None:
+    """Create a simple branded DMG background."""
+    width, height = 640, 400
+    bg = Image.new("RGBA", (width, height), (245, 251, 242, 255))
+    logo = image.copy()
+    logo.thumbnail((220, 220), Image.Resampling.LANCZOS)
+    logo.putalpha(logo.getchannel("A").point(lambda value: int(value * 0.16)))
+    bg.alpha_composite(logo, ((width - logo.width) // 2, 34))
+    DMG_BACKGROUND.parent.mkdir(parents=True, exist_ok=True)
+    bg.convert("RGB").save(DMG_BACKGROUND)
+
+
 def main() -> None:
     image = recolor_logo()
     save_iconset(image)
+    save_dmg_background(image)
     subprocess.run(["iconutil", "-c", "icns", str(ICONSET), "-o", str(ICNS)], check=True)
     print(ICNS)
 

@@ -131,6 +131,7 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any]) -> dict
             "verification": clip.get("verification"),
             "error": clip.get("error"),
             "no_audio": bool(clip.get("no_audio")),
+            "projection": (record.get("probe") or {}).get("projection") if record else None,
             "path": clip.get("path"),
             "source_path": clip.get("source_path"),
         }
@@ -139,7 +140,10 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any]) -> dict
         if reason:
             excluded.append({"filename": diagnostic["filename"], "reason": reason, "diagnostic": diagnostic})
             continue
-        selected.append(clip)
+        selected_clip = dict(clip)
+        if diagnostic.get("projection"):
+            selected_clip["projection"] = diagnostic["projection"]
+        selected.append(selected_clip)
     return {"clips": selected, "warnings": [], "diagnostics": diagnostics, "excluded": excluded}
 
 

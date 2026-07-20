@@ -23,6 +23,7 @@ MAX_EXPORT_BYTES = int(1.9 * 1024 * 1024 * 1024)
 AUDIO_BITRATE = 192_000
 MIN_ACCEPTABLE_VIDEO_BITRATE = 2_500_000
 MAX_VIDEO_BITRATE = 18_000_000
+EXPORT_SEGMENT_RECIPE_VERSION = 2
 
 
 class ExportStage(Stage):
@@ -124,6 +125,8 @@ def _render_plan(
     rendered_duration = 0.0
     color_profiles = _color_profiles_for_segments(project, segments, warnings)
     overlay_config = _overlay_config(platform, segments[0])
+    verified_sources: set[str] = set()
+    verify_motion = bool(project.data.get("settings", {}).get("export", {}).get("verify_motion", True))
     try:
         for index, segment in enumerate(segments, start=1):
             segment_duration = max(0.1, float(segment["duration_sec"]))
@@ -138,8 +141,12 @@ def _render_plan(
             intro_fade = index == 1
             outro_fade = index == len(segments)
             segment_path = cached_segment_path(project, segment, platform, video_bitrate, overlay_config, color_profile, intro_fade, outro_fade)
+            source_info = _segment_source_info(project, segment)
+            source_key = str(source_info.get("cache_key") or source_info.get("source_path") or segment.get("clip_path"))
+            command_line = "cached segment"
             if not segment_path.exists():
                 tmp_segment = temp_dir / f"segment-{index:04d}.mp4"
+                commands: list[list[str]] = []
                 rendered_from = _render_segment(
                     project,
                     segment,
@@ -153,11 +160,43 @@ def _render_plan(
                     intro_fade=intro_fade,
                     outro_fade=outro_fade,
                     warnings=warnings,
+                    command_recorder=commands,
                 )
+                if commands:
+                    command_line = " ".join(commands[-1])
                 segment_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(tmp_segment, segment_path)
                 if rendered_from == "proxy":
                     warnings.append(f"Used proxy fallback for {Path(str(segment.get('source_path') or segment.get('clip_path'))).name}")
+            if verify_motion and source_key not in verified_sources:
+                try:
+                    _verify_moving_segment(segment_path, segment_duration, Path(str(source_info.get("source_path") or segment.get("clip_path"))).name, command_line)
+                except FFmpegError:
+                    if command_line == "cached segment":
+                        segment_path.unlink(missing_ok=True)
+                        commands = []
+                        tmp_segment = temp_dir / f"segment-{index:04d}.mp4"
+                        _render_segment(
+                            project,
+                            segment,
+                            master_path,
+                            tmp_segment,
+                            platform,
+                            video_bitrate,
+                            overlay_config,
+                            color_profile,
+                            segment_progress,
+                            intro_fade=intro_fade,
+                            outro_fade=outro_fade,
+                            warnings=warnings,
+                            command_recorder=commands,
+                        )
+                        command_line = " ".join(commands[-1]) if commands else "rerender command unavailable"
+                        shutil.copy2(tmp_segment, segment_path)
+                        _verify_moving_segment(segment_path, segment_duration, Path(str(source_info.get("source_path") or segment.get("clip_path"))).name, command_line)
+                    else:
+                        raise
+                verified_sources.add(source_key)
             segment_paths.append(segment_path)
             rendered_duration += segment_duration
         concat_path = temp_dir / "concat.txt"
@@ -203,6 +242,7 @@ def _render_segment(
     intro_fade: bool = False,
     outro_fade: bool = False,
     warnings: list[str] | None = None,
+    command_recorder: list[list[str]] | None = None,
 ) -> str:
     ffmpeg = _ffmpeg_path()
     duration = max(0.1, float(segment["duration_sec"]))
@@ -250,7 +290,10 @@ def _render_segment(
     hardware = _video_encode_args("h264_videotoolbox", video_bitrate)
     software = _video_encode_args("libx264", video_bitrate)
     try:
-        _run_ffmpeg_progress(command_base + hardware + [str(output_path)], duration, Path(str(source["source_path"])).name, progress_callback)
+        command = command_base + hardware + [str(output_path)]
+        if command_recorder is not None:
+            command_recorder.append(command)
+        _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
         return "original"
     except FFmpegError as exc:
         if output_path.exists():
@@ -258,7 +301,10 @@ def _render_segment(
         if progress_callback:
             progress_callback(0, t("hardware_fallback"))
         try:
-            _run_ffmpeg_progress(command_base + software + [str(output_path)], duration, Path(str(source["source_path"])).name, progress_callback)
+            command = command_base + software + [str(output_path)]
+            if command_recorder is not None:
+                command_recorder.append(command)
+            _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
             return "original"
         except FFmpegError as fallback_exc:
             if output_path.exists():
@@ -283,7 +329,10 @@ def _render_segment(
                 proxy_command.extend(["-loop", "1", "-i", str(watermark)])
             proxy_command.extend(command_base[command_base.index("-filter_complex") :])
             proxy_command[proxy_command.index("-filter_complex") + 1] = proxy_filter
-            _run_ffmpeg_progress(proxy_command + software + [str(output_path)], duration, Path(str(proxy_path)).name, progress_callback)
+            command = proxy_command + software + [str(output_path)]
+            if command_recorder is not None:
+                command_recorder.append(command)
+            _run_ffmpeg_progress(command, duration, Path(str(proxy_path)).name, progress_callback)
             return "proxy"
 
 
@@ -420,10 +469,59 @@ def cached_segment_path(
             "intro_fade": intro_fade,
             "outro_fade": outro_fade,
             "normalization_version": NORMALIZATION_VERSION,
-            "export_segment_recipe": 1,
+            "export_segment_recipe": EXPORT_SEGMENT_RECIPE_VERSION,
         }
     )[:24]
     return global_segment_path(recipe)
+
+
+def _verify_moving_segment(path: Path, duration: float, label: str, command_line: str) -> None:
+    """Fail when a rendered segment decodes as identical frames at two timestamps."""
+    if duration < 1.0:
+        return
+    first_at = max(0.05, min(0.5, duration * 0.2))
+    second_at = max(first_at + 0.4, min(duration - 0.05, duration * 0.8))
+    if second_at <= first_at:
+        return
+    first = _frame_md5(path, first_at)
+    second = _frame_md5(path, second_at)
+    if first and second and first == second:
+        raise FFmpegError(
+            f"Rendered static segment for {label}: frame hashes were identical at {first_at:.2f}s and {second_at:.2f}s. "
+            f"segment={path} command={command_line}"
+        )
+
+
+def _frame_md5(path: Path, timestamp: float) -> str | None:
+    ffmpeg = _ffmpeg_path()
+    result = subprocess.run(
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-ss",
+            f"{timestamp:.3f}",
+            "-i",
+            str(path),
+            "-frames:v",
+            "1",
+            "-f",
+            "md5",
+            "-",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    if result.returncode != 0:
+        raise FFmpegError((result.stderr or "").strip() or f"Could not verify rendered segment frames: {path}")
+    output = (result.stdout or "").strip()
+    if "=" in output:
+        return output.split("=", 1)[1].strip()
+    return output or None
 
 
 def _color_filter(color_profile: dict[str, Any]) -> str:
@@ -510,6 +608,7 @@ def _clip_fates(project: Project, plan: dict[str, Any], segments: list[dict[str,
                 "offset_sec": diagnostic.get("offset_sec"),
                 "verification": diagnostic.get("verification"),
                 "manual_override": diagnostic.get("manual_override"),
+                "projection": diagnostic.get("projection"),
             }
         )
     for path, seconds in used_seconds.items():
@@ -577,9 +676,9 @@ def _global_config() -> dict[str, Any]:
 def _watermark_path() -> Path | None:
     candidates = [
         Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "watermark.png",
-        Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "logo_editor_blue.png",
+        Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "logo_editor_green.png",
         Path(__file__).resolve().parents[2] / "assets" / "watermark.png",
-        Path(__file__).resolve().parents[2] / "assets" / "logo_editor_blue.png",
+        Path(__file__).resolve().parents[2] / "assets" / "logo_editor_green.png",
     ]
     for candidate in candidates:
         if candidate.exists():
