@@ -2,11 +2,13 @@
 
 Simple three-step app for turning Zucker Mixer audio plus raw camera clips into a finished video.
 
+The user-facing UI is English-only in this build. User strings are centralized in `core/messages.py` for backend/status text and `web/strings.js` for frontend dynamic text.
+
 ## Uso
 
 1. **Drop everything**
-   - Escribe `Nombre del vídeo`, or keep the default `Jam YYYY-MM-DD`.
-   - Drag videos, master audio, and optionally `songs.json` into `Arrastra aquí tus archivos`.
+   - Enter `Video name`, or keep the default `Jam YYYY-MM-DD`.
+   - Drag videos, master audio, and optionally `songs.json` into `Drop your files here`.
    - Files already in `~/ZuckerVideos/Inbox/` are imported automatically.
    - You can continue once there is at least one video and one master audio. Without `songs.json`, Zucker Editor makes one continuous video.
 
@@ -14,13 +16,13 @@ Simple three-step app for turning Zucker Mixer audio plus raw camera clips into 
    - `YouTube`: full-length 16:9 edit.
    - `Instagram`: vertical 9:16 short, about 45 seconds.
    - `TikTok`: vertical 9:16 short, about 20 seconds.
-   - If `songs.json` has multiple songs, choose the song. YouTube also allows `Todas`.
+   - If `songs.json` has multiple songs, choose the song. YouTube also allows `All`.
 
 3. **Wait for the result**
    - The app runs ingest, sync, cut, edit, and export automatically.
    - Progress is shown in plain Spanish, including ffmpeg export progress and ETA.
    - On success, preview the video, reveal it in Finder, or start another.
-   - On failure, use `Ver detalles técnicos` for the log tail.
+   - On failure, use `Show technical details` for the log tail.
 
 Creative logic in this version:
 
@@ -303,6 +305,7 @@ Edit/export prototype:
 - `export` renders per-segment MP4 intermediates with matching master-audio slices, concatenates them, and keeps output under 1.9 GB by computing a target bitrate from duration.
 - Export tries `h264_videotoolbox` first on macOS and falls back to `libx264` when hardware encoding is unavailable.
 - Export applies a bottom-right watermark from `assets/watermark.png` when present, otherwise `logo_editor_blue.png`.
+- Export color matching samples five short windows per clip and caches the profile globally under `~/ZuckerVideos/Cache/color/`; color-measure failures are warnings, not export failures.
 - Text overlays use `band_name` and `handle` from `~/ZuckerVideos/config.json`; if ffmpeg lacks `drawtext`, export skips text rather than failing.
 - Frontend JavaScript runtime errors are logged to `~/ZuckerVideos/logs/frontend.log`.
 

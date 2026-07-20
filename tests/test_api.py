@@ -529,7 +529,7 @@ def test_ingest_demotes_registered_invalid_clip(tmp_path, monkeypatch):
 
     record = project.data["inputs"]["videos"][0]
     assert record["status"] == "not_a_video"
-    assert record["not_a_video_reason"] == "no es un vídeo de cámara"
+    assert record["not_a_video_reason"] == "not a camera video"
     assert record["probe"]["valid_video"] is False
 
 
@@ -539,7 +539,7 @@ def test_cut_fails_cleanly_when_no_valid_confident_clip(tmp_path):
     video.write_bytes(b"bad")
     record = file_record(str(video))
     record["status"] = "not_a_video"
-    record["not_a_video_reason"] = "no es un vídeo de cámara"
+    record["not_a_video_reason"] = "not a camera video"
     record["probe"] = {"valid_video": False, "video_codec": "ansi", "duration": 3.0, "width": 80, "height": 25}
     project.data["inputs"]["videos"] = [record]
     project.data["settings"]["wizard"] = {"platform": "youtube", "song_choice": None}
@@ -565,8 +565,8 @@ def test_cut_fails_cleanly_when_no_valid_confident_clip(tmp_path):
     with pytest.raises(ValueError) as exc_info:
         CutStage().run(project, lambda percent, message: None)
     message = str(exc_info.value)
-    assert "Ninguno de los archivos parece un vídeo de cámara utilizable" in message
-    assert "clip.mp4: vídeo válido=no, confianza=9.000, umbral=6.000" in message
+    assert "None of the files looks like a usable camera video" in message
+    assert "clip.mp4: valid video=no, confidence=9.000, threshold=6.000" in message
 
 
 def test_cut_excludes_low_confidence_clip_without_manual_override(tmp_path):
@@ -615,7 +615,7 @@ def test_cut_excludes_low_confidence_clip_without_manual_override(tmp_path):
 
     with pytest.raises(ValueError) as exc_info:
         CutStage().run(project, lambda percent, message: None)
-    assert "clip.mov: vídeo válido=sí, confianza=2.500, umbral=6.000 (confianza baja)" in str(exc_info.value)
+    assert "clip.mov: valid video=yes, confidence=2.500, threshold=6.000 (low confidence)" in str(exc_info.value)
 
 
 def test_cut_and_export_use_manual_override_global_cached_clip(tmp_path, monkeypatch):
@@ -664,7 +664,7 @@ def test_cut_and_export_use_manual_override_global_cached_clip(tmp_path, monkeyp
 
     monkeypatch.setattr(
         "core.stages.export._render_plan",
-        lambda segments, master_path, output_path, platform, video_bitrate, progress_callback: output_path.write_bytes(b"export"),
+        lambda project, segments, master_path, output_path, platform, video_bitrate, warnings, progress_callback: output_path.write_bytes(b"export"),
     )
 
     CutStage().run(project, lambda percent, message: None)
@@ -687,7 +687,7 @@ def test_sync_skips_ingest_demoted_clip(tmp_path, monkeypatch):
     project.data["inputs"]["master"] = file_record(str(master))
     record = file_record(str(video))
     record["status"] = "not_a_video"
-    record["not_a_video_reason"] = "no es un vídeo de cámara"
+    record["not_a_video_reason"] = "not a camera video"
     record["probe"] = {"valid_video": False, "video_codec": "ansi", "duration": 3.0, "width": 80, "height": 25}
     project.data["inputs"]["videos"] = [record]
     monkeypatch.setattr("core.stages.sync.load_or_compute_master_envelope", lambda project: [])

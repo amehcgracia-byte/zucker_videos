@@ -67,7 +67,7 @@
     }
   }
 
-  async function reveal(path, label = "Abrir en Finder") {
+  async function reveal(path, label = "Reveal in Finder") {
     if (!path) return false;
     return call("reveal_in_finder", [path], label);
   }

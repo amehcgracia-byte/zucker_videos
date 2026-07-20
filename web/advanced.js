@@ -127,7 +127,7 @@ function renderCacheStatus(status) {
   const root = document.querySelector("#cacheSummary");
   if (!root) return;
   const counts = status.counts || {};
-  root.textContent = `${formatBytes(status.size_bytes || status.after_bytes || 0)} · ${counts.normalized || 0} vídeos preparados · ${counts.envelopes || 0} envelopes · ${status.path || ""}`;
+  root.textContent = `${formatBytes(status.size_bytes || status.after_bytes || 0)} · ${counts.normalized || 0} prepared videos · ${counts.envelopes || 0} envelopes · ${status.path || ""}`;
 }
 
 async function refreshCacheStatus() {
@@ -137,7 +137,7 @@ async function refreshCacheStatus() {
 async function freeCache() {
   const result = await api("/cache/free", { method: "POST", body: "{}" });
   renderCacheStatus({ ...result, size_bytes: result.after_bytes, counts: (await api("/cache/status")).counts });
-  showToast(`Cache liberada: ${formatBytes(result.deleted_bytes || 0)} en ${result.deleted_files || 0} archivos`);
+  showToast(`Freed cache: ${formatBytes(result.deleted_bytes || 0)} across ${result.deleted_files || 0} files`);
 }
 
 function parseOffset(value) {

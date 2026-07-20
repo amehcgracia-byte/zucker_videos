@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from core.build_info import build_info
+from core.messages import t
 from core.project import Project, create_project
 from core.stages.cut import CutStage
 from core.stages.edit import EditStage
@@ -29,7 +30,7 @@ class WizardJob:
     id: str
     status: str = "running"
     progress: int = 0
-    message: str = "Trabajando..."
+    message: str = t("working")
     detail: str | None = None
     error: str | None = None
     technical_details: str | None = None
@@ -51,8 +52,8 @@ class WizardRunner:
         """Create/register a project and run ingest + sync while the user chooses an edit type."""
         with self._lock:
             if self._job and self._job.status == "running":
-                raise RuntimeError("Ya hay un vídeo en proceso")
-            job = WizardJob(id="current", message="Escuchando tus vídeos...")
+                raise RuntimeError("A video is already being processed")
+            job = WizardJob(id="current", message=t("listening"))
             self._job = job
             self._prepared_project = None
             thread = threading.Thread(
@@ -69,13 +70,13 @@ class WizardRunner:
         """Use an already-prepared project as the wizard's Step 2 state."""
         with self._lock:
             if self._job and self._job.status == "running":
-                raise RuntimeError("Ya hay un vídeo en proceso")
+                raise RuntimeError("A video is already being processed")
             job = WizardJob(
                 id="current",
                 status="waiting_choice",
                 progress=95,
-                message="Listo para montar",
-                detail="Elige el tipo de edición",
+                message=t("ready_to_edit"),
+                detail=t("choose_edit_type"),
             )
             _attach_project(job, project)
             self._job = job
@@ -148,7 +149,7 @@ class WizardRunner:
         """Return the current wizard job snapshot."""
         with self._lock:
             if not self._job:
-                return {"status": "idle", "progress": 0, "message": "Sin trabajo"}
+                return {"status": "idle", "progress": 0, "message": "Idle"}
             return dict(self._job.__dict__)
 
     def _run(
@@ -174,15 +175,15 @@ class WizardRunner:
             }
             project.save()
 
-            self._run_stage(job, project, IngestStage(), 0, 22, "Escuchando tus vídeos...")
-            self._run_stage(job, project, SyncStage(), 22, 48, "Sincronizando con el audio...")
+            self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
+            self._run_stage(job, project, SyncStage(), 22, 48, t("syncing_audio"))
             self._finish(job=job, project=project, name=name, platform=platform, song_choice=song_choice, master_path=master_path, songs_path=songs_path, video_paths=video_paths)
         except Exception as exc:
             LOGGER.exception("Wizard job failed")
             job.status = "failed"
             job.error = _friendly_error(exc)
             job.technical_details = traceback.format_exc()
-            job.message = "No pude terminar el vídeo"
+            job.message = t("cannot_finish")
 
     def _prepare_project(self, *, job: WizardJob, name: str, master_path: str, songs_path: str | None, video_paths: list[str]) -> None:
         try:
@@ -190,20 +191,20 @@ class WizardRunner:
             _attach_project(job, project)
             register_selected_inputs(project, master_path=master_path, songs_path=songs_path, video_paths=video_paths, append_videos=False)
             _write_stage_log(project, "wizard", f"Audio master elegido: {Path(master_path).name}")
-            self._run_stage(job, project, IngestStage(), 0, 45, "Escuchando tus vídeos...")
-            self._run_stage(job, project, SyncStage(), 45, 95, "Sincronizando con el audio...")
+            self._run_stage(job, project, IngestStage(), 0, 45, t("listening"))
+            self._run_stage(job, project, SyncStage(), 45, 95, t("syncing_audio"))
             with self._lock:
                 self._prepared_project = project
             job.status = "waiting_choice"
             job.progress = 95
-            job.message = "Listo para montar"
-            job.detail = "Elige el tipo de edición"
+            job.message = t("ready_to_edit")
+            job.detail = t("choose_edit_type")
         except Exception as exc:
             LOGGER.exception("Wizard prepare failed")
             job.status = "failed"
             job.error = _friendly_error(exc)
             job.technical_details = traceback.format_exc()
-            job.message = "No pude preparar los archivos"
+            job.message = t("cannot_prepare")
 
     def _finish(
         self,
@@ -226,9 +227,9 @@ class WizardRunner:
                 "placeholder_logic": platform in {"instagram", "tiktok"},
             }
             project.save()
-            self._run_stage(job, project, CutStage(), 48, 58, "Cortando la canción...")
-            self._run_stage(job, project, EditStage(), 58, 70, "Montando la edición...")
-            outputs = self._run_stage(job, project, ExportStage(), 70, 100, "Exportando el vídeo...")
+            self._run_stage(job, project, CutStage(), 48, 58, t("cutting_song"))
+            self._run_stage(job, project, EditStage(), 58, 70, t("building_edit"))
+            outputs = self._run_stage(job, project, ExportStage(), 70, 100, t("exporting_video"))
             manifest_path = Path(outputs["export_manifest"])
             import json
 
@@ -240,7 +241,7 @@ class WizardRunner:
                 raise RuntimeError(f"Export did not produce an MP4: {export_path}")
             job.status = "done"
             job.progress = 100
-            job.message = "Listo"
+            job.message = t("done")
             job.result = {
                 "project_path": str(project.folder),
                 "filename": export_path.name,
@@ -255,14 +256,14 @@ class WizardRunner:
             }
             elapsed = time.monotonic() - started_at
             if project.data["inputs"].get("videos") and elapsed < 1.0:
-                _write_stage_log(project, "wizard", f"WARNING suspiciously fast finish: {elapsed:.2f}s")
+                _write_stage_log(project, "wizard", t("suspiciously_fast", elapsed=elapsed))
         except Exception as exc:
             LOGGER.exception("Wizard finish failed")
             _write_stage_log(project, "wizard", f"FAILED {traceback.format_exc()}")
             job.status = "failed"
             job.error = _friendly_error(exc)
             job.technical_details = traceback.format_exc()
-            job.message = "No pude terminar el vídeo"
+            job.message = t("cannot_finish")
 
     def _finish_after_prepare(
         self,
@@ -276,7 +277,7 @@ class WizardRunner:
         songs_path: str | None,
         video_paths: list[str],
     ) -> None:
-        job.message = "Esperando la sincronización..."
+        job.message = t("waiting_for_sync")
         if prepare_thread:
             prepare_thread.join()
         if job.status == "failed":
@@ -286,8 +287,8 @@ class WizardRunner:
             self._prepared_project = None
         if not project:
             job.status = "failed"
-            job.error = "No encontré el proyecto preparado"
-            job.message = "No pude terminar el vídeo"
+            job.error = t("prepared_project_missing")
+            job.message = t("cannot_finish")
             return
         self._finish(
             job=job,
@@ -336,7 +337,7 @@ def _create_wizard_project(name: str) -> Project:
         folder = base / f"{safe_name}{suffix}.zuckervid"
         if not folder.exists():
             return create_project(name, str(folder))
-    raise RuntimeError("No pude crear el proyecto")
+    raise RuntimeError("I couldn't create the project")
 
 
 def wizard_song_options(songs_path: str | None) -> list[dict[str, Any]]:
@@ -404,7 +405,7 @@ def _tail_lines(path: Path, limit: int) -> list[str]:
 def _friendly_error(exc: Exception) -> str:
     text = str(exc)
     if "ffmpeg" in text.lower() or "ffprobe" in text.lower():
-        return "Falta ffmpeg o hubo un problema leyendo los archivos de vídeo."
+        return t("ffmpeg_problem")
     if "songs.json" in text:
-        return "El songs.json no se pudo leer correctamente."
-    return text or "Error inesperado"
+        return t("songs_problem")
+    return text or t("unexpected_error")

@@ -19,7 +19,7 @@ def test_youtube_plan_excludes_missing_sources_and_cuts_on_bars():
             {"path": "/tmp/a.mp4", "filename": "a.mp4", "offset_sec": 0.0, "duration_sec": 8.0, "confidence": 9.0},
             {"path": "/tmp/b.mp4", "filename": "b.mp4", "offset_sec": 0.0, "duration_sec": 8.0, "confidence": 8.0},
         ],
-        "excluded_clips": [{"filename": "bad.mp4", "reason": "sincronización dudosa — excluido"}],
+        "excluded_clips": [{"filename": "bad.mp4", "reason": "questionable sync — excluded"}],
     }
     beats = {"bars_sec": [0.0, 2.0, 4.0, 6.0, 8.0], "sections_sec": [4.0]}
 

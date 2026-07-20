@@ -14,6 +14,7 @@ from scipy.signal import correlate
 
 from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.media_validation import record_is_usable_camera_video, record_media_path
+from core.messages import t
 from core.normalization import global_clip_audio_path, global_clip_envelope_path, global_thumbnail_path, source_cache_key
 from core.project import Project
 from core.stages.base import ProgressCallback, Stage, artifact_path, file_signature, stable_fingerprint, write_artifact_json
@@ -64,7 +65,7 @@ class SyncStage(Stage):
             clip_id = clip_id_for_record(record)
             filename = Path(record["path"]).name
             percent = int(((index - 1) / total) * 90) + 5
-            progress_callback(percent, f"Syncing clip {index}/{len(videos)}: {filename}")
+            progress_callback(percent, t("syncing_clip", index=index, total=len(videos), filename=filename))
             try:
                 result = sync_clip(project, record, master_env, threshold)
                 result = preserve_manual_override(old_map, clip_id, record, result)
@@ -72,7 +73,7 @@ class SyncStage(Stage):
                 result = error_clip_entry(record, str(exc))
             clips[clip_id] = result
 
-        progress_callback(96, "Writing sync map")
+        progress_callback(96, t("writing_sync_map"))
         write_artifact_json(
             sync_map_path(project),
             {
@@ -86,7 +87,7 @@ class SyncStage(Stage):
                 "clips": clips,
             },
         )
-        progress_callback(100, "Sync complete")
+        progress_callback(100, t("sync_complete"))
         return self.outputs(project)
 
 

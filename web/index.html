@@ -10,109 +10,110 @@
   <body>
     <button id="statusStrip" class="status-strip" hidden>
       <span class="status-dot"></span>
-      <span id="statusStripText">Trabajando...</span>
+      <span id="statusStripText">Working...</span>
     </button>
     <main class="wizard">
       <section class="step active" id="step1">
         <div class="step-header">
           <div class="brand-line">
             <img src="/logo_editor_blue.png" alt="" />
-            <span>Paso 1 de 3</span>
+            <span>Step 1 of 3</span>
           </div>
           <h1>Zucker Editor</h1>
         </div>
         <label class="name-field">
-          Nombre del vídeo
+          Video name
           <input id="videoName" />
         </label>
         <div id="dropZone" class="drop-zone">
           <div class="drop-copy">
-            <strong>Arrastra aquí tus archivos</strong>
-            <span>Vídeos, el audio master y (si lo tienes) el songs.json del Zucker Mixer</span>
+            <strong>Drop your files here</strong>
+            <span>Videos, the master audio, and songs.json from Zucker Mixer if you have it</span>
           </div>
           <div id="chips" class="chips"></div>
         </div>
-        <p id="softRule" class="soft-rule">Falta el audio master</p>
-        <button id="confirmFiles" class="primary icon-button" data-icon="arrow" disabled>Confirmar y seguir</button>
+        <p id="softRule" class="soft-rule">Missing master audio</p>
+        <button id="confirmFiles" class="primary icon-button" data-icon="arrow" disabled>Confirm and continue</button>
       </section>
 
       <section class="step" id="step2">
         <div class="step-header">
-          <span>Paso 2 de 3</span>
-          <h1>Elige el tipo de edición</h1>
+          <span>Step 2 of 3</span>
+          <h1>Choose edit type</h1>
         </div>
         <div class="platforms">
           <button class="platform-card" data-platform="youtube">
             <span class="platform-glyph" data-glyph="youtube"></span>
             <strong>YouTube</strong>
-            <span>Canción completa</span>
+            <span>Full song</span>
           </button>
           <button class="platform-card" data-platform="instagram">
             <span class="platform-glyph" data-glyph="instagram"></span>
             <strong>Instagram</strong>
-            <span>Corto vertical</span>
+            <span>Vertical short</span>
           </button>
           <button class="platform-card" data-platform="tiktok">
             <span class="platform-glyph" data-glyph="tiktok"></span>
             <strong>TikTok</strong>
-            <span>Muy rápido</span>
+            <span>Fast cut</span>
           </button>
         </div>
         <div id="songPicker" class="song-picker" hidden>
-          <h2>¿Qué canción?</h2>
+          <h2>Which song?</h2>
           <div id="songOptions"></div>
         </div>
-        <button id="startWizard" class="primary icon-button" data-icon="wand" disabled>¡Hazlo!</button>
+        <button id="startWizard" class="primary icon-button" data-icon="wand" disabled>Make it</button>
       </section>
 
       <section class="step" id="step3">
         <div class="step-header">
-          <span>Paso 3 de 3</span>
-          <h1 id="progressTitle">Creando tu vídeo</h1>
+          <span>Step 3 of 3</span>
+          <h1 id="progressTitle">Creating your video</h1>
         </div>
         <div id="progressBox" class="progress-box">
           <div class="progress-track"><div id="progressBar"></div></div>
           <div class="progress-main">
-            <strong id="progressMessage">Trabajando...</strong>
+            <strong id="progressMessage">Working...</strong>
             <span id="progressPercent">0%</span>
           </div>
           <span id="progressDetail"></span>
           <div class="progress-meta">
-            <span id="elapsedTime">0 min</span>
-            <span id="etaTime">ETA calculando...</span>
+            <span id="elapsedTime">Elapsed: 0 min</span>
+            <span id="etaTime">ETA: calculating...</span>
           </div>
           <div class="stage-checks">
-            <span data-stage="ingest">Preparar</span>
-            <span data-stage="sync">Sincronizar</span>
-            <span data-stage="cut">Cortar</span>
-            <span data-stage="export">Exportar</span>
+            <span data-stage="ingest">Prepare</span>
+            <span data-stage="sync">Sync</span>
+            <span data-stage="cut">Cut</span>
+            <span data-stage="export">Export</span>
           </div>
         </div>
         <div id="errorBox" class="error-box" hidden>
           <p id="errorText"></p>
           <details>
-            <summary>Ver detalles técnicos</summary>
+            <summary>Show technical details</summary>
             <pre id="technicalDetails"></pre>
           </details>
           <div class="result-actions">
-            <button id="openLogsError" class="icon-button desktop-only" data-icon="doc">Abrir logs</button>
-            <button id="copyReport" class="icon-button" data-icon="clipboard">Copiar informe</button>
+            <button id="openLogsError" class="icon-button desktop-only" data-icon="doc">Open logs</button>
+            <button id="copyReport" class="icon-button" data-icon="clipboard">Copy report</button>
           </div>
-          <button id="retryWizard" class="icon-button" data-icon="retry">Reintentar</button>
+          <button id="retryWizard" class="icon-button" data-icon="retry">Retry</button>
         </div>
         <div id="resultBox" class="result-box" hidden>
           <video id="resultVideo" controls></video>
           <strong id="resultFilename"></strong>
           <p id="resultSummary" class="result-summary"></p>
           <div class="result-actions">
-            <button id="openLogsSuccess" class="icon-button desktop-only" data-icon="doc">Abrir logs</button>
-            <button id="showFinder" class="icon-button desktop-only" data-icon="folder">Mostrar en Finder</button>
-            <button id="again" class="icon-button" data-icon="play">Hacer otro</button>
+            <button id="openLogsSuccess" class="icon-button desktop-only" data-icon="doc">Open logs</button>
+            <button id="showFinder" class="icon-button desktop-only" data-icon="folder">Show in Finder</button>
+            <button id="again" class="icon-button" data-icon="play">Make another</button>
           </div>
         </div>
       </section>
     </main>
     <div id="toast" class="toast" hidden></div>
+    <script src="/strings.js"></script>
     <script src="/native_bridge.js"></script>
     <script src="/app.js"></script>
   </body>

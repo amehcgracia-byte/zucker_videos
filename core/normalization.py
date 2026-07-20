@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core.ffmpeg import FFmpegError, tool_status
+from core.messages import t
 from core.project import Project
 from core.stages.base import stable_fingerprint
 
@@ -38,8 +39,7 @@ def ensure_normalized_space(project: Project, records: list[dict[str, Any]]) -> 
     free = shutil.disk_usage(root).free
     if free < estimate * 2:
         raise RuntimeError(
-            "No hay espacio suficiente para preparar los vídeos. "
-            "Libera espacio en la caché global o mueve los vídeos a un disco con más espacio."
+            t("not_enough_space")
         )
 
 
@@ -52,7 +52,7 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
     record["cache_key"] = key
     existing = record.get("normalized") or {}
     if _migrate_legacy_normalized(project, record, destination, signature):
-        progress(100, f"Ya preparado: {source.name}")
+        progress(100, t("already_prepared", filename=source.name))
         return record["normalized"]
     if not needs_normalization(record, destination):
         existing.update(
@@ -64,7 +64,7 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
             }
         )
         record["normalized"] = existing
-        progress(100, f"Ya preparado: {source.name}")
+        progress(100, t("already_prepared", filename=source.name))
         return existing
 
     destination.parent.mkdir(parents=True, exist_ok=True)

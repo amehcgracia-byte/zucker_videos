@@ -1,4 +1,5 @@
 const detected = { master: [], songs: [], videos: [], ignored: [] };
+const S = window.UI_STRINGS || {};
 let selectedPlatform = null;
 let selectedSong = null;
 let selectedMasterPath = null;
@@ -50,14 +51,14 @@ async function api(path, options = {}) {
     ...options,
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error?.message || "Error");
+  if (!response.ok) throw new Error(data.error?.message || S.error || "Error");
   return data;
 }
 
 async function apiForm(path, formData) {
   const response = await fetch(`/api/v1${path}`, { method: "POST", body: formData });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error?.message || "Error");
+  if (!response.ok) throw new Error(data.error?.message || S.error || "Error");
   return data;
 }
 
@@ -113,7 +114,7 @@ function recordToDetectedItem(record, kind, source = "project") {
     ...record,
     kind,
     filename: filename(record.path),
-    note: kind === "master" ? "audio master registrado" : kind === "songs" ? "songs.json registrado" : "vídeo preparado",
+    note: kind === "master" ? S.registeredMaster : kind === "songs" ? S.registeredSongs : S.preparedVideo,
     source,
   };
 }
@@ -128,7 +129,7 @@ async function resumeInputsFromProject() {
   if (songs) detected.songs.push(songs);
   for (const record of inputs.videos || []) {
     if (record.status === "not_a_video") {
-      detected.ignored.push({ ...recordToDetectedItem(record, "ignored"), note: record.not_a_video_reason || "ignorado" });
+      detected.ignored.push({ ...recordToDetectedItem(record, "ignored"), note: record.not_a_video_reason || S.ignored });
     } else {
       detected.videos.push(recordToDetectedItem(record, "videos"));
     }
@@ -170,8 +171,8 @@ function renderChips() {
         <span class="chip ${item.kind === "ignored" ? "muted" : ""}" title="${escapeHtml(item.path)}">
           ${iconFor(item)} ${escapeHtml(item.filename || filename(item.path))}
           ${item.projection === "equirect" || item.probe?.projection === "equirect" ? "<small>360°</small>" : ""}
-          ${item.source === "inbox" ? "<small>del Inbox</small>" : ""}
-          ${item.kind === "ignored" ? `<small>${escapeHtml(item.note || "ignorado")}</small>` : ""}
+          ${item.source === "inbox" ? "<small>from Inbox</small>" : ""}
+          ${item.kind === "ignored" ? `<small>${escapeHtml(item.note || S.ignored)}</small>` : ""}
         </span>`
     )
     .join("");
@@ -179,7 +180,7 @@ function renderChips() {
     const selected = selectedMasterPath || detected.master[0].path;
     root.insertAdjacentHTML(
       "afterbegin",
-      `<label class="master-select-chip">🎵 Audio master
+      `<label class="master-select-chip">🎵 ${escapeHtml(S.masterAudio)}
         <select id="masterSelect">
           ${detected.master
             .map((item) => {
@@ -199,10 +200,10 @@ function renderChips() {
   const note = document.querySelector("#softRule");
   const button = document.querySelector("#confirmFiles");
   button.disabled = !(hasVideo && hasMaster);
-  if (!hasVideo) note.textContent = "Falta al menos un vídeo";
-  else if (!hasMaster) note.textContent = "Falta el audio master";
-  else if (!hasSongs) note.textContent = "Sin songs.json haré un solo vídeo continuo";
-  else note.textContent = "Todo listo";
+  if (!hasVideo) note.textContent = S.missingVideo;
+  else if (!hasMaster) note.textContent = S.missingMaster;
+  else if (!hasSongs) note.textContent = S.noSongsContinuous;
+  else note.textContent = S.ready;
 }
 
 function selectedInputs() {
@@ -282,7 +283,7 @@ async function handleDrop(event) {
   }
   const files = await browserDropFiles(event.dataTransfer);
   if (!files.length) {
-    showToast("No encontré archivos compatibles", true);
+    showToast(S.noCompatibleFiles, true);
     return;
   }
   const form = new FormData();
@@ -323,7 +324,7 @@ function renderSongOptions(songs) {
     return;
   }
   picker.hidden = false;
-  const allOption = selectedPlatform === "youtube" ? `<button class="song-option selected" data-song="all">Todas</button>` : "";
+  const allOption = selectedPlatform === "youtube" ? `<button class="song-option selected" data-song="all">${escapeHtml(S.allSongs)}</button>` : "";
   selectedSong = selectedPlatform === "youtube" ? "all" : 0;
   root.innerHTML =
     allOption +
@@ -340,10 +341,10 @@ async function waitForPreparedProject() {
     const status = await api("/wizard/status");
     if (status.status === "waiting_choice") return;
     if (status.status === "done") return;
-    if (status.status === "failed") throw new Error(status.error || "No pude preparar los archivos");
+    if (status.status === "failed") throw new Error(status.error || S.prepareFailed);
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  throw new Error("La preparación tardó demasiado");
+  throw new Error(S.prepareTimeout);
 }
 
 async function startWizard() {
@@ -370,7 +371,7 @@ function ensureStatusPolling() {
     pollTimer = setInterval(() => {
       pollStatus().catch((error) => {
         logFrontendError(`pollStatus failed: ${error.message}`, error.stack || "");
-        showToast(`No pude actualizar el progreso: ${error.message}`, true);
+        showToast(`${S.statusUpdateFailed}: ${error.message}`, true);
       });
     }, 1000);
   }
@@ -388,15 +389,15 @@ function renderWizardStatus(status) {
   renderStatusStrip(status, progress);
   document.querySelector("#progressBar").style.width = `${progress}%`;
   document.querySelector("#progressPercent").textContent = `${Math.round(progress)}%`;
-  document.querySelector("#progressMessage").textContent = status.message || "Trabajando...";
-  document.querySelector("#progressDetail").textContent = status.detail || currentSubtask(status) || "Calculando el siguiente paso...";
-  document.querySelector("#elapsedTime").textContent = `Tiempo: ${formatElapsed(elapsedSeconds())}`;
-  document.querySelector("#etaTime").textContent = `ETA: ${formatEta(etaSeconds(progress))}`;
+  document.querySelector("#progressMessage").textContent = status.message || S.working;
+  document.querySelector("#progressDetail").textContent = status.detail || currentSubtask(status) || S.nextStep;
+  document.querySelector("#elapsedTime").textContent = `${S.elapsed}: ${formatElapsed(elapsedSeconds())}`;
+  document.querySelector("#etaTime").textContent = `${S.eta}: ${formatEta(etaSeconds(progress))}`;
   updateStageChecks(progress, status);
   if (status.status === "failed") {
     clearInterval(pollTimer);
     pollTimer = null;
-    document.querySelector("#errorText").textContent = status.error || "No pude terminar";
+    document.querySelector("#errorText").textContent = status.error || S.failedTitle;
     document.querySelector("#technicalDetails").textContent = status.technical_details || "";
     document.querySelector("#errorBox").hidden = false;
   }
@@ -404,7 +405,7 @@ function renderWizardStatus(status) {
     clearInterval(pollTimer);
     pollTimer = null;
     latestResult = status.result;
-    document.querySelector("#progressTitle").textContent = "Tu vídeo está listo";
+    document.querySelector("#progressTitle").textContent = S.doneTitle;
     document.querySelector("#resultFilename").textContent = latestResult.filename;
     document.querySelector("#resultSummary").textContent = resultSummary(latestResult);
     document.querySelector("#resultVideo").src = `${latestResult.media_url}?t=${Date.now()}`;
@@ -423,7 +424,7 @@ function renderStatusStrip(status, progress) {
     return;
   }
   strip.hidden = false;
-  const detail = currentSubtask(status) || status.message || "Trabajando";
+  const detail = currentSubtask(status) || status.message || S.working;
   document.querySelector("#statusStripText").textContent = `${detail} · ${Math.round(progress)}% · ${formatEta(etaSeconds(progress))}`;
 }
 
@@ -466,8 +467,8 @@ function formatElapsed(seconds) {
 }
 
 function formatEta(seconds) {
-  if (seconds == null || !Number.isFinite(seconds)) return "calculando...";
-  return `~${Math.max(1, Math.round(seconds / 60))} min restantes`;
+  if (seconds == null || !Number.isFinite(seconds)) return S.calculating;
+  return `~${Math.max(1, Math.round(seconds / 60))} min remaining`;
 }
 
 function updateStageChecks(progress, status) {
@@ -486,14 +487,14 @@ function resultSummary(result) {
   const cameraUsage = result?.camera_usage || {};
   const cameraCount = Object.keys(cameraUsage).length;
   const parts = [];
-  if (cutCount > 0 || cameraCount > 0) parts.push(`${cutCount} cortes · ${cameraCount} cámaras`);
+  if (cutCount > 0 || cameraCount > 0) parts.push(`${cutCount} cuts · ${cameraCount} cameras`);
   const warnings = result?.warnings || [];
   if (warnings.length) parts.push(warnings.join(" · "));
   const excluded = result?.excluded_clips || [];
   if (excluded.length) {
     parts.push(
       excluded
-        .map((item) => `${item.filename || "clip"}: ${item.reason || "excluido"}`)
+        .map((item) => `${item.filename || "clip"}: ${item.reason || "excluded"}`)
         .join(" · ")
     );
   }
@@ -506,14 +507,14 @@ async function revealNative(path, label) {
 
 async function openLogs() {
   const path = latestResult?.logs_path || latestStatus?.logs_path;
-  await revealNative(path, "Abrir logs");
+  await revealNative(path, S.logs);
 }
 
 async function copyReport() {
   const response = await fetch("/api/v1/wizard/report");
   const text = await response.text();
   await navigator.clipboard.writeText(text);
-  showToast("Informe copiado");
+  showToast(S.reportCopied);
 }
 
 function escapeHtml(value) {
@@ -557,7 +558,7 @@ document.addEventListener("click", (event) => {
   if (target.id === "again") {
     document.querySelector("#errorBox").hidden = true;
     document.querySelector("#resultBox").hidden = true;
-    document.querySelector("#progressTitle").textContent = "Creando tu vídeo";
+    document.querySelector("#progressTitle").textContent = "Creating your video";
     setStep(1);
   }
   if (target.id === "openLogsSuccess" || target.id === "openLogsError") {
@@ -567,7 +568,7 @@ document.addEventListener("click", (event) => {
     copyReport().catch((error) => showToast(error.message, true));
   }
   if (target.id === "showFinder") {
-    revealNative(latestResult?.path, "Mostrar en Finder").catch((error) => showToast(error.message, true));
+    revealNative(latestResult?.path, S.reveal).catch((error) => showToast(error.message, true));
   }
   if (target.id === "statusStrip") setStep(3);
 });

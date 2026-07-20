@@ -6,10 +6,13 @@ import re
 import shutil
 import subprocess
 import sys
+import json
 from pathlib import Path
 from typing import Any
 
 from core.ffmpeg import FFmpegError, tool_status
+from core.messages import t
+from core.normalization import global_cache_root, source_cache_key
 from core.project import Project
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.cut import load_coverage
@@ -43,28 +46,28 @@ class ExportStage(Stage):
 
     def run(self, project: Project, progress_callback: ProgressCallback) -> dict[str, Any]:
         """Render the wizard export with streamed ffmpeg progress."""
-        progress_callback(5, "Preparando exportación")
+        progress_callback(5, t("preparing_export"))
         try:
             plan = load_edit_plan(project)
         except FileNotFoundError:
             plan = load_coverage(project)
         segments = plan.get("segments") or []
         if not segments:
-            raise ValueError("No hay segmentos para exportar")
+            raise ValueError(t("missing_segments"))
         master = project.data["inputs"].get("master")
         if not master:
-            raise ValueError("Falta el audio master")
+            raise ValueError(t("missing_master_for_export"))
         platform = plan.get("platform") or project.data["settings"].get("wizard", {}).get("platform") or "youtube"
         output_path = _output_path(project, platform)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         duration = _plan_duration(segments)
         bitrate_info = _bitrate_for_duration(duration)
+        warnings = list(plan.get("warnings") or [])
         if bitrate_info["warning"]:
             progress_callback(6, bitrate_info["warning"])
-        _render_plan(segments, master["path"], output_path, platform, bitrate_info["video_bitrate"], progress_callback)
-        progress_callback(95, "Guardando resultado")
+        _render_plan(project, segments, master["path"], output_path, platform, bitrate_info["video_bitrate"], warnings, progress_callback)
+        progress_callback(95, t("saving_result"))
         path = artifact_path(project, "export_manifest.json")
-        warnings = list(plan.get("warnings") or [])
         if bitrate_info["warning"]:
             warnings.append(bitrate_info["warning"])
         write_artifact_json(
@@ -89,7 +92,7 @@ class ExportStage(Stage):
                 ],
             },
         )
-        progress_callback(100, "Exportación lista")
+        progress_callback(100, t("export_ready"))
         return self.outputs(project)
 
 
@@ -99,11 +102,13 @@ def _output_path(project: Project, platform: str) -> Path:
 
 
 def _render_plan(
+    project: Project,
     segments: list[dict[str, Any]],
     master_path: str,
     output_path: Path,
     platform: str,
     video_bitrate: int,
+    warnings: list[str],
     progress_callback: ProgressCallback,
 ) -> None:
     ffmpeg = _ffmpeg_path()
@@ -114,7 +119,7 @@ def _render_plan(
     segment_paths: list[Path] = []
     total_duration = _plan_duration(segments)
     rendered_duration = 0.0
-    color_profiles = _color_profiles_for_segments(segments)
+    color_profiles = _color_profiles_for_segments(project, segments, warnings)
     overlay_config = _overlay_config(platform, segments[0])
     try:
         for index, segment in enumerate(segments, start=1):
@@ -125,7 +130,7 @@ def _render_plan(
             def segment_progress(local_percent: int, detail: str, *, index: int = index) -> None:
                 segment_share = 70 * segment_duration / max(total_duration, 0.1)
                 percent = base_percent + int(segment_share * local_percent / 100)
-                progress_callback(min(84, percent), f"Renderizando segmento {index}/{len(segments)}: {detail}")
+                progress_callback(min(84, percent), f"Rendering segment {index}/{len(segments)}: {detail}")
 
             color_profile = color_profiles.get(str(segment.get("clip_path")), {})
             _render_segment(segment, master_path, segment_path, platform, video_bitrate, overlay_config, color_profile, segment_progress)
@@ -154,7 +159,7 @@ def _render_plan(
                 str(output_path),
             ],
             total_duration,
-            "Uniendo segmentos",
+            t("joining_segments"),
             lambda percent, detail: progress_callback(84 + int(percent * 11 / 100), detail),
         )
     finally:
@@ -226,7 +231,7 @@ def _render_segment(
         if output_path.exists():
             output_path.unlink()
         if progress_callback:
-            progress_callback(0, "h264_videotoolbox no disponible; usando libx264")
+            progress_callback(0, t("hardware_fallback"))
         try:
             _run_ffmpeg_progress(command_base + software + [str(output_path)], duration, Path(str(segment["clip_path"])).name, progress_callback)
         except FFmpegError as fallback_exc:
@@ -368,12 +373,16 @@ def _concat_file_line(path: Path) -> str:
     return "file '{}'\n".format(path.as_posix().replace("'", "'\\''"))
 
 
-def _color_profiles_for_segments(segments: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def _color_profiles_for_segments(project: Project, segments: list[dict[str, Any]], warnings: list[str] | None = None) -> dict[str, dict[str, Any]]:
     raw: dict[str, dict[str, float]] = {}
+    warnings = warnings if warnings is not None else []
     for segment in segments:
         clip_path = str(segment.get("clip_path"))
         if clip_path and clip_path not in raw:
-            raw[clip_path] = measure_clip_color(clip_path)
+            profile, warning = cached_or_measure_clip_color(project, clip_path)
+            if warning:
+                warnings.append(warning)
+            raw[clip_path] = profile
     valid = [profile for profile in raw.values() if profile]
     if not valid:
         return {path: {} for path in raw}
@@ -388,30 +397,109 @@ def _color_profiles_for_segments(segments: list[dict[str, Any]]) -> dict[str, di
     return corrected
 
 
-def measure_clip_color(path: str) -> dict[str, float]:
-    """Measure sampled luma/saturation using ffmpeg signalstats."""
-    command = [
-        _ffmpeg_path(),
-        "-hide_banner",
-        "-nostdin",
-        "-i",
-        path,
-        "-vf",
-        "fps=1/20,signalstats,metadata=print",
-        "-an",
-        "-f",
-        "null",
-        "-",
-    ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=60)
-    if result.returncode != 0:
-        return {}
-    text = f"{result.stdout}\n{result.stderr}"
-    y_values = [float(value) for value in re.findall(r"lavfi.signalstats.YAVG=([0-9.]+)", text)]
-    sat_values = [float(value) for value in re.findall(r"lavfi.signalstats.SATAVG=([0-9.]+)", text)]
+def cached_or_measure_clip_color(project: Project, path: str) -> tuple[dict[str, float], str | None]:
+    """Return cached color profile or measure bounded samples."""
+    key = _color_cache_key(project, path)
+    cache_path = global_cache_root() / "color" / f"{key}.json"
+    if cache_path.exists():
+        try:
+            with cache_path.open("r", encoding="utf-8") as fh:
+                cached = json.load(fh)
+            if isinstance(cached, dict) and "luma" in cached and "saturation" in cached:
+                return {"luma": float(cached["luma"]), "saturation": float(cached["saturation"])}, None
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+    profile, warning = measure_clip_color(path)
+    if profile:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with cache_path.open("w", encoding="utf-8") as fh:
+            json.dump(profile, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+    return profile, warning
+
+
+def _color_cache_key(project: Project, path: str) -> str:
+    for record in project.data.get("inputs", {}).get("videos", []):
+        normalized = record.get("normalized") or {}
+        if path in {record.get("path"), normalized.get("path")}:
+            return str(record.get("cache_key") or normalized.get("cache_key") or source_cache_key(record))
+    return stable_fingerprint({"path": str(Path(path).expanduser().resolve())})[:24]
+
+
+def measure_clip_color(path: str) -> tuple[dict[str, float], str | None]:
+    """Measure sampled luma/saturation using short ffmpeg signalstats windows."""
+    try:
+        duration = _media_duration(path)
+    except Exception as exc:
+        return {}, t("color_skipped", filename=Path(path).name, reason=str(exc))
+    y_values: list[float] = []
+    sat_values: list[float] = []
+    for command in color_sample_commands(path, duration):
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=30)
+        except subprocess.TimeoutExpired:
+            return {}, t("color_skipped", filename=Path(path).name, reason="sample timed out")
+        if result.returncode != 0:
+            return {}, t("color_skipped", filename=Path(path).name, reason=(result.stderr or "sample failed").strip()[:180])
+        text = f"{result.stdout}\n{result.stderr}"
+        y_values.extend(float(value) for value in re.findall(r"lavfi.signalstats.YAVG=([0-9.]+)", text))
+        sat_values.extend(float(value) for value in re.findall(r"lavfi.signalstats.SATAVG=([0-9.]+)", text))
     if not y_values or not sat_values:
-        return {}
-    return {"luma": sum(y_values) / len(y_values), "saturation": sum(sat_values) / len(sat_values)}
+        return {}, t("color_skipped", filename=Path(path).name, reason="no signalstats samples")
+    return {"luma": sum(y_values) / len(y_values), "saturation": sum(sat_values) / len(sat_values)}, None
+
+
+def color_sample_commands(path: str, duration: float) -> list[list[str]]:
+    """Build bounded color-sampling ffmpeg commands."""
+    window = min(2.0, max(0.25, duration / 5.0))
+    commands: list[list[str]] = []
+    for fraction in (0.10, 0.30, 0.50, 0.70, 0.90):
+        start = max(0.0, min(duration - window, duration * fraction))
+        commands.append(
+            [
+                _ffmpeg_path(),
+                "-hide_banner",
+                "-nostdin",
+                "-ss",
+                f"{start:.3f}",
+                "-t",
+                f"{window:.3f}",
+                "-i",
+                path,
+                "-vf",
+                "signalstats,metadata=print",
+                "-an",
+                "-f",
+                "null",
+                "-",
+            ]
+        )
+    return commands
+
+
+def _media_duration(path: str) -> float:
+    status = tool_status()
+    ffprobe = status.get("ffprobe_path")
+    if not ffprobe:
+        raise FFmpegError("ffprobe is missing. Install it with: brew install ffmpeg")
+    result = subprocess.run(
+        [
+            str(ffprobe),
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise FFmpegError(result.stderr.strip() or "ffprobe failed")
+    return max(0.1, float((result.stdout or "0").strip() or 0.0))
 
 
 def color_correction_for_profile(profile: dict[str, float], target_luma: float, target_sat: float) -> dict[str, float]:
@@ -457,7 +545,7 @@ def _bitrate_for_duration(duration: float) -> dict[str, Any]:
     target = int(max(300_000, budget_bits / seconds - AUDIO_BITRATE))
     warning = None
     if target < MIN_ACCEPTABLE_VIDEO_BITRATE:
-        warning = "El vídeo es largo: lo exporté con bitrate limitado para quedar por debajo de 1.9 GB."
+        warning = t("bitrate_cap_warning")
     return {"video_bitrate": min(target, MAX_VIDEO_BITRATE), "warning": warning}
 
 

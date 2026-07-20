@@ -22,12 +22,12 @@ VIDEO_EXTENSIONS = {
     ".mxf",
 }
 SIDE_CAR_REASONS = {
-    ".insv": "Vídeo 360 sin procesar — expórtalo primero con Insta360 Studio (Archivo → Exportar) y trae aquí el MP4",
-    ".insp": "Vídeo 360 sin procesar — expórtalo primero con Insta360 Studio (Archivo → Exportar) y trae aquí el MP4",
-    ".lrv": "archivo auxiliar de la cámara (versión en baja resolución)",
-    ".thm": "archivo auxiliar de la cámara",
-    ".xml": "archivo auxiliar de la cámara",
-    ".srt": "subtítulos, no es un vídeo de cámara",
+    ".insv": "Raw 360 video — export it first with Insta360 Studio (File → Export) and bring the MP4 here",
+    ".insp": "Raw 360 video — export it first with Insta360 Studio (File → Export) and bring the MP4 here",
+    ".lrv": "camera sidecar file (low-resolution proxy)",
+    ".thm": "camera sidecar file",
+    ".xml": "camera sidecar file",
+    ".srt": "subtitles, not a camera video",
 }
 SANE_VIDEO_CODECS = {
     "h264",
@@ -59,7 +59,7 @@ def static_rejection_reason(path: Path) -> str | None:
     name = path.name
     suffix = path.suffix.lower()
     if name == ".DS_Store" or name.startswith("."):
-        return "archivo oculto o del sistema"
+        return "hidden or system file"
     if suffix in SIDE_CAR_REASONS:
         return SIDE_CAR_REASONS[suffix]
     return None
@@ -90,13 +90,13 @@ def validate_camera_video_metadata(metadata: dict[str, Any]) -> VideoValidation:
         "valid_video": False,
     }
     if not video_stream or codec not in SANE_VIDEO_CODECS:
-        return VideoValidation(False, "no es un vídeo de cámara", summary)
+        return VideoValidation(False, "not a camera video", summary)
     if duration is None or duration <= MIN_VIDEO_DURATION_SEC:
-        return VideoValidation(False, "vídeo demasiado corto", summary)
+        return VideoValidation(False, "video too short", summary)
     if width is None or height is None or width < MIN_VIDEO_WIDTH or height < MIN_VIDEO_HEIGHT:
-        return VideoValidation(False, "resolución demasiado baja para ser un clip de cámara", summary)
+        return VideoValidation(False, "resolution too low for a camera clip", summary)
     summary["valid_video"] = True
-    return VideoValidation(True, "video de cámara", summary)
+    return VideoValidation(True, "camera video", summary)
 
 
 def record_is_usable_camera_video(record: dict[str, Any]) -> bool:

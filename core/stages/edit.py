@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from core.messages import t
 from core.project import Project
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.cut import load_coverage
@@ -40,7 +41,7 @@ class EditStage(Stage):
 
     def run(self, project: Project, progress_callback: ProgressCallback) -> dict[str, Any]:
         """Write the edit plan consumed by export."""
-        progress_callback(10, "Analizando ritmo")
+        progress_callback(10, t("analyzing_rhythm"))
         coverage = load_coverage(project)
         platform = str(coverage.get("platform") or "youtube")
         if platform != "youtube":
@@ -48,11 +49,11 @@ class EditStage(Stage):
             beats = {"stage": self.name, "platform": platform, "beats_sec": [], "bars_sec": [], "sections_sec": [], "tempo": None, "placeholder_short_form": True}
         else:
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
-            progress_callback(55, "Eligiendo cámaras")
+            progress_callback(55, t("choosing_cameras"))
             plan = _youtube_multicam_plan(coverage, beats)
         write_artifact_json(artifact_path(project, "beats.json"), beats)
         write_artifact_json(artifact_path(project, "edit_plan.json"), plan)
-        progress_callback(100, "Plan de edición listo")
+        progress_callback(100, t("edit_plan_ready"))
         return self.outputs(project)
 
 
@@ -68,11 +69,11 @@ def _load_or_analyze_beats(project: Project, coverage: dict[str, Any], progress_
         with path.open("r", encoding="utf-8") as fh:
             cached = json.load(fh)
         if cached.get("fingerprint") == _beat_fingerprint(project, coverage):
-            progress_callback(45, "Ritmo en caché")
+            progress_callback(45, t("rhythm_cached"))
             return cached
     master = project.data.get("inputs", {}).get("master")
     if not master:
-        raise ValueError("Falta el audio master")
+        raise ValueError(t("missing_master_for_edit"))
     window = coverage.get("window") or {}
     start = float(window.get("start_sec") or 0.0)
     duration = max(1.0, float(window.get("duration_sec") or 1.0))
@@ -92,7 +93,7 @@ def _load_or_analyze_beats(project: Project, coverage: dict[str, Any], progress_
     if len(beat_times) < 2:
         beat_times = _fallback_beats(start, duration)
     bars = estimate_bar_starts(beat_times, start, duration)
-    progress_callback(45, "Ritmo listo")
+    progress_callback(45, t("rhythm_ready"))
     return {
         "stage": "edit",
         "platform": "youtube",
@@ -156,20 +157,20 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any]) -> d
             continue
         source = _choose_source(available, previous_source)
         previous_source = _source_id(source)
-        segments.append(_segment_from_source(source, segment_start, segment_end, window.get("title") or "Vídeo completo"))
+        segments.append(_segment_from_source(source, segment_start, segment_end, window.get("title") or t("full_video")))
         bar_index = next_index
         segment_index += 1
 
     warnings = list(coverage.get("warnings") or [])
     if gaps:
-        warnings.extend([f"Sin vídeo entre {_fmt_time(gap['start_sec'])}–{_fmt_time(gap['end_sec'])}" for gap in gaps])
+        warnings.extend([t("no_video_between", start=_fmt_time(gap["start_sec"]), end=_fmt_time(gap["end_sec"])) for gap in gaps])
     usage: dict[str, int] = {}
     for segment in segments:
         usage[Path(str(segment.get("clip_path"))).name] = usage.get(Path(str(segment.get("clip_path"))).name, 0) + 1
     return {
         "stage": "edit",
         "platform": "youtube",
-        "title": window.get("title") or "Vídeo completo",
+        "title": window.get("title") or t("full_video"),
         "real_edit_logic": "youtube beat-aligned multicam v1",
         "warnings": warnings,
         "excluded_clips": coverage.get("excluded_clips") or [],
@@ -273,7 +274,7 @@ def _short_form_segments_from_best_coverage(coverage: dict[str, Any]) -> list[di
     offset = float(best.get("offset_sec") or best.get("clip_offset_sec") or 0.0)
     return [
         {
-            "title": (coverage.get("window") or {}).get("title") or best.get("title") or "Vídeo",
+            "title": (coverage.get("window") or {}).get("title") or best.get("title") or t("video_title"),
             "clip_path": best["path"] if "path" in best else best["clip_path"],
             "clip_start_sec": clip_start,
             "master_start_sec": offset + clip_start,

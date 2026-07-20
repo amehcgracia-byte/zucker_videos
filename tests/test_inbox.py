@@ -42,8 +42,8 @@ def test_inbox_classification_extensions_and_invalid_songs(tmp_path, monkeypatch
     assert [item["filename"] for item in result["songs"]] == ["songs.json"]
     ignored_notes = {item["filename"]: item["note"] for item in result["ignored"]}
     assert ignored_notes["notes.json"] == "JSON ignored: missing songs array"
-    assert ignored_notes["readme.txt"] == "no es un vídeo de cámara"
-    assert ignored_notes["clip.lrv"] == "archivo auxiliar de la cámara (versión en baja resolución)"
+    assert ignored_notes["readme.txt"] == "not a camera video"
+    assert ignored_notes["clip.lrv"] == "camera sidecar file (low-resolution proxy)"
 
 
 def test_classifier_rejects_non_camera_video_files(tmp_path, monkeypatch):
@@ -70,9 +70,9 @@ def test_classifier_rejects_non_camera_video_files(tmp_path, monkeypatch):
 
     assert [item["filename"] for item in result["videos"]] == ["camera.mp4"]
     ignored = {item["filename"]: item["note"] for item in result["ignored"]}
-    assert ignored["mix_report.txt"] == "no es un vídeo de cámara"
-    assert ignored["clip.lrv"] == "archivo auxiliar de la cámara (versión en baja resolución)"
-    assert ignored["audio-only.mov"] == "no es un vídeo de cámara"
+    assert ignored["mix_report.txt"] == "not a camera video"
+    assert ignored["clip.lrv"] == "camera sidecar file (low-resolution proxy)"
+    assert ignored["audio-only.mov"] == "not a camera video"
 
 
 def test_classifier_accepts_hevc_mts_and_marks_equirect(tmp_path, monkeypatch):
@@ -204,7 +204,7 @@ def test_project_open_reconcile_demotes_old_invalid_video_record(tmp_path, monke
 
     record = project.data["inputs"]["videos"][0]
     assert record["status"] == "not_a_video"
-    assert record["not_a_video_reason"] == "no es un vídeo de cámara"
+    assert record["not_a_video_reason"] == "not a camera video"
     assert project.data["stages"]["ingest"]["status"] == "stale"
 
 

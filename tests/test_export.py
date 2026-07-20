@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -15,7 +16,9 @@ from core.stages.export import (
     _bitrate_for_duration,
     _run_ffmpeg_progress,
     _segment_filtergraph,
+    color_sample_commands,
     color_correction_for_profile,
+    measure_clip_color,
 )
 
 
@@ -60,22 +63,51 @@ def test_segment_filtergraph_adds_watermark_and_texts():
     graph = _segment_filtergraph(
         "youtube",
         12.0,
-        {"title": "Mi canción", "band_name": "La Banda", "handle": "@banda"},
+        {"title": "My song", "band_name": "The Band", "handle": "@banda"},
         {"brightness_adjust": 0.02, "saturation_adjust": 1.05},
         has_watermark=True,
     )
 
     assert "drawtext=" in graph
-    assert "Mi canción" in graph
+    assert "My song" in graph
     assert "overlay=W-w-40:H-h-40" in graph
     assert "eq=brightness=0.0200:saturation=1.0500" in graph
+
+
+def test_color_sampling_uses_short_seeked_windows(monkeypatch):
+    monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
+
+    commands = color_sample_commands("/video.mp4", 600.0)
+
+    assert len(commands) == 5
+    starts = [float(command[command.index("-ss") + 1]) for command in commands]
+    assert starts == [60.0, 180.0, 300.0, 420.0, 540.0]
+    for command in commands:
+        assert command.index("-ss") < command.index("-i")
+        assert command[command.index("-t") + 1] == "2.000"
+
+
+def test_color_measure_timeout_returns_warning(monkeypatch):
+    monkeypatch.setattr("core.stages.export._media_duration", lambda path: 600.0)
+    monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], 30)
+
+    monkeypatch.setattr("core.stages.export.subprocess.run", timeout)
+
+    profile, warning = measure_clip_color(str(Path("/tmp/clip.mp4")))
+
+    assert profile == {}
+    assert warning is not None
+    assert "Skipped color matching" in warning
 
 
 @pytest.mark.slow
 def test_two_segment_export_contains_bottom_right_watermark(tmp_path, monkeypatch):
     if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
         pytest.skip("ffmpeg/ffprobe not available")
-    monkeypatch.setattr("core.stages.export.measure_clip_color", lambda path: {})
+    monkeypatch.setattr("core.stages.export.measure_clip_color", lambda path: ({}, None))
     monkeypatch.setattr("core.stages.export._ffmpeg_supports_filter", lambda name: False)
     project = create_project("Watermark", str(tmp_path / "Watermark.zuckervid"))
     master = tmp_path / "master.wav"

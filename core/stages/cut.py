@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from core.media_validation import record_is_usable_camera_video
+from core.messages import t
 from core.project import Project
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.sync import load_song_boundaries, load_sync_map, sync_confidence_threshold
@@ -37,7 +38,7 @@ class CutStage(Stage):
 
     def run(self, project: Project, progress_callback: ProgressCallback) -> dict[str, Any]:
         """Write a simple coverage plan consumed by export."""
-        progress_callback(20, "Leyendo sincronización")
+        progress_callback(20, t("reading_sync"))
         sync_map = load_sync_map(project) or {}
         selection = _selectable_synced_clips(project, sync_map)
         if not selection["clips"]:
@@ -55,7 +56,7 @@ class CutStage(Stage):
         if warnings:
             segment["warnings"] = warnings
 
-        progress_callback(70, "Creando cobertura")
+        progress_callback(70, t("building_coverage"))
         path = artifact_path(project, "coverage.json")
         write_artifact_json(
             path,
@@ -72,7 +73,7 @@ class CutStage(Stage):
                 "segments": [segment],
             },
         )
-        progress_callback(100, "Plan de corte listo")
+        progress_callback(100, t("coverage_ready"))
         return self.outputs(project)
 
 
@@ -90,11 +91,11 @@ def _selected_window(songs: list[dict[str, Any]], song_choice: Any, sync_map: di
             start = float(song.get("start_sec") or 0)
             end = song.get("end_sec")
             duration = max(1.0, float(end) - start) if end is not None else 60.0
-            return {"title": song.get("title") or "Canción", "start_sec": start, "duration_sec": duration}
+            return {"title": song.get("title") or t("song_default"), "start_sec": start, "duration_sec": duration}
         except (IndexError, TypeError, ValueError):
             pass
     duration = float(sync_map.get("master_duration_sec") or 0) or 60.0
-    return {"title": "Vídeo completo", "start_sec": 0.0, "duration_sec": duration}
+    return {"title": t("full_video"), "start_sec": 0.0, "duration_sec": duration}
 
 
 def _selectable_synced_clips(project: Project, sync_map: dict[str, Any]) -> dict[str, Any]:
@@ -141,42 +142,42 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any]) -> dict
 
 def _exclusion_reason(diagnostic: dict[str, Any]) -> str | None:
     if not diagnostic["valid_video"]:
-        return "no es un vídeo de cámara utilizable"
+        return t("not_usable_camera_video")
     if diagnostic.get("error"):
         return str(diagnostic["error"])
     if diagnostic.get("no_audio"):
-        return "sin audio utilizable para sincronizar"
+        return t("no_sync_audio")
     if diagnostic.get("unstable_sync"):
         verification = diagnostic.get("verification") or {}
         delta = verification.get("delta_sec")
         if isinstance(delta, (int, float)):
-            return f"sincronización inestable ({delta * 1000:.0f} ms entre verificaciones)"
-        return "sincronización inestable"
+            return t("unstable_sync_detail", ms=delta * 1000)
+        return t("unstable_sync")
     if diagnostic.get("low_confidence") and not diagnostic.get("manual_override"):
-        return "sincronización dudosa — excluido"
+        return t("low_confidence_excluded")
     return None
 
 
 def _diagnostic_error_message(diagnostics: list[dict[str, Any]]) -> str:
-    lines = ["Ninguno de los archivos parece un vídeo de cámara utilizable", "Diagnóstico por clip:"]
+    lines = [t("no_usable_camera_video"), t("clip_diagnostics")]
     if not diagnostics:
-        lines.append("- sin clips en sync_map")
+        lines.append("- no clips in sync_map")
         return "\n".join(lines)
     for item in diagnostics:
-        valid = "sí" if item["valid_video"] else "no"
+        valid = t("valid_yes") if item["valid_video"] else t("valid_no")
         confidence = f"{item['confidence']:.3f}"
         threshold = f"{item['threshold']:.3f}"
         reason_bits = []
         if item.get("error"):
             reason_bits.append(f"error={item['error']}")
         if item.get("no_audio"):
-            reason_bits.append("sin audio")
+            reason_bits.append(t("no_audio"))
         if item.get("low_confidence"):
-            reason_bits.append("confianza baja")
+            reason_bits.append(t("low_confidence"))
         if item.get("unstable_sync"):
-            reason_bits.append("sincronización inestable")
+            reason_bits.append(t("unstable_sync"))
         reason = f" ({'; '.join(reason_bits)})" if reason_bits else ""
-        lines.append(f"- {item['filename']}: vídeo válido={valid}, confianza={confidence}, umbral={threshold}{reason}")
+        lines.append(f"- {item['filename']}: valid video={valid}, confidence={confidence}, threshold={threshold}{reason}")
     return "\n".join(lines)
 
 

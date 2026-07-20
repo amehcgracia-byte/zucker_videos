@@ -134,7 +134,7 @@ def classify_file(path: Path) -> dict[str, Any]:
     """Classify one file with strict extension and media validation."""
     suffix = path.suffix.lower()
     static_video_rejection = static_rejection_reason(path)
-    if static_video_rejection == "archivo oculto o del sistema":
+    if static_video_rejection == "hidden or system file":
         return _item(path, "ignored", static_video_rejection, checked=False)
     if suffix in AUDIO_EXTENSIONS:
         item = _item(path, "master", "audio file")
@@ -148,7 +148,7 @@ def classify_file(path: Path) -> dict[str, Any]:
         try:
             validation = validate_camera_video_metadata(ffprobe(str(path)))
         except Exception:
-            note = "tipo de archivo no compatible" if suffix not in VIDEO_EXTENSIONS else "no es un vídeo de cámara"
+            note = "unsupported file type" if suffix not in VIDEO_EXTENSIONS else "not a camera video"
             return _item(path, "ignored", note, checked=False)
         item = _item(path, "videos", validation.reason) if validation.valid else _item(path, "ignored", validation.reason, checked=False)
         item["probe"] = validation.summary

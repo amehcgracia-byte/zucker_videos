@@ -13,6 +13,7 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
+from core.messages import t
 from core.project import Project, ProjectError, create_project, load_project
 from core.media_validation import record_media_path
 from core.normalization import cache_status, cleanup_unreferenced_cache, migrate_project_normalization_cache
@@ -240,9 +241,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if platform not in {"youtube", "instagram", "tiktok"}:
             return error_response("bad_request", "platform must be youtube, instagram, or tiktok", 400)
         if not master:
-            return error_response("missing_master", "Falta el audio master", 400)
+            return error_response("missing_master", t("missing_master"), 400)
         if not isinstance(videos, list) or not all(isinstance(path, str) for path in videos) or not videos:
-            return error_response("missing_video", "Falta al menos un vídeo", 400)
+            return error_response("missing_video", t("missing_video"), 400)
         try:
             if _can_reuse_prepared_project(state.project, master, songs, videos):
                 state.wizard.adopt_prepared_project(state.project)
@@ -266,9 +267,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         songs = str(body.get("songs") or "").strip() or None
         videos = body.get("videos") or []
         if not master:
-            return error_response("missing_master", "Falta el audio master", 400)
+            return error_response("missing_master", t("missing_master"), 400)
         if not isinstance(videos, list) or not all(isinstance(path, str) for path in videos) or not videos:
-            return error_response("missing_video", "Falta al menos un vídeo", 400)
+            return error_response("missing_video", t("missing_video"), 400)
         try:
             if _can_reuse_prepared_project(state.project, master, songs, videos):
                 job = state.wizard.adopt_prepared_project(state.project)
@@ -314,10 +315,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         result = status.get("result") or {}
         path = result.get("path")
         if not path:
-            return error_response("not_found", "No hay vídeo exportado todavía", 404)
+            return error_response("not_found", "No exported video yet", 404)
         candidate = Path(path)
         if candidate.suffix.lower() != ".mp4" or not candidate.exists():
-            return error_response("not_found", f"El resultado no es un MP4 exportado: {candidate}", 404)
+            return error_response("not_found", f"The result is not an exported MP4: {candidate}", 404)
         return send_file_with_range(str(candidate))
 
     @app.post("/api/v1/inputs/classify-paths")
@@ -502,7 +503,7 @@ def _project_wizard_status(project: Project) -> dict[str, Any]:
             "id": "project",
             "status": "done",
             "progress": 100,
-            "message": "Tu vídeo está listo",
+            "message": t("done"),
             "detail": export_result["filename"],
             "result": export_result,
             "project_path": str(project.folder),
@@ -515,7 +516,7 @@ def _project_wizard_status(project: Project) -> dict[str, Any]:
             "id": "project",
             "status": "failed",
             "progress": _stage_progress(name),
-            "message": "No pude terminar el vídeo",
+            "message": t("cannot_finish"),
             "detail": name,
             "error": stage.get("error") or "Error",
             "project_path": str(project.folder),
@@ -538,8 +539,8 @@ def _project_wizard_status(project: Project) -> dict[str, Any]:
             "id": "project",
             "status": "waiting_choice",
             "progress": 95,
-            "message": "Listo para montar",
-            "detail": "Elige el tipo de edición",
+            "message": t("ready_to_edit"),
+            "detail": t("choose_edit_type"),
             "project_path": str(project.folder),
             "logs_path": logs_path,
         }
@@ -547,7 +548,7 @@ def _project_wizard_status(project: Project) -> dict[str, Any]:
         "id": "project",
         "status": "idle",
         "progress": 0,
-        "message": "Sin trabajo",
+        "message": "Idle",
         "project_path": str(project.folder),
         "logs_path": logs_path,
     }
@@ -632,12 +633,12 @@ def _stage_progress(stage_name: str) -> int:
 
 def _friendly_stage_message(stage_name: str) -> str:
     return {
-        "ingest": "Escuchando tus vídeos...",
-        "sync": "Sincronizando con el audio...",
-        "cut": "Cortando la canción...",
-        "edit": "Montando la edición...",
-        "export": "Exportando el vídeo...",
-    }.get(stage_name, "Trabajando...")
+        "ingest": t("listening"),
+        "sync": t("syncing_audio"),
+        "cut": t("cutting_song"),
+        "edit": t("building_edit"),
+        "export": t("exporting_video"),
+    }.get(stage_name, t("working"))
 
 
 def _media_path(project: Project, kind: str, index: int) -> str:
