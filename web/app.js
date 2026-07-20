@@ -10,6 +10,23 @@ let appConfig = { dev: true, desktop: false };
 let progressStartedAt = null;
 let progressSamples = [];
 
+function logFrontendError(message, stack = "") {
+  fetch("/api/v1/wizard/frontend-log", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, stack, url: window.location.href }),
+  }).catch(() => {});
+}
+
+window.onerror = (message, source, line, column, error) => {
+  logFrontendError(`window.onerror: ${message} (${source}:${line}:${column})`, error?.stack || "");
+};
+
+window.onunhandledrejection = (event) => {
+  const reason = event.reason;
+  logFrontendError(`unhandledrejection: ${reason?.message || reason}`, reason?.stack || "");
+};
+
 const icons = {
   arrow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 12h14"></path><path d="m13 6 6 6-6 6"></path></svg>',
   folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"></path></svg>',
@@ -349,7 +366,14 @@ async function startWizard() {
 }
 
 function ensureStatusPolling() {
-  if (!pollTimer) pollTimer = setInterval(pollStatus, 1000);
+  if (!pollTimer) {
+    pollTimer = setInterval(() => {
+      pollStatus().catch((error) => {
+        logFrontendError(`pollStatus failed: ${error.message}`, error.stack || "");
+        showToast(`No pude actualizar el progreso: ${error.message}`, true);
+      });
+    }, 1000);
+  }
 }
 
 async function pollStatus() {
@@ -382,6 +406,7 @@ function renderWizardStatus(status) {
     latestResult = status.result;
     document.querySelector("#progressTitle").textContent = "Tu vídeo está listo";
     document.querySelector("#resultFilename").textContent = latestResult.filename;
+    document.querySelector("#resultSummary").textContent = resultSummary(latestResult);
     document.querySelector("#resultVideo").src = `${latestResult.media_url}?t=${Date.now()}`;
     document.querySelector("#resultBox").hidden = false;
   }
@@ -449,11 +474,22 @@ function updateStageChecks(progress, status) {
   const done = new Set();
   if (progress >= 22) done.add("ingest");
   if (progress >= 48 || status.status === "waiting_choice") done.add("sync");
-  if (progress >= 64) done.add("cut");
+  if (progress >= 58) done.add("cut");
   if (status.status === "done") done.add("export");
   document.querySelectorAll(".stage-checks [data-stage]").forEach((node) => {
     node.classList.toggle("done", done.has(node.dataset.stage));
   });
+}
+
+function resultSummary(result) {
+  const cutCount = Number(result?.cut_count || 0);
+  const cameraUsage = result?.camera_usage || {};
+  const cameraCount = Object.keys(cameraUsage).length;
+  const parts = [];
+  if (cutCount > 0 || cameraCount > 0) parts.push(`${cutCount} cortes · ${cameraCount} cámaras`);
+  const warnings = result?.warnings || [];
+  if (warnings.length) parts.push(warnings.join(" · "));
+  return parts.join(" · ");
 }
 
 async function revealNative(path, label) {

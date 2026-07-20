@@ -13,6 +13,7 @@ from typing import Any
 from core.build_info import build_info
 from core.project import Project, create_project
 from core.stages.cut import CutStage
+from core.stages.edit import EditStage
 from core.stages.export import ExportStage
 from core.stages.ingest import IngestStage
 from core.stages.sync import SyncStage, load_song_boundaries
@@ -169,7 +170,7 @@ class WizardRunner:
             project.data["settings"]["wizard"] = {
                 "platform": platform,
                 "song_choice": song_choice,
-                "placeholder_logic": True,
+                "placeholder_logic": platform in {"instagram", "tiktok"},
             }
             project.save()
 
@@ -222,13 +223,12 @@ class WizardRunner:
             project.data["settings"]["wizard"] = {
                 "platform": platform,
                 "song_choice": song_choice,
-                "placeholder_logic": True,
+                "placeholder_logic": platform in {"instagram", "tiktok"},
             }
             project.save()
-            self._run_stage(job, project, CutStage(), 48, 64, "Cortando la canción...")
-            _write_stage_log(project, "wizard", "Skipping edit stage in wizard until real edit logic exists")
-            project.data["stages"]["edit"].update({"status": "stale", "error": None})
-            outputs = self._run_stage(job, project, ExportStage(), 64, 100, "Exportando el vídeo...")
+            self._run_stage(job, project, CutStage(), 48, 58, "Cortando la canción...")
+            self._run_stage(job, project, EditStage(), 58, 70, "Montando la edición...")
+            outputs = self._run_stage(job, project, ExportStage(), 70, 100, "Exportando el vídeo...")
             manifest_path = Path(outputs["export_manifest"])
             import json
 
@@ -248,6 +248,9 @@ class WizardRunner:
                 "media_url": "/api/v1/wizard/result",
                 "platform": platform,
                 "logs_path": str(project.cache_dir / "logs"),
+                "cut_count": export.get("cut_count"),
+                "camera_usage": export.get("camera_usage"),
+                "warnings": export.get("warnings") or manifest.get("warnings") or [],
             }
             elapsed = time.monotonic() - started_at
             if project.data["inputs"].get("videos") and elapsed < 1.0:

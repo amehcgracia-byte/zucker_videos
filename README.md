@@ -17,16 +17,16 @@ Simple three-step app for turning Zucker Mixer audio plus raw camera clips into 
    - If `songs.json` has multiple songs, choose the song. YouTube also allows `Todas`.
 
 3. **Wait for the result**
-   - The app runs ingest, sync, cut, and export automatically. The old edit stub is skipped until real edit logic exists.
-   - Progress is shown in plain Spanish.
+   - The app runs ingest, sync, cut, edit, and export automatically.
+   - Progress is shown in plain Spanish, including ffmpeg export progress and ETA.
    - On success, preview the video, reveal it in Finder, or start another.
    - On failure, use `Ver detalles técnicos` for the log tail.
 
-Placeholder creative logic in this version:
+Creative logic in this version:
 
-- Video selection uses the first clip that covers the chosen song window, or the longest clip when there is no `songs.json`.
+- YouTube builds a first real multicam edit: beat-aligned cuts, 4-8 beat segment lengths, confidence-weighted camera rotation, and no silent fallback to fake footage.
 - Instagram/TikTok use a center crop and fixed middle-duration extract.
-- There is no real multicam selection, highlight scoring, beat cutting, or creative pacing yet.
+- Instagram/TikTok highlight selection, automatic subject tracking, and more advanced creative pacing are still placeholders.
 
 The old technical UI is still available for debugging at:
 
@@ -36,7 +36,7 @@ The old technical UI is still available for debugging at:
 
 ## Development
 
-This version implements the architecture, persistence, pipeline contracts, Flask API, media range serving, a real audio-based sync stage, the three-step wizard, and a minimal ffmpeg export path.
+This version implements the architecture, persistence, pipeline contracts, Flask API, media range serving, a real audio-based sync stage, the three-step wizard, YouTube beat-cut multicam v1, and ffmpeg export with streamed progress.
 
 ### Definition Of Done
 
@@ -149,8 +149,9 @@ core/stages/*
   | Stage interface implementations
   | ingest is real validation/probe
   | sync is real onset-correlation matching
-  | cut/export provide a simple placeholder wizard render
-  | edit is still a JSON placeholder
+  | cut plans usable synced coverage
+  | edit builds beat-aligned YouTube multicam plans
+  | export renders edit-plan segments with ffmpeg progress
 
 server/media.py
   | Range-aware file serving for browser audio/video seeking
@@ -285,11 +286,19 @@ Porting the existing sync prototype:
 
 Cut prototype:
 
-- Move coverage planning and per-song segment export into `core/stages/cut.py`.
+- Move coverage planning into `core/stages/cut.py`.
 - Keep the public artifact as `artifacts/coverage.json`; put generated segments under `artifacts/cut/`.
 - Include `sync` fingerprint, songs file signature, video signatures, and cut settings in `inputs_fingerprint`.
-- Write each segment to a temp path before rename, then write the final coverage JSON last.
 - Leave final rendering decisions for `edit` and `export`.
+
+Edit/export prototype:
+
+- `edit` writes `artifacts/beats.json` and `artifacts/edit_plan.json`.
+- YouTube uses `librosa.beat.beat_track` on the selected master-audio window and plans beat-aligned multicam cuts.
+- Instagram/TikTok still use the current fixed middle excerpt as placeholder creative logic.
+- `export` renders per-segment MP4 intermediates with matching master-audio slices, concatenates them, and keeps output under 1.9 GB by computing a target bitrate from duration.
+- Export tries `h264_videotoolbox` first on macOS and falls back to `libx264` when hardware encoding is unavailable.
+- Frontend JavaScript runtime errors are logged to `~/ZuckerVideos/logs/frontend.log`.
 
 ## API
 

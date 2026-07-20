@@ -1,4 +1,4 @@
-"""Simple wizard cut planning stage."""
+"""Coverage planning stage for wizard edits."""
 
 from __future__ import annotations
 
@@ -16,12 +16,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class CutStage(Stage):
-    """Plan a minimal single-clip edit for the wizard.
-
-    This is intentionally placeholder creative logic: pick the first clip that
-    overlaps the requested song window, or the longest clip when there is no
-    songs.json.
-    """
+    """Plan usable synced clip coverage for the requested wizard window."""
 
     name = "cut"
     dependencies = ["sync"]
@@ -60,18 +55,19 @@ class CutStage(Stage):
         if warnings:
             segment["warnings"] = warnings
 
-        progress_callback(70, "Creando plan simple")
+        progress_callback(70, "Creando cobertura")
         path = artifact_path(project, "coverage.json")
         write_artifact_json(
             path,
             {
                 "stage": self.name,
-                "placeholder_logic": "first covering clip; no multicam or highlight scoring yet",
                 "platform": platform,
                 "song_choice": song_choice,
                 "songs": songs,
+                "window": window,
                 "warnings": warnings,
                 "clip_diagnostics": selection["diagnostics"],
+                "sources": selection["clips"],
                 "segments": [segment],
             },
         )

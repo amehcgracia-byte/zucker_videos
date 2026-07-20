@@ -614,8 +614,8 @@ def test_cut_and_export_use_global_cached_clip_with_low_confidence_warning(tmp_p
     )
 
     monkeypatch.setattr(
-        "core.stages.export._render_segment",
-        lambda segment, master_path, output_path, platform: output_path.write_bytes(b"export"),
+        "core.stages.export._render_plan",
+        lambda segments, master_path, output_path, platform, video_bitrate, progress_callback: output_path.write_bytes(b"export"),
     )
 
     CutStage().run(project, lambda percent, message: None)

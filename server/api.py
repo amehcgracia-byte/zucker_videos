@@ -290,6 +290,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_wizard_report() -> Response:
         return Response(wizard_report(state.wizard.status()), mimetype="text/plain")
 
+    @app.post("/api/v1/wizard/frontend-log")
+    def api_wizard_frontend_log() -> Response:
+        body = _json_body()
+        log_dir = app_home() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        message = str(body.get("message") or "frontend event")
+        stack = str(body.get("stack") or "")
+        url = str(body.get("url") or "")
+        with (log_dir / "frontend.log").open("a", encoding="utf-8") as fh:
+            fh.write(f"{message}\n")
+            if url:
+                fh.write(f"url: {url}\n")
+            if stack:
+                fh.write(f"{stack}\n")
+        return jsonify({"ok": True})
+
     @app.get("/api/v1/wizard/result")
     def api_wizard_result() -> Response:
         status = state.wizard.status()
@@ -603,6 +619,9 @@ def _export_result(project: Project) -> dict[str, Any] | None:
         "media_url": "/api/v1/wizard/result",
         "platform": export.get("platform"),
         "logs_path": str(project.cache_dir / "logs"),
+        "cut_count": export.get("cut_count"),
+        "camera_usage": export.get("camera_usage"),
+        "warnings": export.get("warnings") or manifest.get("warnings") or [],
     }
 
 
@@ -615,6 +634,7 @@ def _friendly_stage_message(stage_name: str) -> str:
         "ingest": "Escuchando tus vídeos...",
         "sync": "Sincronizando con el audio...",
         "cut": "Cortando la canción...",
+        "edit": "Montando la edición...",
         "export": "Exportando el vídeo...",
     }.get(stage_name, "Trabajando...")
 
