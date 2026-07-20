@@ -80,6 +80,48 @@ function mergeDetected(result, source = "") {
   renderChips();
 }
 
+function clearDetected() {
+  for (const key of ["master", "songs", "videos", "ignored"]) detected[key] = [];
+  selectedMasterPath = null;
+}
+
+function recordToDetectedItem(record, kind, source = "project") {
+  if (!record?.path) return null;
+  return {
+    ...record,
+    kind,
+    filename: filename(record.path),
+    note: kind === "master" ? "audio master registrado" : kind === "songs" ? "songs.json registrado" : "vídeo preparado",
+    source,
+  };
+}
+
+async function resumeInputsFromProject() {
+  const project = await api("/project");
+  const inputs = project.inputs || {};
+  clearDetected();
+  const master = recordToDetectedItem(inputs.master, "master");
+  const songs = recordToDetectedItem(inputs.songs, "songs");
+  if (master) detected.master.push(master);
+  if (songs) detected.songs.push(songs);
+  for (const record of inputs.videos || []) {
+    if (record.status === "not_a_video") {
+      detected.ignored.push({ ...recordToDetectedItem(record, "ignored"), note: record.not_a_video_reason || "ignorado" });
+    } else {
+      detected.videos.push(recordToDetectedItem(record, "videos"));
+    }
+  }
+  chooseDefaultMaster();
+  renderChips();
+  document.querySelector("#videoName").value = project.name || document.querySelector("#videoName").value || todayName();
+  if (inputs.songs?.path) {
+    const result = await api("/wizard/songs", { method: "POST", body: JSON.stringify({ songs: inputs.songs.path }) });
+    renderSongOptions(result.songs || []);
+  } else {
+    renderSongOptions([]);
+  }
+}
+
 function chooseDefaultMaster() {
   if (selectedMasterPath && detected.master.some((item) => item.path === selectedMasterPath)) return;
   const sorted = [...detected.master].sort((a, b) => Number(b.duration || 0) - Number(a.duration || 0));
@@ -274,7 +316,8 @@ function renderSongOptions(songs) {
 async function waitForPreparedProject() {
   for (let attempt = 0; attempt < 240; attempt += 1) {
     const status = await api("/wizard/status");
-    if (status.status === "waiting_choice" || status.status === "idle") return;
+    if (status.status === "waiting_choice") return;
+    if (status.status === "done") return;
     if (status.status === "failed") throw new Error(status.error || "No pude preparar los archivos");
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
@@ -508,8 +551,12 @@ document.addEventListener("pywebviewready", () => {
 
 async function boot() {
   injectIcons();
-  await loadInbox();
   const status = await api("/wizard/status");
+  if (["running", "waiting_choice", "done", "failed"].includes(status.status)) {
+    await resumeInputsFromProject().catch(() => {});
+  } else {
+    await loadInbox();
+  }
   renderWizardStatus(status);
   if (status.status === "running") {
     setStep(3);

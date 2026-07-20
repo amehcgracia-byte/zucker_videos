@@ -64,6 +64,24 @@ class WizardRunner:
             thread.start()
             return job
 
+    def adopt_prepared_project(self, project: Project) -> WizardJob:
+        """Use an already-prepared project as the wizard's Step 2 state."""
+        with self._lock:
+            if self._job and self._job.status == "running":
+                raise RuntimeError("Ya hay un vídeo en proceso")
+            job = WizardJob(
+                id="current",
+                status="waiting_choice",
+                progress=95,
+                message="Listo para montar",
+                detail="Elige el tipo de edición",
+            )
+            _attach_project(job, project)
+            self._job = job
+            self._thread = None
+            self._prepared_project = project
+            return job
+
     def start(
         self,
         *,

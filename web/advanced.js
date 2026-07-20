@@ -126,6 +126,23 @@ function formatBytes(bytes) {
   return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
+function renderCacheStatus(status) {
+  const root = document.querySelector("#cacheSummary");
+  if (!root) return;
+  const counts = status.counts || {};
+  root.textContent = `${formatBytes(status.size_bytes || status.after_bytes || 0)} · ${counts.normalized || 0} vídeos preparados · ${counts.envelopes || 0} envelopes · ${status.path || ""}`;
+}
+
+async function refreshCacheStatus() {
+  renderCacheStatus(await api("/cache/status"));
+}
+
+async function freeCache() {
+  const result = await api("/cache/free", { method: "POST", body: "{}" });
+  renderCacheStatus({ ...result, size_bytes: result.after_bytes, counts: (await api("/cache/status")).counts });
+  showToast(`Cache liberada: ${formatBytes(result.deleted_bytes || 0)} en ${result.deleted_files || 0} archivos`);
+}
+
 function parseOffset(value) {
   const trimmed = value.trim();
   if (trimmed.includes(":")) {
@@ -645,6 +662,8 @@ document.addEventListener("click", async (event) => {
       else showToast("Reveal in Finder is available in the desktop app");
     }
     if (target.id === "rescanInbox") await scanInbox();
+    if (target.id === "refreshCache") await refreshCacheStatus();
+    if (target.id === "freeCache") await freeCache();
     if (target.id === "useDetected") await registerDetected();
     if (pickerMethods[target.id]) await callPicker(target.id);
     if (target.dataset.useSongSuggestion) {
@@ -691,6 +710,7 @@ async function boot() {
   await refreshSongSuggestions();
   await refreshStatus();
   await refreshSyncMap();
+  await refreshCacheStatus();
 }
 
 document.addEventListener("pywebviewready", () => {

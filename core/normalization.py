@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core.ffmpeg import FFmpegError, tool_status
-from core.media_validation import record_media_path
 from core.project import Project
 from core.stages.base import stable_fingerprint
 
@@ -26,6 +25,7 @@ SDR_TONEMAP_FILTER = (
 )
 EVEN_SDR_FILTER = "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p"
 EQUIRECT_FILTER = "v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w=1920:h=1080,format=yuv420p"
+CACHE_SUBDIRS = ("normalized", "audio", "envelopes", "thumbnails")
 
 
 def ensure_normalized_space(project: Project, records: list[dict[str, Any]]) -> None:
@@ -33,12 +33,13 @@ def ensure_normalized_space(project: Project, records: list[dict[str, Any]]) -> 
     estimate = sum(int(record.get("size") or 0) for record in records)
     if estimate <= 0:
         return
-    project.cache_dir.mkdir(parents=True, exist_ok=True)
-    free = shutil.disk_usage(project.cache_dir).free
+    root = global_cache_root()
+    root.mkdir(parents=True, exist_ok=True)
+    free = shutil.disk_usage(root).free
     if free < estimate * 2:
         raise RuntimeError(
             "No hay espacio suficiente para preparar los vídeos. "
-            "Libera espacio en disco o mueve el proyecto a un disco con más espacio."
+            "Libera espacio en la caché global o mueve los vídeos a un disco con más espacio."
         )
 
 
@@ -47,8 +48,22 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
     source = Path(record["path"]).expanduser().resolve()
     destination = normalized_path(project, record)
     signature = _source_signature(source)
+    key = cache_key_for_signature(source, signature)
+    record["cache_key"] = key
     existing = record.get("normalized") or {}
+    if _migrate_legacy_normalized(project, record, destination, signature):
+        progress(100, f"Ya preparado: {source.name}")
+        return record["normalized"]
     if not needs_normalization(record, destination):
+        existing.update(
+            {
+                "path": str(destination),
+                "cache_key": key,
+                "source_size": signature["size"],
+                "source_mtime": signature["mtime"],
+            }
+        )
+        record["normalized"] = existing
         progress(100, f"Ya preparado: {source.name}")
         return existing
 
@@ -66,6 +81,7 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
     os.replace(tmp_path, destination)
     normalized = {
         "path": str(destination),
+        "cache_key": key,
         "source_size": signature["size"],
         "source_mtime": signature["mtime"],
         "codec": "h264",
@@ -83,23 +99,187 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
 
 def needs_normalization(record: dict[str, Any], destination: Path | None = None) -> bool:
     """Return True if the normalized mezzanine is missing or stale."""
-    source = Path(record["path"]).expanduser()
+    source = Path(record["path"]).expanduser().resolve()
     if destination is None:
-        destination = Path(record_media_path(record))
+        destination = normalized_path(None, record)
     normalized = record.get("normalized") or {}
     if not destination.exists():
         return True
     try:
-        stat = source.stat()
+        signature = _source_signature(source)
     except OSError:
         return True
-    return normalized.get("source_size") != stat.st_size or normalized.get("source_mtime") != stat.st_mtime
+    expected_key = cache_key_for_signature(source, signature)
+    if record.get("cache_key") != expected_key:
+        return True
+    if normalized.get("cache_key") not in {None, expected_key}:
+        return True
+    if normalized.get("source_size") is None and normalized.get("source_mtime") is None:
+        return False
+    return normalized.get("source_size") != signature["size"] or normalized.get("source_mtime") != signature["mtime"]
 
 
-def normalized_path(project: Project, record: dict[str, Any]) -> Path:
+def normalized_path(project: Project | None, record: dict[str, Any]) -> Path:
     """Return the cache path for a clip's normalized mezzanine."""
-    clip_id = stable_fingerprint({"path": record["path"]})[:16]
-    return project.cache_dir / "normalized" / f"{clip_id}.mp4"
+    return global_normalized_path(source_cache_key(record))
+
+
+def source_cache_key(record: dict[str, Any]) -> str:
+    """Return the source-signature cache key for a record."""
+    try:
+        source = Path(record["path"]).expanduser().resolve()
+        signature = _source_signature(source)
+        key = cache_key_for_signature(source, signature)
+    except OSError:
+        key = str(record.get("cache_key") or "")
+    if key:
+        record["cache_key"] = key
+        normalized = record.get("normalized")
+        if isinstance(normalized, dict):
+            normalized["cache_key"] = key
+    if not key:
+        key = stable_fingerprint({"path": record.get("path"), "size": record.get("size"), "mtime": record.get("mtime")})[:24]
+    return key
+
+
+def cache_key_for_source(path: str | Path) -> str:
+    """Return the cache key for a source file's current path/size/mtime."""
+    source = Path(path).expanduser().resolve()
+    return cache_key_for_signature(source, _source_signature(source))
+
+
+def cache_key_for_signature(source: Path, signature: dict[str, Any]) -> str:
+    """Return the cheap stable global cache key for a source signature."""
+    return stable_fingerprint(
+        {
+            "path": str(source),
+            "size": signature.get("size"),
+            "mtime": signature.get("mtime"),
+        }
+    )[:24]
+
+
+def global_cache_root() -> Path:
+    """Return the app-wide media cache root."""
+    return Path.home() / "ZuckerVideos" / "Cache"
+
+
+def global_normalized_path(key: str) -> Path:
+    """Return the global normalized MP4 path for a source key."""
+    return global_cache_root() / "normalized" / f"{key}.mp4"
+
+
+def global_clip_audio_path(key: str) -> Path:
+    """Return the global extracted clip-audio path for a source key."""
+    return global_cache_root() / "audio" / f"{key}.wav"
+
+
+def global_clip_envelope_path(key: str) -> Path:
+    """Return the global clip-envelope path for a source key."""
+    return global_cache_root() / "envelopes" / f"{key}.npy"
+
+
+def global_thumbnail_path(key: str, signature: dict[str, Any]) -> Path:
+    """Return the global thumbnail path for a source key and normalized signature."""
+    return global_cache_root() / "thumbnails" / f"{key}-{signature['size']}-{int(signature['mtime'])}.jpg"
+
+
+def cache_status() -> dict[str, Any]:
+    """Return global cache size and entry counts."""
+    root = global_cache_root()
+    size = _directory_size(root)
+    counts = {name: len(list((root / name).glob("*"))) if (root / name).exists() else 0 for name in CACHE_SUBDIRS}
+    return {"path": str(root), "size_bytes": size, "counts": counts}
+
+
+def cleanup_unreferenced_cache(projects_root: Path | None = None) -> dict[str, Any]:
+    """Delete global cache files whose source key is not referenced by any project."""
+    root = global_cache_root()
+    before = _directory_size(root)
+    referenced = referenced_cache_keys(projects_root)
+    deleted_files = 0
+    deleted_bytes = 0
+    for subdir in CACHE_SUBDIRS:
+        folder = root / subdir
+        if not folder.exists():
+            continue
+        for path in folder.iterdir():
+            if not path.is_file():
+                continue
+            key = path.name.split(".", 1)[0].split("-", 1)[0]
+            if key in referenced:
+                continue
+            try:
+                size = path.stat().st_size
+                path.unlink()
+            except OSError:
+                continue
+            deleted_files += 1
+            deleted_bytes += size
+    return {
+        "path": str(root),
+        "before_bytes": before,
+        "after_bytes": _directory_size(root),
+        "deleted_bytes": deleted_bytes,
+        "deleted_files": deleted_files,
+        "referenced_keys": len(referenced),
+    }
+
+
+def migrate_project_normalization_cache(project: Project) -> bool:
+    """Best-effort migration from legacy per-project normalized files to the global cache."""
+    changed = False
+    for record in project.data.get("inputs", {}).get("videos", []):
+        if record.get("status") == "not_a_video" or not record.get("path"):
+            continue
+        try:
+            source = Path(record["path"]).expanduser().resolve()
+            signature = _source_signature(source)
+        except OSError:
+            continue
+        key = cache_key_for_signature(source, signature)
+        destination = global_normalized_path(key)
+        migrated = _migrate_legacy_normalized(project, record, destination, signature)
+        if migrated:
+            changed = True
+        if destination.exists() or migrated:
+            normalized = record.get("normalized") or {}
+            if normalized.get("path") != str(destination) or normalized.get("cache_key") != key or record.get("cache_key") != key:
+                normalized.update(
+                    {
+                        "path": str(destination),
+                        "cache_key": key,
+                        "source_size": signature["size"],
+                        "source_mtime": signature["mtime"],
+                    }
+                )
+                record["normalized"] = normalized
+                record["cache_key"] = key
+                changed = True
+    if changed:
+        project.save()
+    return changed
+
+
+def referenced_cache_keys(projects_root: Path | None = None) -> set[str]:
+    """Return cache keys referenced by existing project.json files."""
+    import json
+
+    root = Path(projects_root or (Path.home() / "ZuckerVideos" / "Projects")).expanduser()
+    keys: set[str] = set()
+    if not root.exists():
+        return keys
+    for project_json in root.rglob("project.json"):
+        try:
+            with project_json.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        for record in data.get("inputs", {}).get("videos", []):
+            key = record.get("cache_key") or (record.get("normalized") or {}).get("cache_key")
+            if key:
+                keys.add(str(key))
+    return keys
 
 
 def normalization_filter(probe: dict[str, Any]) -> str:
@@ -194,3 +374,60 @@ def _bounded_fps(fps: float) -> float:
 def _source_signature(path: Path) -> dict[str, Any]:
     stat = path.stat()
     return {"size": stat.st_size, "mtime": stat.st_mtime}
+
+
+def _legacy_normalized_path(project: Project, record: dict[str, Any]) -> Path:
+    clip_id = stable_fingerprint({"path": record["path"]})[:16]
+    return project.cache_dir / "normalized" / f"{clip_id}.mp4"
+
+
+def _migrate_legacy_normalized(project: Project, record: dict[str, Any], destination: Path, signature: dict[str, Any]) -> bool:
+    """Move a matching per-project normalized file into the global cache."""
+    normalized = record.get("normalized") or {}
+    candidates = []
+    existing_path = normalized.get("path")
+    if existing_path:
+        candidates.append(Path(existing_path).expanduser())
+    candidates.append(_legacy_normalized_path(project, record))
+    key = cache_key_for_signature(Path(record["path"]).expanduser().resolve(), signature)
+    for candidate in candidates:
+        try:
+            candidate = candidate.resolve()
+        except OSError:
+            continue
+        if candidate == destination.resolve() or not candidate.exists():
+            continue
+        if normalized.get("source_size") != signature["size"] or normalized.get("source_mtime") != signature["mtime"]:
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if not destination.exists():
+            try:
+                shutil.move(str(candidate), str(destination))
+            except OSError:
+                try:
+                    shutil.copy2(candidate, destination)
+                except OSError:
+                    continue
+        record["cache_key"] = key
+        record["normalized"] = {
+            **normalized,
+            "path": str(destination),
+            "cache_key": key,
+            "source_size": signature["size"],
+            "source_mtime": signature["mtime"],
+        }
+        return True
+    return False
+
+
+def _directory_size(root: Path) -> int:
+    if not root.exists():
+        return 0
+    total = 0
+    for path in root.rglob("*"):
+        if path.is_file():
+            try:
+                total += path.stat().st_size
+            except OSError:
+                continue
+    return total

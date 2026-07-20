@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -15,6 +14,7 @@ from scipy.signal import correlate
 
 from core.ffmpeg import ffprobe
 from core.media_validation import record_is_usable_camera_video, record_media_path
+from core.normalization import global_clip_audio_path, global_clip_envelope_path, global_thumbnail_path, source_cache_key
 from core.project import Project
 from core.stages.base import ProgressCallback, Stage, artifact_path, file_signature, stable_fingerprint, write_artifact_json
 
@@ -106,15 +106,9 @@ def clip_id_for_record(record: dict[str, Any]) -> str:
     return stable_fingerprint({"path": record["path"]})[:16]
 
 
-def safe_stem(path: str) -> str:
-    """Return a filesystem-safe stem for cache files."""
-    stem = Path(path).stem.lower()
-    return re.sub(r"[^a-z0-9_.-]+", "_", stem).strip("_") or "clip"
-
-
 def cache_key(record: dict[str, Any]) -> str:
     """Return the cache key for a clip."""
-    return f"{safe_stem(record['path'])}-{clip_id_for_record(record)}"
+    return source_cache_key(record)
 
 
 def media_duration(path: str) -> float:
@@ -179,14 +173,14 @@ def load_or_compute_clip_envelope(project: Project, record: dict[str, Any]) -> t
 
 def clip_audio_path(project: Project, record: dict[str, Any]) -> Path:
     """Return the cached extracted clip-audio path."""
-    path = project.cache_dir / "audio" / f"{cache_key(record)}.wav"
+    path = global_clip_audio_path(cache_key(record))
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def clip_envelope_path(project: Project, record: dict[str, Any]) -> Path:
     """Return the cached clip envelope path."""
-    path = project.cache_dir / "envelopes" / f"{cache_key(record)}.npy"
+    path = global_clip_envelope_path(cache_key(record))
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -473,7 +467,7 @@ def generate_thumbnail(project: Project, clip_id: str) -> Path:
     record = record_for_clip_id(project, clip_id)
     media_path = record_media_path(record)
     signature = file_signature(media_path)
-    thumb_path = project.cache_dir / "thumbnails" / f"{clip_id}-{signature['size']}-{int(signature['mtime'])}.jpg"
+    thumb_path = global_thumbnail_path(cache_key(record), signature)
     thumb_path.parent.mkdir(parents=True, exist_ok=True)
     if thumb_path.exists():
         return thumb_path

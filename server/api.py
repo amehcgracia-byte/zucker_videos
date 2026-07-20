@@ -15,6 +15,7 @@ from werkzeug.exceptions import RequestEntityTooLarge
 from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
 from core.project import Project, ProjectError, create_project, load_project
 from core.media_validation import record_media_path
+from core.normalization import cache_status, cleanup_unreferenced_cache, migrate_project_normalization_cache
 from core.stages.sync import clear_manual_override, generate_preview, generate_thumbnail, set_manual_override
 from server.inbox import (
     app_home,
@@ -54,7 +55,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     state = AppState(engine=PipelineEngine(), dev=dev, wizard=WizardRunner())
     if project_path:
         state.project = load_project(project_path)
-        if reconcile_registered_inputs(state.project):
+        reconciled = reconcile_registered_inputs(state.project)
+        migrated = migrate_project_normalization_cache(state.project)
+        if reconciled or migrated:
             LOGGER.info("Reconciled registered inputs for %s", state.project.folder)
     app.config["ZUCKER_STATE"] = state
 
@@ -107,7 +110,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("bad_request", "folder is required", 400)
         try:
             state.project = load_project(folder)
-            if reconcile_registered_inputs(state.project):
+            reconciled = reconcile_registered_inputs(state.project)
+            migrated = migrate_project_normalization_cache(state.project)
+            if reconciled or migrated:
                 LOGGER.info("Reconciled registered inputs for %s", state.project.folder)
             _remember_project(state.project)
             return jsonify(state.project.snapshot())
@@ -239,6 +244,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not isinstance(videos, list) or not all(isinstance(path, str) for path in videos) or not videos:
             return error_response("missing_video", "Falta al menos un vídeo", 400)
         try:
+            if _can_reuse_prepared_project(state.project, master, songs, videos):
+                state.wizard.adopt_prepared_project(state.project)
             job = state.wizard.start(
                 name=name or "Jam",
                 platform=platform,
@@ -263,6 +270,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not isinstance(videos, list) or not all(isinstance(path, str) for path in videos) or not videos:
             return error_response("missing_video", "Falta al menos un vídeo", 400)
         try:
+            if _can_reuse_prepared_project(state.project, master, songs, videos):
+                job = state.wizard.adopt_prepared_project(state.project)
+                LOGGER.info("Reused prepared wizard project %s instead of creating a new project", state.project.folder)
+                return jsonify(dict(job.__dict__)), 202
             job = state.wizard.prepare(name=name or "Jam", master_path=master, songs_path=songs, video_paths=videos)
             return jsonify(dict(job.__dict__)), 202
         except RuntimeError as exc:
@@ -316,6 +327,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         config = load_global_config()
         config["dev"] = state.dev
         return jsonify(config)
+
+    @app.get("/api/v1/cache/status")
+    def api_cache_status() -> Response:
+        return jsonify(cache_status())
+
+    @app.post("/api/v1/cache/free")
+    def api_cache_free() -> Response:
+        return jsonify(cleanup_unreferenced_cache())
 
     @app.post("/api/v1/stages/<name>/run")
     def api_run_stage(name: str) -> Response:
@@ -515,6 +534,31 @@ def _project_wizard_status(project: Project) -> dict[str, Any]:
         "project_path": str(project.folder),
         "logs_path": logs_path,
     }
+
+
+def _can_reuse_prepared_project(project: Project | None, master: str, songs: str | None, videos: list[str]) -> bool:
+    """Return True when a loaded project already has these inputs prepared through sync."""
+    if not project:
+        return False
+    stages = project.data.get("stages") or {}
+    if stages.get("sync", {}).get("status") != "done":
+        return False
+    inputs = project.data.get("inputs") or {}
+    if _resolved(inputs.get("master", {}).get("path")) != _resolved(master):
+        return False
+    project_songs = inputs.get("songs")
+    project_songs_path = project_songs.get("path") if project_songs else None
+    if songs and _resolved(project_songs_path) != _resolved(songs):
+        return False
+    project_videos = [_resolved(record.get("path")) for record in inputs.get("videos", [])]
+    requested_videos = [_resolved(path) for path in videos]
+    return set(project_videos) == set(requested_videos) and bool(requested_videos)
+
+
+def _resolved(path: str | None) -> str | None:
+    if not path:
+        return None
+    return str(Path(path).expanduser().resolve())
 
 
 def _export_result(project: Project) -> dict[str, Any] | None:

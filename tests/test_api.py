@@ -14,6 +14,7 @@ from core.stages.cut import CutStage
 from core.stages.ingest import IngestStage
 from core.stages.sync import SyncStage
 from server.api import create_app
+from server.wizard import WizardJob
 
 
 def valid_video_probe(duration: str = "3.0", width: int = 1280, height: int = 720) -> dict:
@@ -166,6 +167,51 @@ def test_wizard_start_soft_rules_require_video_and_master(tmp_path):
     )
     assert response.status_code == 400
     assert response.get_json()["error"]["code"] == "missing_master"
+
+
+def test_wizard_start_after_relaunch_reuses_prepared_project(tmp_path, monkeypatch):
+    folder = tmp_path / "Prepared.zuckervid"
+    project = create_project("Prepared", str(folder))
+    master = tmp_path / "master.wav"
+    songs = tmp_path / "songs.json"
+    video = tmp_path / "clip.mp4"
+    master.write_bytes(b"master")
+    songs.write_text('{"songs": []}', encoding="utf-8")
+    video.write_bytes(b"video")
+    project.data["inputs"]["master"] = file_record(str(master))
+    project.data["inputs"]["songs"] = file_record(str(songs))
+    project.data["inputs"]["videos"] = [file_record(str(video))]
+    project.data["stages"]["ingest"]["status"] = "done"
+    project.data["stages"]["sync"]["status"] = "done"
+    project.save()
+    monkeypatch.setattr("server.api.reconcile_registered_inputs", lambda project: False)
+    monkeypatch.setattr("server.api.migrate_project_normalization_cache", lambda project: False)
+
+    app = create_app(project_path=str(folder))
+    state = app.config["ZUCKER_STATE"]
+
+    def fake_start(**kwargs):
+        assert state.wizard._prepared_project is state.project
+        return WizardJob(id="current", status="running", project_path=str(state.project.folder))
+
+    state.wizard.start = fake_start
+    client = app.test_client()
+
+    status = client.get("/api/v1/wizard/status").get_json()
+    assert status["status"] == "waiting_choice"
+    response = client.post(
+        "/api/v1/wizard/start",
+        json={
+            "name": "Prepared",
+            "platform": "youtube",
+            "master": str(master),
+            "songs": str(songs),
+            "videos": [str(video)],
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.get_json()["project_path"] == str(folder.resolve())
 
 
 @pytest.mark.slow
