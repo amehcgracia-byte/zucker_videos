@@ -544,6 +544,8 @@ def _can_reuse_prepared_project(project: Project | None, master: str, songs: str
     stages = project.data.get("stages") or {}
     if stages.get("sync", {}).get("status") != "done":
         return False
+    if not _project_has_sync_candidates(project):
+        return False
     inputs = project.data.get("inputs") or {}
     if _resolved(inputs.get("master", {}).get("path")) != _resolved(master):
         return False
@@ -560,6 +562,21 @@ def _resolved(path: str | None) -> str | None:
     if not path:
         return None
     return str(Path(path).expanduser().resolve())
+
+
+def _project_has_sync_candidates(project: Project) -> bool:
+    outputs = project.data.get("stages", {}).get("sync", {}).get("outputs") or {}
+    sync_map_path = outputs.get("sync_map") or str(project.artifacts_dir / "sync_map.json")
+    try:
+        with Path(sync_map_path).open("r", encoding="utf-8") as fh:
+            sync_map = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return False
+    for clip in (sync_map.get("clips") or {}).values():
+        if clip.get("error") or clip.get("no_audio"):
+            continue
+        return True
+    return False
 
 
 def _export_result(project: Project) -> dict[str, Any] | None:

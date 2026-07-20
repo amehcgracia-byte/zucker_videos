@@ -59,12 +59,14 @@ class ExportStage(Stage):
             {
                 "stage": self.name,
                 "placeholder_logic": "single selected clip; master audio; simple crop only",
+                "warnings": coverage.get("warnings") or segment.get("warnings") or [],
                 "exports": [
                     {
                         "platform": platform,
                         "path": str(output_path),
                         "filename": output_path.name,
                         "duration_sec": segment["duration_sec"],
+                        "warnings": segment.get("warnings") or [],
                     }
                 ],
             },

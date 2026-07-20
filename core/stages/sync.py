@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 from scipy.signal import correlate
 
-from core.ffmpeg import ffprobe
+from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.media_validation import record_is_usable_camera_video, record_media_path
 from core.normalization import global_clip_audio_path, global_clip_envelope_path, global_thumbnail_path, source_cache_key
 from core.project import Project
@@ -189,7 +189,7 @@ def extract_clip_audio(video_path: str, audio_path: Path) -> None:
     """Extract mono 22050 Hz WAV audio from a clip."""
     tmp_path = audio_path.with_suffix(".tmp.wav")
     command = [
-        "ffmpeg",
+        ffmpeg_path(),
         "-y",
         "-i",
         video_path,
@@ -292,6 +292,7 @@ def error_clip_entry(record: dict[str, Any], message: str) -> dict[str, Any]:
     """Return a non-fatal sync error entry for one clip."""
     return {
         "path": record["path"],
+        "source_path": record["path"],
         "filename": Path(record["path"]).name,
         "duration_sec": 0.0,
         "offset_sec": 0.0,
@@ -430,7 +431,7 @@ def generate_preview(project: Project, clip_id: str) -> Path:
     master_start = max(0.0, float(clip.get("offset_sec", 0.0)) + clip_start)
     tmp_path = preview_path.with_suffix(".tmp.mp4")
     command = [
-        "ffmpeg",
+        ffmpeg_path(),
         "-y",
         "-ss",
         f"{clip_start:.3f}",
@@ -475,7 +476,7 @@ def generate_thumbnail(project: Project, clip_id: str) -> Path:
     midpoint = max(0.0, duration / 2.0)
     tmp_path = thumb_path.with_suffix(".tmp.jpg")
     command = [
-        "ffmpeg",
+        ffmpeg_path(),
         "-y",
         "-ss",
         f"{midpoint:.3f}",
@@ -505,6 +506,15 @@ def run_ffmpeg(command: list[str]) -> None:
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "ffmpeg failed")
+
+
+def ffmpeg_path() -> str:
+    """Return the configured ffmpeg executable path."""
+    status = tool_status()
+    ffmpeg = status.get("ffmpeg_path")
+    if not ffmpeg:
+        raise FFmpegError("ffmpeg is missing. Install it with: brew install ffmpeg")
+    return str(ffmpeg)
 
 
 def format_seconds(seconds: float) -> str:

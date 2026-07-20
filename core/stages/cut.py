@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,8 @@ from core.media_validation import record_is_usable_camera_video
 from core.project import Project
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.sync import load_song_boundaries, load_sync_map, sync_confidence_threshold
+
+LOGGER = logging.getLogger(__name__)
 
 
 class CutStage(Stage):
@@ -41,16 +44,21 @@ class CutStage(Stage):
         """Write a simple coverage plan consumed by export."""
         progress_callback(20, "Leyendo sincronización")
         sync_map = load_sync_map(project) or {}
-        clips = _usable_synced_clips(project, sync_map)
-        if not clips:
-            raise ValueError("Ninguno de los archivos parece un vídeo de cámara utilizable")
+        selection = _selectable_synced_clips(project, sync_map)
+        if not selection["clips"]:
+            diagnostics = selection["diagnostics"]
+            LOGGER.error("Cut rejected all clips: %s", diagnostics)
+            raise ValueError(_diagnostic_error_message(diagnostics))
         wizard = project.data["settings"].get("wizard", {})
         platform = str(wizard.get("platform") or "youtube")
         songs = load_song_boundaries(project)
         song_choice = wizard.get("song_choice")
         window = _selected_window(songs, song_choice, sync_map)
-        clip = _first_covering_clip(clips, window) or _longest_clip(clips)
+        clip = _first_covering_clip(selection["clips"], window) or _longest_clip(selection["clips"])
         segment = _segment_for_platform(clip, window, platform)
+        warnings = selection["warnings"]
+        if warnings:
+            segment["warnings"] = warnings
 
         progress_callback(70, "Creando plan simple")
         path = artifact_path(project, "coverage.json")
@@ -62,6 +70,8 @@ class CutStage(Stage):
                 "platform": platform,
                 "song_choice": song_choice,
                 "songs": songs,
+                "warnings": warnings,
+                "clip_diagnostics": selection["diagnostics"],
                 "segments": [segment],
             },
         )
@@ -90,7 +100,7 @@ def _selected_window(songs: list[dict[str, Any]], song_choice: Any, sync_map: di
     return {"title": "Vídeo completo", "start_sec": 0.0, "duration_sec": duration}
 
 
-def _usable_synced_clips(project: Project, sync_map: dict[str, Any]) -> list[dict[str, Any]]:
+def _selectable_synced_clips(project: Project, sync_map: dict[str, Any]) -> dict[str, Any]:
     records_by_path: dict[str, dict[str, Any]] = {}
     for record in project.data.get("inputs", {}).get("videos", []):
         if record.get("path"):
@@ -99,21 +109,65 @@ def _usable_synced_clips(project: Project, sync_map: dict[str, Any]) -> list[dic
         if normalized.get("path"):
             records_by_path[normalized["path"]] = record
     threshold = sync_confidence_threshold(project)
-    usable: list[dict[str, Any]] = []
+    confident: list[dict[str, Any]] = []
+    low_confidence: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
     for clip in (sync_map.get("clips") or {}).values():
         path = clip.get("source_path") or clip.get("path")
         record = records_by_path.get(path)
         if record is None and clip.get("path"):
             record = records_by_path.get(clip["path"])
         confidence = _float_or_zero(clip.get("confidence"))
-        if not record or not record_is_usable_camera_video(record):
+        valid_video = bool(record and record_is_usable_camera_video(record))
+        diagnostic = {
+            "filename": clip.get("filename") or Path(str(path or "")).name or "clip",
+            "valid_video": valid_video,
+            "confidence": confidence,
+            "threshold": threshold,
+            "low_confidence": bool(clip.get("low_confidence") or confidence < threshold),
+            "error": clip.get("error"),
+            "no_audio": bool(clip.get("no_audio")),
+            "path": clip.get("path"),
+            "source_path": clip.get("source_path"),
+        }
+        diagnostics.append(diagnostic)
+        if not valid_video:
             continue
         if clip.get("error") or clip.get("no_audio"):
             continue
         if confidence < threshold or clip.get("low_confidence"):
+            low_confidence.append(clip)
             continue
-        usable.append(clip)
-    return usable
+        confident.append(clip)
+    if confident:
+        return {"clips": confident, "warnings": [], "diagnostics": diagnostics}
+    if low_confidence:
+        best = max(low_confidence, key=lambda clip: _float_or_zero(clip.get("confidence")))
+        warning = "Sincronización dudosa — revisa el resultado"
+        LOGGER.warning("Cut falling back to low-confidence clip: %s diagnostics=%s", best.get("filename"), diagnostics)
+        return {"clips": [best], "warnings": [warning], "diagnostics": diagnostics}
+    return {"clips": [], "warnings": [], "diagnostics": diagnostics}
+
+
+def _diagnostic_error_message(diagnostics: list[dict[str, Any]]) -> str:
+    lines = ["Ninguno de los archivos parece un vídeo de cámara utilizable", "Diagnóstico por clip:"]
+    if not diagnostics:
+        lines.append("- sin clips en sync_map")
+        return "\n".join(lines)
+    for item in diagnostics:
+        valid = "sí" if item["valid_video"] else "no"
+        confidence = f"{item['confidence']:.3f}"
+        threshold = f"{item['threshold']:.3f}"
+        reason_bits = []
+        if item.get("error"):
+            reason_bits.append(f"error={item['error']}")
+        if item.get("no_audio"):
+            reason_bits.append("sin audio")
+        if item.get("low_confidence"):
+            reason_bits.append("confianza baja")
+        reason = f" ({'; '.join(reason_bits)})" if reason_bits else ""
+        lines.append(f"- {item['filename']}: vídeo válido={valid}, confianza={confidence}, umbral={threshold}{reason}")
+    return "\n".join(lines)
 
 
 def _first_covering_clip(clips: list[dict[str, Any]], window: dict[str, Any]) -> dict[str, Any] | None:

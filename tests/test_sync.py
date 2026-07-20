@@ -15,6 +15,7 @@ from core.stages.sync import (
     SYNC_SAMPLE_RATE,
     SyncStage,
     confidence_from_correlation,
+    extract_clip_audio,
     recover_offset,
 )
 
@@ -40,6 +41,26 @@ def test_offset_math_recovers_known_shift_exactly():
     offset_sec, _ = recover_offset(master, clip)
 
     assert offset_sec == pytest.approx(shift_frames * SYNC_HOP_LENGTH / SYNC_SAMPLE_RATE)
+
+
+def test_extract_clip_audio_uses_configured_ffmpeg_path(tmp_path, monkeypatch):
+    calls = []
+    video = tmp_path / "clip.mp4"
+    audio = tmp_path / "clip.wav"
+    video.write_bytes(b"video")
+
+    monkeypatch.setattr("core.stages.sync.tool_status", lambda: {"ffmpeg_path": "/opt/homebrew/bin/ffmpeg"})
+
+    def fake_run(command):
+        calls.append(command)
+        audio.with_suffix(".tmp.wav").write_bytes(b"wav")
+
+    monkeypatch.setattr("core.stages.sync.run_ffmpeg", fake_run)
+
+    extract_clip_audio(str(video), audio)
+
+    assert calls[0][0] == "/opt/homebrew/bin/ffmpeg"
+    assert audio.exists()
 
 
 @pytest.mark.slow
