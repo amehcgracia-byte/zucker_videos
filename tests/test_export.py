@@ -16,6 +16,7 @@ from core.stages.export import (
     _bitrate_for_duration,
     _run_ffmpeg_progress,
     _render_plan,
+    _render_segment,
     _clip_fates,
     _segment_filtergraph,
     color_sample_commands,
@@ -111,7 +112,8 @@ def test_render_plan_fades_only_intro_and_outro_segments(tmp_path, monkeypatch):
 
     def fake_render_segment(*args, **kwargs):
         calls.append(kwargs)
-        args[2].write_bytes(b"segment")
+        args[3].write_bytes(b"segment")
+        return "original"
 
     def fake_progress(command, duration, label, progress):
         Path(command[-1]).write_bytes(b"export")
@@ -138,6 +140,94 @@ def test_render_plan_fades_only_intro_and_outro_segments(tmp_path, monkeypatch):
 
     assert [call["intro_fade"] for call in calls] == [True, False, False]
     assert [call["outro_fade"] for call in calls] == [False, False, True]
+
+
+def test_render_segment_uses_original_source_with_proxy_metadata(tmp_path, monkeypatch):
+    project = create_project("Original", str(tmp_path / "Original.zuckervid"))
+    source = tmp_path / "source.mov"
+    proxy = tmp_path / "proxy.mp4"
+    master = tmp_path / "master.wav"
+    output = tmp_path / "segment.mp4"
+    source.write_bytes(b"source")
+    proxy.write_bytes(b"proxy")
+    master.write_bytes(b"master")
+    record = file_record(str(source))
+    record["probe"] = {"valid_video": True, "video_codec": "h264", "duration": 5.0, "width": 1920, "height": 1080, "fps": 24.0}
+    record["cache_key"] = "clip-key"
+    record["normalized"] = {"path": str(proxy), "cache_key": "clip-key", "kind": "proxy"}
+    project.data["inputs"]["videos"] = [record]
+    commands = []
+
+    monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
+    monkeypatch.setattr("core.stages.export._watermark_path", lambda: None)
+    monkeypatch.setattr("core.stages.export._ffmpeg_supports_filter", lambda name: False)
+
+    def fake_progress(command, duration, label, progress):
+        commands.append(command)
+        output.write_bytes(b"segment")
+
+    monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", fake_progress)
+
+    rendered_from = _render_segment(
+        project,
+        {"clip_path": str(proxy), "source_path": str(source), "clip_start_sec": 1, "master_start_sec": 2, "duration_sec": 3},
+        str(master),
+        output,
+        "youtube",
+        4_000_000,
+    )
+
+    assert rendered_from == "original"
+    assert str(source) in commands[0]
+    assert str(proxy) not in commands[0]
+
+
+def test_render_segment_falls_back_to_proxy_when_original_decode_fails(tmp_path, monkeypatch):
+    project = create_project("Fallback", str(tmp_path / "Fallback.zuckervid"))
+    source = tmp_path / "source.mov"
+    proxy = tmp_path / "proxy.mp4"
+    master = tmp_path / "master.wav"
+    output = tmp_path / "segment.mp4"
+    source.write_bytes(b"source")
+    proxy.write_bytes(b"proxy")
+    master.write_bytes(b"master")
+    record = file_record(str(source))
+    record["probe"] = {"valid_video": True, "video_codec": "h264", "duration": 5.0, "width": 1920, "height": 1080}
+    record["cache_key"] = "clip-key"
+    record["normalized"] = {"path": str(proxy), "cache_key": "clip-key", "kind": "proxy"}
+    project.data["inputs"]["videos"] = [record]
+    calls = []
+
+    monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
+    monkeypatch.setattr("core.stages.export._watermark_path", lambda: None)
+    monkeypatch.setattr("core.stages.export._ffmpeg_supports_filter", lambda name: False)
+
+    def fake_progress(command, duration, label, progress):
+        calls.append(command)
+        if len(calls) < 3:
+            from core.ffmpeg import FFmpegError
+
+            raise FFmpegError("decode failed")
+        output.write_bytes(b"proxy segment")
+
+    monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", fake_progress)
+    warnings = []
+
+    rendered_from = _render_segment(
+        project,
+        {"clip_path": str(proxy), "source_path": str(source), "clip_start_sec": 1, "master_start_sec": 2, "duration_sec": 3},
+        str(master),
+        output,
+        "youtube",
+        4_000_000,
+        warnings=warnings,
+    )
+
+    assert rendered_from == "proxy"
+    assert str(source) in calls[0]
+    assert str(source) in calls[1]
+    assert str(proxy) in calls[2]
+    assert warnings
 
 
 def test_color_sampling_uses_short_seeked_windows(monkeypatch):

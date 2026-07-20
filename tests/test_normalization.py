@@ -179,6 +179,6 @@ def test_equirect_normalization_produces_moving_cfr_h264(tmp_path, monkeypatch):
     stream = json.loads(result.stdout)["streams"][0]
     assert stream["codec_name"] == "h264"
     assert stream["pix_fmt"] == "yuv420p"
-    assert (stream["width"], stream["height"]) == (1920, 1080)
+    assert (stream["width"], stream["height"]) == (1280, 720)
     assert stream["avg_frame_rate"] == "24/1"
     assert int(stream.get("nb_frames") or 0) > 50

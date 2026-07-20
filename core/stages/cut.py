@@ -224,6 +224,7 @@ def _segment_for_platform(clip: dict[str, Any], window: dict[str, Any], platform
     return {
         "title": window["title"],
         "clip_path": clip["path"],
+        "source_path": clip.get("source_path") or clip["path"],
         "clip_start_sec": source_start,
         "master_start_sec": master_start,
         "duration_sec": max(1.0, duration),

@@ -18,7 +18,9 @@ from core.stages.base import stable_fingerprint
 
 Progress = Callable[[int, str], None]
 
-NORMALIZATION_VERSION = 2
+NORMALIZATION_VERSION = 3
+PROXY_MAX_WIDTH = 1280
+PROXY_MAX_HEIGHT = 720
 SDR_TONEMAP_FILTER = (
     "zscale=t=linear:npl=100,"
     "format=gbrpf32le,"
@@ -29,26 +31,24 @@ SDR_TONEMAP_FILTER = (
 EVEN_SDR_FILTER = "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p"
 LOGGER = logging.getLogger(__name__)
 
-EQUIRECT_FILTER = "v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w=1920:h=1080,fps=30,setpts=PTS-STARTPTS,format=yuv420p"
-CACHE_SUBDIRS = ("normalized", "audio", "envelopes", "thumbnails")
+EQUIRECT_FILTER = "v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w=1280:h=720,fps=30,setpts=PTS-STARTPTS,format=yuv420p"
+CACHE_SUBDIRS = ("proxies", "normalized", "segments", "audio", "envelopes", "thumbnails")
 
 
 def ensure_normalized_space(project: Project, records: list[dict[str, Any]]) -> None:
     """Fail early when cache storage is unlikely to fit normalized outputs."""
-    estimate = sum(int(record.get("size") or 0) for record in records)
+    estimate = sum(int(record.get("size") or 0) for record in records) // 4
     if estimate <= 0:
         return
     root = global_cache_root()
     root.mkdir(parents=True, exist_ok=True)
     free = shutil.disk_usage(root).free
     if free < estimate * 2:
-        raise RuntimeError(
-            t("not_enough_space")
-        )
+        raise RuntimeError(t("not_enough_space"))
 
 
 def normalize_video_record(project: Project, record: dict[str, Any], progress: Progress) -> dict[str, Any]:
-    """Create or reuse the normalized mezzanine for one validated video record."""
+    """Create or reuse the low-resolution proxy for one validated video record."""
     source = Path(record["path"]).expanduser().resolve()
     destination = normalized_path(project, record)
     signature = _source_signature(source)
@@ -80,27 +80,34 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
     probe = record.get("probe") or {}
     duration = float(probe.get("duration") or 0.0)
     fps = _bounded_fps(float(probe.get("fps") or 30.0))
-    filtergraph = normalization_filter(probe, fps=fps)
+    filtergraph = normalization_filter(probe, fps=fps, proxy=True)
     if probe.get("projection") == "equirect":
         LOGGER.info("Normalizing equirectangular source %s with probe=%s filter=%s", source, probe, filtergraph)
-    command = _normalization_command(source, tmp_path, fps, filtergraph)
-    _run_ffmpeg_progress(command, duration, source.name, progress)
+    try:
+        _run_ffmpeg_progress(_normalization_command(source, tmp_path, fps, filtergraph, "h264_videotoolbox"), duration, source.name, progress)
+    except FFmpegError:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        _run_ffmpeg_progress(_normalization_command(source, tmp_path, fps, filtergraph, "libx264"), duration, source.name, progress)
     os.replace(tmp_path, destination)
     normalized = {
         "path": str(destination),
         "cache_key": key,
         "normalization_version": NORMALIZATION_VERSION,
+        "kind": "proxy",
         "source_size": signature["size"],
         "source_mtime": signature["mtime"],
         "codec": "h264",
         "pix_fmt": "yuv420p",
         "fps": fps,
         "audio": "aac stereo 48k",
+        "max_width": PROXY_MAX_WIDTH,
+        "max_height": PROXY_MAX_HEIGHT,
         "filter": filtergraph,
     }
     if probe.get("projection") == "equirect":
         normalized["projection"] = "equirect"
-        normalized["reframe"] = {"yaw": 0, "pitch": 0, "h_fov": 100, "width": 1920, "height": 1080}
+        normalized["reframe"] = {"yaw": 0, "pitch": 0, "h_fov": 100, "width": PROXY_MAX_WIDTH, "height": PROXY_MAX_HEIGHT}
     record["normalized"] = normalized
     return normalized
 
@@ -128,8 +135,8 @@ def needs_normalization(record: dict[str, Any], destination: Path | None = None)
 
 
 def normalized_path(project: Project | None, record: dict[str, Any]) -> Path:
-    """Return the cache path for a clip's normalized mezzanine."""
-    return global_normalized_path(source_cache_key(record))
+    """Return the cache path for a clip's analysis proxy."""
+    return global_proxy_path(source_cache_key(record))
 
 
 def source_cache_key(record: dict[str, Any]) -> str:
@@ -184,6 +191,16 @@ def global_cache_root() -> Path:
 def global_normalized_path(key: str) -> Path:
     """Return the global normalized MP4 path for a source key."""
     return global_cache_root() / "normalized" / f"{key}.mp4"
+
+
+def global_proxy_path(key: str) -> Path:
+    """Return the global proxy MP4 path for a source key."""
+    return global_cache_root() / "proxies" / f"{key}.mp4"
+
+
+def global_segment_path(key: str) -> Path:
+    """Return the global rendered-segment path for a segment recipe key."""
+    return global_cache_root() / "segments" / f"{key}.mp4"
 
 
 def global_clip_audio_path(key: str) -> Path:
@@ -255,7 +272,7 @@ def migrate_project_normalization_cache(project: Project) -> bool:
         except OSError:
             continue
         key = cache_key_for_signature(source, signature)
-        destination = global_normalized_path(key)
+        destination = global_proxy_path(key)
         migrated = _migrate_legacy_normalized(project, record, destination, signature)
         if migrated:
             changed = True
@@ -300,20 +317,26 @@ def referenced_cache_keys(projects_root: Path | None = None) -> set[str]:
     return keys
 
 
-def normalization_filter(probe: dict[str, Any], fps: float | None = None) -> str:
-    """Return the ffmpeg filter chain used for the normalized mezzanine."""
+def normalization_filter(probe: dict[str, Any], fps: float | None = None, proxy: bool = False) -> str:
+    """Return the ffmpeg filter chain used for proxies or full-quality fragments."""
     target_fps = _bounded_fps(float(fps or probe.get("fps") or 30.0))
+    if proxy:
+        size_filter = f"scale={PROXY_MAX_WIDTH}:{PROXY_MAX_HEIGHT}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    else:
+        size_filter = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
     if probe.get("projection") == "equirect":
-        equirect = f"v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w=1920:h=1080,fps={target_fps:.3f},setpts=PTS-STARTPTS"
+        width = PROXY_MAX_WIDTH if proxy else 1920
+        height = PROXY_MAX_HEIGHT if proxy else 1080
+        equirect = f"v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w={width}:h={height},fps={target_fps:.3f},setpts=PTS-STARTPTS"
         if probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
             return f"{equirect},{SDR_TONEMAP_FILTER}"
         return f"{equirect},format=yuv420p"
     if probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
-        return f"{SDR_TONEMAP_FILTER},scale=trunc(iw/2)*2:trunc(ih/2)*2"
-    return EVEN_SDR_FILTER
+        return f"{SDR_TONEMAP_FILTER},{size_filter}"
+    return f"{size_filter},format=yuv420p" if proxy else EVEN_SDR_FILTER
 
 
-def _normalization_command(source: Path, destination: Path, fps: float, filtergraph: str) -> list[str]:
+def _normalization_command(source: Path, destination: Path, fps: float, filtergraph: str, codec: str = "h264_videotoolbox") -> list[str]:
     status = tool_status()
     ffmpeg = status.get("ffmpeg_path")
     if not ffmpeg:
@@ -340,11 +363,13 @@ def _normalization_command(source: Path, destination: Path, fps: float, filtergr
         "-fps_mode",
         "cfr",
         "-c:v",
-        "libx264",
-        "-preset",
-        "fast",
-        "-crf",
-        "16",
+        codec,
+        "-b:v",
+        "2500k",
+        "-maxrate",
+        "3500k",
+        "-bufsize",
+        "7000k",
         "-pix_fmt",
         "yuv420p",
         "-metadata:s:v:0",
@@ -404,6 +429,8 @@ def _legacy_normalized_path(project: Project, record: dict[str, Any]) -> Path:
 def _migrate_legacy_normalized(project: Project, record: dict[str, Any], destination: Path, signature: dict[str, Any]) -> bool:
     """Move a matching per-project normalized file into the global cache."""
     normalized = record.get("normalized") or {}
+    if normalized.get("normalization_version") != NORMALIZATION_VERSION or normalized.get("kind") != "proxy":
+        return False
     candidates = []
     existing_path = normalized.get("path")
     if existing_path:

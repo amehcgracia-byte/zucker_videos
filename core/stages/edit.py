@@ -278,6 +278,7 @@ def _short_form_segments_from_best_coverage(coverage: dict[str, Any]) -> list[di
         {
             "title": (coverage.get("window") or {}).get("title") or best.get("title") or t("video_title"),
             "clip_path": best["path"] if "path" in best else best["clip_path"],
+            "source_path": best.get("source_path") or best.get("path") or best.get("clip_path"),
             "clip_start_sec": clip_start,
             "master_start_sec": offset + clip_start,
             "duration_sec": duration,
@@ -312,6 +313,7 @@ def _segment_from_source(source: dict[str, Any], start: float, end: float, title
     return {
         "title": title,
         "clip_path": source["path"],
+        "source_path": source.get("source_path") or source["path"],
         "clip_start_sec": max(0.0, start - offset),
         "master_start_sec": start,
         "duration_sec": max(0.1, end - start),

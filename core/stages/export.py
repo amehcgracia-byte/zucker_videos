@@ -13,7 +13,7 @@ from typing import Any
 from core.ffmpeg import FFmpegError, tool_status
 from core.messages import t
 from core.media_validation import record_is_usable_camera_video, record_media_path
-from core.normalization import global_cache_root, source_cache_key
+from core.normalization import NORMALIZATION_VERSION, global_cache_root, global_segment_path, normalization_filter, source_cache_key
 from core.project import Project
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.cut import load_coverage
@@ -126,7 +126,6 @@ def _render_plan(
     overlay_config = _overlay_config(platform, segments[0])
     try:
         for index, segment in enumerate(segments, start=1):
-            segment_path = temp_dir / f"segment-{index:04d}.mp4"
             segment_duration = max(0.1, float(segment["duration_sec"]))
             base_percent = 10 + int(70 * rendered_duration / max(total_duration, 0.1))
 
@@ -136,18 +135,29 @@ def _render_plan(
                 progress_callback(min(84, percent), f"Rendering segment {index}/{len(segments)}: {detail}")
 
             color_profile = color_profiles.get(str(segment.get("clip_path")), {})
-            _render_segment(
-                segment,
-                master_path,
-                segment_path,
-                platform,
-                video_bitrate,
-                overlay_config,
-                color_profile,
-                segment_progress,
-                intro_fade=index == 1,
-                outro_fade=index == len(segments),
-            )
+            intro_fade = index == 1
+            outro_fade = index == len(segments)
+            segment_path = cached_segment_path(project, segment, platform, video_bitrate, overlay_config, color_profile, intro_fade, outro_fade)
+            if not segment_path.exists():
+                tmp_segment = temp_dir / f"segment-{index:04d}.mp4"
+                rendered_from = _render_segment(
+                    project,
+                    segment,
+                    master_path,
+                    tmp_segment,
+                    platform,
+                    video_bitrate,
+                    overlay_config,
+                    color_profile,
+                    segment_progress,
+                    intro_fade=intro_fade,
+                    outro_fade=outro_fade,
+                    warnings=warnings,
+                )
+                segment_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(tmp_segment, segment_path)
+                if rendered_from == "proxy":
+                    warnings.append(f"Used proxy fallback for {Path(str(segment.get('source_path') or segment.get('clip_path'))).name}")
             segment_paths.append(segment_path)
             rendered_duration += segment_duration
         concat_path = temp_dir / "concat.txt"
@@ -181,6 +191,7 @@ def _render_plan(
 
 
 def _render_segment(
+    project: Project,
     segment: dict[str, Any],
     master_path: str,
     output_path: Path,
@@ -191,9 +202,11 @@ def _render_segment(
     progress_callback: ProgressCallback | None = None,
     intro_fade: bool = False,
     outro_fade: bool = False,
-) -> None:
+    warnings: list[str] | None = None,
+) -> str:
     ffmpeg = _ffmpeg_path()
     duration = max(0.1, float(segment["duration_sec"]))
+    source = _segment_source_info(project, segment)
     watermark = _watermark_path()
     filter_complex = _segment_filtergraph(
         platform,
@@ -204,29 +217,15 @@ def _render_segment(
         _ffmpeg_supports_filter("drawtext"),
         intro_fade=intro_fade,
         outro_fade=outro_fade,
+        source_filter=normalization_filter(source.get("probe") or {}, fps=(source.get("probe") or {}).get("fps"), proxy=False),
     )
-    command_base = [
+    command_base = _segment_command_base(
         ffmpeg,
-        "-y",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-nostdin",
-        "-progress",
-        "pipe:1",
-        "-ss",
-        f"{float(segment['clip_start_sec']):.3f}",
-        "-t",
-        f"{duration:.3f}",
-        "-i",
-        str(Path(segment["clip_path"])),
-        "-ss",
-        f"{float(segment.get('master_start_sec') or 0.0):.3f}",
-        "-t",
-        f"{duration:.3f}",
-        "-i",
-        str(Path(master_path)),
-    ]
+        source["source_path"],
+        master_path,
+        segment,
+        duration,
+    )
     if watermark:
         command_base.extend(["-loop", "1", "-i", str(watermark)])
     command_base.extend(
@@ -251,16 +250,66 @@ def _render_segment(
     hardware = _video_encode_args("h264_videotoolbox", video_bitrate)
     software = _video_encode_args("libx264", video_bitrate)
     try:
-        _run_ffmpeg_progress(command_base + hardware + [str(output_path)], duration, Path(str(segment["clip_path"])).name, progress_callback)
+        _run_ffmpeg_progress(command_base + hardware + [str(output_path)], duration, Path(str(source["source_path"])).name, progress_callback)
+        return "original"
     except FFmpegError as exc:
         if output_path.exists():
             output_path.unlink()
         if progress_callback:
             progress_callback(0, t("hardware_fallback"))
         try:
-            _run_ffmpeg_progress(command_base + software + [str(output_path)], duration, Path(str(segment["clip_path"])).name, progress_callback)
+            _run_ffmpeg_progress(command_base + software + [str(output_path)], duration, Path(str(source["source_path"])).name, progress_callback)
+            return "original"
         except FFmpegError as fallback_exc:
-            raise FFmpegError(f"{fallback_exc}\nFallback after h264_videotoolbox failed with: {exc}") from fallback_exc
+            if output_path.exists():
+                output_path.unlink()
+            proxy_path = source.get("proxy_path")
+            if not proxy_path or proxy_path == source["source_path"]:
+                raise FFmpegError(f"{fallback_exc}\nFallback after h264_videotoolbox failed with: {exc}") from fallback_exc
+            if warnings is not None:
+                warnings.append(f"Original render failed for {Path(str(source['source_path'])).name}; using proxy fallback")
+            proxy_filter = _segment_filtergraph(
+                platform,
+                duration,
+                overlay_config or {},
+                color_profile or {},
+                bool(watermark),
+                _ffmpeg_supports_filter("drawtext"),
+                intro_fade=intro_fade,
+                outro_fade=outro_fade,
+            )
+            proxy_command = _segment_command_base(ffmpeg, proxy_path, master_path, segment, duration)
+            if watermark:
+                proxy_command.extend(["-loop", "1", "-i", str(watermark)])
+            proxy_command.extend(command_base[command_base.index("-filter_complex") :])
+            proxy_command[proxy_command.index("-filter_complex") + 1] = proxy_filter
+            _run_ffmpeg_progress(proxy_command + software + [str(output_path)], duration, Path(str(proxy_path)).name, progress_callback)
+            return "proxy"
+
+
+def _segment_command_base(ffmpeg: str, clip_path: str, master_path: str, segment: dict[str, Any], duration: float) -> list[str]:
+    return [
+        ffmpeg,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-progress",
+        "pipe:1",
+        "-ss",
+        f"{float(segment['clip_start_sec']):.3f}",
+        "-t",
+        f"{duration:.3f}",
+        "-i",
+        str(Path(clip_path)),
+        "-ss",
+        f"{float(segment.get('master_start_sec') or 0.0):.3f}",
+        "-t",
+        f"{duration:.3f}",
+        "-i",
+        str(Path(master_path)),
+    ]
 
 
 def _run_ffmpeg_progress(command: list[str], duration: float, label: str, progress: ProgressCallback | None) -> None:
@@ -298,8 +347,12 @@ def _segment_filtergraph(
     text_enabled: bool = True,
     intro_fade: bool = False,
     outro_fade: bool = False,
+    source_filter: str | None = None,
 ) -> str:
-    filters = [_base_video_filter(platform), _color_filter(color_profile)]
+    filters = []
+    if source_filter:
+        filters.append(source_filter)
+    filters.extend([_base_video_filter(platform), _color_filter(color_profile)])
     if intro_fade:
         filters.append("fade=t=in:st=0:d=0.5")
     if outro_fade:
@@ -317,6 +370,60 @@ def _segment_filtergraph(
         f"[2:v]format=rgba,scale=-1:{wm_height},colorchannelmixer=aa=0.70[wm];"
         f"[base][wm]overlay=W-w-{margin}:H-h-{margin}:format=auto[v]"
     )
+
+
+def _segment_source_info(project: Project, segment: dict[str, Any]) -> dict[str, Any]:
+    """Resolve the original source and analysis proxy for an edit segment."""
+    segment_source = str(segment.get("source_path") or "")
+    segment_proxy = str(segment.get("clip_path") or "")
+    for record in project.data.get("inputs", {}).get("videos", []):
+        normalized = record.get("normalized") or {}
+        candidates = {str(record.get("path") or ""), str(normalized.get("path") or "")}
+        if segment_source in candidates or segment_proxy in candidates:
+            return {
+                "source_path": str(record.get("path") or segment_source or segment_proxy),
+                "proxy_path": str(normalized.get("path") or segment_proxy),
+                "probe": record.get("probe") or {},
+                "cache_key": record.get("cache_key") or normalized.get("cache_key") or source_cache_key(record),
+            }
+    return {
+        "source_path": segment_source or segment_proxy,
+        "proxy_path": segment_proxy,
+        "probe": segment.get("probe") or {},
+        "cache_key": stable_fingerprint({"source": segment_source, "proxy": segment_proxy})[:24],
+    }
+
+
+def cached_segment_path(
+    project: Project,
+    segment: dict[str, Any],
+    platform: str,
+    video_bitrate: int,
+    overlay_config: dict[str, Any],
+    color_profile: dict[str, Any],
+    intro_fade: bool,
+    outro_fade: bool,
+) -> Path:
+    """Return the global cache path for a rendered segment recipe."""
+    source = _segment_source_info(project, segment)
+    recipe = stable_fingerprint(
+        {
+            "cache_key": source["cache_key"],
+            "source_path": source["source_path"],
+            "clip_start_sec": round(float(segment.get("clip_start_sec") or 0.0), 3),
+            "duration_sec": round(float(segment.get("duration_sec") or 0.0), 3),
+            "master_start_sec": round(float(segment.get("master_start_sec") or 0.0), 3),
+            "platform": platform,
+            "video_bitrate": video_bitrate,
+            "overlay": overlay_config,
+            "color": color_profile,
+            "intro_fade": intro_fade,
+            "outro_fade": outro_fade,
+            "normalization_version": NORMALIZATION_VERSION,
+            "export_segment_recipe": 1,
+        }
+    )[:24]
+    return global_segment_path(recipe)
 
 
 def _color_filter(color_profile: dict[str, Any]) -> str:
