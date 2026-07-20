@@ -38,6 +38,10 @@ The old technical UI is still available for debugging at:
 
 This version implements the architecture, persistence, pipeline contracts, Flask API, media range serving, a real audio-based sync stage, the three-step wizard, and a minimal ffmpeg export path.
 
+### Definition Of Done
+
+For any task that changes app behavior, finish by rebuilding `dist/Zucker Editor.app` and `dist/Zucker Editor.dmg`, then verify the bundled `build_info.json` reports the current git commit.
+
 ### Quick Start
 
 ```bash
