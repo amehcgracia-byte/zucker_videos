@@ -104,6 +104,21 @@
           <video id="resultVideo" controls></video>
           <strong id="resultFilename"></strong>
           <p id="resultSummary" class="result-summary"></p>
+          <div id="clipFates" class="clip-fates"></div>
+          <div id="rescuePanel" class="rescue-panel" hidden>
+            <div>
+              <strong id="rescueTitle">Rescue camera</strong>
+              <p id="rescueMeta"></p>
+            </div>
+            <video id="rescuePreview" controls></video>
+            <label>
+              Sync offset (seconds)
+              <input id="rescueOffset" type="number" step="0.001" />
+            </label>
+            <div class="result-actions">
+              <button id="confirmRescue" class="icon-button" data-icon="retry">Use this camera and rerender</button>
+            </div>
+          </div>
           <div class="result-actions">
             <button id="openLogsSuccess" class="icon-button desktop-only" data-icon="doc">Open logs</button>
             <button id="showFinder" class="icon-button desktop-only" data-icon="folder">Show in Finder</button>

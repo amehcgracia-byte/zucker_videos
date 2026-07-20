@@ -24,4 +24,9 @@ window.UI_STRINGS = {
   allSongs: "All",
   logs: "Open logs",
   reveal: "Show in Finder",
+  fateUsed: "Used",
+  fateExcluded: "Excluded",
+  fateNotCovering: "Not covering this song",
+  rescueCamera: "Rescue camera",
+  invalidOffset: "Enter a valid offset",
 };

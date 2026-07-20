@@ -17,7 +17,7 @@ from core.stages.cut import CutStage
 from core.stages.edit import EditStage
 from core.stages.export import ExportStage
 from core.stages.ingest import IngestStage
-from core.stages.sync import SyncStage, load_song_boundaries
+from core.stages.sync import SyncStage, load_song_boundaries, set_manual_override
 from server.inbox import app_home, load_global_config, register_selected_inputs, save_global_config
 
 LOGGER = logging.getLogger(__name__)
@@ -152,6 +152,25 @@ class WizardRunner:
                 return {"status": "idle", "progress": 0, "message": "Idle"}
             return dict(self._job.__dict__)
 
+    def rescue(self, project: Project, *, clip_id: str, offset_sec: float) -> WizardJob:
+        """Apply a manual sync override and rerender cut/edit/export for the wizard."""
+        with self._lock:
+            if self._job and self._job.status == "running":
+                raise RuntimeError("A video is already being processed")
+            job = WizardJob(id="current", message=t("building_edit"))
+            _attach_project(job, project)
+            self._job = job
+            self._prepared_project = None
+            thread = threading.Thread(
+                target=self._rescue_and_rerender,
+                kwargs={"job": job, "project": project, "clip_id": clip_id, "offset_sec": offset_sec},
+                daemon=True,
+                name="zucker-wizard-rescue",
+            )
+            self._thread = thread
+            thread.start()
+            return job
+
     def _run(
         self,
         *,
@@ -253,6 +272,7 @@ class WizardRunner:
                 "camera_usage": export.get("camera_usage"),
                 "warnings": export.get("warnings") or manifest.get("warnings") or [],
                 "excluded_clips": export.get("excluded_clips") or [],
+                "clip_fates": export.get("clip_fates") or [],
             }
             elapsed = time.monotonic() - started_at
             if project.data["inputs"].get("videos") and elapsed < 1.0:
@@ -300,6 +320,49 @@ class WizardRunner:
             songs_path=songs_path,
             video_paths=video_paths,
         )
+
+    def _rescue_and_rerender(self, *, job: WizardJob, project: Project, clip_id: str, offset_sec: float) -> None:
+        started_at = time.monotonic()
+        try:
+            set_manual_override(project, clip_id, offset_sec)
+            _write_stage_log(project, "wizard", f"RESCUE clip_id={clip_id} offset_sec={offset_sec:.3f}")
+            self._run_stage(job, project, CutStage(), 0, 16, t("cutting_song"))
+            self._run_stage(job, project, EditStage(), 16, 34, t("building_edit"))
+            outputs = self._run_stage(job, project, ExportStage(), 34, 100, t("exporting_video"))
+            manifest_path = Path(outputs["export_manifest"])
+            import json
+
+            with manifest_path.open("r", encoding="utf-8") as fh:
+                manifest = json.load(fh)
+            export = manifest["exports"][0]
+            export_path = Path(export["path"])
+            if export_path.suffix.lower() != ".mp4" or not export_path.exists():
+                raise RuntimeError(f"Export did not produce an MP4: {export_path}")
+            job.status = "done"
+            job.progress = 100
+            job.message = t("done")
+            job.result = {
+                "project_path": str(project.folder),
+                "filename": export_path.name,
+                "path": str(export_path),
+                "media_url": "/api/v1/wizard/result",
+                "platform": export.get("platform"),
+                "logs_path": str(project.cache_dir / "logs"),
+                "cut_count": export.get("cut_count"),
+                "camera_usage": export.get("camera_usage"),
+                "warnings": export.get("warnings") or manifest.get("warnings") or [],
+                "excluded_clips": export.get("excluded_clips") or [],
+                "clip_fates": export.get("clip_fates") or [],
+            }
+            elapsed = time.monotonic() - started_at
+            _write_stage_log(project, "wizard", f"RESCUE DONE clip_id={clip_id} elapsed={elapsed:.2f}s")
+        except Exception as exc:
+            LOGGER.exception("Wizard rescue rerender failed")
+            _write_stage_log(project, "wizard", f"RESCUE FAILED {traceback.format_exc()}")
+            job.status = "failed"
+            job.error = _friendly_error(exc)
+            job.technical_details = traceback.format_exc()
+            job.message = t("cannot_finish")
 
     def _run_stage(self, job: WizardJob, project: Project, stage: Any, start: int, end: int, message: str) -> dict[str, str]:
         job.message = message

@@ -12,6 +12,7 @@ from typing import Any
 
 from core.ffmpeg import FFmpegError, tool_status
 from core.messages import t
+from core.media_validation import record_is_usable_camera_video, record_media_path
 from core.normalization import global_cache_root, source_cache_key
 from core.project import Project
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
@@ -70,6 +71,7 @@ class ExportStage(Stage):
         path = artifact_path(project, "export_manifest.json")
         if bitrate_info["warning"]:
             warnings.append(bitrate_info["warning"])
+        clip_fates = _clip_fates(project, plan, segments, duration)
         write_artifact_json(
             path,
             {
@@ -88,6 +90,7 @@ class ExportStage(Stage):
                         "cut_count": int(plan.get("cut_count") or max(0, len(segments) - 1)),
                         "camera_usage": plan.get("camera_usage") or _camera_usage(segments),
                         "excluded_clips": plan.get("excluded_clips") or [],
+                        "clip_fates": clip_fates,
                     }
                 ],
             },
@@ -133,7 +136,18 @@ def _render_plan(
                 progress_callback(min(84, percent), f"Rendering segment {index}/{len(segments)}: {detail}")
 
             color_profile = color_profiles.get(str(segment.get("clip_path")), {})
-            _render_segment(segment, master_path, segment_path, platform, video_bitrate, overlay_config, color_profile, segment_progress)
+            _render_segment(
+                segment,
+                master_path,
+                segment_path,
+                platform,
+                video_bitrate,
+                overlay_config,
+                color_profile,
+                segment_progress,
+                intro_fade=index == 1,
+                outro_fade=index == len(segments),
+            )
             segment_paths.append(segment_path)
             rendered_duration += segment_duration
         concat_path = temp_dir / "concat.txt"
@@ -175,11 +189,22 @@ def _render_segment(
     overlay_config: dict[str, Any] | None = None,
     color_profile: dict[str, Any] | None = None,
     progress_callback: ProgressCallback | None = None,
+    intro_fade: bool = False,
+    outro_fade: bool = False,
 ) -> None:
     ffmpeg = _ffmpeg_path()
     duration = max(0.1, float(segment["duration_sec"]))
     watermark = _watermark_path()
-    filter_complex = _segment_filtergraph(platform, duration, overlay_config or {}, color_profile or {}, bool(watermark), _ffmpeg_supports_filter("drawtext"))
+    filter_complex = _segment_filtergraph(
+        platform,
+        duration,
+        overlay_config or {},
+        color_profile or {},
+        bool(watermark),
+        _ffmpeg_supports_filter("drawtext"),
+        intro_fade=intro_fade,
+        outro_fade=outro_fade,
+    )
     command_base = [
         ffmpeg,
         "-y",
@@ -271,8 +296,14 @@ def _segment_filtergraph(
     color_profile: dict[str, Any],
     has_watermark: bool = True,
     text_enabled: bool = True,
+    intro_fade: bool = False,
+    outro_fade: bool = False,
 ) -> str:
-    filters = [_base_video_filter(platform), _color_filter(color_profile), f"fade=t=in:st=0:d=0.5", f"fade=t=out:st={max(0.0, duration - 0.5):.3f}:d=0.5"]
+    filters = [_base_video_filter(platform), _color_filter(color_profile)]
+    if intro_fade:
+        filters.append("fade=t=in:st=0:d=0.5")
+    if outro_fade:
+        filters.append(f"fade=t=out:st={max(0.0, duration - 0.5):.3f}:d=0.5")
     if text_enabled:
         filters.extend(_text_filters(platform, duration, overlay_config))
     filters.append("format=yuv420p")
@@ -292,6 +323,101 @@ def _color_filter(color_profile: dict[str, Any]) -> str:
     brightness = max(-0.08, min(0.08, float(color_profile.get("brightness_adjust") or 0.0)))
     saturation = max(0.90, min(1.10, float(color_profile.get("saturation_adjust") or 1.0)))
     return f"eq=brightness={brightness:.4f}:saturation={saturation:.4f}"
+
+
+def _clip_fates(project: Project, plan: dict[str, Any], segments: list[dict[str, Any]], total_duration: float) -> list[dict[str, Any]]:
+    """Summarize every registered clip as used, excluded, or not covering the edit."""
+    used_seconds: dict[str, float] = {}
+    names_by_path: dict[str, str] = {}
+    for segment in segments:
+        path = str(segment.get("clip_path") or "")
+        if not path:
+            continue
+        used_seconds[path] = used_seconds.get(path, 0.0) + float(segment.get("duration_sec") or 0.0)
+        names_by_path[path] = str(segment.get("filename") or Path(path).name)
+
+    excluded_by_path: dict[str, dict[str, Any]] = {}
+    excluded_by_name: dict[str, dict[str, Any]] = {}
+    for item in plan.get("excluded_clips") or []:
+        diagnostic = item.get("diagnostic") or {}
+        for key in (diagnostic.get("path"), diagnostic.get("source_path")):
+            if key:
+                excluded_by_path[str(key)] = item
+        excluded_by_name[str(item.get("filename") or diagnostic.get("filename") or "")] = item
+
+    diagnostics = list(plan.get("clip_diagnostics") or [])
+    diagnostic_keys = {
+        str(value)
+        for diagnostic in diagnostics
+        for value in (diagnostic.get("path"), diagnostic.get("source_path"))
+        if value
+    }
+    for record in project.data.get("inputs", {}).get("videos", []):
+        media_path = record_media_path(record)
+        if str(media_path) in diagnostic_keys or str(record.get("path")) in diagnostic_keys:
+            continue
+        reason = record.get("not_a_video_reason") or "not covering this song"
+        diagnostics.append(
+            {
+                "clip_id": None,
+                "filename": Path(str(record.get("path") or media_path)).name,
+                "path": media_path,
+                "source_path": record.get("path"),
+                "valid_video": record_is_usable_camera_video(record),
+                "reason": reason,
+            }
+        )
+
+    fates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for diagnostic in diagnostics:
+        path = str(diagnostic.get("path") or diagnostic.get("source_path") or "")
+        filename = str(diagnostic.get("filename") or names_by_path.get(path) or Path(path).name or "clip")
+        excluded = excluded_by_path.get(path) or excluded_by_name.get(filename)
+        if excluded:
+            status = "excluded"
+            used_percent = 0.0
+            reason = str(excluded.get("reason") or "excluded")
+        elif path in used_seconds:
+            status = "used"
+            used_percent = used_seconds[path] / max(total_duration, 0.1) * 100
+            reason = "used in final edit"
+        elif diagnostic.get("valid_video") is False:
+            status = "excluded"
+            used_percent = 0.0
+            reason = str(diagnostic.get("reason") or "not a usable camera video")
+        else:
+            status = "not_covering"
+            used_percent = 0.0
+            reason = "not covering this song"
+        seen.add(path or filename)
+        fates.append(
+            {
+                "clip_id": diagnostic.get("clip_id"),
+                "filename": filename,
+                "status": status,
+                "reason": reason,
+                "used_percent": round(used_percent, 1),
+                "confidence": diagnostic.get("confidence"),
+                "threshold": diagnostic.get("threshold"),
+                "offset_sec": diagnostic.get("offset_sec"),
+                "verification": diagnostic.get("verification"),
+                "manual_override": diagnostic.get("manual_override"),
+            }
+        )
+    for path, seconds in used_seconds.items():
+        key = path or names_by_path.get(path, "")
+        if key in seen:
+            continue
+        fates.append(
+            {
+                "filename": names_by_path.get(path) or Path(path).name,
+                "status": "used",
+                "reason": "used in final edit",
+                "used_percent": round(seconds / max(total_duration, 0.1) * 100, 1),
+            }
+        )
+    return fates
 
 
 def _text_filters(platform: str, duration: float, config: dict[str, Any]) -> list[str]:

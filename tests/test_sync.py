@@ -17,6 +17,7 @@ from core.stages.sync import (
     confidence_from_correlation,
     extract_clip_audio,
     recover_offset,
+    sync_clip,
     verify_sync_stability,
 )
 
@@ -75,6 +76,41 @@ def test_sync_verification_marks_disagreeing_offsets_unstable(monkeypatch):
     assert result["checked"] is True
     assert result["unstable_sync"] is True
     assert result["delta_sec"] > 0.150
+
+
+def test_sync_clip_uses_spectral_flux_fallback_when_onset_confidence_is_low(tmp_path, monkeypatch):
+    import core.stages.sync as sync
+
+    project = create_project("Fallback", str(tmp_path / "Fallback.zuckervid"))
+    master = tmp_path / "master.wav"
+    clip = tmp_path / "clip.mp4"
+    master.write_bytes(b"master")
+    clip.write_bytes(b"clip")
+    project.data["inputs"]["master"] = {"path": str(master)}
+    record = {"path": str(clip), "size": clip.stat().st_size, "mtime": clip.stat().st_mtime}
+    onset_master = np.ones(100, dtype=np.float32)
+    onset_clip = np.ones(20, dtype=np.float32)
+    spectral_master = np.arange(100, dtype=np.float32)
+    spectral_clip = np.arange(20, dtype=np.float32)
+    calls = []
+
+    monkeypatch.setattr(sync, "media_duration", lambda path: 20.0)
+    monkeypatch.setattr(sync, "load_or_compute_clip_envelope", lambda project, record: (onset_clip, "/audio.wav"))
+    monkeypatch.setattr(sync, "load_or_compute_master_spectral_envelope", lambda project: spectral_master)
+    monkeypatch.setattr(sync, "load_or_compute_clip_spectral_envelope", lambda project, record: (spectral_clip, "/audio.wav"))
+    monkeypatch.setattr(sync, "verify_sync_stability", lambda master, clip, offset: {"checked": True, "unstable_sync": False})
+
+    def fake_recover(master, clip_env):
+        calls.append((master, clip_env))
+        return (1.0, 2.0) if len(calls) == 1 else (3.0, 9.0)
+
+    monkeypatch.setattr(sync, "recover_offset", fake_recover)
+
+    result = sync_clip(project, record, onset_master, threshold=6.0)
+
+    assert result["offset_sec"] == 3.0
+    assert result["confidence"] == 9.0
+    assert result["sync_method"] == "spectral_flux"
 
 
 @pytest.mark.slow

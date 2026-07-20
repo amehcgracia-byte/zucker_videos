@@ -15,6 +15,8 @@ from core.stages.export import (
     ExportStage,
     _bitrate_for_duration,
     _run_ffmpeg_progress,
+    _render_plan,
+    _clip_fates,
     _segment_filtergraph,
     color_sample_commands,
     color_correction_for_profile,
@@ -72,6 +74,70 @@ def test_segment_filtergraph_adds_watermark_and_texts():
     assert "My song" in graph
     assert "overlay=W-w-40:H-h-40" in graph
     assert "eq=brightness=0.0200:saturation=1.0500" in graph
+    assert "fade=t=in" not in graph
+    assert "fade=t=out" not in graph
+
+
+def test_segment_filtergraph_keeps_only_explicit_intro_outro_fades():
+    graph = _segment_filtergraph("youtube", 12.0, {}, {}, has_watermark=False, text_enabled=False, intro_fade=True, outro_fade=True)
+
+    assert "fade=t=in:st=0:d=0.5" in graph
+    assert "fade=t=out:st=11.500:d=0.5" in graph
+
+
+def test_clip_fates_report_used_excluded_and_not_covering(tmp_path):
+    project = create_project("Fates", str(tmp_path / "Fates.zuckervid"))
+    plan = {
+        "clip_diagnostics": [
+            {"clip_id": "a", "filename": "a.mp4", "path": "/cache/a.mp4", "confidence": 9.0, "threshold": 6.0, "offset_sec": 0.0},
+            {"clip_id": "b", "filename": "b.mp4", "path": "/cache/b.mp4", "confidence": 2.0, "threshold": 6.0, "offset_sec": 1.0},
+            {"clip_id": "c", "filename": "c.mp4", "path": "/cache/c.mp4", "confidence": 8.0, "threshold": 6.0, "offset_sec": 99.0},
+        ],
+        "excluded_clips": [{"filename": "b.mp4", "reason": "low confidence 2.0 < threshold 6.0", "diagnostic": {"path": "/cache/b.mp4"}}],
+    }
+    segments = [{"clip_path": "/cache/a.mp4", "filename": "a.mp4", "duration_sec": 5.0}]
+
+    fates = _clip_fates(project, plan, segments, 10.0)
+
+    assert {item["filename"]: item["status"] for item in fates} == {"a.mp4": "used", "b.mp4": "excluded", "c.mp4": "not_covering"}
+    assert next(item for item in fates if item["filename"] == "a.mp4")["used_percent"] == 50.0
+
+
+def test_render_plan_fades_only_intro_and_outro_segments(tmp_path, monkeypatch):
+    project = create_project("Fades", str(tmp_path / "Fades.zuckervid"))
+    master = tmp_path / "master.wav"
+    master.write_bytes(b"master")
+    calls = []
+
+    def fake_render_segment(*args, **kwargs):
+        calls.append(kwargs)
+        args[2].write_bytes(b"segment")
+
+    def fake_progress(command, duration, label, progress):
+        Path(command[-1]).write_bytes(b"export")
+
+    monkeypatch.setattr("core.stages.export._render_segment", fake_render_segment)
+    monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", fake_progress)
+    monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
+    monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda project, segments, warnings: {})
+
+    _render_plan(
+        project,
+        [
+            {"clip_path": "/a.mp4", "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 2},
+            {"clip_path": "/b.mp4", "clip_start_sec": 0, "master_start_sec": 2, "duration_sec": 2},
+            {"clip_path": "/c.mp4", "clip_start_sec": 0, "master_start_sec": 4, "duration_sec": 2},
+        ],
+        str(master),
+        tmp_path / "out.mp4",
+        "youtube",
+        4_000_000,
+        [],
+        lambda percent, detail: None,
+    )
+
+    assert [call["intro_fade"] for call in calls] == [True, False, False]
+    assert [call["outro_fade"] for call in calls] == [False, False, True]
 
 
 def test_color_sampling_uses_short_seeked_windows(monkeypatch):

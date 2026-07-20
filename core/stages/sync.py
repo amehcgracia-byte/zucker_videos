@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy.signal import correlate
+from scipy.signal import butter, correlate, sosfiltfilt
 
 from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.media_validation import record_is_usable_camera_video, record_media_path
@@ -38,7 +38,7 @@ class SyncStage(Stage):
                 "master": project.data["inputs"].get("master"),
                 "videos": project.data["inputs"].get("videos", []),
                 "settings": project.data["settings"].get(self.name, {}),
-                "algorithm": {"sr": SYNC_SAMPLE_RATE, "hop": SYNC_HOP_LENGTH, "version": 2, "verify_tolerance_sec": 0.150},
+                "algorithm": {"sr": SYNC_SAMPLE_RATE, "hop": SYNC_HOP_LENGTH, "version": 3, "verify_tolerance_sec": 0.150},
             }
         )
 
@@ -69,8 +69,10 @@ class SyncStage(Stage):
             try:
                 result = sync_clip(project, record, master_env, threshold)
                 result = preserve_manual_override(old_map, clip_id, record, result)
+                result["clip_id"] = clip_id
             except Exception as exc:
                 result = error_clip_entry(record, str(exc))
+                result["clip_id"] = clip_id
             clips[clip_id] = result
 
         progress_callback(96, t("writing_sync_map"))
@@ -135,23 +137,72 @@ def normalized_onset_envelope(path: str) -> np.ndarray:
     import librosa
 
     y, _ = librosa.load(path, sr=SYNC_SAMPLE_RATE, mono=True)
+    y = preprocess_sync_audio(y, SYNC_SAMPLE_RATE)
     envelope = librosa.onset.onset_strength(y=y, sr=SYNC_SAMPLE_RATE, hop_length=SYNC_HOP_LENGTH)
-    envelope = np.asarray(envelope, dtype=np.float32)
-    if envelope.size == 0:
-        return envelope
-    std = float(np.std(envelope))
+    return normalize_envelope(envelope)
+
+
+def normalized_spectral_flux_envelope(path: str) -> np.ndarray:
+    """Load audio and return a normalized spectral-flux envelope for weak camera audio."""
+    import librosa
+
+    y, _ = librosa.load(path, sr=SYNC_SAMPLE_RATE, mono=True)
+    y = preprocess_sync_audio(y, SYNC_SAMPLE_RATE)
+    spectrogram = np.abs(librosa.stft(y, n_fft=2048, hop_length=SYNC_HOP_LENGTH))
+    if spectrogram.shape[1] < 2:
+        return np.zeros(0, dtype=np.float32)
+    flux = np.maximum(0.0, np.diff(spectrogram, axis=1)).sum(axis=0)
+    return normalize_envelope(flux)
+
+
+def preprocess_sync_audio(y: np.ndarray, sr: int) -> np.ndarray:
+    """Band-limit and compress camera audio before sync envelope extraction."""
+    samples = np.asarray(y, dtype=np.float32)
+    if samples.size == 0:
+        return samples
+    high = min(8000.0, sr / 2 - 100.0)
+    if high > 100.0:
+        try:
+            sos = butter(4, [100.0, high], btype="bandpass", fs=sr, output="sos")
+            samples = sosfiltfilt(sos, samples).astype(np.float32)
+        except ValueError:
+            pass
+    peak = float(np.max(np.abs(samples))) if samples.size else 0.0
+    if peak > 1e-6:
+        samples = samples / peak
+    samples = np.sign(samples) * np.sqrt(np.abs(samples))
+    return samples.astype(np.float32)
+
+
+def normalize_envelope(envelope: Any) -> np.ndarray:
+    """Return a zero-mean, unit-std float envelope."""
+    values = np.asarray(envelope, dtype=np.float32)
+    if values.size == 0:
+        return values
+    std = float(np.std(values))
     if std < 1e-9:
-        return np.zeros_like(envelope, dtype=np.float32)
-    return ((envelope - float(np.mean(envelope))) / std).astype(np.float32)
+        return np.zeros_like(values, dtype=np.float32)
+    return ((values - float(np.mean(values))) / std).astype(np.float32)
 
 
 def load_or_compute_master_envelope(project: Project) -> np.ndarray:
     """Load cached master envelope or compute it from the registered master."""
     master_path = project.data["inputs"]["master"]["path"]
-    cache_path = project.cache_dir / "envelopes" / "master.npy"
+    cache_path = project.cache_dir / "envelopes" / "master_onset_v3.npy"
     if cache_path.exists() and cache_path.stat().st_mtime >= Path(master_path).stat().st_mtime:
         return np.load(cache_path)
     envelope = normalized_onset_envelope(master_path)
+    atomic_save_npy(cache_path, envelope)
+    return envelope
+
+
+def load_or_compute_master_spectral_envelope(project: Project) -> np.ndarray:
+    """Load cached master spectral-flux envelope or compute it."""
+    master_path = project.data["inputs"]["master"]["path"]
+    cache_path = project.cache_dir / "envelopes" / "master_spectral_v3.npy"
+    if cache_path.exists() and cache_path.stat().st_mtime >= Path(master_path).stat().st_mtime:
+        return np.load(cache_path)
+    envelope = normalized_spectral_flux_envelope(master_path)
     atomic_save_npy(cache_path, envelope)
     return envelope
 
@@ -172,6 +223,23 @@ def load_or_compute_clip_envelope(project: Project, record: dict[str, Any]) -> t
     return envelope, str(audio_path)
 
 
+def load_or_compute_clip_spectral_envelope(project: Project, record: dict[str, Any]) -> tuple[np.ndarray | None, str | None]:
+    """Extract clip audio if needed, then load or compute its spectral-flux envelope."""
+    video_path = record_media_path(record)
+    if not has_audio_stream(video_path):
+        return None, None
+    audio_path = clip_audio_path(project, record)
+    if not audio_path.exists() or audio_path.stat().st_mtime < Path(video_path).stat().st_mtime:
+        extract_clip_audio(video_path, audio_path)
+    envelope_path = global_clip_envelope_path(cache_key(record)).with_name(f"{cache_key(record)}.spectral.npy")
+    envelope_path.parent.mkdir(parents=True, exist_ok=True)
+    if envelope_path.exists() and envelope_path.stat().st_mtime >= audio_path.stat().st_mtime:
+        return np.load(envelope_path), str(audio_path)
+    envelope = normalized_spectral_flux_envelope(str(audio_path))
+    atomic_save_npy(envelope_path, envelope)
+    return envelope, str(audio_path)
+
+
 def clip_audio_path(project: Project, record: dict[str, Any]) -> Path:
     """Return the cached extracted clip-audio path."""
     path = global_clip_audio_path(cache_key(record))
@@ -181,7 +249,8 @@ def clip_audio_path(project: Project, record: dict[str, Any]) -> Path:
 
 def clip_envelope_path(project: Project, record: dict[str, Any]) -> Path:
     """Return the cached clip envelope path."""
-    path = global_clip_envelope_path(cache_key(record))
+    key = cache_key(record)
+    path = global_clip_envelope_path(key).with_name(f"{key}.onset-v3.npy")
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -237,6 +306,18 @@ def sync_clip(project: Project, record: dict[str, Any], master_env: np.ndarray, 
         return {**base, "offset_sec": 0.0, "confidence": 0.0, "low_confidence": True, "error": "Empty onset envelope"}
 
     offset_sec, confidence = recover_offset(master_env, clip_env)
+    sync_method = "onset"
+    if confidence < threshold:
+        spectral_master = load_or_compute_master_spectral_envelope(project)
+        spectral_clip, _ = load_or_compute_clip_spectral_envelope(project, record)
+        if spectral_clip is not None and spectral_master.size and spectral_clip.size:
+            fallback_offset, fallback_confidence = recover_offset(spectral_master, spectral_clip)
+            if fallback_confidence > confidence:
+                offset_sec = fallback_offset
+                confidence = fallback_confidence
+                clip_env = spectral_clip
+                master_env = spectral_master
+                sync_method = "spectral_flux"
     verification = verify_sync_stability(master_env, clip_env, offset_sec)
     unstable = bool(verification.get("unstable_sync"))
     return {
@@ -245,6 +326,7 @@ def sync_clip(project: Project, record: dict[str, Any], master_env: np.ndarray, 
         "offset_sec": offset_sec,
         "duration_sec": duration,
         "confidence": confidence,
+        "sync_method": sync_method,
         "low_confidence": confidence < threshold,
         "verification": verification,
         "unstable_sync": unstable,

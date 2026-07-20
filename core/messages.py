@@ -25,6 +25,7 @@ STRINGS = {
     "unstable_sync": "unstable sync",
     "unstable_sync_detail": "unstable sync ({ms:.0f} ms between checks)",
     "low_confidence_excluded": "questionable sync — excluded",
+    "low_confidence_excluded_detail": "low confidence {confidence:.1f} < threshold {threshold:.1f}",
     "valid_yes": "yes",
     "valid_no": "no",
     "low_confidence": "low confidence",

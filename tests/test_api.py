@@ -457,6 +457,27 @@ def test_sync_override_endpoint_persists_and_marks_downstream_stale(tmp_path):
     assert clip["manual_override"] is False
 
 
+def test_wizard_rescue_endpoint_starts_manual_override_rerender(tmp_path):
+    folder = tmp_path / "Rescue.zuckervid"
+    create_project("Rescue", str(folder))
+    app = create_app(project_path=str(folder))
+    state = app.config["ZUCKER_STATE"]
+
+    def fake_rescue(project_arg, *, clip_id, offset_sec):
+        assert project_arg is state.project
+        assert clip_id == "clip-a"
+        assert offset_sec == 4.25
+        return WizardJob(id="current", status="running", progress=0, project_path=str(project_arg.folder))
+
+    state.wizard.rescue = fake_rescue
+    client = app.test_client()
+
+    response = client.post("/api/v1/wizard/rescue", json={"clip_id": "clip-a", "offset_sec": 4.25})
+
+    assert response.status_code == 202
+    assert response.get_json()["status"] == "running"
+
+
 def test_register_status_run_ingest_end_to_end_regression(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "core.stages.ingest.ffprobe",

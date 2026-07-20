@@ -110,7 +110,8 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any]) -> dict
     selected: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
     diagnostics: list[dict[str, Any]] = []
-    for clip in (sync_map.get("clips") or {}).values():
+    for map_clip_id, clip in (sync_map.get("clips") or {}).items():
+        clip_id = str(clip.get("clip_id") or map_clip_id)
         path = clip.get("source_path") or clip.get("path")
         record = records_by_path.get(path)
         if record is None and clip.get("path"):
@@ -118,10 +119,12 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any]) -> dict
         confidence = _float_or_zero(clip.get("confidence"))
         valid_video = bool(record and record_is_usable_camera_video(record))
         diagnostic = {
+            "clip_id": clip_id,
             "filename": clip.get("filename") or Path(str(path or "")).name or "clip",
             "valid_video": valid_video,
             "confidence": confidence,
             "threshold": threshold,
+            "offset_sec": clip.get("offset_sec"),
             "low_confidence": bool(clip.get("low_confidence") or confidence < threshold),
             "unstable_sync": bool(clip.get("unstable_sync")) and not bool(clip.get("manual_override")),
             "manual_override": bool(clip.get("manual_override")),
@@ -154,7 +157,7 @@ def _exclusion_reason(diagnostic: dict[str, Any]) -> str | None:
             return t("unstable_sync_detail", ms=delta * 1000)
         return t("unstable_sync")
     if diagnostic.get("low_confidence") and not diagnostic.get("manual_override"):
-        return t("low_confidence_excluded")
+        return t("low_confidence_excluded_detail", confidence=float(diagnostic.get("confidence") or 0.0), threshold=float(diagnostic.get("threshold") or 0.0))
     return None
 
 

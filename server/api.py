@@ -291,6 +291,23 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_wizard_report() -> Response:
         return Response(wizard_report(state.wizard.status()), mimetype="text/plain")
 
+    @app.post("/api/v1/wizard/rescue")
+    def api_wizard_rescue() -> Response:
+        project = _require_project(state)
+        body = _json_body()
+        clip_id = str(body.get("clip_id") or "").strip()
+        if not clip_id or "offset_sec" not in body:
+            return error_response("bad_request", "clip_id and offset_sec are required", 400)
+        try:
+            job = state.wizard.rescue(project, clip_id=clip_id, offset_sec=float(body["offset_sec"]))
+            return jsonify(dict(job.__dict__)), 202
+        except RuntimeError as exc:
+            return error_response("wizard_busy", str(exc), 409)
+        except (KeyError, FileNotFoundError) as exc:
+            return error_response("not_found", str(exc), 404)
+        except (TypeError, ValueError) as exc:
+            return error_response("bad_request", str(exc), 400)
+
     @app.post("/api/v1/wizard/frontend-log")
     def api_wizard_frontend_log() -> Response:
         body = _json_body()
@@ -530,7 +547,7 @@ def _project_wizard_status(project: Project) -> dict[str, Any]:
             "status": "running",
             "progress": _stage_progress(name),
             "message": _friendly_stage_message(name),
-            "detail": "Recuperando estado del proyecto...",
+            "detail": "Recovering project state...",
             "project_path": str(project.folder),
             "logs_path": logs_path,
         }
@@ -624,6 +641,7 @@ def _export_result(project: Project) -> dict[str, Any] | None:
         "camera_usage": export.get("camera_usage"),
         "warnings": export.get("warnings") or manifest.get("warnings") or [],
         "excluded_clips": export.get("excluded_clips") or [],
+        "clip_fates": export.get("clip_fates") or [],
     }
 
 

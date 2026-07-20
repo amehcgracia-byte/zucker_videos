@@ -10,6 +10,7 @@ let pollTimer = null;
 let appConfig = { dev: true, desktop: false };
 let progressStartedAt = null;
 let progressSamples = [];
+let rescueClipId = null;
 
 function logFrontendError(message, stack = "") {
   fetch("/api/v1/wizard/frontend-log", {
@@ -408,6 +409,7 @@ function renderWizardStatus(status) {
     document.querySelector("#progressTitle").textContent = S.doneTitle;
     document.querySelector("#resultFilename").textContent = latestResult.filename;
     document.querySelector("#resultSummary").textContent = resultSummary(latestResult);
+    renderClipFates(latestResult);
     document.querySelector("#resultVideo").src = `${latestResult.media_url}?t=${Date.now()}`;
     document.querySelector("#resultBox").hidden = false;
   }
@@ -501,6 +503,70 @@ function resultSummary(result) {
   return parts.join(" · ");
 }
 
+function renderClipFates(result) {
+  const root = document.querySelector("#clipFates");
+  const fates = result?.clip_fates || [];
+  if (!fates.length) {
+    root.innerHTML = "";
+    return;
+  }
+  root.innerHTML = `
+    <h2>Camera status</h2>
+    ${fates
+      .map((item) => {
+        const confidence = item.confidence == null ? "" : ` · confidence ${Number(item.confidence).toFixed(1)}`;
+        const used = item.status === "used" ? ` · ${Number(item.used_percent || 0).toFixed(1)}% of timeline` : "";
+        const rescue =
+          item.status === "excluded" && item.clip_id
+            ? `<button class="rescue-button" data-rescue="${escapeHtml(item.clip_id)}" data-offset="${Number(item.offset_sec || 0)}">Rescue</button>`
+            : "";
+        return `<div class="clip-fate ${escapeHtml(item.status || "")}">
+          <div>
+            <strong>${escapeHtml(item.filename || "clip")}</strong>
+            <span>${escapeHtml(fateLabel(item.status))}${used}${confidence}</span>
+            <small>${escapeHtml(item.reason || "")}</small>
+          </div>
+          ${rescue}
+        </div>`;
+      })
+      .join("")}`;
+}
+
+function fateLabel(status) {
+  if (status === "used") return S.fateUsed || "Used";
+  if (status === "excluded") return S.fateExcluded || "Excluded";
+  if (status === "not_covering") return S.fateNotCovering || "Not covering this song";
+  return status || "";
+}
+
+async function openRescue(clipId, offset) {
+  rescueClipId = clipId;
+  const fate = (latestResult?.clip_fates || []).find((item) => item.clip_id === clipId) || {};
+  const panel = document.querySelector("#rescuePanel");
+  document.querySelector("#rescueTitle").textContent = `${S.rescueCamera || "Rescue camera"}: ${fate.filename || clipId}`;
+  document.querySelector("#rescueMeta").textContent = `${fate.reason || ""}${fate.confidence == null ? "" : ` · confidence ${Number(fate.confidence).toFixed(1)}`}`;
+  document.querySelector("#rescueOffset").value = Number(offset || fate.offset_sec || 0).toFixed(3);
+  const preview = await api(`/stages/sync/preview/${encodeURIComponent(clipId)}`);
+  document.querySelector("#rescuePreview").src = `${preview.media_url}?t=${Date.now()}`;
+  panel.hidden = false;
+  panel.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+async function confirmRescue() {
+  if (!rescueClipId) return;
+  const offset = Number(document.querySelector("#rescueOffset").value);
+  if (!Number.isFinite(offset)) {
+    showToast(S.invalidOffset || "Enter a valid offset", true);
+    return;
+  }
+  document.querySelector("#rescuePanel").hidden = true;
+  document.querySelector("#resultBox").hidden = true;
+  setStep(3);
+  await api("/wizard/rescue", { method: "POST", body: JSON.stringify({ clip_id: rescueClipId, offset_sec: offset }) });
+  ensureStatusPolling();
+  await pollStatus();
+}
+
 async function revealNative(path, label) {
   await window.NativeBridge.reveal(path, label);
 }
@@ -571,6 +637,13 @@ document.addEventListener("click", (event) => {
     revealNative(latestResult?.path, S.reveal).catch((error) => showToast(error.message, true));
   }
   if (target.id === "statusStrip") setStep(3);
+  const rescueButton = target.closest?.("[data-rescue]");
+  if (rescueButton instanceof HTMLElement) {
+    openRescue(rescueButton.dataset.rescue, rescueButton.dataset.offset).catch((error) => showToast(error.message, true));
+  }
+  if (target.closest?.("#confirmRescue")) {
+    confirmRescue().catch((error) => showToast(error.message, true));
+  }
 });
 
 document.addEventListener("change", (event) => {

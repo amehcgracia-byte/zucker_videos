@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import time
+import logging
 from pathlib import Path
 from typing import Any, Callable
 
@@ -25,7 +26,9 @@ SDR_TONEMAP_FILTER = (
     "format=yuv420p"
 )
 EVEN_SDR_FILTER = "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p"
-EQUIRECT_FILTER = "v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w=1920:h=1080,format=yuv420p"
+LOGGER = logging.getLogger(__name__)
+
+EQUIRECT_FILTER = "v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w=1920:h=1080,fps=30,setpts=PTS-STARTPTS,format=yuv420p"
 CACHE_SUBDIRS = ("normalized", "audio", "envelopes", "thumbnails")
 
 
@@ -75,7 +78,9 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
     probe = record.get("probe") or {}
     duration = float(probe.get("duration") or 0.0)
     fps = _bounded_fps(float(probe.get("fps") or 30.0))
-    filtergraph = normalization_filter(probe)
+    filtergraph = normalization_filter(probe, fps=fps)
+    if probe.get("projection") == "equirect":
+        LOGGER.info("Normalizing equirectangular source %s with probe=%s filter=%s", source, probe, filtergraph)
     command = _normalization_command(source, tmp_path, fps, filtergraph)
     _run_ffmpeg_progress(command, duration, source.name, progress)
     os.replace(tmp_path, destination)
@@ -282,12 +287,14 @@ def referenced_cache_keys(projects_root: Path | None = None) -> set[str]:
     return keys
 
 
-def normalization_filter(probe: dict[str, Any]) -> str:
+def normalization_filter(probe: dict[str, Any], fps: float | None = None) -> str:
     """Return the ffmpeg filter chain used for the normalized mezzanine."""
+    target_fps = _bounded_fps(float(fps or probe.get("fps") or 30.0))
     if probe.get("projection") == "equirect":
+        equirect = f"v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w=1920:h=1080,fps={target_fps:.3f},setpts=PTS-STARTPTS"
         if probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
-            return f"v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w=1920:h=1080,{SDR_TONEMAP_FILTER}"
-        return EQUIRECT_FILTER
+            return f"{equirect},{SDR_TONEMAP_FILTER}"
+        return f"{equirect},format=yuv420p"
     if probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
         return f"{SDR_TONEMAP_FILTER},scale=trunc(iw/2)*2:trunc(ih/2)*2"
     return EVEN_SDR_FILTER
