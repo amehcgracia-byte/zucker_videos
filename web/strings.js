@@ -29,4 +29,8 @@ window.UI_STRINGS = {
   fateNotCovering: "Not covering this song",
   rescueCamera: "Rescue camera",
   invalidOffset: "Enter a valid offset",
+  hasExport: "export",
+  openProject: "Open",
+  deleteProject: "Delete",
+  projectDeleted: "Project deleted",
 };

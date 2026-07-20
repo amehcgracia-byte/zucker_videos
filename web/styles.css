@@ -124,6 +124,71 @@ h1 {
   background: #fff;
 }
 
+.project-shelf {
+  display: grid;
+  gap: 10px;
+}
+
+.project-shelf[hidden] {
+  display: none;
+}
+
+.shelf-title,
+.project-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.shelf-title h2 {
+  font-size: 18px;
+}
+
+.shelf-title button,
+.project-row button {
+  min-height: 36px;
+  border-radius: 12px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.project-list {
+  display: grid;
+  gap: 8px;
+}
+
+.project-row {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.project-row > div {
+  display: grid;
+  min-width: 0;
+}
+
+.project-row span,
+.project-row small {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.project-row small {
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: var(--accent-strong);
+  font-weight: 800;
+}
+
+.project-row .danger {
+  color: var(--bad);
+}
+
 .drop-zone {
   min-height: 430px;
   border: 2px dashed var(--accent);

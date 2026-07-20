@@ -66,6 +66,25 @@ class WizardRunner:
             thread.start()
             return job
 
+    def prepare_existing(self, project: Project) -> WizardJob:
+        """Run ingest + sync for an existing matching project."""
+        with self._lock:
+            if self._job and self._job.status == "running":
+                raise RuntimeError("A video is already being processed")
+            job = WizardJob(id="current", message=t("listening"))
+            _attach_project(job, project)
+            self._job = job
+            self._prepared_project = None
+            thread = threading.Thread(
+                target=self._prepare_existing_project,
+                kwargs={"job": job, "project": project},
+                daemon=True,
+                name="zucker-wizard-prepare-existing",
+            )
+            self._thread = thread
+            thread.start()
+            return job
+
     def adopt_prepared_project(self, project: Project) -> WizardJob:
         """Use an already-prepared project as the wizard's Step 2 state."""
         with self._lock:
@@ -220,6 +239,24 @@ class WizardRunner:
             job.detail = t("choose_edit_type")
         except Exception as exc:
             LOGGER.exception("Wizard prepare failed")
+            job.status = "failed"
+            job.error = _friendly_error(exc)
+            job.technical_details = traceback.format_exc()
+            job.message = t("cannot_prepare")
+
+    def _prepare_existing_project(self, *, job: WizardJob, project: Project) -> None:
+        try:
+            _attach_project(job, project)
+            self._run_stage(job, project, IngestStage(), 0, 45, t("listening"))
+            self._run_stage(job, project, SyncStage(), 45, 95, t("syncing_audio"))
+            with self._lock:
+                self._prepared_project = project
+            job.status = "waiting_choice"
+            job.progress = 95
+            job.message = t("ready_to_edit")
+            job.detail = t("choose_edit_type")
+        except Exception as exc:
+            LOGGER.exception("Wizard prepare existing project failed")
             job.status = "failed"
             job.error = _friendly_error(exc)
             job.technical_details = traceback.format_exc()

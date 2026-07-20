@@ -31,6 +31,7 @@ from server.inbox import (
     unique_destination,
 )
 from server.media import send_file_with_range
+from server.projects import delete_project_folder, find_project_by_inputs, input_signature, list_projects, project_input_signature
 from server.wizard import WizardRunner, wizard_report, wizard_song_options
 
 LOGGER = logging.getLogger(__name__)
@@ -245,8 +246,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not isinstance(videos, list) or not all(isinstance(path, str) for path in videos) or not videos:
             return error_response("missing_video", t("missing_video"), 400)
         try:
-            if _can_reuse_prepared_project(state.project, master, songs, videos):
+            matching_project = state.project if _can_reuse_prepared_project(state.project, master, songs, videos) else find_project_by_inputs(master, songs, videos)
+            if matching_project and _project_can_skip_prepare(matching_project):
+                state.project = matching_project
                 state.wizard.adopt_prepared_project(state.project)
+            elif matching_project:
+                state.project = matching_project
+                state.wizard.prepare_existing(matching_project)
             job = state.wizard.start(
                 name=name or "Jam",
                 platform=platform,
@@ -258,6 +264,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return jsonify(dict(job.__dict__)), 202
         except RuntimeError as exc:
             return error_response("wizard_busy", str(exc), 409)
+        except OSError as exc:
+            return error_response("input_file_error", str(exc), 400)
 
     @app.post("/api/v1/wizard/prepare")
     def api_wizard_prepare() -> Response:
@@ -271,14 +279,23 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not isinstance(videos, list) or not all(isinstance(path, str) for path in videos) or not videos:
             return error_response("missing_video", t("missing_video"), 400)
         try:
-            if _can_reuse_prepared_project(state.project, master, songs, videos):
+            matching_project = state.project if _can_reuse_prepared_project(state.project, master, songs, videos) else find_project_by_inputs(master, songs, videos)
+            if matching_project and _project_can_skip_prepare(matching_project):
+                state.project = matching_project
                 job = state.wizard.adopt_prepared_project(state.project)
                 LOGGER.info("Reused prepared wizard project %s instead of creating a new project", state.project.folder)
+                return jsonify(dict(job.__dict__)), 202
+            if matching_project:
+                state.project = matching_project
+                job = state.wizard.prepare_existing(matching_project)
+                LOGGER.info("Reused existing wizard project %s instead of creating a new project", matching_project.folder)
                 return jsonify(dict(job.__dict__)), 202
             job = state.wizard.prepare(name=name or "Jam", master_path=master, songs_path=songs, video_paths=videos)
             return jsonify(dict(job.__dict__)), 202
         except RuntimeError as exc:
             return error_response("wizard_busy", str(exc), 409)
+        except OSError as exc:
+            return error_response("input_file_error", str(exc), 400)
 
     @app.get("/api/v1/wizard/status")
     def api_wizard_status() -> Response:
@@ -286,6 +303,49 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if status.get("status") == "idle" and state.project:
             return jsonify(_project_wizard_status(state.project))
         return jsonify(status)
+
+    @app.get("/api/v1/wizard/projects")
+    def api_wizard_projects() -> Response:
+        return jsonify({"projects": list_projects()})
+
+    @app.post("/api/v1/wizard/projects/open")
+    def api_wizard_project_open() -> Response:
+        body = _json_body()
+        folder = str(body.get("path") or "").strip()
+        if not folder:
+            return error_response("bad_request", "path is required", 400)
+        try:
+            state.project = load_project(folder)
+            reconciled = reconcile_registered_inputs(state.project)
+            migrated = migrate_project_normalization_cache(state.project)
+            if reconciled or migrated:
+                LOGGER.info("Reconciled registered inputs for %s", state.project.folder)
+            _remember_project(state.project)
+            status = _project_wizard_status(state.project)
+            if status.get("status") == "waiting_choice":
+                state.wizard.adopt_prepared_project(state.project)
+            return jsonify(status)
+        except ProjectError as exc:
+            return error_response("project_error", str(exc), 404)
+
+    @app.post("/api/v1/wizard/projects/delete")
+    def api_wizard_project_delete() -> Response:
+        body = _json_body()
+        folder = str(body.get("path") or "").strip()
+        keep_exports = bool(body.get("keep_exports", False))
+        if not folder:
+            return error_response("bad_request", "path is required", 400)
+        try:
+            result = delete_project_folder(folder, keep_exports=keep_exports)
+            if state.project and Path(result["deleted"]).resolve() == state.project.folder.resolve():
+                state.project = None
+                config = load_global_config()
+                if config.get("last_project_path") == result["deleted"]:
+                    config.pop("last_project_path", None)
+                    save_global_config(config)
+            return jsonify(result)
+        except (ProjectError, ValueError, OSError) as exc:
+            return error_response("project_error", str(exc), 400)
 
     @app.get("/api/v1/wizard/report")
     def api_wizard_report() -> Response:
@@ -587,9 +647,13 @@ def _can_reuse_prepared_project(project: Project | None, master: str, songs: str
     project_songs_path = project_songs.get("path") if project_songs else None
     if songs and _resolved(project_songs_path) != _resolved(songs):
         return False
-    project_videos = [_resolved(record.get("path")) for record in inputs.get("videos", [])]
-    requested_videos = [_resolved(path) for path in videos]
-    return set(project_videos) == set(requested_videos) and bool(requested_videos)
+    return project_input_signature(project) == input_signature(master, songs, videos)
+
+
+def _project_can_skip_prepare(project: Project) -> bool:
+    """Return True when an existing project can resume at edit-choice time."""
+    stages = project.data.get("stages") or {}
+    return stages.get("sync", {}).get("status") == "done" and _project_has_sync_candidates(project)
 
 
 def _resolved(path: str | None) -> str | None:

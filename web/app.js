@@ -37,6 +37,7 @@ const icons = {
   doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path><path d="M14 2v6h6"></path><path d="M8 13h8M8 17h8"></path></svg>',
   clipboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M8 4h8l1 2h3v14H4V6h3Z"></path><path d="M9 4a3 3 0 0 1 6 0"></path></svg>',
   retry: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M20 12a8 8 0 1 1-2.34-5.66"></path><path d="M20 4v6h-6"></path></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="m6 6 1 15h10l1-15"></path><path d="M10 11v6M14 11v6"></path></svg>',
   youtube: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="6" width="18" height="12" rx="4"></rect><path d="m10 9 5 3-5 3Z"></path></svg>',
   instagram: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="4" y="4" width="16" height="16" rx="5"></rect><circle cx="12" cy="12" r="3"></circle><path d="M17 7h.01"></path></svg>',
   tiktok: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 4v10.5a3.5 3.5 0 1 1-3-3.46"></path><path d="M14 4c1 3 2.7 4.7 5 5"></path></svg>',
@@ -225,6 +226,70 @@ function formatDuration(seconds) {
 async function loadInbox() {
   const result = await api("/inbox");
   mergeDetected(result, "inbox");
+}
+
+async function loadProjects() {
+  const result = await api("/wizard/projects");
+  renderProjects(result.projects || []);
+}
+
+function renderProjects(projects) {
+  const shelf = document.querySelector("#projectShelf");
+  const root = document.querySelector("#projectList");
+  shelf.hidden = projects.length === 0;
+  root.innerHTML = projects
+    .map(
+      (project) => `
+        <div class="project-row">
+          <div>
+            <strong>${escapeHtml(project.name)}</strong>
+            <span>${escapeHtml(formatProjectDate(project.modified_at))} · ${escapeHtml(project.status || "new")} · ${formatBytes(project.size_bytes || 0)}</span>
+          </div>
+          ${project.has_export ? `<small>${escapeHtml(S.hasExport || "export")}</small>` : ""}
+          <button data-open-project="${escapeHtml(project.path)}">${escapeHtml(S.openProject || "Open")}</button>
+          <button class="danger" data-delete-project="${escapeHtml(project.path)}" data-has-export="${project.has_export ? "1" : ""}" data-name="${escapeHtml(
+        project.name
+      )}" data-icon="trash">${escapeHtml(S.deleteProject || "Delete")}</button>
+        </div>`
+    )
+    .join("");
+  injectIcons();
+}
+
+function formatProjectDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
+  if (value < 1024 * 1024 * 1024) return `${Math.round(value / (1024 * 1024))} MB`;
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+async function openProject(path) {
+  const status = await api("/wizard/projects/open", { method: "POST", body: JSON.stringify({ path }) });
+  await resumeInputsFromProject().catch(() => {});
+  renderWizardStatus(status);
+  if (status.status === "done" || status.status === "failed" || status.status === "running") {
+    setStep(3);
+    if (status.status === "running") ensureStatusPolling();
+  } else if (status.status === "waiting_choice") {
+    setStep(2);
+  } else {
+    setStep(1);
+  }
+}
+
+async function deleteProject(path, name, hasExport) {
+  if (!confirm(`Delete "${name || "this project"}"? This removes the project folder. Global cache stays untouched.`)) return;
+  const keepExports = hasExport && confirm("This project has exports. Move them to ~/ZuckerVideos/Exports before deleting?");
+  await api("/wizard/projects/delete", { method: "POST", body: JSON.stringify({ path, keep_exports: Boolean(keepExports) }) });
+  showToast(S.projectDeleted || "Project deleted");
+  await loadProjects();
 }
 
 function supportedDropFile(file) {
@@ -609,6 +674,17 @@ document.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
   if (target.id === "confirmFiles") prepareStep2().catch((error) => showToast(error.message, true));
+  if (target.id === "refreshProjects") loadProjects().catch((error) => showToast(error.message, true));
+  const openButton = target.closest?.("[data-open-project]");
+  if (openButton instanceof HTMLElement) {
+    openProject(openButton.dataset.openProject).catch((error) => showToast(error.message, true));
+  }
+  const deleteButton = target.closest?.("[data-delete-project]");
+  if (deleteButton instanceof HTMLElement) {
+    deleteProject(deleteButton.dataset.deleteProject, deleteButton.dataset.name, deleteButton.dataset.hasExport === "1").catch((error) =>
+      showToast(error.message, true)
+    );
+  }
   if (target.classList.contains("platform-card")) {
     selectedPlatform = target.dataset.platform;
     document.querySelectorAll(".platform-card").forEach((card) => card.classList.toggle("selected", card === target));
@@ -665,6 +741,7 @@ async function boot() {
   } else {
     await loadInbox();
   }
+  await loadProjects().catch(() => {});
   renderWizardStatus(status);
   if (status.status === "running") {
     setStep(3);

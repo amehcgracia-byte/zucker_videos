@@ -225,6 +225,73 @@ def test_wizard_start_after_relaunch_reuses_prepared_project(tmp_path, monkeypat
     assert response.get_json()["project_path"] == str(folder.resolve())
 
 
+def test_wizard_prepare_adopts_matching_project_from_disk_without_suffix_copy(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    projects_root = tmp_path / "ZuckerVideos" / "Projects"
+    folder = projects_root / "Jam.zuckervid"
+    project = create_project("Jam", str(folder))
+    master = tmp_path / "master.wav"
+    video = tmp_path / "clip.mp4"
+    master.write_bytes(b"master")
+    video.write_bytes(b"video")
+    project.data["inputs"]["master"] = file_record(str(master))
+    project.data["inputs"]["videos"] = [file_record(str(video))]
+    sync_map = folder / "artifacts" / "sync_map.json"
+    write_artifact_json(
+        sync_map,
+        {
+            "schema_version": 1,
+            "master_duration_sec": 3.0,
+            "clips": {"clip": {"path": str(video.resolve()), "filename": "clip.mp4", "confidence": 9.0, "low_confidence": False}},
+        },
+    )
+    project.data["stages"]["sync"]["status"] = "done"
+    project.data["stages"]["sync"]["outputs"] = {"sync_map": str(sync_map)}
+    project.save()
+
+    app = create_app()
+    client = app.test_client()
+
+    response = client.post("/api/v1/wizard/prepare", json={"name": "Jam", "master": str(master), "videos": [str(video)]})
+
+    assert response.status_code == 202
+    payload = response.get_json()
+    assert payload["status"] == "waiting_choice"
+    assert payload["project_path"] == str(folder.resolve())
+    assert not (projects_root / "Jam-2.zuckervid").exists()
+
+
+def test_project_list_open_and_delete_keep_exports(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    folder = tmp_path / "ZuckerVideos" / "Projects" / "Managed.zuckervid"
+    project = create_project("Managed", str(folder))
+    export = project.exports_dir / "Managed-youtube.mp4"
+    export.write_bytes(b"mp4")
+    manifest = project.artifacts_dir / "export_manifest.json"
+    write_artifact_json(manifest, {"exports": [{"path": str(export), "platform": "youtube"}]})
+    project.data["stages"]["export"]["status"] = "done"
+    project.data["stages"]["export"]["outputs"] = {"export_manifest": str(manifest)}
+    project.save()
+    app = create_app()
+    client = app.test_client()
+
+    listed = client.get("/api/v1/wizard/projects").get_json()["projects"]
+    assert listed[0]["name"] == "Managed"
+    assert listed[0]["has_export"] is True
+
+    opened = client.post("/api/v1/wizard/projects/open", json={"path": str(folder)}).get_json()
+    assert opened["status"] == "done"
+    assert opened["result"]["filename"] == "Managed-youtube.mp4"
+
+    response = client.post("/api/v1/wizard/projects/delete", json={"path": str(folder), "keep_exports": True})
+
+    assert response.status_code == 200
+    assert not folder.exists()
+    kept = response.get_json()["kept_exports"]
+    assert len(kept) == 1
+    assert Path(kept[0]).read_bytes() == b"mp4"
+
+
 @pytest.mark.slow
 def test_wizard_orchestration_exports_tiny_media(tmp_path, monkeypatch):
     if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:

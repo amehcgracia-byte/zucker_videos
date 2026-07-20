@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="es">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -21,6 +21,13 @@
           </div>
           <h1>Zucker Editor</h1>
         </div>
+        <section class="project-shelf" id="projectShelf" hidden>
+          <div class="shelf-title">
+            <h2>Existing projects</h2>
+            <button id="refreshProjects">Refresh</button>
+          </div>
+          <div id="projectList" class="project-list"></div>
+        </section>
         <label class="name-field">
           Video name
           <input id="videoName" />
