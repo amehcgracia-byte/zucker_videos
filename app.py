@@ -74,7 +74,11 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     logging.getLogger(__name__).info("Starting %s", startup_label())
     args = parse_args()
-    app = create_app(project_path=args.project, dev=args.dev)
+    config = load_global_config()
+    project_path = args.project or config.get("last_project_path")
+    if project_path and not Path(project_path).exists():
+        project_path = None
+    app = create_app(project_path=project_path, dev=args.dev)
     port = choose_dev_port() if args.dev else find_free_port()
     if args.dev:
         app.run(host="127.0.0.1", port=port, debug=True, use_reloader=False)

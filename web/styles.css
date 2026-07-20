@@ -1,12 +1,17 @@
 :root {
   color-scheme: light;
-  --ink: #17242b;
+  --primary: #7fbf62;
+  --primary-dark: #4f8c3b;
+  --accent: #7ec8e3;
+  --accent-strong: #258fb6;
+  --bg: #f3fafc;
+  --text: #17242b;
   --muted: #667680;
   --line: #d8e7ed;
   --panel: #f5fbfd;
-  --accent: #67bddb;
-  --accent-strong: #2497bd;
   --bad: #a43b3b;
+  --ok: #4f8c3b;
+  --shadow: 0 24px 80px rgba(37, 143, 182, 0.13);
 }
 
 * {
@@ -16,14 +21,46 @@
 body {
   margin: 0;
   min-height: 100vh;
-  color: var(--ink);
-  background: linear-gradient(180deg, #eef9fc 0, #fff 38%);
+  color: var(--text);
+  background: linear-gradient(180deg, var(--bg) 0, #fff 38%);
   font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 button,
 input {
   font: inherit;
+}
+
+.status-strip {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  width: 100%;
+  min-height: 34px;
+  border: 0;
+  border-radius: 0;
+  padding: 7px 16px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  background: #113746;
+  color: #f2fbfe;
+  font-weight: 800;
+  box-shadow: 0 6px 18px rgba(17, 55, 70, 0.16);
+}
+
+.status-strip[hidden] {
+  display: none;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--primary);
+  box-shadow: 0 0 0 0 rgba(127, 191, 98, 0.7);
+  animation: pulse 1.4s infinite;
 }
 
 .wizard {
@@ -39,11 +76,23 @@ input {
 .step.active {
   display: grid;
   gap: 24px;
+  animation: fadeIn 180ms ease-out;
 }
 
 .step-header span {
   color: var(--accent-strong);
   font-weight: 700;
+}
+
+.brand-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-line img {
+  width: 34px;
+  height: 34px;
 }
 
 h1,
@@ -71,7 +120,7 @@ h1 {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 14px 16px;
-  color: var(--ink);
+  color: var(--text);
   background: #fff;
 }
 
@@ -84,7 +133,7 @@ h1 {
   display: grid;
   align-content: center;
   gap: 24px;
-  box-shadow: 0 24px 80px rgba(36, 151, 189, 0.12);
+  box-shadow: var(--shadow);
 }
 
 .drop-zone.dragging {
@@ -126,6 +175,8 @@ h1 {
   padding: 8px 12px;
   background: #fff;
   overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 750;
 }
 
 .chip small {
@@ -153,7 +204,7 @@ h1 {
   max-width: min(360px, 58vw);
   border: 0;
   background: transparent;
-  color: var(--ink);
+  color: var(--text);
   font: inherit;
 }
 
@@ -164,11 +215,22 @@ h1 {
 
 button {
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 18px;
   padding: 14px 18px;
   background: #fff;
-  color: var(--ink);
+  color: var(--text);
   cursor: pointer;
+  transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease, border-color 160ms ease;
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 26px rgba(23, 36, 43, 0.08);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: none;
 }
 
 button:disabled {
@@ -181,9 +243,30 @@ button:disabled {
   min-width: 230px;
   min-height: 56px;
   border-color: var(--accent);
-  background: var(--accent);
-  color: #07313f;
+  background: var(--primary);
+  color: #102113;
   font-weight: 800;
+  box-shadow: 0 14px 30px rgba(79, 140, 59, 0.22);
+}
+
+.primary:hover:not(:disabled) {
+  background: #8ccd6f;
+  border-color: var(--primary-dark);
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+}
+
+.icon-button svg,
+.platform-glyph svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  stroke-width: 2;
 }
 
 .platforms {
@@ -193,17 +276,33 @@ button:disabled {
 }
 
 .platform-card {
-  min-height: 190px;
+  min-height: 160px;
   display: grid;
-  align-content: end;
+  align-content: center;
   gap: 10px;
-  text-align: left;
+  text-align: center;
   border-radius: 24px;
   padding: 24px;
 }
 
+.platform-glyph {
+  width: 48px;
+  height: 48px;
+  margin: 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 18px;
+  background: #e8f7fc;
+  color: var(--accent-strong);
+}
+
+.platform-glyph svg {
+  width: 28px;
+  height: 28px;
+}
+
 .platform-card strong {
-  font-size: 30px;
+  font-size: 26px;
 }
 
 .platform-card span {
@@ -248,8 +347,63 @@ button:disabled {
 #progressBar {
   height: 100%;
   width: 0;
-  background: var(--accent);
+  background: linear-gradient(90deg, var(--primary), var(--accent));
   transition: width 240ms ease;
+}
+
+.progress-main,
+.progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+}
+
+#progressPercent {
+  color: var(--accent-strong);
+  font-weight: 900;
+}
+
+.progress-meta {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.stage-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.stage-checks span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 10px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.stage-checks span.done {
+  color: var(--ok);
+  border-color: rgba(79, 140, 59, 0.35);
+  background: #f0faec;
+}
+
+.stage-checks span.done::before {
+  content: "✓";
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ok);
+  color: #fff;
+  font-size: 11px;
+  animation: tick 220ms ease-out;
 }
 
 .error-box {
@@ -296,6 +450,40 @@ pre {
   border-color: var(--bad);
   background: #fff5f3;
   color: var(--bad);
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(127, 191, 98, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 9px rgba(127, 191, 98, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(127, 191, 98, 0);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes tick {
+  from {
+    transform: scale(0.7);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 @media (max-width: 780px) {

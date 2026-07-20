@@ -4,13 +4,21 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Zucker Editor</title>
+    <link rel="icon" href="/logo_editor_blue.png" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
+    <button id="statusStrip" class="status-strip" hidden>
+      <span class="status-dot"></span>
+      <span id="statusStripText">Trabajando...</span>
+    </button>
     <main class="wizard">
       <section class="step active" id="step1">
         <div class="step-header">
-          <span>Paso 1 de 3</span>
+          <div class="brand-line">
+            <img src="/logo_editor_blue.png" alt="" />
+            <span>Paso 1 de 3</span>
+          </div>
           <h1>Zucker Editor</h1>
         </div>
         <label class="name-field">
@@ -25,7 +33,7 @@
           <div id="chips" class="chips"></div>
         </div>
         <p id="softRule" class="soft-rule">Falta el audio master</p>
-        <button id="confirmFiles" class="primary" disabled>Confirmar y seguir →</button>
+        <button id="confirmFiles" class="primary icon-button" data-icon="arrow" disabled>Confirmar y seguir</button>
       </section>
 
       <section class="step" id="step2">
@@ -35,23 +43,26 @@
         </div>
         <div class="platforms">
           <button class="platform-card" data-platform="youtube">
+            <span class="platform-glyph" data-glyph="youtube"></span>
             <strong>YouTube</strong>
-            <span>Edición completa de la canción</span>
+            <span>Canción completa</span>
           </button>
           <button class="platform-card" data-platform="instagram">
+            <span class="platform-glyph" data-glyph="instagram"></span>
             <strong>Instagram</strong>
-            <span>Vídeo corto formato Instagram</span>
+            <span>Corto vertical</span>
           </button>
           <button class="platform-card" data-platform="tiktok">
+            <span class="platform-glyph" data-glyph="tiktok"></span>
             <strong>TikTok</strong>
-            <span>Aún más corto y dinámico</span>
+            <span>Muy rápido</span>
           </button>
         </div>
         <div id="songPicker" class="song-picker" hidden>
           <h2>¿Qué canción?</h2>
           <div id="songOptions"></div>
         </div>
-        <button id="startWizard" class="primary" disabled>¡Hazlo! →</button>
+        <button id="startWizard" class="primary icon-button" data-icon="wand" disabled>¡Hazlo!</button>
       </section>
 
       <section class="step" id="step3">
@@ -61,8 +72,21 @@
         </div>
         <div id="progressBox" class="progress-box">
           <div class="progress-track"><div id="progressBar"></div></div>
-          <strong id="progressMessage">Preparando...</strong>
+          <div class="progress-main">
+            <strong id="progressMessage">Trabajando...</strong>
+            <span id="progressPercent">0%</span>
+          </div>
           <span id="progressDetail"></span>
+          <div class="progress-meta">
+            <span id="elapsedTime">0 min</span>
+            <span id="etaTime">ETA calculando...</span>
+          </div>
+          <div class="stage-checks">
+            <span data-stage="ingest">Preparar</span>
+            <span data-stage="sync">Sincronizar</span>
+            <span data-stage="cut">Cortar</span>
+            <span data-stage="export">Exportar</span>
+          </div>
         </div>
         <div id="errorBox" class="error-box" hidden>
           <p id="errorText"></p>
@@ -71,18 +95,18 @@
             <pre id="technicalDetails"></pre>
           </details>
           <div class="result-actions">
-            <button id="openLogsError">Abrir logs</button>
-            <button id="copyReport">Copiar informe</button>
+            <button id="openLogsError" class="icon-button" data-icon="doc">Abrir logs</button>
+            <button id="copyReport" class="icon-button" data-icon="clipboard">Copiar informe</button>
           </div>
-          <button id="retryWizard">Reintentar</button>
+          <button id="retryWizard" class="icon-button" data-icon="retry">Reintentar</button>
         </div>
         <div id="resultBox" class="result-box" hidden>
           <video id="resultVideo" controls></video>
           <strong id="resultFilename"></strong>
           <div class="result-actions">
-            <button id="openLogsSuccess">Abrir logs</button>
-            <button id="showFinder">Mostrar en Finder</button>
-            <button id="again">Hacer otro</button>
+            <button id="openLogsSuccess" class="icon-button" data-icon="doc">Abrir logs</button>
+            <button id="showFinder" class="icon-button" data-icon="folder">Mostrar en Finder</button>
+            <button id="again" class="icon-button" data-icon="play">Hacer otro</button>
           </div>
         </div>
       </section>

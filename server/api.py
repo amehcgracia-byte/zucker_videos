@@ -22,6 +22,7 @@ from server.inbox import (
     load_global_config,
     reconcile_registered_inputs,
     register_selected_inputs,
+    save_global_config,
     save_uploads,
     scan_inbox,
     suggest_songs_json,
@@ -86,6 +87,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("bad_request", "name and folder are required", 400)
         try:
             state.project = create_project(name, folder)
+            _remember_project(state.project)
             return jsonify(state.project.snapshot()), 201
         except ProjectError as exc:
             return error_response("project_error", str(exc), 409)
@@ -107,6 +109,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             state.project = load_project(folder)
             if reconcile_registered_inputs(state.project):
                 LOGGER.info("Reconciled registered inputs for %s", state.project.folder)
+            _remember_project(state.project)
             return jsonify(state.project.snapshot())
         except ProjectError as exc:
             return error_response("project_error", str(exc), 404)
@@ -267,7 +270,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.get("/api/v1/wizard/status")
     def api_wizard_status() -> Response:
-        return jsonify(state.wizard.status())
+        status = state.wizard.status()
+        if status.get("status") == "idle" and state.project:
+            return jsonify(_project_wizard_status(state.project))
+        return jsonify(status)
 
     @app.get("/api/v1/wizard/report")
     def api_wizard_report() -> Response:
@@ -276,6 +282,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.get("/api/v1/wizard/result")
     def api_wizard_result() -> Response:
         status = state.wizard.status()
+        if status.get("status") == "idle" and state.project:
+            status = _project_wizard_status(state.project)
         result = status.get("result") or {}
         path = result.get("path")
         if not path:
@@ -441,6 +449,112 @@ def _require_project(state: AppState) -> Project:
     if state.project is None:
         raise ProjectError("No project is open")
     return state.project
+
+
+def _remember_project(project: Project) -> None:
+    config = load_global_config()
+    config["last_project_path"] = str(project.folder)
+    save_global_config(config)
+
+
+def _project_wizard_status(project: Project) -> dict[str, Any]:
+    stages = project.data.get("stages") or {}
+    logs_path = str(project.cache_dir / "logs")
+    export_result = _export_result(project)
+    if export_result:
+        return {
+            "id": "project",
+            "status": "done",
+            "progress": 100,
+            "message": "Tu vídeo está listo",
+            "detail": export_result["filename"],
+            "result": export_result,
+            "project_path": str(project.folder),
+            "logs_path": logs_path,
+        }
+    failed = next(((name, stage) for name, stage in stages.items() if stage.get("status") == "failed"), None)
+    if failed:
+        name, stage = failed
+        return {
+            "id": "project",
+            "status": "failed",
+            "progress": _stage_progress(name),
+            "message": "No pude terminar el vídeo",
+            "detail": name,
+            "error": stage.get("error") or "Error",
+            "project_path": str(project.folder),
+            "logs_path": logs_path,
+        }
+    running = next(((name, stage) for name, stage in stages.items() if stage.get("status") == "running"), None)
+    if running:
+        name, _ = running
+        return {
+            "id": "project",
+            "status": "running",
+            "progress": _stage_progress(name),
+            "message": _friendly_stage_message(name),
+            "detail": "Recuperando estado del proyecto...",
+            "project_path": str(project.folder),
+            "logs_path": logs_path,
+        }
+    if stages.get("sync", {}).get("status") == "done" and stages.get("export", {}).get("status") != "done":
+        return {
+            "id": "project",
+            "status": "waiting_choice",
+            "progress": 95,
+            "message": "Listo para montar",
+            "detail": "Elige el tipo de edición",
+            "project_path": str(project.folder),
+            "logs_path": logs_path,
+        }
+    return {
+        "id": "project",
+        "status": "idle",
+        "progress": 0,
+        "message": "Sin trabajo",
+        "project_path": str(project.folder),
+        "logs_path": logs_path,
+    }
+
+
+def _export_result(project: Project) -> dict[str, Any] | None:
+    outputs = project.data.get("stages", {}).get("export", {}).get("outputs") or {}
+    manifest_path = outputs.get("export_manifest")
+    if not manifest_path:
+        return None
+    try:
+        with Path(manifest_path).open("r", encoding="utf-8") as fh:
+            manifest = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    exports = manifest.get("exports") or []
+    if not exports:
+        return None
+    export = exports[0]
+    path = Path(export.get("path") or "")
+    if not path.exists():
+        return None
+    return {
+        "project_path": str(project.folder),
+        "filename": path.name,
+        "path": str(path),
+        "media_url": "/api/v1/wizard/result",
+        "platform": export.get("platform"),
+        "logs_path": str(project.cache_dir / "logs"),
+    }
+
+
+def _stage_progress(stage_name: str) -> int:
+    return {"ingest": 8, "sync": 35, "cut": 56, "edit": 64, "export": 76}.get(stage_name, 0)
+
+
+def _friendly_stage_message(stage_name: str) -> str:
+    return {
+        "ingest": "Escuchando tus vídeos...",
+        "sync": "Sincronizando con el audio...",
+        "cut": "Cortando la canción...",
+        "export": "Exportando el vídeo...",
+    }.get(stage_name, "Trabajando...")
 
 
 def _media_path(project: Project, kind: str, index: int) -> str:

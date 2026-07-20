@@ -16,7 +16,7 @@ from core.stages.cut import CutStage
 from core.stages.export import ExportStage
 from core.stages.ingest import IngestStage
 from core.stages.sync import SyncStage, load_song_boundaries
-from server.inbox import app_home, register_selected_inputs
+from server.inbox import app_home, load_global_config, register_selected_inputs, save_global_config
 
 LOGGER = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class WizardJob:
     id: str
     status: str = "running"
     progress: int = 0
-    message: str = "Preparando..."
+    message: str = "Trabajando..."
     detail: str | None = None
     error: str | None = None
     technical_details: str | None = None
@@ -284,11 +284,18 @@ class WizardRunner:
         stage_state = project.data["stages"][stage.name]
         stage_state.update({"status": "running", "error": None})
         project.save()
+        last_logged_percent = -1
+        last_logged_at = 0.0
 
         def progress(percent: int, detail: str) -> None:
+            nonlocal last_logged_percent, last_logged_at
             job.progress = start + int((end - start) * max(0, min(100, percent)) / 100)
             job.detail = detail
-            _write_stage_log(project, stage.name, f"{percent}% {detail}")
+            now = time.monotonic()
+            if percent != last_logged_percent or now - last_logged_at >= 5:
+                _write_stage_log(project, stage.name, f"{percent}% {detail}")
+                last_logged_percent = percent
+                last_logged_at = now
 
         outputs = stage.run(project, progress)
         stage_state.update({"status": "done", "outputs": outputs, "error": None, "fingerprint": stage.inputs_fingerprint(project)})
@@ -353,6 +360,9 @@ def wizard_report(status: dict[str, Any]) -> str:
 def _attach_project(job: WizardJob, project: Project) -> None:
     job.project_path = str(project.folder)
     job.logs_path = str(project.cache_dir / "logs")
+    config = load_global_config()
+    config["last_project_path"] = str(project.folder)
+    save_global_config(config)
 
 
 def _write_stage_log(project: Project, stage_name: str, line: str) -> None:

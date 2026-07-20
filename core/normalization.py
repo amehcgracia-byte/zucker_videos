@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -166,14 +167,18 @@ def _run_ffmpeg_progress(command: list[str], duration: float, filename: str, pro
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     assert process.stdout is not None
     current = 0
+    last_emit = 0.0
     for line in process.stdout:
         match = re.match(r"out_time_ms=(\d+)", line.strip())
         if not match or duration <= 0:
             continue
         seconds = int(match.group(1)) / 1_000_000
         percent = max(current, min(99, int(seconds / duration * 100)))
-        current = percent
-        progress(percent, f"{filename} — {percent}%")
+        now = time.monotonic()
+        if percent > current or now - last_emit >= 5:
+            current = percent
+            last_emit = now
+            progress(percent, f"{filename} — {percent}%")
     _, stderr = process.communicate()
     if process.returncode != 0:
         raise FFmpegError((stderr or "").strip() or "ffmpeg normalization failed")

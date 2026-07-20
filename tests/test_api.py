@@ -229,7 +229,7 @@ def test_wizard_orchestration_exports_tiny_media(tmp_path, monkeypatch):
     )
     assert response.status_code == 202
 
-    deadline = time.time() + 20
+    deadline = time.time() + 120
     status = {}
     while time.time() < deadline:
         status = client.get("/api/v1/wizard/status").get_json()

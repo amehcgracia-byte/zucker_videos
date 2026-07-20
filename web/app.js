@@ -6,6 +6,22 @@ let currentSongs = [];
 let latestResult = null;
 let latestStatus = null;
 let pollTimer = null;
+let desktopBridgeReady = Boolean(window.pywebview?.api);
+let progressStartedAt = null;
+let progressSamples = [];
+
+const icons = {
+  arrow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 12h14"></path><path d="m13 6 6 6-6 6"></path></svg>',
+  folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"></path></svg>',
+  play: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m8 5 11 7-11 7Z"></path></svg>',
+  wand: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m15 4 5 5"></path><path d="M14 5 3 16l5 5L19 10Z"></path><path d="M4 4h.01M9 2h.01M2 9h.01M20 15h.01M15 22h.01"></path></svg>',
+  doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path><path d="M14 2v6h6"></path><path d="M8 13h8M8 17h8"></path></svg>',
+  clipboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M8 4h8l1 2h3v14H4V6h3Z"></path><path d="M9 4a3 3 0 0 1 6 0"></path></svg>',
+  retry: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M20 12a8 8 0 1 1-2.34-5.66"></path><path d="M20 4v6h-6"></path></svg>',
+  youtube: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="6" width="18" height="12" rx="4"></rect><path d="m10 9 5 3-5 3Z"></path></svg>',
+  instagram: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="4" y="4" width="16" height="16" rx="5"></rect><circle cx="12" cy="12" r="3"></circle><path d="M17 7h.01"></path></svg>',
+  tiktok: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 4v10.5a3.5 3.5 0 1 1-3-3.46"></path><path d="M14 4c1 3 2.7 4.7 5 5"></path></svg>',
+};
 
 function todayName() {
   return `Jam ${new Date().toISOString().slice(0, 10)}`;
@@ -40,6 +56,16 @@ function showToast(message, isError = false) {
 
 function setStep(number) {
   document.querySelectorAll(".step").forEach((step, index) => step.classList.toggle("active", index === number - 1));
+}
+
+function injectIcons() {
+  document.querySelectorAll("[data-icon]").forEach((node) => {
+    const svg = icons[node.dataset.icon];
+    if (svg && !node.querySelector("svg")) node.insertAdjacentHTML("afterbegin", svg);
+  });
+  document.querySelectorAll("[data-glyph]").forEach((node) => {
+    node.innerHTML = icons[node.dataset.glyph] || "";
+  });
 }
 
 function mergeDetected(result, source = "") {
@@ -213,6 +239,7 @@ async function prepareStep2() {
     }),
   }).catch((error) => showToast(error.message, true));
   setStep(2);
+  ensureStatusPolling();
   if (inputs.songs) {
     const result = await api("/wizard/songs", { method: "POST", body: JSON.stringify({ songs: inputs.songs }) });
     renderSongOptions(result.songs || []);
@@ -269,39 +296,138 @@ async function startWizard() {
       videos: inputs.videos,
     }),
   });
-  pollTimer = setInterval(pollStatus, 1000);
+  ensureStatusPolling();
   await pollStatus();
+}
+
+function ensureStatusPolling() {
+  if (!pollTimer) pollTimer = setInterval(pollStatus, 1000);
 }
 
 async function pollStatus() {
   const status = await api("/wizard/status");
+  renderWizardStatus(status);
+}
+
+function renderWizardStatus(status) {
   latestStatus = status;
-  document.querySelector("#progressBar").style.width = `${status.progress || 0}%`;
+  const progress = Number(status.progress || 0);
+  updateTiming(status, progress);
+  renderStatusStrip(status, progress);
+  document.querySelector("#progressBar").style.width = `${progress}%`;
+  document.querySelector("#progressPercent").textContent = `${Math.round(progress)}%`;
   document.querySelector("#progressMessage").textContent = status.message || "Trabajando...";
-  document.querySelector("#progressDetail").textContent = status.detail || "";
+  document.querySelector("#progressDetail").textContent = status.detail || currentSubtask(status) || "Calculando el siguiente paso...";
+  document.querySelector("#elapsedTime").textContent = `Tiempo: ${formatElapsed(elapsedSeconds())}`;
+  document.querySelector("#etaTime").textContent = `ETA: ${formatEta(etaSeconds(progress))}`;
+  updateStageChecks(progress, status);
   if (status.status === "failed") {
     clearInterval(pollTimer);
+    pollTimer = null;
     document.querySelector("#errorText").textContent = status.error || "No pude terminar";
     document.querySelector("#technicalDetails").textContent = status.technical_details || "";
     document.querySelector("#errorBox").hidden = false;
   }
   if (status.status === "done") {
     clearInterval(pollTimer);
+    pollTimer = null;
     latestResult = status.result;
     document.querySelector("#progressTitle").textContent = "Tu vídeo está listo";
     document.querySelector("#resultFilename").textContent = latestResult.filename;
     document.querySelector("#resultVideo").src = `${latestResult.media_url}?t=${Date.now()}`;
     document.querySelector("#resultBox").hidden = false;
   }
+  if (status.status === "waiting_choice") {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
+
+function renderStatusStrip(status, progress) {
+  const strip = document.querySelector("#statusStrip");
+  if (status.status !== "running") {
+    strip.hidden = true;
+    return;
+  }
+  strip.hidden = false;
+  const detail = currentSubtask(status) || status.message || "Trabajando";
+  document.querySelector("#statusStripText").textContent = `${detail} · ${Math.round(progress)}% · ${formatEta(etaSeconds(progress))}`;
+}
+
+function currentSubtask(status) {
+  return String(status.detail || "").replace(/^(.+?) — /, "$1 · ");
+}
+
+function updateTiming(status, progress) {
+  if (status.status !== "running") return;
+  const now = Date.now();
+  const previous = progressSamples[progressSamples.length - 1];
+  if (!progressStartedAt || progress < (previous?.progress || 0)) {
+    progressStartedAt = now;
+    progressSamples = [];
+  }
+  const last = progressSamples[progressSamples.length - 1];
+  if (!last || progress !== last.progress) {
+    progressSamples.push({ time: now, progress });
+    progressSamples = progressSamples.slice(-12);
+  }
+}
+
+function elapsedSeconds() {
+  return progressStartedAt ? Math.max(0, (Date.now() - progressStartedAt) / 1000) : 0;
+}
+
+function etaSeconds(progress) {
+  const elapsed = elapsedSeconds();
+  if (elapsed < 30 || progress <= 0 || progress >= 100 || progressSamples.length < 2) return null;
+  const first = progressSamples[0];
+  const last = progressSamples[progressSamples.length - 1];
+  const rate = (last.progress - first.progress) / ((last.time - first.time) / 1000);
+  if (rate <= 0) return null;
+  return (100 - progress) / rate;
+}
+
+function formatElapsed(seconds) {
+  if (seconds < 60) return `${Math.max(0, Math.round(seconds))} s`;
+  return `${Math.round(seconds / 60)} min`;
+}
+
+function formatEta(seconds) {
+  if (seconds == null || !Number.isFinite(seconds)) return "calculando...";
+  return `~${Math.max(1, Math.round(seconds / 60))} min restantes`;
+}
+
+function updateStageChecks(progress, status) {
+  const done = new Set();
+  if (progress >= 22) done.add("ingest");
+  if (progress >= 48 || status.status === "waiting_choice") done.add("sync");
+  if (progress >= 64) done.add("cut");
+  if (status.status === "done") done.add("export");
+  document.querySelectorAll(".stage-checks [data-stage]").forEach((node) => {
+    node.classList.toggle("done", done.has(node.dataset.stage));
+  });
+}
+
+function getDesktopApi(actionLabel) {
+  const bridge = window.pywebview?.api;
+  if (bridge) {
+    desktopBridgeReady = true;
+    return bridge;
+  }
+  const suffix = desktopBridgeReady ? "El puente de escritorio todavía no está listo." : "Solo disponible en la app de escritorio.";
+  showToast(`${actionLabel}: ${suffix}`, true);
+  return null;
+}
+
+async function revealNative(path, label) {
+  const bridge = getDesktopApi(label);
+  if (!bridge || !path) return;
+  await bridge.reveal_in_finder(path);
 }
 
 async function openLogs() {
   const path = latestResult?.logs_path || latestStatus?.logs_path;
-  if (window.pywebview?.api && path) {
-    await window.pywebview.api.reveal_in_finder(path);
-    return;
-  }
-  showToast("Abrir logs está disponible en la app de escritorio", true);
+  await revealNative(path, "Abrir logs");
 }
 
 async function copyReport() {
@@ -362,9 +488,9 @@ document.addEventListener("click", (event) => {
     copyReport().catch((error) => showToast(error.message, true));
   }
   if (target.id === "showFinder") {
-    if (window.pywebview?.api && latestResult?.path) window.pywebview.api.reveal_in_finder(latestResult.path);
-    else showToast("Disponible en la app de escritorio");
+    revealNative(latestResult?.path, "Mostrar en Finder").catch((error) => showToast(error.message, true));
   }
+  if (target.id === "statusStrip") setStep(3);
 });
 
 document.addEventListener("change", (event) => {
@@ -376,4 +502,23 @@ document.addEventListener("change", (event) => {
 });
 
 document.querySelector("#videoName").value = todayName();
-loadInbox().catch((error) => showToast(error.message, true));
+document.addEventListener("pywebviewready", () => {
+  desktopBridgeReady = Boolean(window.pywebview?.api);
+});
+
+async function boot() {
+  injectIcons();
+  await loadInbox();
+  const status = await api("/wizard/status");
+  renderWizardStatus(status);
+  if (status.status === "running") {
+    setStep(3);
+    ensureStatusPolling();
+  } else if (status.status === "waiting_choice") {
+    setStep(2);
+  } else if (status.status === "done" || status.status === "failed") {
+    setStep(3);
+  }
+}
+
+boot().catch((error) => showToast(error.message, true));
