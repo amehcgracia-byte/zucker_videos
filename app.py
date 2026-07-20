@@ -7,6 +7,7 @@ import logging
 import multiprocessing
 import subprocess
 import socket
+import sys
 import threading
 from pathlib import Path
 
@@ -71,7 +72,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     """Run Zucker Editor in desktop or dev-server mode."""
     multiprocessing.freeze_support()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    _configure_logging()
     logging.getLogger(__name__).info("Starting %s", startup_label())
     args = parse_args()
     config = load_global_config()
@@ -128,6 +129,18 @@ def _open_folder_dialog() -> list[str]:
         return []
     result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG, allow_multiple=False)
     return [str(Path(path).resolve()) for path in (result or [])]
+
+
+def _configure_logging() -> None:
+    """Write startup/runtime logs to both stderr and the user app log folder."""
+    log_dir = Path.home() / "ZuckerVideos" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        handlers=[logging.StreamHandler(sys.stderr), logging.FileHandler(log_dir / "app.log", encoding="utf-8")],
+        force=True,
+    )
 
 
 if __name__ == "__main__":
