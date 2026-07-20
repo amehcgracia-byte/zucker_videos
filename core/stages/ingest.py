@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+import threading
 from typing import Any
 
 from core.ffmpeg import ffprobe
@@ -61,15 +63,40 @@ class IngestStage(Stage):
         if sum(int(record.get("size") or 0) for record in valid_records) > 500 * 1024 * 1024 or len(valid_records) > 3:
             progress_callback(25, t("long_videos_note"))
         ensure_normalized_space(project, valid_records)
-        for index, record in enumerate(valid_records, start=1):
-            filename = Path(record["path"]).name
-            base = 25 + int((index - 1) / max(1, len(valid_records)) * 70)
-            span = max(1, int(70 / max(1, len(valid_records))))
-
-            def clip_progress(percent: int, message: str, *, base: int = base, span: int = span, index: int = index, filename: str = filename) -> None:
-                overall = min(95, base + int(percent / 100 * span))
-                progress_callback(overall, t("preparing_video", index=index, total=len(valid_records), filename=filename, percent=percent))
-
-            normalize_video_record(project, record, clip_progress)
+        prepare_videos(project, valid_records, progress_callback)
         progress_callback(100, "Ingest complete")
         return {}
+
+
+def prepare_videos(project: Project, records: list[dict[str, Any]], progress_callback: ProgressCallback) -> None:
+    """Prepare analysis proxies concurrently and aggregate progress."""
+    if not records:
+        return
+    workers = max(1, min(len(records), int(project.data["settings"].get("ingest", {}).get("proxy_workers", 2))))
+    progresses: dict[int, int] = {index: 0 for index in range(len(records))}
+    labels: dict[int, str] = {index: Path(record["path"]).name for index, record in enumerate(records)}
+    lock = threading.Lock()
+
+    def set_progress(index: int, percent: int) -> None:
+        with lock:
+            progresses[index] = max(progresses[index], int(percent))
+
+    def emit() -> None:
+        with lock:
+            overall = min(95, 25 + int(sum(progresses.values()) / max(1, len(records)) * 70 / 100))
+            active = " · ".join(f"{labels[index]} {progresses[index]}%" for index in sorted(progresses) if progresses[index] < 100) or "complete"
+        progress_callback(overall, t("preparing_videos", count=len(records), details=active))
+
+    def run_one(index: int, record: dict[str, Any]) -> None:
+        def clip_progress(percent: int, message: str) -> None:
+            set_progress(index, percent)
+            emit()
+
+        normalize_video_record(project, record, clip_progress)
+        set_progress(index, 100)
+        emit()
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(run_one, index, record) for index, record in enumerate(records)]
+        for future in as_completed(futures):
+            future.result()

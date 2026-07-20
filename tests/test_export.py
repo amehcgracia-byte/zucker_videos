@@ -105,6 +105,7 @@ def test_clip_fates_report_used_excluded_and_not_covering(tmp_path):
 
 
 def test_render_plan_fades_only_intro_and_outro_segments(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     project = create_project("Fades", str(tmp_path / "Fades.zuckervid"))
     master = tmp_path / "master.wav"
     master.write_bytes(b"master")

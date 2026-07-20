@@ -16,6 +16,7 @@ from core.normalization import (
     normalization_filter,
     normalize_video_record,
     normalized_path,
+    proxy_transcode_compliant,
 )
 from core.project import create_project, file_record
 
@@ -51,8 +52,10 @@ def test_normalization_cache_decision_uses_source_signature(tmp_path, monkeypatc
 
     assert needs_normalization(record, destination) is True
     destination.write_bytes(b"normalized")
+    record["cache_key"] = cache_key_for_source(source)
     record["normalized"] = {
         "path": str(destination),
+        "cache_key": record["cache_key"],
         "source_size": record["size"],
         "source_mtime": record["mtime"],
     }
@@ -62,6 +65,64 @@ def test_normalization_cache_decision_uses_source_signature(tmp_path, monkeypatc
     source.write_bytes(b"changed")
     record["cache_key"] = cache_key_for_source(source)
     assert needs_normalization(record, destination) is True
+
+
+def test_proxy_compliance_predicate_is_conservative():
+    compliant = {
+        "video_codec": "h264",
+        "cfr": True,
+        "hdr": False,
+        "bit_depth": 8,
+        "rotation": 0,
+        "width": 1920,
+        "height": 1080,
+    }
+
+    assert proxy_transcode_compliant(compliant) is True
+    assert proxy_transcode_compliant({**compliant, "video_codec": "hevc"}) is False
+    assert proxy_transcode_compliant({**compliant, "cfr": False}) is False
+    assert proxy_transcode_compliant({**compliant, "hdr": True}) is False
+    assert proxy_transcode_compliant({**compliant, "rotation": 90}) is False
+    assert proxy_transcode_compliant({**compliant, "height": 2160}) is False
+    assert proxy_transcode_compliant({**compliant, "projection": "equirect"}) is False
+
+
+def test_compliant_source_skips_proxy_transcode(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    project = create_project("Skip", str(tmp_path / "Skip.zuckervid"))
+    record = file_record(str(source))
+    record["probe"] = {
+        "video_codec": "h264",
+        "cfr": True,
+        "hdr": False,
+        "bit_depth": 8,
+        "rotation": 0,
+        "width": 1280,
+        "height": 720,
+    }
+    calls = []
+    monkeypatch.setattr("core.normalization._run_ffmpeg_progress", lambda *args, **kwargs: calls.append(args))
+
+    normalized = normalize_video_record(project, record, lambda percent, message: None)
+
+    assert calls == []
+    assert normalized["path"] == str(source.resolve())
+    assert normalized["kind"] == "original"
+    assert normalized["proxy_skipped"] is True
+
+
+def test_proxy_command_uses_hwaccel_only_for_hardware_path(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.normalization.tool_status", lambda: {"ffmpeg_path": "ffmpeg"})
+    source = tmp_path / "clip.mov"
+    dest = tmp_path / "proxy.mp4"
+
+    hardware = normalization._normalization_command(source, dest, 30.0, "scale=1280:720", "h264_videotoolbox", hwaccel=True)
+    software = normalization._normalization_command(source, dest, 30.0, "scale=1280:720", "libx264", hwaccel=False)
+
+    assert hardware[hardware.index("-hwaccel") + 1] == "videotoolbox"
+    assert "-hwaccel" not in software
 
 
 def test_global_normalization_cache_hits_across_projects(tmp_path, monkeypatch):

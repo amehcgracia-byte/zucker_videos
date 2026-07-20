@@ -97,14 +97,16 @@ Watched Inbox:
 - Unsupported files are shown under Ignored with a note.
 - When multiple master candidates are present, the wizard defaults to the longest audio file and shows a small selector so you can change it.
 
-Ingest normalization:
+Ingest proxies:
 
-- Ingest transcodes each valid camera clip once into `cache/normalized/{clip_id}.mp4`.
-- Downstream sync, thumbnails, previews, cut, and export consume only the normalized MP4 path.
-- Normalized video is H.264 `yuv420p`, even dimensions, constant frame rate at the detected dominant FPS, with rotation baked in.
-- Audio is normalized to AAC stereo 48 kHz.
+- Ingest prepares low-resolution analysis proxies in the global cache at `~/ZuckerVideos/Cache/proxies/{cache_key}.mp4`.
+- Proxy generation runs two clips at a time by default (`settings.ingest.proxy_workers`) and reports aggregate per-clip progress.
+- Hardware is attempted first with `-hwaccel videotoolbox` plus `h264_videotoolbox`; each clip falls back to software `libx264` if the hardware path fails, and the chosen path is logged.
+- Proxies are H.264 `yuv420p`, no larger than 1280x720, even dimensions, constant frame rate at the detected dominant FPS, with rotation baked in.
 - HDR/10-bit sources use `zscale -> tonemap=hable -> bt709 -> yuv420p`; regular SDR sources use even-dimension scale plus `yuv420p`.
-- Equirectangular clips use ffmpeg `v360` equirect-to-flat with yaw `0`, pitch `0`, h_fov `100`, output `1920x1080`. TODO: expose per-clip yaw/pitch controls later.
+- Equirectangular clips use ffmpeg `v360` equirect-to-flat with yaw `0`, pitch `0`, h_fov `100`, output `1280x720`. TODO: expose per-clip yaw/pitch controls later.
+- Already-compliant originals skip proxy transcoding and are analyzed directly. The predicate is: H.264, constant frame rate, SDR 8-bit or lower, no rotation metadata, not equirectangular, and no larger than 1920x1080.
+- Downstream sync, beat/coverage analysis, color measurement, thumbnails, and previews consume the proxy/original analysis path. Final export renders only the used segments lazily from the original camera files and caches rendered segments globally under `~/ZuckerVideos/Cache/segments/`.
 
 Native Pickers:
 
@@ -306,8 +308,14 @@ Edit/export prototype:
 - Export tries `h264_videotoolbox` first on macOS and falls back to `libx264` when hardware encoding is unavailable.
 - Export applies a bottom-right watermark from `assets/watermark.png` when present, otherwise `logo_editor_blue.png`.
 - Export color matching samples five short windows per clip and caches the profile globally under `~/ZuckerVideos/Cache/color/`; color-measure failures are warnings, not export failures.
+- Full-clip high-quality mezzanines are no longer required for export; segment renders seek into the original camera files and fall back to the analysis proxy only if an original fragment cannot be decoded.
 - Text overlays use `band_name` and `handle` from `~/ZuckerVideos/config.json`; if ffmpeg lacks `drawtext`, export skips text rather than failing.
 - Frontend JavaScript runtime errors are logged to `~/ZuckerVideos/logs/frontend.log`.
+
+Proxy benchmark:
+
+- Benchmark command path: add one ~10 minute 4K HEVC camera clip, run ingest once with the previous full-mezzanine build, then run ingest with the current proxy build and compare the per-clip log lines in `~/ZuckerVideos/logs/`.
+- This checkout does not include a representative 10 minute 4K HEVC sample, so no local speedup number is recorded here. Expected improvement comes from 720p proxies, hardware decode/encode, two-clip parallelism, compliant-source skip, and lazy full-quality segment rendering at export time.
 
 ## API
 

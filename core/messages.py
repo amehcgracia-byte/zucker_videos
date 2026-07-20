@@ -40,6 +40,7 @@ STRINGS = {
     "ignoring_file": "Ignoring {filename}: {reason}",
     "long_videos_note": "Long videos take a while the first time; after that they stay prepared",
     "preparing_video": "Preparing video {index}/{total}: {filename} — {percent}%",
+    "preparing_videos": "Preparing {count} videos... {details}",
     "already_prepared": "Already prepared: {filename}",
     "ingest_complete": "Ingest complete",
     "not_enough_space": "Not enough space to prepare the videos. Free global cache space or move the videos to a disk with more room.",

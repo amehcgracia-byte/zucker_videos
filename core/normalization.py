@@ -18,7 +18,7 @@ from core.stages.base import stable_fingerprint
 
 Progress = Callable[[int, str], None]
 
-NORMALIZATION_VERSION = 3
+NORMALIZATION_VERSION = 4
 PROXY_MAX_WIDTH = 1280
 PROXY_MAX_HEIGHT = 720
 SDR_TONEMAP_FILTER = (
@@ -55,6 +55,22 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
     key = cache_key_for_signature(source, signature)
     record["cache_key"] = key
     existing = record.get("normalized") or {}
+    probe = record.get("probe") or {}
+    if proxy_transcode_compliant(probe):
+        normalized = {
+            "path": str(source),
+            "cache_key": key,
+            "normalization_version": NORMALIZATION_VERSION,
+            "kind": "original",
+            "proxy_skipped": True,
+            "skip_reason": "h264 CFR SDR no-rotation <=1080p",
+            "source_size": signature["size"],
+            "source_mtime": signature["mtime"],
+        }
+        record["normalized"] = normalized
+        LOGGER.info("Proxy skipped for compliant source %s", source)
+        progress(100, t("already_prepared", filename=source.name))
+        return normalized
     if _migrate_legacy_normalized(project, record, destination, signature):
         progress(100, t("already_prepared", filename=source.name))
         return record["normalized"]
@@ -77,24 +93,28 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
     if tmp_path.exists():
         tmp_path.unlink()
 
-    probe = record.get("probe") or {}
     duration = float(probe.get("duration") or 0.0)
     fps = _bounded_fps(float(probe.get("fps") or 30.0))
     filtergraph = normalization_filter(probe, fps=fps, proxy=True)
     if probe.get("projection") == "equirect":
         LOGGER.info("Normalizing equirectangular source %s with probe=%s filter=%s", source, probe, filtergraph)
     try:
-        _run_ffmpeg_progress(_normalization_command(source, tmp_path, fps, filtergraph, "h264_videotoolbox"), duration, source.name, progress)
+        _run_ffmpeg_progress(_normalization_command(source, tmp_path, fps, filtergraph, "h264_videotoolbox", hwaccel=True), duration, source.name, progress)
+        encode_path = "hardware"
+        LOGGER.info("Proxy generated with hardware decode/encode for %s", source)
     except FFmpegError:
         if tmp_path.exists():
             tmp_path.unlink()
         _run_ffmpeg_progress(_normalization_command(source, tmp_path, fps, filtergraph, "libx264"), duration, source.name, progress)
+        encode_path = "software"
+        LOGGER.info("Proxy generated with software fallback for %s", source)
     os.replace(tmp_path, destination)
     normalized = {
         "path": str(destination),
         "cache_key": key,
         "normalization_version": NORMALIZATION_VERSION,
         "kind": "proxy",
+        "encode_path": encode_path,
         "source_size": signature["size"],
         "source_mtime": signature["mtime"],
         "codec": "h264",
@@ -118,6 +138,8 @@ def needs_normalization(record: dict[str, Any], destination: Path | None = None)
     if destination is None:
         destination = normalized_path(None, record)
     normalized = record.get("normalized") or {}
+    if proxy_transcode_compliant(record.get("probe") or {}):
+        return normalized.get("path") != str(source) or normalized.get("normalization_version") != NORMALIZATION_VERSION
     if not destination.exists():
         return True
     try:
@@ -336,12 +358,33 @@ def normalization_filter(probe: dict[str, Any], fps: float | None = None, proxy:
     return f"{size_filter},format=yuv420p" if proxy else EVEN_SDR_FILTER
 
 
-def _normalization_command(source: Path, destination: Path, fps: float, filtergraph: str, codec: str = "h264_videotoolbox") -> list[str]:
+def proxy_transcode_compliant(probe: dict[str, Any]) -> bool:
+    """Return True when the original can safely serve as the analysis proxy."""
+    codec = str(probe.get("video_codec") or "").lower()
+    width = _int_or_zero(probe.get("width"))
+    height = _int_or_zero(probe.get("height"))
+    bit_depth = _int_or_zero(probe.get("bit_depth") or 8)
+    rotation = _float_or_zero(probe.get("rotation"))
+    return (
+        codec == "h264"
+        and bool(probe.get("cfr")) is True
+        and not bool(probe.get("hdr"))
+        and bit_depth <= 8
+        and abs(rotation) < 0.01
+        and not probe.get("projection")
+        and width > 0
+        and height > 0
+        and width <= 1920
+        and height <= 1080
+    )
+
+
+def _normalization_command(source: Path, destination: Path, fps: float, filtergraph: str, codec: str = "h264_videotoolbox", hwaccel: bool = False) -> list[str]:
     status = tool_status()
     ffmpeg = status.get("ffmpeg_path")
     if not ffmpeg:
         raise FFmpegError("ffmpeg is missing. Install it with: brew install ffmpeg")
-    return [
+    command = [
         str(ffmpeg),
         "-y",
         "-hide_banner",
@@ -350,6 +393,10 @@ def _normalization_command(source: Path, destination: Path, fps: float, filtergr
         "-nostdin",
         "-progress",
         "pipe:1",
+    ]
+    if hwaccel:
+        command.extend(["-hwaccel", "videotoolbox"])
+    command.extend([
         "-i",
         str(source),
         "-map",
@@ -385,7 +432,8 @@ def _normalization_command(source: Path, destination: Path, fps: float, filtergr
         "-movflags",
         "+faststart",
         str(destination),
-    ]
+    ])
+    return command
 
 
 def _run_ffmpeg_progress(command: list[str], duration: float, filename: str, progress: Progress) -> None:
@@ -414,6 +462,20 @@ def _bounded_fps(fps: float) -> float:
     if fps <= 0:
         return 30.0
     return max(1.0, min(120.0, fps))
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _float_or_zero(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _source_signature(path: Path) -> dict[str, Any]:

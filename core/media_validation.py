@@ -84,6 +84,7 @@ def validate_camera_video_metadata(metadata: dict[str, Any]) -> VideoValidation:
         "height": height,
         "rotation": _rotation(video_stream or {}),
         "fps": dominant_fps(video_stream or {}),
+        "cfr": is_probably_cfr(video_stream or {}),
         "projection": projection(metadata, width, height),
         "bit_depth": bit_depth(video_stream or {}),
         "hdr": is_hdr_video(video_stream or {}),
@@ -134,6 +135,15 @@ def dominant_fps(stream: dict[str, Any]) -> float:
         if fps > 0:
             return fps
     return 30.0
+
+
+def is_probably_cfr(stream: dict[str, Any]) -> bool:
+    """Return True when ffprobe rates do not suggest variable frame rate."""
+    avg = _parse_rate(stream.get("avg_frame_rate"))
+    nominal = _parse_rate(stream.get("r_frame_rate"))
+    if avg <= 0 or nominal <= 0:
+        return False
+    return abs(avg - nominal) < 0.01
 
 
 def projection(metadata: dict[str, Any], width: int | None, height: int | None) -> str | None:
