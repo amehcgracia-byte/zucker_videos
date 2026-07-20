@@ -46,7 +46,7 @@ def default_settings() -> dict[str, Any]:
         "sync": {"confidence_threshold": 6.0},
         "cut": {"min_segment_seconds": 4.0},
         "edit": {"style": "coverage_first"},
-        "export": {"format": "mp4", "resolution": "source"},
+        "export": {"format": "mp4", "resolution": "source", "transiciones_suaves": False},
     }
 
 

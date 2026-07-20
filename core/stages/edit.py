@@ -45,7 +45,7 @@ class EditStage(Stage):
         platform = str(coverage.get("platform") or "youtube")
         if platform != "youtube":
             plan = _simple_plan(coverage)
-            beats = {"stage": self.name, "platform": platform, "beats_sec": [], "tempo": None, "placeholder_short_form": True}
+            beats = {"stage": self.name, "platform": platform, "beats_sec": [], "bars_sec": [], "sections_sec": [], "tempo": None, "placeholder_short_form": True}
         else:
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, "Eligiendo cámaras")
@@ -81,13 +81,17 @@ def _load_or_analyze_beats(project: Project, coverage: dict[str, Any], progress_
 
         y, sr = librosa.load(str(Path(master["path"])), sr=22050, mono=True, offset=start, duration=duration)
         tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr, units="frames")
-        beat_times = [round(start + float(value), 3) for value in librosa.frames_to_time(beat_frames, sr=sr)]
+        local_beats = [float(value) for value in librosa.frames_to_time(beat_frames, sr=sr)]
+        beat_times = [round(start + value, 3) for value in local_beats]
+        section_times = [round(start + value, 3) for value in estimate_section_changes(y, sr, local_beats)]
         tempo_value = float(tempo[0] if hasattr(tempo, "__len__") else tempo)
     except Exception:
         beat_times = _fallback_beats(start, duration)
+        section_times = []
         tempo_value = None
     if len(beat_times) < 2:
         beat_times = _fallback_beats(start, duration)
+    bars = estimate_bar_starts(beat_times, start, duration)
     progress_callback(45, "Ritmo listo")
     return {
         "stage": "edit",
@@ -97,6 +101,8 @@ def _load_or_analyze_beats(project: Project, coverage: dict[str, Any], progress_
         "window_duration_sec": duration,
         "tempo": tempo_value,
         "beats_sec": beat_times,
+        "bars_sec": bars,
+        "sections_sec": section_times,
     }
 
 
@@ -114,42 +120,46 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any]) -> d
     window = coverage.get("window") or {}
     start = float(window.get("start_sec") or 0.0)
     end = start + max(1.0, float(window.get("duration_sec") or 1.0))
-    beat_times = [value for value in (beats.get("beats_sec") or []) if start <= float(value) <= end]
-    if not beat_times or beat_times[0] > start:
-        beat_times.insert(0, start)
-    if beat_times[-1] < end:
-        beat_times.append(end)
+    bar_times = [float(value) for value in (beats.get("bars_sec") or []) if start <= float(value) <= end]
+    if not bar_times or bar_times[0] > start:
+        bar_times.insert(0, start)
+    if bar_times[-1] < end:
+        bar_times.append(end)
+    section_times = [float(value) for value in (beats.get("sections_sec") or []) if start < float(value) < end]
 
     sources = coverage.get("sources") or []
+    if not sources and coverage.get("segments"):
+        sources = coverage["segments"]
     segments: list[dict[str, Any]] = []
     gaps: list[dict[str, float]] = []
     previous_source: str | None = None
-    beat_index = 0
+    bar_index = 0
     segment_index = 0
-    while beat_index < len(beat_times) - 1:
-        beats_per_segment = 8 if segment_index % 4 else 4
-        next_index = min(len(beat_times) - 1, beat_index + beats_per_segment)
-        while next_index > beat_index + 1 and beat_times[next_index] - beat_times[beat_index] > 15.0:
+    while bar_index < len(bar_times) - 1:
+        bars_per_segment = 4 if segment_index % 4 else 2
+        next_index = min(len(bar_times) - 1, bar_index + bars_per_segment)
+        section_index = _reachable_section_index(bar_times, section_times, bar_index, next_index)
+        if section_index is not None:
+            next_index = section_index
+        while next_index > bar_index + 1 and bar_times[next_index] - bar_times[bar_index] > 15.0:
             next_index -= 1
-        while next_index < len(beat_times) - 1 and beat_times[next_index] - beat_times[beat_index] < 2.0:
+        while next_index < len(bar_times) - 1 and bar_times[next_index] - bar_times[bar_index] < 2.0:
             next_index += 1
-        segment_start = float(beat_times[beat_index])
-        segment_end = min(end, float(beat_times[next_index]))
+        segment_start = float(bar_times[bar_index])
+        segment_end = min(end, float(bar_times[next_index]))
         if segment_end <= segment_start:
             break
         available = _covering_sources(sources, segment_start, segment_end)
         if not available:
             gaps.append({"start_sec": round(segment_start, 3), "end_sec": round(segment_end, 3)})
-            beat_index = next_index
+            bar_index = next_index
             continue
         source = _choose_source(available, previous_source)
         previous_source = _source_id(source)
         segments.append(_segment_from_source(source, segment_start, segment_end, window.get("title") or "Vídeo completo"))
-        beat_index = next_index
+        bar_index = next_index
         segment_index += 1
 
-    if not segments and coverage.get("segments"):
-        segments = coverage["segments"]
     warnings = list(coverage.get("warnings") or [])
     if gaps:
         warnings.extend([f"Sin vídeo entre {_fmt_time(gap['start_sec'])}–{_fmt_time(gap['end_sec'])}" for gap in gaps])
@@ -162,6 +172,7 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any]) -> d
         "title": window.get("title") or "Vídeo completo",
         "real_edit_logic": "youtube beat-aligned multicam v1",
         "warnings": warnings,
+        "excluded_clips": coverage.get("excluded_clips") or [],
         "gaps": gaps,
         "cut_count": max(0, len(segments) - 1),
         "camera_usage": usage,
@@ -170,17 +181,108 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any]) -> d
 
 
 def _simple_plan(coverage: dict[str, Any]) -> dict[str, Any]:
-    segments = coverage.get("segments") or []
+    segments = _short_form_segments_from_best_coverage(coverage)
     return {
         "stage": "edit",
         "platform": coverage.get("platform") or "youtube",
         "placeholder_logic": "short-form middle excerpt; multicam/highlight logic pending",
         "warnings": coverage.get("warnings") or [],
+        "excluded_clips": coverage.get("excluded_clips") or [],
         "gaps": [],
         "cut_count": max(0, len(segments) - 1),
         "camera_usage": _camera_usage(segments),
         "segments": segments,
     }
+
+
+def estimate_bar_starts(beat_times: list[float], start: float, duration: float) -> list[float]:
+    """Estimate downbeats by grouping beats in fours."""
+    end = start + duration
+    beats = [float(value) for value in beat_times if start <= float(value) <= end]
+    if not beats:
+        return [start, end]
+    bars = [start]
+    best_phase = 0
+    if len(beats) >= 8:
+        gaps = [beats[index + 4] - beats[index] for index in range(len(beats) - 4)]
+        best_phase = min(range(4), key=lambda phase: abs((gaps[phase] if phase < len(gaps) else 2.0) - np_median(gaps)))
+    for index, beat in enumerate(beats):
+        if index % 4 == best_phase and beat > start + 0.05:
+            bars.append(round(beat, 3))
+    if bars[-1] < end:
+        bars.append(end)
+    return sorted(set(bars))
+
+
+def estimate_section_changes(y: Any, sr: int, beat_times: list[float]) -> list[float]:
+    """Estimate section boundaries from spectral novelty peaks."""
+    if not beat_times:
+        return []
+    try:
+        import librosa
+        import numpy as np
+
+        chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
+        novelty = np.linalg.norm(np.diff(chroma, axis=1), axis=0)
+        if novelty.size == 0:
+            return []
+        threshold = float(np.percentile(novelty, 90))
+        frame_times = librosa.frames_to_time(np.arange(novelty.size), sr=sr)
+        candidates = [float(frame_times[index]) for index, value in enumerate(novelty) if float(value) >= threshold]
+        sections = []
+        for candidate in candidates:
+            nearest = min(beat_times, key=lambda beat: abs(beat - candidate))
+            if not sections or abs(nearest - sections[-1]) > 12:
+                sections.append(round(nearest, 3))
+        return sections
+    except Exception:
+        return []
+
+
+def np_median(values: list[float]) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[midpoint]
+    return (ordered[midpoint - 1] + ordered[midpoint]) / 2
+
+
+def _reachable_section_index(bar_times: list[float], section_times: list[float], current_index: int, proposed_index: int) -> int | None:
+    current = bar_times[current_index]
+    proposed = bar_times[proposed_index]
+    for section in section_times:
+        if current + 2.0 <= section <= min(proposed + 4.0, current + 15.0):
+            nearest = min(range(current_index + 1, len(bar_times)), key=lambda index: abs(bar_times[index] - section))
+            return nearest
+    return None
+
+
+def _short_form_segments_from_best_coverage(coverage: dict[str, Any]) -> list[dict[str, Any]]:
+    segments = coverage.get("segments") or []
+    sources = coverage.get("sources") or []
+    if not segments:
+        return []
+    platform = str(coverage.get("platform") or "")
+    target = 45.0 if platform == "instagram" else 20.0 if platform == "tiktok" else float(segments[0].get("duration_sec") or 1.0)
+    best = max(sources or segments, key=lambda source: float(source.get("confidence") or 0.0) * max(1.0, float(source.get("duration_sec") or 0.0)))
+    duration = min(target, float(best.get("duration_sec") or target))
+    clip_duration = float(best.get("duration_sec") or duration)
+    clip_start = max(0.0, (clip_duration - duration) / 2)
+    offset = float(best.get("offset_sec") or best.get("clip_offset_sec") or 0.0)
+    return [
+        {
+            "title": (coverage.get("window") or {}).get("title") or best.get("title") or "Vídeo",
+            "clip_path": best["path"] if "path" in best else best["clip_path"],
+            "clip_start_sec": clip_start,
+            "master_start_sec": offset + clip_start,
+            "duration_sec": duration,
+            "clip_offset_sec": offset,
+            "confidence": float(best.get("confidence") or 0.0),
+            "filename": best.get("filename") or Path(str(best.get("path") or best.get("clip_path"))).name,
+        }
+    ]
 
 
 def _covering_sources(sources: list[dict[str, Any]], start: float, end: float) -> list[dict[str, Any]]:

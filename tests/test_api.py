@@ -569,7 +569,7 @@ def test_cut_fails_cleanly_when_no_valid_confident_clip(tmp_path):
     assert "clip.mp4: vídeo válido=no, confianza=9.000, umbral=6.000" in message
 
 
-def test_cut_and_export_use_global_cached_clip_with_low_confidence_warning(tmp_path, monkeypatch):
+def test_cut_excludes_low_confidence_clip_without_manual_override(tmp_path):
     project = create_project("CachedCut", str(tmp_path / "CachedCut.zuckervid"))
     source = tmp_path / "clip.mov"
     normalized = tmp_path / "global-cache" / "normalized" / "clip.mp4"
@@ -613,6 +613,55 @@ def test_cut_and_export_use_global_cached_clip_with_low_confidence_warning(tmp_p
         },
     )
 
+    with pytest.raises(ValueError) as exc_info:
+        CutStage().run(project, lambda percent, message: None)
+    assert "clip.mov: vídeo válido=sí, confianza=2.500, umbral=6.000 (confianza baja)" in str(exc_info.value)
+
+
+def test_cut_and_export_use_manual_override_global_cached_clip(tmp_path, monkeypatch):
+    project = create_project("CachedCut", str(tmp_path / "CachedCut.zuckervid"))
+    source = tmp_path / "clip.mov"
+    normalized = tmp_path / "global-cache" / "normalized" / "clip.mp4"
+    master = tmp_path / "master.wav"
+    source.write_bytes(b"source")
+    normalized.parent.mkdir(parents=True)
+    normalized.write_bytes(b"normalized")
+    master.write_bytes(b"master")
+    record = file_record(str(source))
+    record["probe"] = {
+        "valid_video": True,
+        "video_codec": "h264",
+        "duration": 10.0,
+        "width": 1280,
+        "height": 720,
+    }
+    record["cache_key"] = "cache-key"
+    record["normalized"] = {"path": str(normalized), "cache_key": "cache-key", "source_size": record["size"], "source_mtime": record["mtime"]}
+    project.data["inputs"]["master"] = file_record(str(master))
+    project.data["inputs"]["videos"] = [record]
+    project.data["settings"]["wizard"] = {"platform": "youtube", "song_choice": None}
+    project.data["settings"]["sync"]["confidence_threshold"] = 6.0
+    write_artifact_json(
+        project.artifacts_dir / "sync_map.json",
+        {
+            "schema_version": 1,
+            "confidence_threshold": 6.0,
+            "master_duration_sec": 10.0,
+            "clips": {
+                "cached": {
+                    "path": str(normalized),
+                    "source_path": str(source.resolve()),
+                    "filename": "clip.mov",
+                    "offset_sec": 0.0,
+                    "duration_sec": 10.0,
+                    "confidence": 2.5,
+                    "low_confidence": True,
+                    "manual_override": True,
+                }
+            },
+        },
+    )
+
     monkeypatch.setattr(
         "core.stages.export._render_plan",
         lambda segments, master_path, output_path, platform, video_bitrate, progress_callback: output_path.write_bytes(b"export"),
@@ -621,12 +670,12 @@ def test_cut_and_export_use_global_cached_clip_with_low_confidence_warning(tmp_p
     CutStage().run(project, lambda percent, message: None)
     coverage = json.loads((project.artifacts_dir / "coverage.json").read_text(encoding="utf-8"))
     assert coverage["segments"][0]["clip_path"] == str(normalized)
-    assert coverage["warnings"] == ["Sincronización dudosa — revisa el resultado"]
+    assert coverage["excluded_clips"] == []
 
     ExportStage().run(project, lambda percent, message: None)
     manifest = json.loads((project.artifacts_dir / "export_manifest.json").read_text(encoding="utf-8"))
     assert Path(manifest["exports"][0]["path"]).read_bytes() == b"export"
-    assert manifest["warnings"] == ["Sincronización dudosa — revisa el resultado"]
+    assert manifest["warnings"] == []
 
 
 def test_sync_skips_ingest_demoted_clip(tmp_path, monkeypatch):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +84,7 @@ class ExportStage(Stage):
                         "warnings": warnings,
                         "cut_count": int(plan.get("cut_count") or max(0, len(segments) - 1)),
                         "camera_usage": plan.get("camera_usage") or _camera_usage(segments),
+                        "excluded_clips": plan.get("excluded_clips") or [],
                     }
                 ],
             },
@@ -112,6 +114,8 @@ def _render_plan(
     segment_paths: list[Path] = []
     total_duration = _plan_duration(segments)
     rendered_duration = 0.0
+    color_profiles = _color_profiles_for_segments(segments)
+    overlay_config = _overlay_config(platform, segments[0])
     try:
         for index, segment in enumerate(segments, start=1):
             segment_path = temp_dir / f"segment-{index:04d}.mp4"
@@ -123,7 +127,8 @@ def _render_plan(
                 percent = base_percent + int(segment_share * local_percent / 100)
                 progress_callback(min(84, percent), f"Renderizando segmento {index}/{len(segments)}: {detail}")
 
-            _render_segment(segment, master_path, segment_path, platform, video_bitrate, segment_progress)
+            color_profile = color_profiles.get(str(segment.get("clip_path")), {})
+            _render_segment(segment, master_path, segment_path, platform, video_bitrate, overlay_config, color_profile, segment_progress)
             segment_paths.append(segment_path)
             rendered_duration += segment_duration
         concat_path = temp_dir / "concat.txt"
@@ -162,10 +167,14 @@ def _render_segment(
     output_path: Path,
     platform: str,
     video_bitrate: int,
+    overlay_config: dict[str, Any] | None = None,
+    color_profile: dict[str, Any] | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> None:
     ffmpeg = _ffmpeg_path()
     duration = max(0.1, float(segment["duration_sec"]))
+    watermark = _watermark_path()
+    filter_complex = _segment_filtergraph(platform, duration, overlay_config or {}, color_profile or {}, bool(watermark), _ffmpeg_supports_filter("drawtext"))
     command_base = [
         ffmpeg,
         "-y",
@@ -187,22 +196,28 @@ def _render_segment(
         f"{duration:.3f}",
         "-i",
         str(Path(master_path)),
-        "-map",
-        "0:v:0",
-        "-map",
-        "1:a:0",
-        "-vf",
-        _video_filter(platform),
-        "-pix_fmt",
-        "yuv420p",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-shortest",
-        "-movflags",
-        "+faststart",
     ]
+    if watermark:
+        command_base.extend(["-loop", "1", "-i", str(watermark)])
+    command_base.extend(
+        [
+            "-filter_complex",
+            filter_complex,
+        "-map",
+            "[v]",
+        "-map",
+            "1:a:0",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+        ]
+    )
     hardware = _video_encode_args("h264_videotoolbox", video_bitrate)
     software = _video_encode_args("libx264", video_bitrate)
     try:
@@ -238,14 +253,174 @@ def _run_ffmpeg_progress(command: list[str], duration: float, label: str, progre
         progress(100, f"{label} — 100%")
 
 
-def _video_filter(platform: str) -> str:
+def _base_video_filter(platform: str) -> str:
     if platform in {"instagram", "tiktok"}:
         return "scale=608:1080:force_original_aspect_ratio=increase,crop=608:1080,setsar=1,format=yuv420p"
     return "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
 
 
+def _segment_filtergraph(
+    platform: str,
+    duration: float,
+    overlay_config: dict[str, Any],
+    color_profile: dict[str, Any],
+    has_watermark: bool = True,
+    text_enabled: bool = True,
+) -> str:
+    filters = [_base_video_filter(platform), _color_filter(color_profile), f"fade=t=in:st=0:d=0.5", f"fade=t=out:st={max(0.0, duration - 0.5):.3f}:d=0.5"]
+    if text_enabled:
+        filters.extend(_text_filters(platform, duration, overlay_config))
+    filters.append("format=yuv420p")
+    graph = f"[0:v]{','.join(filter for filter in filters if filter)}[base]"
+    if not has_watermark:
+        return f"{graph};[base]copy[v]"
+    margin = 40 if platform == "youtube" else 28
+    wm_height = 65
+    return (
+        f"{graph};"
+        f"[2:v]format=rgba,scale=-1:{wm_height},colorchannelmixer=aa=0.70[wm];"
+        f"[base][wm]overlay=W-w-{margin}:H-h-{margin}:format=auto[v]"
+    )
+
+
+def _color_filter(color_profile: dict[str, Any]) -> str:
+    brightness = max(-0.08, min(0.08, float(color_profile.get("brightness_adjust") or 0.0)))
+    saturation = max(0.90, min(1.10, float(color_profile.get("saturation_adjust") or 1.0)))
+    return f"eq=brightness={brightness:.4f}:saturation={saturation:.4f}"
+
+
+def _text_filters(platform: str, duration: float, config: dict[str, Any]) -> list[str]:
+    title = str(config.get("title") or "").strip()
+    band = str(config.get("band_name") or "").strip()
+    handle = str(config.get("handle") or "").strip()
+    filters: list[str] = []
+    if title:
+        if platform == "youtube":
+            text = title if not band else f"{title} • {band}"
+            filters.append(_drawtext(text, "x=64:y=h-th-92:fontsize=46:enable='between(t,0,4)'"))
+        else:
+            filters.append(_drawtext(title, "x=(w-tw)/2:y=(h-th)/2:fontsize=54:enable='between(t,0,4)'"))
+    if platform in {"instagram", "tiktok"} and handle:
+        filters.append(_drawtext(handle, f"x=(w-tw)/2:y=h-th-130:fontsize=38:enable='gte(t,{max(0.0, duration - 4):.3f})'"))
+    return filters
+
+
+def _drawtext(text: str, placement: str) -> str:
+    font = _font_path()
+    font_part = f"fontfile='{_escape_filter_value(str(font))}':" if font else ""
+    return (
+        "drawtext="
+        f"{font_part}text='{_escape_filter_value(text)}':"
+        "fontcolor=white:shadowcolor=black@0.60:shadowx=2:shadowy=2:"
+        f"{placement}"
+    )
+
+
+def _overlay_config(platform: str, first_segment: dict[str, Any]) -> dict[str, Any]:
+    config = _global_config()
+    return {
+        "platform": platform,
+        "title": first_segment.get("title") or config.get("project_name"),
+        "band_name": config.get("band_name") or "",
+        "handle": config.get("handle") or "",
+    }
+
+
+def _global_config() -> dict[str, Any]:
+    path = Path.home() / "ZuckerVideos" / "config.json"
+    try:
+        import json
+
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _watermark_path() -> Path | None:
+    candidates = [
+        Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "watermark.png",
+        Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "logo_editor_blue.png",
+        Path(__file__).resolve().parents[2] / "assets" / "watermark.png",
+        Path(__file__).resolve().parents[2] / "assets" / "logo_editor_blue.png",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _font_path() -> Path | None:
+    for candidate in (
+        Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
+        Path("/System/Library/Fonts/SFNS.ttf"),
+        Path("/Library/Fonts/Arial.ttf"),
+    ):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _escape_filter_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
+
+
 def _concat_file_line(path: Path) -> str:
     return "file '{}'\n".format(path.as_posix().replace("'", "'\\''"))
+
+
+def _color_profiles_for_segments(segments: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    raw: dict[str, dict[str, float]] = {}
+    for segment in segments:
+        clip_path = str(segment.get("clip_path"))
+        if clip_path and clip_path not in raw:
+            raw[clip_path] = measure_clip_color(clip_path)
+    valid = [profile for profile in raw.values() if profile]
+    if not valid:
+        return {path: {} for path in raw}
+    target_luma = sum(profile["luma"] for profile in valid) / len(valid)
+    target_sat = sum(profile["saturation"] for profile in valid) / len(valid)
+    corrected: dict[str, dict[str, Any]] = {}
+    for path, profile in raw.items():
+        if not profile:
+            corrected[path] = {}
+            continue
+        corrected[path] = color_correction_for_profile(profile, target_luma, target_sat)
+    return corrected
+
+
+def measure_clip_color(path: str) -> dict[str, float]:
+    """Measure sampled luma/saturation using ffmpeg signalstats."""
+    command = [
+        _ffmpeg_path(),
+        "-hide_banner",
+        "-nostdin",
+        "-i",
+        path,
+        "-vf",
+        "fps=1/20,signalstats,metadata=print",
+        "-an",
+        "-f",
+        "null",
+        "-",
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=60)
+    if result.returncode != 0:
+        return {}
+    text = f"{result.stdout}\n{result.stderr}"
+    y_values = [float(value) for value in re.findall(r"lavfi.signalstats.YAVG=([0-9.]+)", text)]
+    sat_values = [float(value) for value in re.findall(r"lavfi.signalstats.SATAVG=([0-9.]+)", text)]
+    if not y_values or not sat_values:
+        return {}
+    return {"luma": sum(y_values) / len(y_values), "saturation": sum(sat_values) / len(sat_values)}
+
+
+def color_correction_for_profile(profile: dict[str, float], target_luma: float, target_sat: float) -> dict[str, float]:
+    """Return subtle eq corrections toward a shared target."""
+    luma = max(1.0, float(profile.get("luma") or target_luma or 128.0))
+    sat = max(1.0, float(profile.get("saturation") or target_sat or 64.0))
+    brightness = max(-0.08, min(0.08, (target_luma - luma) / 255.0 * 0.35))
+    saturation = max(0.90, min(1.10, 1.0 + (target_sat - sat) / 255.0 * 0.60))
+    return {"brightness_adjust": brightness, "saturation_adjust": saturation}
 
 
 def _video_encode_args(codec: str, video_bitrate: int) -> list[str]:
@@ -304,3 +479,18 @@ def _ffmpeg_path() -> str:
     if not ffmpeg:
         raise FFmpegError("ffmpeg is missing. Install it with: brew install ffmpeg")
     return str(ffmpeg)
+
+
+_FILTER_SUPPORT_CACHE: dict[str, bool] = {}
+
+
+def _ffmpeg_supports_filter(name: str) -> bool:
+    if name in _FILTER_SUPPORT_CACHE:
+        return _FILTER_SUPPORT_CACHE[name]
+    try:
+        result = subprocess.run([_ffmpeg_path(), "-hide_banner", "-filters"], capture_output=True, text=True, check=False)
+        supported = result.returncode == 0 and re.search(rf"\b{name}\b", result.stdout) is not None
+    except Exception:
+        supported = False
+    _FILTER_SUPPORT_CACHE[name] = supported
+    return supported

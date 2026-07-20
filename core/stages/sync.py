@@ -37,7 +37,7 @@ class SyncStage(Stage):
                 "master": project.data["inputs"].get("master"),
                 "videos": project.data["inputs"].get("videos", []),
                 "settings": project.data["settings"].get(self.name, {}),
-                "algorithm": {"sr": SYNC_SAMPLE_RATE, "hop": SYNC_HOP_LENGTH, "version": 1},
+                "algorithm": {"sr": SYNC_SAMPLE_RATE, "hop": SYNC_HOP_LENGTH, "version": 2, "verify_tolerance_sec": 0.150},
             }
         )
 
@@ -236,6 +236,8 @@ def sync_clip(project: Project, record: dict[str, Any], master_env: np.ndarray, 
         return {**base, "offset_sec": 0.0, "confidence": 0.0, "low_confidence": True, "error": "Empty onset envelope"}
 
     offset_sec, confidence = recover_offset(master_env, clip_env)
+    verification = verify_sync_stability(master_env, clip_env, offset_sec)
+    unstable = bool(verification.get("unstable_sync"))
     return {
         **base,
         "audio_cache": audio_path,
@@ -243,6 +245,8 @@ def sync_clip(project: Project, record: dict[str, Any], master_env: np.ndarray, 
         "duration_sec": duration,
         "confidence": confidence,
         "low_confidence": confidence < threshold,
+        "verification": verification,
+        "unstable_sync": unstable,
     }
 
 
@@ -259,6 +263,43 @@ def recover_offset(master_env: np.ndarray, clip_env: np.ndarray) -> tuple[float,
         offset_frames = max(0, int(lags[peak_index]))
     offset_sec = offset_frames * SYNC_HOP_LENGTH / SYNC_SAMPLE_RATE
     return float(offset_sec), confidence_from_correlation(curve)
+
+
+def verify_sync_stability(master_env: np.ndarray, clip_env: np.ndarray, full_offset_sec: float) -> dict[str, Any]:
+    """Verify sync by correlating first and last thirds independently."""
+    thirds = split_clip_verification_segments(clip_env)
+    if len(thirds) < 2:
+        return {"checked": False, "reason": "clip too short for second-pass sync verification"}
+    offsets: list[dict[str, float]] = []
+    for name, start_frame, segment in thirds:
+        offset_sec, confidence = recover_offset(master_env, segment)
+        adjusted = offset_sec - start_frame * SYNC_HOP_LENGTH / SYNC_SAMPLE_RATE
+        offsets.append({"segment": name, "offset_sec": adjusted, "confidence": confidence})
+    delta = abs(offsets[0]["offset_sec"] - offsets[-1]["offset_sec"])
+    return {
+        "checked": True,
+        "full_offset_sec": full_offset_sec,
+        "first_offset_sec": offsets[0]["offset_sec"],
+        "last_offset_sec": offsets[-1]["offset_sec"],
+        "delta_sec": delta,
+        "tolerance_sec": 0.150,
+        "unstable_sync": delta > 0.150,
+        "segments": offsets,
+    }
+
+
+def split_clip_verification_segments(clip_env: np.ndarray) -> list[tuple[str, int, np.ndarray]]:
+    """Return first/last thirds large enough for independent correlation."""
+    total_sec = clip_env.size * SYNC_HOP_LENGTH / SYNC_SAMPLE_RATE
+    if total_sec < 10.0:
+        return []
+    third = clip_env.size // 3
+    if third < 8:
+        return []
+    return [
+        ("first_third", 0, clip_env[:third]),
+        ("last_third", third * 2, clip_env[third * 2 :]),
+    ]
 
 
 def confidence_from_correlation(curve: np.ndarray) -> float:
@@ -285,6 +326,9 @@ def preserve_manual_override(
     preserved["detected_offset_sec"] = detected.get("offset_sec", 0.0)
     preserved["offset_sec"] = float(old_clip.get("offset_sec", 0.0))
     preserved["manual_override"] = True
+    preserved["low_confidence"] = False
+    preserved["unstable_sync"] = False
+    preserved["manual_override_rescues_sync"] = True
     return preserved
 
 

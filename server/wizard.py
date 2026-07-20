@@ -251,6 +251,7 @@ class WizardRunner:
                 "cut_count": export.get("cut_count"),
                 "camera_usage": export.get("camera_usage"),
                 "warnings": export.get("warnings") or manifest.get("warnings") or [],
+                "excluded_clips": export.get("excluded_clips") or [],
             }
             elapsed = time.monotonic() - started_at
             if project.data["inputs"].get("videos") and elapsed < 1.0:

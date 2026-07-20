@@ -489,6 +489,14 @@ function resultSummary(result) {
   if (cutCount > 0 || cameraCount > 0) parts.push(`${cutCount} cortes · ${cameraCount} cámaras`);
   const warnings = result?.warnings || [];
   if (warnings.length) parts.push(warnings.join(" · "));
+  const excluded = result?.excluded_clips || [];
+  if (excluded.length) {
+    parts.push(
+      excluded
+        .map((item) => `${item.filename || "clip"}: ${item.reason || "excluido"}`)
+        .join(" · ")
+    );
+  }
   return parts.join(" · ");
 }
 

@@ -24,8 +24,11 @@ Simple three-step app for turning Zucker Mixer audio plus raw camera clips into 
 
 Creative logic in this version:
 
-- YouTube builds a first real multicam edit: beat-aligned cuts, 4-8 beat segment lengths, confidence-weighted camera rotation, and no silent fallback to fake footage.
-- Instagram/TikTok use a center crop and fixed middle-duration extract.
+- YouTube builds a first real multicam edit: bar-aligned cuts, 2-4 bar segment lengths, confidence-weighted camera rotation, and no silent fallback to bad sync.
+- Clips below the sync confidence threshold, clips with unstable second-pass sync verification, clips without usable audio, and invalid videos are excluded from multicam. If no clip qualifies, the job fails with per-clip diagnostics.
+- Manual sync overrides in `/advanced` still rescue a clip when the user has verified it by hand.
+- Instagram/TikTok use a center crop and fixed short excerpt sourced from the best-covered synced stretch.
+- All exports include the Zucker watermark, intro/outro fades, subtle per-source color normalization, and title overlays when the active ffmpeg build supports `drawtext`.
 - Instagram/TikTok highlight selection, automatic subject tracking, and more advanced creative pacing are still placeholders.
 
 The old technical UI is still available for debugging at:
@@ -293,11 +296,14 @@ Cut prototype:
 
 Edit/export prototype:
 
+- `sync` verifies each detected offset with independent first-third/last-third correlations. A disagreement above 150 ms marks the clip `unstable_sync`.
 - `edit` writes `artifacts/beats.json` and `artifacts/edit_plan.json`.
-- YouTube uses `librosa.beat.beat_track` on the selected master-audio window and plans beat-aligned multicam cuts.
+- YouTube uses `librosa.beat.beat_track` plus onset/spectral novelty to estimate bars and section changes, then plans bar-aligned multicam cuts.
 - Instagram/TikTok still use the current fixed middle excerpt as placeholder creative logic.
 - `export` renders per-segment MP4 intermediates with matching master-audio slices, concatenates them, and keeps output under 1.9 GB by computing a target bitrate from duration.
 - Export tries `h264_videotoolbox` first on macOS and falls back to `libx264` when hardware encoding is unavailable.
+- Export applies a bottom-right watermark from `assets/watermark.png` when present, otherwise `logo_editor_blue.png`.
+- Text overlays use `band_name` and `handle` from `~/ZuckerVideos/config.json`; if ffmpeg lacks `drawtext`, export skips text rather than failing.
 - Frontend JavaScript runtime errors are logged to `~/ZuckerVideos/logs/frontend.log`.
 
 ## API

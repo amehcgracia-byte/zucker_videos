@@ -66,6 +66,7 @@ class CutStage(Stage):
                 "songs": songs,
                 "window": window,
                 "warnings": warnings,
+                "excluded_clips": selection["excluded"],
                 "clip_diagnostics": selection["diagnostics"],
                 "sources": selection["clips"],
                 "segments": [segment],
@@ -105,8 +106,8 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any]) -> dict
         if normalized.get("path"):
             records_by_path[normalized["path"]] = record
     threshold = sync_confidence_threshold(project)
-    confident: list[dict[str, Any]] = []
-    low_confidence: list[dict[str, Any]] = []
+    selected: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
     diagnostics: list[dict[str, Any]] = []
     for clip in (sync_map.get("clips") or {}).values():
         path = clip.get("source_path") or clip.get("path")
@@ -121,28 +122,39 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any]) -> dict
             "confidence": confidence,
             "threshold": threshold,
             "low_confidence": bool(clip.get("low_confidence") or confidence < threshold),
+            "unstable_sync": bool(clip.get("unstable_sync")) and not bool(clip.get("manual_override")),
+            "manual_override": bool(clip.get("manual_override")),
+            "verification": clip.get("verification"),
             "error": clip.get("error"),
             "no_audio": bool(clip.get("no_audio")),
             "path": clip.get("path"),
             "source_path": clip.get("source_path"),
         }
         diagnostics.append(diagnostic)
-        if not valid_video:
+        reason = _exclusion_reason(diagnostic)
+        if reason:
+            excluded.append({"filename": diagnostic["filename"], "reason": reason, "diagnostic": diagnostic})
             continue
-        if clip.get("error") or clip.get("no_audio"):
-            continue
-        if confidence < threshold or clip.get("low_confidence"):
-            low_confidence.append(clip)
-            continue
-        confident.append(clip)
-    if confident:
-        return {"clips": confident, "warnings": [], "diagnostics": diagnostics}
-    if low_confidence:
-        best = max(low_confidence, key=lambda clip: _float_or_zero(clip.get("confidence")))
-        warning = "Sincronización dudosa — revisa el resultado"
-        LOGGER.warning("Cut falling back to low-confidence clip: %s diagnostics=%s", best.get("filename"), diagnostics)
-        return {"clips": [best], "warnings": [warning], "diagnostics": diagnostics}
-    return {"clips": [], "warnings": [], "diagnostics": diagnostics}
+        selected.append(clip)
+    return {"clips": selected, "warnings": [], "diagnostics": diagnostics, "excluded": excluded}
+
+
+def _exclusion_reason(diagnostic: dict[str, Any]) -> str | None:
+    if not diagnostic["valid_video"]:
+        return "no es un vídeo de cámara utilizable"
+    if diagnostic.get("error"):
+        return str(diagnostic["error"])
+    if diagnostic.get("no_audio"):
+        return "sin audio utilizable para sincronizar"
+    if diagnostic.get("unstable_sync"):
+        verification = diagnostic.get("verification") or {}
+        delta = verification.get("delta_sec")
+        if isinstance(delta, (int, float)):
+            return f"sincronización inestable ({delta * 1000:.0f} ms entre verificaciones)"
+        return "sincronización inestable"
+    if diagnostic.get("low_confidence") and not diagnostic.get("manual_override"):
+        return "sincronización dudosa — excluido"
+    return None
 
 
 def _diagnostic_error_message(diagnostics: list[dict[str, Any]]) -> str:
@@ -161,6 +173,8 @@ def _diagnostic_error_message(diagnostics: list[dict[str, Any]]) -> str:
             reason_bits.append("sin audio")
         if item.get("low_confidence"):
             reason_bits.append("confianza baja")
+        if item.get("unstable_sync"):
+            reason_bits.append("sincronización inestable")
         reason = f" ({'; '.join(reason_bits)})" if reason_bits else ""
         lines.append(f"- {item['filename']}: vídeo válido={valid}, confianza={confidence}, umbral={threshold}{reason}")
     return "\n".join(lines)

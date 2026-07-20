@@ -17,6 +17,7 @@ from core.stages.sync import (
     confidence_from_correlation,
     extract_clip_audio,
     recover_offset,
+    verify_sync_stability,
 )
 
 
@@ -61,6 +62,19 @@ def test_extract_clip_audio_uses_configured_ffmpeg_path(tmp_path, monkeypatch):
 
     assert calls[0][0] == "/opt/homebrew/bin/ffmpeg"
     assert audio.exists()
+
+
+def test_sync_verification_marks_disagreeing_offsets_unstable(monkeypatch):
+    import core.stages.sync as sync
+
+    calls = iter([(1.0, 8.0), (1.3, 8.0)])
+    monkeypatch.setattr(sync, "recover_offset", lambda master, clip: next(calls))
+
+    result = verify_sync_stability(np.ones(2000), np.ones(900), 1.0)
+
+    assert result["checked"] is True
+    assert result["unstable_sync"] is True
+    assert result["delta_sec"] > 0.150
 
 
 @pytest.mark.slow

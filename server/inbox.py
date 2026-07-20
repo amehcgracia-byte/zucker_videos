@@ -34,6 +34,8 @@ def load_global_config() -> dict[str, Any]:
     else:
         config = {"inbox_path": str(app_home() / "Inbox")}
         save_global_config(config)
+    config.setdefault("band_name", "")
+    config.setdefault("handle", "")
     inbox = Path(config.get("inbox_path") or app_home() / "Inbox").expanduser()
     inbox.mkdir(parents=True, exist_ok=True)
     config["inbox_path"] = str(inbox.resolve())
