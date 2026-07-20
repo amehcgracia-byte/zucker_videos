@@ -43,7 +43,7 @@ PY
   --workpath "$BUILD" \
   --specpath "$BUILD" \
   --add-data "$ROOT/web:web" \
-  --add-data "$BUILD_INFO:build_info.json" \
+  --add-data "$BUILD_INFO:." \
   --hidden-import librosa \
   --hidden-import scipy.signal \
   --hidden-import soundfile \
