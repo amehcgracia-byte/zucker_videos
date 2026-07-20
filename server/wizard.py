@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.build_info import build_info
 from core.project import Project, create_project
 from core.stages.cut import CutStage
 from core.stages.export import ExportStage
@@ -319,7 +320,8 @@ def wizard_song_options(songs_path: str | None) -> list[dict[str, Any]]:
 
 def wizard_report(status: dict[str, Any]) -> str:
     """Build a pasteable wizard report with logs and stage statuses."""
-    lines = ["Zucker Editor wizard report", "version: 0.1"]
+    info = build_info()
+    lines = ["Zucker Editor wizard report", f"version: {info['version']}", f"git_commit: {info['git_commit']}"]
     result = status.get("result") or {}
     project_path = status.get("project_path") or result.get("project_path")
     lines.append(f"status: {status.get('status')}")

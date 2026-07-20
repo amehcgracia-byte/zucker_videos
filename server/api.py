@@ -16,7 +16,17 @@ from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
 from core.project import Project, ProjectError, create_project, load_project
 from core.media_validation import record_media_path
 from core.stages.sync import clear_manual_override, generate_preview, generate_thumbnail, set_manual_override
-from server.inbox import app_home, classify_paths, load_global_config, register_selected_inputs, save_uploads, scan_inbox, suggest_songs_json, unique_destination
+from server.inbox import (
+    app_home,
+    classify_paths,
+    load_global_config,
+    reconcile_registered_inputs,
+    register_selected_inputs,
+    save_uploads,
+    scan_inbox,
+    suggest_songs_json,
+    unique_destination,
+)
 from server.media import send_file_with_range
 from server.wizard import WizardRunner, wizard_report, wizard_song_options
 
@@ -43,6 +53,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     state = AppState(engine=PipelineEngine(), dev=dev, wizard=WizardRunner())
     if project_path:
         state.project = load_project(project_path)
+        if reconcile_registered_inputs(state.project):
+            LOGGER.info("Reconciled registered inputs for %s", state.project.folder)
     app.config["ZUCKER_STATE"] = state
 
     if dev:
@@ -93,6 +105,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("bad_request", "folder is required", 400)
         try:
             state.project = load_project(folder)
+            if reconcile_registered_inputs(state.project):
+                LOGGER.info("Reconciled registered inputs for %s", state.project.folder)
             return jsonify(state.project.snapshot())
         except ProjectError as exc:
             return error_response("project_error", str(exc), 404)

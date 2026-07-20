@@ -215,6 +215,38 @@ def register_selected_inputs(
     return project.snapshot()
 
 
+def reconcile_registered_inputs(project: Project) -> bool:
+    """Reclassify registered project inputs and demote stale invalid video records."""
+    changed = False
+    for record in project.data.get("inputs", {}).get("videos", []):
+        path = Path(record.get("path") or "").expanduser()
+        if not path.exists():
+            continue
+        item = classify_file(path)
+        if item["kind"] == "videos":
+            probe = item.get("probe")
+            if probe and record.get("probe") != probe:
+                record["probe"] = probe
+                changed = True
+            if item.get("projection") and record.get("projection") != item["projection"]:
+                record["projection"] = item["projection"]
+                changed = True
+            if record.get("status") == "not_a_video":
+                record.pop("status", None)
+                record.pop("not_a_video_reason", None)
+                changed = True
+            continue
+        if record.get("status") != "not_a_video" or record.get("not_a_video_reason") != item["note"]:
+            record["status"] = "not_a_video"
+            record["not_a_video_reason"] = item["note"]
+            record.pop("normalized", None)
+            changed = True
+    if changed:
+        project.mark_all_stale_from("ingest")
+        project.save()
+    return changed
+
+
 def expand_video_paths(paths: list[str]) -> list[str]:
     """Expand directories and keep only paths classified as video files."""
     expanded: list[str] = []

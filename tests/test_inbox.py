@@ -4,7 +4,8 @@ import io
 import json
 
 from server.api import create_app
-from server.inbox import classify_paths, scan_input_paths
+from server.inbox import classify_paths, reconcile_registered_inputs, scan_input_paths
+from core.project import create_project, file_record
 
 
 def valid_video_probe(duration: str = "3.0") -> dict:
@@ -182,6 +183,29 @@ def test_register_from_inbox_api_refs_and_missing_badge(tmp_path, monkeypatch):
     video.unlink()
     project = client.get("/api/v1/project").get_json()
     assert project["inputs"]["videos"][0]["missing"] is True
+
+
+def test_project_open_reconcile_demotes_old_invalid_video_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "server.inbox.ffprobe",
+        lambda path: {
+            "format": {"duration": "3.0", "format_name": "tty"},
+            "streams": [{"codec_type": "video", "codec_name": "ansi", "width": 80, "height": 25}],
+        },
+    )
+    project = create_project("Old", str(tmp_path / "Old.zuckervid"))
+    report = tmp_path / "mix_report.txt"
+    report.write_text("old report", encoding="utf-8")
+    project.data["inputs"]["videos"] = [file_record(str(report))]
+    project.data["stages"]["ingest"]["status"] = "done"
+    project.save()
+
+    assert reconcile_registered_inputs(project) is True
+
+    record = project.data["inputs"]["videos"][0]
+    assert record["status"] == "not_a_video"
+    assert record["not_a_video_reason"] == "no es un vídeo de cámara"
+    assert project.data["stages"]["ingest"]["status"] == "stale"
 
 
 def test_upload_endpoint_saves_and_classifies(tmp_path, monkeypatch):

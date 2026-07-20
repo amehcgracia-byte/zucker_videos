@@ -7,6 +7,7 @@ APP_NAME="Zucker Editor"
 DIST="$ROOT/dist"
 BUILD="$ROOT/build/pyinstaller"
 DMG_ROOT="$ROOT/build/dmg"
+BUILD_INFO="$ROOT/build/build_info.json"
 DMG_PATH="$DIST/Zucker Editor.dmg"
 APP_BUNDLE="$DIST/$APP_NAME.app"
 
@@ -25,6 +26,13 @@ PY
 cd "$ROOT"
 "$PYTHON" tools/make_icon.py
 rm -rf "$APP_BUNDLE" "$DIST/$APP_NAME" "$BUILD" "$DMG_ROOT" "$DMG_PATH"
+mkdir -p "$ROOT/build"
+COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+"$PYTHON" - <<PY
+import json
+from pathlib import Path
+Path("$BUILD_INFO").write_text(json.dumps({"version": "0.1", "git_commit": "$COMMIT"}, indent=2) + "\n", encoding="utf-8")
+PY
 
 "$PYTHON" -m PyInstaller \
   --noconfirm \
@@ -35,6 +43,7 @@ rm -rf "$APP_BUNDLE" "$DIST/$APP_NAME" "$BUILD" "$DMG_ROOT" "$DMG_PATH"
   --workpath "$BUILD" \
   --specpath "$BUILD" \
   --add-data "$ROOT/web:web" \
+  --add-data "$BUILD_INFO:build_info.json" \
   --hidden-import librosa \
   --hidden-import scipy.signal \
   --hidden-import soundfile \

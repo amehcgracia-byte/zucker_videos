@@ -10,6 +10,7 @@ import socket
 import threading
 from pathlib import Path
 
+from core.build_info import startup_label
 from server.api import create_app
 from server.inbox import load_global_config
 
@@ -71,6 +72,7 @@ def main() -> None:
     """Run Zucker Editor in desktop or dev-server mode."""
     multiprocessing.freeze_support()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.getLogger(__name__).info("Starting %s", startup_label())
     args = parse_args()
     app = create_app(project_path=args.project, dev=args.dev)
     port = choose_dev_port() if args.dev else find_free_port()
