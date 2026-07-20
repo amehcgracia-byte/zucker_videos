@@ -18,6 +18,7 @@ from core.stages.base import stable_fingerprint
 
 Progress = Callable[[int, str], None]
 
+NORMALIZATION_VERSION = 2
 SDR_TONEMAP_FILTER = (
     "zscale=t=linear:npl=100,"
     "format=gbrpf32le,"
@@ -62,6 +63,7 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
             {
                 "path": str(destination),
                 "cache_key": key,
+                "normalization_version": NORMALIZATION_VERSION,
                 "source_size": signature["size"],
                 "source_mtime": signature["mtime"],
             }
@@ -87,6 +89,7 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
     normalized = {
         "path": str(destination),
         "cache_key": key,
+        "normalization_version": NORMALIZATION_VERSION,
         "source_size": signature["size"],
         "source_mtime": signature["mtime"],
         "codec": "h264",
@@ -142,8 +145,16 @@ def source_cache_key(record: dict[str, Any]) -> str:
         normalized = record.get("normalized")
         if isinstance(normalized, dict):
             normalized["cache_key"] = key
+            normalized["normalization_version"] = NORMALIZATION_VERSION
     if not key:
-        key = stable_fingerprint({"path": record.get("path"), "size": record.get("size"), "mtime": record.get("mtime")})[:24]
+        key = stable_fingerprint(
+            {
+                "path": record.get("path"),
+                "size": record.get("size"),
+                "mtime": record.get("mtime"),
+                "normalization_version": NORMALIZATION_VERSION,
+            }
+        )[:24]
     return key
 
 
@@ -160,6 +171,7 @@ def cache_key_for_signature(source: Path, signature: dict[str, Any]) -> str:
             "path": str(source),
             "size": signature.get("size"),
             "mtime": signature.get("mtime"),
+            "normalization_version": NORMALIZATION_VERSION,
         }
     )[:24]
 
@@ -254,6 +266,7 @@ def migrate_project_normalization_cache(project: Project) -> bool:
                     {
                         "path": str(destination),
                         "cache_key": key,
+                        "normalization_version": NORMALIZATION_VERSION,
                         "source_size": signature["size"],
                         "source_mtime": signature["mtime"],
                     }

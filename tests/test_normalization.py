@@ -7,8 +7,10 @@ import time
 from pathlib import Path
 
 import pytest
+import core.normalization as normalization
 
 from core.normalization import (
+    NORMALIZATION_VERSION,
     cache_key_for_source,
     needs_normalization,
     normalization_filter,
@@ -24,6 +26,18 @@ def test_cache_key_is_stable_for_same_source_signature(tmp_path, monkeypatch):
     source.write_bytes(b"video")
 
     assert cache_key_for_source(source) == cache_key_for_source(str(source.resolve()))
+
+
+def test_cache_key_includes_normalization_recipe_version(tmp_path, monkeypatch):
+    source = tmp_path / "clip.mov"
+    source.write_bytes(b"video")
+    signature = {"size": source.stat().st_size, "mtime": source.stat().st_mtime}
+    current = normalization.cache_key_for_signature(source.resolve(), signature)
+
+    monkeypatch.setattr(normalization, "NORMALIZATION_VERSION", NORMALIZATION_VERSION + 1)
+    bumped = normalization.cache_key_for_signature(source.resolve(), signature)
+
+    assert bumped != current
 
 
 def test_normalization_cache_decision_uses_source_signature(tmp_path, monkeypatch):
@@ -74,6 +88,7 @@ def test_global_normalization_cache_hits_across_projects(tmp_path, monkeypatch):
 
     assert len(calls) == 1
     assert record_a["cache_key"] == record_b["cache_key"]
+    assert record_a["normalized"]["normalization_version"] == NORMALIZATION_VERSION
     assert record_a["normalized"]["path"] == record_b["normalized"]["path"]
     assert Path(record_b["normalized"]["path"]).exists()
 
