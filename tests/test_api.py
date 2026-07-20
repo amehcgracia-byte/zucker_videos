@@ -354,6 +354,14 @@ def test_api_error_envelope_without_open_project():
     assert response.get_json() == {"error": {"code": "project_error", "message": "No project is open"}}
 
 
+def test_app_config_reports_desktop_mode():
+    browser_app = create_app(dev=True)
+    desktop_app = create_app(dev=False)
+
+    assert browser_app.test_client().get("/api/v1/app/config").get_json()["desktop"] is False
+    assert desktop_app.test_client().get("/api/v1/app/config").get_json()["desktop"] is True
+
+
 def test_sync_override_endpoint_persists_and_marks_downstream_stale(tmp_path):
     app = create_app()
     client = app.test_client()

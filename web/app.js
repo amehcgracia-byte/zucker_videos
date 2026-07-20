@@ -6,7 +6,7 @@ let currentSongs = [];
 let latestResult = null;
 let latestStatus = null;
 let pollTimer = null;
-let desktopBridgeReady = Boolean(window.pywebview?.api);
+let appConfig = { dev: true, desktop: false };
 let progressStartedAt = null;
 let progressSamples = [];
 
@@ -42,6 +42,11 @@ async function apiForm(path, formData) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error?.message || "Error");
   return data;
+}
+
+async function loadAppConfig() {
+  appConfig = await api("/app/config");
+  window.NativeBridge?.configure(appConfig);
 }
 
 function showToast(message, isError = false) {
@@ -451,21 +456,8 @@ function updateStageChecks(progress, status) {
   });
 }
 
-function getDesktopApi(actionLabel) {
-  const bridge = window.pywebview?.api;
-  if (bridge) {
-    desktopBridgeReady = true;
-    return bridge;
-  }
-  const suffix = desktopBridgeReady ? "El puente de escritorio todavía no está listo." : "Solo disponible en la app de escritorio.";
-  showToast(`${actionLabel}: ${suffix}`, true);
-  return null;
-}
-
 async function revealNative(path, label) {
-  const bridge = getDesktopApi(label);
-  if (!bridge || !path) return;
-  await bridge.reveal_in_finder(path);
+  await window.NativeBridge.reveal(path, label);
 }
 
 async function openLogs() {
@@ -545,12 +537,10 @@ document.addEventListener("change", (event) => {
 });
 
 document.querySelector("#videoName").value = todayName();
-document.addEventListener("pywebviewready", () => {
-  desktopBridgeReady = Boolean(window.pywebview?.api);
-});
 
 async function boot() {
   injectIcons();
+  await loadAppConfig();
   const status = await api("/wizard/status");
   if (["running", "waiting_choice", "done", "failed"].includes(status.status)) {
     await resumeInputsFromProject().catch(() => {});

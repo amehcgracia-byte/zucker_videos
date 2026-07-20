@@ -59,7 +59,7 @@
             <p id="inboxPath">~/ZuckerVideos/Inbox</p>
           </div>
           <div class="input-actions">
-            <button id="revealInbox">Reveal in Finder</button>
+            <button id="revealInbox" class="desktop-only">Reveal in Finder</button>
             <button id="rescanInbox">Rescan</button>
           </div>
         </div>
@@ -120,6 +120,7 @@
     </main>
 
     <div id="toast" class="toast" hidden></div>
+    <script src="/native_bridge.js"></script>
     <script src="/advanced.js"></script>
   </body>
 </html>

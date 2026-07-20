@@ -326,6 +326,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_app_config() -> Response:
         config = load_global_config()
         config["dev"] = state.dev
+        config["desktop"] = not state.dev
         return jsonify(config)
 
     @app.get("/api/v1/cache/status")

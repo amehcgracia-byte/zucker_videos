@@ -81,6 +81,7 @@ def main() -> None:
     app = create_app(project_path=project_path, dev=args.dev)
     port = choose_dev_port() if args.dev else find_free_port()
     if args.dev:
+        logging.getLogger(__name__).info("js_api bridge attached: no")
         app.run(host="127.0.0.1", port=port, debug=True, use_reloader=False)
         return
 
@@ -92,7 +93,9 @@ def main() -> None:
         daemon=True,
     )
     server.start()
-    window = webview.create_window(APP_NAME, url, width=1200, height=820, js_api=DesktopApi())
+    js_api = DesktopApi()
+    logging.getLogger(__name__).info("js_api bridge attached: yes")
+    window = webview.create_window(APP_NAME, url, width=1200, height=820, js_api=js_api)
 
     def on_loaded() -> None:
         config = load_global_config()

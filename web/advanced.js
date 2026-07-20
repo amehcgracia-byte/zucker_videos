@@ -1,10 +1,9 @@
 const stages = ["ingest", "sync", "cut", "edit", "export"];
 let project = null;
 let syncMap = null;
-let appConfig = { dev: true, inbox_path: "~/ZuckerVideos/Inbox" };
+let appConfig = { dev: true, desktop: false, inbox_path: "~/ZuckerVideos/Inbox" };
 let detectedInputs = { inbox_path: null, master: [], songs: [], videos: [], ignored: [] };
 let songSuggestions = [];
-let desktopBridgeReady = Boolean(window.pywebview?.api);
 let dropStatusTimer = null;
 const uploadableDropExtensions = new Set([".mp4", ".mov", ".mts", ".m4v", ".wav", ".mp3", ".flac", ".aiff", ".aif", ".json"]);
 const maxBrowserUploadBytes = 512 * 1024 * 1024;
@@ -77,18 +76,16 @@ function setDropStatus(message, options = {}) {
 }
 
 function setPickerAvailability() {
-  const desktopMode = !appConfig.dev;
-  const hasBridge = Boolean(window.pywebview?.api);
+  const desktopMode = Boolean(appConfig.desktop);
   document.querySelectorAll(".desktop-only").forEach((button) => {
     button.disabled = !desktopMode;
-    if (appConfig.dev) {
+    if (!desktopMode) {
       button.title = "Native pickers are available in the bundled desktop app. Use drag and drop or the Inbox in browser dev mode.";
-    } else if (hasBridge) {
-      button.title = "";
     } else {
-      button.title = "Desktop bridge is not ready yet";
+      button.title = "";
     }
   });
+  window.NativeBridge?.updateDesktopOnlyAvailability();
 }
 
 function escapeHtml(value) {
@@ -163,9 +160,10 @@ function setActiveTab(name) {
 
 async function loadAppConfig() {
   appConfig = await api("/app/config");
+  window.NativeBridge?.configure(appConfig);
   document.querySelector("#inboxPath").textContent = appConfig.inbox_path;
   setPickerAvailability();
-  document.querySelector("#dropMode").textContent = !appConfig.dev
+  document.querySelector("#dropMode").textContent = appConfig.desktop
     ? "Desktop drops use local paths. Folder drops recurse for video files."
     : "Browser dev drops upload smaller files. Put large videos in the Inbox or use the desktop app.";
 }
@@ -438,25 +436,13 @@ function uploadFiles(files) {
 }
 
 async function callPicker(buttonId) {
-  if (appConfig.dev) {
+  if (!appConfig.desktop) {
     throw new Error("Native pickers are only available in the bundled desktop app. Use drag and drop or the Inbox in browser dev mode.");
   }
   const [methodName, kind] = pickerMethods[buttonId] || [];
   if (!methodName || !kind) throw new Error(`Unknown picker: ${buttonId}`);
-  const bridge = window.pywebview?.api;
-  if (!bridge) {
-    throw new Error("Desktop picker bridge is not available yet. Wait for the app window to finish loading and try again.");
-  }
-  const method = bridge[methodName];
-  if (typeof method !== "function") {
-    throw new Error(`Desktop picker bridge is missing ${methodName}`);
-  }
   let paths;
-  try {
-    paths = await method.call(bridge);
-  } catch (error) {
-    throw new Error(`Native picker failed: ${error?.message || error}`);
-  }
+  paths = await window.NativeBridge.call(methodName, [], "Native picker");
   if (!Array.isArray(paths)) {
     throw new Error(`Native picker returned an invalid result for ${methodName}`);
   }
@@ -658,8 +644,7 @@ document.addEventListener("click", async (event) => {
       renderProject();
     }
     if (target.id === "revealInbox") {
-      if (window.pywebview?.api) await window.pywebview.api.reveal_in_finder(appConfig.inbox_path);
-      else showToast("Reveal in Finder is available in the desktop app");
+      await window.NativeBridge.reveal(appConfig.inbox_path, "Reveal in Finder");
     }
     if (target.id === "rescanInbox") await scanInbox();
     if (target.id === "refreshCache") await refreshCacheStatus();
@@ -712,12 +697,6 @@ async function boot() {
   await refreshSyncMap();
   await refreshCacheStatus();
 }
-
-document.addEventListener("pywebviewready", () => {
-  desktopBridgeReady = Boolean(window.pywebview?.api);
-  setPickerAvailability();
-  loadAppConfig().catch(() => {});
-});
 
 setInterval(async () => {
   if (document.querySelector("#inputs").classList.contains("active")) {

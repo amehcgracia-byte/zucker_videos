@@ -95,7 +95,7 @@
             <pre id="technicalDetails"></pre>
           </details>
           <div class="result-actions">
-            <button id="openLogsError" class="icon-button" data-icon="doc">Abrir logs</button>
+            <button id="openLogsError" class="icon-button desktop-only" data-icon="doc">Abrir logs</button>
             <button id="copyReport" class="icon-button" data-icon="clipboard">Copiar informe</button>
           </div>
           <button id="retryWizard" class="icon-button" data-icon="retry">Reintentar</button>
@@ -104,14 +104,15 @@
           <video id="resultVideo" controls></video>
           <strong id="resultFilename"></strong>
           <div class="result-actions">
-            <button id="openLogsSuccess" class="icon-button" data-icon="doc">Abrir logs</button>
-            <button id="showFinder" class="icon-button" data-icon="folder">Mostrar en Finder</button>
+            <button id="openLogsSuccess" class="icon-button desktop-only" data-icon="doc">Abrir logs</button>
+            <button id="showFinder" class="icon-button desktop-only" data-icon="folder">Mostrar en Finder</button>
             <button id="again" class="icon-button" data-icon="play">Hacer otro</button>
           </div>
         </div>
       </section>
     </main>
     <div id="toast" class="toast" hidden></div>
+    <script src="/native_bridge.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>
