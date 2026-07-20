@@ -8,17 +8,18 @@
   --green-400: #9bd282;
   --green-300: #bce6aa;
   --green-200: #d7f1ce;
-  --green-100: #edf8e8;
-  --green-50: #f7fcf4;
+  --green-100: #e3f3dc;
+  --green-50: #edf8e8;
   --primary: var(--green-500);
   --primary-dark: var(--green-700);
   --accent: var(--green-400);
   --accent-strong: var(--green-700);
-  --bg: var(--green-50);
+  --bg: #e5f3de;
   --text: #17242b;
   --muted: #667680;
-  --line: #d9e8d2;
-  --panel: #fbfef9;
+  --line: #c7dfbe;
+  --panel: #e9f6e4;
+  --panel-strong: #dcefd3;
   --bad: #a43b3b;
   --ok: var(--green-700);
   --shadow: 0 24px 80px rgba(49, 95, 37, 0.13);
@@ -32,7 +33,7 @@ body {
   margin: 0;
   min-height: 100vh;
   color: var(--text);
-  background: linear-gradient(180deg, var(--green-50) 0, #fbfef9 42%, #fff 100%);
+  background: linear-gradient(180deg, var(--green-50) 0, #e2f2da 48%, #d5ebcc 100%);
   font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
@@ -173,7 +174,7 @@ h1 {
   border: 1px solid var(--line);
   border-radius: 16px;
   padding: 10px 12px;
-  background: rgba(251, 254, 249, 0.88);
+  background: rgba(233, 246, 228, 0.92);
 }
 
 .project-row > div {
@@ -204,7 +205,7 @@ h1 {
   border: 2px dashed var(--accent);
   border-radius: 28px;
   padding: 32px;
-  background: rgba(251, 254, 249, 0.86);
+  background: linear-gradient(180deg, rgba(233, 246, 228, 0.94), rgba(220, 239, 211, 0.9));
   display: grid;
   align-content: center;
   gap: 24px;
@@ -333,7 +334,7 @@ h1 {
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 8px 12px;
-  background: #fdfffc;
+  background: var(--panel);
   overflow-wrap: anywhere;
   font-size: 13px;
   font-weight: 750;
@@ -377,7 +378,7 @@ button {
   border: 1px solid var(--line);
   border-radius: 18px;
   padding: 14px 18px;
-  background: #fdfffc;
+  background: var(--panel);
   color: var(--text);
   cursor: pointer;
   transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease, border-color 160ms ease;
@@ -494,7 +495,7 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 28px;
   padding: 26px;
-  background: rgba(253, 255, 252, 0.92);
+  background: linear-gradient(180deg, rgba(233, 246, 228, 0.96), rgba(220, 239, 211, 0.92));
 }
 
 .progress-track {
@@ -608,7 +609,7 @@ pre {
 
 .toast.error {
   border-color: var(--bad);
-  background: #fff5f3;
+  background: #f7e6e2;
   color: var(--bad);
 }
 

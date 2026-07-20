@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from core.media_validation import VIDEO_EXTENSIONS, static_rejection_reason, val
 from core.project import STAGE_NAMES, Project, file_record
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".aiff", ".aif"}
+LOGGER = logging.getLogger(__name__)
 
 
 def app_home() -> Path:
@@ -121,12 +123,16 @@ def classify_paths(paths: list[str], inbox_path: str | None = None) -> dict[str,
             for child in scan_input_paths([str(path)]):
                 item = classify_file(child)
                 result[item["kind"]].append(item)
+                log_classification_verdict(child, item)
             continue
         if not path.exists():
-            result["ignored"].append(_item(path, "ignored", "missing file", checked=False))
+            item = _item(path, "ignored", "missing file", checked=False)
+            result["ignored"].append(item)
+            log_classification_verdict(path, item)
             continue
         item = classify_file(path)
         result[item["kind"]].append(item)
+        log_classification_verdict(path, item)
     return result
 
 
@@ -258,9 +264,38 @@ def expand_video_paths(paths: list[str]) -> list[str]:
     """Expand directories and keep only paths classified as video files."""
     expanded: list[str] = []
     for path in scan_input_paths(paths):
-        if classify_file(path)["kind"] == "videos":
+        item = classify_file(path)
+        log_classification_verdict(path, item)
+        if item["kind"] == "videos":
             expanded.append(str(path.resolve()))
     return expanded
+
+
+def log_classification_verdict(path: Path, item: dict[str, Any]) -> None:
+    """Write an ingest-facing scan verdict for one candidate file."""
+    probe = item.get("probe") or {}
+    probe_summary = {
+        key: probe.get(key)
+        for key in ("valid_video", "video_codec", "audio_codec", "duration", "width", "height", "projection", "fps")
+        if probe.get(key) is not None
+    }
+    payload = {
+        "event": "input_scan_verdict",
+        "filename": path.name,
+        "extension": path.suffix.lower(),
+        "path": str(path.expanduser()),
+        "kind": item.get("kind"),
+        "accepted": item.get("kind") != "ignored",
+        "reason": item.get("note"),
+        "probe": probe_summary,
+    }
+    try:
+        log_dir = app_home() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with (log_dir / "ingest.log").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, sort_keys=True) + "\n")
+    except OSError as exc:
+        LOGGER.warning("Could not write input scan verdict for %s: %s", path, exc)
 
 
 def prepare_input_file(project: Project, path: str, kind: str) -> Path:

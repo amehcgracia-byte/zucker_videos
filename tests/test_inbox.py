@@ -104,6 +104,45 @@ def test_classifier_accepts_hevc_mts_and_marks_equirect(tmp_path, monkeypatch):
     assert "Insta360 Studio" in ignored["raw.insv"]
 
 
+def test_classifier_accepts_high_res_insta360_studio_export(tmp_path, monkeypatch):
+    sphere = tmp_path / "insta360-5760x2880.mp4"
+    sphere.write_bytes(b"x")
+
+    monkeypatch.setattr(
+        "server.inbox.ffprobe",
+        lambda path: {
+            "format": {"duration": "120.0", "format_name": "mov,mp4"},
+            "streams": [{"codec_type": "video", "codec_name": "hevc", "width": 5760, "height": 2880}],
+        },
+    )
+
+    result = classify_paths([str(sphere)])
+
+    assert [item["filename"] for item in result["videos"]] == ["insta360-5760x2880.mp4"]
+    assert result["videos"][0]["projection"] == "equirect"
+    assert result["videos"][0]["probe"]["width"] == 5760
+
+
+def test_classify_paths_logs_every_scan_verdict(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    raw_360 = tmp_path / "clip.insv"
+    video = tmp_path / "clip.mp4"
+    raw_360.write_bytes(b"x")
+    video.write_bytes(b"x")
+    monkeypatch.setattr("server.inbox.ffprobe", lambda path: valid_video_probe())
+
+    result = classify_paths([str(raw_360), str(video)])
+
+    assert [item["filename"] for item in result["videos"]] == ["clip.mp4"]
+    log_path = tmp_path / "home" / "ZuckerVideos" / "logs" / "ingest.log"
+    lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    verdicts = {line["filename"]: line for line in lines}
+    assert verdicts["clip.insv"]["kind"] == "ignored"
+    assert "Insta360 Studio" in verdicts["clip.insv"]["reason"]
+    assert verdicts["clip.mp4"]["accepted"] is True
+    assert verdicts["clip.mp4"]["probe"]["valid_video"] is True
+
+
 def test_shared_scan_function_recurses_nested_dirs(tmp_path):
     root = tmp_path / "drop"
     nested = root / "camera" / "day-1"

@@ -125,7 +125,6 @@ def _render_plan(
     rendered_duration = 0.0
     color_profiles = _color_profiles_for_segments(project, segments, warnings)
     overlay_config = _overlay_config(platform, segments[0])
-    verified_sources: set[str] = set()
     verify_motion = bool(project.data.get("settings", {}).get("export", {}).get("verify_motion", True))
     try:
         for index, segment in enumerate(segments, start=1):
@@ -142,7 +141,6 @@ def _render_plan(
             outro_fade = index == len(segments)
             segment_path = cached_segment_path(project, segment, platform, video_bitrate, overlay_config, color_profile, intro_fade, outro_fade)
             source_info = _segment_source_info(project, segment)
-            source_key = str(source_info.get("cache_key") or source_info.get("source_path") or segment.get("clip_path"))
             command_line = "cached segment"
             if not segment_path.exists():
                 tmp_segment = temp_dir / f"segment-{index:04d}.mp4"
@@ -168,35 +166,25 @@ def _render_plan(
                 shutil.copy2(tmp_segment, segment_path)
                 if rendered_from == "proxy":
                     warnings.append(f"Used proxy fallback for {Path(str(segment.get('source_path') or segment.get('clip_path'))).name}")
-            if verify_motion and source_key not in verified_sources:
-                try:
-                    _verify_moving_segment(segment_path, segment_duration, Path(str(source_info.get("source_path") or segment.get("clip_path"))).name, command_line)
-                except FFmpegError:
-                    if command_line == "cached segment":
-                        segment_path.unlink(missing_ok=True)
-                        commands = []
-                        tmp_segment = temp_dir / f"segment-{index:04d}.mp4"
-                        _render_segment(
-                            project,
-                            segment,
-                            master_path,
-                            tmp_segment,
-                            platform,
-                            video_bitrate,
-                            overlay_config,
-                            color_profile,
-                            segment_progress,
-                            intro_fade=intro_fade,
-                            outro_fade=outro_fade,
-                            warnings=warnings,
-                            command_recorder=commands,
-                        )
-                        command_line = " ".join(commands[-1]) if commands else "rerender command unavailable"
-                        shutil.copy2(tmp_segment, segment_path)
-                        _verify_moving_segment(segment_path, segment_duration, Path(str(source_info.get("source_path") or segment.get("clip_path"))).name, command_line)
-                    else:
-                        raise
-                verified_sources.add(source_key)
+            if verify_motion:
+                command_line = _verify_or_rebuild_segment(
+                    project,
+                    segment,
+                    master_path,
+                    segment_path,
+                    temp_dir / f"segment-{index:04d}.mp4",
+                    platform,
+                    video_bitrate,
+                    overlay_config,
+                    color_profile,
+                    segment_progress,
+                    intro_fade,
+                    outro_fade,
+                    warnings,
+                    command_line,
+                    segment_duration,
+                    Path(str(source_info.get("source_path") or segment.get("clip_path"))).name,
+                )
             segment_paths.append(segment_path)
             rendered_duration += segment_duration
         concat_path = temp_dir / "concat.txt"
@@ -243,11 +231,35 @@ def _render_segment(
     outro_fade: bool = False,
     warnings: list[str] | None = None,
     command_recorder: list[list[str]] | None = None,
+    force_proxy: bool = False,
 ) -> str:
     ffmpeg = _ffmpeg_path()
     duration = max(0.1, float(segment["duration_sec"]))
     source = _segment_source_info(project, segment)
     watermark = _watermark_path()
+    if force_proxy:
+        proxy_path = source.get("proxy_path")
+        if not proxy_path or proxy_path == source["source_path"]:
+            raise FFmpegError(f"No proxy fallback is available for {Path(str(source['source_path'])).name}")
+        if warnings is not None:
+            warnings.append(f"Original segment looked static for {Path(str(source['source_path'])).name}; using proxy fallback")
+        return _render_proxy_segment(
+            ffmpeg,
+            proxy_path,
+            master_path,
+            segment,
+            output_path,
+            platform,
+            video_bitrate,
+            overlay_config or {},
+            color_profile or {},
+            duration,
+            watermark,
+            progress_callback,
+            intro_fade,
+            outro_fade,
+            command_recorder,
+        )
     filter_complex = _segment_filtergraph(
         platform,
         duration,
@@ -314,26 +326,153 @@ def _render_segment(
                 raise FFmpegError(f"{fallback_exc}\nFallback after h264_videotoolbox failed with: {exc}") from fallback_exc
             if warnings is not None:
                 warnings.append(f"Original render failed for {Path(str(source['source_path'])).name}; using proxy fallback")
-            proxy_filter = _segment_filtergraph(
+            return _render_proxy_segment(
+                ffmpeg,
+                proxy_path,
+                master_path,
+                segment,
+                output_path,
                 platform,
-                duration,
+                video_bitrate,
                 overlay_config or {},
                 color_profile or {},
-                bool(watermark),
-                _ffmpeg_supports_filter("drawtext"),
+                duration,
+                watermark,
+                progress_callback,
+                intro_fade,
+                outro_fade,
+                command_recorder,
+            )
+
+
+def _render_proxy_segment(
+    ffmpeg: str,
+    proxy_path: str,
+    master_path: str,
+    segment: dict[str, Any],
+    output_path: Path,
+    platform: str,
+    video_bitrate: int,
+    overlay_config: dict[str, Any],
+    color_profile: dict[str, Any],
+    duration: float,
+    watermark: Path | None,
+    progress_callback: ProgressCallback | None,
+    intro_fade: bool,
+    outro_fade: bool,
+    command_recorder: list[list[str]] | None,
+) -> str:
+    proxy_filter = _segment_filtergraph(
+        platform,
+        duration,
+        overlay_config,
+        color_profile,
+        bool(watermark),
+        _ffmpeg_supports_filter("drawtext"),
+        intro_fade=intro_fade,
+        outro_fade=outro_fade,
+    )
+    proxy_command = _segment_command_base(ffmpeg, proxy_path, master_path, segment, duration)
+    if watermark:
+        proxy_command.extend(["-loop", "1", "-i", str(watermark)])
+    proxy_command.extend(
+        [
+            "-filter_complex",
+            proxy_filter,
+            "-map",
+            "[v]",
+            "-map",
+            "1:a:0",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+        ]
+    )
+    command = proxy_command + _video_encode_args("libx264", video_bitrate) + [str(output_path)]
+    if command_recorder is not None:
+        command_recorder.append(command)
+    _run_ffmpeg_progress(command, duration, Path(str(proxy_path)).name, progress_callback)
+    return "proxy"
+
+
+def _verify_or_rebuild_segment(
+    project: Project,
+    segment: dict[str, Any],
+    master_path: str,
+    segment_path: Path,
+    tmp_segment: Path,
+    platform: str,
+    video_bitrate: int,
+    overlay_config: dict[str, Any],
+    color_profile: dict[str, Any],
+    progress_callback: ProgressCallback | None,
+    intro_fade: bool,
+    outro_fade: bool,
+    warnings: list[str],
+    command_line: str,
+    segment_duration: float,
+    label: str,
+) -> str:
+    """Verify one rendered segment, rebuilding/falling back before final concat."""
+    try:
+        _verify_moving_segment(segment_path, segment_duration, label, command_line)
+        return command_line
+    except FFmpegError as first_error:
+        segment_path.unlink(missing_ok=True)
+        commands: list[list[str]] = []
+        _render_segment(
+            project,
+            segment,
+            master_path,
+            tmp_segment,
+            platform,
+            video_bitrate,
+            overlay_config,
+            color_profile,
+            progress_callback,
+            intro_fade=intro_fade,
+            outro_fade=outro_fade,
+            warnings=warnings,
+            command_recorder=commands,
+        )
+        command_line = " ".join(commands[-1]) if commands else "rerender command unavailable"
+        shutil.copy2(tmp_segment, segment_path)
+        try:
+            _verify_moving_segment(segment_path, segment_duration, label, command_line)
+            return command_line
+        except FFmpegError as rerender_error:
+            source_info = _segment_source_info(project, segment)
+            proxy_path = source_info.get("proxy_path")
+            if not proxy_path or proxy_path == source_info.get("source_path"):
+                raise FFmpegError(f"{rerender_error}\nInitial verification failure: {first_error}") from rerender_error
+            tmp_segment.unlink(missing_ok=True)
+            commands = []
+            _render_segment(
+                project,
+                segment,
+                master_path,
+                tmp_segment,
+                platform,
+                video_bitrate,
+                overlay_config,
+                color_profile,
+                progress_callback,
                 intro_fade=intro_fade,
                 outro_fade=outro_fade,
+                warnings=warnings,
+                command_recorder=commands,
+                force_proxy=True,
             )
-            proxy_command = _segment_command_base(ffmpeg, proxy_path, master_path, segment, duration)
-            if watermark:
-                proxy_command.extend(["-loop", "1", "-i", str(watermark)])
-            proxy_command.extend(command_base[command_base.index("-filter_complex") :])
-            proxy_command[proxy_command.index("-filter_complex") + 1] = proxy_filter
-            command = proxy_command + software + [str(output_path)]
-            if command_recorder is not None:
-                command_recorder.append(command)
-            _run_ffmpeg_progress(command, duration, Path(str(proxy_path)).name, progress_callback)
-            return "proxy"
+            command_line = " ".join(commands[-1]) if commands else "proxy fallback command unavailable"
+            shutil.copy2(tmp_segment, segment_path)
+            _verify_moving_segment(segment_path, segment_duration, label, command_line)
+            return command_line
 
 
 def _segment_command_base(ffmpeg: str, clip_path: str, master_path: str, segment: dict[str, Any], duration: float) -> list[str]:
@@ -479,8 +618,8 @@ def _verify_moving_segment(path: Path, duration: float, label: str, command_line
     """Fail when a rendered segment decodes as identical frames at two timestamps."""
     if duration < 1.0:
         return
-    first_at = max(0.05, min(0.5, duration * 0.2))
-    second_at = max(first_at + 0.4, min(duration - 0.05, duration * 0.8))
+    first_at = max(0.10, min(duration * 0.20, max(0.10, duration - 0.90)))
+    second_at = min(duration - 0.10, max(duration * 0.80, first_at + min(1.0, duration * 0.40)))
     if second_at <= first_at:
         return
     first = _frame_md5(path, first_at)

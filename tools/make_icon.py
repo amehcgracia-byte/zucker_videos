@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import colorsys
 import subprocess
 from pathlib import Path
 
@@ -17,26 +16,28 @@ ICONSET = ROOT / "build" / "ZuckerEditor.iconset"
 ICNS = ROOT / "assets" / "icon.icns"
 DMG_BACKGROUND = ROOT / "build" / "dmg_background.png"
 TARGET_RGB = (0x7F, 0xBF, 0x62)
+GREEN_DARK = (0x1E, 0x3F, 0x17)
+GREEN_MID = TARGET_RGB
+GREEN_LIGHT = (0xD7, 0xF1, 0xCE)
 ICON_SIZES = (16, 32, 64, 128, 256, 512, 1024)
 
 
 def recolor_logo() -> Image.Image:
-    """Recolor non-transparent, saturated pixels toward Zucker Editor green."""
+    """Colorize non-transparent logo pixels into the Zucker Editor green ramp."""
     if not SOURCE.exists():
         raise FileNotFoundError(f"Missing {SOURCE}. Replace this swap point with the Mixer logo.")
     src = Image.open(SOURCE).convert("RGBA")
-    target_h, target_s, _target_v = colorsys.rgb_to_hsv(*(channel / 255 for channel in TARGET_RGB))
     pixels = []
     for r, g, b, a in src.getdata():
         if a == 0:
             pixels.append((r, g, b, a))
             continue
-        h, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
-        if s > 0.08 and v < 0.98:
-            nr, ng, nb = colorsys.hsv_to_rgb(target_h, max(s, target_s), v)
-            pixels.append((int(nr * 255), int(ng * 255), int(nb * 255), a))
+        luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+        if luminance < 0.55:
+            nr, ng, nb = _lerp_rgb(GREEN_DARK, GREEN_MID, luminance / 0.55)
         else:
-            pixels.append((r, g, b, a))
+            nr, ng, nb = _lerp_rgb(GREEN_MID, GREEN_LIGHT, (luminance - 0.55) / 0.45)
+        pixels.append((nr, ng, nb, a))
     out = Image.new("RGBA", src.size)
     out.putdata(pixels)
     GREEN_LOGO.parent.mkdir(parents=True, exist_ok=True)
@@ -44,6 +45,11 @@ def recolor_logo() -> Image.Image:
     WEB_LOGO.parent.mkdir(parents=True, exist_ok=True)
     out.save(WEB_LOGO)
     return out
+
+
+def _lerp_rgb(start: tuple[int, int, int], end: tuple[int, int, int], amount: float) -> tuple[int, int, int]:
+    amount = max(0.0, min(1.0, amount))
+    return tuple(int(round(a + (b - a) * amount)) for a, b in zip(start, end))
 
 
 def save_iconset(image: Image.Image) -> None:

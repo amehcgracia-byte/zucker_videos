@@ -145,6 +145,45 @@ def test_render_plan_fades_only_intro_and_outro_segments(tmp_path, monkeypatch):
     assert [call["outro_fade"] for call in calls] == [False, False, True]
 
 
+def test_render_plan_verifies_every_segment_not_just_every_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project = create_project("VerifyAll", str(tmp_path / "VerifyAll.zuckervid"))
+    master = tmp_path / "master.wav"
+    master.write_bytes(b"master")
+    verified: list[Path] = []
+
+    def fake_render_segment(*args, **kwargs):
+        args[3].write_bytes(b"segment")
+        return "original"
+
+    def fake_progress(command, duration, label, progress):
+        Path(command[-1]).write_bytes(b"export")
+
+    monkeypatch.setattr("core.stages.export._render_segment", fake_render_segment)
+    monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", fake_progress)
+    monkeypatch.setattr("core.stages.export._verify_moving_segment", lambda path, duration, label, command: verified.append(path))
+    monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
+    monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda project, segments, warnings: {})
+
+    shared_source = str(tmp_path / "sony.mp4")
+    _render_plan(
+        project,
+        [
+            {"clip_path": shared_source, "source_path": shared_source, "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 2},
+            {"clip_path": shared_source, "source_path": shared_source, "clip_start_sec": 10, "master_start_sec": 2, "duration_sec": 2},
+            {"clip_path": shared_source, "source_path": shared_source, "clip_start_sec": 20, "master_start_sec": 4, "duration_sec": 2},
+        ],
+        str(master),
+        tmp_path / "out.mp4",
+        "youtube",
+        4_000_000,
+        [],
+        lambda percent, detail: None,
+    )
+
+    assert len(verified) == 3
+
+
 def test_render_segment_uses_original_source_with_proxy_metadata(tmp_path, monkeypatch):
     project = create_project("Original", str(tmp_path / "Original.zuckervid"))
     source = tmp_path / "source.mov"
