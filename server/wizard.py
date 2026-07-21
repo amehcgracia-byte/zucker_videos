@@ -212,7 +212,7 @@ class WizardRunner:
             project = _create_wizard_project(name)
             _attach_project(job, project)
             register_selected_inputs(project, master_path=master_path, songs_path=songs_path, video_paths=video_paths, append_videos=False)
-            _write_stage_log(project, "wizard", f"Audio master elegido: {Path(master_path).name}")
+            _write_stage_log(project, "wizard", f"Master audio selected: {Path(master_path).name}")
             project.data["settings"]["wizard"] = {
                 "platform": platform,
                 "song_choice": song_choice,
@@ -235,7 +235,7 @@ class WizardRunner:
             project = _create_wizard_project(name)
             _attach_project(job, project)
             register_selected_inputs(project, master_path=master_path, songs_path=songs_path, video_paths=video_paths, append_videos=False)
-            _write_stage_log(project, "wizard", f"Audio master elegido: {Path(master_path).name}")
+            _write_stage_log(project, "wizard", f"Master audio selected: {Path(master_path).name}")
             self._run_stage(job, project, IngestStage(), 0, 45, t("listening"))
             self._run_stage(job, project, SyncStage(), 45, 95, t("syncing_audio"))
             with self._lock:
@@ -477,9 +477,7 @@ def wizard_report(status: dict[str, Any]) -> str:
                 lines.append(f"- {name}: {stage.get('status')} {stage.get('error') or ''}".rstrip())
         log_dir = Path(project_path) / "cache" / "logs"
         lines.append("last log lines:")
-        for log_path in sorted(log_dir.glob("*.log")):
-            lines.append(f"--- {log_path.name} ---")
-            lines.extend(_tail_lines(log_path, 100))
+        lines.extend(_combined_log_tail(log_dir, 160))
     technical = status.get("technical_details")
     if technical:
         lines.append("--- technical_details ---")
@@ -507,6 +505,15 @@ def _tail_lines(path: Path, limit: int) -> list[str]:
         return path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]
     except OSError:
         return []
+
+
+def _combined_log_tail(log_dir: Path, limit: int) -> list[str]:
+    rows: list[tuple[str, str]] = []
+    for log_path in sorted(log_dir.glob("*.log")):
+        for line in _tail_lines(log_path, limit):
+            timestamp = line[:19] if len(line) >= 19 and line[4:5] == "-" else ""
+            rows.append((timestamp, f"[{log_path.name}] {line}"))
+    return [line for _timestamp, line in sorted(rows, key=lambda row: row[0])[-limit:]]
 
 
 def _friendly_error(exc: Exception) -> str:

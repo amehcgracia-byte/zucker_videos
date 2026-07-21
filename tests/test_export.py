@@ -16,7 +16,9 @@ from core.stages.export import (
     ExportStage,
     _bitrate_for_duration,
     _frame_pts_times,
+    _equirect_filtergraph,
     _run_ffmpeg_progress,
+    _render_360_body,
     _render_plan,
     _render_segment,
     _verify_moving_segment,
@@ -77,9 +79,9 @@ def test_segment_filtergraph_adds_watermark_and_texts():
     assert "drawtext=" in graph
     assert "My song" in graph
     assert "overlay=W-w-40:H-h-40" in graph
-    assert "split=2" in graph
-    assert "overlay=(W-w)/2:(H-h)/2" in graph
-    assert "enable='lt(t,2)'" in graph
+    assert "split=2" not in graph
+    assert "overlay=(W-w)/2:(H-h)/2" not in graph
+    assert "enable='lt(t,2)'" not in graph
     assert "eq=brightness=0.0200:saturation=1.0500" in graph
     assert "fade=t=in:st=0:d=0.5" not in graph
     assert "fade=t=out:st=11.500:d=0.5" not in graph
@@ -115,13 +117,14 @@ def test_clip_fates_report_used_excluded_and_not_covering(tmp_path):
     assert "chosen 1/2 eligible" in next(item for item in fates if item["filename"] == "a.mp4")["reason"]
 
 
-def test_render_plan_fades_only_intro_and_outro_segments(tmp_path, monkeypatch):
+def test_render_plan_uses_standalone_intro_and_outro_clips(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     project = create_project("Fades", str(tmp_path / "Fades.zuckervid"))
     project.data["settings"]["export"]["verify_motion"] = False
     master = tmp_path / "master.wav"
     master.write_bytes(b"master")
     calls = []
+    logo_clips = []
 
     def fake_render_segment(*args, **kwargs):
         calls.append(kwargs)
@@ -129,9 +132,15 @@ def test_render_plan_fades_only_intro_and_outro_segments(tmp_path, monkeypatch):
         return "original"
 
     def fake_progress(command, duration, label, progress):
+        if "-f" in command and "concat" in command:
+            concat_file = Path(command[command.index("-i") + 1])
+            lines = concat_file.read_text(encoding="utf-8").splitlines()
+            assert "intro.mp4" in lines[0]
+            assert "outro.mp4" in lines[-1]
         Path(command[-1]).write_bytes(b"export")
 
     monkeypatch.setattr("core.stages.export._render_segment", fake_render_segment)
+    monkeypatch.setattr("core.stages.export._render_logo_clip", lambda *args, **kwargs: (logo_clips.append((args, kwargs)), args[1].write_bytes(b"logo")))
     monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", fake_progress)
     monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
     monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda project, segments, warnings: {})
@@ -151,8 +160,9 @@ def test_render_plan_fades_only_intro_and_outro_segments(tmp_path, monkeypatch):
         lambda percent, detail: None,
     )
 
-    assert [call["intro_fade"] for call in calls] == [True, False, False]
-    assert [call["outro_fade"] for call in calls] == [False, False, True]
+    assert [call["intro_fade"] for call in calls] == [False, False, False]
+    assert [call["outro_fade"] for call in calls] == [False, False, False]
+    assert [call[0][3] for call in logo_clips] == ["intro", "outro"]
 
 
 def test_render_plan_verifies_every_segment_not_just_every_source(tmp_path, monkeypatch):
@@ -172,7 +182,8 @@ def test_render_plan_verifies_every_segment_not_just_every_source(tmp_path, monk
     monkeypatch.setattr("core.stages.export._render_segment", fake_render_segment)
     monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", fake_progress)
     monkeypatch.setattr("core.stages.export._verify_moving_segment", lambda path, duration, label, command: verified.append(path))
-    monkeypatch.setattr("core.stages.export._verify_joined_output", lambda path, segments: None)
+    monkeypatch.setattr("core.stages.export._verify_joined_output", lambda path, segments, timeline_offset=0.0: None)
+    monkeypatch.setattr("core.stages.export._render_logo_clip", lambda *args, **kwargs: args[1].write_bytes(b"logo"))
     monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
     monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda project, segments, warnings: {})
 
@@ -237,6 +248,51 @@ def test_render_segment_uses_original_source_with_proxy_metadata(tmp_path, monke
     assert commands[0][commands[0].index("-r") + 1] == "30.000"
     assert commands[0][commands[0].index("-fps_mode") + 1] == "cfr"
     assert commands[0][commands[0].index("-video_track_timescale") + 1] == "30000"
+
+
+def test_360_filtergraph_preserves_equirectangular_shape():
+    graph = _equirect_filtergraph({"projection": "equirect"}, 4.0, has_watermark=True)
+
+    assert "v360=input=equirect:output=flat" not in graph
+    assert "scale=3840:1920" in graph
+    assert "overlay=W-w-80:H-h-80" in graph
+
+
+def test_360_body_writes_spherical_metadata(tmp_path, monkeypatch):
+    project = create_project("Sphere", str(tmp_path / "Sphere.zuckervid"))
+    source = tmp_path / "sphere.mp4"
+    master = tmp_path / "master.wav"
+    output = tmp_path / "body.mp4"
+    source.write_bytes(b"source")
+    master.write_bytes(b"master")
+    record = file_record(str(source))
+    record["probe"] = {"valid_video": True, "projection": "equirect", "duration": 5.0, "width": 3840, "height": 1920, "fps": 30.0}
+    project.data["inputs"]["videos"] = [record]
+    commands = []
+
+    monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
+    monkeypatch.setattr("core.stages.export._watermark_path", lambda: None)
+
+    def fake_progress(command, duration, label, progress):
+        commands.append(command)
+        output.write_bytes(b"body")
+
+    monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", fake_progress)
+
+    _render_360_body(
+        project,
+        {"clip_path": str(source), "source_path": str(source), "clip_start_sec": 0, "master_start_sec": 1, "duration_sec": 3, "projection": "equirect"},
+        str(master),
+        output,
+        4_000_000,
+        lambda percent, detail: None,
+    )
+
+    command = commands[0]
+    assert "projection=equirectangular" in command
+    assert "spherical_video=true" in command
+    assert command[command.index("-ss") + 1] == "0.000"
+    assert command[command.index("-filter_complex") + 1].count("3840:1920") >= 1
 
 
 def test_render_segment_falls_back_to_proxy_when_original_decode_fails(tmp_path, monkeypatch):

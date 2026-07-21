@@ -22,7 +22,7 @@
       return Promise.resolve(existing);
     }
     if (bridgeState.desktop === false) {
-      return Promise.reject(new Error("Solo disponible en la app de escritorio"));
+      return Promise.reject(new Error("Only available in the desktop app"));
     }
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -41,7 +41,7 @@
         document.removeEventListener("pywebviewready", onReady);
         bridgeState.ready = false;
         updateDesktopOnlyAvailability();
-        reject(new Error("El puente nativo no respondió"));
+        reject(new Error("The native bridge did not respond"));
       };
       const onReady = () => {
         const bridge = api();
@@ -54,11 +54,11 @@
     });
   }
 
-  async function call(methodName, args = [], label = "Acción nativa") {
+  async function call(methodName, args = [], label = "Native action") {
     const bridge = await waitForApi();
     const method = bridge[methodName];
     if (typeof method !== "function") {
-      throw new Error(`${label}: el puente nativo no expone ${methodName}`);
+      throw new Error(`${label}: native bridge does not expose ${methodName}`);
     }
     try {
       return await method.apply(bridge, args);
@@ -79,11 +79,11 @@
     document.querySelectorAll(".desktop-only").forEach((button) => {
       button.disabled = desktop === false;
       if (desktop === false) {
-        button.title = "Disponible en la app de escritorio";
+        button.title = "Available in the desktop app";
       } else if (ready) {
         button.title = "";
       } else {
-        button.title = "Esperando el puente nativo";
+        button.title = "Waiting for the native bridge";
       }
     });
   }

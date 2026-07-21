@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from core.stages.edit import estimate_bar_starts, _youtube_multicam_plan
+from core.stages.cut import _segment_for_360, _select_360_clip
 
 
 def test_estimate_bar_starts_groups_beats_in_fours():
@@ -49,3 +50,19 @@ def test_youtube_plan_does_not_starve_lower_confidence_camera():
     assert names == {"a.mp4", "b.mp4", "c.mp4"}
     stats = {item["filename"]: item for item in plan["selection_diagnostics"]}
     assert stats["c.mp4"]["chosen_segments"] > 0
+
+
+def test_360_selection_prefers_studio_export_and_uses_full_clip():
+    clips = [
+        {"path": "/tmp/raw.insv", "filename": "raw.insv", "projection": "raw_insv", "offset_sec": 3.0, "duration_sec": 10.0},
+        {"path": "/tmp/studio.mp4", "filename": "studio.mp4", "projection": "equirect", "offset_sec": 5.0, "duration_sec": 12.0},
+    ]
+
+    clip = _select_360_clip(clips)
+    segment = _segment_for_360(clip)
+
+    assert clip["filename"] == "studio.mp4"
+    assert segment["clip_start_sec"] == 0.0
+    assert segment["master_start_sec"] == 5.0
+    assert segment["duration_sec"] == 12.0
+    assert segment["projection"] == "equirect"

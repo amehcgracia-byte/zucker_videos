@@ -239,8 +239,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         master = str(body.get("master") or "").strip()
         songs = str(body.get("songs") or "").strip() or None
         videos = body.get("videos") or []
-        if platform not in {"youtube", "instagram", "tiktok"}:
-            return error_response("bad_request", "platform must be youtube, instagram, or tiktok", 400)
+        if platform not in {"youtube", "instagram", "tiktok", "360"}:
+            return error_response("bad_request", "platform must be youtube, instagram, tiktok, or 360", 400)
         if not master:
             return error_response("missing_master", t("missing_master"), 400)
         if not isinstance(videos, list) or not all(isinstance(path, str) for path in videos) or not videos:

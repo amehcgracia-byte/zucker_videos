@@ -81,6 +81,11 @@
             <strong>TikTok</strong>
             <span>Fast cut</span>
           </button>
+          <button class="platform-card" data-platform="360">
+            <span class="platform-glyph" data-glyph="sphere"></span>
+            <strong>360</strong>
+            <span>Full 360 clip</span>
+          </button>
         </div>
         <div id="songPicker" class="song-picker" hidden>
           <h2>Which song?</h2>
@@ -113,20 +118,16 @@
           </div>
           <details id="progressDetails" class="progress-details">
             <summary>Show details</summary>
+            <button id="copyProgressReport" class="icon-button small" data-icon="clipboard">Copy report</button>
             <pre id="progressReport">Loading details...</pre>
           </details>
         </div>
         <div id="errorBox" class="error-box" hidden>
           <p id="errorText"></p>
-          <details>
-            <summary>Show technical details</summary>
-            <pre id="technicalDetails"></pre>
-          </details>
           <div class="result-actions">
             <button id="openLogsError" class="icon-button desktop-only" data-icon="doc">Open logs</button>
-            <button id="copyReport" class="icon-button" data-icon="clipboard">Copy report</button>
+            <button id="retryWizard" class="icon-button" data-icon="retry">Retry</button>
           </div>
-          <button id="retryWizard" class="icon-button" data-icon="retry">Retry</button>
         </div>
         <div id="resultBox" class="result-box" hidden>
           <video id="resultVideo" controls></video>

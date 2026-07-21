@@ -16,7 +16,7 @@ class EditStage(Stage):
     """Build wizard edit decisions from coverage.
 
     YouTube uses a first-pass real multicam plan with beat-aligned cuts.
-    Instagram and TikTok still use the simple cut-stage segment until the
+    Instagram, TikTok, and 360 still use the simple cut-stage segment until the
     short-form creative logic is implemented.
     """
 
@@ -46,7 +46,7 @@ class EditStage(Stage):
         platform = str(coverage.get("platform") or "youtube")
         if platform != "youtube":
             plan = _simple_plan(coverage)
-            beats = {"stage": self.name, "platform": platform, "beats_sec": [], "bars_sec": [], "sections_sec": [], "tempo": None, "placeholder_short_form": True}
+            beats = {"stage": self.name, "platform": platform, "beats_sec": [], "bars_sec": [], "sections_sec": [], "tempo": None, "placeholder_short_form": platform != "360"}
         else:
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, t("choosing_cameras"))
@@ -195,10 +195,14 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any]) -> d
 
 def _simple_plan(coverage: dict[str, Any]) -> dict[str, Any]:
     segments = _short_form_segments_from_best_coverage(coverage)
+    platform = coverage.get("platform") or "youtube"
+    if platform == "360":
+        segments = coverage.get("segments") or segments
     return {
         "stage": "edit",
-        "platform": coverage.get("platform") or "youtube",
-        "placeholder_logic": "short-form middle excerpt; multicam/highlight logic pending",
+        "platform": platform,
+        "placeholder_logic": "short-form middle excerpt; multicam/highlight logic pending" if platform != "360" else None,
+        "real_edit_logic": "360 passthrough full clip with synced master audio" if platform == "360" else None,
         "warnings": coverage.get("warnings") or [],
         "excluded_clips": coverage.get("excluded_clips") or [],
         "clip_diagnostics": coverage.get("clip_diagnostics") or [],

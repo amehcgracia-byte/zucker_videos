@@ -50,8 +50,15 @@ class CutStage(Stage):
         songs = load_song_boundaries(project)
         song_choice = wizard.get("song_choice")
         window = _selected_window(songs, song_choice, sync_map)
-        clip = _first_covering_clip(selection["clips"], window) or _longest_clip(selection["clips"])
-        segment = _segment_for_platform(clip, window, platform)
+        if platform == "360":
+            clip = _select_360_clip(selection["clips"])
+            if not clip:
+                raise ValueError("No registered 360 clip is available for 360 export")
+            segment = _segment_for_360(clip)
+            window = {"title": segment["title"], "start_sec": segment["master_start_sec"], "duration_sec": segment["duration_sec"]}
+        else:
+            clip = _first_covering_clip(selection["clips"], window) or _longest_clip(selection["clips"])
+            segment = _segment_for_platform(clip, window, platform)
         warnings = selection["warnings"]
         if warnings:
             segment["warnings"] = warnings
@@ -203,6 +210,13 @@ def _longest_clip(clips: list[dict[str, Any]]) -> dict[str, Any]:
     return max(clips, key=lambda clip: float(clip.get("duration_sec") or 0))
 
 
+def _select_360_clip(clips: list[dict[str, Any]]) -> dict[str, Any] | None:
+    candidates = [clip for clip in clips if clip.get("projection") in {"equirect", "raw_insv"} or clip.get("raw_360")]
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda clip: 0 if clip.get("projection") == "equirect" else 1)[0]
+
+
 def _float_or_zero(value: Any) -> float:
     try:
         return float(value)
@@ -233,4 +247,21 @@ def _segment_for_platform(clip: dict[str, Any], window: dict[str, Any], platform
         "master_start_sec": master_start,
         "duration_sec": max(1.0, duration),
         "clip_offset_sec": clip_offset,
+    }
+
+
+def _segment_for_360(clip: dict[str, Any]) -> dict[str, Any]:
+    clip_offset = float(clip.get("offset_sec") or 0)
+    duration = max(1.0, float(clip.get("duration_sec") or 1))
+    return {
+        "title": clip.get("filename") or t("full_video"),
+        "clip_path": clip["path"],
+        "source_path": clip.get("source_path") or clip["path"],
+        "clip_start_sec": 0.0,
+        "master_start_sec": max(0.0, clip_offset),
+        "duration_sec": duration,
+        "clip_offset_sec": clip_offset,
+        "confidence": float(clip.get("confidence") or 0.0),
+        "filename": clip.get("filename") or Path(str(clip.get("path"))).name,
+        "projection": clip.get("projection"),
     }

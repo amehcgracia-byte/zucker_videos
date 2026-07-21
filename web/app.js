@@ -43,6 +43,7 @@ const icons = {
   youtube: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="6" width="18" height="12" rx="4"></rect><path d="m10 9 5 3-5 3Z"></path></svg>',
   instagram: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="4" y="4" width="16" height="16" rx="5"></rect><circle cx="12" cy="12" r="3"></circle><path d="M17 7h.01"></path></svg>',
   tiktok: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 4v10.5a3.5 3.5 0 1 1-3-3.46"></path><path d="M14 4c1 3 2.7 4.7 5 5"></path></svg>',
+  sphere: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"></circle><path d="M3 12h18"></path><path d="M12 3c3 2.4 4.5 5.4 4.5 9S15 18.6 12 21"></path><path d="M12 3c-3 2.4-4.5 5.4-4.5 9S9 18.6 12 21"></path></svg>',
 };
 
 function todayName() {
@@ -449,8 +450,8 @@ function renderSongOptions(songs) {
     return;
   }
   picker.hidden = false;
-  const allOption = selectedPlatform === "youtube" ? `<button class="song-option selected" data-song="all">${escapeHtml(S.allSongs)}</button>` : "";
-  selectedSong = selectedPlatform === "youtube" ? "all" : 0;
+  const allOption = selectedPlatform === "youtube" || selectedPlatform === "360" ? `<button class="song-option selected" data-song="all">${escapeHtml(S.allSongs)}</button>` : "";
+  selectedSong = selectedPlatform === "youtube" || selectedPlatform === "360" ? "all" : 0;
   root.innerHTML =
     allOption +
     songs
@@ -527,8 +528,8 @@ function renderWizardStatus(status) {
     clearInterval(pollTimer);
     pollTimer = null;
     document.querySelector("#errorText").textContent = status.error || S.failedTitle;
-    document.querySelector("#technicalDetails").textContent = status.technical_details || "";
     document.querySelector("#errorBox").hidden = false;
+    refreshProgressReport().catch((error) => logFrontendError(`progress report failed: ${error.message}`, error.stack || ""));
   }
   if (status.status === "done") {
     clearInterval(pollTimer);
@@ -785,7 +786,7 @@ document.addEventListener("click", (event) => {
   if (target.id === "openLogsSuccess" || target.id === "openLogsError") {
     openLogs().catch((error) => showToast(error.message, true));
   }
-  if (target.id === "copyReport") {
+  if (target.id === "copyProgressReport") {
     copyReport().catch((error) => showToast(error.message, true));
   }
   if (target.id === "showFinder") {
