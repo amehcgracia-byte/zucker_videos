@@ -23,7 +23,9 @@ MAX_EXPORT_BYTES = int(1.9 * 1024 * 1024 * 1024)
 AUDIO_BITRATE = 192_000
 MIN_ACCEPTABLE_VIDEO_BITRATE = 2_500_000
 MAX_VIDEO_BITRATE = 18_000_000
-EXPORT_SEGMENT_RECIPE_VERSION = 2
+TARGET_EXPORT_FPS = 30.0
+TARGET_EXPORT_TIMESCALE = 30_000
+EXPORT_SEGMENT_RECIPE_VERSION = 3
 
 
 class ExportStage(Stage):
@@ -213,6 +215,8 @@ def _render_plan(
             t("joining_segments"),
             lambda percent, detail: progress_callback(84 + int(percent * 11 / 100), detail),
         )
+        if verify_motion:
+            _verify_joined_output(output_path, segments)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -269,7 +273,7 @@ def _render_segment(
         _ffmpeg_supports_filter("drawtext"),
         intro_fade=intro_fade,
         outro_fade=outro_fade,
-        source_filter=normalization_filter(source.get("probe") or {}, fps=(source.get("probe") or {}).get("fps"), proxy=False),
+        source_filter=normalization_filter(source.get("probe") or {}, fps=TARGET_EXPORT_FPS, proxy=False),
     )
     command_base = _segment_command_base(
         ffmpeg,
@@ -290,6 +294,12 @@ def _render_segment(
             "1:a:0",
             "-pix_fmt",
             "yuv420p",
+            "-r",
+            f"{TARGET_EXPORT_FPS:.3f}",
+            "-fps_mode",
+            "cfr",
+            "-video_track_timescale",
+            str(TARGET_EXPORT_TIMESCALE),
             "-c:a",
             "aac",
             "-b:a",
@@ -385,6 +395,12 @@ def _render_proxy_segment(
             "1:a:0",
             "-pix_fmt",
             "yuv420p",
+            "-r",
+            f"{TARGET_EXPORT_FPS:.3f}",
+            "-fps_mode",
+            "cfr",
+            "-video_track_timescale",
+            str(TARGET_EXPORT_TIMESCALE),
             "-c:a",
             "aac",
             "-b:a",
@@ -541,6 +557,7 @@ def _segment_filtergraph(
     if source_filter:
         filters.append(source_filter)
     filters.extend([_base_video_filter(platform), _color_filter(color_profile)])
+    filters.append(f"fps={TARGET_EXPORT_FPS:.3f},setpts=PTS-STARTPTS")
     if intro_fade:
         filters.append("fade=t=in:st=0:d=0.5")
     if outro_fade:
@@ -620,6 +637,20 @@ def _verify_moving_segment(path: Path, duration: float, label: str, command_line
         return
     first_at = max(0.10, min(duration * 0.20, max(0.10, duration - 0.90)))
     second_at = min(duration - 0.10, max(duration * 0.80, first_at + min(1.0, duration * 0.40)))
+    _verify_moving_frames(path, first_at, second_at, label, f"segment={path} command={command_line}")
+
+
+def _verify_moving_window(path: Path, start: float, duration: float, label: str, context: str) -> None:
+    """Fail when a window inside a rendered video decodes as identical frames."""
+    if duration < 1.0:
+        return
+    first_at = start + max(0.10, min(duration * 0.25, duration - 0.75))
+    second_at = start + min(duration - 0.10, max(duration * 0.75, (first_at - start) + min(1.0, duration * 0.40)))
+    _verify_moving_frames(path, first_at, second_at, label, context)
+
+
+def _verify_moving_frames(path: Path, first_at: float, second_at: float, label: str, context: str) -> None:
+    """Compare two decoded frames from one file."""
     if second_at <= first_at:
         return
     first = _frame_md5(path, first_at)
@@ -627,8 +658,59 @@ def _verify_moving_segment(path: Path, duration: float, label: str, command_line
     if first and second and first == second:
         raise FFmpegError(
             f"Rendered static segment for {label}: frame hashes were identical at {first_at:.2f}s and {second_at:.2f}s. "
-            f"segment={path} command={command_line}"
+            f"{context}"
         )
+
+
+def _verify_joined_output(path: Path, segments: list[dict[str, Any]]) -> None:
+    """Verify final concat output timing and per-source motion after the join."""
+    if len(segments) < 2:
+        return
+    timeline: list[tuple[float, dict[str, Any]]] = []
+    cursor = 0.0
+    for segment in segments:
+        timeline.append((cursor, segment))
+        cursor += max(0.0, float(segment.get("duration_sec") or 0.0))
+
+    checked_sources: set[str] = set()
+    for start, segment in timeline:
+        source = str(segment.get("source_path") or segment.get("clip_path") or "")
+        if not source or source in checked_sources:
+            continue
+        duration = max(0.0, float(segment.get("duration_sec") or 0.0))
+        if duration < 1.0:
+            continue
+        checked_sources.add(source)
+        _verify_moving_window(
+            path,
+            start,
+            duration,
+            Path(source).name,
+            f"final={path} window_start={start:.3f} window_duration={duration:.3f}",
+        )
+
+    boundaries: list[float] = []
+    cursor = 0.0
+    for segment in segments[:-1]:
+        cursor += max(0.0, float(segment.get("duration_sec") or 0.0))
+        boundaries.append(cursor)
+        if len(boundaries) >= 3:
+            break
+    expected_delta = 1.0 / TARGET_EXPORT_FPS
+    for boundary in boundaries:
+        start = max(0.0, boundary - expected_delta * 5)
+        pts = _frame_pts_times(path, start, expected_delta * 12)
+        if len(pts) < 3:
+            raise FFmpegError(f"Could not verify final output PTS near join boundary {boundary:.3f}s in {path}")
+        deltas = [later - earlier for earlier, later in zip(pts, pts[1:])]
+        if any(delta <= 0 for delta in deltas):
+            raise FFmpegError(f"Non-monotonic final output PTS near join boundary {boundary:.3f}s in {path}: {pts[:12]}")
+        tiny = [delta for delta in deltas if delta < expected_delta * 0.50]
+        if tiny:
+            raise FFmpegError(
+                f"Collapsed final output PTS near join boundary {boundary:.3f}s in {path}: "
+                f"min_delta={min(tiny):.6f}, expected~{expected_delta:.6f}, pts={pts[:12]}"
+            )
 
 
 def _frame_md5(path: Path, timestamp: float) -> str | None:
@@ -661,6 +743,44 @@ def _frame_md5(path: Path, timestamp: float) -> str | None:
     if "=" in output:
         return output.split("=", 1)[1].strip()
     return output or None
+
+
+def _frame_pts_times(path: Path, start: float, duration: float) -> list[float]:
+    ffprobe = _ffprobe_path()
+    result = subprocess.run(
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-read_intervals",
+            f"{start:.6f}%+{duration:.6f}",
+            "-show_entries",
+            "frame=best_effort_timestamp_time",
+            "-of",
+            "json",
+            str(path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    if result.returncode != 0:
+        raise FFmpegError((result.stderr or "").strip() or f"Could not inspect frame PTS: {path}")
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise FFmpegError(f"Could not parse frame PTS for {path}: {exc}") from exc
+    pts: list[float] = []
+    for frame in payload.get("frames") or []:
+        value = frame.get("best_effort_timestamp_time")
+        try:
+            pts.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    return pts
 
 
 def _color_filter(color_profile: dict[str, Any]) -> str:
@@ -1038,6 +1158,14 @@ def _ffmpeg_path() -> str:
     if not ffmpeg:
         raise FFmpegError("ffmpeg is missing. Install it with: brew install ffmpeg")
     return str(ffmpeg)
+
+
+def _ffprobe_path() -> str:
+    status = tool_status()
+    ffprobe = status.get("ffprobe_path")
+    if not ffprobe:
+        raise FFmpegError("ffprobe is missing. Install it with: brew install ffmpeg")
+    return str(ffprobe)
 
 
 _FILTER_SUPPORT_CACHE: dict[str, bool] = {}

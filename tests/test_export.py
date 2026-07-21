@@ -12,8 +12,10 @@ from core.stages.base import write_artifact_json
 from core.stages.export import (
     MAX_EXPORT_BYTES,
     MIN_ACCEPTABLE_VIDEO_BITRATE,
+    TARGET_EXPORT_FPS,
     ExportStage,
     _bitrate_for_duration,
+    _frame_pts_times,
     _run_ffmpeg_progress,
     _render_plan,
     _render_segment,
@@ -162,6 +164,7 @@ def test_render_plan_verifies_every_segment_not_just_every_source(tmp_path, monk
     monkeypatch.setattr("core.stages.export._render_segment", fake_render_segment)
     monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", fake_progress)
     monkeypatch.setattr("core.stages.export._verify_moving_segment", lambda path, duration, label, command: verified.append(path))
+    monkeypatch.setattr("core.stages.export._verify_joined_output", lambda path, segments: None)
     monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
     monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda project, segments, warnings: {})
 
@@ -222,7 +225,10 @@ def test_render_segment_uses_original_source_with_proxy_metadata(tmp_path, monke
     assert rendered_from == "original"
     assert str(source) in commands[0]
     assert str(proxy) not in commands[0]
-    assert "fps=24.000,setpts=PTS-STARTPTS" in commands[0][commands[0].index("-filter_complex") + 1]
+    assert "fps=30.000,setpts=PTS-STARTPTS" in commands[0][commands[0].index("-filter_complex") + 1]
+    assert commands[0][commands[0].index("-r") + 1] == "30.000"
+    assert commands[0][commands[0].index("-fps_mode") + 1] == "cfr"
+    assert commands[0][commands[0].index("-video_track_timescale") + 1] == "30000"
 
 
 def test_render_segment_falls_back_to_proxy_when_original_decode_fails(tmp_path, monkeypatch):
@@ -350,6 +356,95 @@ def test_compliant_skip_original_segment_renders_moving_video(tmp_path, monkeypa
 
     assert rendered_from == "original"
     _verify_moving_segment(output, 1.5, "source.mp4", "test command")
+
+
+@pytest.mark.slow
+def test_export_join_normalizes_mixed_fps_segments(tmp_path, monkeypatch):
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not available")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("core.stages.export.measure_clip_color", lambda path: ({}, None))
+    monkeypatch.setattr("core.stages.export._watermark_path", lambda: None)
+    monkeypatch.setattr("core.stages.export._ffmpeg_supports_filter", lambda name: False)
+    project = create_project("Mixed FPS", str(tmp_path / "Mixed FPS.zuckervid"))
+    master = tmp_path / "master.wav"
+    clip_25 = tmp_path / "sony25.mp4"
+    clip_30 = tmp_path / "phone30.mp4"
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=6", str(master)], check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25:duration=6", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(clip_25)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=6", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(clip_30)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    record_25 = file_record(str(clip_25))
+    record_25.update(
+        {
+            "probe": {"valid_video": True, "video_codec": "h264", "duration": 6.0, "width": 640, "height": 360, "fps": 25.0, "cfr": True},
+            "cache_key": "sony25-key",
+            "normalized": {"path": str(clip_25), "cache_key": "sony25-key", "kind": "original", "proxy_skipped": True},
+        }
+    )
+    record_30 = file_record(str(clip_30))
+    record_30.update(
+        {
+            "probe": {"valid_video": True, "video_codec": "h264", "duration": 6.0, "width": 640, "height": 360, "fps": 30.0, "cfr": True},
+            "cache_key": "phone30-key",
+            "normalized": {"path": str(clip_30), "cache_key": "phone30-key", "kind": "original", "proxy_skipped": True},
+        }
+    )
+    project.data["inputs"]["master"] = file_record(str(master))
+    project.data["inputs"]["videos"] = [record_25, record_30]
+    write_artifact_json(
+        project.artifacts_dir / "edit_plan.json",
+        {
+            "platform": "youtube",
+            "segments": [
+                {"filename": "sony25.mp4", "clip_path": str(clip_25), "source_path": str(clip_25), "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 1.5},
+                {"filename": "phone30.mp4", "clip_path": str(clip_30), "source_path": str(clip_30), "clip_start_sec": 0, "master_start_sec": 1.5, "duration_sec": 1.5},
+                {"filename": "sony25.mp4", "clip_path": str(clip_25), "source_path": str(clip_25), "clip_start_sec": 1.5, "master_start_sec": 3.0, "duration_sec": 1.5},
+                {"filename": "phone30.mp4", "clip_path": str(clip_30), "source_path": str(clip_30), "clip_start_sec": 1.5, "master_start_sec": 4.5, "duration_sec": 1.5},
+            ],
+        },
+    )
+
+    ExportStage().run(project, lambda percent, message: None)
+
+    manifest = json.loads((project.artifacts_dir / "export_manifest.json").read_text(encoding="utf-8"))
+    output = Path(manifest["exports"][0]["path"])
+    probe = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=avg_frame_rate,r_frame_rate,time_base,pix_fmt",
+            "-of",
+            "json",
+            str(output),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    stream = json.loads(probe.stdout)["streams"][0]
+    assert stream["avg_frame_rate"] == "30/1"
+    assert stream["r_frame_rate"] == "30/1"
+    assert stream["pix_fmt"] == "yuv420p"
+    pts = _frame_pts_times(output, 1.45, 0.3)
+    deltas = [later - earlier for earlier, later in zip(pts, pts[1:])]
+    assert deltas
+    assert all(delta > 0 for delta in deltas)
+    assert min(deltas) >= (1 / TARGET_EXPORT_FPS) * 0.5
+    _verify_moving_segment(output, 5.5, "mixed-fps final", "joined output")
 
 
 @pytest.mark.slow
