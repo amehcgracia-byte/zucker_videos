@@ -110,6 +110,7 @@ class WizardRunner:
         platform: str,
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
+        spherical_landmarks: dict[str, float] | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -128,6 +129,7 @@ class WizardRunner:
                         "platform": platform,
                         "song_choice": song_choice,
                         "audio_trim": audio_trim,
+                        "spherical_landmarks": spherical_landmarks,
                         "master_path": master_path,
                         "songs_path": songs_path,
                         "video_paths": video_paths,
@@ -148,6 +150,7 @@ class WizardRunner:
                 "platform": platform,
                 "song_choice": song_choice,
                 "audio_trim": audio_trim,
+                "spherical_landmarks": spherical_landmarks,
                 "master_path": master_path,
                 "songs_path": songs_path,
                 "video_paths": video_paths,
@@ -208,6 +211,7 @@ class WizardRunner:
         platform: str,
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
+        spherical_landmarks: dict[str, float] | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -223,11 +227,23 @@ class WizardRunner:
                 "audio_trim": audio_trim or {},
                 "placeholder_logic": platform in {"instagram", "tiktok"},
             }
+            _store_spherical_landmarks(project, spherical_landmarks)
             project.save()
 
             self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
             self._run_stage(job, project, SyncStage(), 22, 48, t("syncing_audio"))
-            self._finish(job=job, project=project, name=name, platform=platform, song_choice=song_choice, audio_trim=audio_trim, master_path=master_path, songs_path=songs_path, video_paths=video_paths)
+            self._finish(
+                job=job,
+                project=project,
+                name=name,
+                platform=platform,
+                song_choice=song_choice,
+                audio_trim=audio_trim,
+                spherical_landmarks=spherical_landmarks,
+                master_path=master_path,
+                songs_path=songs_path,
+                video_paths=video_paths,
+            )
         except Exception as exc:
             LOGGER.exception("Wizard job failed")
             job.status = "failed"
@@ -283,6 +299,7 @@ class WizardRunner:
         platform: str,
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
+        spherical_landmarks: dict[str, float] | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -296,6 +313,7 @@ class WizardRunner:
                 "audio_trim": audio_trim or {},
                 "placeholder_logic": platform in {"instagram", "tiktok"},
             }
+            _store_spherical_landmarks(project, spherical_landmarks)
             project.save()
             self._run_stage(job, project, CutStage(), 48, 58, t("cutting_song"))
             self._run_stage(job, project, EditStage(), 58, 70, t("building_edit"))
@@ -321,6 +339,7 @@ class WizardRunner:
                 "logs_path": str(project.cache_dir / "logs"),
                 "cut_count": export.get("cut_count"),
                 "camera_usage": export.get("camera_usage"),
+                "spherical_shot_usage": export.get("spherical_shot_usage") or manifest.get("spherical_shot_usage") or {},
                 "warnings": export.get("warnings") or manifest.get("warnings") or [],
                 "excluded_clips": export.get("excluded_clips") or [],
                 "clip_fates": export.get("clip_fates") or [],
@@ -345,6 +364,7 @@ class WizardRunner:
         platform: str,
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
+        spherical_landmarks: dict[str, float] | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -369,6 +389,7 @@ class WizardRunner:
             platform=platform,
             song_choice=song_choice,
             audio_trim=audio_trim,
+            spherical_landmarks=spherical_landmarks,
             master_path=master_path,
             songs_path=songs_path,
             video_paths=video_paths,
@@ -403,6 +424,7 @@ class WizardRunner:
                 "logs_path": str(project.cache_dir / "logs"),
                 "cut_count": export.get("cut_count"),
                 "camera_usage": export.get("camera_usage"),
+                "spherical_shot_usage": export.get("spherical_shot_usage") or manifest.get("spherical_shot_usage") or {},
                 "warnings": export.get("warnings") or manifest.get("warnings") or [],
                 "excluded_clips": export.get("excluded_clips") or [],
                 "clip_fates": export.get("clip_fates") or [],
@@ -499,6 +521,15 @@ def _attach_project(job: WizardJob, project: Project) -> None:
     job.logs_path = str(project.cache_dir / "logs")
     config = load_global_config()
     config["last_project_path"] = str(project.folder)
+    save_global_config(config)
+
+
+def _store_spherical_landmarks(project: Project, landmarks: dict[str, float] | None) -> None:
+    if landmarks is None:
+        return
+    project.data.setdefault("settings", {})["spherical_landmarks"] = dict(landmarks)
+    config = load_global_config()
+    config["spherical_landmarks"] = dict(landmarks)
     save_global_config(config)
 
 

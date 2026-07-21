@@ -565,7 +565,8 @@ button:disabled {
   background: var(--green-100);
 }
 
-.trim-box {
+.trim-box,
+.spherical-setup {
   display: grid;
   gap: 12px;
   margin: 18px 0;
@@ -573,6 +574,38 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fff;
+}
+
+.spherical-setup[hidden] {
+  display: none;
+}
+
+.setup-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.setup-heading h2 {
+  font-size: 18px;
+}
+
+.spherical-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.spherical-fields label {
+  display: grid;
+  gap: 6px;
+  font-weight: 800;
+  color: var(--muted);
+}
+
+.spherical-fields input {
+  width: 100%;
 }
 
 .trim-fields {
@@ -596,6 +629,12 @@ button:disabled {
 .trim-fields input {
   width: 100%;
   min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .spherical-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .song-picker {

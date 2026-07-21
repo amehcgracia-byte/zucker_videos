@@ -19,6 +19,7 @@ from core.stages.export import (
     ExportStage,
     _audio_gain_curve_samples,
     _bitrate_for_duration,
+    _expand_spherical_render_segments,
     _frame_pts_times,
     _equirect_filtergraph,
     _run_ffmpeg_progress,
@@ -27,6 +28,7 @@ from core.stages.export import (
     _render_segment,
     _audio_rms,
     _frame_normalized_segments,
+    _frame_md5,
     _verify_final_audio,
     _verify_moving_segment,
     _verify_video_cadence,
@@ -279,12 +281,26 @@ def test_render_segment_uses_original_source_with_proxy_metadata(tmp_path, monke
 
 
 def test_360_filtergraph_preserves_equirectangular_shape():
-    graph = _equirect_filtergraph({"projection": "equirect"}, 4.0, 120, has_watermark=True)
+    graph = _equirect_filtergraph({"projection": "equirect"}, 4.0, 120, has_watermark=True, shot={"yaw": 90, "pitch": 0})
 
-    assert "v360=input=equirect:output=flat" not in graph
+    assert "v360=input=equirect:output=equirect:yaw=90.000:pitch=0.000" in graph
     assert "scale=3840:1920" in graph
     assert "fps=fps=30.000:round=near:start_time=0,trim=start_frame=0:end_frame=120,setpts=N/(30.000*TB)" in graph
     assert "overlay=W-w-80:H-h-80" in graph
+
+
+def test_spherical_render_parts_expand_pan_and_planet_motion():
+    segments = [
+        {"clip_path": "/tmp/360.mp4", "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 3, "spherical_shot": {"type": "singer", "label": "Cantante", "yaw": 20, "pitch": 0, "fov": 80}},
+        {"clip_path": "/tmp/360.mp4", "clip_start_sec": 3, "master_start_sec": 3, "duration_sec": 3, "spherical_shot": {"type": "planet", "label": "Planeta", "yaw": 40, "pitch": -65, "fov": 180, "spin_deg_per_sec": 22, "transition_sec": 0.45}},
+    ]
+
+    parts = _expand_spherical_render_segments(segments)
+
+    assert sum(float(part["duration_sec"]) for part in parts) == pytest.approx(6.0)
+    yaws = [round(float(part["spherical_shot"]["yaw"]), 1) for part in parts if part["spherical_shot"].get("type") == "planet"]
+    assert len(yaws) > 1
+    assert len(set(yaws)) > 1
 
 
 def test_360_body_writes_spherical_metadata(tmp_path, monkeypatch):
@@ -323,6 +339,51 @@ def test_360_body_writes_spherical_metadata(tmp_path, monkeypatch):
     assert command[command.index("-filter_complex") + 1].count("3840:1920") >= 1
     assert str(master) not in command
     assert "-an" in command
+
+
+@pytest.mark.slow
+def test_360_body_renders_distinct_landmark_yaws(tmp_path, monkeypatch):
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not available")
+    monkeypatch.setattr("core.stages.export._watermark_path", lambda: None)
+    project = create_project("Sphere Move", str(tmp_path / "Sphere Move.zuckervid"))
+    source = tmp_path / "sphere.mp4"
+    first = tmp_path / "first.mp4"
+    second = tmp_path / "second.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=640x320:rate=25:duration=2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    record = file_record(str(source))
+    record["probe"] = {"valid_video": True, "projection": "equirect", "duration": 2.0, "width": 640, "height": 320, "fps": 25.0}
+    project.data["inputs"]["videos"] = [record]
+    base = {"clip_path": str(source), "source_path": str(source), "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 1, "projection": "equirect"}
+
+    _render_360_body(project, {**base, "spherical_shot": {"type": "singer", "yaw": 0, "pitch": 0, "fov": 80}}, first, 4_000_000, lambda percent, detail: None)
+    _render_360_body(project, {**base, "spherical_shot": {"type": "drummer", "yaw": 120, "pitch": 0, "fov": 80}}, second, 4_000_000, lambda percent, detail: None)
+
+    assert _frame_md5(first, 0.5) != _frame_md5(second, 0.5)
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "stream_tags=projection,spherical_video:format_tags=projection,spherical_video", "-of", "json", str(second)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "equirectangular" in probe.stdout
 
 
 def test_render_segment_falls_back_to_proxy_when_original_decode_fails(tmp_path, monkeypatch):

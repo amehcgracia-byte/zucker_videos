@@ -14,6 +14,7 @@ let rescueClipId = null;
 let currentStep = 1;
 let lastProgressReportAt = 0;
 let trimDefaultsAppliedFor = "";
+let lastSphericalSetup = {};
 
 function logFrontendError(message, stack = "") {
   fetch("/api/v1/wizard/frontend-log", {
@@ -70,6 +71,7 @@ async function apiForm(path, formData) {
 
 async function loadAppConfig() {
   appConfig = await api("/app/config");
+  lastSphericalSetup = appConfig.spherical_landmarks || {};
   window.NativeBridge?.configure(appConfig);
 }
 
@@ -175,6 +177,10 @@ function isRaw360(item) {
   return Boolean(item.raw_360 || item.projection === "raw_insv" || item.probe?.projection === "raw_insv");
 }
 
+function isSphericalVideo(item) {
+  return Boolean(isRaw360(item) || item.projection === "equirect" || item.probe?.projection === "equirect");
+}
+
 function filename(path) {
   return String(path || "").split(/[\\/]/).pop();
 }
@@ -189,7 +195,7 @@ function renderChips() {
         item.path
       )}">
           ${iconFor(item)} ${escapeHtml(item.filename || filename(item.path))}
-          ${item.projection === "equirect" || item.probe?.projection === "equirect" || isRaw360(item) ? "<small>360°</small>" : ""}
+          ${isSphericalVideo(item) ? "<small>360°</small>" : ""}
           ${item.source === "inbox" ? "<small>from Inbox</small>" : ""}
           ${isRaw360(item) ? `<small>${escapeHtml(item.info || "360 stitched automatically")}</small>` : ""}
           ${item.kind === "ignored" ? `<small>${escapeHtml(item.note || S.ignored)}</small>` : ""}
@@ -236,6 +242,10 @@ function renderRaw360Callout() {
   const hasRaw = detected.videos.some(isRaw360) || detected.ignored.some((item) => [".insv", ".insp"].some((suffix) => String(item.path || "").toLowerCase().endsWith(suffix)));
   const hasStudioExport = detected.videos.some((item) => item.projection === "equirect" || item.probe?.projection === "equirect");
   callout.hidden = !(hasRaw && !hasStudioExport);
+}
+
+function hasSphericalInput() {
+  return detected.videos.some(isSphericalVideo);
 }
 
 function removeDetectedItem(kind, path) {
@@ -435,12 +445,38 @@ async function prepareStep2() {
   setStep(2);
   ensureStatusPolling();
   setupTrimControls(inputs.master);
+  renderSphericalSetup();
   if (inputs.songs) {
     const result = await api("/wizard/songs", { method: "POST", body: JSON.stringify({ songs: inputs.songs }) });
     renderSongOptions(result.songs || []);
   } else {
     renderSongOptions([]);
   }
+}
+
+function renderSphericalSetup() {
+  const panel = document.querySelector("#sphericalSetup");
+  if (!panel) return;
+  panel.hidden = !hasSphericalInput();
+  if (!panel.hidden) applySphericalSetup(lastSphericalSetup);
+}
+
+function applySphericalSetup(values = {}) {
+  document.querySelectorAll("[data-spherical-landmark]").forEach((input) => {
+    const key = input.dataset.sphericalLandmark;
+    if (values[key] != null && input.value === "") input.value = Math.round(Number(values[key])).toString();
+  });
+}
+
+function sphericalLandmarksFromForm() {
+  const values = {};
+  document.querySelectorAll("[data-spherical-landmark]").forEach((input) => {
+    const raw = String(input.value || "").trim();
+    if (!raw) return;
+    const value = Number(raw);
+    if (Number.isFinite(value)) values[input.dataset.sphericalLandmark] = ((value % 360) + 360) % 360;
+  });
+  return values;
 }
 
 function setupTrimControls(masterPath) {
@@ -504,6 +540,7 @@ async function startWizard() {
       song_index: selectedSong,
       trim_start_sec: timeToSeconds(document.querySelector("#trimStart").value),
       trim_end_sec: timeToSeconds(document.querySelector("#trimEnd").value),
+      spherical_landmarks: sphericalLandmarksFromForm(),
       master: inputs.master,
       songs: inputs.songs,
       videos: inputs.videos,
@@ -584,6 +621,7 @@ function renderWizardStatus(status) {
     document.querySelector("#resultFilename").textContent = latestResult.filename;
     document.querySelector("#resultSummary").textContent = resultSummary(latestResult);
     renderClipFates(latestResult);
+    renderSphericalShots(latestResult);
     document.querySelector("#resultVideo").src = `${latestResult.media_url}?t=${Date.now()}`;
     document.querySelector("#errorBox").hidden = true;
     document.querySelector("#resultBox").hidden = false;
@@ -708,6 +746,21 @@ function renderClipFates(result) {
       .join("")}`;
 }
 
+function renderSphericalShots(result) {
+  const usage = result?.spherical_shot_usage || {};
+  const entries = Object.entries(usage);
+  const summary = entries.map(([label, count]) => `${label} x${count}`).join(", ");
+  const existing = document.querySelector("#sphericalShotUsage");
+  if (!entries.length) {
+    if (existing) existing.remove();
+    return;
+  }
+  const root = document.querySelector("#clipFates");
+  const html = `<div id="sphericalShotUsage" class="clip-fate used"><div><strong>360 shots</strong><span>${escapeHtml(summary)}</span></div></div>`;
+  if (existing) existing.outerHTML = html;
+  else root.insertAdjacentHTML("beforebegin", html);
+}
+
 function fateLabel(status) {
   if (status === "used") return S.fateUsed || "Used";
   if (status === "excluded") return S.fateExcluded || "Excluded";
@@ -828,6 +881,10 @@ document.addEventListener("click", (event) => {
   if (target.id === "setTrimStart" || target.id === "setTrimEnd") {
     const preview = document.querySelector("#masterPreview");
     document.querySelector(target.id === "setTrimStart" ? "#trimStart" : "#trimEnd").value = secondsToTime(preview.currentTime || 0);
+  }
+  if (target.id === "reuseSphericalSetup") {
+    document.querySelectorAll("[data-spherical-landmark]").forEach((input) => (input.value = ""));
+    applySphericalSetup(lastSphericalSetup);
   }
   if (target.id === "retryWizard" || target.id === "retryWizardSuccess") {
     setStep(3);

@@ -111,6 +111,20 @@
             </label>
           </div>
         </div>
+        <div id="sphericalSetup" class="spherical-setup" hidden>
+          <div class="setup-heading">
+            <h2>360 Setup</h2>
+            <button id="reuseSphericalSetup" class="icon-button small" data-icon="retry" type="button">Reuse last setup</button>
+          </div>
+          <div class="spherical-fields">
+            <label>Singer <input data-spherical-landmark="singer_yaw" type="number" min="0" max="359" step="1" placeholder="yaw" /></label>
+            <label>Drummer <input data-spherical-landmark="drummer_yaw" type="number" min="0" max="359" step="1" placeholder="yaw" /></label>
+            <label>Left side <input data-spherical-landmark="left_yaw" type="number" min="0" max="359" step="1" placeholder="yaw" /></label>
+            <label>Right side <input data-spherical-landmark="right_yaw" type="number" min="0" max="359" step="1" placeholder="yaw" /></label>
+            <label>Audience <input data-spherical-landmark="audience_yaw" type="number" min="0" max="359" step="1" placeholder="yaw" /></label>
+            <label>Full stage <input data-spherical-landmark="full_stage_yaw" type="number" min="0" max="359" step="1" placeholder="0" /></label>
+          </div>
+        </div>
         <button id="startWizard" class="primary icon-button" data-icon="wand" disabled>Make it</button>
       </section>
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, estimate_bar_starts, _youtube_multicam_plan
+from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, build_spherical_shot_segments, estimate_bar_starts, _youtube_multicam_plan
 from core.stages.cut import _segment_for_360, _select_360_clip
 
 
@@ -99,3 +99,25 @@ def test_360_selection_prefers_studio_export_and_uses_full_clip():
     assert segment["master_start_sec"] == 5.0
     assert segment["duration_sec"] == 12.0
     assert segment["projection"] == "equirect"
+
+
+def test_spherical_landmark_map_allows_missing_entries_without_crash():
+    base = [{"clip_path": "/tmp/360.mp4", "source_path": "/tmp/360.mp4", "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 10, "projection": "equirect"}]
+
+    segments = build_spherical_shot_segments(base, {"singer_yaw": 35})
+
+    types = [segment["spherical_shot"]["type"] for segment in segments]
+    assert "singer" in types
+    assert "drummer" not in types
+    assert "full_stage" in types
+
+
+def test_spherical_rotation_avoids_repeats_and_caps_planet():
+    base = [{"clip_path": "/tmp/360.mp4", "source_path": "/tmp/360.mp4", "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 28, "projection": "equirect"}]
+
+    segments = build_spherical_shot_segments(base, {"singer_yaw": 20, "drummer_yaw": 110, "audience_yaw": 250})
+
+    types = [segment["spherical_shot"]["type"] for segment in segments]
+    assert all(a != b for a, b in zip(types, types[1:]) if a != "planet" and b != "planet")
+    assert types.count("planet") <= 1
+    assert all(MIN_SEGMENT_SEC <= segment["duration_sec"] <= MAX_SEGMENT_SEC for segment in segments)

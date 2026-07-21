@@ -16,6 +16,15 @@ MAX_SEGMENT_SEC = 6.0
 MAX_BARS_PER_SEGMENT = 2
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 0.5, "handheld": 0.3, "fixed_rear": 0.2}
+SPHERICAL_PAN_SEC = 0.45
+SPHERICAL_SHOT_ORDER = ("singer", "drummer", "left", "right", "audience", "full_stage")
+SPHERICAL_LANDMARKS = {
+    "singer": ("singer_yaw", "Cantante", 80.0),
+    "drummer": ("drummer_yaw", "Bateria", 80.0),
+    "left": ("left_yaw", "Lado izquierdo", 85.0),
+    "right": ("right_yaw", "Lado derecho", 85.0),
+    "audience": ("audience_yaw", "Publico", 90.0),
+}
 
 
 class EditStage(Stage):
@@ -35,6 +44,7 @@ class EditStage(Stage):
             {
                 "cut": project.data["stages"]["cut"].get("fingerprint"),
                 "settings": project.data["settings"].get(self.name, {}),
+                "spherical_landmarks": project.data["settings"].get("spherical_landmarks", {}),
             }
         )
 
@@ -51,7 +61,7 @@ class EditStage(Stage):
         coverage = load_coverage(project)
         platform = str(coverage.get("platform") or "youtube")
         if platform != "youtube":
-            plan = _simple_plan(coverage)
+            plan = _simple_plan(coverage, project.data.get("settings", {}))
             beats = {"stage": self.name, "platform": platform, "beats_sec": [], "bars_sec": [], "sections_sec": [], "tempo": None, "placeholder_short_form": platform != "360"}
         else:
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
@@ -201,24 +211,125 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any], sett
     }
 
 
-def _simple_plan(coverage: dict[str, Any]) -> dict[str, Any]:
+def _simple_plan(coverage: dict[str, Any], project_settings: dict[str, Any] | None = None) -> dict[str, Any]:
     segments = _short_form_segments_from_best_coverage(coverage)
     platform = coverage.get("platform") or "youtube"
     if platform == "360":
-        segments = coverage.get("segments") or segments
+        segments = build_spherical_shot_segments(coverage.get("segments") or segments, (project_settings or {}).get("spherical_landmarks") or {})
+        usage = _spherical_shot_usage(segments)
+    else:
+        usage = {}
     return {
         "stage": "edit",
         "platform": platform,
         "placeholder_logic": "short-form middle excerpt; multicam/highlight logic pending" if platform != "360" else None,
-        "real_edit_logic": "360 passthrough full clip with synced master audio" if platform == "360" else None,
+        "real_edit_logic": "360 virtual camera shot rotation from manual landmark map" if platform == "360" else None,
         "warnings": coverage.get("warnings") or [],
         "excluded_clips": coverage.get("excluded_clips") or [],
         "clip_diagnostics": coverage.get("clip_diagnostics") or [],
         "gaps": [],
         "cut_count": max(0, len(segments) - 1),
         "camera_usage": _camera_usage(segments),
+        "spherical_shot_usage": usage,
         "segments": segments,
     }
+
+
+def build_spherical_shot_segments(base_segments: list[dict[str, Any]], landmarks: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Split 360 source coverage into named virtual-camera holds."""
+    if not base_segments:
+        return []
+    shots = _available_spherical_shots(landmarks or {})
+    if not shots:
+        return list(base_segments)
+    total_duration = sum(max(0.0, float(segment.get("duration_sec") or 0.0)) for segment in base_segments)
+    planet_budget = 1 if total_duration >= 18.0 else 0
+    planet_after = total_duration * 0.58
+    elapsed = 0.0
+    shot_index = 0
+    previous_type: str | None = None
+    output: list[dict[str, Any]] = []
+    for base in base_segments:
+        remaining = max(0.0, float(base.get("duration_sec") or 0.0))
+        local = 0.0
+        while remaining > 0.001:
+            hold = min(MAX_SEGMENT_SEC, remaining)
+            if remaining - hold > 0.001 and remaining - hold < MIN_SEGMENT_SEC:
+                hold = max(MIN_SEGMENT_SEC, remaining / 2.0)
+            shot = _next_spherical_shot(shots, shot_index, previous_type)
+            if planet_budget > 0 and elapsed <= planet_after < elapsed + hold:
+                shot = _planet_shot(shot.get("yaw", 0.0), hold)
+                planet_budget -= 1
+            else:
+                shot_index += 1
+            previous_type = str(shot.get("type"))
+            segment = {
+                **base,
+                "clip_start_sec": round(float(base.get("clip_start_sec") or 0.0) + local, 6),
+                "master_start_sec": round(float(base.get("master_start_sec") or 0.0) + local, 6),
+                "duration_sec": round(hold, 6),
+                "spherical_shot": shot,
+            }
+            output.append(segment)
+            elapsed += hold
+            local += hold
+            remaining -= hold
+    return output
+
+
+def _available_spherical_shots(landmarks: dict[str, Any]) -> list[dict[str, Any]]:
+    shots: list[dict[str, Any]] = []
+    for shot_type in SPHERICAL_SHOT_ORDER:
+        if shot_type == "full_stage":
+            yaw = _landmark_yaw(landmarks.get("full_stage_yaw"), 0.0)
+            shots.append({"type": "full_stage", "label": "Escenario completo", "yaw": yaw, "pitch": 0.0, "fov": 130.0, "transition_sec": SPHERICAL_PAN_SEC})
+            continue
+        key, label, fov = SPHERICAL_LANDMARKS[shot_type]
+        yaw = _landmark_yaw(landmarks.get(key), None)
+        if yaw is None:
+            continue
+        shots.append({"type": shot_type, "label": label, "yaw": yaw, "pitch": 0.0, "fov": fov, "transition_sec": SPHERICAL_PAN_SEC})
+    return shots
+
+
+def _next_spherical_shot(shots: list[dict[str, Any]], index: int, previous_type: str | None) -> dict[str, Any]:
+    if not shots:
+        return {"type": "full_stage", "label": "Escenario completo", "yaw": 0.0, "pitch": 0.0, "fov": 130.0, "transition_sec": SPHERICAL_PAN_SEC}
+    for offset in range(len(shots)):
+        shot = shots[(index + offset) % len(shots)]
+        if len(shots) == 1 or shot.get("type") != previous_type:
+            return dict(shot)
+    return dict(shots[index % len(shots)])
+
+
+def _planet_shot(start_yaw: float, duration: float) -> dict[str, Any]:
+    return {
+        "type": "planet",
+        "label": "Planeta",
+        "yaw": _landmark_yaw(start_yaw, 0.0),
+        "yaw_end": _landmark_yaw(float(start_yaw) + 22.0 * max(0.0, duration), 0.0),
+        "pitch": -65.0,
+        "fov": 180.0,
+        "transition_sec": SPHERICAL_PAN_SEC,
+        "spin_deg_per_sec": 22.0,
+    }
+
+
+def _landmark_yaw(value: Any, fallback: float | None) -> float | None:
+    try:
+        return float(value) % 360.0
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _spherical_shot_usage(segments: list[dict[str, Any]]) -> dict[str, int]:
+    usage: dict[str, int] = {}
+    for segment in segments:
+        shot = segment.get("spherical_shot") or {}
+        label = str(shot.get("label") or shot.get("type") or "").strip()
+        if label:
+            usage[label] = usage.get(label, 0) + 1
+    return usage
 
 
 def estimate_bar_starts(beat_times: list[float], start: float, duration: float) -> list[float]:

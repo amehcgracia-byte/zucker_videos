@@ -246,6 +246,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         songs = str(body.get("songs") or "").strip() or None
         videos = body.get("videos") or []
         audio_trim = _audio_trim_from_body(body)
+        spherical_landmarks = _spherical_landmarks_from_body(body)
         if platform not in {"youtube", "instagram", "tiktok", "360"}:
             return error_response("bad_request", "platform must be youtube, instagram, tiktok, or 360", 400)
         if not master:
@@ -265,6 +266,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 platform=platform,
                 song_choice=body.get("song_index", body.get("song_choice")),
                 audio_trim=audio_trim,
+                spherical_landmarks=spherical_landmarks,
                 master_path=master,
                 songs_path=songs,
                 video_paths=videos,
@@ -443,6 +445,19 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             settings["copy_into_project"] = bool(body["copy_into_project"])
         project.save()
         return jsonify(project.snapshot())
+
+    @app.post("/api/v1/settings/spherical-landmarks")
+    def api_spherical_landmarks() -> Response:
+        project = _require_project(state)
+        body = _json_body()
+        landmarks = _sanitize_spherical_landmarks(body.get("spherical_landmarks", body))
+        project.data.setdefault("settings", {})["spherical_landmarks"] = landmarks
+        project.mark_all_stale_from("edit")
+        project.save()
+        config = load_global_config()
+        config["spherical_landmarks"] = landmarks
+        save_global_config(config)
+        return jsonify({"spherical_landmarks": landmarks})
 
     @app.get("/api/v1/app/config")
     def api_app_config() -> Response:
@@ -731,6 +746,7 @@ def _export_result(project: Project) -> dict[str, Any] | None:
         "logs_path": str(project.cache_dir / "logs"),
         "cut_count": export.get("cut_count"),
         "camera_usage": export.get("camera_usage"),
+        "spherical_shot_usage": export.get("spherical_shot_usage") or manifest.get("spherical_shot_usage") or {},
         "warnings": export.get("warnings") or manifest.get("warnings") or [],
         "excluded_clips": export.get("excluded_clips") or [],
         "clip_fates": export.get("clip_fates") or [],
@@ -778,6 +794,28 @@ def _audio_trim_from_body(body: dict[str, Any]) -> dict[str, float] | None:
     if trim and trim.get("end_sec", 1.0) <= trim.get("start_sec", 0.0):
         return None
     return trim or None
+
+
+def _spherical_landmarks_from_body(body: dict[str, Any]) -> dict[str, float] | None:
+    if "spherical_landmarks" not in body:
+        return None
+    return _sanitize_spherical_landmarks(body.get("spherical_landmarks") or {})
+
+
+def _sanitize_spherical_landmarks(raw: Any) -> dict[str, float]:
+    if not isinstance(raw, dict):
+        return {}
+    allowed = {"singer_yaw", "drummer_yaw", "left_yaw", "right_yaw", "audience_yaw", "full_stage_yaw"}
+    landmarks: dict[str, float] = {}
+    for key in allowed:
+        value = raw.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            landmarks[key] = round(float(value) % 360.0, 3)
+        except (TypeError, ValueError):
+            continue
+    return landmarks
 
 
 def _enable_cors(app: Flask) -> None:

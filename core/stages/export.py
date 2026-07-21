@@ -97,6 +97,7 @@ class ExportStage(Stage):
                 "warnings": warnings,
                 "max_export_bytes": MAX_EXPORT_BYTES,
                 "target_video_bitrate": bitrate_info["video_bitrate"],
+                "spherical_shot_usage": plan.get("spherical_shot_usage") or _spherical_shot_usage(segments),
                 "exports": [
                     {
                         "platform": platform,
@@ -106,6 +107,7 @@ class ExportStage(Stage):
                         "warnings": warnings,
                         "cut_count": int(plan.get("cut_count") or max(0, len(segments) - 1)),
                         "camera_usage": plan.get("camera_usage") or _camera_usage(segments),
+                        "spherical_shot_usage": plan.get("spherical_shot_usage") or _spherical_shot_usage(segments),
                         "excluded_clips": plan.get("excluded_clips") or [],
                         "clip_fates": clip_fates,
                     }
@@ -356,15 +358,27 @@ def _render_360_plan(
             video_bitrate,
             lambda percent, detail: progress_callback(8 + int(percent * 4 / 100), detail),
         )
-        _render_360_body(
-            project,
-            segment,
-            body,
-            video_bitrate,
-            lambda percent, detail: progress_callback(12 + int(percent * 72 / 100), f"Rendering 360: {detail}"),
-            intro_fade=True,
-            outro_fade=True,
-        )
+        body_paths: list[Path] = []
+        rendered_duration = 0.0
+        body_segments = _expand_spherical_render_segments(segments if any(item.get("spherical_shot") for item in segments) else [segment])
+        for index, body_segment in enumerate(body_segments, start=1):
+            segment_path = temp_dir / f"body-{index:04d}.mp4"
+            segment_duration = max(0.1, float(body_segment.get("duration_sec") or 0.1))
+            base_percent = 12 + int(72 * rendered_duration / max(duration, 0.1))
+            _render_360_body(
+                project,
+                body_segment,
+                segment_path,
+                video_bitrate,
+                lambda percent, detail, base_percent=base_percent, segment_duration=segment_duration: progress_callback(
+                    min(83, base_percent + int(72 * segment_duration / max(duration, 0.1) * percent / 100)),
+                    f"Rendering 360: {detail}",
+                ),
+                intro_fade=index == 1,
+                outro_fade=index == len(body_segments),
+            )
+            body_paths.append(segment_path)
+            rendered_duration += segment_duration
         _render_logo_clip(
             outro,
             "360",
@@ -374,7 +388,7 @@ def _render_360_plan(
             lambda percent, detail: progress_callback(84 + int(percent * 4 / 100), detail),
         )
         concat_path = temp_dir / "concat.txt"
-        concat_path.write_text("".join(_concat_file_line(path) for path in [intro, body, outro]), encoding="utf-8")
+        concat_path.write_text("".join(_concat_file_line(path) for path in [intro, *body_paths, outro]), encoding="utf-8")
         _run_ffmpeg_progress(
             [
                 ffmpeg,
@@ -450,6 +464,67 @@ def _select_360_segment(project: Project, segments: list[dict[str, Any]]) -> dic
     }
 
 
+def _expand_spherical_render_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    expanded: list[dict[str, Any]] = []
+    previous_shot: dict[str, Any] | None = None
+    for segment in segments:
+        shot = _spherical_shot(segment)
+        if not shot:
+            expanded.append(segment)
+            previous_shot = None
+            continue
+        parts = _spherical_segment_parts(segment, previous_shot)
+        expanded.extend(parts)
+        previous_shot = shot
+    return expanded
+
+
+def _spherical_segment_parts(segment: dict[str, Any], previous_shot: dict[str, Any] | None) -> list[dict[str, Any]]:
+    shot = _spherical_shot(segment) or {}
+    duration = max(0.0, float(segment.get("duration_sec") or 0.0))
+    if duration <= 0.001:
+        return []
+    parts: list[dict[str, Any]] = []
+    current = 0.0
+    start_yaw = _shot_float(previous_shot, "yaw", _shot_float(shot, "yaw", 0.0))
+    target_yaw = _shot_float(shot, "yaw", 0.0)
+    if previous_shot and previous_shot.get("type") != shot.get("type") and duration > 1.0:
+        pan_duration = min(_shot_float(shot, "transition_sec", 0.45), duration / 3.0)
+        for index in range(3):
+            part_duration = pan_duration / 3.0
+            amount = (index + 1) / 3.0
+            parts.append(_spherical_part(segment, current, part_duration, {**shot, "type": "pan", "label": shot.get("label"), "yaw": _lerp_angle(start_yaw, target_yaw, amount)}))
+            current += part_duration
+    remaining = max(0.0, duration - current)
+    if shot.get("type") == "planet" and remaining > 0.001:
+        spin = _shot_float(shot, "spin_deg_per_sec", 22.0)
+        step = min(0.5, remaining)
+        while remaining > 0.001:
+            part_duration = min(step, remaining)
+            yaw = target_yaw + spin * (current + part_duration / 2.0)
+            parts.append(_spherical_part(segment, current, part_duration, {**shot, "yaw": yaw % 360.0}))
+            current += part_duration
+            remaining -= part_duration
+    elif remaining > 0.001:
+        parts.append(_spherical_part(segment, current, remaining, shot))
+    return parts
+
+
+def _spherical_part(segment: dict[str, Any], offset: float, duration: float, shot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **segment,
+        "clip_start_sec": round(float(segment.get("clip_start_sec") or 0.0) + offset, 6),
+        "master_start_sec": round(float(segment.get("master_start_sec") or 0.0) + offset, 6),
+        "duration_sec": round(duration, 6),
+        "spherical_shot": shot,
+    }
+
+
+def _lerp_angle(start: float, end: float, amount: float) -> float:
+    delta = ((end - start + 540.0) % 360.0) - 180.0
+    return (start + delta * max(0.0, min(1.0, amount))) % 360.0
+
+
 def _render_360_body(
     project: Project,
     segment: dict[str, Any],
@@ -464,7 +539,8 @@ def _render_360_body(
     frame_count = _segment_frame_count(segment)
     source = _segment_source_info(project, segment)
     watermark = _watermark_path()
-    filter_complex = _equirect_filtergraph(source.get("probe") or {}, duration, frame_count, bool(watermark), intro_fade=intro_fade, outro_fade=outro_fade)
+    shot = _spherical_shot(segment)
+    filter_complex = _equirect_filtergraph(source.get("probe") or {}, duration, frame_count, bool(watermark), shot=shot, intro_fade=intro_fade, outro_fade=outro_fade)
     command = _segment_video_command_base(ffmpeg, source["source_path"], segment, duration)
     if watermark:
         command.extend(["-loop", "1", "-i", str(watermark)])
@@ -486,7 +562,7 @@ def _render_360_body(
             "-frames:v",
             str(frame_count),
             "-movflags",
-            "+faststart",
+            "+faststart+use_metadata_tags",
             *_spherical_metadata_args(),
         ]
     )
@@ -501,12 +577,22 @@ def _render_360_body(
         _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
 
 
-def _equirect_filtergraph(probe: dict[str, Any], duration: float, frame_count: int | None, has_watermark: bool, intro_fade: bool = False, outro_fade: bool = False) -> str:
+def _equirect_filtergraph(
+    probe: dict[str, Any],
+    duration: float,
+    frame_count: int | None,
+    has_watermark: bool,
+    shot: dict[str, Any] | None = None,
+    intro_fade: bool = False,
+    outro_fade: bool = False,
+) -> str:
+    yaw = _shot_float(shot, "yaw", 0.0)
+    pitch = _shot_float(shot, "pitch", 0.0)
     if probe.get("projection") == "raw_insv":
         fov = int(probe.get("insv_fov") or 190)
-        base_filter = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov},scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
+        base_filter = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov},v360=input=equirect:output=equirect:yaw={yaw:.3f}:pitch={pitch:.3f},scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
     else:
-        base_filter = "scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
+        base_filter = f"v360=input=equirect:output=equirect:yaw={yaw:.3f}:pitch={pitch:.3f},scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
     timing = _exact_cadence_filter(frame_count) if frame_count else _constant_cadence_filter()
     filters = f"{base_filter},{timing},tpad=stop_mode=clone:stop_duration={1.0 / TARGET_EXPORT_FPS:.6f},format=yuv420p"
     if intro_fade:
@@ -525,6 +611,10 @@ def _equirect_filtergraph(probe: dict[str, Any], duration: float, frame_count: i
 
 def _spherical_metadata_args() -> list[str]:
     return [
+        "-metadata",
+        "projection=equirectangular",
+        "-metadata",
+        "spherical_video=true",
         "-metadata:s:v:0",
         "projection=equirectangular",
         "-metadata:s:v:0",
@@ -695,7 +785,7 @@ def _render_segment(
         outro_fade=outro_fade,
         intro_logo=intro_logo,
         outro_logo=outro_logo,
-        source_filter=_export_source_filter(source.get("probe") or {}),
+        source_filter=_export_source_filter(source.get("probe") or {}, _spherical_shot(segment)),
         frame_count=frame_count,
     )
     command_base = _segment_video_command_base(
@@ -987,6 +1077,7 @@ def _normalize_joined_video_cadence(
 ) -> None:
     """Rewrite the concatenated video onto one exact CFR timeline before audio mux."""
     duration = _media_duration(str(input_path))
+    movflags = "+faststart+use_metadata_tags" if extra_args else "+faststart"
     command = [
         _ffmpeg_path(),
         "-y",
@@ -1008,7 +1099,7 @@ def _normalize_joined_video_cadence(
         "-video_track_timescale",
         str(TARGET_EXPORT_TIMESCALE),
         "-movflags",
-        "+faststart",
+        movflags,
         *(extra_args or []),
     ]
     command.extend(_video_encode_args("libx264", video_bitrate))
@@ -1031,6 +1122,7 @@ def _mux_continuous_master_audio(
 ) -> None:
     """Mux one continuous master-audio span over the already-concatenated video."""
     ffmpeg = _ffmpeg_path()
+    movflags = "+faststart+use_metadata_tags" if extra_args else "+faststart"
     filters = []
     if audio_delay > 0:
         delay_ms = int(round(audio_delay * 1000))
@@ -1071,7 +1163,7 @@ def _mux_continuous_master_audio(
         "-t",
         f"{duration:.3f}",
         "-movflags",
-        "+faststart",
+        movflags,
         *(extra_args or []),
         str(output_path),
     ]
@@ -1086,18 +1178,43 @@ def _base_video_filter(platform: str) -> str:
     return "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
 
 
-def _export_source_filter(probe: dict[str, Any]) -> str:
+def _export_source_filter(probe: dict[str, Any], shot: dict[str, Any] | None = None) -> str:
     """Prepare source pixels for export while leaving fps conversion to the segment timing filter."""
+    yaw = _shot_float(shot, "yaw", 0.0)
+    pitch = _shot_float(shot, "pitch", 0.0)
+    fov = _shot_float(shot, "fov", 100.0)
     if probe.get("projection") == "raw_insv":
         fov = int(probe.get("insv_fov") or 190)
-        spatial = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov},v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w=1920:h=1080"
+        spatial = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov},v360=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={_shot_float(shot, 'fov', 100.0):.3f}:w=1920:h=1080"
     elif probe.get("projection") == "equirect":
-        spatial = "v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w=1920:h=1080"
+        spatial = f"v360=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={fov:.3f}:w=1920:h=1080"
     elif probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
         spatial = f"{SDR_TONEMAP_FILTER},scale=trunc(iw/2)*2:trunc(ih/2)*2"
     else:
         spatial = EVEN_SDR_FILTER
     return spatial
+
+
+def _spherical_shot(segment: dict[str, Any]) -> dict[str, Any] | None:
+    shot = segment.get("spherical_shot")
+    return shot if isinstance(shot, dict) else None
+
+
+def _shot_float(shot: dict[str, Any] | None, key: str, fallback: float) -> float:
+    try:
+        return float((shot or {}).get(key, fallback))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _spherical_shot_usage(segments: list[dict[str, Any]]) -> dict[str, int]:
+    usage: dict[str, int] = {}
+    for segment in segments:
+        shot = _spherical_shot(segment) or {}
+        label = str(shot.get("label") or shot.get("type") or "").strip()
+        if label:
+            usage[label] = usage.get(label, 0) + 1
+    return usage
 
 
 def _segment_filtergraph(

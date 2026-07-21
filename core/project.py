@@ -49,6 +49,7 @@ def default_settings() -> dict[str, Any]:
             "style": "coverage_first",
             "camera_role_weights": {"360": 0.5, "handheld": 0.3, "fixed_rear": 0.2},
         },
+        "spherical_landmarks": {},
         "export": {"format": "mp4", "resolution": "source", "transiciones_suaves": False},
     }
 
