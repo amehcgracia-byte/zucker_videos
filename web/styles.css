@@ -583,6 +583,21 @@ button:disabled {
   background: linear-gradient(180deg, rgba(233, 246, 228, 0.96), rgba(220, 239, 211, 0.92));
 }
 
+.progress-details {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.progress-details summary {
+  cursor: pointer;
+  color: var(--green-800);
+  font-weight: 850;
+}
+
+#progressReport {
+  margin-top: 10px;
+}
+
 .progress-track {
   height: 18px;
   border-radius: 999px;

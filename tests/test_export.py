@@ -77,9 +77,12 @@ def test_segment_filtergraph_adds_watermark_and_texts():
     assert "drawtext=" in graph
     assert "My song" in graph
     assert "overlay=W-w-40:H-h-40" in graph
+    assert "split=2" in graph
+    assert "overlay=(W-w)/2:(H-h)/2" in graph
+    assert "enable='lt(t,2)'" in graph
     assert "eq=brightness=0.0200:saturation=1.0500" in graph
-    assert "fade=t=in" not in graph
-    assert "fade=t=out" not in graph
+    assert "fade=t=in:st=0:d=0.5" not in graph
+    assert "fade=t=out:st=11.500:d=0.5" not in graph
 
 
 def test_segment_filtergraph_keeps_only_explicit_intro_outro_fades():
@@ -97,6 +100,9 @@ def test_clip_fates_report_used_excluded_and_not_covering(tmp_path):
             {"clip_id": "b", "filename": "b.mp4", "path": "/cache/b.mp4", "confidence": 2.0, "threshold": 6.0, "offset_sec": 1.0},
             {"clip_id": "c", "filename": "c.mp4", "path": "/cache/c.mp4", "confidence": 8.0, "threshold": 6.0, "offset_sec": 99.0},
         ],
+        "selection_diagnostics": [
+            {"filename": "a.mp4", "path": "/cache/a.mp4", "covered_seconds": 10.0, "eligible_segments": 2, "chosen_segments": 1, "chosen_seconds": 5.0}
+        ],
         "excluded_clips": [{"filename": "b.mp4", "reason": "low confidence 2.0 < threshold 6.0", "diagnostic": {"path": "/cache/b.mp4"}}],
     }
     segments = [{"clip_path": "/cache/a.mp4", "filename": "a.mp4", "duration_sec": 5.0}]
@@ -105,6 +111,8 @@ def test_clip_fates_report_used_excluded_and_not_covering(tmp_path):
 
     assert {item["filename"]: item["status"] for item in fates} == {"a.mp4": "used", "b.mp4": "excluded", "c.mp4": "not_covering"}
     assert next(item for item in fates if item["filename"] == "a.mp4")["used_percent"] == 50.0
+    assert next(item for item in fates if item["filename"] == "a.mp4")["chosen_segments"] == 1
+    assert "chosen 1/2 eligible" in next(item for item in fates if item["filename"] == "a.mp4")["reason"]
 
 
 def test_render_plan_fades_only_intro_and_outro_segments(tmp_path, monkeypatch):

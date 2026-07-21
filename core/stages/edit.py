@@ -134,6 +134,8 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any]) -> d
     segments: list[dict[str, Any]] = []
     gaps: list[dict[str, float]] = []
     previous_source: str | None = None
+    usage_counts: dict[str, int] = {}
+    selection_stats = _selection_stats_template(sources, start, end)
     bar_index = 0
     segment_index = 0
     while bar_index < len(bar_times) - 1:
@@ -155,8 +157,16 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any]) -> d
             gaps.append({"start_sec": round(segment_start, 3), "end_sec": round(segment_end, 3)})
             bar_index = next_index
             continue
-        source = _choose_source(available, previous_source)
+        for source in available:
+            stats = selection_stats.setdefault(_source_id(source), _selection_stats_for_source(source, start, end))
+            stats["eligible_segments"] += 1
+            stats["eligible_seconds"] += segment_end - segment_start
+        source = _choose_source(available, previous_source, usage_counts)
         previous_source = _source_id(source)
+        usage_counts[previous_source] = usage_counts.get(previous_source, 0) + 1
+        chosen_stats = selection_stats.setdefault(previous_source, _selection_stats_for_source(source, start, end))
+        chosen_stats["chosen_segments"] += 1
+        chosen_stats["chosen_seconds"] += segment_end - segment_start
         segments.append(_segment_from_source(source, segment_start, segment_end, window.get("title") or t("full_video")))
         bar_index = next_index
         segment_index += 1
@@ -175,6 +185,7 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any]) -> d
         "warnings": warnings,
         "excluded_clips": coverage.get("excluded_clips") or [],
         "clip_diagnostics": coverage.get("clip_diagnostics") or [],
+        "selection_diagnostics": _finalize_selection_stats(selection_stats),
         "gaps": gaps,
         "cut_count": max(0, len(segments) - 1),
         "camera_usage": usage,
@@ -300,13 +311,12 @@ def _covering_sources(sources: list[dict[str, Any]], start: float, end: float) -
     return available
 
 
-def _choose_source(sources: list[dict[str, Any]], previous_source: str | None) -> dict[str, Any]:
-    sorted_sources = sorted(sources, key=lambda source: float(source.get("confidence") or 0.0), reverse=True)
-    if previous_source and len(sorted_sources) > 1:
-        for source in sorted_sources:
-            if _source_id(source) != previous_source:
-                return source
-    return sorted_sources[0]
+def _choose_source(sources: list[dict[str, Any]], previous_source: str | None, usage_counts: dict[str, int] | None = None) -> dict[str, Any]:
+    usage_counts = usage_counts or {}
+    candidates = [source for source in sources if _source_id(source) != previous_source] if len(sources) > 1 else sources
+    if not candidates:
+        candidates = sources
+    return sorted(candidates, key=lambda source: (usage_counts.get(_source_id(source), 0), -float(source.get("confidence") or 0.0), _source_id(source)))[0]
 
 
 def _segment_from_source(source: dict[str, Any], start: float, end: float, title: str) -> dict[str, Any]:
@@ -327,6 +337,46 @@ def _segment_from_source(source: dict[str, Any], start: float, end: float, title
 
 def _source_id(source: dict[str, Any]) -> str:
     return str(source.get("source_path") or source.get("path") or source.get("filename"))
+
+
+def _selection_stats_template(sources: list[dict[str, Any]], window_start: float, window_end: float) -> dict[str, dict[str, Any]]:
+    return {_source_id(source): _selection_stats_for_source(source, window_start, window_end) for source in sources}
+
+
+def _selection_stats_for_source(source: dict[str, Any], window_start: float, window_end: float) -> dict[str, Any]:
+    offset = float(source.get("offset_sec") or 0.0)
+    duration = float(source.get("duration_sec") or 0.0)
+    covered_seconds = max(0.0, min(window_end, offset + duration) - max(window_start, offset))
+    return {
+        "filename": source.get("filename") or Path(str(source.get("path") or source.get("source_path") or "")).name,
+        "path": source.get("path"),
+        "source_path": source.get("source_path"),
+        "confidence": float(source.get("confidence") or 0.0),
+        "offset_sec": offset,
+        "duration_sec": duration,
+        "covered_seconds": covered_seconds,
+        "eligible_segments": 0,
+        "eligible_seconds": 0.0,
+        "chosen_segments": 0,
+        "chosen_seconds": 0.0,
+    }
+
+
+def _finalize_selection_stats(stats: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    finalized = []
+    for item in stats.values():
+        entry = dict(item)
+        entry["covered_seconds"] = round(float(entry.get("covered_seconds") or 0.0), 3)
+        entry["eligible_seconds"] = round(float(entry.get("eligible_seconds") or 0.0), 3)
+        entry["chosen_seconds"] = round(float(entry.get("chosen_seconds") or 0.0), 3)
+        if entry["eligible_segments"] and not entry["chosen_segments"]:
+            entry["selection_reason"] = "eligible but not selected by camera rotation"
+        elif not entry["eligible_segments"]:
+            entry["selection_reason"] = "not covering selected edit intervals"
+        else:
+            entry["selection_reason"] = f"chosen {entry['chosen_segments']} of {entry['eligible_segments']} eligible segments"
+        finalized.append(entry)
+    return sorted(finalized, key=lambda item: str(item.get("filename") or ""))
 
 
 def _camera_usage(segments: list[dict[str, Any]]) -> dict[str, int]:

@@ -571,11 +571,15 @@ def _segment_filtergraph(
     if not has_watermark:
         return f"{graph};[base]copy[v]"
     margin = 40 if platform == "youtube" else 28
-    wm_height = 65
+    wm_height = 65 if platform == "youtube" else 58
+    intro_height = 280 if platform == "youtube" else 220
     return (
         f"{graph};"
-        f"[2:v]format=rgba,scale=-1:{wm_height},colorchannelmixer=aa=0.70[wm];"
-        f"[base][wm]overlay=W-w-{margin}:H-h-{margin}:format=auto[v]"
+        f"[2:v]format=rgba,split=2[wm_src][intro_src];"
+        f"[wm_src]scale=-1:{wm_height},colorchannelmixer=aa=0.70,fade=t=in:st=1.35:d=0.65:alpha=1[wm];"
+        f"[intro_src]scale=-1:{intro_height},fade=t=in:st=0:d=0.35:alpha=1,fade=t=out:st=1.35:d=0.65:alpha=1[intro];"
+        f"[base][intro]overlay=(W-w)/2:(H-h)/2:format=auto:enable='lt(t,2)'[with_intro];"
+        f"[with_intro][wm]overlay=W-w-{margin}:H-h-{margin}:format=auto:enable='gte(t,1.35)'[v]"
     )
 
 
@@ -813,6 +817,14 @@ def _clip_fates(project: Project, plan: dict[str, Any], segments: list[dict[str,
         excluded_by_name[str(item.get("filename") or diagnostic.get("filename") or "")] = item
 
     diagnostics = list(plan.get("clip_diagnostics") or [])
+    selection_by_path: dict[str, dict[str, Any]] = {}
+    selection_by_name: dict[str, dict[str, Any]] = {}
+    for item in plan.get("selection_diagnostics") or []:
+        for key in (item.get("path"), item.get("source_path")):
+            if key:
+                selection_by_path[str(key)] = item
+        if item.get("filename"):
+            selection_by_name[str(item["filename"])] = item
     diagnostic_keys = {
         str(value)
         for diagnostic in diagnostics
@@ -841,6 +853,7 @@ def _clip_fates(project: Project, plan: dict[str, Any], segments: list[dict[str,
         path = str(diagnostic.get("path") or diagnostic.get("source_path") or "")
         filename = str(diagnostic.get("filename") or names_by_path.get(path) or Path(path).name or "clip")
         excluded = excluded_by_path.get(path) or excluded_by_name.get(filename)
+        selection = selection_by_path.get(path) or selection_by_path.get(str(diagnostic.get("source_path") or "")) or selection_by_name.get(filename)
         if excluded:
             status = "excluded"
             used_percent = 0.0
@@ -848,7 +861,7 @@ def _clip_fates(project: Project, plan: dict[str, Any], segments: list[dict[str,
         elif path in used_seconds:
             status = "used"
             used_percent = used_seconds[path] / max(total_duration, 0.1) * 100
-            reason = "used in final edit"
+            reason = _selection_reason("used in final edit", selection)
         elif diagnostic.get("valid_video") is False:
             status = "excluded"
             used_percent = 0.0
@@ -856,7 +869,7 @@ def _clip_fates(project: Project, plan: dict[str, Any], segments: list[dict[str,
         else:
             status = "not_covering"
             used_percent = 0.0
-            reason = "not covering this song"
+            reason = _selection_reason("not covering this song", selection)
         seen.add(path or filename)
         fates.append(
             {
@@ -871,6 +884,11 @@ def _clip_fates(project: Project, plan: dict[str, Any], segments: list[dict[str,
                 "verification": diagnostic.get("verification"),
                 "manual_override": diagnostic.get("manual_override"),
                 "projection": diagnostic.get("projection"),
+                "eligible_segments": selection.get("eligible_segments") if selection else None,
+                "chosen_segments": selection.get("chosen_segments") if selection else None,
+                "covered_seconds": selection.get("covered_seconds") if selection else None,
+                "eligible_seconds": selection.get("eligible_seconds") if selection else None,
+                "chosen_seconds": selection.get("chosen_seconds") if selection else None,
             }
         )
     for path, seconds in used_seconds.items():
@@ -886,6 +904,21 @@ def _clip_fates(project: Project, plan: dict[str, Any], segments: list[dict[str,
             }
         )
     return fates
+
+
+def _selection_reason(base: str, selection: dict[str, Any] | None) -> str:
+    if not selection:
+        return base
+    eligible = int(selection.get("eligible_segments") or 0)
+    chosen = int(selection.get("chosen_segments") or 0)
+    covered = float(selection.get("covered_seconds") or 0.0)
+    chosen_seconds = float(selection.get("chosen_seconds") or 0.0)
+    confidence = selection.get("confidence")
+    if eligible and chosen:
+        return f"{base}; chosen {chosen}/{eligible} eligible segments ({chosen_seconds:.1f}s of {covered:.1f}s covered, confidence {float(confidence or 0.0):.1f})"
+    if eligible and not chosen:
+        return f"eligible for {eligible} segments but not selected by camera rotation ({covered:.1f}s covered, confidence {float(confidence or 0.0):.1f})"
+    return f"{base}; {covered:.1f}s overlaps the requested window"
 
 
 def _text_filters(platform: str, duration: float, config: dict[str, Any]) -> list[str]:
@@ -937,10 +970,12 @@ def _global_config() -> dict[str, Any]:
 
 def _watermark_path() -> Path | None:
     candidates = [
+        Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "watermark_white.png",
+        Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "logo_editor_white.png",
         Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "watermark.png",
-        Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "logo_editor_green.png",
+        Path(__file__).resolve().parents[2] / "assets" / "watermark_white.png",
+        Path(__file__).resolve().parents[2] / "assets" / "logo_editor_white.png",
         Path(__file__).resolve().parents[2] / "assets" / "watermark.png",
-        Path(__file__).resolve().parents[2] / "assets" / "logo_editor_green.png",
     ]
     for candidate in candidates:
         if candidate.exists():

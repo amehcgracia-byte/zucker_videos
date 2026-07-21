@@ -12,6 +12,7 @@ let progressStartedAt = null;
 let progressSamples = [];
 let rescueClipId = null;
 let currentStep = 1;
+let lastProgressReportAt = 0;
 
 function logFrontendError(message, stack = "") {
   fetch("/api/v1/wizard/frontend-log", {
@@ -504,6 +505,10 @@ function ensureStatusPolling() {
 async function pollStatus() {
   const status = await api("/wizard/status");
   renderWizardStatus(status);
+  const details = document.querySelector("#progressDetails");
+  if (details?.open && Date.now() - lastProgressReportAt > 2500) {
+    refreshProgressReport().catch((error) => logFrontendError(`progress report failed: ${error.message}`, error.stack || ""));
+  }
 }
 
 function renderWizardStatus(status) {
@@ -706,6 +711,13 @@ async function copyReport() {
   showToast(S.reportCopied);
 }
 
+async function refreshProgressReport() {
+  lastProgressReportAt = Date.now();
+  const response = await fetch("/api/v1/wizard/report");
+  const text = await response.text();
+  document.querySelector("#progressReport").textContent = text || "No details yet.";
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -788,6 +800,13 @@ document.addEventListener("click", (event) => {
     confirmRescue().catch((error) => showToast(error.message, true));
   }
 });
+
+document.addEventListener("toggle", (event) => {
+  const target = event.target;
+  if (target instanceof HTMLDetailsElement && target.id === "progressDetails" && target.open) {
+    refreshProgressReport().catch((error) => showToast(error.message, true));
+  }
+}, true);
 
 document.addEventListener("change", (event) => {
   const target = event.target;

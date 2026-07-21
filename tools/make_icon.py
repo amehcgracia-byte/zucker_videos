@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "assets" / "logo_mixer.png"
 GREEN_LOGO = ROOT / "assets" / "logo_editor_green.png"
 WEB_LOGO = ROOT / "web" / "logo_editor_green.png"
+WHITE_LOGO = ROOT / "assets" / "logo_editor_white.png"
+WEB_WHITE_LOGO = ROOT / "web" / "logo_editor_white.png"
 ICONSET = ROOT / "build" / "ZuckerEditor.iconset"
 ICNS = ROOT / "assets" / "icon.icns"
 DMG_BACKGROUND = ROOT / "build" / "dmg_background.png"
@@ -44,12 +46,24 @@ def recolor_logo() -> Image.Image:
     out.save(GREEN_LOGO)
     WEB_LOGO.parent.mkdir(parents=True, exist_ok=True)
     out.save(WEB_LOGO)
+    white = white_logo(src)
+    white.save(WHITE_LOGO)
+    WEB_WHITE_LOGO.parent.mkdir(parents=True, exist_ok=True)
+    white.save(WEB_WHITE_LOGO)
     return out
 
 
 def _lerp_rgb(start: tuple[int, int, int], end: tuple[int, int, int], amount: float) -> tuple[int, int, int]:
     amount = max(0.0, min(1.0, amount))
     return tuple(int(round(a + (b - a) * amount)) for a, b in zip(start, end))
+
+
+def white_logo(src: Image.Image) -> Image.Image:
+    """Return a transparent logo with all visible pixels white."""
+    out = Image.new("RGBA", src.size)
+    out.putdata([(255, 255, 255, a) for _r, _g, _b, a in src.getdata()])
+    WHITE_LOGO.parent.mkdir(parents=True, exist_ok=True)
+    return out
 
 
 def save_iconset(image: Image.Image) -> None:
