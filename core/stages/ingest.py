@@ -8,7 +8,7 @@ import threading
 from typing import Any
 
 from core.ffmpeg import ffprobe
-from core.media_validation import validate_camera_video_metadata
+from core.media_validation import is_raw_360_path, raw_360_model_fov, validate_camera_video_metadata
 from core.messages import t
 from core.normalization import ensure_normalized_space, normalize_video_record
 from core.project import Project
@@ -51,6 +51,14 @@ class IngestStage(Stage):
             metadata = ffprobe(path)
             validation = validate_camera_video_metadata(metadata)
             record["probe"] = validation.summary
+            if is_raw_360_path(path):
+                record["projection"] = "raw_insv"
+                record["raw_360"] = True
+                record["probe"]["projection"] = "raw_insv"
+                record["probe"]["raw_360"] = True
+                record["probe"]["input_projection"] = "dfisheye"
+                record["probe"]["insv_fov"] = int(project.data["settings"].get("ingest", {}).get("insv_fov") or raw_360_model_fov(metadata))
+                record.setdefault("info", "360 stitched automatically — for best quality, export from Insta360 Studio instead")
             if validation.valid:
                 record.pop("status", None)
                 record.pop("not_a_video_reason", None)

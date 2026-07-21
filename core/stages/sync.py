@@ -299,6 +299,9 @@ def sync_clip(project: Project, record: dict[str, Any], master_env: np.ndarray, 
         "duration_sec": duration,
         "source_signature": file_signature(record["path"]),
         "manual_override": False,
+        "projection": record.get("projection") or (record.get("probe") or {}).get("projection"),
+        "raw_360": bool(record.get("raw_360") or (record.get("probe") or {}).get("raw_360")),
+        "info": record.get("info"),
     }
     if clip_env is None:
         return {**base, "offset_sec": 0.0, "confidence": 0.0, "low_confidence": True, "no_audio": True}

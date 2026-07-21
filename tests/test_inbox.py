@@ -4,7 +4,7 @@ import io
 import json
 
 from server.api import create_app
-from server.inbox import classify_paths, reconcile_registered_inputs, scan_input_paths
+from server.inbox import classify_paths, paired_insv_path, reconcile_registered_inputs, scan_input_paths
 from core.project import create_project, file_record
 
 
@@ -89,7 +89,7 @@ def test_classifier_accepts_hevc_mts_and_marks_equirect(tmp_path, monkeypatch):
                 "streams": [{"codec_type": "video", "codec_name": "hevc", "width": 3840, "height": 2160}],
             }
         return {
-            "format": {"duration": "12.0", "format_name": "mov,mp4"},
+            "format": {"duration": "15.0" if path.endswith(".insv") else "12.0", "format_name": "mov,mp4"},
             "streams": [{"codec_type": "video", "codec_name": "h264", "width": 3840, "height": 1920}],
         }
 
@@ -100,8 +100,9 @@ def test_classifier_accepts_hevc_mts_and_marks_equirect(tmp_path, monkeypatch):
     videos = {item["filename"]: item for item in result["videos"]}
     assert videos["sony.mts"]["probe"]["video_codec"] == "hevc"
     assert videos["insta360-export.mp4"]["projection"] == "equirect"
-    ignored = {item["filename"]: item["note"] for item in result["ignored"]}
-    assert "Insta360 Studio" in ignored["raw.insv"]
+    assert videos["raw.insv"]["projection"] == "raw_insv"
+    assert videos["raw.insv"]["raw_360"] is True
+    assert "stitched automatically" in videos["raw.insv"]["note"]
 
 
 def test_classifier_accepts_high_res_insta360_studio_export(tmp_path, monkeypatch):
@@ -133,14 +134,46 @@ def test_classify_paths_logs_every_scan_verdict(tmp_path, monkeypatch):
 
     result = classify_paths([str(raw_360), str(video)])
 
-    assert [item["filename"] for item in result["videos"]] == ["clip.mp4"]
+    assert [item["filename"] for item in result["videos"]] == ["clip.insv", "clip.mp4"]
     log_path = tmp_path / "home" / "ZuckerVideos" / "logs" / "ingest.log"
     lines = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
     verdicts = {line["filename"]: line for line in lines}
-    assert verdicts["clip.insv"]["kind"] == "ignored"
-    assert "Insta360 Studio" in verdicts["clip.insv"]["reason"]
+    assert verdicts["clip.insv"]["kind"] == "videos"
+    assert verdicts["clip.insv"]["probe"]["projection"] == "raw_insv"
     assert verdicts["clip.mp4"]["accepted"] is True
     assert verdicts["clip.mp4"]["probe"]["valid_video"] is True
+
+
+def test_studio_export_is_preferred_over_matching_raw_insv(tmp_path, monkeypatch):
+    raw = tmp_path / "clip.insv"
+    studio = tmp_path / "clip.mp4"
+    raw.write_bytes(b"x")
+    studio.write_bytes(b"x")
+
+    def fake_probe(path: str) -> dict:
+        width, height = (3840, 1920) if path.endswith(".mp4") else (5760, 2880)
+        return {
+            "format": {"duration": "60.0", "format_name": "mov,mp4"},
+            "streams": [{"codec_type": "video", "codec_name": "h264", "width": width, "height": height}],
+        }
+
+    monkeypatch.setattr("server.inbox.ffprobe", fake_probe)
+
+    result = classify_paths([str(raw), str(studio)])
+
+    assert [item["filename"] for item in result["videos"]] == ["clip.mp4"]
+    ignored = {item["filename"]: item["note"] for item in result["ignored"]}
+    assert "Studio-exported" in ignored["clip.insv"]
+
+
+def test_paired_insv_detection(tmp_path):
+    first = tmp_path / "VID_20260721_120000_00_001.insv"
+    second = tmp_path / "VID_20260721_120000_10_001.insv"
+    first.write_bytes(b"a")
+    second.write_bytes(b"b")
+
+    assert paired_insv_path(first) == second.resolve()
+    assert paired_insv_path(second) == first.resolve()
 
 
 def test_shared_scan_function_recurses_nested_dirs(tmp_path):

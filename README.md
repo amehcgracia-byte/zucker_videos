@@ -89,11 +89,11 @@ Watched Inbox:
 - The scan runs on app launch, project open/create, the Inputs `Rescan` button, and every few seconds while the Inputs screen is visible.
 - `.wav`, `.mp3`, `.flac`, `.aiff`, and `.aif` are master candidates.
 - `.json` files are accepted as songs only when they contain a top-level `songs` array.
-- Only common camera containers (`.mp4`, `.mov`, `.m4v`, `.mts`, `.m2ts`, `.avi`, `.mkv`, `.3gp`, `.3g2`, `.mpg`, `.mpeg`, `.ts`, `.mxf`) can become video clips.
+- Common camera containers (`.mp4`, `.mov`, `.m4v`, `.mts`, `.m2ts`, `.avi`, `.mkv`, `.3gp`, `.3g2`, `.mpg`, `.mpeg`, `.ts`, `.mxf`) and raw Insta360 `.insv`/`.insp` containers can become video clips.
 - Video candidates must also pass `ffprobe` validation: a real camera-video codec, duration over 2 seconds, and at least 320x240 resolution.
 - `.txt`, `.lrv`, `.thm`, `.xml`, `.srt`, hidden files, and `.DS_Store` are ignored with a visible reason; `.lrv` is treated as a low-resolution camera sidecar, not a usable clip.
-- Raw `.insv`/`.insp` Insta360 files are ignored with instructions to export an MP4 from Insta360 Studio first.
-- 2:1 equirectangular MP4/MOV exports are accepted and prepared as a fixed 16:9 virtual camera view.
+- Raw `.insv`/`.insp` Insta360 files are accepted as raw 360 clips and show a visible quality note. Zucker Editor can stitch them automatically; an Insta360 Studio export is still preferred when present because it includes better stabilization.
+- 2:1 equirectangular MP4/MOV exports are accepted and preferred over matching raw `.insv` files when the durations are within 2 seconds.
 - Unsupported files are shown under Ignored with a note.
 - When multiple master candidates are present, the wizard defaults to the longest audio file and shows a small selector so you can change it.
 
@@ -104,7 +104,7 @@ Ingest proxies:
 - Hardware is attempted first with `-hwaccel videotoolbox` plus `h264_videotoolbox`; each clip falls back to software `libx264` if the hardware path fails, and the chosen path is logged.
 - Proxies are H.264 `yuv420p`, no larger than 1280x720, even dimensions, constant frame rate at the detected dominant FPS, with rotation baked in.
 - HDR/10-bit sources use `zscale -> tonemap=hable -> bt709 -> yuv420p`; regular SDR sources use even-dimension scale plus `yuv420p`.
-- Equirectangular clips use ffmpeg `v360` equirect-to-flat with yaw `0`, pitch `0`, h_fov `100`, output `1280x720`. TODO: expose per-clip yaw/pitch controls later.
+- Equirectangular clips use ffmpeg `v360` equirect-to-flat with yaw `0`, pitch `0`, h_fov `100`, output `1280x720`. Raw `.insv` clips first use `v360=input=dfisheye:output=e` with `settings.ingest.insv_fov` (default `190`; One X2 often needs about `204`, X3/X4 usually about `190`), then the same flat reframe. TODO: expose per-clip yaw/pitch controls later.
 - Already-compliant originals skip proxy transcoding and are analyzed directly. The predicate is: H.264, constant frame rate, SDR 8-bit or lower, no rotation metadata, not equirectangular, and no larger than 1920x1080.
 - Downstream sync, beat/coverage analysis, color measurement, thumbnails, and previews consume the proxy/original analysis path. Final export renders only the used segments lazily from the original camera files and caches rendered segments globally under `~/ZuckerVideos/Cache/segments/`.
 
@@ -429,11 +429,13 @@ Bundle smoke checklist:
 6. Wait for the progress screen to finish.
 7. Play the exported preview.
 
+The wizard can always move back and forward with the top navigation. `New project` clears the current wizard view without deleting the existing project folder, so auto-resume never traps you in a previous run.
+
 Troubleshooting:
 
 - If media probing fails immediately, install ffmpeg with `brew install ffmpeg`, then relaunch.
 - If a dropped file appears under Ignored, the note explains why. Text reports and camera sidecars are intentionally excluded from sync/export.
-- If a raw Insta360 file is ignored, export a normal MP4 from Insta360 Studio and drop that exported MP4 into Zucker Editor.
+- If a raw Insta360 file looks poor after automatic stitching, export a stabilized 360 MP4 from Insta360 Studio and drop that exported MP4 into Zucker Editor; the Studio export will be preferred automatically when it matches the raw clip duration.
 - If Finder blocks a local unsigned build, rerun `codesign --force --deep -s - "dist/Zucker Editor.app"`.
 - If the UI opens but appears blank, verify the build command included `--add-data "$ROOT/web:web"` and rebuild.
 - If native picker buttons do nothing in `/advanced`, wait for the window to finish loading. A missing bridge shows a toast; rebuild with the current `app.py` if the toast says the desktop picker bridge is unavailable.

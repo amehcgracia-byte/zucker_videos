@@ -12,6 +12,14 @@
       <span class="status-dot"></span>
       <span id="statusStripText">Working...</span>
     </button>
+    <nav class="wizard-nav" aria-label="Wizard navigation">
+      <div class="wizard-steps">
+        <button class="step-nav active" data-step-nav="1">Inputs</button>
+        <button class="step-nav" data-step-nav="2">Edit type</button>
+        <button class="step-nav" data-step-nav="3">Result</button>
+      </div>
+      <button id="newProject" class="new-project">New project</button>
+    </nav>
     <main class="wizard">
       <section class="step active" id="step1">
         <div class="step-header">
@@ -38,6 +46,15 @@
             <span>Videos, the master audio, and songs.json from Zucker Mixer if you have it</span>
           </div>
           <div id="chips" class="chips"></div>
+        </div>
+        <div id="insvCallout" class="callout" hidden>
+          <strong>Raw 360 file detected</strong>
+          <p>Zucker Editor can stitch .insv automatically. For best stabilization, export a 360° MP4 from Insta360 Studio and drop that MP4 here instead.</p>
+          <ol>
+            <li>Open the clip in Insta360 Studio.</li>
+            <li>Export as a 360° MP4.</li>
+            <li>Drop the MP4 into Zucker Editor.</li>
+          </ol>
         </div>
         <p id="softRule" class="soft-rule">Missing master audio</p>
         <button id="confirmFiles" class="primary icon-button" data-icon="arrow" disabled>Confirm and continue</button>

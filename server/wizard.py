@@ -171,6 +171,13 @@ class WizardRunner:
                 return {"status": "idle", "progress": 0, "message": "Idle"}
             return dict(self._job.__dict__)
 
+    def reset(self) -> None:
+        """Forget the process-local wizard state without deleting project files."""
+        with self._lock:
+            self._job = None
+            self._thread = None
+            self._prepared_project = None
+
     def rescue(self, project: Project, *, clip_id: str, offset_sec: float) -> WizardJob:
         """Apply a manual sync override and rerender cut/edit/export for the wizard."""
         with self._lock:

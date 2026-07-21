@@ -41,7 +41,7 @@ def file_record(path: str, label: str | None = None) -> dict[str, Any]:
 def default_settings() -> dict[str, Any]:
     """Return default per-stage settings."""
     return {
-        "ingest": {"copy_inputs": False},
+        "ingest": {"copy_inputs": False, "insv_fov": 190},
         "inputs": {"copy_into_project": False},
         "sync": {"confidence_threshold": 6.0},
         "cut": {"min_segment_seconds": 4.0},

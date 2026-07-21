@@ -18,7 +18,7 @@ from core.stages.base import stable_fingerprint
 
 Progress = Callable[[int, str], None]
 
-NORMALIZATION_VERSION = 4
+NORMALIZATION_VERSION = 5
 PROXY_MAX_WIDTH = 1280
 PROXY_MAX_HEIGHT = 720
 SDR_TONEMAP_FILTER = (
@@ -99,13 +99,18 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
     if probe.get("projection") == "equirect":
         LOGGER.info("Normalizing equirectangular source %s with probe=%s filter=%s", source, probe, filtergraph)
     try:
-        _run_ffmpeg_progress(_normalization_command(source, tmp_path, fps, filtergraph, "h264_videotoolbox", hwaccel=True), duration, source.name, progress)
+        _run_ffmpeg_progress(
+            _normalization_command(source, tmp_path, fps, filtergraph, "h264_videotoolbox", hwaccel=True, paired_source=_paired_source(record)),
+            duration,
+            source.name,
+            progress,
+        )
         encode_path = "hardware"
         LOGGER.info("Proxy generated with hardware decode/encode for %s", source)
     except FFmpegError:
         if tmp_path.exists():
             tmp_path.unlink()
-        _run_ffmpeg_progress(_normalization_command(source, tmp_path, fps, filtergraph, "libx264"), duration, source.name, progress)
+        _run_ffmpeg_progress(_normalization_command(source, tmp_path, fps, filtergraph, "libx264", paired_source=_paired_source(record)), duration, source.name, progress)
         encode_path = "software"
         LOGGER.info("Proxy generated with software fallback for %s", source)
     os.replace(tmp_path, destination)
@@ -347,6 +352,18 @@ def normalization_filter(probe: dict[str, Any], fps: float | None = None, proxy:
         size_filter = f"scale={PROXY_MAX_WIDTH}:{PROXY_MAX_HEIGHT}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"
     else:
         size_filter = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    if probe.get("projection") == "raw_insv":
+        fov = _int_or_zero(probe.get("insv_fov") or 190) or 190
+        width = PROXY_MAX_WIDTH if proxy else 1920
+        height = PROXY_MAX_HEIGHT if proxy else 1080
+        stitch = (
+            f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov},"
+            f"v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w={width}:h={height},"
+            f"{timing_filter}"
+        )
+        if probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
+            return f"{stitch},{SDR_TONEMAP_FILTER}"
+        return f"{stitch},format=yuv420p"
     if probe.get("projection") == "equirect":
         width = PROXY_MAX_WIDTH if proxy else 1920
         height = PROXY_MAX_HEIGHT if proxy else 1080
@@ -380,7 +397,15 @@ def proxy_transcode_compliant(probe: dict[str, Any]) -> bool:
     )
 
 
-def _normalization_command(source: Path, destination: Path, fps: float, filtergraph: str, codec: str = "h264_videotoolbox", hwaccel: bool = False) -> list[str]:
+def _normalization_command(
+    source: Path,
+    destination: Path,
+    fps: float,
+    filtergraph: str,
+    codec: str = "h264_videotoolbox",
+    hwaccel: bool = False,
+    paired_source: Path | None = None,
+) -> list[str]:
     status = tool_status()
     ffmpeg = status.get("ffmpeg_path")
     if not ffmpeg:
@@ -397,15 +422,31 @@ def _normalization_command(source: Path, destination: Path, fps: float, filtergr
     ]
     if hwaccel:
         command.extend(["-hwaccel", "videotoolbox"])
+    command.extend(["-i", str(source)])
+    if paired_source:
+        command.extend(["-i", str(paired_source)])
+        command.extend(
+            [
+                "-filter_complex",
+                f"[0:v][1:v]hstack=inputs=2[dual];[dual]{filtergraph}[v]",
+                "-map",
+                "[v]",
+                "-map",
+                "0:a?",
+            ]
+        )
+    else:
+        command.extend(
+            [
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-vf",
+                filtergraph,
+            ]
+        )
     command.extend([
-        "-i",
-        str(source),
-        "-map",
-        "0:v:0",
-        "-map",
-        "0:a?",
-        "-vf",
-        filtergraph,
         "-r",
         f"{fps:.3f}",
         "-fps_mode",
@@ -435,6 +476,14 @@ def _normalization_command(source: Path, destination: Path, fps: float, filtergr
         str(destination),
     ])
     return command
+
+
+def _paired_source(record: dict[str, Any]) -> Path | None:
+    path = record.get("paired_path") or (record.get("probe") or {}).get("paired_path")
+    if not path:
+        return None
+    candidate = Path(str(path)).expanduser()
+    return candidate if candidate.exists() else None
 
 
 def _run_ffmpeg_progress(command: list[str], duration: float, filename: str, progress: Progress) -> None:

@@ -292,6 +292,22 @@ def test_project_list_open_and_delete_keep_exports(tmp_path, monkeypatch):
     assert Path(kept[0]).read_bytes() == b"mp4"
 
 
+def test_new_project_action_clears_resume_without_deleting_project(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    folder = tmp_path / "ZuckerVideos" / "Projects" / "Resume.zuckervid"
+    project = create_project("Resume", str(folder))
+    project.save()
+    app = create_app(project_path=str(folder))
+    client = app.test_client()
+
+    response = client.post("/api/v1/wizard/projects/new", json={})
+
+    assert response.status_code == 200
+    assert folder.exists()
+    assert client.get("/api/v1/wizard/status").get_json()["status"] == "idle"
+    assert "last_project_path" not in (tmp_path / "ZuckerVideos" / "config.json").read_text(encoding="utf-8")
+
+
 @pytest.mark.slow
 def test_wizard_orchestration_exports_tiny_media(tmp_path, monkeypatch):
     if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:

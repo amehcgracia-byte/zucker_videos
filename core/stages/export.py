@@ -241,6 +241,8 @@ def _render_segment(
     duration = max(0.1, float(segment["duration_sec"]))
     source = _segment_source_info(project, segment)
     watermark = _watermark_path()
+    if source.get("paired_path") and not force_proxy:
+        force_proxy = True
     if force_proxy:
         proxy_path = source.get("proxy_path")
         if not proxy_path or proxy_path == source["source_path"]:
@@ -590,6 +592,7 @@ def _segment_source_info(project: Project, segment: dict[str, Any]) -> dict[str,
                 "proxy_path": str(normalized.get("path") or segment_proxy),
                 "probe": record.get("probe") or {},
                 "cache_key": record.get("cache_key") or normalized.get("cache_key") or source_cache_key(record),
+                "paired_path": record.get("paired_path") or (record.get("probe") or {}).get("paired_path"),
             }
     return {
         "source_path": segment_source or segment_proxy,

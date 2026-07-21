@@ -182,8 +182,25 @@ def test_normalization_filter_uses_equirect_and_hdr_paths():
     assert "v360=input=equirect:output=flat" in equirect
     assert "fps=24.000" in equirect
     assert "setpts=PTS-STARTPTS" in equirect
+    raw = normalization_filter({"projection": "raw_insv", "fps": 30.0, "insv_fov": 204})
+    assert "v360=input=dfisheye:output=e:ih_fov=204:iv_fov=204" in raw
+    assert "v360=input=equirect:output=flat" in raw
     assert "tonemap" in normalization_filter({"hdr": True, "bit_depth": 10})
     assert "trunc(iw/2)*2" in normalization_filter({"hdr": False, "bit_depth": 8})
+
+
+def test_paired_insv_proxy_command_hstacks_lens_files(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.normalization.tool_status", lambda: {"ffmpeg_path": "ffmpeg"})
+    source = tmp_path / "VID_00_001.insv"
+    pair = tmp_path / "VID_10_001.insv"
+    dest = tmp_path / "proxy.mp4"
+
+    command = normalization._normalization_command(source, dest, 30.0, "v360=input=dfisheye:output=e", "libx264", paired_source=pair)
+
+    assert str(pair) in command
+    graph = command[command.index("-filter_complex") + 1]
+    assert "[0:v][1:v]hstack=inputs=2[dual]" in graph
+    assert "[dual]v360=input=dfisheye:output=e[v]" in graph
 
 
 @pytest.mark.slow
@@ -242,4 +259,72 @@ def test_equirect_normalization_produces_moving_cfr_h264(tmp_path, monkeypatch):
     assert stream["pix_fmt"] == "yuv420p"
     assert (stream["width"], stream["height"]) == (1280, 720)
     assert stream["avg_frame_rate"] == "24/1"
+    assert int(stream.get("nb_frames") or 0) > 50
+
+
+@pytest.mark.slow
+def test_raw_insv_normalization_stitches_proxy(tmp_path, monkeypatch):
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not available")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("core.normalization.tool_status", lambda: {"ffmpeg_path": shutil.which("ffmpeg")})
+    source = tmp_path / "raw.insv"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=640x320:rate=24:duration=3",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=3",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-f",
+            "mp4",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    project = create_project("Raw360", str(tmp_path / "Raw360.zuckervid"))
+    record = file_record(str(source))
+    record["projection"] = "raw_insv"
+    record["raw_360"] = True
+    record["probe"] = {"projection": "raw_insv", "raw_360": True, "duration": 3.0, "fps": 24.0, "valid_video": True, "insv_fov": 190}
+
+    normalize_video_record(project, record, lambda percent, message: None)
+
+    output = Path(record["normalized"]["path"])
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=codec_name,pix_fmt,width,height,avg_frame_rate,nb_frames",
+            "-of",
+            "json",
+            str(output),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    import json
+
+    stream = json.loads(result.stdout)["streams"][0]
+    assert stream["codec_name"] == "h264"
+    assert stream["pix_fmt"] == "yuv420p"
+    assert (stream["width"], stream["height"]) == (1280, 720)
     assert int(stream.get("nb_frames") or 0) > 50

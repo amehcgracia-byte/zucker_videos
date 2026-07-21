@@ -347,6 +347,15 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except (ProjectError, ValueError, OSError) as exc:
             return error_response("project_error", str(exc), 400)
 
+    @app.post("/api/v1/wizard/projects/new")
+    def api_wizard_project_new() -> Response:
+        state.project = None
+        state.wizard.reset()
+        config = load_global_config()
+        if config.pop("last_project_path", None) is not None:
+            save_global_config(config)
+        return jsonify({"ok": True})
+
     @app.get("/api/v1/wizard/report")
     def api_wizard_report() -> Response:
         return Response(wizard_report(state.wizard.status()), mimetype="text/plain")

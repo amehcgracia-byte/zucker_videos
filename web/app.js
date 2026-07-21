@@ -11,6 +11,7 @@ let appConfig = { dev: true, desktop: false };
 let progressStartedAt = null;
 let progressSamples = [];
 let rescueClipId = null;
+let currentStep = 1;
 
 function logFrontendError(message, stack = "") {
   fetch("/api/v1/wizard/frontend-log", {
@@ -80,7 +81,9 @@ function showToast(message, isError = false) {
 }
 
 function setStep(number) {
-  document.querySelectorAll(".step").forEach((step, index) => step.classList.toggle("active", index === number - 1));
+  currentStep = Math.max(1, Math.min(3, Number(number) || 1));
+  document.querySelectorAll(".step").forEach((step, index) => step.classList.toggle("active", index === currentStep - 1));
+  document.querySelectorAll("[data-step-nav]").forEach((button) => button.classList.toggle("active", Number(button.dataset.stepNav) === currentStep));
 }
 
 function injectIcons() {
@@ -160,6 +163,15 @@ function iconFor(item) {
   return "•";
 }
 
+function isHelpfulWarning(item) {
+  const suffix = filename(item.path).toLowerCase().split(".").pop();
+  return item.kind === "ignored" && ["insv", "insp", "lrv"].includes(suffix);
+}
+
+function isRaw360(item) {
+  return Boolean(item.raw_360 || item.projection === "raw_insv" || item.probe?.projection === "raw_insv");
+}
+
 function filename(path) {
   return String(path || "").split(/[\\/]/).pop();
 }
@@ -170,11 +182,17 @@ function renderChips() {
   root.innerHTML = items
     .map(
       (item) => `
-        <span class="chip ${item.kind === "ignored" ? "muted" : ""}" title="${escapeHtml(item.path)}">
+        <span class="chip ${item.kind === "ignored" ? "muted" : ""} ${isHelpfulWarning(item) ? "warning" : ""} ${isRaw360(item) ? "info" : ""}" title="${escapeHtml(
+        item.path
+      )}">
           ${iconFor(item)} ${escapeHtml(item.filename || filename(item.path))}
-          ${item.projection === "equirect" || item.probe?.projection === "equirect" ? "<small>360°</small>" : ""}
+          ${item.projection === "equirect" || item.probe?.projection === "equirect" || isRaw360(item) ? "<small>360°</small>" : ""}
           ${item.source === "inbox" ? "<small>from Inbox</small>" : ""}
+          ${isRaw360(item) ? `<small>${escapeHtml(item.info || "360 stitched automatically")}</small>` : ""}
           ${item.kind === "ignored" ? `<small>${escapeHtml(item.note || S.ignored)}</small>` : ""}
+          <button class="chip-remove" data-remove-kind="${escapeHtml(item.kind)}" data-remove-path="${escapeHtml(item.path)}" aria-label="Remove ${escapeHtml(
+        item.filename || filename(item.path)
+      )}">×</button>
         </span>`
     )
     .join("");
@@ -199,6 +217,7 @@ function renderChips() {
   const hasVideo = detected.videos.length > 0;
   const hasMaster = detected.master.length > 0;
   const hasSongs = detected.songs.length > 0;
+  renderRaw360Callout();
   const note = document.querySelector("#softRule");
   const button = document.querySelector("#confirmFiles");
   button.disabled = !(hasVideo && hasMaster);
@@ -206,6 +225,23 @@ function renderChips() {
   else if (!hasMaster) note.textContent = S.missingMaster;
   else if (!hasSongs) note.textContent = S.noSongsContinuous;
   else note.textContent = S.ready;
+}
+
+function renderRaw360Callout() {
+  const callout = document.querySelector("#insvCallout");
+  if (!callout) return;
+  const hasRaw = detected.videos.some(isRaw360) || detected.ignored.some((item) => [".insv", ".insp"].some((suffix) => String(item.path || "").toLowerCase().endsWith(suffix)));
+  const hasStudioExport = detected.videos.some((item) => item.projection === "equirect" || item.probe?.projection === "equirect");
+  callout.hidden = !(hasRaw && !hasStudioExport);
+}
+
+function removeDetectedItem(kind, path) {
+  for (const key of ["master", "songs", "videos", "ignored"]) {
+    detected[key] = detected[key].filter((item) => !(item.kind === kind && item.path === path));
+  }
+  if (selectedMasterPath === path) selectedMasterPath = null;
+  chooseDefaultMaster();
+  renderChips();
 }
 
 function selectedInputs() {
@@ -282,6 +318,28 @@ async function openProject(path) {
   } else {
     setStep(1);
   }
+}
+
+async function newProject() {
+  if (latestStatus?.status === "running" && !confirm("A job is still running for the current project. Start a new project view anyway?")) return;
+  await api("/wizard/projects/new", { method: "POST", body: JSON.stringify({}) });
+  clearInterval(pollTimer);
+  pollTimer = null;
+  latestStatus = null;
+  latestResult = null;
+  selectedPlatform = null;
+  selectedSong = null;
+  currentSongs = [];
+  clearDetected();
+  document.querySelector("#videoName").value = todayName();
+  document.querySelector("#errorBox").hidden = true;
+  document.querySelector("#resultBox").hidden = true;
+  document.querySelector("#progressTitle").textContent = "Creating your video";
+  document.querySelector("#startWizard").disabled = true;
+  document.querySelectorAll(".platform-card").forEach((card) => card.classList.remove("selected"));
+  await loadInbox().catch(() => {});
+  await loadProjects().catch(() => {});
+  setStep(1);
 }
 
 async function deleteProject(path, name, hasExport) {
@@ -674,7 +732,16 @@ document.addEventListener("click", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
   if (target.id === "confirmFiles") prepareStep2().catch((error) => showToast(error.message, true));
+  if (target.id === "newProject") newProject().catch((error) => showToast(error.message, true));
   if (target.id === "refreshProjects") loadProjects().catch((error) => showToast(error.message, true));
+  const stepNav = target.closest?.("[data-step-nav]");
+  if (stepNav instanceof HTMLElement) {
+    setStep(Number(stepNav.dataset.stepNav));
+  }
+  const removeButton = target.closest?.("[data-remove-kind]");
+  if (removeButton instanceof HTMLElement) {
+    removeDetectedItem(removeButton.dataset.removeKind, removeButton.dataset.removePath);
+  }
   const openButton = target.closest?.("[data-open-project]");
   if (openButton instanceof HTMLElement) {
     openProject(openButton.dataset.openProject).catch((error) => showToast(error.message, true));

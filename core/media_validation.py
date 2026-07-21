@@ -20,15 +20,16 @@ VIDEO_EXTENSIONS = {
     ".mpeg",
     ".ts",
     ".mxf",
+    ".insv",
+    ".insp",
 }
 SIDE_CAR_REASONS = {
-    ".insv": "Raw 360 video — export it first with Insta360 Studio (File → Export) and bring the MP4 here",
-    ".insp": "Raw 360 video — export it first with Insta360 Studio (File → Export) and bring the MP4 here",
     ".lrv": "camera sidecar file (low-resolution proxy)",
     ".thm": "camera sidecar file",
     ".xml": "camera sidecar file",
     ".srt": "subtitles, not a camera video",
 }
+RAW_360_EXTENSIONS = {".insv", ".insp"}
 SANE_VIDEO_CODECS = {
     "h264",
     "hevc",
@@ -63,6 +64,21 @@ def static_rejection_reason(path: Path) -> str | None:
     if suffix in SIDE_CAR_REASONS:
         return SIDE_CAR_REASONS[suffix]
     return None
+
+
+def is_raw_360_path(path: str | Path) -> bool:
+    """Return True for raw Insta360 container extensions."""
+    return Path(path).suffix.lower() in RAW_360_EXTENSIONS
+
+
+def raw_360_model_fov(metadata: dict[str, Any]) -> int:
+    """Return a practical dual-fisheye FOV estimate from metadata."""
+    text = str(metadata).lower()
+    if "insta360 one x2" in text or "x2" in text:
+        return 204
+    if "insta360 x3" in text or "insta360 x4" in text or " x3" in text or " x4" in text:
+        return 190
+    return 190
 
 
 def validate_camera_video_metadata(metadata: dict[str, Any]) -> VideoValidation:

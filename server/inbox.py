@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from core.ffmpeg import configure_tools, ffprobe
-from core.media_validation import VIDEO_EXTENSIONS, static_rejection_reason, validate_camera_video_metadata
+from core.media_validation import VIDEO_EXTENSIONS, is_raw_360_path, raw_360_model_fov, static_rejection_reason, validate_camera_video_metadata
 from core.project import STAGE_NAMES, Project, file_record
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".aiff", ".aif"}
@@ -133,6 +133,7 @@ def classify_paths(paths: list[str], inbox_path: str | None = None) -> dict[str,
         item = classify_file(path)
         result[item["kind"]].append(item)
         log_classification_verdict(path, item)
+    _prefer_studio_exports(result)
     return result
 
 
@@ -158,6 +159,19 @@ def classify_file(path: Path) -> dict[str, Any]:
             return _item(path, "ignored", note, checked=False)
         item = _item(path, "videos", validation.reason) if validation.valid else _item(path, "ignored", validation.reason, checked=False)
         item["probe"] = validation.summary
+        if validation.valid and is_raw_360_path(path):
+            item["projection"] = "raw_insv"
+            item["raw_360"] = True
+            item["note"] = "Raw 360 file — stitched automatically; Studio export has better stabilization"
+            item["probe"]["projection"] = "raw_insv"
+            item["probe"]["raw_360"] = True
+            item["probe"]["input_projection"] = "dfisheye"
+            item["probe"]["insv_fov"] = raw_360_model_fov(validation.summary)
+            item["info"] = "360 stitched automatically — for best quality, export from Insta360 Studio instead"
+            pair = paired_insv_path(path)
+            if pair:
+                item["paired_path"] = str(pair)
+                item["probe"]["paired_path"] = str(pair)
         if validation.summary.get("projection"):
             item["projection"] = validation.summary["projection"]
         return item
@@ -213,7 +227,9 @@ def register_selected_inputs(
     videos = list(project.data["inputs"].get("videos", [])) if append_videos else []
     for path in expand_video_paths(video_paths or []):
         registered_video = prepare_input_file(project, path, "video") if copy_inputs else Path(path).expanduser().resolve()
-        videos.append(file_record(str(registered_video)))
+        record = file_record(str(registered_video))
+        record.update(video_classification_metadata(registered_video))
+        videos.append(record)
     if video_paths is not None:
         project.data["inputs"]["videos"] = _dedupe_records(videos)
         earliest_stale_stage = _earliest_stage(earliest_stale_stage, "ingest")
@@ -234,13 +250,10 @@ def reconcile_registered_inputs(project: Project) -> bool:
             continue
         item = classify_file(path)
         if item["kind"] == "videos":
-            probe = item.get("probe")
-            if probe and record.get("probe") != probe:
-                record["probe"] = probe
-                changed = True
-            if item.get("projection") and record.get("projection") != item["projection"]:
-                record["projection"] = item["projection"]
-                changed = True
+            for key, value in video_classification_metadata(path).items():
+                if record.get(key) != value:
+                    record[key] = value
+                    changed = True
             if record.get("status") == "not_a_video":
                 record.pop("status", None)
                 record.pop("not_a_video_reason", None)
@@ -269,6 +282,62 @@ def expand_video_paths(paths: list[str]) -> list[str]:
         if item["kind"] == "videos":
             expanded.append(str(path.resolve()))
     return expanded
+
+
+def video_classification_metadata(path: Path) -> dict[str, Any]:
+    """Return project-record metadata from the current classifier."""
+    item = classify_file(path)
+    if item.get("kind") != "videos":
+        return {}
+    metadata: dict[str, Any] = {}
+    for key in ("probe", "projection", "raw_360", "paired_path", "info"):
+        if key in item:
+            metadata[key] = item[key]
+    return metadata
+
+
+def paired_insv_path(path: Path) -> Path | None:
+    """Return the companion lens file for common Insta360 two-file naming."""
+    if not is_raw_360_path(path):
+        return None
+    name = path.name
+    candidates = []
+    for left, right in (("_00_", "_10_"), ("_10_", "_00_"), ("_00.", "_10."), ("_10.", "_00.")):
+        if left in name:
+            candidates.append(path.with_name(name.replace(left, right, 1)))
+    for candidate in candidates:
+        if candidate.exists() and candidate.resolve() != path.resolve():
+            return candidate.resolve()
+    return None
+
+
+def _prefer_studio_exports(result: dict[str, Any]) -> None:
+    """Demote raw .insv clips when a matching equirect Studio export is present."""
+    videos = list(result.get("videos") or [])
+    equirect = [item for item in videos if item.get("projection") == "equirect"]
+    if not equirect:
+        return
+    kept = []
+    for item in videos:
+        if not item.get("raw_360"):
+            kept.append(item)
+            continue
+        raw_duration = float((item.get("probe") or {}).get("duration") or 0.0)
+        match = next(
+            (
+                candidate
+                for candidate in equirect
+                if raw_duration > 0 and abs(float((candidate.get("probe") or {}).get("duration") or 0.0) - raw_duration) <= 2.0
+            ),
+            None,
+        )
+        if match:
+            ignored = {**item, "kind": "ignored", "checked": False}
+            ignored["note"] = f"Using Studio-exported 360 MP4 instead: {match.get('filename')}"
+            result.setdefault("ignored", []).append(ignored)
+        else:
+            kept.append(item)
+    result["videos"] = kept
 
 
 def log_classification_verdict(path: Path, item: dict[str, Any]) -> None:
