@@ -66,6 +66,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     if dev:
         _enable_cors(app)
 
+    @app.after_request
+    def add_no_cache_headers(response: Response) -> Response:
+        if request.path == "/" or request.path.endswith((".html", ".css", ".js", ".png")):
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
+
     @app.errorhandler(RequestEntityTooLarge)
     def api_upload_too_large(_: RequestEntityTooLarge) -> tuple[Response, int]:
         limit_mb = app.config["MAX_CONTENT_LENGTH"] // (1024 * 1024)

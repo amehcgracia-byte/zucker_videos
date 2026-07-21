@@ -141,6 +141,7 @@ def test_render_plan_uses_standalone_intro_and_outro_clips(tmp_path, monkeypatch
 
     monkeypatch.setattr("core.stages.export._render_segment", fake_render_segment)
     monkeypatch.setattr("core.stages.export._render_logo_clip", lambda *args, **kwargs: (logo_clips.append((args, kwargs)), args[1].write_bytes(b"logo")))
+    monkeypatch.setattr("core.stages.export._can_blend_intro_outro", lambda: False)
     monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", fake_progress)
     monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
     monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda project, segments, warnings: {})
@@ -163,6 +164,16 @@ def test_render_plan_uses_standalone_intro_and_outro_clips(tmp_path, monkeypatch
     assert [call["intro_fade"] for call in calls] == [False, False, False]
     assert [call["outro_fade"] for call in calls] == [False, False, False]
     assert [call[0][3] for call in logo_clips] == ["intro", "outro"]
+
+
+def test_segment_filtergraph_can_blend_large_intro_logo_over_footage():
+    graph = _segment_filtergraph("youtube", 8.0, {}, {}, has_watermark=True, text_enabled=False, intro_logo=True, outro_logo=True)
+
+    assert "split=3" in graph
+    assert "scale=-1:756" in graph
+    assert "enable='lt(t,3.2)'" in graph
+    assert "enable='gte(t,4.800)'" in graph
+    assert "overlay=W-w-40:H-h-40" in graph
 
 
 def test_render_plan_verifies_every_segment_not_just_every_source(tmp_path, monkeypatch):

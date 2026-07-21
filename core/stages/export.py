@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fing
 from core.stages.cut import load_coverage
 from core.stages.edit import load_edit_plan
 
+LOGGER = logging.getLogger(__name__)
 MAX_EXPORT_BYTES = int(1.9 * 1024 * 1024 * 1024)
 AUDIO_BITRATE = 192_000
 MIN_ACCEPTABLE_VIDEO_BITRATE = 2_500_000
@@ -26,8 +28,8 @@ MAX_VIDEO_BITRATE = 18_000_000
 TARGET_EXPORT_FPS = 30.0
 TARGET_EXPORT_TIMESCALE = 30_000
 EXPORT_SEGMENT_RECIPE_VERSION = 4
-INTRO_DURATION = 2.0
-OUTRO_DURATION = 2.0
+INTRO_DURATION = 3.4
+OUTRO_DURATION = 3.4
 
 
 class ExportStage(Stage):
@@ -135,18 +137,19 @@ def _render_plan(
     overlay_config = _overlay_config(platform, segments[0])
     verify_motion = bool(project.data.get("settings", {}).get("export", {}).get("verify_motion", True))
     try:
-        intro_path = temp_dir / "intro.mp4"
-        _render_logo_clip(
-            master_path,
-            intro_path,
-            platform,
-            "intro",
-            _intro_master_start(segments),
-            INTRO_DURATION,
-            video_bitrate,
-            lambda percent, detail: progress_callback(8 + int(percent * 2 / 100), detail),
-        )
-        segment_paths.append(intro_path)
+        if not _can_blend_intro_outro():
+            intro_path = temp_dir / "intro.mp4"
+            _render_logo_clip(
+                master_path,
+                intro_path,
+                platform,
+                "intro",
+                _intro_master_start(segments),
+                INTRO_DURATION,
+                video_bitrate,
+                lambda percent, detail: progress_callback(8 + int(percent * 2 / 100), detail),
+            )
+            segment_paths.append(intro_path)
         for index, segment in enumerate(segments, start=1):
             segment_duration = max(0.1, float(segment["duration_sec"]))
             base_percent = 10 + int(70 * rendered_duration / max(total_duration, 0.1))
@@ -159,7 +162,9 @@ def _render_plan(
             color_profile = color_profiles.get(str(segment.get("clip_path")), {})
             intro_fade = False
             outro_fade = False
-            segment_path = cached_segment_path(project, segment, platform, video_bitrate, overlay_config, color_profile, intro_fade, outro_fade)
+            intro_logo = _can_blend_intro_outro() and index == 1
+            outro_logo = _can_blend_intro_outro() and index == len(segments)
+            segment_path = cached_segment_path(project, segment, platform, video_bitrate, overlay_config, color_profile, intro_fade, outro_fade, intro_logo, outro_logo)
             source_info = _segment_source_info(project, segment)
             command_line = "cached segment"
             if not segment_path.exists():
@@ -177,6 +182,8 @@ def _render_plan(
                     segment_progress,
                     intro_fade=intro_fade,
                     outro_fade=outro_fade,
+                    intro_logo=intro_logo,
+                    outro_logo=outro_logo,
                     warnings=warnings,
                     command_recorder=commands,
                 )
@@ -200,6 +207,8 @@ def _render_plan(
                     segment_progress,
                     intro_fade,
                     outro_fade,
+                    intro_logo,
+                    outro_logo,
                     warnings,
                     command_line,
                     segment_duration,
@@ -207,18 +216,19 @@ def _render_plan(
                 )
             segment_paths.append(segment_path)
             rendered_duration += segment_duration
-        outro_path = temp_dir / "outro.mp4"
-        _render_logo_clip(
-            master_path,
-            outro_path,
-            platform,
-            "outro",
-            _outro_master_start(segments),
-            OUTRO_DURATION,
-            video_bitrate,
-            lambda percent, detail: progress_callback(82 + int(percent * 2 / 100), detail),
-        )
-        segment_paths.append(outro_path)
+        if not _can_blend_intro_outro():
+            outro_path = temp_dir / "outro.mp4"
+            _render_logo_clip(
+                master_path,
+                outro_path,
+                platform,
+                "outro",
+                _outro_master_start(segments),
+                OUTRO_DURATION,
+                video_bitrate,
+                lambda percent, detail: progress_callback(82 + int(percent * 2 / 100), detail),
+            )
+            segment_paths.append(outro_path)
         concat_path = temp_dir / "concat.txt"
         concat_path.write_text("".join(_concat_file_line(path) for path in segment_paths), encoding="utf-8")
         _run_ffmpeg_progress(
@@ -241,12 +251,12 @@ def _render_plan(
                 "copy",
                 str(output_path),
             ],
-            total_duration + INTRO_DURATION + OUTRO_DURATION,
+            total_duration + (0 if _can_blend_intro_outro() else INTRO_DURATION + OUTRO_DURATION),
             t("joining_segments"),
             lambda percent, detail: progress_callback(84 + int(percent * 11 / 100), detail),
         )
         if verify_motion:
-            _verify_joined_output(output_path, segments, timeline_offset=INTRO_DURATION)
+            _verify_joined_output(output_path, segments, timeline_offset=0.0 if _can_blend_intro_outro() else INTRO_DURATION)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -273,16 +283,18 @@ def _render_360_plan(
         body = temp_dir / "body.mp4"
         outro = temp_dir / "outro.mp4"
         joined = temp_dir / "joined.mp4"
-        _render_logo_clip(
-            master_path,
-            intro,
-            "360",
-            "intro",
-            _intro_master_start([segment]),
-            INTRO_DURATION,
-            video_bitrate,
-            lambda percent, detail: progress_callback(8 + int(percent * 4 / 100), detail),
-        )
+        blend_logo = _can_blend_intro_outro()
+        if not blend_logo:
+            _render_logo_clip(
+                master_path,
+                intro,
+                "360",
+                "intro",
+                _intro_master_start([segment]),
+                INTRO_DURATION,
+                video_bitrate,
+                lambda percent, detail: progress_callback(8 + int(percent * 4 / 100), detail),
+            )
         _render_360_body(
             project,
             segment,
@@ -290,19 +302,23 @@ def _render_360_plan(
             body,
             video_bitrate,
             lambda percent, detail: progress_callback(12 + int(percent * 72 / 100), f"Rendering 360: {detail}"),
+            intro_logo=blend_logo,
+            outro_logo=blend_logo,
         )
-        _render_logo_clip(
-            master_path,
-            outro,
-            "360",
-            "outro",
-            _outro_master_start([segment]),
-            OUTRO_DURATION,
-            video_bitrate,
-            lambda percent, detail: progress_callback(84 + int(percent * 4 / 100), detail),
-        )
+        if not blend_logo:
+            _render_logo_clip(
+                master_path,
+                outro,
+                "360",
+                "outro",
+                _outro_master_start([segment]),
+                OUTRO_DURATION,
+                video_bitrate,
+                lambda percent, detail: progress_callback(84 + int(percent * 4 / 100), detail),
+            )
         concat_path = temp_dir / "concat.txt"
-        concat_path.write_text("".join(_concat_file_line(path) for path in [intro, body, outro]), encoding="utf-8")
+        concat_inputs = [body] if blend_logo else [intro, body, outro]
+        concat_path.write_text("".join(_concat_file_line(path) for path in concat_inputs), encoding="utf-8")
         _run_ffmpeg_progress(
             [
                 ffmpeg,
@@ -324,7 +340,7 @@ def _render_360_plan(
                 *_spherical_metadata_args(),
                 str(joined),
             ],
-            duration + INTRO_DURATION + OUTRO_DURATION,
+            duration + (0 if blend_logo else INTRO_DURATION + OUTRO_DURATION),
             t("joining_segments"),
             lambda percent, detail: progress_callback(88 + int(percent * 7 / 100), detail),
         )
@@ -363,12 +379,14 @@ def _render_360_body(
     output_path: Path,
     video_bitrate: int,
     progress_callback: ProgressCallback | None,
+    intro_logo: bool = False,
+    outro_logo: bool = False,
 ) -> None:
     ffmpeg = _ffmpeg_path()
     duration = max(0.1, float(segment["duration_sec"]))
     source = _segment_source_info(project, segment)
     watermark = _watermark_path()
-    filter_complex = _equirect_filtergraph(source.get("probe") or {}, duration, bool(watermark))
+    filter_complex = _equirect_filtergraph(source.get("probe") or {}, duration, bool(watermark), intro_logo=intro_logo, outro_logo=outro_logo)
     command = _segment_command_base(ffmpeg, source["source_path"], master_path, segment, duration)
     if watermark:
         command.extend(["-loop", "1", "-i", str(watermark)])
@@ -409,7 +427,7 @@ def _render_360_body(
         _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
 
 
-def _equirect_filtergraph(probe: dict[str, Any], duration: float, has_watermark: bool) -> str:
+def _equirect_filtergraph(probe: dict[str, Any], duration: float, has_watermark: bool, intro_logo: bool = False, outro_logo: bool = False) -> str:
     if probe.get("projection") == "raw_insv":
         fov = int(probe.get("insv_fov") or 190)
         base_filter = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov},scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
@@ -419,6 +437,8 @@ def _equirect_filtergraph(probe: dict[str, Any], duration: float, has_watermark:
     graph = f"[0:v]{filters}[base]"
     if not has_watermark:
         return f"{graph};[base]copy[v]"
+    if intro_logo or outro_logo:
+        return _logo_overlay_filtergraph(graph, "360", duration, intro_logo, outro_logo, margin=80, wm_height=96)
     return (
         f"{graph};"
         "[2:v]format=rgba,scale=-1:96,colorchannelmixer=aa=0.70[wm];"
@@ -449,9 +469,9 @@ def _render_logo_clip(
 ) -> None:
     """Render a standalone intro/outro logo clip in the concat house format."""
     ffmpeg = _ffmpeg_path()
-    logo = _logo_path()
+    logo = _intro_logo_path() or _logo_path()
     width, height = _target_size(platform)
-    bg = "0x0b1209" if kind == "outro" else "0xfafcf9"
+    bg = "0x000000"
     command = [
         ffmpeg,
         "-y",
@@ -519,12 +539,8 @@ def _logo_filtergraph(platform: str, kind: str, duration: float, has_logo: bool,
         )
     if not has_logo:
         return f"{video};[bg]copy[v];{audio}"
-    logo_height = 310 if platform == "youtube" else 230
-    if platform == "360":
-        logo_height = 360
-    fade = "fade=t=in:st=0:d=0.35:alpha=1,fade=t=out:st=1.35:d=0.55:alpha=1"
-    if kind == "outro":
-        fade = "fade=t=in:st=0.25:d=0.45:alpha=1"
+    logo_height = int(_target_size(platform)[1] * 0.72)
+    fade = "fade=t=in:st=0.50:d=1.15:alpha=1,fade=t=out:st=2.35:d=1.00:alpha=1"
     return (
         f"{video};"
         f"[1:v]format=rgba,scale=-1:{logo_height},{fade}[logo];"
@@ -565,6 +581,8 @@ def _render_segment(
     progress_callback: ProgressCallback | None = None,
     intro_fade: bool = False,
     outro_fade: bool = False,
+    intro_logo: bool = False,
+    outro_logo: bool = False,
     warnings: list[str] | None = None,
     command_recorder: list[list[str]] | None = None,
     force_proxy: bool = False,
@@ -596,6 +614,8 @@ def _render_segment(
             progress_callback,
             intro_fade,
             outro_fade,
+            intro_logo,
+            outro_logo,
             command_recorder,
         )
     filter_complex = _segment_filtergraph(
@@ -607,6 +627,8 @@ def _render_segment(
         _ffmpeg_supports_filter("drawtext"),
         intro_fade=intro_fade,
         outro_fade=outro_fade,
+        intro_logo=intro_logo,
+        outro_logo=outro_logo,
         source_filter=normalization_filter(source.get("probe") or {}, fps=TARGET_EXPORT_FPS, proxy=False),
     )
     command_base = _segment_command_base(
@@ -685,6 +707,8 @@ def _render_segment(
                 progress_callback,
                 intro_fade,
                 outro_fade,
+                intro_logo,
+                outro_logo,
                 command_recorder,
             )
 
@@ -704,6 +728,8 @@ def _render_proxy_segment(
     progress_callback: ProgressCallback | None,
     intro_fade: bool,
     outro_fade: bool,
+    intro_logo: bool,
+    outro_logo: bool,
     command_recorder: list[list[str]] | None,
 ) -> str:
     proxy_filter = _segment_filtergraph(
@@ -715,6 +741,8 @@ def _render_proxy_segment(
         _ffmpeg_supports_filter("drawtext"),
         intro_fade=intro_fade,
         outro_fade=outro_fade,
+        intro_logo=intro_logo,
+        outro_logo=outro_logo,
     )
     proxy_command = _segment_command_base(ffmpeg, proxy_path, master_path, segment, duration)
     if watermark:
@@ -764,6 +792,8 @@ def _verify_or_rebuild_segment(
     progress_callback: ProgressCallback | None,
     intro_fade: bool,
     outro_fade: bool,
+    intro_logo: bool,
+    outro_logo: bool,
     warnings: list[str],
     command_line: str,
     segment_duration: float,
@@ -788,6 +818,8 @@ def _verify_or_rebuild_segment(
             progress_callback,
             intro_fade=intro_fade,
             outro_fade=outro_fade,
+            intro_logo=intro_logo,
+            outro_logo=outro_logo,
             warnings=warnings,
             command_recorder=commands,
         )
@@ -815,6 +847,8 @@ def _verify_or_rebuild_segment(
                 progress_callback,
                 intro_fade=intro_fade,
                 outro_fade=outro_fade,
+                intro_logo=intro_logo,
+                outro_logo=outro_logo,
                 warnings=warnings,
                 command_recorder=commands,
                 force_proxy=True,
@@ -887,6 +921,8 @@ def _segment_filtergraph(
     text_enabled: bool = True,
     intro_fade: bool = False,
     outro_fade: bool = False,
+    intro_logo: bool = False,
+    outro_logo: bool = False,
     source_filter: str | None = None,
 ) -> str:
     filters = []
@@ -906,10 +942,51 @@ def _segment_filtergraph(
         return f"{graph};[base]copy[v]"
     margin = 40 if platform == "youtube" else 28
     wm_height = 65 if platform == "youtube" else 58
+    if not intro_logo and not outro_logo:
+        return (
+            f"{graph};"
+            f"[2:v]format=rgba,scale=-1:{wm_height},colorchannelmixer=aa=0.70[wm];"
+            f"[base][wm]overlay=W-w-{margin}:H-h-{margin}:format=auto[v]"
+        )
+    return _logo_overlay_filtergraph(graph, platform, duration, intro_logo, outro_logo, margin=margin, wm_height=wm_height)
+
+
+def _logo_overlay_filtergraph(graph: str, platform: str, duration: float, intro_logo: bool, outro_logo: bool, margin: int, wm_height: int) -> str:
+    """Overlay transparent watermark and optional large intro/outro logo from input 2."""
+    logo_height = int(_target_size(platform)[1] * 0.70)
+    logo_fade_filters = []
+    logo_labels = []
+    split_outputs = ["wm_src"]
+    if intro_logo:
+        split_outputs.append("intro_src")
+    if outro_logo:
+        split_outputs.append("outro_src")
+    split_count = len(split_outputs)
+    split = f"[2:v]format=rgba,split={split_count}" + "".join(f"[{label}]" for label in split_outputs)
+    if intro_logo:
+        logo_fade_filters.append(
+            f"[intro_src]scale=-1:{logo_height},fade=t=in:st=0.35:d=1.10:alpha=1,fade=t=out:st=2.00:d=1.10:alpha=1[intro]"
+        )
+        logo_labels.append(("intro", "enable='lt(t,3.2)'"))
+    if outro_logo:
+        logo_fade_filters.append(
+            f"[outro_src]scale=-1:{logo_height},fade=t=in:st=0:d=1.10:alpha=1,fade=t=out:st=2.10:d=1.00:alpha=1[outro]"
+        )
+        logo_labels.append(("outro", f"enable='gte(t,{max(0.0, duration - 3.2):.3f})'"))
+    wm = f"[wm_src]scale=-1:{wm_height},colorchannelmixer=aa=0.70[wm]"
+    chain_input = "base"
+    chain_filters = []
+    for index, (label, enable) in enumerate(logo_labels):
+        output = "with_logo" if index == len(logo_labels) - 1 else f"with_logo_{index}"
+        chain_filters.append(f"[{chain_input}][{label}]overlay=(W-w)/2:(H-h)/2:format=auto:{enable}[{output}]")
+        chain_input = output
     return (
         f"{graph};"
-        f"[2:v]format=rgba,scale=-1:{wm_height},colorchannelmixer=aa=0.70[wm];"
-        f"[base][wm]overlay=W-w-{margin}:H-h-{margin}:format=auto[v]"
+        f"{split};"
+        f"{wm};"
+        + ";".join(logo_fade_filters + chain_filters)
+        + ";"
+        f"[{chain_input}][wm]overlay=W-w-{margin}:H-h-{margin}:format=auto[v]"
     )
 
 
@@ -945,6 +1022,8 @@ def cached_segment_path(
     color_profile: dict[str, Any],
     intro_fade: bool,
     outro_fade: bool,
+    intro_logo: bool = False,
+    outro_logo: bool = False,
 ) -> Path:
     """Return the global cache path for a rendered segment recipe."""
     source = _segment_source_info(project, segment)
@@ -961,6 +1040,8 @@ def cached_segment_path(
             "color": color_profile,
             "intro_fade": intro_fade,
             "outro_fade": outro_fade,
+            "intro_logo": intro_logo,
+            "outro_logo": outro_logo,
             "normalization_version": NORMALIZATION_VERSION,
             "export_segment_recipe": EXPORT_SEGMENT_RECIPE_VERSION,
         }
@@ -1300,15 +1381,13 @@ def _global_config() -> dict[str, Any]:
 
 def _watermark_path() -> Path | None:
     candidates = [
-        Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "watermark_white.png",
-        Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "logo_editor_white.png",
+        Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "logo_watermark.png",
         Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "watermark.png",
-        Path(__file__).resolve().parents[2] / "assets" / "watermark_white.png",
-        Path(__file__).resolve().parents[2] / "assets" / "logo_editor_white.png",
+        Path(__file__).resolve().parents[2] / "assets" / "logo_watermark.png",
         Path(__file__).resolve().parents[2] / "assets" / "watermark.png",
     ]
     for candidate in candidates:
-        if candidate.exists():
+        if candidate.exists() and _has_real_alpha(candidate):
             return candidate
     return None
 
@@ -1322,6 +1401,36 @@ def _logo_path() -> Path | None:
         if candidate.exists():
             return candidate
     return _watermark_path()
+
+
+def _intro_logo_path() -> Path | None:
+    candidates = [
+        Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "logo_intro_black.png",
+        Path(__file__).resolve().parents[2] / "assets" / "logo_intro_black.png",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _can_blend_intro_outro() -> bool:
+    return _watermark_path() is not None
+
+
+def _has_real_alpha(path: Path) -> bool:
+    try:
+        from PIL import Image
+
+        image = Image.open(path).convert("RGBA")
+        alpha = set(image.getchannel("A").getdata())
+        if len(alpha) >= 2 and min(alpha) < 250:
+            return True
+        LOGGER.error("Refusing watermark without real alpha transparency: %s", path)
+        return False
+    except Exception as exc:
+        LOGGER.error("Could not validate watermark alpha for %s: %s", path, exc)
+        return False
 
 
 def _font_path() -> Path | None:

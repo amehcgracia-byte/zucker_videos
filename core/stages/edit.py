@@ -11,6 +11,9 @@ from core.project import Project
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.cut import load_coverage
 
+MIN_SEGMENT_SEC = 1.5
+MAX_SEGMENT_SEC = 6.0
+
 
 class EditStage(Stage):
     """Build wizard edit decisions from coverage.
@@ -139,14 +142,14 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any]) -> d
     bar_index = 0
     segment_index = 0
     while bar_index < len(bar_times) - 1:
-        bars_per_segment = 4 if segment_index % 4 else 2
+        bars_per_segment = _bars_for_segment(segment_index, bar_times, section_times, bar_index)
         next_index = min(len(bar_times) - 1, bar_index + bars_per_segment)
         section_index = _reachable_section_index(bar_times, section_times, bar_index, next_index)
         if section_index is not None:
             next_index = section_index
-        while next_index > bar_index + 1 and bar_times[next_index] - bar_times[bar_index] > 15.0:
+        while next_index > bar_index + 1 and bar_times[next_index] - bar_times[bar_index] > MAX_SEGMENT_SEC:
             next_index -= 1
-        while next_index < len(bar_times) - 1 and bar_times[next_index] - bar_times[bar_index] < 2.0:
+        while next_index < len(bar_times) - 1 and bar_times[next_index] - bar_times[bar_index] < MIN_SEGMENT_SEC:
             next_index += 1
         segment_start = float(bar_times[bar_index])
         segment_end = min(end, float(bar_times[next_index]))
@@ -271,10 +274,20 @@ def _reachable_section_index(bar_times: list[float], section_times: list[float],
     current = bar_times[current_index]
     proposed = bar_times[proposed_index]
     for section in section_times:
-        if current + 2.0 <= section <= min(proposed + 4.0, current + 15.0):
+        if current + MIN_SEGMENT_SEC <= section <= min(proposed + 2.0, current + MAX_SEGMENT_SEC):
             nearest = min(range(current_index + 1, len(bar_times)), key=lambda index: abs(bar_times[index] - section))
             return nearest
     return None
+
+
+def _bars_for_segment(segment_index: int, bar_times: list[float], section_times: list[float], bar_index: int) -> int:
+    current = bar_times[bar_index]
+    near_section = any(current < section <= current + MAX_SEGMENT_SEC for section in section_times)
+    if near_section:
+        return 1
+    if segment_index % 5 in {1, 4}:
+        return 1
+    return 2
 
 
 def _short_form_segments_from_best_coverage(coverage: dict[str, Any]) -> list[dict[str, Any]]:

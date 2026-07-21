@@ -83,7 +83,7 @@ function showToast(message, isError = false) {
 }
 
 function setStep(number) {
-  currentStep = Math.max(1, Math.min(3, Number(number) || 1));
+  currentStep = Math.max(1, Math.min(4, Number(number) || 1));
   document.querySelectorAll(".step").forEach((step, index) => step.classList.toggle("active", index === currentStep - 1));
   document.querySelectorAll("[data-step-nav]").forEach((button) => button.classList.toggle("active", Number(button.dataset.stepNav) === currentStep));
 }
@@ -312,9 +312,11 @@ async function openProject(path) {
   const status = await api("/wizard/projects/open", { method: "POST", body: JSON.stringify({ path }) });
   await resumeInputsFromProject().catch(() => {});
   renderWizardStatus(status);
-  if (status.status === "done" || status.status === "failed" || status.status === "running") {
+  if (status.status === "running") {
     setStep(3);
-    if (status.status === "running") ensureStatusPolling();
+    ensureStatusPolling();
+  } else if (status.status === "done" || status.status === "failed") {
+    setStep(4);
   } else if (status.status === "waiting_choice") {
     setStep(2);
   } else {
@@ -528,19 +530,25 @@ function renderWizardStatus(status) {
     clearInterval(pollTimer);
     pollTimer = null;
     document.querySelector("#errorText").textContent = status.error || S.failedTitle;
+    document.querySelector("#resultTitle").textContent = S.failedTitle;
     document.querySelector("#errorBox").hidden = false;
+    document.querySelector("#resultBox").hidden = true;
     refreshProgressReport().catch((error) => logFrontendError(`progress report failed: ${error.message}`, error.stack || ""));
+    setStep(4);
   }
   if (status.status === "done") {
     clearInterval(pollTimer);
     pollTimer = null;
     latestResult = status.result;
     document.querySelector("#progressTitle").textContent = S.doneTitle;
+    document.querySelector("#resultTitle").textContent = S.doneTitle;
     document.querySelector("#resultFilename").textContent = latestResult.filename;
     document.querySelector("#resultSummary").textContent = resultSummary(latestResult);
     renderClipFates(latestResult);
     document.querySelector("#resultVideo").src = `${latestResult.media_url}?t=${Date.now()}`;
+    document.querySelector("#errorBox").hidden = true;
     document.querySelector("#resultBox").hidden = false;
+    setStep(4);
   }
   if (status.status === "waiting_choice") {
     clearInterval(pollTimer);
@@ -697,6 +705,7 @@ async function confirmRescue() {
 }
 
 async function revealNative(path, label) {
+  if (!path) throw new Error(`${label || "Native action"}: no file path is available yet`);
   await window.NativeBridge.reveal(path, label);
 }
 
@@ -742,7 +751,8 @@ document.addEventListener("drop", (event) => {
 });
 
 document.addEventListener("click", (event) => {
-  const target = event.target;
+  const rawTarget = event.target;
+  const target = rawTarget instanceof HTMLElement ? rawTarget.closest("button, [data-remove-kind], [data-open-project], [data-delete-project], [data-rescue]") || rawTarget : rawTarget;
   if (!(target instanceof HTMLElement)) return;
   if (target.id === "confirmFiles") prepareStep2().catch((error) => showToast(error.message, true));
   if (target.id === "newProject") newProject().catch((error) => showToast(error.message, true));
@@ -776,7 +786,10 @@ document.addEventListener("click", (event) => {
     document.querySelectorAll(".song-option").forEach((button) => button.classList.toggle("selected", button === target));
   }
   if (target.id === "startWizard") startWizard().catch((error) => showToast(error.message, true));
-  if (target.id === "retryWizard") startWizard().catch((error) => showToast(error.message, true));
+  if (target.id === "retryWizard") {
+    setStep(3);
+    startWizard().catch((error) => showToast(error.message, true));
+  }
   if (target.id === "again") {
     document.querySelector("#errorBox").hidden = true;
     document.querySelector("#resultBox").hidden = true;
@@ -790,6 +803,10 @@ document.addEventListener("click", (event) => {
     copyReport().catch((error) => showToast(error.message, true));
   }
   if (target.id === "showFinder") {
+    if (!latestResult?.path) {
+      showToast("The exported file path is not available yet", true);
+      return;
+    }
     revealNative(latestResult?.path, S.reveal).catch((error) => showToast(error.message, true));
   }
   if (target.id === "statusStrip") setStep(3);
@@ -836,7 +853,7 @@ async function boot() {
   } else if (status.status === "waiting_choice") {
     setStep(2);
   } else if (status.status === "done" || status.status === "failed") {
-    setStep(3);
+    setStep(4);
   }
 }
 
