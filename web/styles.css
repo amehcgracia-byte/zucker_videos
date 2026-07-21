@@ -597,15 +597,25 @@ button:disabled {
   gap: 12px;
 }
 
-.spherical-fields label {
+.spherical-fields fieldset {
   display: grid;
-  gap: 6px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.spherical-fields legend {
+  padding: 0 4px;
   font-weight: 800;
   color: var(--muted);
+  grid-column: 1 / -1;
 }
 
 .spherical-fields input {
   width: 100%;
+  min-width: 0;
 }
 
 .trim-fields {

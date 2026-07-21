@@ -71,7 +71,7 @@ async function apiForm(path, formData) {
 
 async function loadAppConfig() {
   appConfig = await api("/app/config");
-  lastSphericalSetup = appConfig.spherical_landmarks || {};
+  lastSphericalSetup = normalizeSphericalSetup(appConfig.spherical_landmarks || {});
   window.NativeBridge?.configure(appConfig);
 }
 
@@ -462,21 +462,61 @@ function renderSphericalSetup() {
 }
 
 function applySphericalSetup(values = {}) {
-  document.querySelectorAll("[data-spherical-landmark]").forEach((input) => {
-    const key = input.dataset.sphericalLandmark;
-    if (values[key] != null && input.value === "") input.value = Math.round(Number(values[key])).toString();
+  const normalized = normalizeSphericalSetup(values);
+  document.querySelectorAll("fieldset[data-spherical-landmark]").forEach((group) => {
+    const key = group.dataset.sphericalLandmark;
+    const data = normalized[key] || {};
+    group.querySelectorAll("[data-field]").forEach((input) => {
+      const value = data[input.dataset.field];
+      if (value != null && input.value === "") input.value = Number(value).toString();
+    });
   });
 }
 
 function sphericalLandmarksFromForm() {
   const values = {};
-  document.querySelectorAll("[data-spherical-landmark]").forEach((input) => {
-    const raw = String(input.value || "").trim();
-    if (!raw) return;
-    const value = Number(raw);
-    if (Number.isFinite(value)) values[input.dataset.sphericalLandmark] = ((value % 360) + 360) % 360;
+  document.querySelectorAll("fieldset[data-spherical-landmark]").forEach((group) => {
+    const yawInput = group.querySelector('[data-field="yaw"]');
+    const yaw = Number(yawInput?.value);
+    if (!Number.isFinite(yaw)) return;
+    const data = { yaw: ((yaw % 360) + 360) % 360 };
+    for (const field of ["pitch", "fov", "weight"]) {
+      const value = Number(group.querySelector(`[data-field="${field}"]`)?.value);
+      if (Number.isFinite(value)) data[field] = value;
+    }
+    values[group.dataset.sphericalLandmark] = data;
   });
   return values;
+}
+
+function normalizeSphericalSetup(raw = {}) {
+  const legacy = {
+    full_stage: "full_stage_yaw",
+    singer: "singer_yaw",
+    drummer: "drummer_yaw",
+    left: "left_yaw",
+    right: "right_yaw",
+    audience: "audience_yaw",
+    audience_stage_wide: "audience_stage_wide_yaw",
+    planet: "planet_yaw",
+  };
+  const defaults = {
+    full_stage: 110,
+    audience_stage_wide: 113.6,
+    planet: 150,
+  };
+  const result = {};
+  for (const [key, legacyKey] of Object.entries(legacy)) {
+    const source = raw[key] && typeof raw[key] === "object" ? raw[key] : raw[legacyKey] != null ? { yaw: raw[legacyKey] } : null;
+    if (!source || source.yaw == null) continue;
+    result[key] = {
+      yaw: Number(source.yaw),
+      pitch: Number.isFinite(Number(source.pitch)) ? Number(source.pitch) : 0,
+      fov: Number.isFinite(Number(source.fov)) ? Number(source.fov) : defaults[key] || 74.8,
+      weight: Number.isFinite(Number(source.weight)) ? Number(source.weight) : 1,
+    };
+  }
+  return result;
 }
 
 function setupTrimControls(masterPath) {
@@ -883,7 +923,7 @@ document.addEventListener("click", (event) => {
     document.querySelector(target.id === "setTrimStart" ? "#trimStart" : "#trimEnd").value = secondsToTime(preview.currentTime || 0);
   }
   if (target.id === "reuseSphericalSetup") {
-    document.querySelectorAll("[data-spherical-landmark]").forEach((input) => (input.value = ""));
+    document.querySelectorAll("[data-field]").forEach((input) => (input.value = ""));
     applySphericalSetup(lastSphericalSetup);
   }
   if (target.id === "retryWizard" || target.id === "retryWizardSuccess") {

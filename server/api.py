@@ -796,26 +796,58 @@ def _audio_trim_from_body(body: dict[str, Any]) -> dict[str, float] | None:
     return trim or None
 
 
-def _spherical_landmarks_from_body(body: dict[str, Any]) -> dict[str, float] | None:
+def _spherical_landmarks_from_body(body: dict[str, Any]) -> dict[str, dict[str, float]] | None:
     if "spherical_landmarks" not in body:
         return None
     return _sanitize_spherical_landmarks(body.get("spherical_landmarks") or {})
 
 
-def _sanitize_spherical_landmarks(raw: Any) -> dict[str, float]:
+def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, float]]:
     if not isinstance(raw, dict):
         return {}
-    allowed = {"singer_yaw", "drummer_yaw", "left_yaw", "right_yaw", "audience_yaw", "full_stage_yaw"}
-    landmarks: dict[str, float] = {}
-    for key in allowed:
-        value = raw.get(key)
-        if value in (None, ""):
+    defaults = {
+        "full_stage": {"legacy": "full_stage_yaw", "fov": 110.0},
+        "singer": {"legacy": "singer_yaw", "fov": 74.8},
+        "drummer": {"legacy": "drummer_yaw", "fov": 74.8},
+        "left": {"legacy": "left_yaw", "fov": 74.8},
+        "right": {"legacy": "right_yaw", "fov": 74.8},
+        "audience": {"legacy": "audience_yaw", "fov": 74.8},
+        "audience_stage_wide": {"legacy": "audience_stage_wide_yaw", "fov": 113.6},
+        "planet": {"legacy": "planet_yaw", "fov": 150.0},
+    }
+    landmarks: dict[str, dict[str, float]] = {}
+    for key, meta in defaults.items():
+        source = raw.get(key)
+        if source is None and meta["legacy"] in raw:
+            source = {"yaw": raw.get(meta["legacy"])}
+        if not isinstance(source, dict):
             continue
-        try:
-            landmarks[key] = round(float(value) % 360.0, 3)
-        except (TypeError, ValueError):
+        yaw = _optional_degrees(source.get("yaw"))
+        if yaw is None:
             continue
+        pitch = _optional_float_setting(source.get("pitch"), 0.0)
+        fov = max(1.0, min(190.0, _optional_float_setting(source.get("fov"), float(meta["fov"]))))
+        weight = max(0.0, _optional_float_setting(source.get("weight"), 1.0))
+        landmarks[key] = {"yaw": yaw, "pitch": pitch, "fov": fov, "weight": weight}
     return landmarks
+
+
+def _optional_degrees(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return round(float(value) % 360.0, 3)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_float_setting(value: Any, fallback: float) -> float:
+    if value in (None, ""):
+        return fallback
+    try:
+        return round(float(value), 3)
+    except (TypeError, ValueError):
+        return fallback
 
 
 def _enable_cors(app: Flask) -> None:

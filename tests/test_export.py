@@ -19,6 +19,8 @@ from core.stages.export import (
     ExportStage,
     _audio_gain_curve_samples,
     _bitrate_for_duration,
+    _cadence_checked_joined_video,
+    cached_segment_path,
     _expand_spherical_render_segments,
     _frame_pts_times,
     _equirect_filtergraph,
@@ -278,6 +280,39 @@ def test_render_segment_uses_original_source_with_proxy_metadata(tmp_path, monke
     assert commands[0][commands[0].index("-r") + 1] == "30.000"
     assert commands[0][commands[0].index("-fps_mode") + 1] == "cfr"
     assert commands[0][commands[0].index("-video_track_timescale") + 1] == "30000"
+
+
+def test_cached_segment_path_includes_spherical_shot_recipe(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project = create_project("Cache", str(tmp_path / "Cache.zuckervid"))
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    record = file_record(str(source))
+    record["probe"] = {"valid_video": True, "projection": "equirect"}
+    record["cache_key"] = "source-key"
+    project.data["inputs"]["videos"] = [record]
+    base = {"clip_path": str(source), "source_path": str(source), "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 3}
+
+    first = cached_segment_path(project, {**base, "spherical_shot": {"type": "singer", "yaw": 10}}, "youtube", 4_000_000, {}, {}, False, False)
+    second = cached_segment_path(project, {**base, "spherical_shot": {"type": "drummer", "yaw": 120}}, "youtube", 4_000_000, {}, {}, False, False)
+
+    assert first != second
+
+
+def test_join_fast_path_skips_cfr_rewrite_when_cadence_passes(tmp_path, monkeypatch):
+    source = tmp_path / "joined.mp4"
+    fallback = tmp_path / "fallback.mp4"
+    source.write_bytes(b"video")
+    calls = []
+
+    monkeypatch.setattr("core.stages.export._media_duration", lambda path: 12.0)
+    monkeypatch.setattr("core.stages.export._verify_video_cadence", lambda *args, **kwargs: None)
+    monkeypatch.setattr("core.stages.export._normalize_joined_video_cadence", lambda *args, **kwargs: calls.append(args))
+
+    selected = _cadence_checked_joined_video(source, fallback, 4_000_000, lambda percent, detail: None)
+
+    assert selected == source
+    assert calls == []
 
 
 def test_360_filtergraph_preserves_equirectangular_shape():

@@ -27,7 +27,7 @@ MIN_ACCEPTABLE_VIDEO_BITRATE = 2_500_000
 MAX_VIDEO_BITRATE = 18_000_000
 TARGET_EXPORT_FPS = 30.0
 TARGET_EXPORT_TIMESCALE = 30_000
-EXPORT_SEGMENT_RECIPE_VERSION = 8
+EXPORT_SEGMENT_RECIPE_VERSION = 9
 INTRO_DURATION = 10.2
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
@@ -290,10 +290,9 @@ def _render_plan(
             t("joining_segments"),
             lambda percent, detail: progress_callback(84 + int(percent * 6 / 100), detail),
         )
-        cfr_video = temp_dir / "joined-video-cfr.mp4"
-        _normalize_joined_video_cadence(
+        cfr_video = _cadence_checked_joined_video(
             joined_video,
-            cfr_video,
+            temp_dir / "joined-video-cfr.mp4",
             video_bitrate,
             lambda percent, detail: progress_callback(89 + int(percent * 1 / 100), detail),
         )
@@ -414,10 +413,9 @@ def _render_360_plan(
             t("joining_segments"),
             lambda percent, detail: progress_callback(88 + int(percent * 4 / 100), detail),
         )
-        cfr_joined = temp_dir / "joined-cfr.mp4"
-        _normalize_joined_video_cadence(
+        cfr_joined = _cadence_checked_joined_video(
             joined,
-            cfr_joined,
+            temp_dir / "joined-cfr.mp4",
             video_bitrate,
             lambda percent, detail: progress_callback(91 + int(percent * 1 / 100), detail),
             extra_args=_spherical_metadata_args(),
@@ -1107,6 +1105,23 @@ def _normalize_joined_video_cadence(
     _run_ffmpeg_progress(command, duration, t("joining_segments"), progress_callback)
 
 
+def _cadence_checked_joined_video(
+    input_path: Path,
+    fallback_output_path: Path,
+    video_bitrate: int,
+    progress_callback: ProgressCallback | None,
+    extra_args: list[str] | None = None,
+) -> Path:
+    """Use stream-copy concat output when cadence is already valid; rewrite only as fallback."""
+    try:
+        _verify_video_cadence(input_path, f"stream-copy joined video {input_path}", duration=_media_duration(str(input_path)))
+        return input_path
+    except FFmpegError as exc:
+        LOGGER.warning("Joined video cadence rewrite required for %s: %s", input_path, exc)
+        _normalize_joined_video_cadence(input_path, fallback_output_path, video_bitrate, progress_callback, extra_args=extra_args)
+        return fallback_output_path
+
+
 def _mux_continuous_master_audio(
     video_path: Path,
     master_path: str,
@@ -1349,6 +1364,7 @@ def cached_segment_path(
             "outro_fade": outro_fade,
             "intro_logo": intro_logo,
             "outro_logo": outro_logo,
+            "spherical_shot": _spherical_shot(segment) or {},
             "normalization_version": NORMALIZATION_VERSION,
             "export_segment_recipe": EXPORT_SEGMENT_RECIPE_VERSION,
         }

@@ -17,13 +17,17 @@ MAX_BARS_PER_SEGMENT = 2
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 0.5, "handheld": 0.3, "fixed_rear": 0.2}
 SPHERICAL_PAN_SEC = 0.45
-SPHERICAL_SHOT_ORDER = ("singer", "drummer", "left", "right", "audience", "full_stage")
+SPHERICAL_DEFAULT_FOV = 74.8
+SPHERICAL_SHOT_ORDER = ("full_stage", "singer", "drummer", "left", "right", "audience", "audience_stage_wide", "planet")
 SPHERICAL_LANDMARKS = {
-    "singer": ("singer_yaw", "Cantante", 80.0),
-    "drummer": ("drummer_yaw", "Bateria", 80.0),
-    "left": ("left_yaw", "Lado izquierdo", 85.0),
-    "right": ("right_yaw", "Lado derecho", 85.0),
-    "audience": ("audience_yaw", "Publico", 90.0),
+    "singer": ("singer_yaw", "Cantante", SPHERICAL_DEFAULT_FOV),
+    "drummer": ("drummer_yaw", "Bateria", SPHERICAL_DEFAULT_FOV),
+    "left": ("left_yaw", "Lado izquierdo", SPHERICAL_DEFAULT_FOV),
+    "right": ("right_yaw", "Lado derecho", SPHERICAL_DEFAULT_FOV),
+    "audience": ("audience_yaw", "Publico", SPHERICAL_DEFAULT_FOV),
+    "full_stage": ("full_stage_yaw", "Escenario completo", 110.0),
+    "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", 113.6),
+    "planet": ("planet_yaw", "Planeta", 150.0),
 }
 
 
@@ -66,7 +70,7 @@ class EditStage(Stage):
         else:
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, t("choosing_cameras"))
-            plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}).get(self.name, {}))
+            plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}))
         write_artifact_json(artifact_path(project, "beats.json"), beats)
         write_artifact_json(artifact_path(project, "edit_plan.json"), plan)
         progress_callback(100, t("edit_plan_ready"))
@@ -152,7 +156,10 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any], sett
     previous_source: str | None = None
     usage_counts: dict[str, int] = {}
     selection_stats = _selection_stats_template(sources, start, end)
-    role_weights = _camera_role_weights(settings)
+    project_settings = settings or {}
+    edit_settings = project_settings.get("edit") if "edit" in project_settings else project_settings
+    spherical_landmarks = migrate_spherical_landmarks(project_settings.get("spherical_landmarks") or {})
+    role_weights = _camera_role_weights(edit_settings)
     bar_index = 0
     segment_index = 0
     while bar_index < len(bar_times) - 1:
@@ -185,7 +192,15 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any], sett
         chosen_stats = selection_stats.setdefault(previous_source, _selection_stats_for_source(source, start, end))
         chosen_stats["chosen_segments"] += 1
         chosen_stats["chosen_seconds"] += segment_end - segment_start
-        segments.append(_segment_from_source(source, segment_start, segment_end, window.get("title") or t("full_video")))
+        segment = _segment_from_source(source, segment_start, segment_end, window.get("title") or t("full_video"))
+        if _source_role(source) == "360":
+            current_usage = _spherical_shot_usage(segments)
+            available_shots = _available_spherical_shots(spherical_landmarks)
+            include_planet = current_usage.get("Planeta", 0) == 0 and sum(current_usage.values()) >= 5
+            shot = _next_weighted_spherical_shot(available_shots, _spherical_type_usage(segments), include_planet=include_planet)
+            if shot:
+                segment["spherical_shot"] = shot
+        segments.append(segment)
         bar_index = next_index
         segment_index += 1
 
@@ -207,6 +222,7 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any], sett
         "gaps": gaps,
         "cut_count": max(0, len(segments) - 1),
         "camera_usage": usage,
+        "spherical_shot_usage": _spherical_shot_usage(segments),
         "segments": segments,
     }
 
@@ -239,15 +255,14 @@ def build_spherical_shot_segments(base_segments: list[dict[str, Any]], landmarks
     """Split 360 source coverage into named virtual-camera holds."""
     if not base_segments:
         return []
-    shots = _available_spherical_shots(landmarks or {})
+    shots = _available_spherical_shots(migrate_spherical_landmarks(landmarks or {}))
     if not shots:
         return list(base_segments)
     total_duration = sum(max(0.0, float(segment.get("duration_sec") or 0.0)) for segment in base_segments)
     planet_budget = 1 if total_duration >= 18.0 else 0
     planet_after = total_duration * 0.58
     elapsed = 0.0
-    shot_index = 0
-    previous_type: str | None = None
+    usage: dict[str, int] = {}
     output: list[dict[str, Any]] = []
     for base in base_segments:
         remaining = max(0.0, float(base.get("duration_sec") or 0.0))
@@ -256,13 +271,14 @@ def build_spherical_shot_segments(base_segments: list[dict[str, Any]], landmarks
             hold = min(MAX_SEGMENT_SEC, remaining)
             if remaining - hold > 0.001 and remaining - hold < MIN_SEGMENT_SEC:
                 hold = max(MIN_SEGMENT_SEC, remaining / 2.0)
-            shot = _next_spherical_shot(shots, shot_index, previous_type)
-            if planet_budget > 0 and elapsed <= planet_after < elapsed + hold:
-                shot = _planet_shot(shot.get("yaw", 0.0), hold)
+            shot = _next_weighted_spherical_shot(shots, usage, include_planet=False)
+            if planet_budget > 0 and elapsed <= planet_after < elapsed + hold and any(item.get("type") == "planet" for item in shots):
+                shot = dict(next(item for item in shots if item.get("type") == "planet"))
+                shot["yaw_end"] = _landmark_yaw(float(shot.get("yaw") or 0.0) + _landmark_weight(shot, "spin_deg_per_sec", 22.0) * max(0.0, hold), 0.0)
                 planet_budget -= 1
-            else:
-                shot_index += 1
-            previous_type = str(shot.get("type"))
+            if not shot:
+                break
+            usage[str(shot.get("type"))] = usage.get(str(shot.get("type")), 0) + 1
             segment = {
                 **base,
                 "clip_start_sec": round(float(base.get("clip_start_sec") or 0.0) + local, 6),
@@ -277,47 +293,88 @@ def build_spherical_shot_segments(base_segments: list[dict[str, Any]], landmarks
     return output
 
 
-def _available_spherical_shots(landmarks: dict[str, Any]) -> list[dict[str, Any]]:
-    shots: list[dict[str, Any]] = []
-    for shot_type in SPHERICAL_SHOT_ORDER:
-        if shot_type == "full_stage":
-            yaw = _landmark_yaw(landmarks.get("full_stage_yaw"), 0.0)
-            shots.append({"type": "full_stage", "label": "Escenario completo", "yaw": yaw, "pitch": 0.0, "fov": 130.0, "transition_sec": SPHERICAL_PAN_SEC})
+def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, float]]:
+    """Normalize legacy yaw-only landmark settings to the current per-shot schema."""
+    if not isinstance(raw, dict):
+        return {}
+    migrated: dict[str, dict[str, float]] = {}
+    for shot_type, (legacy_key, _label, default_fov) in SPHERICAL_LANDMARKS.items():
+        source = raw.get(shot_type)
+        if source is None and legacy_key in raw:
+            source = {"yaw": raw.get(legacy_key)}
+        if not isinstance(source, dict):
             continue
-        key, label, fov = SPHERICAL_LANDMARKS[shot_type]
-        yaw = _landmark_yaw(landmarks.get(key), None)
+        yaw = _landmark_yaw(source.get("yaw"), None)
         if yaw is None:
             continue
-        shots.append({"type": shot_type, "label": label, "yaw": yaw, "pitch": 0.0, "fov": fov, "transition_sec": SPHERICAL_PAN_SEC})
+        migrated[shot_type] = {
+            "yaw": yaw,
+            "pitch": _landmark_weight(source, "pitch", 0.0),
+            "fov": _landmark_weight(source, "fov", default_fov),
+            "weight": max(0.0, _landmark_weight(source, "weight", 1.0)),
+        }
+    return migrated
+
+
+def _available_spherical_shots(landmarks: dict[str, dict[str, float]]) -> list[dict[str, Any]]:
+    shots: list[dict[str, Any]] = []
+    for shot_type in SPHERICAL_SHOT_ORDER:
+        key, label, default_fov = SPHERICAL_LANDMARKS[shot_type]
+        data = landmarks.get(shot_type)
+        if data is None and shot_type == "full_stage":
+            data = {"yaw": 0.0, "pitch": 0.0, "fov": default_fov, "weight": 1.0}
+        if not data:
+            continue
+        yaw = _landmark_yaw(data.get("yaw"), None)
+        if yaw is None:
+            continue
+        weight = max(0.0, _landmark_weight(data, "weight", 1.0))
+        if weight <= 0.0:
+            continue
+        shot = {
+            "type": shot_type,
+            "label": label,
+            "yaw": yaw,
+            "pitch": _landmark_weight(data, "pitch", 0.0),
+            "fov": _landmark_weight(data, "fov", default_fov),
+            "weight": weight,
+            "transition_sec": SPHERICAL_PAN_SEC,
+        }
+        if shot_type == "planet":
+            shot["spin_deg_per_sec"] = 18.0
+        shots.append(shot)
     return shots
 
 
-def _next_spherical_shot(shots: list[dict[str, Any]], index: int, previous_type: str | None) -> dict[str, Any]:
-    if not shots:
-        return {"type": "full_stage", "label": "Escenario completo", "yaw": 0.0, "pitch": 0.0, "fov": 130.0, "transition_sec": SPHERICAL_PAN_SEC}
-    for offset in range(len(shots)):
-        shot = shots[(index + offset) % len(shots)]
-        if len(shots) == 1 or shot.get("type") != previous_type:
-            return dict(shot)
-    return dict(shots[index % len(shots)])
-
-
-def _planet_shot(start_yaw: float, duration: float) -> dict[str, Any]:
-    return {
-        "type": "planet",
-        "label": "Planeta",
-        "yaw": _landmark_yaw(start_yaw, 0.0),
-        "yaw_end": _landmark_yaw(float(start_yaw) + 22.0 * max(0.0, duration), 0.0),
-        "pitch": -65.0,
-        "fov": 180.0,
-        "transition_sec": SPHERICAL_PAN_SEC,
-        "spin_deg_per_sec": 22.0,
-    }
-
+def _next_weighted_spherical_shot(shots: list[dict[str, Any]], usage: dict[str, int], include_planet: bool = False) -> dict[str, Any] | None:
+    candidates = [
+        shot
+        for shot in shots
+        if float(shot.get("weight") or 0.0) > 0.0 and (include_planet or shot.get("type") != "planet")
+    ]
+    if not candidates:
+        return None
+    return dict(
+        sorted(
+            candidates,
+            key=lambda shot: (
+                usage.get(str(shot.get("type")), 0) / max(0.001, float(shot.get("weight") or 1.0)),
+                usage.get(str(shot.get("type")), 0),
+                str(shot.get("type")),
+            ),
+        )[0]
+    )
 
 def _landmark_yaw(value: Any, fallback: float | None) -> float | None:
     try:
         return float(value) % 360.0
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _landmark_weight(data: dict[str, Any], key: str, fallback: float) -> float:
+    try:
+        return float(data.get(key, fallback))
     except (TypeError, ValueError):
         return fallback
 
@@ -329,6 +386,16 @@ def _spherical_shot_usage(segments: list[dict[str, Any]]) -> dict[str, int]:
         label = str(shot.get("label") or shot.get("type") or "").strip()
         if label:
             usage[label] = usage.get(label, 0) + 1
+    return usage
+
+
+def _spherical_type_usage(segments: list[dict[str, Any]]) -> dict[str, int]:
+    usage: dict[str, int] = {}
+    for segment in segments:
+        shot = segment.get("spherical_shot") or {}
+        shot_type = str(shot.get("type") or "").strip()
+        if shot_type:
+            usage[shot_type] = usage.get(shot_type, 0) + 1
     return usage
 
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, build_spherical_shot_segments, estimate_bar_starts, _youtube_multicam_plan
+from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _youtube_multicam_plan
 from core.stages.cut import _segment_for_360, _select_360_clip
 
 
@@ -121,3 +121,42 @@ def test_spherical_rotation_avoids_repeats_and_caps_planet():
     assert all(a != b for a, b in zip(types, types[1:]) if a != "planet" and b != "planet")
     assert types.count("planet") <= 1
     assert all(MIN_SEGMENT_SEC <= segment["duration_sec"] <= MAX_SEGMENT_SEC for segment in segments)
+
+
+def test_spherical_landmark_schema_migrates_yaw_only_values():
+    migrated = migrate_spherical_landmarks({"singer_yaw": -23.2})
+
+    assert migrated["singer"]["yaw"] == 336.8
+    assert migrated["singer"]["pitch"] == 0.0
+    assert migrated["singer"]["fov"] == 74.8
+
+
+def test_spherical_weights_exclude_zero_and_bias_frequency():
+    base = [{"clip_path": "/tmp/360.mp4", "source_path": "/tmp/360.mp4", "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 60, "projection": "equirect"}]
+
+    segments = build_spherical_shot_segments(
+        base,
+        {
+            "singer": {"yaw": 20, "pitch": 0, "fov": 74.8, "weight": 4},
+            "left": {"yaw": 90, "pitch": 0, "fov": 74.8, "weight": 1},
+            "audience": {"yaw": 180, "pitch": 0, "fov": 74.8, "weight": 0},
+        },
+    )
+
+    types = [segment["spherical_shot"]["type"] for segment in segments]
+    assert "audience" not in types
+    assert types.count("singer") > types.count("left")
+
+
+def test_youtube_plan_assigns_spherical_shots_to_360_segments():
+    coverage = {
+        "platform": "youtube",
+        "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 8.0},
+        "sources": [{"path": "/tmp/360.mp4", "filename": "wide360.mp4", "projection": "equirect", "offset_sec": 0.0, "duration_sec": 8.0, "confidence": 8.0}],
+    }
+    beats = {"bars_sec": [0.0, 2.0, 4.0, 6.0, 8.0], "sections_sec": []}
+
+    plan = _youtube_multicam_plan(coverage, beats, {"spherical_landmarks": {"singer": {"yaw": 10, "weight": 1}, "left": {"yaw": 90, "weight": 1}}})
+
+    assert any(segment.get("spherical_shot") for segment in plan["segments"])
+    assert plan["spherical_shot_usage"]
