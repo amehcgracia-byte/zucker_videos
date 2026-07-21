@@ -270,7 +270,7 @@ def test_render_segment_uses_original_source_with_proxy_metadata(tmp_path, monke
     assert rendered_from == "original"
     assert str(source) in commands[0]
     assert str(proxy) not in commands[0]
-    assert "fps=30.000,setpts=N/(30.000*TB)" in commands[0][commands[0].index("-filter_complex") + 1]
+    assert "fps=fps=30.000:round=near:start_time=0,trim=start_frame=0:end_frame=90,setpts=N/(30.000*TB)" in commands[0][commands[0].index("-filter_complex") + 1]
     assert str(master) not in commands[0]
     assert "-an" in commands[0]
     assert commands[0][commands[0].index("-r") + 1] == "30.000"
@@ -279,10 +279,11 @@ def test_render_segment_uses_original_source_with_proxy_metadata(tmp_path, monke
 
 
 def test_360_filtergraph_preserves_equirectangular_shape():
-    graph = _equirect_filtergraph({"projection": "equirect"}, 4.0, has_watermark=True)
+    graph = _equirect_filtergraph({"projection": "equirect"}, 4.0, 120, has_watermark=True)
 
     assert "v360=input=equirect:output=flat" not in graph
     assert "scale=3840:1920" in graph
+    assert "fps=fps=30.000:round=near:start_time=0,trim=start_frame=0:end_frame=120,setpts=N/(30.000*TB)" in graph
     assert "overlay=W-w-80:H-h-80" in graph
 
 

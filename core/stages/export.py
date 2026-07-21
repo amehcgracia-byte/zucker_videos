@@ -14,7 +14,7 @@ from typing import Any
 from core.ffmpeg import FFmpegError, tool_status
 from core.messages import t
 from core.media_validation import record_is_usable_camera_video, record_media_path
-from core.normalization import NORMALIZATION_VERSION, global_cache_root, global_segment_path, normalization_filter, source_cache_key
+from core.normalization import EVEN_SDR_FILTER, NORMALIZATION_VERSION, SDR_TONEMAP_FILTER, global_cache_root, global_segment_path, source_cache_key
 from core.project import Project
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.cut import load_coverage
@@ -27,7 +27,7 @@ MIN_ACCEPTABLE_VIDEO_BITRATE = 2_500_000
 MAX_VIDEO_BITRATE = 18_000_000
 TARGET_EXPORT_FPS = 30.0
 TARGET_EXPORT_TIMESCALE = 30_000
-EXPORT_SEGMENT_RECIPE_VERSION = 7
+EXPORT_SEGMENT_RECIPE_VERSION = 8
 INTRO_DURATION = 10.2
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
@@ -464,7 +464,7 @@ def _render_360_body(
     frame_count = _segment_frame_count(segment)
     source = _segment_source_info(project, segment)
     watermark = _watermark_path()
-    filter_complex = _equirect_filtergraph(source.get("probe") or {}, duration, bool(watermark), intro_fade=intro_fade, outro_fade=outro_fade)
+    filter_complex = _equirect_filtergraph(source.get("probe") or {}, duration, frame_count, bool(watermark), intro_fade=intro_fade, outro_fade=outro_fade)
     command = _segment_video_command_base(ffmpeg, source["source_path"], segment, duration)
     if watermark:
         command.extend(["-loop", "1", "-i", str(watermark)])
@@ -501,13 +501,14 @@ def _render_360_body(
         _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
 
 
-def _equirect_filtergraph(probe: dict[str, Any], duration: float, has_watermark: bool, intro_fade: bool = False, outro_fade: bool = False) -> str:
+def _equirect_filtergraph(probe: dict[str, Any], duration: float, frame_count: int | None, has_watermark: bool, intro_fade: bool = False, outro_fade: bool = False) -> str:
     if probe.get("projection") == "raw_insv":
         fov = int(probe.get("insv_fov") or 190)
         base_filter = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov},scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
     else:
         base_filter = "scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
-    filters = f"{base_filter},{_constant_cadence_filter()},tpad=stop_mode=clone:stop_duration={1.0 / TARGET_EXPORT_FPS:.6f},format=yuv420p"
+    timing = _exact_cadence_filter(frame_count) if frame_count else _constant_cadence_filter()
+    filters = f"{base_filter},{timing},tpad=stop_mode=clone:stop_duration={1.0 / TARGET_EXPORT_FPS:.6f},format=yuv420p"
     if intro_fade:
         filters += f",fade=t=in:st=0:d={CONTENT_FADE_DURATION:.3f}"
     if outro_fade:
@@ -694,7 +695,8 @@ def _render_segment(
         outro_fade=outro_fade,
         intro_logo=intro_logo,
         outro_logo=outro_logo,
-        source_filter=normalization_filter(source.get("probe") or {}, fps=TARGET_EXPORT_FPS, proxy=False),
+        source_filter=_export_source_filter(source.get("probe") or {}),
+        frame_count=frame_count,
     )
     command_base = _segment_video_command_base(
         ffmpeg,
@@ -805,6 +807,7 @@ def _render_proxy_segment(
         outro_fade=outro_fade,
         intro_logo=intro_logo,
         outro_logo=outro_logo,
+        frame_count=frame_count,
     )
     proxy_command = _segment_video_command_base(ffmpeg, proxy_path, segment, duration)
     if watermark:
@@ -964,7 +967,15 @@ def _run_ffmpeg_progress(command: list[str], duration: float, label: str, progre
 
 
 def _constant_cadence_filter(fps: float = TARGET_EXPORT_FPS) -> str:
-    return f"fps={fps:.3f},setpts=N/({fps:.3f}*TB)"
+    return f"{_target_fps_filter(fps)},setpts=N/({fps:.3f}*TB)"
+
+
+def _target_fps_filter(fps: float = TARGET_EXPORT_FPS) -> str:
+    return f"fps=fps={fps:.3f}:round=near:start_time=0"
+
+
+def _exact_cadence_filter(frame_count: int, fps: float = TARGET_EXPORT_FPS) -> str:
+    return f"{_target_fps_filter(fps)},trim=start_frame=0:end_frame={max(1, int(frame_count))},setpts=N/({fps:.3f}*TB)"
 
 
 def _normalize_joined_video_cadence(
@@ -1075,6 +1086,20 @@ def _base_video_filter(platform: str) -> str:
     return "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
 
 
+def _export_source_filter(probe: dict[str, Any]) -> str:
+    """Prepare source pixels for export while leaving fps conversion to the segment timing filter."""
+    if probe.get("projection") == "raw_insv":
+        fov = int(probe.get("insv_fov") or 190)
+        spatial = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov},v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w=1920:h=1080"
+    elif probe.get("projection") == "equirect":
+        spatial = "v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w=1920:h=1080"
+    elif probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
+        spatial = f"{SDR_TONEMAP_FILTER},scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    else:
+        spatial = EVEN_SDR_FILTER
+    return spatial
+
+
 def _segment_filtergraph(
     platform: str,
     duration: float,
@@ -1087,12 +1112,13 @@ def _segment_filtergraph(
     intro_logo: bool = False,
     outro_logo: bool = False,
     source_filter: str | None = None,
+    frame_count: int | None = None,
 ) -> str:
     filters = []
     if source_filter:
         filters.append(source_filter)
     filters.extend([_base_video_filter(platform), _color_filter(color_profile)])
-    filters.append(_constant_cadence_filter())
+    filters.append(_exact_cadence_filter(frame_count) if frame_count else _constant_cadence_filter())
     if intro_fade:
         filters.append(f"fade=t=in:st=0:d={CONTENT_FADE_DURATION:.3f}")
     if outro_fade:
