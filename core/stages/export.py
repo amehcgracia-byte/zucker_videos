@@ -27,9 +27,10 @@ MIN_ACCEPTABLE_VIDEO_BITRATE = 2_500_000
 MAX_VIDEO_BITRATE = 18_000_000
 TARGET_EXPORT_FPS = 30.0
 TARGET_EXPORT_TIMESCALE = 30_000
-EXPORT_SEGMENT_RECIPE_VERSION = 4
-INTRO_DURATION = 3.4
-OUTRO_DURATION = 3.4
+EXPORT_SEGMENT_RECIPE_VERSION = 5
+INTRO_DURATION = 6.8
+OUTRO_DURATION = 6.8
+CONTENT_FADE_DURATION = 1.0
 
 
 class ExportStage(Stage):
@@ -87,7 +88,11 @@ class ExportStage(Stage):
             path,
             {
                 "stage": self.name,
-                "render_logic": "360 passthrough with master audio and spherical metadata" if platform == "360" else "edit-plan segments with master-audio slices; intro/outro clips; concat",
+                "render_logic": (
+                    "360 video-only passthrough with one continuous final master-audio mux"
+                    if platform == "360"
+                    else "video-only edit-plan segments plus intro/outro clips; concat; one continuous final master-audio mux"
+                ),
                 "warnings": warnings,
                 "max_export_bytes": MAX_EXPORT_BYTES,
                 "target_video_bitrate": bitrate_info["video_bitrate"],
@@ -137,19 +142,16 @@ def _render_plan(
     overlay_config = _overlay_config(platform, segments[0])
     verify_motion = bool(project.data.get("settings", {}).get("export", {}).get("verify_motion", True))
     try:
-        if not _can_blend_intro_outro():
-            intro_path = temp_dir / "intro.mp4"
-            _render_logo_clip(
-                master_path,
-                intro_path,
-                platform,
-                "intro",
-                _intro_master_start(segments),
-                INTRO_DURATION,
-                video_bitrate,
-                lambda percent, detail: progress_callback(8 + int(percent * 2 / 100), detail),
-            )
-            segment_paths.append(intro_path)
+        intro_path = temp_dir / "intro.mp4"
+        _render_logo_clip(
+            intro_path,
+            platform,
+            "intro",
+            INTRO_DURATION,
+            video_bitrate,
+            lambda percent, detail: progress_callback(8 + int(percent * 2 / 100), detail),
+        )
+        segment_paths.append(intro_path)
         for index, segment in enumerate(segments, start=1):
             segment_duration = max(0.1, float(segment["duration_sec"]))
             base_percent = 10 + int(70 * rendered_duration / max(total_duration, 0.1))
@@ -160,10 +162,10 @@ def _render_plan(
                 progress_callback(min(84, percent), f"Rendering segment {index}/{len(segments)}: {detail}")
 
             color_profile = color_profiles.get(str(segment.get("clip_path")), {})
-            intro_fade = False
-            outro_fade = False
-            intro_logo = _can_blend_intro_outro() and index == 1
-            outro_logo = _can_blend_intro_outro() and index == len(segments)
+            intro_fade = index == 1
+            outro_fade = index == len(segments)
+            intro_logo = False
+            outro_logo = False
             segment_path = cached_segment_path(project, segment, platform, video_bitrate, overlay_config, color_profile, intro_fade, outro_fade, intro_logo, outro_logo)
             source_info = _segment_source_info(project, segment)
             command_line = "cached segment"
@@ -216,20 +218,18 @@ def _render_plan(
                 )
             segment_paths.append(segment_path)
             rendered_duration += segment_duration
-        if not _can_blend_intro_outro():
-            outro_path = temp_dir / "outro.mp4"
-            _render_logo_clip(
-                master_path,
-                outro_path,
-                platform,
-                "outro",
-                _outro_master_start(segments),
-                OUTRO_DURATION,
-                video_bitrate,
-                lambda percent, detail: progress_callback(82 + int(percent * 2 / 100), detail),
-            )
-            segment_paths.append(outro_path)
+        outro_path = temp_dir / "outro.mp4"
+        _render_logo_clip(
+            outro_path,
+            platform,
+            "outro",
+            OUTRO_DURATION,
+            video_bitrate,
+            lambda percent, detail: progress_callback(82 + int(percent * 2 / 100), detail),
+        )
+        segment_paths.append(outro_path)
         concat_path = temp_dir / "concat.txt"
+        joined_video = temp_dir / "joined-video.mp4"
         concat_path.write_text("".join(_concat_file_line(path) for path in segment_paths), encoding="utf-8")
         _run_ffmpeg_progress(
             [
@@ -249,14 +249,24 @@ def _render_plan(
                 str(concat_path),
                 "-c",
                 "copy",
-                str(output_path),
+                str(joined_video),
             ],
-            total_duration + (0 if _can_blend_intro_outro() else INTRO_DURATION + OUTRO_DURATION),
+            total_duration + INTRO_DURATION + OUTRO_DURATION,
             t("joining_segments"),
-            lambda percent, detail: progress_callback(84 + int(percent * 11 / 100), detail),
+            lambda percent, detail: progress_callback(84 + int(percent * 6 / 100), detail),
+        )
+        _mux_continuous_master_audio(
+            joined_video,
+            master_path,
+            output_path,
+            _intro_master_start(segments),
+            total_duration + INTRO_DURATION + OUTRO_DURATION,
+            video_bitrate,
+            lambda percent, detail: progress_callback(90 + int(percent * 5 / 100), detail),
         )
         if verify_motion:
-            _verify_joined_output(output_path, segments, timeline_offset=0.0 if _can_blend_intro_outro() else INTRO_DURATION)
+            _verify_joined_output(output_path, segments, timeline_offset=INTRO_DURATION)
+            _verify_final_audio(output_path, segments, master_path, _intro_master_start(segments), timeline_offset=INTRO_DURATION)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -283,42 +293,33 @@ def _render_360_plan(
         body = temp_dir / "body.mp4"
         outro = temp_dir / "outro.mp4"
         joined = temp_dir / "joined.mp4"
-        blend_logo = _can_blend_intro_outro()
-        if not blend_logo:
-            _render_logo_clip(
-                master_path,
-                intro,
-                "360",
-                "intro",
-                _intro_master_start([segment]),
-                INTRO_DURATION,
-                video_bitrate,
-                lambda percent, detail: progress_callback(8 + int(percent * 4 / 100), detail),
-            )
+        _render_logo_clip(
+            intro,
+            "360",
+            "intro",
+            INTRO_DURATION,
+            video_bitrate,
+            lambda percent, detail: progress_callback(8 + int(percent * 4 / 100), detail),
+        )
         _render_360_body(
             project,
             segment,
-            master_path,
             body,
             video_bitrate,
             lambda percent, detail: progress_callback(12 + int(percent * 72 / 100), f"Rendering 360: {detail}"),
-            intro_logo=blend_logo,
-            outro_logo=blend_logo,
+            intro_fade=True,
+            outro_fade=True,
         )
-        if not blend_logo:
-            _render_logo_clip(
-                master_path,
-                outro,
-                "360",
-                "outro",
-                _outro_master_start([segment]),
-                OUTRO_DURATION,
-                video_bitrate,
-                lambda percent, detail: progress_callback(84 + int(percent * 4 / 100), detail),
-            )
+        _render_logo_clip(
+            outro,
+            "360",
+            "outro",
+            OUTRO_DURATION,
+            video_bitrate,
+            lambda percent, detail: progress_callback(84 + int(percent * 4 / 100), detail),
+        )
         concat_path = temp_dir / "concat.txt"
-        concat_inputs = [body] if blend_logo else [intro, body, outro]
-        concat_path.write_text("".join(_concat_file_line(path) for path in concat_inputs), encoding="utf-8")
+        concat_path.write_text("".join(_concat_file_line(path) for path in [intro, body, outro]), encoding="utf-8")
         _run_ffmpeg_progress(
             [
                 ffmpeg,
@@ -340,11 +341,20 @@ def _render_360_plan(
                 *_spherical_metadata_args(),
                 str(joined),
             ],
-            duration + (0 if blend_logo else INTRO_DURATION + OUTRO_DURATION),
+            duration + INTRO_DURATION + OUTRO_DURATION,
             t("joining_segments"),
-            lambda percent, detail: progress_callback(88 + int(percent * 7 / 100), detail),
+            lambda percent, detail: progress_callback(88 + int(percent * 4 / 100), detail),
         )
-        shutil.move(str(joined), output_path)
+        _mux_continuous_master_audio(
+            joined,
+            master_path,
+            output_path,
+            _intro_master_start([segment]),
+            duration + INTRO_DURATION + OUTRO_DURATION,
+            video_bitrate,
+            lambda percent, detail: progress_callback(92 + int(percent * 3 / 100), detail),
+            extra_args=_spherical_metadata_args(),
+        )
         warnings.append("360 export uses the selected 360 clip full length with synced master audio; no multicam cuts.")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -375,19 +385,18 @@ def _select_360_segment(project: Project, segments: list[dict[str, Any]]) -> dic
 def _render_360_body(
     project: Project,
     segment: dict[str, Any],
-    master_path: str,
     output_path: Path,
     video_bitrate: int,
     progress_callback: ProgressCallback | None,
-    intro_logo: bool = False,
-    outro_logo: bool = False,
+    intro_fade: bool = False,
+    outro_fade: bool = False,
 ) -> None:
     ffmpeg = _ffmpeg_path()
     duration = max(0.1, float(segment["duration_sec"]))
     source = _segment_source_info(project, segment)
     watermark = _watermark_path()
-    filter_complex = _equirect_filtergraph(source.get("probe") or {}, duration, bool(watermark), intro_logo=intro_logo, outro_logo=outro_logo)
-    command = _segment_command_base(ffmpeg, source["source_path"], master_path, segment, duration)
+    filter_complex = _equirect_filtergraph(source.get("probe") or {}, duration, bool(watermark), intro_fade=intro_fade, outro_fade=outro_fade)
+    command = _segment_video_command_base(ffmpeg, source["source_path"], segment, duration)
     if watermark:
         command.extend(["-loop", "1", "-i", str(watermark)])
     command.extend(
@@ -396,8 +405,6 @@ def _render_360_body(
             filter_complex,
             "-map",
             "[v]",
-            "-map",
-            "1:a:0",
             "-pix_fmt",
             "yuv420p",
             "-r",
@@ -406,11 +413,7 @@ def _render_360_body(
             "cfr",
             "-video_track_timescale",
             str(TARGET_EXPORT_TIMESCALE),
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-            "-shortest",
+            "-an",
             "-movflags",
             "+faststart",
             *_spherical_metadata_args(),
@@ -427,21 +430,23 @@ def _render_360_body(
         _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
 
 
-def _equirect_filtergraph(probe: dict[str, Any], duration: float, has_watermark: bool, intro_logo: bool = False, outro_logo: bool = False) -> str:
+def _equirect_filtergraph(probe: dict[str, Any], duration: float, has_watermark: bool, intro_fade: bool = False, outro_fade: bool = False) -> str:
     if probe.get("projection") == "raw_insv":
         fov = int(probe.get("insv_fov") or 190)
         base_filter = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov},scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
     else:
         base_filter = "scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
     filters = f"{base_filter},fps={TARGET_EXPORT_FPS:.3f},setpts=PTS-STARTPTS,format=yuv420p"
+    if intro_fade:
+        filters += f",fade=t=in:st=0:d={CONTENT_FADE_DURATION:.3f}"
+    if outro_fade:
+        filters += f",fade=t=out:st={max(0.0, duration - CONTENT_FADE_DURATION):.3f}:d={CONTENT_FADE_DURATION:.3f}"
     graph = f"[0:v]{filters}[base]"
     if not has_watermark:
         return f"{graph};[base]copy[v]"
-    if intro_logo or outro_logo:
-        return _logo_overlay_filtergraph(graph, "360", duration, intro_logo, outro_logo, margin=80, wm_height=96)
     return (
         f"{graph};"
-        "[2:v]format=rgba,scale=-1:96,colorchannelmixer=aa=0.70[wm];"
+        "[1:v]format=rgba,scale=-1:96,colorchannelmixer=aa=0.70[wm];"
         "[base][wm]overlay=W-w-80:H-h-80:format=auto[v]"
     )
 
@@ -458,16 +463,14 @@ def _spherical_metadata_args() -> list[str]:
 
 
 def _render_logo_clip(
-    master_path: str,
     output_path: Path,
     platform: str,
     kind: str,
-    master_start: float,
     duration: float,
     video_bitrate: int,
     progress_callback: ProgressCallback | None,
 ) -> None:
-    """Render a standalone intro/outro logo clip in the concat house format."""
+    """Render a standalone video-only intro/outro logo clip in the concat house format."""
     ffmpeg = _ffmpeg_path()
     logo = _intro_logo_path() or _logo_path()
     width, height = _target_size(platform)
@@ -490,22 +493,13 @@ def _render_logo_clip(
     if logo:
         command.extend(["-loop", "1", "-t", f"{duration:.3f}", "-i", str(logo)])
         input_count += 1
-    master_index: int | None = None
-    if kind == "intro":
-        command.extend(["-ss", f"{max(0.0, master_start):.3f}", "-t", f"{duration:.3f}", "-i", str(Path(master_path))])
-        master_index = input_count
-        input_count += 1
-    command.extend(["-f", "lavfi", "-t", f"{duration:.3f}", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"])
-    silence_index = input_count
-    filter_complex = _logo_filtergraph(platform, kind, duration, bool(logo), silence_index, master_index)
+    filter_complex = _logo_filtergraph(platform, kind, duration, bool(logo))
     command.extend(
         [
             "-filter_complex",
             filter_complex,
             "-map",
             "[v]",
-            "-map",
-            "[a]",
             "-pix_fmt",
             "yuv420p",
             "-r",
@@ -514,10 +508,7 @@ def _render_logo_clip(
             "cfr",
             "-video_track_timescale",
             str(TARGET_EXPORT_TIMESCALE),
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
+            "-an",
             "-movflags",
             "+faststart",
         ]
@@ -527,25 +518,20 @@ def _render_logo_clip(
     _run_ffmpeg_progress(command, duration, f"{kind.title()} logo", progress_callback)
 
 
-def _logo_filtergraph(platform: str, kind: str, duration: float, has_logo: bool, silence_index: int, master_index: int | None = None) -> str:
+def _logo_filtergraph(platform: str, kind: str, duration: float, has_logo: bool) -> str:
     video = "[0:v]format=yuv420p[bg]"
-    if master_index is None:
-        audio = f"[{silence_index}:a]atrim=0:{duration:.3f},asetpts=PTS-STARTPTS[a]"
-    else:
-        audio = (
-            f"[{master_index}:a]atrim=0:{duration:.3f},asetpts=PTS-STARTPTS[master];"
-            f"[{silence_index}:a]atrim=0:{duration:.3f},asetpts=PTS-STARTPTS[silence];"
-            "[silence][master]amix=inputs=2:duration=first:dropout_transition=0[a]"
-        )
     if not has_logo:
-        return f"{video};[bg]copy[v];{audio}"
+        return f"{video};[bg]copy[v]"
     logo_height = int(_target_size(platform)[1] * 0.72)
-    fade = "fade=t=in:st=0.50:d=1.15:alpha=1,fade=t=out:st=2.35:d=1.00:alpha=1"
+    fade_in = 2.30
+    fade_out = 2.00
+    black_hold = 1.00
+    fade_out_start = max(0.0, duration - black_hold - fade_out)
+    fade = f"fade=t=in:st={black_hold:.2f}:d={fade_in:.2f}:alpha=1,fade=t=out:st={fade_out_start:.2f}:d={fade_out:.2f}:alpha=1"
     return (
         f"{video};"
         f"[1:v]format=rgba,scale=-1:{logo_height},{fade}[logo];"
-        f"[bg][logo]overlay=(W-w)/2:(H-h)/2:format=auto[v];"
-        f"{audio}"
+        f"[bg][logo]overlay=(W-w)/2:(H-h)/2:format=auto[v]"
     )
 
 
@@ -631,10 +617,9 @@ def _render_segment(
         outro_logo=outro_logo,
         source_filter=normalization_filter(source.get("probe") or {}, fps=TARGET_EXPORT_FPS, proxy=False),
     )
-    command_base = _segment_command_base(
+    command_base = _segment_video_command_base(
         ffmpeg,
         source["source_path"],
-        master_path,
         segment,
         duration,
     )
@@ -644,10 +629,8 @@ def _render_segment(
         [
             "-filter_complex",
             filter_complex,
-        "-map",
+            "-map",
             "[v]",
-        "-map",
-            "1:a:0",
             "-pix_fmt",
             "yuv420p",
             "-r",
@@ -656,11 +639,7 @@ def _render_segment(
             "cfr",
             "-video_track_timescale",
             str(TARGET_EXPORT_TIMESCALE),
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-            "-shortest",
+            "-an",
             "-movflags",
             "+faststart",
         ]
@@ -744,7 +723,7 @@ def _render_proxy_segment(
         intro_logo=intro_logo,
         outro_logo=outro_logo,
     )
-    proxy_command = _segment_command_base(ffmpeg, proxy_path, master_path, segment, duration)
+    proxy_command = _segment_video_command_base(ffmpeg, proxy_path, segment, duration)
     if watermark:
         proxy_command.extend(["-loop", "1", "-i", str(watermark)])
     proxy_command.extend(
@@ -753,8 +732,6 @@ def _render_proxy_segment(
             proxy_filter,
             "-map",
             "[v]",
-            "-map",
-            "1:a:0",
             "-pix_fmt",
             "yuv420p",
             "-r",
@@ -763,11 +740,7 @@ def _render_proxy_segment(
             "cfr",
             "-video_track_timescale",
             str(TARGET_EXPORT_TIMESCALE),
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-            "-shortest",
+            "-an",
             "-movflags",
             "+faststart",
         ]
@@ -859,7 +832,7 @@ def _verify_or_rebuild_segment(
             return command_line
 
 
-def _segment_command_base(ffmpeg: str, clip_path: str, master_path: str, segment: dict[str, Any], duration: float) -> list[str]:
+def _segment_video_command_base(ffmpeg: str, clip_path: str, segment: dict[str, Any], duration: float) -> list[str]:
     return [
         ffmpeg,
         "-y",
@@ -875,12 +848,6 @@ def _segment_command_base(ffmpeg: str, clip_path: str, master_path: str, segment
         f"{duration:.3f}",
         "-i",
         str(Path(clip_path)),
-        "-ss",
-        f"{float(segment.get('master_start_sec') or 0.0):.3f}",
-        "-t",
-        f"{duration:.3f}",
-        "-i",
-        str(Path(master_path)),
     ]
 
 
@@ -902,6 +869,56 @@ def _run_ffmpeg_progress(command: list[str], duration: float, label: str, progre
         raise FFmpegError((stderr or "").strip() or "ffmpeg export failed")
     if progress:
         progress(100, f"{label} — 100%")
+
+
+def _mux_continuous_master_audio(
+    video_path: Path,
+    master_path: str,
+    output_path: Path,
+    audio_start: float,
+    duration: float,
+    video_bitrate: int,
+    progress_callback: ProgressCallback | None,
+    extra_args: list[str] | None = None,
+) -> None:
+    """Mux one continuous master-audio span over the already-concatenated video."""
+    ffmpeg = _ffmpeg_path()
+    audio_filter = f"apad,atrim=0:{duration:.3f},asetpts=PTS-STARTPTS[a]"
+    command = [
+        ffmpeg,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-progress",
+        "pipe:1",
+        "-i",
+        str(video_path),
+        "-ss",
+        f"{max(0.0, audio_start):.3f}",
+        "-i",
+        str(Path(master_path)),
+        "-filter_complex",
+        audio_filter,
+        "-map",
+        "0:v:0",
+        "-map",
+        "[a]",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-t",
+        f"{duration:.3f}",
+        "-movflags",
+        "+faststart",
+        *(extra_args or []),
+        str(output_path),
+    ]
+    _run_ffmpeg_progress(command, duration, t("joining_segments"), progress_callback)
 
 
 def _base_video_filter(platform: str) -> str:
@@ -931,9 +948,9 @@ def _segment_filtergraph(
     filters.extend([_base_video_filter(platform), _color_filter(color_profile)])
     filters.append(f"fps={TARGET_EXPORT_FPS:.3f},setpts=PTS-STARTPTS")
     if intro_fade:
-        filters.append("fade=t=in:st=0:d=0.5")
+        filters.append(f"fade=t=in:st=0:d={CONTENT_FADE_DURATION:.3f}")
     if outro_fade:
-        filters.append(f"fade=t=out:st={max(0.0, duration - 0.5):.3f}:d=0.5")
+        filters.append(f"fade=t=out:st={max(0.0, duration - CONTENT_FADE_DURATION):.3f}:d={CONTENT_FADE_DURATION:.3f}")
     if text_enabled:
         filters.extend(_text_filters(platform, duration, overlay_config))
     filters.append("format=yuv420p")
@@ -945,14 +962,14 @@ def _segment_filtergraph(
     if not intro_logo and not outro_logo:
         return (
             f"{graph};"
-            f"[2:v]format=rgba,scale=-1:{wm_height},colorchannelmixer=aa=0.70[wm];"
+            f"[1:v]format=rgba,scale=-1:{wm_height},colorchannelmixer=aa=0.70[wm];"
             f"[base][wm]overlay=W-w-{margin}:H-h-{margin}:format=auto[v]"
         )
     return _logo_overlay_filtergraph(graph, platform, duration, intro_logo, outro_logo, margin=margin, wm_height=wm_height)
 
 
 def _logo_overlay_filtergraph(graph: str, platform: str, duration: float, intro_logo: bool, outro_logo: bool, margin: int, wm_height: int) -> str:
-    """Overlay transparent watermark and optional large intro/outro logo from input 2."""
+    """Overlay transparent watermark and optional large intro/outro logo from input 1."""
     logo_height = int(_target_size(platform)[1] * 0.70)
     logo_fade_filters = []
     logo_labels = []
@@ -962,17 +979,17 @@ def _logo_overlay_filtergraph(graph: str, platform: str, duration: float, intro_
     if outro_logo:
         split_outputs.append("outro_src")
     split_count = len(split_outputs)
-    split = f"[2:v]format=rgba,split={split_count}" + "".join(f"[{label}]" for label in split_outputs)
+    split = f"[1:v]format=rgba,split={split_count}" + "".join(f"[{label}]" for label in split_outputs)
     if intro_logo:
         logo_fade_filters.append(
-            f"[intro_src]scale=-1:{logo_height},fade=t=in:st=0.35:d=1.10:alpha=1,fade=t=out:st=2.00:d=1.10:alpha=1[intro]"
+            f"[intro_src]scale=-1:{logo_height},fade=t=in:st=0.70:d=2.20:alpha=1,fade=t=out:st=4.00:d=2.20:alpha=1[intro]"
         )
-        logo_labels.append(("intro", "enable='lt(t,3.2)'"))
+        logo_labels.append(("intro", "enable='lt(t,6.4)'"))
     if outro_logo:
         logo_fade_filters.append(
-            f"[outro_src]scale=-1:{logo_height},fade=t=in:st=0:d=1.10:alpha=1,fade=t=out:st=2.10:d=1.00:alpha=1[outro]"
+            f"[outro_src]scale=-1:{logo_height},fade=t=in:st=0:d=2.20:alpha=1,fade=t=out:st=4.20:d=2.00:alpha=1[outro]"
         )
-        logo_labels.append(("outro", f"enable='gte(t,{max(0.0, duration - 3.2):.3f})'"))
+        logo_labels.append(("outro", f"enable='gte(t,{max(0.0, duration - 6.4):.3f})'"))
     wm = f"[wm_src]scale=-1:{wm_height},colorchannelmixer=aa=0.70[wm]"
     chain_input = "base"
     chain_filters = []
@@ -1129,6 +1146,100 @@ def _verify_joined_output(path: Path, segments: list[dict[str, Any]], timeline_o
                 f"Collapsed final output PTS near join boundary {boundary:.3f}s in {path}: "
                 f"min_delta={min(tiny):.6f}, expected~{expected_delta:.6f}, pts={pts[:12]}"
             )
+
+
+def _verify_final_audio(path: Path, segments: list[dict[str, Any]], master_path: str, audio_start: float, timeline_offset: float) -> None:
+    """Verify final file has one audio stream and no obvious gaps at early joins."""
+    metadata = _probe_streams(path)
+    audio_streams = [stream for stream in metadata.get("streams") or [] if stream.get("codec_type") == "audio"]
+    if len(audio_streams) != 1:
+        raise FFmpegError(f"Expected exactly one continuous final audio stream in {path}, found {len(audio_streams)}")
+    try:
+        source_audio_duration = _media_duration(master_path)
+    except Exception:
+        source_audio_duration = 0.0
+    boundaries: list[float] = []
+    cursor = timeline_offset
+    for segment in segments[:-1]:
+        cursor += max(0.0, float(segment.get("duration_sec") or 0.0))
+        boundaries.append(cursor)
+        if len(boundaries) >= 3:
+            break
+    for boundary in boundaries:
+        source_time = audio_start + boundary
+        if source_audio_duration and source_time + 0.080 >= source_audio_duration:
+            continue
+        before = _audio_rms(path, max(0.0, boundary - 0.080), 0.060)
+        after = _audio_rms(path, boundary + 0.020, 0.060)
+        if before <= 0.0005 or after <= 0.0005:
+            raise FFmpegError(f"Possible audio silence gap near segment join {boundary:.3f}s in {path}: before={before:.6f} after={after:.6f}")
+        ratio = max(before, after) / max(0.000001, min(before, after))
+        if ratio > 8.0:
+            raise FFmpegError(f"Possible audio level jump near segment join {boundary:.3f}s in {path}: before={before:.6f} after={after:.6f}")
+
+
+def _probe_streams(path: Path) -> dict[str, Any]:
+    result = subprocess.run(
+        [
+            _ffprobe_path(),
+            "-v",
+            "error",
+            "-show_streams",
+            "-of",
+            "json",
+            str(path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    if result.returncode != 0:
+        raise FFmpegError((result.stderr or "").strip() or f"Could not inspect streams: {path}")
+    try:
+        return json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise FFmpegError(f"Could not parse stream probe for {path}: {exc}") from exc
+
+
+def _audio_rms(path: Path, start: float, duration: float) -> float:
+    result = subprocess.run(
+        [
+            _ffmpeg_path(),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-ss",
+            f"{start:.3f}",
+            "-t",
+            f"{duration:.3f}",
+            "-i",
+            str(path),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "48000",
+            "-f",
+            "s16le",
+            "-",
+        ],
+        check=False,
+        capture_output=True,
+        timeout=20,
+    )
+    if result.returncode != 0:
+        raise FFmpegError((result.stderr.decode("utf-8", "ignore") if isinstance(result.stderr, bytes) else result.stderr or "").strip() or f"Could not decode audio: {path}")
+    data = result.stdout or b""
+    if len(data) < 2:
+        return 0.0
+    sample_count = len(data) // 2
+    total = 0.0
+    for index in range(0, sample_count * 2, 2):
+        sample = int.from_bytes(data[index : index + 2], byteorder="little", signed=True) / 32768.0
+        total += sample * sample
+    return (total / max(1, sample_count)) ** 0.5
 
 
 def _frame_md5(path: Path, timestamp: float) -> str | None:

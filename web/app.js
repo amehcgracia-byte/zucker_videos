@@ -786,7 +786,7 @@ document.addEventListener("click", (event) => {
     document.querySelectorAll(".song-option").forEach((button) => button.classList.toggle("selected", button === target));
   }
   if (target.id === "startWizard") startWizard().catch((error) => showToast(error.message, true));
-  if (target.id === "retryWizard") {
+  if (target.id === "retryWizard" || target.id === "retryWizardSuccess") {
     setStep(3);
     startWizard().catch((error) => showToast(error.message, true));
   }
@@ -799,7 +799,7 @@ document.addEventListener("click", (event) => {
   if (target.id === "openLogsSuccess" || target.id === "openLogsError") {
     openLogs().catch((error) => showToast(error.message, true));
   }
-  if (target.id === "copyProgressReport") {
+  if (target.id === "copyProgressReport" || target.id === "copyProgressReportResult") {
     copyReport().catch((error) => showToast(error.message, true));
   }
   if (target.id === "showFinder") {

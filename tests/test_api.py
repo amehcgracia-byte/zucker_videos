@@ -432,11 +432,12 @@ def test_wizard_orchestration_exports_tiny_media(tmp_path, monkeypatch):
     streams = metadata["streams"]
     video_stream = next(stream for stream in streams if stream["codec_type"] == "video")
     audio_stream = next(stream for stream in streams if stream["codec_type"] == "audio")
+    assert sum(1 for stream in streams if stream["codec_type"] == "audio") == 1
     assert video_stream["codec_name"] == "h264"
     assert audio_stream["codec_name"] == "aac"
     assert int(video_stream["width"]) % 2 == 0
     assert int(video_stream["height"]) % 2 == 0
-    assert float(metadata["format"]["duration"]) == pytest.approx(9.8, abs=1.2)
+    assert float(metadata["format"]["duration"]) == pytest.approx(16.6, abs=1.2)
 
     first_export_size = export_path.stat().st_size
     response = client.post(

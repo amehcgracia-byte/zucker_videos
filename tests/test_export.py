@@ -83,15 +83,15 @@ def test_segment_filtergraph_adds_watermark_and_texts():
     assert "overlay=(W-w)/2:(H-h)/2" not in graph
     assert "enable='lt(t,2)'" not in graph
     assert "eq=brightness=0.0200:saturation=1.0500" in graph
-    assert "fade=t=in:st=0:d=0.5" not in graph
-    assert "fade=t=out:st=11.500:d=0.5" not in graph
+    assert "fade=t=in:st=0:d=1.000" not in graph
+    assert "fade=t=out:st=11.000:d=1.000" not in graph
 
 
 def test_segment_filtergraph_keeps_only_explicit_intro_outro_fades():
     graph = _segment_filtergraph("youtube", 12.0, {}, {}, has_watermark=False, text_enabled=False, intro_fade=True, outro_fade=True)
 
-    assert "fade=t=in:st=0:d=0.5" in graph
-    assert "fade=t=out:st=11.500:d=0.5" in graph
+    assert "fade=t=in:st=0:d=1.000" in graph
+    assert "fade=t=out:st=11.000:d=1.000" in graph
 
 
 def test_clip_fates_report_used_excluded_and_not_covering(tmp_path):
@@ -140,9 +140,10 @@ def test_render_plan_uses_standalone_intro_and_outro_clips(tmp_path, monkeypatch
         Path(command[-1]).write_bytes(b"export")
 
     monkeypatch.setattr("core.stages.export._render_segment", fake_render_segment)
-    monkeypatch.setattr("core.stages.export._render_logo_clip", lambda *args, **kwargs: (logo_clips.append((args, kwargs)), args[1].write_bytes(b"logo")))
+    monkeypatch.setattr("core.stages.export._render_logo_clip", lambda *args, **kwargs: (logo_clips.append((args, kwargs)), args[0].write_bytes(b"logo")))
     monkeypatch.setattr("core.stages.export._can_blend_intro_outro", lambda: False)
     monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", fake_progress)
+    monkeypatch.setattr("core.stages.export._mux_continuous_master_audio", lambda video, master, output, *args, **kwargs: output.write_bytes(b"muxed"))
     monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
     monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda project, segments, warnings: {})
 
@@ -161,9 +162,9 @@ def test_render_plan_uses_standalone_intro_and_outro_clips(tmp_path, monkeypatch
         lambda percent, detail: None,
     )
 
-    assert [call["intro_fade"] for call in calls] == [False, False, False]
-    assert [call["outro_fade"] for call in calls] == [False, False, False]
-    assert [call[0][3] for call in logo_clips] == ["intro", "outro"]
+    assert [call["intro_fade"] for call in calls] == [True, False, False]
+    assert [call["outro_fade"] for call in calls] == [False, False, True]
+    assert [call[0][2] for call in logo_clips] == ["intro", "outro"]
 
 
 def test_segment_filtergraph_can_blend_large_intro_logo_over_footage():
@@ -171,8 +172,8 @@ def test_segment_filtergraph_can_blend_large_intro_logo_over_footage():
 
     assert "split=3" in graph
     assert "scale=-1:756" in graph
-    assert "enable='lt(t,3.2)'" in graph
-    assert "enable='gte(t,4.800)'" in graph
+    assert "enable='lt(t,6.4)'" in graph
+    assert "enable='gte(t,1.600)'" in graph
     assert "overlay=W-w-40:H-h-40" in graph
 
 
@@ -194,7 +195,9 @@ def test_render_plan_verifies_every_segment_not_just_every_source(tmp_path, monk
     monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", fake_progress)
     monkeypatch.setattr("core.stages.export._verify_moving_segment", lambda path, duration, label, command: verified.append(path))
     monkeypatch.setattr("core.stages.export._verify_joined_output", lambda path, segments, timeline_offset=0.0: None)
-    monkeypatch.setattr("core.stages.export._render_logo_clip", lambda *args, **kwargs: args[1].write_bytes(b"logo"))
+    monkeypatch.setattr("core.stages.export._verify_final_audio", lambda *args, **kwargs: None)
+    monkeypatch.setattr("core.stages.export._mux_continuous_master_audio", lambda video, master, output, *args, **kwargs: output.write_bytes(b"muxed"))
+    monkeypatch.setattr("core.stages.export._render_logo_clip", lambda *args, **kwargs: args[0].write_bytes(b"logo"))
     monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
     monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda project, segments, warnings: {})
 
@@ -256,6 +259,8 @@ def test_render_segment_uses_original_source_with_proxy_metadata(tmp_path, monke
     assert str(source) in commands[0]
     assert str(proxy) not in commands[0]
     assert "fps=30.000,setpts=PTS-STARTPTS" in commands[0][commands[0].index("-filter_complex") + 1]
+    assert str(master) not in commands[0]
+    assert "-an" in commands[0]
     assert commands[0][commands[0].index("-r") + 1] == "30.000"
     assert commands[0][commands[0].index("-fps_mode") + 1] == "cfr"
     assert commands[0][commands[0].index("-video_track_timescale") + 1] == "30000"
@@ -293,7 +298,6 @@ def test_360_body_writes_spherical_metadata(tmp_path, monkeypatch):
     _render_360_body(
         project,
         {"clip_path": str(source), "source_path": str(source), "clip_start_sec": 0, "master_start_sec": 1, "duration_sec": 3, "projection": "equirect"},
-        str(master),
         output,
         4_000_000,
         lambda percent, detail: None,
@@ -304,6 +308,8 @@ def test_360_body_writes_spherical_metadata(tmp_path, monkeypatch):
     assert "spherical_video=true" in command
     assert command[command.index("-ss") + 1] == "0.000"
     assert command[command.index("-filter_complex") + 1].count("3840:1920") >= 1
+    assert str(master) not in command
+    assert "-an" in command
 
 
 def test_render_segment_falls_back_to_proxy_when_original_decode_fails(tmp_path, monkeypatch):

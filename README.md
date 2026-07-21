@@ -304,7 +304,7 @@ Edit/export prototype:
 - `edit` writes `artifacts/beats.json` and `artifacts/edit_plan.json`.
 - YouTube uses `librosa.beat.beat_track` plus onset/spectral novelty to estimate bars and section changes, then plans bar-aligned multicam cuts.
 - Instagram/TikTok still use the current fixed middle excerpt as placeholder creative logic.
-- `export` renders per-segment MP4 intermediates with matching master-audio slices, concatenates them, and keeps output under 1.9 GB by computing a target bitrate from duration.
+- `export` renders video-only MP4 intermediates, concatenates them, then muxes one continuous master-audio stream over the finished video and keeps output under 1.9 GB by computing a target bitrate from duration.
 - Export tries `h264_videotoolbox` first on macOS and falls back to `libx264` when hardware encoding is unavailable.
 - Export applies a bottom-right watermark from `assets/watermark.png` when present, otherwise `logo_editor_green.png`.
 - Export color matching samples five short windows per clip and caches the profile globally under `~/ZuckerVideos/Cache/color/`; color-measure failures are warnings, not export failures.
