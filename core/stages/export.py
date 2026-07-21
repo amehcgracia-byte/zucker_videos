@@ -1633,6 +1633,8 @@ def _logo_path() -> Path | None:
 
 def _intro_logo_path() -> Path | None:
     candidates = [
+        Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "logo_watermark.png",
+        Path(__file__).resolve().parents[2] / "assets" / "logo_watermark.png",
         Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "logo_intro_black.png",
         Path(__file__).resolve().parents[2] / "assets" / "logo_intro_black.png",
     ]
