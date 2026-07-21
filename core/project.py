@@ -45,7 +45,10 @@ def default_settings() -> dict[str, Any]:
         "inputs": {"copy_into_project": False},
         "sync": {"confidence_threshold": 6.0},
         "cut": {"min_segment_seconds": 4.0},
-        "edit": {"style": "coverage_first"},
+        "edit": {
+            "style": "coverage_first",
+            "camera_role_weights": {"360": 0.5, "handheld": 0.3, "fixed_rear": 0.2},
+        },
         "export": {"format": "mp4", "resolution": "source", "transiciones_suaves": False},
     }
 

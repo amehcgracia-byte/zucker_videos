@@ -52,6 +52,24 @@ def test_youtube_plan_does_not_starve_lower_confidence_camera():
     assert stats["c.mp4"]["chosen_segments"] > 0
 
 
+def test_youtube_plan_role_weights_bias_eligible_camera_share():
+    coverage = {
+        "platform": "youtube",
+        "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 24.0},
+        "sources": [
+            {"path": "/tmp/360.mp4", "filename": "wide360.mp4", "projection": "equirect", "offset_sec": 0.0, "duration_sec": 24.0, "confidence": 8.0},
+            {"path": "/tmp/sony.mp4", "filename": "sony.mp4", "offset_sec": 0.0, "duration_sec": 24.0, "confidence": 10.0},
+            {"path": "/tmp/iphone.mov", "filename": "iphone.mov", "offset_sec": 0.0, "duration_sec": 24.0, "confidence": 9.0},
+        ],
+    }
+    beats = {"bars_sec": [0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0], "sections_sec": []}
+
+    plan = _youtube_multicam_plan(coverage, beats)
+
+    usage = plan["camera_usage"]
+    assert usage["360.mp4"] >= usage["sony.mp4"] >= usage["iphone.mov"]
+
+
 def test_youtube_plan_segment_lengths_stay_within_bounds():
     coverage = {
         "platform": "youtube",

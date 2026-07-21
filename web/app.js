@@ -13,6 +13,7 @@ let progressSamples = [];
 let rescueClipId = null;
 let currentStep = 1;
 let lastProgressReportAt = 0;
+let trimDefaultsAppliedFor = "";
 
 function logFrontendError(message, stack = "") {
   fetch("/api/v1/wizard/frontend-log", {
@@ -433,11 +434,27 @@ async function prepareStep2() {
   }).catch((error) => showToast(error.message, true));
   setStep(2);
   ensureStatusPolling();
+  setupTrimControls(inputs.master);
   if (inputs.songs) {
     const result = await api("/wizard/songs", { method: "POST", body: JSON.stringify({ songs: inputs.songs }) });
     renderSongOptions(result.songs || []);
   } else {
     renderSongOptions([]);
+  }
+}
+
+function setupTrimControls(masterPath) {
+  const master = detected.master.find((item) => item.path === masterPath) || {};
+  const duration = Number(master.duration || 0);
+  const preview = document.querySelector("#masterPreview");
+  if (preview && preview.dataset.path !== masterPath) {
+    preview.dataset.path = masterPath || "";
+    preview.src = `/api/v1/wizard/master-preview?t=${Date.now()}`;
+  }
+  if (trimDefaultsAppliedFor !== masterPath) {
+    document.querySelector("#trimStart").value = "00:00";
+    document.querySelector("#trimEnd").value = duration ? secondsToTime(duration) : "00:00";
+    trimDefaultsAppliedFor = masterPath || "";
   }
 }
 
@@ -485,6 +502,8 @@ async function startWizard() {
       name: document.querySelector("#videoName").value || todayName(),
       platform: selectedPlatform,
       song_index: selectedSong,
+      trim_start_sec: timeToSeconds(document.querySelector("#trimStart").value),
+      trim_end_sec: timeToSeconds(document.querySelector("#trimEnd").value),
       master: inputs.master,
       songs: inputs.songs,
       videos: inputs.videos,
@@ -492,6 +511,26 @@ async function startWizard() {
   });
   ensureStatusPolling();
   await pollStatus();
+}
+
+function timeToSeconds(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const parts = text.split(":").map((part) => Number(part));
+  if (parts.some((part) => !Number.isFinite(part))) return null;
+  if (parts.length === 1) return Math.max(0, parts[0]);
+  const seconds = parts.pop();
+  const minutes = parts.pop() || 0;
+  const hours = parts.pop() || 0;
+  return Math.max(0, hours * 3600 + minutes * 60 + seconds);
+}
+
+function secondsToTime(seconds) {
+  const whole = Math.max(0, Math.floor(Number(seconds) || 0));
+  const h = Math.floor(whole / 3600);
+  const m = Math.floor((whole % 3600) / 60);
+  const s = whole % 60;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
 function ensureStatusPolling() {
@@ -786,6 +825,10 @@ document.addEventListener("click", (event) => {
     document.querySelectorAll(".song-option").forEach((button) => button.classList.toggle("selected", button === target));
   }
   if (target.id === "startWizard") startWizard().catch((error) => showToast(error.message, true));
+  if (target.id === "setTrimStart" || target.id === "setTrimEnd") {
+    const preview = document.querySelector("#masterPreview");
+    document.querySelector(target.id === "setTrimStart" ? "#trimStart" : "#trimEnd").value = secondsToTime(preview.currentTime || 0);
+  }
   if (target.id === "retryWizard" || target.id === "retryWizardSuccess") {
     setStep(3);
     startWizard().catch((error) => showToast(error.message, true));

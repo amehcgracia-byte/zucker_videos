@@ -97,6 +97,7 @@ def prepare_intro_logo() -> Path | None:
 
 def prepare_watermark() -> Path | None:
     """Choose and validate a transparent watermark symbol, or keep the existing fallback."""
+    log_source_asset_inventory()
     chosen = choose_symbol_source()
     if chosen:
         image = Image.open(chosen).convert("RGBA")
@@ -131,6 +132,25 @@ def choose_symbol_source() -> Path | None:
         return None
     scored = [(symbol_legibility_score(path), path) for path in candidates]
     return sorted(scored, key=lambda item: (-item[0], item[1].name))[0][1]
+
+
+def log_source_asset_inventory() -> None:
+    """Print expected logo asset names and any misplaced PNGs for build diagnostics."""
+    expected = [FULL_CIRCLE_SOURCE, SYMBOL_A_SOURCE, SYMBOL_B_SOURCE]
+    present = [path for path in expected if path.exists()]
+    pngs = sorted(SOURCE_DIR.glob("*.png")) if SOURCE_DIR.exists() else []
+    misplaced = sorted(path for path in (ROOT / "assets").glob("*.png") if path.name.startswith("ChatGPT"))
+    if present:
+        print("Logo source assets found: " + ", ".join(path.relative_to(ROOT).as_posix() for path in present))
+    else:
+        print(
+            "No expected logo source assets found. Required filenames: "
+            "assets/source/logo_symbol_a.png, assets/source/logo_symbol_b.png, assets/source/logo_full_circle.png"
+        )
+    if pngs:
+        print("assets/source PNG inventory: " + ", ".join(path.name for path in pngs))
+    if misplaced:
+        print("PNG files currently in assets/ instead of assets/source/: " + ", ".join(path.name for path in misplaced))
 
 
 def symbol_legibility_score(path: Path) -> float:
@@ -173,7 +193,7 @@ def save_iconset(image: Image.Image) -> None:
 def save_dmg_background(image: Image.Image) -> None:
     """Create a simple branded DMG background."""
     width, height = 640, 400
-    bg = Image.new("RGBA", (width, height), (245, 251, 242, 255))
+    bg = Image.new("RGBA", (width, height), (255, 255, 255, 255))
     logo = image.copy()
     logo.thumbnail((220, 220), Image.Resampling.LANCZOS)
     logo.putalpha(logo.getchannel("A").point(lambda value: int(value * 0.16)))

@@ -49,7 +49,7 @@ class CutStage(Stage):
         platform = str(wizard.get("platform") or "youtube")
         songs = load_song_boundaries(project)
         song_choice = wizard.get("song_choice")
-        window = _selected_window(songs, song_choice, sync_map)
+        window = _selected_window(songs, song_choice, sync_map, wizard)
         if platform == "360":
             clip = _select_360_clip(selection["clips"])
             if not clip:
@@ -91,18 +91,37 @@ def load_coverage(project: Project) -> dict[str, Any]:
         return json.load(fh)
 
 
-def _selected_window(songs: list[dict[str, Any]], song_choice: Any, sync_map: dict[str, Any]) -> dict[str, Any]:
+def _selected_window(songs: list[dict[str, Any]], song_choice: Any, sync_map: dict[str, Any], wizard: dict[str, Any] | None = None) -> dict[str, Any]:
+    wizard = wizard or {}
+    trim = wizard.get("audio_trim") or {}
     if songs and song_choice != "all":
         try:
             song = songs[int(song_choice or 0)]
             start = float(song.get("start_sec") or 0)
             end = song.get("end_sec")
             duration = max(1.0, float(end) - start) if end is not None else 60.0
-            return {"title": song.get("title") or t("song_default"), "start_sec": start, "duration_sec": duration}
+            return _trimmed_window({"title": song.get("title") or t("song_default"), "start_sec": start, "duration_sec": duration}, trim)
         except (IndexError, TypeError, ValueError):
             pass
     duration = float(sync_map.get("master_duration_sec") or 0) or 60.0
-    return {"title": t("full_video"), "start_sec": 0.0, "duration_sec": duration}
+    return _trimmed_window({"title": t("full_video"), "start_sec": 0.0, "duration_sec": duration}, trim)
+
+
+def _trimmed_window(window: dict[str, Any], trim: dict[str, Any]) -> dict[str, Any]:
+    base_start = float(window.get("start_sec") or 0.0)
+    base_end = base_start + max(1.0, float(window.get("duration_sec") or 1.0))
+    start = _optional_float(trim.get("start_sec"), base_start)
+    end = _optional_float(trim.get("end_sec"), base_end)
+    start = max(base_start, min(start, base_end - 1.0))
+    end = max(start + 1.0, min(end, base_end))
+    return {**window, "start_sec": start, "duration_sec": end - start, "trim_start_sec": start, "trim_end_sec": end}
+
+
+def _optional_float(value: Any, fallback: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
 
 
 def _selectable_synced_clips(project: Project, sync_map: dict[str, Any]) -> dict[str, Any]:

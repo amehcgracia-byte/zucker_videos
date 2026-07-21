@@ -96,7 +96,7 @@ def main() -> None:
     server.start()
     js_api = DesktopApi()
     logging.getLogger(__name__).info("js_api bridge attached: yes")
-    window = webview.create_window(APP_NAME, url, width=1200, height=820, js_api=js_api)
+    window = webview.create_window(APP_NAME, url, width=1200, height=820, js_api=js_api, background_color="#ffffff")
 
     def on_loaded() -> None:
         config = load_global_config()

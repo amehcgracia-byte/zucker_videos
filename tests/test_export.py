@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 import shutil
 import subprocess
+import wave
 from pathlib import Path
 
 import pytest
@@ -21,6 +24,8 @@ from core.stages.export import (
     _render_360_body,
     _render_plan,
     _render_segment,
+    _audio_rms,
+    _frame_normalized_segments,
     _verify_moving_segment,
     _clip_fates,
     _segment_filtergraph,
@@ -83,15 +88,15 @@ def test_segment_filtergraph_adds_watermark_and_texts():
     assert "overlay=(W-w)/2:(H-h)/2" not in graph
     assert "enable='lt(t,2)'" not in graph
     assert "eq=brightness=0.0200:saturation=1.0500" in graph
-    assert "fade=t=in:st=0:d=1.000" not in graph
-    assert "fade=t=out:st=11.000:d=1.000" not in graph
+    assert "fade=t=in:st=0:d=1.500" not in graph
+    assert "fade=t=out:st=10.500:d=1.500" not in graph
 
 
 def test_segment_filtergraph_keeps_only_explicit_intro_outro_fades():
     graph = _segment_filtergraph("youtube", 12.0, {}, {}, has_watermark=False, text_enabled=False, intro_fade=True, outro_fade=True)
 
-    assert "fade=t=in:st=0:d=1.000" in graph
-    assert "fade=t=out:st=11.000:d=1.000" in graph
+    assert "fade=t=in:st=0:d=1.500" in graph
+    assert "fade=t=out:st=10.500:d=1.500" in graph
 
 
 def test_clip_fates_report_used_excluded_and_not_covering(tmp_path):
@@ -144,6 +149,8 @@ def test_render_plan_uses_standalone_intro_and_outro_clips(tmp_path, monkeypatch
     monkeypatch.setattr("core.stages.export._can_blend_intro_outro", lambda: False)
     monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", fake_progress)
     monkeypatch.setattr("core.stages.export._mux_continuous_master_audio", lambda video, master, output, *args, **kwargs: output.write_bytes(b"muxed"))
+    monkeypatch.setattr("core.stages.export._verify_segment_frame_duration", lambda *args, **kwargs: None)
+    monkeypatch.setattr("core.stages.export._media_duration", lambda path: 6.0)
     monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
     monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda project, segments, warnings: {})
 
@@ -172,8 +179,8 @@ def test_segment_filtergraph_can_blend_large_intro_logo_over_footage():
 
     assert "split=3" in graph
     assert "scale=-1:756" in graph
-    assert "enable='lt(t,6.4)'" in graph
-    assert "enable='gte(t,1.600)'" in graph
+    assert "enable='lt(t,9.6)'" in graph
+    assert "enable='gte(t,0.000)'" in graph
     assert "overlay=W-w-40:H-h-40" in graph
 
 
@@ -194,9 +201,11 @@ def test_render_plan_verifies_every_segment_not_just_every_source(tmp_path, monk
     monkeypatch.setattr("core.stages.export._render_segment", fake_render_segment)
     monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", fake_progress)
     monkeypatch.setattr("core.stages.export._verify_moving_segment", lambda path, duration, label, command: verified.append(path))
+    monkeypatch.setattr("core.stages.export._verify_segment_frame_duration", lambda *args, **kwargs: None)
     monkeypatch.setattr("core.stages.export._verify_joined_output", lambda path, segments, timeline_offset=0.0: None)
     monkeypatch.setattr("core.stages.export._verify_final_audio", lambda *args, **kwargs: None)
     monkeypatch.setattr("core.stages.export._mux_continuous_master_audio", lambda video, master, output, *args, **kwargs: output.write_bytes(b"muxed"))
+    monkeypatch.setattr("core.stages.export._media_duration", lambda path: 6.0)
     monkeypatch.setattr("core.stages.export._render_logo_clip", lambda *args, **kwargs: args[0].write_bytes(b"logo"))
     monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
     monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda project, segments, warnings: {})
@@ -584,3 +593,125 @@ def test_two_segment_export_contains_bottom_right_watermark(tmp_path, monkeypatc
     )
 
     assert "lavfi.signalstats.YAVG=0" not in f"{result.stdout}\n{result.stderr}"
+
+
+@pytest.mark.slow
+def test_fractional_segment_export_keeps_audio_video_duration_and_markers_in_sync(tmp_path, monkeypatch):
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not available")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("core.stages.export.measure_clip_color", lambda path: ({}, None))
+    monkeypatch.setattr("core.stages.export._watermark_path", lambda: None)
+    monkeypatch.setattr("core.stages.export._ffmpeg_supports_filter", lambda name: False)
+    project = create_project("Drift Guard", str(tmp_path / "Drift Guard.zuckervid"))
+    master = tmp_path / "master.wav"
+    clip = tmp_path / "clip.mp4"
+    raw_durations = [2.03 if index % 2 == 0 else 3.07 for index in range(22)]
+    segments = []
+    cursor = 0.0
+    marker_times = []
+    marker_offset = 1.0
+    for index, duration in enumerate(raw_durations):
+        marker_times.append(cursor + marker_offset)
+        segments.append({"filename": "clip.mp4", "clip_path": str(clip), "source_path": str(clip), "clip_start_sec": cursor, "master_start_sec": cursor, "duration_sec": duration})
+        cursor += duration
+    normalized = _frame_normalized_segments(segments)
+    source_duration = cursor + 8.0
+    _write_marker_master(master, source_duration, marker_times)
+    drawboxes = ",".join(f"drawbox=enable='between(t,{time:.3f},{time + 0.100:.3f})':x=0:y=0:w=iw:h=ih:color=white@1:t=fill" for time in marker_times)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc2=size=640x360:rate=30:duration={source_duration:.3f}",
+            "-vf",
+            drawboxes,
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(clip),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    record = file_record(str(clip))
+    record["probe"] = {"valid_video": True, "video_codec": "h264", "duration": source_duration, "width": 640, "height": 360, "fps": 30.0, "cfr": True}
+    record["cache_key"] = "drift-guard"
+    record["normalized"] = {"path": str(clip), "cache_key": "drift-guard", "kind": "original", "proxy_skipped": True}
+    project.data["inputs"]["master"] = file_record(str(master))
+    project.data["inputs"]["videos"] = [record]
+    write_artifact_json(project.artifacts_dir / "edit_plan.json", {"platform": "youtube", "segments": segments})
+
+    ExportStage().run(project, lambda percent, message: None)
+
+    output = Path(json.loads((project.artifacts_dir / "export_manifest.json").read_text(encoding="utf-8"))["exports"][0]["path"])
+    streams = _probe_stream_durations(output)
+    assert abs(streams["video"] - streams["audio"]) <= 1.0 / TARGET_EXPORT_FPS
+    for index in (0, 9, len(normalized) - 1):
+        timeline = 10.2 + sum(float(segment["duration_sec"]) for segment in normalized[:index]) + marker_offset
+        assert _audio_rms(output, timeline - 0.025, 0.050) > 0.20
+        assert _frame_luma(output, timeline) > 150.0
+
+
+def _write_marker_master(path: Path, duration: float, marker_times: list[float]) -> None:
+    sample_rate = 48_000
+    markers = {int(time * sample_rate) for time in marker_times}
+    with wave.open(str(path), "wb") as fh:
+        fh.setnchannels(1)
+        fh.setsampwidth(2)
+        fh.setframerate(sample_rate)
+        frames = bytearray()
+        blip_len = int(0.08 * sample_rate)
+        total = int(duration * sample_rate)
+        for index in range(total):
+            value = 0.06 * math.sin(2 * math.pi * 220 * index / sample_rate)
+            if any(start <= index < start + blip_len for start in markers):
+                value += 0.85 * math.sin(2 * math.pi * 1200 * index / sample_rate)
+            sample = max(-1.0, min(1.0, value))
+            frames.extend(int(sample * 32767).to_bytes(2, "little", signed=True))
+        fh.writeframes(bytes(frames))
+
+
+def _probe_stream_durations(path: Path) -> dict[str, float]:
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,duration", "-of", "json", str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    durations = {}
+    for stream in json.loads(result.stdout)["streams"]:
+        if stream.get("codec_type") in {"video", "audio"}:
+            durations[stream["codec_type"]] = float(stream["duration"])
+    return durations
+
+
+def _frame_luma(path: Path, timestamp: float) -> float:
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostdin",
+            "-ss",
+            f"{timestamp:.3f}",
+            "-i",
+            str(path),
+            "-vf",
+            "signalstats,metadata=print",
+            "-frames:v",
+            "1",
+            "-f",
+            "null",
+            "-",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    match = re.search(r"lavfi.signalstats.YAVG=([0-9.]+)", f"{result.stdout}\n{result.stderr}")
+    return float(match.group(1)) if match else 0.0

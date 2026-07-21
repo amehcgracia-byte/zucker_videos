@@ -109,6 +109,7 @@ class WizardRunner:
         name: str,
         platform: str,
         song_choice: int | str | None,
+        audio_trim: dict[str, float] | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -126,6 +127,7 @@ class WizardRunner:
                         "name": name,
                         "platform": platform,
                         "song_choice": song_choice,
+                        "audio_trim": audio_trim,
                         "master_path": master_path,
                         "songs_path": songs_path,
                         "video_paths": video_paths,
@@ -145,6 +147,7 @@ class WizardRunner:
                 "name": name,
                 "platform": platform,
                 "song_choice": song_choice,
+                "audio_trim": audio_trim,
                 "master_path": master_path,
                 "songs_path": songs_path,
                 "video_paths": video_paths,
@@ -204,6 +207,7 @@ class WizardRunner:
         name: str,
         platform: str,
         song_choice: int | str | None,
+        audio_trim: dict[str, float] | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -216,13 +220,14 @@ class WizardRunner:
             project.data["settings"]["wizard"] = {
                 "platform": platform,
                 "song_choice": song_choice,
+                "audio_trim": audio_trim or {},
                 "placeholder_logic": platform in {"instagram", "tiktok"},
             }
             project.save()
 
             self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
             self._run_stage(job, project, SyncStage(), 22, 48, t("syncing_audio"))
-            self._finish(job=job, project=project, name=name, platform=platform, song_choice=song_choice, master_path=master_path, songs_path=songs_path, video_paths=video_paths)
+            self._finish(job=job, project=project, name=name, platform=platform, song_choice=song_choice, audio_trim=audio_trim, master_path=master_path, songs_path=songs_path, video_paths=video_paths)
         except Exception as exc:
             LOGGER.exception("Wizard job failed")
             job.status = "failed"
@@ -277,6 +282,7 @@ class WizardRunner:
         name: str,
         platform: str,
         song_choice: int | str | None,
+        audio_trim: dict[str, float] | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -287,6 +293,7 @@ class WizardRunner:
             project.data["settings"]["wizard"] = {
                 "platform": platform,
                 "song_choice": song_choice,
+                "audio_trim": audio_trim or {},
                 "placeholder_logic": platform in {"instagram", "tiktok"},
             }
             project.save()
@@ -337,6 +344,7 @@ class WizardRunner:
         name: str,
         platform: str,
         song_choice: int | str | None,
+        audio_trim: dict[str, float] | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -360,6 +368,7 @@ class WizardRunner:
             name=name,
             platform=platform,
             song_choice=song_choice,
+            audio_trim=audio_trim,
             master_path=master_path,
             songs_path=songs_path,
             video_paths=video_paths,

@@ -245,6 +245,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         master = str(body.get("master") or "").strip()
         songs = str(body.get("songs") or "").strip() or None
         videos = body.get("videos") or []
+        audio_trim = _audio_trim_from_body(body)
         if platform not in {"youtube", "instagram", "tiktok", "360"}:
             return error_response("bad_request", "platform must be youtube, instagram, tiktok, or 360", 400)
         if not master:
@@ -263,6 +264,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 name=name or "Jam",
                 platform=platform,
                 song_choice=body.get("song_index", body.get("song_choice")),
+                audio_trim=audio_trim,
                 master_path=master,
                 songs_path=songs,
                 video_paths=videos,
@@ -272,6 +274,17 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("wizard_busy", str(exc), 409)
         except OSError as exc:
             return error_response("input_file_error", str(exc), 400)
+
+    @app.get("/api/v1/wizard/master-preview")
+    def api_wizard_master_preview() -> Response:
+        status = state.wizard.status()
+        project_path = status.get("project_path") or ((status.get("result") or {}).get("project_path"))
+        project = state.project
+        if not project and project_path:
+            project = load_project(project_path)
+        if not project or not project.data.get("inputs", {}).get("master"):
+            return error_response("not_found", "Master media is not registered", 404)
+        return send_file_with_range(project.data["inputs"]["master"]["path"])
 
     @app.post("/api/v1/wizard/prepare")
     def api_wizard_prepare() -> Response:
@@ -747,6 +760,24 @@ def _media_path(project: Project, kind: str, index: int) -> str:
             raise ValueError("Master media is not registered")
         return inputs["master"]["path"]
     raise ValueError(f"Unknown media kind: {kind}")
+
+
+def _audio_trim_from_body(body: dict[str, Any]) -> dict[str, float] | None:
+    start = body.get("trim_start_sec")
+    end = body.get("trim_end_sec")
+    try:
+        start_value = float(start) if start not in (None, "") else None
+        end_value = float(end) if end not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+    trim: dict[str, float] = {}
+    if start_value is not None:
+        trim["start_sec"] = max(0.0, start_value)
+    if end_value is not None:
+        trim["end_sec"] = max(0.0, end_value)
+    if trim and trim.get("end_sec", 1.0) <= trim.get("start_sec", 0.0):
+        return None
+    return trim or None
 
 
 def _enable_cors(app: Flask) -> None:

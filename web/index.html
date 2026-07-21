@@ -92,6 +92,25 @@
           <h2>Which song?</h2>
           <div id="songOptions"></div>
         </div>
+        <div class="trim-box">
+          <audio id="masterPreview" controls preload="metadata"></audio>
+          <div class="trim-fields">
+            <label>
+              Start
+              <span>
+                <input id="trimStart" inputmode="numeric" value="00:00" />
+                <button id="setTrimStart" class="icon-button small" data-icon="arrow" type="button">Set</button>
+              </span>
+            </label>
+            <label>
+              End
+              <span>
+                <input id="trimEnd" inputmode="numeric" value="00:00" />
+                <button id="setTrimEnd" class="icon-button small" data-icon="arrow" type="button">Set</button>
+              </span>
+            </label>
+          </div>
+        </div>
         <button id="startWizard" class="primary icon-button" data-icon="wand" disabled>Make it</button>
       </section>
 

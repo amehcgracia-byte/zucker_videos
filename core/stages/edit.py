@@ -14,6 +14,8 @@ from core.stages.cut import load_coverage
 MIN_SEGMENT_SEC = 2.0
 MAX_SEGMENT_SEC = 6.0
 MAX_BARS_PER_SEGMENT = 2
+EDIT_FPS = 30.0
+DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 0.5, "handheld": 0.3, "fixed_rear": 0.2}
 
 
 class EditStage(Stage):
@@ -54,7 +56,7 @@ class EditStage(Stage):
         else:
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, t("choosing_cameras"))
-            plan = _youtube_multicam_plan(coverage, beats)
+            plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}).get(self.name, {}))
         write_artifact_json(artifact_path(project, "beats.json"), beats)
         write_artifact_json(artifact_path(project, "edit_plan.json"), plan)
         progress_callback(100, t("edit_plan_ready"))
@@ -121,7 +123,7 @@ def _fallback_beats(start: float, duration: float) -> list[float]:
     return [round(start + index * step, 3) for index in range(count + 1)]
 
 
-def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any]) -> dict[str, Any]:
+def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any], settings: dict[str, Any] | None = None) -> dict[str, Any]:
     window = coverage.get("window") or {}
     start = float(window.get("start_sec") or 0.0)
     end = start + max(1.0, float(window.get("duration_sec") or 1.0))
@@ -140,6 +142,7 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any]) -> d
     previous_source: str | None = None
     usage_counts: dict[str, int] = {}
     selection_stats = _selection_stats_template(sources, start, end)
+    role_weights = _camera_role_weights(settings)
     bar_index = 0
     segment_index = 0
     while bar_index < len(bar_times) - 1:
@@ -166,7 +169,7 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any]) -> d
             stats = selection_stats.setdefault(_source_id(source), _selection_stats_for_source(source, start, end))
             stats["eligible_segments"] += 1
             stats["eligible_seconds"] += segment_end - segment_start
-        source = _choose_source(available, previous_source, usage_counts)
+        source = _choose_source(available, previous_source, usage_counts, selection_stats, role_weights)
         previous_source = _source_id(source)
         usage_counts[previous_source] = usage_counts.get(previous_source, 0) + 1
         chosen_stats = selection_stats.setdefault(previous_source, _selection_stats_for_source(source, start, end))
@@ -330,28 +333,71 @@ def _covering_sources(sources: list[dict[str, Any]], start: float, end: float) -
     return available
 
 
-def _choose_source(sources: list[dict[str, Any]], previous_source: str | None, usage_counts: dict[str, int] | None = None) -> dict[str, Any]:
+def _choose_source(
+    sources: list[dict[str, Any]],
+    previous_source: str | None,
+    usage_counts: dict[str, int] | None = None,
+    selection_stats: dict[str, dict[str, Any]] | None = None,
+    role_weights: dict[str, float] | None = None,
+) -> dict[str, Any]:
     usage_counts = usage_counts or {}
     candidates = [source for source in sources if _source_id(source) != previous_source] if len(sources) > 1 else sources
     if not candidates:
         candidates = sources
-    return sorted(candidates, key=lambda source: (usage_counts.get(_source_id(source), 0), -float(source.get("confidence") or 0.0), _source_id(source)))[0]
+    selection_stats = selection_stats or {}
+    role_weights = role_weights or DEFAULT_CAMERA_ROLE_WEIGHTS
+
+    def score(source: dict[str, Any]) -> tuple[float, int, float, str]:
+        role = _source_role(source)
+        target_share = max(0.05, float(role_weights.get(role, role_weights.get("handheld", 0.3))))
+        chosen_seconds = float((selection_stats.get(_source_id(source)) or {}).get("chosen_seconds") or 0.0)
+        return (chosen_seconds / target_share, usage_counts.get(_source_id(source), 0), -float(source.get("confidence") or 0.0), _source_id(source))
+
+    return sorted(candidates, key=score)[0]
 
 
 def _segment_from_source(source: dict[str, Any], start: float, end: float, title: str) -> dict[str, Any]:
     offset = float(source.get("offset_sec") or 0.0)
+    start = _round_to_frame(start)
+    end = max(start + 1.0 / EDIT_FPS, _round_to_frame(end))
     return {
         "title": title,
         "clip_path": source["path"],
         "source_path": source.get("source_path") or source["path"],
         "clip_start_sec": max(0.0, start - offset),
         "master_start_sec": start,
-        "duration_sec": max(0.1, end - start),
+        "duration_sec": max(1.0 / EDIT_FPS, end - start),
         "clip_offset_sec": offset,
         "confidence": float(source.get("confidence") or 0.0),
         "filename": source.get("filename") or Path(str(source["path"])).name,
         "projection": source.get("projection"),
     }
+
+
+def _camera_role_weights(settings: dict[str, Any] | None) -> dict[str, float]:
+    raw = (settings or {}).get("camera_role_weights") or {}
+    weights = {**DEFAULT_CAMERA_ROLE_WEIGHTS}
+    for key in weights:
+        try:
+            weights[key] = max(0.01, float(raw.get(key, weights[key])))
+        except (TypeError, ValueError):
+            pass
+    total = sum(weights.values()) or 1.0
+    return {key: value / total for key, value in weights.items()}
+
+
+def _source_role(source: dict[str, Any]) -> str:
+    projection = str(source.get("projection") or "").lower()
+    filename = str(source.get("filename") or source.get("path") or source.get("source_path") or "").lower()
+    if projection in {"equirect", "raw_insv"} or filename.endswith(".insv") or "360" in filename:
+        return "360"
+    if "iphone" in filename or filename.endswith(".mov"):
+        return "fixed_rear"
+    return "handheld"
+
+
+def _round_to_frame(seconds: float, fps: float = EDIT_FPS) -> float:
+    return round(round(float(seconds) * fps) / fps, 6)
 
 
 def _source_id(source: dict[str, Any]) -> str:
