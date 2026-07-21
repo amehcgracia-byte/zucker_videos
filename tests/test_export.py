@@ -17,6 +17,7 @@ from core.stages.export import (
     MIN_ACCEPTABLE_VIDEO_BITRATE,
     TARGET_EXPORT_FPS,
     ExportStage,
+    _audio_gain_curve_samples,
     _bitrate_for_duration,
     _frame_pts_times,
     _equirect_filtergraph,
@@ -26,7 +27,9 @@ from core.stages.export import (
     _render_segment,
     _audio_rms,
     _frame_normalized_segments,
+    _verify_final_audio,
     _verify_moving_segment,
+    _verify_video_cadence,
     _clip_fates,
     _segment_filtergraph,
     color_sample_commands,
@@ -267,7 +270,7 @@ def test_render_segment_uses_original_source_with_proxy_metadata(tmp_path, monke
     assert rendered_from == "original"
     assert str(source) in commands[0]
     assert str(proxy) not in commands[0]
-    assert "fps=30.000,setpts=PTS-STARTPTS" in commands[0][commands[0].index("-filter_complex") + 1]
+    assert "fps=30.000,setpts=N/(30.000*TB)" in commands[0][commands[0].index("-filter_complex") + 1]
     assert str(master) not in commands[0]
     assert "-an" in commands[0]
     assert commands[0][commands[0].index("-r") + 1] == "30.000"
@@ -534,6 +537,7 @@ def test_export_join_normalizes_mixed_fps_segments(tmp_path, monkeypatch):
     assert deltas
     assert all(delta > 0 for delta in deltas)
     assert min(deltas) >= (1 / TARGET_EXPORT_FPS) * 0.5
+    _verify_video_cadence(output, "mixed-fps final", duration=6.0)
     _verify_moving_segment(output, 5.5, "mixed-fps final", "joined output")
 
 
@@ -656,6 +660,67 @@ def test_fractional_segment_export_keeps_audio_video_duration_and_markers_in_syn
         timeline = 10.2 + sum(float(segment["duration_sec"]) for segment in normalized[:index]) + marker_offset
         assert _audio_rms(output, timeline - 0.025, 0.050) > 0.20
         assert _frame_luma(output, timeline) > 150.0
+    _verify_video_cadence(output, "drift guard final", duration=streams["video"])
+
+
+@pytest.mark.slow
+def test_final_audio_verifier_allows_source_level_change_and_smooth_fade_stack(tmp_path):
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not available")
+    master = tmp_path / "master.wav"
+    output = tmp_path / "output.mp4"
+    source_duration = 30.0
+    _write_step_master(master, source_duration, quiet_after=23.467)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc2=size=640x360:rate=30:duration={source_duration:.3f}",
+            "-i",
+            str(master),
+            "-vf",
+            "fps=30,setpts=N/(30*TB),format=yuv420p",
+            "-af",
+            f"afade=t=in:st=10.200:d=1.500,afade=t=out:st={source_duration - 1.5:.3f}:d=1.500",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            str(output),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    segments = [
+        {"duration_sec": 5.0, "master_start_sec": 0.0},
+        {"duration_sec": 4.0, "master_start_sec": 5.0},
+        {"duration_sec": 4.267, "master_start_sec": 9.0},
+        {"duration_sec": 3.0, "master_start_sec": 13.267},
+    ]
+
+    _verify_final_audio(
+        output,
+        segments,
+        str(master),
+        audio_start=0.0,
+        timeline_offset=10.2,
+        duration=source_duration,
+        content_start=10.2,
+        content_end=source_duration,
+    )
+    curve = _audio_gain_curve_samples(source_duration, 10.2, source_duration)
+    fade_in = [gain for timestamp, gain in curve if 10.2 <= timestamp <= 11.7]
+    steady = [gain for timestamp, gain in curve if 11.7 < timestamp < source_duration - 1.5]
+    assert fade_in == sorted(fade_in)
+    assert all(gain == pytest.approx(1.0) for gain in steady)
 
 
 def _write_marker_master(path: Path, duration: float, marker_times: list[float]) -> None:
@@ -674,6 +739,22 @@ def _write_marker_master(path: Path, duration: float, marker_times: list[float])
                 value += 0.85 * math.sin(2 * math.pi * 1200 * index / sample_rate)
             sample = max(-1.0, min(1.0, value))
             frames.extend(int(sample * 32767).to_bytes(2, "little", signed=True))
+        fh.writeframes(bytes(frames))
+
+
+def _write_step_master(path: Path, duration: float, quiet_after: float) -> None:
+    sample_rate = 48_000
+    with wave.open(str(path), "wb") as fh:
+        fh.setnchannels(1)
+        fh.setsampwidth(2)
+        fh.setframerate(sample_rate)
+        frames = bytearray()
+        total = int(duration * sample_rate)
+        quiet_index = int(quiet_after * sample_rate)
+        for index in range(total):
+            amplitude = 0.24 if index < quiet_index else 0.015
+            value = amplitude * math.sin(2 * math.pi * 440 * index / sample_rate)
+            frames.extend(int(value * 32767).to_bytes(2, "little", signed=True))
         fh.writeframes(bytes(frames))
 
 

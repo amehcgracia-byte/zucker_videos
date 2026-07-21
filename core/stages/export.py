@@ -27,10 +27,11 @@ MIN_ACCEPTABLE_VIDEO_BITRATE = 2_500_000
 MAX_VIDEO_BITRATE = 18_000_000
 TARGET_EXPORT_FPS = 30.0
 TARGET_EXPORT_TIMESCALE = 30_000
-EXPORT_SEGMENT_RECIPE_VERSION = 6
+EXPORT_SEGMENT_RECIPE_VERSION = 7
 INTRO_DURATION = 10.2
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
+FRAME_INTERVAL_TOLERANCE = 0.50
 
 
 class ExportStage(Stage):
@@ -287,10 +288,17 @@ def _render_plan(
             t("joining_segments"),
             lambda percent, detail: progress_callback(84 + int(percent * 6 / 100), detail),
         )
-        real_duration = _media_duration(str(joined_video))
+        cfr_video = temp_dir / "joined-video-cfr.mp4"
+        _normalize_joined_video_cadence(
+            joined_video,
+            cfr_video,
+            video_bitrate,
+            lambda percent, detail: progress_callback(89 + int(percent * 1 / 100), detail),
+        )
+        real_duration = _media_duration(str(cfr_video))
         audio_start, audio_delay = _audio_mux_start_and_delay(segments)
         _mux_continuous_master_audio(
-            joined_video,
+            cfr_video,
             master_path,
             output_path,
             audio_start,
@@ -303,7 +311,17 @@ def _render_plan(
         )
         if verify_motion:
             _verify_joined_output(output_path, segments, timeline_offset=INTRO_DURATION)
-            _verify_final_audio(output_path, segments, master_path, audio_start, timeline_offset=INTRO_DURATION, audio_delay=audio_delay)
+            _verify_final_audio(
+                output_path,
+                segments,
+                master_path,
+                audio_start,
+                timeline_offset=INTRO_DURATION,
+                audio_delay=audio_delay,
+                duration=real_duration,
+                content_start=INTRO_DURATION,
+                content_end=max(INTRO_DURATION, real_duration - OUTRO_DURATION),
+            )
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -382,10 +400,18 @@ def _render_360_plan(
             t("joining_segments"),
             lambda percent, detail: progress_callback(88 + int(percent * 4 / 100), detail),
         )
-        real_duration = _media_duration(str(joined))
+        cfr_joined = temp_dir / "joined-cfr.mp4"
+        _normalize_joined_video_cadence(
+            joined,
+            cfr_joined,
+            video_bitrate,
+            lambda percent, detail: progress_callback(91 + int(percent * 1 / 100), detail),
+            extra_args=_spherical_metadata_args(),
+        )
+        real_duration = _media_duration(str(cfr_joined))
         audio_start, audio_delay = _audio_mux_start_and_delay([segment])
         _mux_continuous_master_audio(
-            joined,
+            cfr_joined,
             master_path,
             output_path,
             audio_start,
@@ -481,7 +507,7 @@ def _equirect_filtergraph(probe: dict[str, Any], duration: float, has_watermark:
         base_filter = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov},scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
     else:
         base_filter = "scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
-    filters = f"{base_filter},fps={TARGET_EXPORT_FPS:.3f},setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=1,format=yuv420p"
+    filters = f"{base_filter},{_constant_cadence_filter()},tpad=stop_mode=clone:stop_duration={1.0 / TARGET_EXPORT_FPS:.6f},format=yuv420p"
     if intro_fade:
         filters += f",fade=t=in:st=0:d={CONTENT_FADE_DURATION:.3f}"
     if outro_fade:
@@ -564,7 +590,7 @@ def _render_logo_clip(
 
 
 def _logo_filtergraph(platform: str, kind: str, duration: float, has_logo: bool) -> str:
-    video = "[0:v]format=yuv420p[bg]"
+    video = f"[0:v]format=yuv420p,{_constant_cadence_filter()}[bg]"
     if not has_logo:
         return f"{video};[bg]copy[v]"
     logo_height = int(_target_size(platform)[1] * 0.72)
@@ -937,6 +963,48 @@ def _run_ffmpeg_progress(command: list[str], duration: float, label: str, progre
         progress(100, f"{label} — 100%")
 
 
+def _constant_cadence_filter(fps: float = TARGET_EXPORT_FPS) -> str:
+    return f"fps={fps:.3f},setpts=N/({fps:.3f}*TB)"
+
+
+def _normalize_joined_video_cadence(
+    input_path: Path,
+    output_path: Path,
+    video_bitrate: int,
+    progress_callback: ProgressCallback | None,
+    extra_args: list[str] | None = None,
+) -> None:
+    """Rewrite the concatenated video onto one exact CFR timeline before audio mux."""
+    duration = _media_duration(str(input_path))
+    command = [
+        _ffmpeg_path(),
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-progress",
+        "pipe:1",
+        "-i",
+        str(input_path),
+        "-vf",
+        f"{_constant_cadence_filter()},format=yuv420p",
+        "-an",
+        "-r",
+        f"{TARGET_EXPORT_FPS:.3f}",
+        "-fps_mode",
+        "cfr",
+        "-video_track_timescale",
+        str(TARGET_EXPORT_TIMESCALE),
+        "-movflags",
+        "+faststart",
+        *(extra_args or []),
+    ]
+    command.extend(_video_encode_args("libx264", video_bitrate))
+    command.append(str(output_path))
+    _run_ffmpeg_progress(command, duration, t("joining_segments"), progress_callback)
+
+
 def _mux_continuous_master_audio(
     video_path: Path,
     master_path: str,
@@ -1024,14 +1092,14 @@ def _segment_filtergraph(
     if source_filter:
         filters.append(source_filter)
     filters.extend([_base_video_filter(platform), _color_filter(color_profile)])
-    filters.append(f"fps={TARGET_EXPORT_FPS:.3f},setpts=PTS-STARTPTS")
+    filters.append(_constant_cadence_filter())
     if intro_fade:
         filters.append(f"fade=t=in:st=0:d={CONTENT_FADE_DURATION:.3f}")
     if outro_fade:
         filters.append(f"fade=t=out:st={max(0.0, duration - CONTENT_FADE_DURATION):.3f}:d={CONTENT_FADE_DURATION:.3f}")
     if text_enabled:
         filters.extend(_text_filters(platform, duration, overlay_config))
-    filters.append("tpad=stop_mode=clone:stop_duration=1")
+    filters.append(f"tpad=stop_mode=clone:stop_duration={1.0 / TARGET_EXPORT_FPS:.6f}")
     filters.append("format=yuv420p")
     graph = f"[0:v]{','.join(filter for filter in filters if filter)}[base]"
     if not has_watermark:
@@ -1261,9 +1329,26 @@ def _verify_joined_output(path: Path, segments: list[dict[str, Any]], timeline_o
                 f"Collapsed final output PTS near join boundary {boundary:.3f}s in {path}: "
                 f"min_delta={min(tiny):.6f}, expected~{expected_delta:.6f}, pts={pts[:12]}"
             )
+        long = [delta for delta in deltas if delta > expected_delta * (1.0 + FRAME_INTERVAL_TOLERANCE)]
+        if long:
+            raise FFmpegError(
+                f"Stretched final output PTS near join boundary {boundary:.3f}s in {path}: "
+                f"max_delta={max(long):.6f}, expected~{expected_delta:.6f}, pts={pts[:12]}"
+            )
+    _verify_video_cadence(path, f"final output {path}", start=0.0, duration=_media_duration(str(path)))
 
 
-def _verify_final_audio(path: Path, segments: list[dict[str, Any]], master_path: str, audio_start: float, timeline_offset: float, audio_delay: float = 0.0) -> None:
+def _verify_final_audio(
+    path: Path,
+    segments: list[dict[str, Any]],
+    master_path: str,
+    audio_start: float,
+    timeline_offset: float,
+    audio_delay: float = 0.0,
+    duration: float | None = None,
+    content_start: float | None = None,
+    content_end: float | None = None,
+) -> None:
     """Verify final file has one audio stream and no obvious gaps at early joins."""
     metadata = _probe_streams(path)
     audio_streams = [stream for stream in metadata.get("streams") or [] if stream.get("codec_type") == "audio"]
@@ -1283,15 +1368,23 @@ def _verify_final_audio(path: Path, segments: list[dict[str, Any]], master_path:
     for boundary in boundaries:
         if boundary < audio_delay:
             continue
+        if _time_overlaps_audio_fade(boundary - 0.080, 0.160, duration, content_start, content_end):
+            LOGGER.info("Skipping final audio join RMS jump check inside intentional fade window at %.3fs", boundary)
+            continue
         source_time = audio_start + boundary - audio_delay
         if source_audio_duration and source_time + 0.080 >= source_audio_duration:
             continue
         before = _audio_rms(path, max(0.0, boundary - 0.080), 0.060)
         after = _audio_rms(path, boundary + 0.020, 0.060)
+        expected_before = _expected_master_rms(master_path, source_time - 0.080, 0.060, boundary - 0.080, duration, content_start, content_end)
+        expected_after = _expected_master_rms(master_path, source_time + 0.020, 0.060, boundary + 0.020, duration, content_start, content_end)
         if before <= 0.0005 or after <= 0.0005:
+            if min(expected_before, expected_after) <= 0.0005:
+                continue
             raise FFmpegError(f"Possible audio silence gap near segment join {boundary:.3f}s in {path}: before={before:.6f} after={after:.6f}")
         ratio = max(before, after) / max(0.000001, min(before, after))
-        if ratio > 8.0:
+        expected_ratio = max(expected_before, expected_after) / max(0.000001, min(expected_before, expected_after))
+        if ratio > 8.0 and ratio > expected_ratio * 2.0:
             raise FFmpegError(f"Possible audio level jump near segment join {boundary:.3f}s in {path}: before={before:.6f} after={after:.6f}")
 
 
@@ -1357,6 +1450,76 @@ def _audio_rms(path: Path, start: float, duration: float) -> float:
         sample = int.from_bytes(data[index : index + 2], byteorder="little", signed=True) / 32768.0
         total += sample * sample
     return (total / max(1, sample_count)) ** 0.5
+
+
+def _expected_master_rms(
+    master_path: str,
+    source_start: float,
+    window_duration: float,
+    timeline_start: float,
+    total_duration: float | None,
+    content_start: float | None,
+    content_end: float | None,
+) -> float:
+    if source_start < 0:
+        return 0.0
+    rms = _audio_rms(Path(master_path), source_start, window_duration)
+    gain = _audio_gain_at(timeline_start + window_duration / 2.0, total_duration, content_start, content_end)
+    return rms * gain
+
+
+def _audio_gain_at(timestamp: float, total_duration: float | None, content_start: float | None, content_end: float | None) -> float:
+    gain = 1.0
+    if content_start is not None and timestamp < content_start:
+        gain = 1.0
+    if content_start is not None and content_start <= timestamp < content_start + CONTENT_FADE_DURATION:
+        gain *= max(0.0, min(1.0, (timestamp - content_start) / CONTENT_FADE_DURATION))
+    if content_end is not None and content_end - CONTENT_FADE_DURATION < timestamp <= content_end:
+        gain *= max(0.0, min(1.0, (content_end - timestamp) / CONTENT_FADE_DURATION))
+    if content_end is not None and timestamp > content_end:
+        return 0.0
+    if total_duration is not None and timestamp > total_duration:
+        return 0.0
+    return gain
+
+
+def _time_overlaps_audio_fade(
+    start: float,
+    duration: float,
+    total_duration: float | None,
+    content_start: float | None,
+    content_end: float | None,
+) -> bool:
+    end = start + duration
+    for fade_start, fade_end in _audio_fade_windows(total_duration, content_start, content_end):
+        if start < fade_end and end > fade_start:
+            return True
+    return False
+
+
+def _audio_fade_windows(total_duration: float | None, content_start: float | None, content_end: float | None) -> list[tuple[float, float]]:
+    windows: list[tuple[float, float]] = []
+    if content_start is not None:
+        windows.append((max(0.0, content_start), max(0.0, content_start + CONTENT_FADE_DURATION)))
+    if content_end is not None:
+        windows.append((max(0.0, content_end - CONTENT_FADE_DURATION), max(0.0, content_end)))
+    if total_duration is not None:
+        windows = [(max(0.0, start), min(total_duration, end)) for start, end in windows if end > 0.0 and start < total_duration]
+    return [(start, end) for start, end in windows if end > start]
+
+
+def _audio_gain_curve_samples(
+    total_duration: float,
+    content_start: float,
+    content_end: float,
+    step: float = 1.0 / TARGET_EXPORT_FPS,
+) -> list[tuple[float, float]]:
+    samples: list[tuple[float, float]] = []
+    count = int(round(total_duration / step)) + 1
+    for index in range(count):
+        timestamp = min(total_duration, index * step)
+        samples.append((round(timestamp, 6), _audio_gain_at(timestamp, total_duration, content_start, content_end)))
+    return samples
 
 
 def _frame_md5(path: Path, timestamp: float) -> str | None:
@@ -1427,6 +1590,39 @@ def _frame_pts_times(path: Path, start: float, duration: float) -> list[float]:
         except (TypeError, ValueError):
             continue
     return pts
+
+
+def _verify_video_cadence(path: Path, label: str, start: float = 0.0, duration: float | None = None) -> None:
+    expected_delta = 1.0 / TARGET_EXPORT_FPS
+    window = duration if duration is not None else max(0.0, _media_duration(str(path)) - start)
+    if window <= expected_delta * 3:
+        return
+    sample_window = min(2.0, window)
+    if window <= sample_window + expected_delta:
+        sample_starts = [start]
+    else:
+        span = max(0.0, window - sample_window)
+        sample_starts = [start + span * fraction for fraction in (0.0, 0.10, 0.25, 0.50, 0.75, 0.90, 1.0)]
+    pts: list[float] = []
+    for sample_start in sample_starts:
+        pts.extend(_frame_pts_times(path, sample_start, sample_window))
+    if len(pts) < 3:
+        raise FFmpegError(f"Could not verify video cadence for {label}: only {len(pts)} frame timestamps")
+    deltas = [
+        later - earlier
+        for earlier, later in zip(pts, pts[1:])
+        if later > earlier and later - earlier < sample_window
+    ]
+    if not deltas:
+        raise FFmpegError(f"Could not verify video cadence for {label}: no usable frame timestamp deltas")
+    low = expected_delta * (1.0 - FRAME_INTERVAL_TOLERANCE)
+    high = expected_delta * (1.0 + FRAME_INTERVAL_TOLERANCE)
+    outliers = [delta for delta in deltas if delta < low or delta > high]
+    if outliers:
+        raise FFmpegError(
+            f"Irregular video cadence in {label}: min_delta={min(deltas):.6f}, max_delta={max(deltas):.6f}, "
+            f"expected~{expected_delta:.6f}, outliers={len(outliers)}"
+        )
 
 
 def _color_filter(color_profile: dict[str, Any]) -> str:
