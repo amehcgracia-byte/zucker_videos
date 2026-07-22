@@ -8,6 +8,7 @@ import subprocess
 import sys
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,7 @@ MIN_ACCEPTABLE_VIDEO_BITRATE = 2_500_000
 MAX_VIDEO_BITRATE = 18_000_000
 TARGET_EXPORT_FPS = 30.0
 TARGET_EXPORT_TIMESCALE = 30_000
-EXPORT_SEGMENT_RECIPE_VERSION = 12
+EXPORT_SEGMENT_RECIPE_VERSION = 13
 INTRO_DURATION = 10.2
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
@@ -186,7 +187,7 @@ def _render_plan(
             lambda percent, detail: progress_callback(8 + int(percent * 2 / 100), detail),
         )
         segment_paths.append(intro_path)
-        render_segments = _expand_spherical_render_segments(segments)
+        render_segments = _continuous_spherical_render_segments(segments)
         for index, segment in enumerate(render_segments, start=1):
             segment_duration = max(0.1, float(segment["duration_sec"]))
             base_percent = 10 + int(70 * rendered_duration / max(total_duration, 0.1))
@@ -360,7 +361,7 @@ def _render_360_plan(
         )
         body_paths: list[Path] = []
         rendered_duration = 0.0
-        body_segments = _expand_spherical_render_segments(segments if any(item.get("spherical_shot") for item in segments) else [segment])
+        body_segments = _continuous_spherical_render_segments(segments if any(item.get("spherical_shot") for item in segments) else [segment])
         for index, body_segment in enumerate(body_segments, start=1):
             segment_path = temp_dir / f"body-{index:04d}.mp4"
             segment_duration = max(0.1, float(body_segment.get("duration_sec") or 0.1))
@@ -478,6 +479,20 @@ def _expand_spherical_render_segments(segments: list[dict[str, Any]]) -> list[di
     return expanded
 
 
+def _continuous_spherical_render_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    previous_shot: dict[str, Any] | None = None
+    for segment in segments:
+        shot = _spherical_shot(segment)
+        if shot and previous_shot and previous_shot.get("type") != shot.get("type"):
+            shot = {**shot, "previous_shot": previous_shot}
+            output.append({**segment, "spherical_shot": shot})
+        else:
+            output.append(segment)
+        previous_shot = _spherical_shot(segment)
+    return output
+
+
 def _spherical_segment_parts(segment: dict[str, Any], previous_shot: dict[str, Any] | None) -> list[dict[str, Any]]:
     shot = _spherical_shot(segment) or {}
     duration = max(0.0, float(segment.get("duration_sec") or 0.0))
@@ -559,7 +574,16 @@ def _render_360_body(
     source = _segment_source_info(project, segment)
     watermark = _watermark_path()
     shot = _spherical_shot(segment)
-    filter_complex = _equirect_filtergraph(source.get("probe") or {}, duration, frame_count, bool(watermark), shot=shot, intro_fade=intro_fade, outro_fade=outro_fade)
+    filter_complex = _equirect_filtergraph(
+        source.get("probe") or {},
+        duration,
+        frame_count,
+        bool(watermark),
+        shot=shot,
+        intro_fade=intro_fade,
+        outro_fade=outro_fade,
+        command_path=output_path.with_suffix(".sendcmd.txt"),
+    )
     command = _segment_video_command_base(ffmpeg, source["source_path"], segment, duration)
     if watermark:
         command.extend(["-loop", "1", "-i", str(watermark)])
@@ -604,14 +628,16 @@ def _equirect_filtergraph(
     shot: dict[str, Any] | None = None,
     intro_fade: bool = False,
     outro_fade: bool = False,
+    command_path: Path | None = None,
 ) -> str:
     yaw = _shot_yaw(shot)
     pitch = _shot_float(shot, "pitch", 0.0)
+    command_prefix = _v360_sendcmd_filter(shot, duration, command_path)
     if probe.get("projection") == "raw_insv":
         fov = int(probe.get("insv_fov") or 190)
-        base_filter = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov}:interp=lanczos,v360=input=equirect:output=equirect:yaw={yaw:.3f}:pitch={pitch:.3f}:interp=lanczos,scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
+        base_filter = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov}:interp=lanczos,{command_prefix}v360@sphere=input=equirect:output=equirect:yaw={yaw:.3f}:pitch={pitch:.3f}:interp=lanczos,scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
     else:
-        base_filter = f"v360=input=equirect:output=equirect:yaw={yaw:.3f}:pitch={pitch:.3f}:interp=lanczos,scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
+        base_filter = f"{command_prefix}v360@sphere=input=equirect:output=equirect:yaw={yaw:.3f}:pitch={pitch:.3f}:interp=lanczos,scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
     timing = _exact_cadence_filter(frame_count) if frame_count else _constant_cadence_filter()
     filters = f"{base_filter},{timing},tpad=stop_mode=clone:stop_duration={1.0 / TARGET_EXPORT_FPS:.6f},format=yuv420p"
     if intro_fade:
@@ -793,6 +819,8 @@ def _render_segment(
             outro_logo,
             command_recorder,
         )
+    sendcmd_path = output_path.with_suffix(".sendcmd.txt")
+    source_filter = _export_source_filter(source.get("probe") or {}, _spherical_shot(segment), duration=duration, command_path=sendcmd_path)
     filter_complex = _segment_filtergraph(
         platform,
         duration,
@@ -804,7 +832,7 @@ def _render_segment(
         outro_fade=outro_fade,
         intro_logo=intro_logo,
         outro_logo=outro_logo,
-        source_filter=_export_source_filter(source.get("probe") or {}, _spherical_shot(segment)),
+        source_filter=source_filter,
         motion_filter=_motion_filter(segment, platform, duration),
         frame_count=frame_count,
     )
@@ -1232,23 +1260,98 @@ def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> s
     pan_x = max(0.0, min(1.0, pan_x))
     pan_y = max(0.0, min(1.0, pan_y))
     duration = max(0.1, float(duration))
-    zoom_expr = f"({zoom_start:.4f}+({zoom_end:.4f}-{zoom_start:.4f})*min(t\\,{duration:.4f})/{duration:.4f})"
+    frames = max(1, int(round(duration * TARGET_EXPORT_FPS)))
+    zoom_expr = f"'{zoom_start:.4f}+({zoom_end:.4f}-{zoom_start:.4f})*on/{max(1, frames - 1)}'"
     return (
-        f"scale=w='trunc({width}*{zoom_expr}/2)*2':h='trunc({height}*{zoom_expr}/2)*2':eval=frame,"
-        f"crop={width}:{height}:'(iw-ow)*{pan_x:.4f}':'(ih-oh)*{pan_y:.4f}'"
+        f"zoompan=z={zoom_expr}:x='(iw-iw/zoom)*{pan_x:.4f}':y='(ih-ih/zoom)*{pan_y:.4f}':"
+        f"d={frames}:s={width}x{height}:fps={TARGET_EXPORT_FPS:.3f},trim=start_frame=0:end_frame={frames},setpts=N/({TARGET_EXPORT_FPS:.3f}*TB)"
     )
 
 
-def _export_source_filter(probe: dict[str, Any], shot: dict[str, Any] | None = None) -> str:
+def _v360_sendcmd_filter(shot: dict[str, Any] | None, duration: float | None, command_path: Path | None) -> str:
+    if not shot or command_path is None or duration is None or duration <= 0:
+        return ""
+    commands = _v360_motion_commands(shot, float(duration))
+    if not commands:
+        return ""
+    command_path.write_text("".join(commands), encoding="utf-8")
+    return f"sendcmd=f={_escape_filter_path(command_path)},"
+
+
+def _v360_motion_commands(shot: dict[str, Any], duration: float) -> list[str]:
+    step = 1.0 / TARGET_EXPORT_FPS
+    count = max(1, int(math.ceil(duration / step)))
+    commands: list[str] = []
+    for index in range(count + 1):
+        t = min(duration, index * step)
+        yaw, pitch, fov = _v360_motion_at(shot, duration, t)
+        commands.append(f"{t:.6f} sphere yaw {yaw:.6f};\n")
+        commands.append(f"{t:.6f} sphere pitch {pitch:.6f};\n")
+        commands.append(f"{t:.6f} sphere h_fov {fov:.6f};\n")
+    return commands
+
+
+def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[float, float, float]:
+    duration = max(0.001, duration)
+    target_yaw = _shot_yaw(shot)
+    target_pitch = _shot_float(shot, "pitch", 0.0)
+    target_fov = _shot_float(shot, "fov", 100.0)
+    if shot.get("type") == "planet":
+        yaw = target_yaw + _shot_float(shot, "spin_deg_per_sec", 18.0) * max(0.0, t)
+        return _signed_yaw(yaw), target_pitch, target_fov
+
+    previous = shot.get("previous_shot") if isinstance(shot.get("previous_shot"), dict) else None
+    pan_duration = 0.0
+    yaw = target_yaw
+    pitch = target_pitch
+    fov = target_fov
+    if previous:
+        pan_duration = min(_shot_float(shot, "transition_sec", 0.45), duration / 3.0)
+        if pan_duration > 0 and t < pan_duration:
+            amount = max(0.0, min(1.0, t / pan_duration))
+            yaw = _lerp_signed_yaw(_shot_yaw(previous), target_yaw, amount)
+            pitch = _lerp_float(_shot_float(previous, "pitch", target_pitch), target_pitch, amount)
+            fov = _lerp_float(_shot_float(previous, "fov", target_fov), target_fov, amount)
+            return _signed_yaw(yaw), pitch, fov
+
+    hold_duration = max(0.001, duration - pan_duration)
+    hold_amount = max(0.0, min(1.0, (t - pan_duration) / hold_duration))
+    yaw += _shot_float(shot, "drift_yaw_deg", 0.0) * (hold_amount - 0.5)
+    pitch += _shot_float(shot, "drift_pitch_deg", 0.0) * (hold_amount - 0.5)
+    return _signed_yaw(yaw), pitch, fov
+
+
+def _lerp_float(start: float, end: float, amount: float) -> float:
+    return start + (end - start) * max(0.0, min(1.0, amount))
+
+
+def _lerp_signed_yaw(start: float, end: float, amount: float) -> float:
+    delta = ((end - start + 540.0) % 360.0) - 180.0
+    return start + delta * max(0.0, min(1.0, amount))
+
+
+def _signed_yaw(value: float) -> float:
+    value = float(value) % 360.0
+    if value > 180.0:
+        value -= 360.0
+    return value
+
+
+def _escape_filter_path(path: Path) -> str:
+    return str(path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+
+
+def _export_source_filter(probe: dict[str, Any], shot: dict[str, Any] | None = None, duration: float | None = None, command_path: Path | None = None) -> str:
     """Prepare source pixels for export while leaving fps conversion to the segment timing filter."""
     yaw = _shot_yaw(shot)
     pitch = _shot_float(shot, "pitch", 0.0)
     fov = _shot_float(shot, "fov", 100.0)
+    command_prefix = _v360_sendcmd_filter(shot, duration, command_path)
     if probe.get("projection") == "raw_insv":
         fov = int(probe.get("insv_fov") or 190)
-        spatial = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov}:interp=lanczos,v360=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={_shot_float(shot, 'fov', 100.0):.3f}:w=1920:h=1080:interp=lanczos"
+        spatial = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov}:interp=lanczos,{command_prefix}v360@sphere=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={_shot_float(shot, 'fov', 100.0):.3f}:w=1920:h=1080:interp=lanczos"
     elif probe.get("projection") == "equirect":
-        spatial = f"v360=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={fov:.3f}:w=1920:h=1080:interp=lanczos"
+        spatial = f"{command_prefix}v360@sphere=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={fov:.3f}:w=1920:h=1080:interp=lanczos"
     elif probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
         spatial = f"{SDR_TONEMAP_FILTER},scale=trunc(iw/2)*2:trunc(ih/2)*2"
     else:

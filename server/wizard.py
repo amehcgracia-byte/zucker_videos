@@ -235,6 +235,7 @@ class WizardRunner:
                 "audio_trim": audio_trim or {},
                 "placeholder_logic": platform in {"instagram", "tiktok"},
             }
+            _store_audio_trim(master_path, audio_trim)
             _store_spherical_landmarks(project, spherical_landmarks)
             _store_camera_role_weights(project, camera_role_weights)
             _store_fixed_rear_motion(project, fixed_rear_motion)
@@ -327,6 +328,7 @@ class WizardRunner:
                 "audio_trim": audio_trim or {},
                 "placeholder_logic": platform in {"instagram", "tiktok"},
             }
+            _store_audio_trim(master_path, audio_trim)
             _store_spherical_landmarks(project, spherical_landmarks)
             _store_camera_role_weights(project, camera_role_weights)
             _store_fixed_rear_motion(project, fixed_rear_motion)
@@ -550,6 +552,15 @@ def _store_spherical_landmarks(project: Project, landmarks: dict[str, float] | N
     project.data.setdefault("settings", {})["spherical_landmarks"] = dict(landmarks)
     config = load_global_config()
     config["spherical_landmarks"] = dict(landmarks)
+    save_global_config(config)
+
+
+def _store_audio_trim(master_path: str, audio_trim: dict[str, float] | None) -> None:
+    if not audio_trim:
+        return
+    config = load_global_config()
+    trims = config.setdefault("audio_trim_by_master", {})
+    trims[str(master_path)] = dict(audio_trim)
     save_global_config(config)
 
 

@@ -21,11 +21,14 @@ from core.stages.export import (
     _bitrate_for_duration,
     _cadence_checked_joined_video,
     cached_segment_path,
+    _continuous_spherical_render_segments,
     _expand_spherical_render_segments,
     _export_source_filter,
     _frame_pts_times,
     _equirect_filtergraph,
     _motion_filter,
+    _v360_motion_at,
+    _v360_motion_commands,
     _run_ffmpeg_progress,
     _render_360_body,
     _render_plan,
@@ -320,7 +323,7 @@ def test_join_fast_path_skips_cfr_rewrite_when_cadence_passes(tmp_path, monkeypa
 def test_360_filtergraph_preserves_equirectangular_shape():
     graph = _equirect_filtergraph({"projection": "equirect"}, 4.0, 120, has_watermark=True, shot={"yaw": 90, "pitch": 0})
 
-    assert "v360=input=equirect:output=equirect:yaw=90.000:pitch=0.000" in graph
+    assert "v360@sphere=input=equirect:output=equirect:yaw=90.000:pitch=0.000" in graph
     assert "scale=3840:1920" in graph
     assert "fps=fps=30.000:round=near:start_time=0,trim=start_frame=0:end_frame=120,setpts=N/(30.000*TB)" in graph
     assert "overlay=W-w-80:H-h-80" in graph
@@ -377,13 +380,54 @@ def test_spherical_pan_steps_keep_angle_increments_small():
     assert max(deltas) <= 10.0
 
 
+def test_continuous_spherical_segments_keep_cut_count_flat():
+    segments = [
+        {"clip_path": "/tmp/360.mp4", "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 3, "spherical_shot": {"type": "singer", "label": "Cantante", "yaw": 20, "pitch": 0, "fov": 80}},
+        {"clip_path": "/tmp/360.mp4", "clip_start_sec": 3, "master_start_sec": 3, "duration_sec": 3, "spherical_shot": {"type": "left", "label": "Lado izquierdo", "yaw": 100, "pitch": 0, "fov": 80, "transition_sec": 0.45}},
+    ]
+
+    render_segments = _continuous_spherical_render_segments(segments)
+
+    assert len(render_segments) == len(segments)
+    assert render_segments[1]["spherical_shot"]["previous_shot"]["type"] == "singer"
+
+
+def test_v360_sendcmd_motion_progresses_smoothly_across_pan():
+    shot = {"type": "left", "yaw": 100, "pitch": 0, "fov": 80, "transition_sec": 0.45, "previous_shot": {"type": "singer", "yaw": 20, "pitch": 0, "fov": 80}}
+    samples = [_v360_motion_at(shot, 3.0, index * (1.0 / TARGET_EXPORT_FPS))[0] for index in range(10)]
+    deltas = [abs(((b - a + 540) % 360) - 180) for a, b in zip(samples, samples[1:])]
+    commands = _v360_motion_commands(shot, 3.0)
+
+    assert all(delta <= 7.0 for delta in deltas)
+    assert samples == sorted(samples)
+    assert len(commands) > 30
+
+
 def test_motion_filter_builds_bounded_ken_burns_zoom():
     graph = _motion_filter({"motion": {"type": "ken_burns", "zoom_start": 1.0, "zoom_end": 1.08, "pan_x": 0.5, "pan_y": 0.5}}, "youtube", 4.0)
 
     assert graph is not None
-    assert "scale=w='trunc(1920*" in graph
-    assert "(1.0000+(1.0800-1.0000)*min(t\\,4.0000)/4.0000)" in graph
-    assert "crop=1920:1080" in graph
+    assert "zoompan=" in graph
+    assert "fps=30.000" in graph
+    assert "trim=start_frame=0:end_frame=120" in graph
+
+
+def test_fixed_rear_export_cadence_passes_with_zoom_on_and_off(tmp_path):
+    project = create_project("IphoneCadence", str(tmp_path / "IphoneCadence.zuckervid"))
+    source = tmp_path / "iphone.mov"
+    master = tmp_path / "master.wav"
+    _make_test_video(source, duration=3.0, fps=30.0, size="640x360")
+    _make_silent_wav(master, duration=3.0)
+    project.data["inputs"]["master"] = file_record(str(master))
+    record = file_record(str(source))
+    record["probe"] = {"valid_video": True, "projection": None, "duration": 3.0, "fps": 30.0, "width": 640, "height": 360}
+    project.data["inputs"]["videos"] = [record]
+    base = {"clip_path": str(source), "source_path": str(source), "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 3, "filename": "iphone.mov"}
+
+    for name, segment in {"off": base, "on": {**base, "motion": {"type": "ken_burns", "zoom_start": 1.0, "zoom_end": 1.08, "pan_x": 0.5, "pan_y": 0.5}}}.items():
+        output = tmp_path / f"{name}.mp4"
+        _render_segment(project, segment, str(master), output, "youtube", 4_000_000, {}, {}, None, warnings=[], command_recorder=[])
+        _verify_video_cadence(output, f"fixed rear zoom {name}", duration=3.0)
 
 
 def test_spherical_flat_filter_uses_signed_yaw_for_saved_singer_value():
@@ -910,6 +954,24 @@ def _write_step_master(path: Path, duration: float, quiet_after: float) -> None:
             value = amplitude * math.sin(2 * math.pi * 440 * index / sample_rate)
             frames.extend(int(value * 32767).to_bytes(2, "little", signed=True))
         fh.writeframes(bytes(frames))
+
+
+def _make_silent_wav(path: Path, duration: float) -> None:
+    sample_rate = 48_000
+    with wave.open(str(path), "wb") as fh:
+        fh.setnchannels(1)
+        fh.setsampwidth(2)
+        fh.setframerate(sample_rate)
+        fh.writeframes(b"\0\0" * int(sample_rate * duration))
+
+
+def _make_test_video(path: Path, duration: float, fps: float, size: str) -> None:
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+    subprocess.run(
+        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", f"testsrc2=size={size}:rate={fps}:duration={duration}", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)],
+        check=True,
+    )
 
 
 def _probe_stream_durations(path: Path) -> dict[str, float]:

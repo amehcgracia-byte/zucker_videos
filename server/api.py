@@ -470,6 +470,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         config["desktop"] = not state.dev
         config.setdefault("camera_role_weights", {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0})
         config.setdefault("fixed_rear_motion", True)
+        config.setdefault("audio_trim_by_master", {})
         return jsonify(config)
 
     @app.get("/api/v1/cache/status")

@@ -17,6 +17,7 @@ let trimDefaultsAppliedFor = "";
 let lastSphericalSetup = {};
 let cameraRoleWeights = { "360": 50, handheld: 30, fixed_rear: 20 };
 let fixedRearMotion = true;
+let savedAudioTrim = {};
 
 function logFrontendError(message, stack = "") {
   fetch("/api/v1/wizard/frontend-log", {
@@ -78,6 +79,7 @@ async function loadAppConfig() {
   applyCameraRoleWeights(cameraRoleWeights);
   fixedRearMotion = appConfig.fixed_rear_motion !== false;
   applyFixedRearMotion(fixedRearMotion);
+  savedAudioTrim = appConfig.audio_trim_by_master || {};
   window.NativeBridge?.configure(appConfig);
 }
 
@@ -153,6 +155,10 @@ async function resumeInputsFromProject() {
   chooseDefaultMaster();
   renderChips();
   document.querySelector("#videoName").value = project.name || document.querySelector("#videoName").value || todayName();
+  if (project.settings?.wizard?.audio_trim && inputs.master?.path) {
+    savedAudioTrim[inputs.master.path] = project.settings.wizard.audio_trim;
+    trimDefaultsAppliedFor = "";
+  }
   if (project.settings?.spherical_landmarks) {
     lastSphericalSetup = normalizeSphericalSetup(project.settings.spherical_landmarks);
   }
@@ -587,8 +593,11 @@ function setupTrimControls(masterPath) {
     preview.src = `/api/v1/wizard/master-preview?t=${Date.now()}`;
   }
   if (trimDefaultsAppliedFor !== masterPath) {
-    document.querySelector("#trimStart").value = "00:00";
-    document.querySelector("#trimEnd").value = duration ? secondsToTime(duration) : "00:00";
+    const saved = savedAudioTrim[masterPath] || {};
+    const start = Number(saved.start_sec);
+    const end = Number(saved.end_sec);
+    document.querySelector("#trimStart").value = Number.isFinite(start) ? secondsToTime(start) : "00:00";
+    document.querySelector("#trimEnd").value = Number.isFinite(end) ? secondsToTime(end) : duration ? secondsToTime(duration) : "00:00";
     trimDefaultsAppliedFor = masterPath || "";
   }
 }

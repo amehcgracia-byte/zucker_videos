@@ -15,7 +15,8 @@ from core.stages.export import ExportStage
 from core.stages.ingest import IngestStage
 from core.stages.sync import SyncStage
 from server.api import create_app, _sanitize_camera_role_weights, _sanitize_spherical_landmarks
-from server.wizard import WizardJob
+from server.inbox import load_global_config
+from server.wizard import WizardJob, _store_audio_trim
 
 
 def valid_video_probe(duration: str = "3.0", width: int = 1280, height: int = 720) -> dict:
@@ -908,3 +909,13 @@ def test_edit_type_ui_separates_camera_mix_from_360_landmarks():
     assert 'data-spherical-landmark="right"' in spherical_setup
     assert 'data-field="yaw"' in spherical_setup
     assert 'data-field="fov"' in spherical_setup
+
+
+def test_audio_trim_persists_by_master_in_global_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    master = str(tmp_path / "song.wav")
+
+    _store_audio_trim(master, {"start_sec": 12.5, "end_sec": 98.0})
+    config = load_global_config()
+
+    assert config["audio_trim_by_master"][master] == {"start_sec": 12.5, "end_sec": 98.0}
