@@ -113,6 +113,7 @@ class WizardRunner:
         spherical_landmarks: dict[str, float] | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
+        spherical_mode: str | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -134,6 +135,7 @@ class WizardRunner:
                         "spherical_landmarks": spherical_landmarks,
                         "camera_role_weights": camera_role_weights,
                         "fixed_rear_motion": fixed_rear_motion,
+                        "spherical_mode": spherical_mode,
                         "master_path": master_path,
                         "songs_path": songs_path,
                         "video_paths": video_paths,
@@ -157,6 +159,7 @@ class WizardRunner:
                 "spherical_landmarks": spherical_landmarks,
                 "camera_role_weights": camera_role_weights,
                 "fixed_rear_motion": fixed_rear_motion,
+                "spherical_mode": spherical_mode,
                 "master_path": master_path,
                 "songs_path": songs_path,
                 "video_paths": video_paths,
@@ -220,6 +223,7 @@ class WizardRunner:
         spherical_landmarks: dict[str, float] | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
+        spherical_mode: str | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -239,6 +243,7 @@ class WizardRunner:
             _store_spherical_landmarks(project, spherical_landmarks)
             _store_camera_role_weights(project, camera_role_weights)
             _store_fixed_rear_motion(project, fixed_rear_motion)
+            _store_spherical_mode(project, spherical_mode)
             project.save()
 
             self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
@@ -253,6 +258,7 @@ class WizardRunner:
                 spherical_landmarks=spherical_landmarks,
                 camera_role_weights=camera_role_weights,
                 fixed_rear_motion=fixed_rear_motion,
+                spherical_mode=spherical_mode,
                 master_path=master_path,
                 songs_path=songs_path,
                 video_paths=video_paths,
@@ -315,6 +321,7 @@ class WizardRunner:
         spherical_landmarks: dict[str, float] | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
+        spherical_mode: str | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -332,6 +339,7 @@ class WizardRunner:
             _store_spherical_landmarks(project, spherical_landmarks)
             _store_camera_role_weights(project, camera_role_weights)
             _store_fixed_rear_motion(project, fixed_rear_motion)
+            _store_spherical_mode(project, spherical_mode)
             project.save()
             self._run_stage(job, project, CutStage(), 48, 58, t("cutting_song"))
             self._run_stage(job, project, EditStage(), 58, 70, t("building_edit"))
@@ -358,6 +366,7 @@ class WizardRunner:
                 "cut_count": export.get("cut_count"),
                 "camera_usage": export.get("camera_usage"),
                 "spherical_shot_usage": export.get("spherical_shot_usage") or manifest.get("spherical_shot_usage") or {},
+                "spherical_recording_usage": export.get("spherical_recording_usage") or manifest.get("spherical_recording_usage") or {},
                 "warnings": export.get("warnings") or manifest.get("warnings") or [],
                 "excluded_clips": export.get("excluded_clips") or [],
                 "clip_fates": export.get("clip_fates") or [],
@@ -385,6 +394,7 @@ class WizardRunner:
         spherical_landmarks: dict[str, float] | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
+        spherical_mode: str | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -412,6 +422,7 @@ class WizardRunner:
             spherical_landmarks=spherical_landmarks,
             camera_role_weights=camera_role_weights,
             fixed_rear_motion=fixed_rear_motion,
+            spherical_mode=spherical_mode,
             master_path=master_path,
             songs_path=songs_path,
             video_paths=video_paths,
@@ -447,6 +458,7 @@ class WizardRunner:
                 "cut_count": export.get("cut_count"),
                 "camera_usage": export.get("camera_usage"),
                 "spherical_shot_usage": export.get("spherical_shot_usage") or manifest.get("spherical_shot_usage") or {},
+                "spherical_recording_usage": export.get("spherical_recording_usage") or manifest.get("spherical_recording_usage") or {},
                 "warnings": export.get("warnings") or manifest.get("warnings") or [],
                 "excluded_clips": export.get("excluded_clips") or [],
                 "clip_fates": export.get("clip_fates") or [],
@@ -579,6 +591,18 @@ def _store_fixed_rear_motion(project: Project, enabled: bool | None) -> None:
     project.data.setdefault("settings", {}).setdefault("edit", {})["fixed_rear_motion"] = bool(enabled)
     config = load_global_config()
     config["fixed_rear_motion"] = bool(enabled)
+    save_global_config(config)
+
+
+def _store_spherical_mode(project: Project, mode: str | None) -> None:
+    if mode is None:
+        return
+    value = str(mode or "automatic").strip().lower()
+    if value not in {"automatic", "directed"}:
+        value = "automatic"
+    project.data.setdefault("settings", {}).setdefault("edit", {})["spherical_mode"] = value
+    config = load_global_config()
+    config["spherical_mode"] = value
     save_global_config(config)
 
 

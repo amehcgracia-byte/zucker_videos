@@ -101,11 +101,18 @@ def test_spherical_motion_profiles_follow_shot_direction_rules():
     left = _spherical_motion_profile({"type": "left", "yaw": 47.6, "pitch": -15.9, "fov": 95}, 2)
     right = _spherical_motion_profile({"type": "right", "yaw": 322.1, "pitch": -15, "fov": 95}, 3)
     audience = _spherical_motion_profile({"type": "audience", "yaw": 203.7, "pitch": -15.5, "fov": 95}, 4)
+    full = _spherical_motion_profile({"type": "full_stage", "yaw": 11.5, "pitch": -34.3, "fov": 120}, 5)
+    audience_stage = _spherical_motion_profile({"type": "audience_stage_wide", "yaw": 298.1, "pitch": -12.2, "fov": 125}, 6)
+    planet = _spherical_motion_profile({"type": "planet", "yaw": 6, "pitch": -23.5, "fov": 150}, 7)
 
-    assert singer["drift_pitch_deg"] > 0
+    assert singer["fov_delta_deg"] > 0
     assert left["drift_yaw_deg"] < 0
     assert right["drift_yaw_deg"] > 0
-    assert abs(audience["fov_delta_deg"]) >= 5.0
+    assert audience["fov_delta_deg"] < 0
+    assert full["fov_delta_deg"] < 0
+    assert audience_stage["drift_yaw_deg"] < 0
+    assert planet["projection"] == "tiny_planet"
+    assert planet["pitch"] == -90.0
 
 
 def test_youtube_plan_prefers_recorded_360_curve_when_segment_is_covered():
@@ -122,12 +129,29 @@ def test_youtube_plan_prefers_recorded_360_curve_when_segment_is_covered():
         "smoothed": [{"t": index / 10, "yaw": index * 2, "pitch": -10, "fov": 100} for index in range(0, 81)],
     }
 
-    plan = _youtube_multicam_plan(coverage, beats, recorded_moves=[move])
+    plan = _youtube_multicam_plan(coverage, beats, {"edit": {"spherical_mode": "directed"}}, recorded_moves=[move])
 
     assert plan["segments"]
     assert {segment["spherical_shot"]["type"] for segment in plan["segments"]} == {"recorded_move"}
     assert plan["spherical_recording_usage"]["recorded_segments"] == len(plan["segments"])
     assert plan["spherical_recording_usage"]["landmark_segments"] == 0
+
+
+def test_youtube_plan_automatic_mode_ignores_recorded_360_curve():
+    coverage = {
+        "platform": "youtube",
+        "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 8.0},
+        "sources": [
+            {"path": "/tmp/360.mp4", "filename": "wide360.mp4", "projection": "equirect", "offset_sec": 0.0, "duration_sec": 8.0, "confidence": 8.0},
+        ],
+    }
+    beats = {"bars_sec": [0.0, 2.0, 4.0, 6.0, 8.0], "sections_sec": []}
+    move = {"name": "Main take", "smoothed": [{"t": index / 10, "yaw": index, "pitch": -10, "fov": 100} for index in range(0, 81)]}
+
+    plan = _youtube_multicam_plan(coverage, beats, {"spherical_landmarks": {"singer": {"yaw": 336.8, "weight": 1}}}, recorded_moves=[move])
+
+    assert {segment["spherical_shot"]["type"] for segment in plan["segments"]} == {"full_stage", "singer"}
+    assert plan["spherical_recording_usage"]["recorded_segments"] == 0
 
 
 def test_fixed_camera_motion_varies_target_direction_and_zoom_direction():

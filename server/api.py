@@ -255,6 +255,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         spherical_landmarks = _spherical_landmarks_from_body(body)
         camera_role_weights = _camera_role_weights_from_body(body)
         fixed_rear_motion = _fixed_rear_motion_from_body(body)
+        spherical_mode = _spherical_mode_from_body(body)
         if platform not in {"youtube", "instagram", "tiktok", "360"}:
             return error_response("bad_request", "platform must be youtube, instagram, tiktok, or 360", 400)
         if not master:
@@ -277,6 +278,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 spherical_landmarks=spherical_landmarks,
                 camera_role_weights=camera_role_weights,
                 fixed_rear_motion=fixed_rear_motion,
+                spherical_mode=spherical_mode,
                 master_path=master,
                 songs_path=songs,
                 video_paths=videos,
@@ -541,6 +543,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         config["desktop"] = not state.dev
         config.setdefault("camera_role_weights", {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0})
         config.setdefault("fixed_rear_motion", True)
+        config.setdefault("spherical_mode", "automatic")
         config.setdefault("audio_trim_by_master", {})
         return jsonify(config)
 
@@ -892,6 +895,13 @@ def _fixed_rear_motion_from_body(body: dict[str, Any]) -> bool | None:
     if "fixed_rear_motion" not in body:
         return None
     return bool(body.get("fixed_rear_motion"))
+
+
+def _spherical_mode_from_body(body: dict[str, Any]) -> str | None:
+    if "spherical_mode" not in body:
+        return None
+    value = str(body.get("spherical_mode") or "automatic").strip().lower()
+    return value if value in {"automatic", "directed"} else "automatic"
 
 
 def _sanitize_camera_role_weights(raw: Any) -> dict[str, float]:

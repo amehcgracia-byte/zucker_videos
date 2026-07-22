@@ -891,6 +891,60 @@ pre {
   justify-content: flex-end;
 }
 
+.spherical-mode {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.spherical-mode label {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  background: #fff;
+}
+
+.spherical-mode label:has(input:checked) {
+  border-color: var(--green-700);
+  background: var(--green-50);
+}
+
+.spherical-mode span {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.director-entry {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  border: 1px solid var(--green-300);
+  border-radius: 12px;
+  padding: 14px;
+  background: var(--green-50);
+}
+
+.director-entry.directed {
+  border-color: var(--green-700);
+  box-shadow: 0 0 0 3px rgba(127, 191, 98, 0.18);
+}
+
+.director-entry > div {
+  display: grid;
+  gap: 4px;
+}
+
+.director-entry span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .director-screen {
   position: fixed;
   inset: 0;
@@ -1078,9 +1132,15 @@ pre {
   }
 
   .spherical-fields,
+  .spherical-mode,
   .camera-weight-fields,
   .trim-fields {
     grid-template-columns: 1fr;
+  }
+
+  .director-entry {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .drop-zone {

@@ -1011,6 +1011,16 @@ def test_edit_type_ui_separates_camera_mix_from_360_landmarks():
     assert 'data-field="fov"' in spherical_setup
 
 
+def test_director_entry_point_and_mode_choice_render_in_360_setup():
+    html = Path("web/index.html").read_text(encoding="utf-8")
+    spherical_setup = html.split('id="sphericalSetup"', 1)[1].split('id="startWizard"', 1)[0]
+
+    assert "Direct the 360 camera live" in spherical_setup
+    assert 'id="openDirector"' in spherical_setup
+    assert 'name="sphericalMode" value="automatic"' in spherical_setup
+    assert 'name="sphericalMode" value="directed"' in spherical_setup
+
+
 def test_audio_trim_persists_by_master_in_global_config(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     master = str(tmp_path / "song.wav")

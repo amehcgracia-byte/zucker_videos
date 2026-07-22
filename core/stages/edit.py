@@ -10,6 +10,7 @@ from typing import Any
 from core.camera_moves import load_camera_moves, recorded_move_covering, recorded_shot_for_segment
 from core.messages import t
 from core.project import Project
+from core.shot_quality import analyze_handheld_director_quality, director_quality_for_segment
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.cut import load_coverage
 
@@ -70,6 +71,8 @@ class EditStage(Stage):
         coverage = load_coverage(project)
         platform = str(coverage.get("platform") or "youtube")
         recorded_moves = load_camera_moves(project)
+        if platform == "youtube":
+            coverage = _with_director_quality(project, coverage, progress_callback)
         if platform != "youtube":
             plan = _simple_plan(coverage, project.data.get("settings", {}), recorded_moves=recorded_moves)
             beats = {"stage": self.name, "platform": platform, "beats_sec": [], "bars_sec": [], "sections_sec": [], "tempo": None, "placeholder_short_form": platform != "360"}
@@ -157,6 +160,15 @@ def _fallback_beats(start: float, duration: float) -> list[float]:
     return [round(start + index * step, 3) for index in range(count + 1)]
 
 
+def _with_director_quality(project: Project, coverage: dict[str, Any], progress_callback: ProgressCallback) -> dict[str, Any]:
+    sources = coverage.get("sources") or []
+    if not sources:
+        return coverage
+    progress_callback(50, "Scoring Sony director camera")
+    scored = analyze_handheld_director_quality(project, sources)
+    return {**coverage, "sources": scored}
+
+
 def _youtube_multicam_plan(
     coverage: dict[str, Any],
     beats: dict[str, Any],
@@ -184,6 +196,8 @@ def _youtube_multicam_plan(
     project_settings = settings or {}
     edit_settings = project_settings.get("edit") if "edit" in project_settings else project_settings
     spherical_landmarks = migrate_spherical_landmarks(project_settings.get("spherical_landmarks") or {})
+    spherical_mode = str(edit_settings.get("spherical_mode") or "automatic").lower()
+    use_recorded_360 = spherical_mode == "directed"
     role_weights = _camera_role_weights(edit_settings)
     fixed_rear_motion = bool(edit_settings.get("fixed_rear_motion", True))
     bar_index = 0
@@ -203,7 +217,7 @@ def _youtube_multicam_plan(
         segment_end = min(end, float(bar_times[next_index]))
         if segment_end <= segment_start:
             break
-        available = _covering_sources(sources, segment_start, segment_end)
+        available = _quality_filtered_sources(_covering_sources(sources, segment_start, segment_end), segment_start, segment_end, selection_stats)
         if not available:
             gaps.append({"start_sec": round(segment_start, 3), "end_sec": round(segment_end, 3)})
             bar_index = next_index
@@ -220,7 +234,7 @@ def _youtube_multicam_plan(
         chosen_stats["chosen_seconds"] += segment_end - segment_start
         segment = _segment_from_source(source, segment_start, segment_end, window.get("title") or t("full_video"))
         if _source_role(source) == "360":
-            recorded = recorded_move_covering(recorded_moves or [], segment_start, segment_end)
+            recorded = recorded_move_covering(recorded_moves or [], segment_start, segment_end) if use_recorded_360 else None
             if recorded:
                 segment["spherical_shot"] = recorded_shot_for_segment(recorded, segment_start, segment_end)
             else:
@@ -267,11 +281,13 @@ def _simple_plan(
 ) -> dict[str, Any]:
     segments = _short_form_segments_from_best_coverage(coverage)
     platform = coverage.get("platform") or "youtube"
+    edit_settings = ((project_settings or {}).get("edit") if "edit" in (project_settings or {}) else project_settings) or {}
+    use_recorded_360 = str(edit_settings.get("spherical_mode") or "automatic").lower() == "directed"
     if platform == "360":
         segments = build_spherical_shot_segments(
             coverage.get("segments") or segments,
             (project_settings or {}).get("spherical_landmarks") or {},
-            recorded_moves=recorded_moves,
+            recorded_moves=recorded_moves if use_recorded_360 else None,
         )
         usage = _spherical_shot_usage(segments)
     else:
@@ -402,31 +418,24 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int) -> dict[str, Any
     shot = dict(shot)
     shot_type = str(shot.get("type") or "")
     if shot_type == "planet":
+        shot["pitch"] = -90.0
+        shot["fov"] = max(240.0, float(shot.get("fov") or 240.0))
+        shot["projection"] = "tiny_planet"
         return shot
-    rng = random.Random(stable_fingerprint({"shot": shot_type, "yaw": round(float(shot.get("yaw") or 0.0), 3), "index": index}))
-    yaw_jitter = rng.uniform(-0.8, 0.8)
-    pitch_jitter = rng.uniform(-0.5, 0.5)
     if shot_type == "singer":
-        shot["drift_yaw_deg"] = yaw_jitter
-        shot["drift_pitch_deg"] = rng.uniform(2.6, 4.0)
+        shot["fov_delta_deg"] = 8.0
     elif shot_type == "left":
-        shot["drift_yaw_deg"] = -rng.uniform(3.0, 5.0)
-        shot["drift_pitch_deg"] = pitch_jitter
+        shot["drift_yaw_deg"] = -4.0
     elif shot_type == "right":
-        shot["drift_yaw_deg"] = rng.uniform(3.0, 5.0)
-        shot["drift_pitch_deg"] = pitch_jitter
+        shot["drift_yaw_deg"] = 4.0
     elif shot_type == "audience":
-        shot["drift_yaw_deg"] = yaw_jitter
-        shot["drift_pitch_deg"] = pitch_jitter
-        shot["fov_delta_deg"] = rng.choice([-1.0, 1.0]) * rng.uniform(5.0, 9.0)
+        shot["fov_delta_deg"] = -8.0
+    elif shot_type == "full_stage":
+        shot["fov_delta_deg"] = -7.0
+    elif shot_type == "audience_stage_wide":
+        shot["drift_yaw_deg"] = -5.0
     else:
-        if rng.random() < 0.5:
-            shot["drift_yaw_deg"] = rng.uniform(-3.0, 3.0)
-            shot["drift_pitch_deg"] = rng.uniform(-1.6, 1.6)
-        else:
-            shot["drift_yaw_deg"] = yaw_jitter
-            shot["drift_pitch_deg"] = pitch_jitter
-            shot["fov_delta_deg"] = rng.choice([-1.0, 1.0]) * rng.uniform(3.0, 6.0)
+        shot["fov_delta_deg"] = -5.0 if index % 2 == 0 else 5.0
     return shot
 
 
@@ -624,6 +633,36 @@ def _covering_sources(sources: list[dict[str, Any]], start: float, end: float) -
     return available
 
 
+def _quality_filtered_sources(
+    sources: list[dict[str, Any]],
+    start: float,
+    end: float,
+    selection_stats: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    filtered = []
+    rejected_handheld: list[tuple[float, dict[str, Any]]] = []
+    for source in sources:
+        if _source_role(source) != "handheld":
+            filtered.append(source)
+            continue
+        quality = director_quality_for_segment(source, start, end)
+        stats = selection_stats.setdefault(_source_id(source), _selection_stats_for_source(source, start, end))
+        stats.setdefault("director_quality", (source.get("director_quality") or {}).get("summary") or {})
+        if quality.get("eligible", True):
+            stats["director_score_sum"] = float(stats.get("director_score_sum") or 0.0) + float(quality.get("score") or 0.0)
+            stats["director_score_windows"] = int(stats.get("director_score_windows") or 0) + 1
+            filtered.append({**source, "director_segment_score": quality.get("score")})
+        else:
+            stats["director_rejected_segments"] = int(stats.get("director_rejected_segments") or 0) + 1
+            reasons = stats.setdefault("director_reject_reasons", {})
+            for reason in quality.get("reasons") or ["low director score"]:
+                reasons[str(reason)] = reasons.get(str(reason), 0) + 1
+            rejected_handheld.append((float(quality.get("score") or 0.0), {**source, "director_segment_score": quality.get("score")}))
+    if not filtered and rejected_handheld:
+        return [sorted(rejected_handheld, key=lambda item: item[0], reverse=True)[0][1]]
+    return filtered
+
+
 def _choose_source(
     sources: list[dict[str, Any]],
     previous_source: str | None,
@@ -641,11 +680,12 @@ def _choose_source(
         candidates = usable_sources
     selection_stats = selection_stats or {}
 
-    def score(source: dict[str, Any]) -> tuple[float, int, float, str]:
+    def score(source: dict[str, Any]) -> tuple[float, int, float, float, str]:
         role = _source_role(source)
         target_share = max(0.001, float(role_weights.get(role, role_weights.get("handheld", 0.3))))
         chosen_seconds = float((selection_stats.get(_source_id(source)) or {}).get("chosen_seconds") or 0.0)
-        return (chosen_seconds / target_share, usage_counts.get(_source_id(source), 0), -float(source.get("confidence") or 0.0), _source_id(source))
+        director_bonus = float(source.get("director_segment_score") or 1.0) if role == "handheld" else 1.0
+        return (chosen_seconds / target_share, usage_counts.get(_source_id(source), 0), -director_bonus, -float(source.get("confidence") or 0.0), _source_id(source))
 
     return sorted(candidates, key=score)[0]
 
@@ -747,6 +787,10 @@ def _selection_stats_for_source(source: dict[str, Any], window_start: float, win
         "eligible_seconds": 0.0,
         "chosen_segments": 0,
         "chosen_seconds": 0.0,
+        "director_rejected_segments": 0,
+        "director_reject_reasons": {},
+        "director_score_sum": 0.0,
+        "director_score_windows": 0,
     }
 
 
@@ -757,12 +801,23 @@ def _finalize_selection_stats(stats: dict[str, dict[str, Any]]) -> list[dict[str
         entry["covered_seconds"] = round(float(entry.get("covered_seconds") or 0.0), 3)
         entry["eligible_seconds"] = round(float(entry.get("eligible_seconds") or 0.0), 3)
         entry["chosen_seconds"] = round(float(entry.get("chosen_seconds") or 0.0), 3)
+        score_windows = int(entry.pop("director_score_windows", 0) or 0)
+        score_sum = float(entry.pop("director_score_sum", 0.0) or 0.0)
+        if score_windows:
+            entry["director_average_score"] = round(score_sum / score_windows, 3)
+        entry["director_rejected_segments"] = int(entry.get("director_rejected_segments") or 0)
         if entry["eligible_segments"] and not entry["chosen_segments"]:
             entry["selection_reason"] = "eligible but not selected by camera rotation"
         elif not entry["eligible_segments"]:
             entry["selection_reason"] = "not covering selected edit intervals"
         else:
             entry["selection_reason"] = f"chosen {entry['chosen_segments']} of {entry['eligible_segments']} eligible segments"
+        if entry["director_rejected_segments"]:
+            reasons = entry.get("director_reject_reasons") or {}
+            reason_text = " / ".join(sorted(reasons, key=lambda key: (-reasons[key], key))[:3])
+            entry["selection_reason"] += f"; Sony quality rejected {entry['director_rejected_segments']} windows"
+            if reason_text:
+                entry["selection_reason"] += f": {reason_text}"
         finalized.append(entry)
     return sorted(finalized, key=lambda item: str(item.get("filename") or ""))
 

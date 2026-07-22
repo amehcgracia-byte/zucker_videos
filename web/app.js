@@ -17,6 +17,7 @@ let trimDefaultsAppliedFor = "";
 let lastSphericalSetup = {};
 let cameraRoleWeights = { "360": 50, handheld: 30, fixed_rear: 20 };
 let fixedRearMotion = true;
+let sphericalMode = "automatic";
 let savedAudioTrim = {};
 let previewTimers = new Map();
 let previewVersions = new Map();
@@ -115,6 +116,8 @@ async function loadAppConfig() {
   applyCameraRoleWeights(cameraRoleWeights);
   fixedRearMotion = appConfig.fixed_rear_motion !== false;
   applyFixedRearMotion(fixedRearMotion);
+  sphericalMode = appConfig.spherical_mode === "directed" ? "directed" : "automatic";
+  applySphericalMode(sphericalMode);
   savedAudioTrim = appConfig.audio_trim_by_master || {};
   window.NativeBridge?.configure(appConfig);
 }
@@ -256,6 +259,9 @@ async function resumeInputsFromProject() {
   if (project.settings?.edit && "fixed_rear_motion" in project.settings.edit) {
     fixedRearMotion = project.settings.edit.fixed_rear_motion !== false;
     applyFixedRearMotion(fixedRearMotion);
+  }
+  if (project.settings?.edit?.spherical_mode) {
+    applySphericalMode(project.settings.edit.spherical_mode);
   }
   if (inputs.songs?.path) {
     const result = await api("/wizard/songs", { method: "POST", body: JSON.stringify({ songs: inputs.songs.path }) });
@@ -568,7 +574,41 @@ function renderSphericalSetup() {
   const panel = document.querySelector("#sphericalSetup");
   if (!panel) return;
   panel.hidden = !hasSphericalInput();
-  if (!panel.hidden) applySphericalSetup(lastSphericalSetup);
+  if (!panel.hidden) {
+    applySphericalSetup(lastSphericalSetup);
+    refreshDirectorEntryStatus().catch(() => {});
+  }
+}
+
+function sphericalModeFromForm() {
+  return document.querySelector('input[name="sphericalMode"]:checked')?.value === "directed" ? "directed" : "automatic";
+}
+
+function applySphericalMode(mode) {
+  sphericalMode = mode === "directed" ? "directed" : "automatic";
+  const input = document.querySelector(`input[name="sphericalMode"][value="${sphericalMode}"]`);
+  if (input) input.checked = true;
+  document.querySelector("#directorEntry")?.classList.toggle("directed", sphericalMode === "directed");
+  refreshDirectorEntryStatus().catch(() => {});
+}
+
+async function refreshDirectorEntryStatus() {
+  const status = document.querySelector("#directorEntryStatus");
+  if (!status || !hasSphericalInput()) return;
+  try {
+    const result = await api("/wizard/camera-moves");
+    const count = (result.takes || []).length;
+    status.textContent =
+      sphericalModeFromForm() === "directed"
+        ? count
+          ? `${count} recorded take${count === 1 ? "" : "s"} available. Directed mode will use covered recording ranges.`
+          : "No recorded take yet. Open Director to record one before exporting."
+        : count
+          ? `${count} recorded take${count === 1 ? "" : "s"} saved, but Automatic mode will use shot angles.`
+          : "Play the synced song, drag the 360 view, and record a camera move take.";
+  } catch (_error) {
+    status.textContent = "Open Director to record live 360 camera moves.";
+  }
 }
 
 function applySphericalSetup(values = {}) {
@@ -1081,6 +1121,7 @@ async function stopDirectorRecording(save) {
   });
   nameInput.value = "";
   renderDirectorTakes(result.takes || []);
+  refreshDirectorEntryStatus().catch(() => {});
   directorStatus(`Saved ${result.take?.name || "take"} with ${director.samples.length} samples.`);
 }
 
@@ -1114,6 +1155,7 @@ async function deleteDirectorTake(name) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error?.message || "Could not delete take");
   renderDirectorTakes(data.takes || []);
+  refreshDirectorEntryStatus().catch(() => {});
 }
 
 function setupTrimControls(masterPath) {
@@ -1184,6 +1226,7 @@ async function startWizard(options = {}) {
       spherical_landmarks: sphericalLandmarksFromForm(),
       camera_role_weights: cameraRoleWeightsFromForm(),
       fixed_rear_motion: fixedRearMotionFromForm(),
+      spherical_mode: sphericalModeFromForm(),
       master: inputs.master,
       songs: inputs.songs,
       videos: inputs.videos,
@@ -1594,6 +1637,9 @@ document.addEventListener("change", (event) => {
     trimDefaultsAppliedFor = "";
     setupTrimControls(selectedMasterPath);
     renderChips();
+  }
+  if (target instanceof HTMLInputElement && target.name === "sphericalMode") {
+    applySphericalMode(target.value);
   }
   const sphericalGroup = target.closest?.("fieldset[data-spherical-landmark]");
   if (sphericalGroup instanceof HTMLElement && target instanceof HTMLInputElement) {

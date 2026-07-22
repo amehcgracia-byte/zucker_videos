@@ -424,6 +424,14 @@ def test_v360_sendcmd_follows_recorded_curve_samples():
     assert any("sphere v_fov" in command for command in commands)
 
 
+def test_planet_uses_stereographic_tiny_planet_projection():
+    graph = _export_source_filter({"projection": "equirect"}, {"type": "planet", "yaw": 6, "pitch": -90, "fov": 260}, duration=3.0, command_path=None)
+
+    assert "output=sg" in graph
+    assert "pitch=-90.000" in graph
+    assert "h_fov=260.000" in graph
+
+
 def test_motion_filter_builds_bounded_ken_burns_zoom():
     graph = _motion_filter({"motion": {"type": "ken_burns", "zoom_start": 1.0, "zoom_end": 1.08, "pan_x": 0.5, "pan_y": 0.5}}, "youtube", 4.0)
 
