@@ -19,6 +19,8 @@ let cameraRoleWeights = { "360": 50, handheld: 30, fixed_rear: 20 };
 let fixedRearMotion = true;
 let savedAudioTrim = {};
 let previewTimers = new Map();
+let previewVersions = new Map();
+let previewControllers = new Map();
 
 const LANDMARK_LABELS = {
   full_stage: "Full stage",
@@ -557,7 +559,7 @@ function applySphericalSetup(values = {}) {
       if (value != null && input.value === "") input.value = formatCanonicalNumber(value);
     });
     syncFriendlyFromAdvanced(group);
-    queueSphericalPreview(group);
+    queueSphericalPreview(group, "final");
   });
   updateSphericalWarnings();
 }
@@ -692,7 +694,7 @@ function syncFriendlyFromAdvanced(group) {
   updateRawSummary(group);
 }
 
-function syncAdvancedFromFriendly(group) {
+function syncAdvancedFromFriendly(group, previewQuality = "drag") {
   const direction = parseLocaleNumber(group.querySelector('[data-friendly="direction"]')?.value);
   const height = parseLocaleNumber(group.querySelector('[data-friendly="height"]')?.value);
   const zoom = parseLocaleNumber(group.querySelector('[data-friendly="zoom"]')?.value);
@@ -708,7 +710,7 @@ function syncAdvancedFromFriendly(group) {
   if (weightInput && frequency != null) weightInput.value = formatCanonicalNumber(frequency);
   updateRawSummary(group);
   updateSphericalWarnings();
-  queueSphericalPreview(group);
+  queueSphericalPreview(group, previewQuality);
 }
 
 function updateRawSummary(group) {
@@ -723,7 +725,7 @@ function updateRawSummary(group) {
   summary.textContent = yaw ? `Exact: ${yaw}° direction, ${pitch || "0"}° height, zoom ${fov || "95"} · ${label}` : "";
 }
 
-function queueSphericalPreview(group) {
+function queueSphericalPreview(group, quality = "final") {
   const image = group.querySelector("[data-preview]");
   const source = selectedSphericalSourcePath();
   const yaw = normalizeYaw(group.querySelector('[data-field="yaw"]')?.value);
@@ -732,17 +734,46 @@ function queueSphericalPreview(group) {
   if (!image || !source || yaw == null) return;
   const key = group.dataset.sphericalLandmark;
   clearTimeout(previewTimers.get(key));
+  previewControllers.get(key)?.abort();
+  const version = (previewVersions.get(key) || 0) + 1;
+  previewVersions.set(key, version);
   previewTimers.set(
     key,
     setTimeout(() => {
+      if (previewVersions.get(key) !== version) return;
       const params = new URLSearchParams({
         source,
         yaw: formatCanonicalNumber(yaw),
         pitch: formatCanonicalNumber(pitch ?? 0),
         fov: formatCanonicalNumber(fov ?? 95),
+        quality,
       });
-      image.src = `/api/v1/wizard/spherical-preview?${params.toString()}&t=${Date.now()}`;
-    }, 250)
+      const nextSrc = `/api/v1/wizard/spherical-preview?${params.toString()}`;
+      if (image.dataset.pendingSrc === nextSrc || image.src.endsWith(nextSrc)) return;
+      image.dataset.pendingSrc = nextSrc;
+      const controller = new AbortController();
+      previewControllers.set(key, controller);
+      fetch(nextSrc, { signal: controller.signal })
+        .then((response) => {
+          if (!response.ok) throw new Error("Preview failed");
+          return response.blob();
+        })
+        .then((blob) => {
+          if (previewVersions.get(key) === version) {
+            if (image.dataset.objectUrl) URL.revokeObjectURL(image.dataset.objectUrl);
+            const objectUrl = URL.createObjectURL(blob);
+            image.dataset.objectUrl = objectUrl;
+            image.src = objectUrl;
+            image.dataset.pendingSrc = "";
+          }
+        })
+        .catch((error) => {
+          if (error.name !== "AbortError" && previewVersions.get(key) === version) image.dataset.pendingSrc = "";
+        })
+        .finally(() => {
+          if (previewControllers.get(key) === controller) previewControllers.delete(key);
+        });
+    }, quality === "drag" ? 90 : 220)
   );
 }
 
@@ -1215,15 +1246,15 @@ document.addEventListener("change", (event) => {
   }
   const sphericalGroup = target.closest?.("fieldset[data-spherical-landmark]");
   if (sphericalGroup instanceof HTMLElement && target instanceof HTMLInputElement) {
-    if (target.dataset.friendly) syncAdvancedFromFriendly(sphericalGroup);
+    if (target.dataset.friendly) syncAdvancedFromFriendly(sphericalGroup, "final");
     else {
       syncFriendlyFromAdvanced(sphericalGroup);
       updateSphericalWarnings();
-      queueSphericalPreview(sphericalGroup);
+      queueSphericalPreview(sphericalGroup, "final");
     }
   }
   if (sphericalGroup instanceof HTMLElement && target instanceof HTMLSelectElement && target.dataset.friendly) {
-    syncAdvancedFromFriendly(sphericalGroup);
+    syncAdvancedFromFriendly(sphericalGroup, "final");
   }
 });
 
@@ -1232,11 +1263,11 @@ document.addEventListener("input", (event) => {
   const sphericalGroup = target.closest?.("fieldset[data-spherical-landmark]");
   if (!(sphericalGroup instanceof HTMLElement)) return;
   if (target instanceof HTMLInputElement && target.dataset.friendly) {
-    syncAdvancedFromFriendly(sphericalGroup);
+    syncAdvancedFromFriendly(sphericalGroup, "drag");
   } else if (target instanceof HTMLInputElement) {
     syncFriendlyFromAdvanced(sphericalGroup);
     updateSphericalWarnings();
-    queueSphericalPreview(sphericalGroup);
+    queueSphericalPreview(sphericalGroup, "drag");
   }
 });
 

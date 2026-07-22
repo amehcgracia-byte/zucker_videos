@@ -180,11 +180,13 @@ def test_global_cache_misses_when_mtime_changes(tmp_path, monkeypatch):
 def test_normalization_filter_uses_equirect_and_hdr_paths():
     equirect = normalization_filter({"projection": "equirect", "fps": 24.0})
     assert "v360=input=equirect:output=flat" in equirect
+    assert "h_fov=100.000:v_fov=67.673" in equirect
     assert "fps=24.000" in equirect
     assert "setpts=PTS-STARTPTS" in equirect
     raw = normalization_filter({"projection": "raw_insv", "fps": 30.0, "insv_fov": 204})
     assert "v360=input=dfisheye:output=e:ih_fov=204:iv_fov=204" in raw
     assert "v360=input=equirect:output=flat" in raw
+    assert "h_fov=100.000:v_fov=67.673" in raw
     assert "tonemap" in normalization_filter({"hdr": True, "bit_depth": 10})
     assert "trunc(iw/2)*2" in normalization_filter({"hdr": False, "bit_depth": 8})
 

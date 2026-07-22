@@ -303,10 +303,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         yaw = _optional_degrees(request.args.get("yaw"))
         pitch = _optional_float_setting(request.args.get("pitch"), 0.0)
         fov = max(65.0, min(150.0, _optional_float_setting(request.args.get("fov"), 95.0)))
+        quality = str(request.args.get("quality") or "final").strip().lower()
         if not source or yaw is None:
             return error_response("bad_request", "source and yaw are required", 400)
         try:
-            return send_file_with_range(str(_spherical_preview_frame(state.project, source, yaw, pitch, fov)))
+            return send_file_with_range(str(_spherical_preview_frame(state.project, source, yaw, pitch, fov, quality=quality)))
         except (OSError, FFmpegError, ValueError) as exc:
             return error_response("ffmpeg_error", str(exc), 500)
 
@@ -919,14 +920,30 @@ def _coerce_float(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _spherical_preview_frame(project: Project | None, source: str, yaw: float, pitch: float, fov: float) -> Path:
+def _spherical_preview_frame(project: Project | None, source: str, yaw: float, pitch: float, fov: float, quality: str = "final") -> Path:
     source_path = Path(source).expanduser().resolve()
     if not source_path.exists():
         raise ValueError("360 source does not exist")
     cache_root = (project.cache_dir if project else app_home() / "cache") / "spherical_previews"
     cache_root.mkdir(parents=True, exist_ok=True)
     stat = source_path.stat()
-    key = sha256(json.dumps({"path": str(source_path), "size": stat.st_size, "mtime": stat.st_mtime, "yaw": round(yaw, 3), "pitch": round(pitch, 3), "fov": round(fov, 3)}, sort_keys=True).encode()).hexdigest()[:24]
+    size = (320, 180) if quality == "drag" else (480, 270)
+    h_fov, v_fov = _paired_flat_fov(fov, size[0] / size[1])
+    key = sha256(
+        json.dumps(
+            {
+                "path": str(source_path),
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+                "yaw": round(yaw, 3),
+                "pitch": round(pitch, 3),
+                "h_fov": round(h_fov, 3),
+                "v_fov": round(v_fov, 3),
+                "preview_size": size,
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()[:24]
     output = cache_root / f"{key}.jpg"
     if output.exists():
         return output
@@ -938,8 +955,8 @@ def _spherical_preview_frame(project: Project | None, source: str, yaw: float, p
     timestamp = max(0.0, min(duration * 0.35, max(0.0, duration - 0.1)))
     tmp = output.with_suffix(".tmp.jpg")
     filtergraph = (
-        f"v360=input=equirect:output=flat:yaw={_signed_degrees(yaw):.3f}:pitch={pitch:.3f}:v_fov={fov:.3f}:"
-        "w=480:h=270:interp=lanczos,format=yuvj420p"
+        f"v360=input=equirect:output=flat:yaw={_signed_degrees(yaw):.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:"
+        f"w={size[0]}:h={size[1]}:interp=lanczos,format=yuvj420p"
     )
     command = [
         str(ffmpeg),
@@ -980,6 +997,13 @@ def _preview_source_duration(path: Path) -> float:
 def _signed_degrees(value: float) -> float:
     value = float(value) % 360.0
     return value - 360.0 if value > 180.0 else value
+
+
+def _paired_flat_fov(horizontal_fov: float, aspect_ratio: float) -> tuple[float, float]:
+    horizontal = max(1.0, min(179.0, float(horizontal_fov)))
+    aspect = max(0.1, float(aspect_ratio))
+    vertical = math.degrees(2.0 * math.atan(math.tan(math.radians(horizontal) / 2.0) / aspect))
+    return horizontal, max(1.0, min(179.0, vertical))
 
 
 def _enable_cors(app: Flask) -> None:

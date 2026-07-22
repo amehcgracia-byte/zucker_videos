@@ -27,6 +27,7 @@ from core.stages.export import (
     _frame_pts_times,
     _equirect_filtergraph,
     _motion_filter,
+    _paired_flat_fov,
     _v360_motion_at,
     _v360_motion_commands,
     _run_ffmpeg_progress,
@@ -435,15 +436,24 @@ def test_spherical_flat_filter_uses_signed_yaw_for_saved_singer_value():
 
     assert "yaw=-23.200" in graph
     assert "pitch=-28.800" in graph
-    assert "v_fov=95.000" in graph
+    assert "h_fov=95.000" in graph
+    assert "v_fov=63.088" in graph
     assert "interp=lanczos" in graph
 
 
-def test_v360_sendcmd_uses_vertical_fov_for_flat_reframes():
-    commands = _v360_motion_commands({"type": "audience", "yaw": 10, "pitch": 0, "fov": 74.8, "fov_delta_deg": 6}, 1.0, fov_command="v_fov")
+def test_v360_sendcmd_always_pairs_horizontal_and_vertical_fov():
+    commands = _v360_motion_commands({"type": "audience", "yaw": 10, "pitch": 0, "fov": 95, "fov_delta_deg": 6}, 1.0)
 
+    assert any(" sphere h_fov " in command for command in commands)
     assert any(" sphere v_fov " in command for command in commands)
-    assert not any(" sphere h_fov " in command for command in commands)
+    assert sum(" sphere h_fov " in command for command in commands) == sum(" sphere v_fov " in command for command in commands)
+
+
+def test_paired_flat_fov_uses_projection_math_for_16x9():
+    h_fov, v_fov = _paired_flat_fov(150.0, 16.0 / 9.0)
+
+    assert h_fov == 150.0
+    assert round(v_fov, 3) == 129.058
 
 
 def test_360_body_writes_spherical_metadata(tmp_path, monkeypatch):

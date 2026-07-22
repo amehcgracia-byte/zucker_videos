@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import time
 import logging
+import math
 from pathlib import Path
 from typing import Any, Callable
 
@@ -18,7 +19,7 @@ from core.stages.base import stable_fingerprint
 
 Progress = Callable[[int, str], None]
 
-NORMALIZATION_VERSION = 5
+NORMALIZATION_VERSION = 6
 PROXY_MAX_WIDTH = 1280
 PROXY_MAX_HEIGHT = 720
 SDR_TONEMAP_FILTER = (
@@ -31,7 +32,7 @@ SDR_TONEMAP_FILTER = (
 EVEN_SDR_FILTER = "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p"
 LOGGER = logging.getLogger(__name__)
 
-EQUIRECT_FILTER = "v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w=1280:h=720,fps=30,setpts=PTS-STARTPTS,format=yuv420p"
+EQUIRECT_FILTER = "v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:v_fov=67.673:w=1280:h=720,fps=30,setpts=PTS-STARTPTS,format=yuv420p"
 CACHE_SUBDIRS = ("proxies", "normalized", "segments", "audio", "envelopes", "thumbnails")
 
 
@@ -356,9 +357,10 @@ def normalization_filter(probe: dict[str, Any], fps: float | None = None, proxy:
         fov = _int_or_zero(probe.get("insv_fov") or 190) or 190
         width = PROXY_MAX_WIDTH if proxy else 1920
         height = PROXY_MAX_HEIGHT if proxy else 1080
+        h_fov, v_fov = _paired_flat_fov(100.0, width / height)
         stitch = (
             f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov},"
-            f"v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w={width}:h={height},"
+            f"v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:w={width}:h={height},"
             f"{timing_filter}"
         )
         if probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
@@ -367,13 +369,21 @@ def normalization_filter(probe: dict[str, Any], fps: float | None = None, proxy:
     if probe.get("projection") == "equirect":
         width = PROXY_MAX_WIDTH if proxy else 1920
         height = PROXY_MAX_HEIGHT if proxy else 1080
-        equirect = f"v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:w={width}:h={height},{timing_filter}"
+        h_fov, v_fov = _paired_flat_fov(100.0, width / height)
+        equirect = f"v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:w={width}:h={height},{timing_filter}"
         if probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
             return f"{equirect},{SDR_TONEMAP_FILTER}"
         return f"{equirect},format=yuv420p"
     if probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
         return f"{SDR_TONEMAP_FILTER},{size_filter},{timing_filter}"
     return f"{size_filter},{timing_filter},format=yuv420p" if proxy else f"{EVEN_SDR_FILTER},{timing_filter}"
+
+
+def _paired_flat_fov(horizontal_fov: float, aspect_ratio: float) -> tuple[float, float]:
+    horizontal = max(1.0, min(179.0, float(horizontal_fov)))
+    aspect = max(0.1, float(aspect_ratio))
+    vertical = math.degrees(2.0 * math.atan(math.tan(math.radians(horizontal) / 2.0) / aspect))
+    return horizontal, max(1.0, min(179.0, vertical))
 
 
 def proxy_transcode_compliant(probe: dict[str, Any]) -> bool:

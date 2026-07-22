@@ -1270,27 +1270,28 @@ def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> s
     )
 
 
-def _v360_sendcmd_filter(shot: dict[str, Any] | None, duration: float | None, command_path: Path | None, fov_command: str | None = "h_fov") -> str:
+def _v360_sendcmd_filter(shot: dict[str, Any] | None, duration: float | None, command_path: Path | None, aspect_ratio: float = 16.0 / 9.0) -> str:
     if not shot or command_path is None or duration is None or duration <= 0:
         return ""
-    commands = _v360_motion_commands(shot, float(duration), fov_command=fov_command)
+    commands = _v360_motion_commands(shot, float(duration), aspect_ratio=aspect_ratio)
     if not commands:
         return ""
     command_path.write_text("".join(commands), encoding="utf-8")
     return f"sendcmd=f={_escape_filter_path(command_path)},"
 
 
-def _v360_motion_commands(shot: dict[str, Any], duration: float, fov_command: str | None = "h_fov") -> list[str]:
+def _v360_motion_commands(shot: dict[str, Any], duration: float, aspect_ratio: float = 16.0 / 9.0) -> list[str]:
     step = 1.0 / TARGET_EXPORT_FPS
     count = max(1, int(math.ceil(duration / step)))
     commands: list[str] = []
     for index in range(count + 1):
         t = min(duration, index * step)
         yaw, pitch, fov = _v360_motion_at(shot, duration, t)
+        h_fov, v_fov = _paired_flat_fov(fov, aspect_ratio)
         commands.append(f"{t:.6f} sphere yaw {yaw:.6f};\n")
         commands.append(f"{t:.6f} sphere pitch {pitch:.6f};\n")
-        if fov_command:
-            commands.append(f"{t:.6f} sphere {fov_command} {fov:.6f};\n")
+        commands.append(f"{t:.6f} sphere h_fov {h_fov:.6f};\n")
+        commands.append(f"{t:.6f} sphere v_fov {v_fov:.6f};\n")
     return commands
 
 
@@ -1350,12 +1351,13 @@ def _export_source_filter(probe: dict[str, Any], shot: dict[str, Any] | None = N
     yaw = _shot_yaw(shot)
     pitch = _shot_float(shot, "pitch", 0.0)
     fov = _effective_flat_fov(shot)
-    command_prefix = _v360_sendcmd_filter(shot, duration, command_path, fov_command="v_fov")
+    h_fov, v_fov = _paired_flat_fov(fov, 16.0 / 9.0)
+    command_prefix = _v360_sendcmd_filter(shot, duration, command_path, aspect_ratio=16.0 / 9.0)
     if probe.get("projection") == "raw_insv":
         insv_fov = int(probe.get("insv_fov") or 190)
-        spatial = f"v360=input=dfisheye:output=e:ih_fov={insv_fov}:iv_fov={insv_fov}:interp=lanczos,{command_prefix}v360@sphere=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:v_fov={fov:.3f}:w=1920:h=1080:interp=lanczos"
+        spatial = f"v360=input=dfisheye:output=e:ih_fov={insv_fov}:iv_fov={insv_fov}:interp=lanczos,{command_prefix}v360@sphere=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:w=1920:h=1080:interp=lanczos"
     elif probe.get("projection") == "equirect":
-        spatial = f"{command_prefix}v360@sphere=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:v_fov={fov:.3f}:w=1920:h=1080:interp=lanczos"
+        spatial = f"{command_prefix}v360@sphere=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:w=1920:h=1080:interp=lanczos"
     elif probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
         spatial = f"{SDR_TONEMAP_FILTER},scale=trunc(iw/2)*2:trunc(ih/2)*2"
     else:
@@ -1380,6 +1382,13 @@ def _effective_flat_fov(shot: dict[str, Any] | None) -> float:
     else:
         minimum = 100.0
     return max(minimum, min(190.0, fov))
+
+
+def _paired_flat_fov(horizontal_fov: float, aspect_ratio: float) -> tuple[float, float]:
+    horizontal = max(1.0, min(179.0, float(horizontal_fov)))
+    aspect = max(0.1, float(aspect_ratio))
+    vertical = math.degrees(2.0 * math.atan(math.tan(math.radians(horizontal) / 2.0) / aspect))
+    return horizontal, max(1.0, min(179.0, vertical))
 
 
 def _shot_float(shot: dict[str, Any] | None, key: str, fallback: float) -> float:

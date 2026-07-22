@@ -697,14 +697,15 @@ def test_spherical_preview_frame_renders_cached_vertical_fov_jpeg(tmp_path, monk
 
     monkeypatch.setattr("server.api.subprocess.run", fake_run)
 
-    first = _spherical_preview_frame(project, str(source), 336.8, -28.8, 80.0)
-    second = _spherical_preview_frame(project, str(source), 336.8, -28.8, 80.0)
+    first = _spherical_preview_frame(project, str(source), 336.8, -28.8, 80.0, quality="drag")
+    second = _spherical_preview_frame(project, str(source), 336.8, -28.8, 80.0, quality="drag")
 
     assert first == second
     assert first.read_bytes() == b"jpg"
     assert len(calls) == 1
     command_text = " ".join(calls[0])
-    assert "v360=input=equirect:output=flat:yaw=-23.200:pitch=-28.800:v_fov=80.000" in command_text
+    assert "v360=input=equirect:output=flat:yaw=-23.200:pitch=-28.800:h_fov=80.000:v_fov=50.534" in command_text
+    assert "w=320:h=180" in command_text
 
 
 def test_adding_video_only_marks_ingest_and_dedupes_existing_clip(tmp_path, monkeypatch):
