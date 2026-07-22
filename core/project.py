@@ -47,7 +47,8 @@ def default_settings() -> dict[str, Any]:
         "cut": {"min_segment_seconds": 4.0},
         "edit": {
             "style": "coverage_first",
-            "camera_role_weights": {"360": 0.5, "handheld": 0.3, "fixed_rear": 0.2},
+            "camera_role_weights": {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0},
+            "fixed_rear_motion": True,
         },
         "spherical_landmarks": {},
         "export": {"format": "mp4", "resolution": "source", "transiciones_suaves": False},

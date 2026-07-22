@@ -15,7 +15,7 @@ MIN_SEGMENT_SEC = 2.0
 MAX_SEGMENT_SEC = 6.0
 MAX_BARS_PER_SEGMENT = 2
 EDIT_FPS = 30.0
-DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 0.5, "handheld": 0.3, "fixed_rear": 0.2}
+DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45
 SPHERICAL_DEFAULT_FOV = 74.8
 SPHERICAL_DRIFT_YAW_DEG = 4.0
@@ -162,6 +162,7 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any], sett
     edit_settings = project_settings.get("edit") if "edit" in project_settings else project_settings
     spherical_landmarks = migrate_spherical_landmarks(project_settings.get("spherical_landmarks") or {})
     role_weights = _camera_role_weights(edit_settings)
+    fixed_rear_motion = bool(edit_settings.get("fixed_rear_motion", True))
     bar_index = 0
     segment_index = 0
     while bar_index < len(bar_times) - 1:
@@ -202,7 +203,7 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any], sett
             shot = _next_weighted_spherical_shot(available_shots, _spherical_type_usage(segments), include_planet=include_planet)
             if shot:
                 segment["spherical_shot"] = shot
-        elif _source_role(source) == "fixed_rear" and segment_index % 2 == 0:
+        elif fixed_rear_motion and _source_role(source) == "fixed_rear" and segment_index % 2 == 0:
             segment["motion"] = _ken_burns_motion(segment_index)
         segments.append(segment)
         bar_index = next_index

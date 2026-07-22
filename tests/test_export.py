@@ -363,6 +363,20 @@ def test_spherical_render_parts_add_bounded_static_drift():
     assert yaws[0] != yaws[-1]
 
 
+def test_spherical_pan_steps_keep_angle_increments_small():
+    segments = [
+        {"clip_path": "/tmp/360.mp4", "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 3, "spherical_shot": {"type": "singer", "label": "Cantante", "yaw": 20, "pitch": 0, "fov": 80}},
+        {"clip_path": "/tmp/360.mp4", "clip_start_sec": 3, "master_start_sec": 3, "duration_sec": 3, "spherical_shot": {"type": "left", "label": "Lado izquierdo", "yaw": 100, "pitch": 0, "fov": 80, "transition_sec": 0.45}},
+    ]
+
+    parts = _expand_spherical_render_segments(segments)
+    pan_yaws = [float(part["spherical_shot"]["yaw"]) for part in parts if part["spherical_shot"].get("type") == "pan"]
+    deltas = [abs(((b - a + 540) % 360) - 180) for a, b in zip([20.0, *pan_yaws], pan_yaws)]
+
+    assert len(pan_yaws) >= 9
+    assert max(deltas) <= 10.0
+
+
 def test_motion_filter_builds_bounded_ken_burns_zoom():
     graph = _motion_filter({"motion": {"type": "ken_burns", "zoom_start": 1.0, "zoom_end": 1.08, "pan_x": 0.5, "pan_y": 0.5}}, "youtube", 4.0)
 
@@ -378,6 +392,7 @@ def test_spherical_flat_filter_uses_signed_yaw_for_saved_singer_value():
     assert "yaw=-23.200" in graph
     assert "pitch=-28.800" in graph
     assert "h_fov=74.800" in graph
+    assert "interp=lanczos" in graph
 
 
 def test_360_body_writes_spherical_metadata(tmp_path, monkeypatch):

@@ -171,6 +171,27 @@ def test_spherical_weights_exclude_zero_and_bias_frequency():
     assert types.count("singer") > types.count("left")
 
 
+def test_real_like_right_side_zero_weight_never_appears_in_youtube_plan():
+    coverage = {
+        "platform": "youtube",
+        "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 24.0},
+        "sources": [{"path": "/tmp/360.mp4", "filename": "wide360.mp4", "projection": "equirect", "offset_sec": 0.0, "duration_sec": 24.0, "confidence": 8.0}],
+    }
+    beats = {"bars_sec": [0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0], "sections_sec": []}
+    landmarks = {
+        "full_stage": {"yaw": 11.5, "pitch": -34.3, "fov": 110.0, "weight": 50.0},
+        "singer": {"yaw": 336.8, "pitch": -28.8, "fov": 74.8, "weight": 10.0},
+        "left": {"yaw": 47.6, "pitch": -15.9, "fov": 74.8, "weight": 30.0},
+        "right": {"yaw": 322.1, "pitch": -15.0, "fov": 74.8, "weight": 0.0},
+    }
+
+    plan = _youtube_multicam_plan(coverage, beats, {"spherical_landmarks": landmarks})
+
+    types = [(segment.get("spherical_shot") or {}).get("type") for segment in plan["segments"]]
+    assert "right" not in types
+    assert {"full_stage", "singer", "left"}.issubset(set(types))
+
+
 def test_fixed_rear_segments_get_subtle_motion_on_some_holds():
     coverage = {
         "platform": "youtube",

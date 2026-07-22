@@ -566,6 +566,7 @@ button:disabled {
 }
 
 .trim-box,
+.camera-mix,
 .spherical-setup {
   display: grid;
   gap: 12px;
@@ -591,6 +592,13 @@ button:disabled {
   font-size: 18px;
 }
 
+.setup-heading span,
+.setup-hint,
+.camera-weight-fields p {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .spherical-fields,
 .camera-weight-fields {
   display: grid;
@@ -598,12 +606,7 @@ button:disabled {
   gap: 12px;
 }
 
-.camera-weight-fields {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.spherical-fields fieldset,
-.camera-weight-fields fieldset {
+.spherical-fields fieldset {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
@@ -612,20 +615,46 @@ button:disabled {
   padding: 10px;
 }
 
-.camera-weight-fields fieldset {
-  grid-template-columns: 1fr;
+.camera-weight-fields details {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
 }
 
-.spherical-fields legend,
-.camera-weight-fields legend {
+.camera-weight-fields summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  gap: 10px;
+  align-items: center;
+  cursor: pointer;
+  font-weight: 900;
+}
+
+.camera-weight-fields summary label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.inline-toggle {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.spherical-fields legend {
   padding: 0 4px;
   font-weight: 800;
   color: var(--muted);
   grid-column: 1 / -1;
 }
 
-.spherical-fields label,
-.camera-weight-fields label {
+.spherical-fields label {
   display: grid;
   gap: 4px;
   font-size: 12px;

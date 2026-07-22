@@ -27,7 +27,7 @@ MIN_ACCEPTABLE_VIDEO_BITRATE = 2_500_000
 MAX_VIDEO_BITRATE = 18_000_000
 TARGET_EXPORT_FPS = 30.0
 TARGET_EXPORT_TIMESCALE = 30_000
-EXPORT_SEGMENT_RECIPE_VERSION = 11
+EXPORT_SEGMENT_RECIPE_VERSION = 12
 INTRO_DURATION = 10.2
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
@@ -489,9 +489,10 @@ def _spherical_segment_parts(segment: dict[str, Any], previous_shot: dict[str, A
     target_yaw = _shot_float(shot, "yaw", 0.0)
     if previous_shot and previous_shot.get("type") != shot.get("type") and duration > 1.0:
         pan_duration = min(_shot_float(shot, "transition_sec", 0.45), duration / 3.0)
-        for index in range(3):
-            part_duration = pan_duration / 3.0
-            amount = (index + 1) / 3.0
+        pan_steps = max(3, min(12, int(round(pan_duration / 0.05))))
+        for index in range(pan_steps):
+            part_duration = pan_duration / pan_steps
+            amount = (index + 1) / pan_steps
             parts.append(_spherical_part(segment, current, part_duration, {**shot, "type": "pan", "label": shot.get("label"), "yaw": _lerp_angle(start_yaw, target_yaw, amount)}))
             current += part_duration
     remaining = max(0.0, duration - current)
@@ -505,7 +506,7 @@ def _spherical_segment_parts(segment: dict[str, Any], previous_shot: dict[str, A
             current += part_duration
             remaining -= part_duration
     elif remaining > 0.001:
-        step = min(2.0, remaining)
+        step = min(1.0, remaining)
         static_start = current
         static_duration = remaining
         while remaining > 0.001:
@@ -608,9 +609,9 @@ def _equirect_filtergraph(
     pitch = _shot_float(shot, "pitch", 0.0)
     if probe.get("projection") == "raw_insv":
         fov = int(probe.get("insv_fov") or 190)
-        base_filter = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov},v360=input=equirect:output=equirect:yaw={yaw:.3f}:pitch={pitch:.3f},scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
+        base_filter = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov}:interp=lanczos,v360=input=equirect:output=equirect:yaw={yaw:.3f}:pitch={pitch:.3f}:interp=lanczos,scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
     else:
-        base_filter = f"v360=input=equirect:output=equirect:yaw={yaw:.3f}:pitch={pitch:.3f},scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
+        base_filter = f"v360=input=equirect:output=equirect:yaw={yaw:.3f}:pitch={pitch:.3f}:interp=lanczos,scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
     timing = _exact_cadence_filter(frame_count) if frame_count else _constant_cadence_filter()
     filters = f"{base_filter},{timing},tpad=stop_mode=clone:stop_duration={1.0 / TARGET_EXPORT_FPS:.6f},format=yuv420p"
     if intro_fade:
@@ -1245,9 +1246,9 @@ def _export_source_filter(probe: dict[str, Any], shot: dict[str, Any] | None = N
     fov = _shot_float(shot, "fov", 100.0)
     if probe.get("projection") == "raw_insv":
         fov = int(probe.get("insv_fov") or 190)
-        spatial = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov},v360=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={_shot_float(shot, 'fov', 100.0):.3f}:w=1920:h=1080"
+        spatial = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov}:interp=lanczos,v360=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={_shot_float(shot, 'fov', 100.0):.3f}:w=1920:h=1080:interp=lanczos"
     elif probe.get("projection") == "equirect":
-        spatial = f"v360=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={fov:.3f}:w=1920:h=1080"
+        spatial = f"v360=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={fov:.3f}:w=1920:h=1080:interp=lanczos"
     elif probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
         spatial = f"{SDR_TONEMAP_FILTER},scale=trunc(iw/2)*2:trunc(ih/2)*2"
     else:

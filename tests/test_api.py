@@ -894,3 +894,17 @@ def test_camera_role_weight_sanitizer_allows_zero_exclusion():
     weights = _sanitize_camera_role_weights({"360": "0", "handheld": "1", "fixed_rear": ""})
 
     assert weights == {"360": 0.0, "handheld": 1.0, "fixed_rear": 0.0}
+
+
+def test_edit_type_ui_separates_camera_mix_from_360_landmarks():
+    html = Path("web/index.html").read_text(encoding="utf-8")
+    camera_mix = html.split('id="cameraMix"', 1)[1].split('id="sphericalSetup"', 1)[0]
+    spherical_setup = html.split('id="sphericalSetup"', 1)[1].split('id="startWizard"', 1)[0]
+
+    assert 'data-camera-role="handheld"' in camera_mix
+    assert 'data-camera-role="fixed_rear"' in camera_mix
+    assert 'data-field="yaw"' not in camera_mix
+    assert 'data-field="pitch"' not in camera_mix
+    assert 'data-spherical-landmark="right"' in spherical_setup
+    assert 'data-field="yaw"' in spherical_setup
+    assert 'data-field="fov"' in spherical_setup

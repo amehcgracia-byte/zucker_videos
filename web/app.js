@@ -15,7 +15,8 @@ let currentStep = 1;
 let lastProgressReportAt = 0;
 let trimDefaultsAppliedFor = "";
 let lastSphericalSetup = {};
-let cameraRoleWeights = { "360": 0.5, handheld: 0.3, fixed_rear: 0.2 };
+let cameraRoleWeights = { "360": 50, handheld: 30, fixed_rear: 20 };
+let fixedRearMotion = true;
 
 function logFrontendError(message, stack = "") {
   fetch("/api/v1/wizard/frontend-log", {
@@ -75,6 +76,8 @@ async function loadAppConfig() {
   lastSphericalSetup = normalizeSphericalSetup(appConfig.spherical_landmarks || {});
   cameraRoleWeights = normalizeCameraRoleWeights(appConfig.camera_role_weights || cameraRoleWeights);
   applyCameraRoleWeights(cameraRoleWeights);
+  fixedRearMotion = appConfig.fixed_rear_motion !== false;
+  applyFixedRearMotion(fixedRearMotion);
   window.NativeBridge?.configure(appConfig);
 }
 
@@ -156,6 +159,10 @@ async function resumeInputsFromProject() {
   if (project.settings?.edit?.camera_role_weights) {
     cameraRoleWeights = normalizeCameraRoleWeights(project.settings.edit.camera_role_weights);
     applyCameraRoleWeights(cameraRoleWeights);
+  }
+  if (project.settings?.edit && "fixed_rear_motion" in project.settings.edit) {
+    fixedRearMotion = project.settings.edit.fixed_rear_motion !== false;
+    applyFixedRearMotion(fixedRearMotion);
   }
   if (inputs.songs?.path) {
     const result = await api("/wizard/songs", { method: "POST", body: JSON.stringify({ songs: inputs.songs.path }) });
@@ -468,7 +475,6 @@ function renderSphericalSetup() {
   const panel = document.querySelector("#sphericalSetup");
   if (!panel) return;
   panel.hidden = !hasSphericalInput();
-  applyCameraRoleWeights(cameraRoleWeights);
   if (!panel.hidden) applySphericalSetup(lastSphericalSetup);
 }
 
@@ -506,7 +512,7 @@ function sphericalLandmarksFromForm() {
 
 function cameraRoleWeightsFromForm() {
   const values = {};
-  document.querySelectorAll("fieldset[data-camera-role]").forEach((group) => {
+  document.querySelectorAll("[data-camera-role]").forEach((group) => {
     const text = String(group.querySelector('[data-field="weight"]')?.value || "").trim();
     const value = text ? Number(text) : NaN;
     if (Number.isFinite(value)) values[group.dataset.cameraRole] = Math.max(0, value);
@@ -516,7 +522,7 @@ function cameraRoleWeightsFromForm() {
 
 function applyCameraRoleWeights(values = {}) {
   const normalized = normalizeCameraRoleWeights(values);
-  document.querySelectorAll("fieldset[data-camera-role]").forEach((group) => {
+  document.querySelectorAll("[data-camera-role]").forEach((group) => {
     const input = group.querySelector('[data-field="weight"]');
     const value = normalized[group.dataset.cameraRole];
     if (input && value != null) input.value = Number(value).toString();
@@ -524,13 +530,22 @@ function applyCameraRoleWeights(values = {}) {
 }
 
 function normalizeCameraRoleWeights(raw = {}) {
-  const defaults = { "360": 0.5, handheld: 0.3, fixed_rear: 0.2 };
+  const defaults = { "360": 50, handheld: 30, fixed_rear: 20 };
   const result = { ...defaults };
   for (const key of Object.keys(defaults)) {
     const value = Number(raw[key]);
     if (Number.isFinite(value)) result[key] = Math.max(0, value);
   }
   return result;
+}
+
+function fixedRearMotionFromForm() {
+  return document.querySelector("#fixedRearMotion")?.checked !== false;
+}
+
+function applyFixedRearMotion(enabled) {
+  const input = document.querySelector("#fixedRearMotion");
+  if (input) input.checked = enabled !== false;
 }
 
 function normalizeSphericalSetup(raw = {}) {
@@ -626,6 +641,7 @@ async function startWizard() {
       trim_end_sec: timeToSeconds(document.querySelector("#trimEnd").value),
       spherical_landmarks: sphericalLandmarksFromForm(),
       camera_role_weights: cameraRoleWeightsFromForm(),
+      fixed_rear_motion: fixedRearMotionFromForm(),
       master: inputs.master,
       songs: inputs.songs,
       videos: inputs.videos,

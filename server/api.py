@@ -248,6 +248,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         audio_trim = _audio_trim_from_body(body)
         spherical_landmarks = _spherical_landmarks_from_body(body)
         camera_role_weights = _camera_role_weights_from_body(body)
+        fixed_rear_motion = _fixed_rear_motion_from_body(body)
         if platform not in {"youtube", "instagram", "tiktok", "360"}:
             return error_response("bad_request", "platform must be youtube, instagram, tiktok, or 360", 400)
         if not master:
@@ -269,6 +270,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 audio_trim=audio_trim,
                 spherical_landmarks=spherical_landmarks,
                 camera_role_weights=camera_role_weights,
+                fixed_rear_motion=fixed_rear_motion,
                 master_path=master,
                 songs_path=songs,
                 video_paths=videos,
@@ -466,7 +468,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         config = load_global_config()
         config["dev"] = state.dev
         config["desktop"] = not state.dev
-        config.setdefault("camera_role_weights", {"360": 0.5, "handheld": 0.3, "fixed_rear": 0.2})
+        config.setdefault("camera_role_weights", {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0})
+        config.setdefault("fixed_rear_motion", True)
         return jsonify(config)
 
     @app.get("/api/v1/cache/status")
@@ -809,6 +812,12 @@ def _camera_role_weights_from_body(body: dict[str, Any]) -> dict[str, float] | N
     if "camera_role_weights" not in body:
         return None
     return _sanitize_camera_role_weights(body.get("camera_role_weights") or {})
+
+
+def _fixed_rear_motion_from_body(body: dict[str, Any]) -> bool | None:
+    if "fixed_rear_motion" not in body:
+        return None
+    return bool(body.get("fixed_rear_motion"))
 
 
 def _sanitize_camera_role_weights(raw: Any) -> dict[str, float]:
