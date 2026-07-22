@@ -42,6 +42,8 @@ let director = {
   recording: false,
   recordTimer: null,
   samples: [],
+  smoothedSamples: [],
+  previewingTake: false,
   animation: null,
 };
 
@@ -597,14 +599,19 @@ async function refreshDirectorEntryStatus() {
   if (!status || !hasSphericalInput()) return;
   try {
     const result = await api("/wizard/camera-moves");
-    const count = (result.takes || []).length;
+    const takes = result.takes || [];
+    const count = takes.length;
+    const brief = takes
+      .slice(0, 2)
+      .map((take) => `${take.name || "Take"} ${secondsToTime(take.start_master_sec || 0)}-${secondsToTime(take.end_master_sec || 0)}`)
+      .join("; ");
     status.textContent =
       sphericalModeFromForm() === "directed"
         ? count
-          ? `${count} recorded take${count === 1 ? "" : "s"} available. Directed mode will use covered recording ranges.`
+          ? `Directed mode active. ${count} take${count === 1 ? "" : "s"} available: ${brief}${count > 2 ? "..." : ""}`
           : "No recorded take yet. Open Director to record one before exporting."
         : count
-          ? `${count} recorded take${count === 1 ? "" : "s"} saved, but Automatic mode will use shot angles.`
+          ? `Automatic mode active. ${count} recorded take${count === 1 ? "" : "s"} saved (${brief}) but not used.`
           : "Play the synced song, drag the 360 view, and record a camera move take.";
   } catch (_error) {
     status.textContent = "Open Director to record live 360 camera moves.";
@@ -846,6 +853,17 @@ function directorStatus(message, isError = false) {
   node.style.color = isError ? "var(--bad)" : "";
 }
 
+function setDirectorProgress(percent, detail = "", visible = true) {
+  const root = document.querySelector("#directorProgress");
+  const bar = document.querySelector("#directorProgressBar");
+  const text = document.querySelector("#directorProgressText");
+  if (!root || !bar || !text) return;
+  root.hidden = !visible;
+  const value = clamp(Number(percent) || 0, 0, 100);
+  bar.style.width = `${value}%`;
+  text.textContent = detail || `${Math.round(value)}%`;
+}
+
 async function openDirector() {
   if (!hasSphericalInput()) {
     showToast("Add a 360 clip before opening Director", true);
@@ -857,6 +875,8 @@ async function openDirector() {
     await setupDirector();
     await loadDirectorTakes();
   } catch (error) {
+    director.loading = false;
+    setDirectorProgress(0, "", false);
     directorStatus(error.message, true);
     showToast(error.message, true);
   }
@@ -877,7 +897,7 @@ async function setupDirector() {
   const gl = canvas.getContext("webgl2");
   if (!gl) throw new Error("WebGL2 is not available in this webview");
   director.gl = gl;
-  const [THREE, media] = await Promise.all([import("/vendor/three.module.min.js"), api("/wizard/director-media")]);
+  const [THREE, media] = await Promise.all([import("/vendor/three.module.min.js"), loadDirectorMedia()]);
   director.media = media;
   director.three = THREE;
   video.src = `${media.video_url}?t=${Date.now()}`;
@@ -891,7 +911,25 @@ async function setupDirector() {
   updateDirectorCamera();
   director.ready = true;
   director.loading = false;
+  seekDirector(0);
+  setDirectorProgress(100, "", false);
   directorStatus("WebGL active. Drag the view while the song plays, then record a take.");
+}
+
+async function loadDirectorMedia() {
+  let media = await api("/wizard/director-media");
+  if (media.proxy_ready) return media;
+  setDirectorProgress(media.progress || 0, media.detail || media.message || "Preparing preview...", true);
+  directorStatus(media.message || "Preparing a lightweight 360 preview — this happens once per clip.");
+  const started = Date.now();
+  while (!media.proxy_ready) {
+    if (Date.now() - started > 30 * 60 * 1000) throw new Error("Preparing the 360 preview timed out. Open logs for details.");
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    media = await api(`/wizard/director-media/status?job_id=${encodeURIComponent(media.job_id)}`);
+    if (media.status === "failed") throw new Error(media.error || "Could not prepare the 360 preview");
+    setDirectorProgress(media.progress || 0, media.detail || media.message || "Preparing preview...", true);
+  }
+  return media;
 }
 
 function waitForMedia(media) {
@@ -903,7 +941,9 @@ function waitForMedia(media) {
     };
     const fail = () => {
       cleanup();
-      reject(new Error("Could not load Director media"));
+      const details = media.error?.message || media.networkState || "unknown media error";
+      logFrontendError(`Director media failed to load: ${details}`);
+      reject(new Error("Could not load Director media. Open logs for details."));
     };
     const cleanup = () => {
       media.removeEventListener("loadedmetadata", done);
@@ -933,6 +973,7 @@ function initDirectorScene(THREE, canvas, video) {
     director.animation = requestAnimationFrame(render);
     syncDirectorAudio();
     updateDirectorScrub();
+    applyDirectorPreviewCurve();
     director.renderer.render(director.scene, director.camera);
   };
   render();
@@ -1034,10 +1075,11 @@ function pauseDirector() {
 function seekDirector(time) {
   const video = document.querySelector("#directorVideo");
   const audio = document.querySelector("#directorAudio");
-  const duration = Number(video.duration || director.media?.duration_sec || 0);
+  const duration = Number(director.media?.duration_sec || 0);
   const next = clamp(time, 0, duration || 0);
-  video.currentTime = next;
-  audio.currentTime = masterTimeForDirectorVideo(next);
+  const masterTime = localDirectorTimeToMaster(next);
+  video.currentTime = videoTimeForMaster(masterTime);
+  audio.currentTime = masterTime;
   updateDirectorScrub();
 }
 
@@ -1046,6 +1088,11 @@ function syncDirectorAudio(force = false) {
   const audio = document.querySelector("#directorAudio");
   if (!video || !audio || !director.media || Number.isNaN(video.currentTime)) return;
   const target = masterTimeForDirectorVideo(video.currentTime);
+  const end = Number(director.media?.trim_end_sec || target);
+  if (target >= end && !video.paused) {
+    pauseDirector();
+    return;
+  }
   if (force || Math.abs((audio.currentTime || 0) - target) > 0.08) {
     audio.currentTime = Math.max(0, Math.min(Number(audio.duration || target), target));
   }
@@ -1059,14 +1106,25 @@ function masterTimeForDirectorVideo(videoTime) {
   return Math.max(0, Number(director.media?.offset_sec || 0) + Number(videoTime || 0));
 }
 
+function localDirectorTimeToMaster(localTime) {
+  return Number(director.media?.trim_start_sec || 0) + Number(localTime || 0);
+}
+
+function videoTimeForMaster(masterTime) {
+  const video = document.querySelector("#directorVideo");
+  const duration = Number(video?.duration || director.media?.proxy_duration_sec || 0);
+  return clamp(Number(masterTime || 0) - Number(director.media?.offset_sec || 0), 0, duration || 0);
+}
+
 function updateDirectorScrub() {
   const video = document.querySelector("#directorVideo");
   const scrub = document.querySelector("#directorScrub");
   if (!video || !scrub) return;
-  const duration = Number(video.duration || director.media?.duration_sec || 0);
+  const duration = Number(director.media?.duration_sec || video.duration || 0);
+  const local = clamp(masterTimeForDirectorVideo(video.currentTime || 0) - Number(director.media?.trim_start_sec || 0), 0, duration || 0);
   scrub.max = String(Math.max(0.01, duration));
-  if (document.activeElement !== scrub) scrub.value = String(video.currentTime || 0);
-  document.querySelector("#directorTime").textContent = secondsToTime(masterTimeForDirectorVideo(video.currentTime || 0));
+  if (document.activeElement !== scrub) scrub.value = String(local);
+  document.querySelector("#directorTime").textContent = `${secondsToTime(local)} / ${secondsToTime(duration)}`;
 }
 
 async function toggleDirectorRecording() {
@@ -1075,6 +1133,10 @@ async function toggleDirectorRecording() {
     return;
   }
   director.samples = [];
+  director.smoothedSamples = [];
+  director.previewingTake = false;
+  document.querySelector("#directorPreviewTake").hidden = true;
+  document.querySelector("#directorSaveTake").hidden = true;
   director.recording = true;
   document.querySelector("#directorRecord").textContent = "Stop recording";
   directorStatus("Recording camera moves...");
@@ -1086,6 +1148,8 @@ function sampleDirectorCamera() {
   const video = document.querySelector("#directorVideo");
   if (!director.recording || !video || video.paused) return;
   const t = masterTimeForDirectorVideo(video.currentTime || 0);
+  const trimEnd = Number(director.media?.trim_end_sec || Infinity);
+  if (t > trimEnd) return;
   const last = director.samples[director.samples.length - 1];
   if (last && t <= last.t) return;
   director.samples.push({
@@ -1109,6 +1173,105 @@ async function stopDirectorRecording(save) {
     directorStatus("Recording was too short.", true);
     return;
   }
+  directorStatus("Smoothing camera moves...");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const strength = document.querySelector("#directorSmoothing")?.value || "medium";
+  director.smoothedSamples = smoothDirectorSamples(director.samples, strength);
+  director.previewingTake = false;
+  document.querySelector("#directorPreviewTake").hidden = false;
+  document.querySelector("#directorSaveTake").hidden = false;
+  directorStatus(`Smoothed ${director.samples.length} samples (${strength}). Preview it, then save the take.`);
+}
+
+function smoothingRadius(strength) {
+  return { light: 2, medium: 5, strong: 9 }[String(strength || "medium")] || 5;
+}
+
+function smoothDirectorSamples(samples, strength) {
+  const radius = smoothingRadius(strength);
+  if (!Array.isArray(samples) || samples.length <= 2) return [...(samples || [])];
+  const yaws = unwrapYawSeries(samples.map((sample) => Number(sample.yaw || 0)));
+  return samples.map((sample, index) => {
+    const start = Math.max(0, index - radius);
+    const end = Math.min(samples.length, index + radius + 1);
+    const weighted = (values) => {
+      let total = 0;
+      let sum = 0;
+      for (let i = start; i < end; i += 1) {
+        const weight = 1 - Math.abs(i - index) / (radius + 1);
+        total += weight;
+        sum += Number(values[i] || 0) * weight;
+      }
+      return total ? sum / total : Number(values[index] || 0);
+    };
+    return {
+      ...sample,
+      yaw: normalizeYaw(weighted(yaws)),
+      pitch: clamp(weighted(samples.map((item) => Number(item.pitch || 0))), -89, 89),
+      fov: clamp(weighted(samples.map((item) => Number(item.fov || 100))), 1, 179),
+    };
+  });
+}
+
+function unwrapYawSeries(yaws) {
+  if (!yaws.length) return [];
+  const output = [Number(yaws[0] || 0)];
+  for (let index = 1; index < yaws.length; index += 1) {
+    let value = Number(yaws[index] || 0);
+    const previous = output[index - 1];
+    while (value - previous > 180) value -= 360;
+    while (value - previous < -180) value += 360;
+    output.push(value);
+  }
+  return output;
+}
+
+function previewDirectorTake() {
+  if (!director.smoothedSamples.length) return;
+  director.previewingTake = true;
+  seekDirector(Math.max(0, director.smoothedSamples[0].t - Number(director.media?.trim_start_sec || 0)));
+  playDirector().catch((error) => showToast(error.message, true));
+  directorStatus("Previewing smoothed camera move.");
+}
+
+function applyDirectorPreviewCurve() {
+  if (!director.previewingTake || !director.smoothedSamples.length || director.recording) return;
+  const masterTime = masterTimeForDirectorVideo(document.querySelector("#directorVideo")?.currentTime || 0);
+  const sample = interpolateDirectorSample(director.smoothedSamples, masterTime);
+  if (!sample) return;
+  director.yaw = sample.yaw;
+  director.pitch = sample.pitch;
+  director.fov = sample.fov;
+  document.querySelector("#directorFov").value = String(sample.fov);
+  updateDirectorCamera();
+}
+
+function interpolateDirectorSample(samples, t) {
+  if (!samples.length) return null;
+  if (t <= samples[0].t) return samples[0];
+  if (t >= samples[samples.length - 1].t) return samples[samples.length - 1];
+  for (let index = 0; index < samples.length - 1; index += 1) {
+    const left = samples[index];
+    const right = samples[index + 1];
+    if (left.t <= t && t <= right.t) {
+      const amount = (t - left.t) / Math.max(0.000001, right.t - left.t);
+      const yawStart = unwrapYawSeries([left.yaw, right.yaw]);
+      return {
+        t,
+        yaw: normalizeYaw(yawStart[0] + (yawStart[1] - yawStart[0]) * amount),
+        pitch: left.pitch + (right.pitch - left.pitch) * amount,
+        fov: left.fov + (right.fov - left.fov) * amount,
+      };
+    }
+  }
+  return samples[samples.length - 1];
+}
+
+async function saveDirectorTake() {
+  if (director.samples.length < 2) {
+    directorStatus("Record a take before saving.", true);
+    return;
+  }
   const nameInput = document.querySelector("#directorTakeName");
   const fallback = `Take ${new Date().toISOString().slice(0, 19).replace("T", " ").replaceAll(":", ".")}`;
   const result = await api("/wizard/camera-moves", {
@@ -1117,9 +1280,13 @@ async function stopDirectorRecording(save) {
       name: nameInput.value || fallback,
       source_path: director.media?.source_path || "",
       samples: director.samples,
+      smoothing: document.querySelector("#directorSmoothing")?.value || "medium",
     }),
   });
   nameInput.value = "";
+  document.querySelector("#directorPreviewTake").hidden = true;
+  document.querySelector("#directorSaveTake").hidden = true;
+  director.previewingTake = false;
   renderDirectorTakes(result.takes || []);
   refreshDirectorEntryStatus().catch(() => {});
   directorStatus(`Saved ${result.take?.name || "take"} with ${director.samples.length} samples.`);
@@ -1439,8 +1606,17 @@ function renderSphericalShots(result) {
   const recording = result?.spherical_recording_usage || {};
   const recordedCount = Number(recording.recorded_segments || 0);
   const landmarkCount = Number(recording.landmark_segments || 0);
-  const recordingSummary =
-    recordedCount || landmarkCount ? `360 source: ${recordedCount} segments from recorded take, ${landmarkCount} from landmark shots.` : "";
+  const takeSummary = Object.entries(recording.takes || {})
+    .map(([name, count]) => `${count} from "${name}"`)
+    .join(", ");
+  let recordingSummary = "";
+  if (recording.recorded_takes_ignored) {
+    recordingSummary = `Automatic mode - ${Number(recording.recorded_takes_available || 0)} recorded take(s) saved but not used. Switch to Directed to use them.`;
+  } else if (recordedCount || landmarkCount) {
+    recordingSummary = `360 source: ${recordedCount} segments from recorded take${takeSummary ? ` (${takeSummary})` : ""}, ${landmarkCount} from landmark shots.`;
+  } else if (recording.mode === "automatic") {
+    recordingSummary = "Automatic mode - landmark shots used when 360 is selected.";
+  }
   const existing = document.querySelector("#sphericalShotUsage");
   if (!entries.length) {
     if (existing) existing.remove();
@@ -1581,6 +1757,8 @@ document.addEventListener("click", (event) => {
   if (target.id === "closeDirector") closeDirector();
   if (target.id === "directorPlay") toggleDirectorPlay().catch((error) => showToast(error.message, true));
   if (target.id === "directorRecord") toggleDirectorRecording().catch((error) => showToast(error.message, true));
+  if (target.id === "directorPreviewTake") previewDirectorTake();
+  if (target.id === "directorSaveTake") saveDirectorTake().catch((error) => showToast(error.message, true));
   if (target.dataset.deleteTake) {
     deleteDirectorTake(target.dataset.deleteTake).catch((error) => showToast(error.message, true));
   }
@@ -1612,6 +1790,10 @@ document.addEventListener("click", (event) => {
       return;
     }
     revealNative(latestResult?.path, S.reveal).catch((error) => showToast(error.message, true));
+  }
+  if (target.id === "fullscreenResult") {
+    const video = document.querySelector("#resultVideo");
+    video?.requestFullscreen?.().catch((error) => showToast(error.message, true));
   }
   if (target.id === "statusStrip") setStep(3);
   const rescueButton = target.closest?.("[data-rescue]");

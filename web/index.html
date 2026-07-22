@@ -228,6 +228,7 @@
             <button id="openLogsSuccess" class="icon-button desktop-only" data-icon="doc">Open logs</button>
             <button id="retryWizardSuccess" class="icon-button" data-icon="retry">Retry</button>
             <button id="copyProgressReportResult" class="icon-button" data-icon="clipboard">Copy report</button>
+            <button id="fullscreenResult" class="icon-button" data-icon="play">Fullscreen</button>
             <button id="showFinder" class="icon-button desktop-only" data-icon="folder">Show in Finder</button>
             <button id="again" class="icon-button" data-icon="play">Make another</button>
           </div>
@@ -249,6 +250,10 @@
           <audio id="directorAudio" preload="metadata" hidden></audio>
           <div id="directorHud" class="director-hud">Yaw 0° · Pitch 0° · Shot width 100°</div>
         </div>
+        <div id="directorProgress" class="director-progress" hidden>
+          <div class="progress-track"><div id="directorProgressBar"></div></div>
+          <span id="directorProgressText">Preparing preview...</span>
+        </div>
         <div class="director-controls">
           <button id="directorPlay" class="icon-button" data-icon="play" type="button">Play</button>
           <label class="director-scrub">
@@ -260,7 +265,17 @@
             <input id="directorFov" type="range" min="65" max="150" step="0.1" value="100" />
           </label>
           <input id="directorTakeName" placeholder="Take name" />
+          <label>
+            Smoothing
+            <select id="directorSmoothing">
+              <option value="light">Light</option>
+              <option value="medium" selected>Medium</option>
+              <option value="strong">Strong</option>
+            </select>
+          </label>
           <button id="directorRecord" class="icon-button" data-icon="sphere" type="button">Record camera moves</button>
+          <button id="directorPreviewTake" class="icon-button" data-icon="play" type="button" hidden>Preview smoothed</button>
+          <button id="directorSaveTake" class="icon-button" data-icon="clipboard" type="button" hidden>Save take</button>
         </div>
         <div id="directorTakes" class="director-takes"></div>
       </div>

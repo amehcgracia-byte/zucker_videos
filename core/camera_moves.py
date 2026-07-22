@@ -13,6 +13,7 @@ from core.project import Project
 
 CAMERA_MOVE_VERSION = 1
 DEFAULT_SAMPLE_RATE_HZ = 15.0
+SMOOTHING_RADII = {"light": 2, "medium": 5, "strong": 9}
 
 
 def camera_moves_dir(project: Project) -> Path:
@@ -85,11 +86,22 @@ def smooth_camera_curve(samples: list[dict[str, float]], radius: int = 2) -> lis
     return smoothed
 
 
-def save_camera_move(project: Project, name: str | None, samples: list[dict[str, Any]], source_path: str | None = None) -> dict[str, Any]:
+def smoothing_radius(strength: str | None) -> int:
+    return SMOOTHING_RADII.get(str(strength or "medium").lower(), SMOOTHING_RADII["medium"])
+
+
+def save_camera_move(
+    project: Project,
+    name: str | None,
+    samples: list[dict[str, Any]],
+    source_path: str | None = None,
+    smoothing: str | None = "medium",
+) -> dict[str, Any]:
     raw = normalize_recorded_samples(samples)
     if len(raw) < 2:
         raise ValueError("Record at least two camera samples")
-    smoothed = smooth_camera_curve(raw)
+    strength = str(smoothing or "medium").lower()
+    smoothed = smooth_camera_curve(raw, radius=smoothing_radius(strength))
     take_name = _unique_take_name(project, sanitize_take_name(name))
     duration = max(0.0, smoothed[-1]["t"] - smoothed[0]["t"])
     sample_rate = (len(smoothed) - 1) / duration if duration > 0 else DEFAULT_SAMPLE_RATE_HZ
@@ -99,6 +111,7 @@ def save_camera_move(project: Project, name: str | None, samples: list[dict[str,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "source_path": source_path or "",
         "sample_rate_hz": round(sample_rate, 3),
+        "smoothing": strength if strength in SMOOTHING_RADII else "medium",
         "start_master_sec": smoothed[0]["t"],
         "end_master_sec": smoothed[-1]["t"],
         "sample_count": len(smoothed),

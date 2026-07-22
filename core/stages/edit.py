@@ -269,7 +269,7 @@ def _youtube_multicam_plan(
         "cut_count": max(0, len(segments) - 1),
         "camera_usage": usage,
         "spherical_shot_usage": _spherical_shot_usage(segments),
-        "spherical_recording_usage": _spherical_recording_usage(segments),
+        "spherical_recording_usage": _spherical_recording_usage(segments, spherical_mode, recorded_moves),
         "segments": segments,
     }
 
@@ -304,7 +304,7 @@ def _simple_plan(
         "cut_count": max(0, len(segments) - 1),
         "camera_usage": _camera_usage(segments),
         "spherical_shot_usage": usage,
-        "spherical_recording_usage": _spherical_recording_usage(segments),
+        "spherical_recording_usage": _spherical_recording_usage(segments, edit_settings.get("spherical_mode"), recorded_moves),
         "segments": segments,
     }
 
@@ -504,7 +504,11 @@ def _spherical_type_usage(segments: list[dict[str, Any]]) -> dict[str, int]:
     return usage
 
 
-def _spherical_recording_usage(segments: list[dict[str, Any]]) -> dict[str, int]:
+def _spherical_recording_usage(
+    segments: list[dict[str, Any]],
+    spherical_mode: str | None = None,
+    recorded_moves: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     recorded = 0
     landmark = 0
     by_take: dict[str, int] = {}
@@ -518,7 +522,16 @@ def _spherical_recording_usage(segments: list[dict[str, Any]]) -> dict[str, int]
             by_take[take] = by_take.get(take, 0) + 1
         elif shot:
             landmark += 1
-    return {"recorded_segments": recorded, "landmark_segments": landmark, "takes": by_take}
+    mode = str(spherical_mode or "automatic").lower()
+    takes_available = len(recorded_moves or [])
+    return {
+        "mode": mode,
+        "recorded_segments": recorded,
+        "landmark_segments": landmark,
+        "takes": by_take,
+        "recorded_takes_available": takes_available,
+        "recorded_takes_ignored": mode == "automatic" and takes_available > 0,
+    }
 
 
 def estimate_bar_starts(beat_times: list[float], start: float, duration: float) -> list[float]:
@@ -748,7 +761,7 @@ def _ken_burns_motion(index: int) -> dict[str, Any]:
         if pick <= cursor:
             pan_x, pan_y = x, y
             break
-    zoom_delta = rng.uniform(0.09, 0.12)
+    zoom_delta = rng.uniform(0.16, 0.22)
     zoom_in = rng.random() < 0.58
     return {
         "type": "ken_burns",

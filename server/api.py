@@ -8,7 +8,8 @@ import math
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -17,12 +18,13 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
+from core.director_proxy import director_proxy_status, ensure_director_proxy, is_360_record
 from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.messages import t
 from core.project import Project, ProjectError, create_project, load_project
 from core.camera_moves import delete_camera_move, list_camera_moves, save_camera_move
 from core.media_validation import record_media_path
-from core.normalization import cache_status, cleanup_unreferenced_cache, migrate_project_normalization_cache
+from core.normalization import cache_status, cleanup_unreferenced_cache, global_cache_root, migrate_project_normalization_cache
 from core.stages.sync import clear_manual_override, clip_id_for_record, generate_preview, generate_thumbnail, load_sync_map, set_manual_override
 from server.inbox import (
     app_home,
@@ -52,6 +54,7 @@ class AppState:
     project: Project | None = None
     dev: bool = False
     wizard: WizardRunner | None = None
+    director_jobs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
@@ -319,21 +322,36 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         project = _require_project(state)
         try:
             record = _director_360_record(project)
-            proxy = _director_equirect_proxy(project, record)
-            offset = _director_sync_offset(project, record)
-            relative = proxy.relative_to(project.cache_dir)
+            status = director_proxy_status(record)
+            if status.get("ready"):
+                return jsonify(_director_media_payload(project, record, status))
+            job = _start_director_proxy_job(state, project, record)
             return jsonify(
                 {
-                    "video_url": f"/api/v1/media/cache/{relative.as_posix()}",
-                    "master_url": "/api/v1/wizard/master-preview",
-                    "offset_sec": offset,
-                    "source_path": record.get("path"),
-                    "proxy_path": str(proxy),
-                    "duration_sec": _preview_source_duration(proxy),
+                    "proxy_ready": False,
+                    "job_id": job["id"],
+                    "message": "Preparing a lightweight 360 preview — this happens once per clip.",
+                    "progress": job.get("progress", 0),
+                    "detail": job.get("detail", ""),
                 }
             )
         except (OSError, FFmpegError, KeyError, ValueError) as exc:
             return error_response("director_media_error", str(exc), 500)
+
+    @app.get("/api/v1/wizard/director-media/status")
+    def api_wizard_director_media_status() -> Response:
+        project = _require_project(state)
+        job_id = str(request.args.get("job_id") or "")
+        job = state.director_jobs.get(job_id)
+        if not job:
+            return error_response("not_found", "Director preview job was not found", 404)
+        if job.get("status") == "done":
+            try:
+                record = _director_360_record(project)
+                return jsonify(_director_media_payload(project, record, job.get("result") or director_proxy_status(record)))
+            except (OSError, FFmpegError, ValueError) as exc:
+                return error_response("director_media_error", str(exc), 500)
+        return jsonify(dict(job))
 
     @app.get("/api/v1/wizard/camera-moves")
     def api_wizard_camera_moves() -> Response:
@@ -348,7 +366,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not isinstance(samples, list):
             return error_response("bad_request", "samples must be a list", 400)
         try:
-            take = save_camera_move(project, str(body.get("name") or ""), samples, str(body.get("source_path") or ""))
+            take = save_camera_move(project, str(body.get("name") or ""), samples, str(body.get("source_path") or ""), str(body.get("smoothing") or "medium"))
             return jsonify({"take": take, "takes": list_camera_moves(project)}), 201
         except ValueError as exc:
             return error_response("bad_request", str(exc), 400)
@@ -658,6 +676,16 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("not_found", "Cached media path is outside project cache", 404)
         return send_file_with_range(str(cache_path))
 
+    @app.get("/api/v1/media/director-proxy/<path:filename>")
+    def api_director_proxy_media(filename: str) -> Response:
+        root_dir = (global_cache_root() / "director_proxies").resolve()
+        cache_path = (root_dir / filename).resolve()
+        try:
+            cache_path.relative_to(root_dir)
+        except ValueError:
+            return error_response("not_found", "Director preview path is outside cache", 404)
+        return send_file_with_range(str(cache_path))
+
     @app.errorhandler(404)
     def not_found(_: Exception) -> tuple[Response, int]:
         return error_response("not_found", "Not found", 404)
@@ -698,18 +726,6 @@ def _remember_project(project: Project) -> None:
 def _project_wizard_status(project: Project) -> dict[str, Any]:
     stages = project.data.get("stages") or {}
     logs_path = str(project.cache_dir / "logs")
-    export_result = _export_result(project)
-    if export_result:
-        return {
-            "id": "project",
-            "status": "done",
-            "progress": 100,
-            "message": t("done"),
-            "detail": export_result["filename"],
-            "result": export_result,
-            "project_path": str(project.folder),
-            "logs_path": logs_path,
-        }
     failed = next(((name, stage) for name, stage in stages.items() if stage.get("status") == "failed"), None)
     if failed:
         name, stage = failed
@@ -732,6 +748,18 @@ def _project_wizard_status(project: Project) -> dict[str, Any]:
             "progress": _stage_progress(name),
             "message": _friendly_stage_message(name),
             "detail": "Recovering project state...",
+            "project_path": str(project.folder),
+            "logs_path": logs_path,
+        }
+    export_result = _export_result(project)
+    if export_result:
+        return {
+            "id": "project",
+            "status": "done",
+            "progress": 100,
+            "message": t("done"),
+            "detail": export_result["filename"],
+            "result": export_result,
             "project_path": str(project.folder),
             "logs_path": logs_path,
         }
@@ -1064,79 +1092,102 @@ def _paired_flat_fov(horizontal_fov: float, aspect_ratio: float) -> tuple[float,
     return horizontal, max(1.0, min(179.0, vertical))
 
 
+def _director_media_payload(project: Project, record: dict[str, Any], proxy_status: dict[str, Any]) -> dict[str, Any]:
+    offset = _director_sync_offset(project, record)
+    trim_start, trim_end = _project_audio_trim(project)
+    proxy_path = Path(str(proxy_status.get("path") or director_proxy_status(record).get("path") or ""))
+    duration = max(0.1, trim_end - trim_start)
+    return {
+        "proxy_ready": True,
+        "video_url": f"/api/v1/media/director-proxy/{proxy_path.name}",
+        "master_url": "/api/v1/wizard/master-preview",
+        "offset_sec": offset,
+        "trim_start_sec": trim_start,
+        "trim_end_sec": trim_end,
+        "duration_sec": duration,
+        "proxy_duration_sec": float(proxy_status.get("duration_sec") or _preview_source_duration(proxy_path)),
+        "source_path": record.get("path"),
+        "proxy_path": str(proxy_path),
+        "proxy_size_bytes": int(proxy_status.get("size_bytes") or (proxy_path.stat().st_size if proxy_path.exists() else 0)),
+        "proxy_width": int(proxy_status.get("width") or 0),
+        "proxy_height": int(proxy_status.get("height") or 0),
+        "proxy_fps": float(proxy_status.get("fps") or 0.0),
+        "generated": bool(proxy_status.get("generated")),
+        "elapsed_sec": float(proxy_status.get("elapsed_sec") or 0.0),
+    }
+
+
+def _start_director_proxy_job(state: AppState, project: Project, record: dict[str, Any]) -> dict[str, Any]:
+    job_id = str(Path(str(record.get("path") or "360")).expanduser().resolve())
+    existing = state.director_jobs.get(job_id)
+    if existing and existing.get("status") in {"running", "done"}:
+        return existing
+    job = {
+        "id": job_id,
+        "status": "running",
+        "progress": 0,
+        "message": "Preparing a lightweight 360 preview — this happens once per clip.",
+        "detail": "Starting ffmpeg",
+    }
+    state.director_jobs[job_id] = job
+
+    def progress(percent: int, detail: str) -> None:
+        job["progress"] = max(int(job.get("progress") or 0), int(percent))
+        job["detail"] = detail
+
+    def worker() -> None:
+        try:
+            job["result"] = ensure_director_proxy(record, progress)
+            job["progress"] = 100
+            job["status"] = "done"
+            job["message"] = "360 preview ready"
+        except Exception as exc:
+            LOGGER.exception("Could not prepare 360 Director preview for %s", project.folder)
+            job["status"] = "failed"
+            job["error"] = str(exc)
+            job["message"] = "Could not prepare the 360 preview"
+
+    threading.Thread(target=worker, name="director-proxy", daemon=True).start()
+    return job
+
+
+def _project_audio_trim(project: Project) -> tuple[float, float]:
+    master = project.data.get("inputs", {}).get("master") or {}
+    duration = 0.0
+    try:
+        duration = float(master.get("duration") or (master.get("probe") or {}).get("duration") or 0.0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    if duration <= 0 and master.get("path"):
+        try:
+            duration = _preview_source_duration(Path(str(master["path"])))
+        except Exception:
+            duration = 0.0
+    trim = project.data.get("settings", {}).get("wizard", {}).get("audio_trim") or {}
+    try:
+        start = max(0.0, float(trim.get("start_sec") or 0.0))
+    except (TypeError, ValueError):
+        start = 0.0
+    try:
+        end = float(trim.get("end_sec") or duration or start + 1.0)
+    except (TypeError, ValueError):
+        end = duration or start + 1.0
+    if duration > 0:
+        end = min(duration, end)
+    if end <= start:
+        end = start + 1.0
+    return round(start, 6), round(end, 6)
+
+
 def _director_360_record(project: Project) -> dict[str, Any]:
     for record in project.data.get("inputs", {}).get("videos", []):
-        probe = record.get("probe") or {}
-        projection = str(record.get("projection") or probe.get("projection") or "").lower()
-        filename = str(record.get("path") or "").lower()
-        if projection in {"equirect", "raw_insv"} or record.get("raw_360") or filename.endswith((".insv", ".insp")):
+        if is_360_record(record):
             return record
     raise ValueError("No 360 clip is registered")
 
 
 def _director_equirect_proxy(project: Project, record: dict[str, Any]) -> Path:
-    source = Path(record.get("path") or record_media_path(record)).expanduser().resolve()
-    if not source.exists():
-        raise ValueError("360 source file is missing")
-    probe = record.get("probe") or {}
-    stat = source.stat()
-    key = sha256(
-        json.dumps(
-            {
-                "recipe": "director_equirect_proxy_v1",
-                "path": str(source),
-                "size": stat.st_size,
-                "mtime": stat.st_mtime,
-                "projection": record.get("projection") or probe.get("projection"),
-                "raw": bool(record.get("raw_360") or probe.get("raw_360")),
-            },
-            sort_keys=True,
-        ).encode()
-    ).hexdigest()[:24]
-    output = project.cache_dir / "director_proxies" / f"{key}.mp4"
-    if output.exists():
-        return output
-    output.parent.mkdir(parents=True, exist_ok=True)
-    ffmpeg = tool_status().get("ffmpeg_path")
-    if not ffmpeg:
-        raise FFmpegError("ffmpeg is missing. Install it with: brew install ffmpeg")
-    projection = str(record.get("projection") or probe.get("projection") or "").lower()
-    raw = projection == "raw_insv" or bool(record.get("raw_360") or probe.get("raw_360")) or source.suffix.lower() in {".insv", ".insp"}
-    if raw:
-        fov = int(probe.get("insv_fov") or 190)
-        spatial = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov}:interp=lanczos,"
-    else:
-        spatial = ""
-    filtergraph = f"{spatial}scale=1280:640:force_original_aspect_ratio=decrease,pad=1280:640:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
-    tmp = output.with_suffix(".tmp.mp4")
-    command = [
-        str(ffmpeg),
-        "-y",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-        str(source),
-        "-vf",
-        filtergraph,
-        "-an",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "28",
-        "-movflags",
-        "+faststart",
-        str(tmp),
-    ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        if tmp.exists():
-            tmp.unlink()
-        raise FFmpegError(result.stderr.strip() or "Could not generate 360 Director proxy")
-    os.replace(tmp, output)
-    return output
+    return Path(str(ensure_director_proxy(record).get("path")))
 
 
 def _director_sync_offset(project: Project, record: dict[str, Any]) -> float:

@@ -8,13 +8,14 @@ from pathlib import Path
 
 import pytest
 
+from core.camera_moves import save_camera_move
 from core.project import create_project, file_record, load_project
 from core.stages.base import write_artifact_json
 from core.stages.cut import CutStage
 from core.stages.export import ExportStage
 from core.stages.ingest import IngestStage
 from core.stages.sync import SyncStage
-from server.api import create_app, _can_reuse_prepared_project, _sanitize_camera_role_weights, _sanitize_spherical_landmarks, _spherical_preview_frame
+from server.api import create_app, _can_reuse_prepared_project, _project_wizard_status, _sanitize_camera_role_weights, _sanitize_spherical_landmarks, _spherical_preview_frame
 from server.inbox import load_global_config
 from server.wizard import WizardJob, _store_audio_trim
 
@@ -733,7 +734,10 @@ def test_director_media_route_returns_proxy_master_and_sync_offset(tmp_path, mon
     Path(project.data["inputs"]["master"]["path"]).write_bytes(b"master")
     project.data["inputs"]["videos"] = [{"path": str(source), "projection": "equirect", "probe": {"projection": "equirect"}}]
     project.save()
-    monkeypatch.setattr("server.api._director_equirect_proxy", lambda project, record: proxy)
+    monkeypatch.setattr(
+        "server.api.director_proxy_status",
+        lambda record: {"ready": True, "path": str(proxy), "duration_sec": 9.0, "size_bytes": 5, "width": 1280, "height": 640, "fps": 15},
+    )
     monkeypatch.setattr("server.api._director_sync_offset", lambda project, record: 12.34)
     monkeypatch.setattr("server.api._preview_source_duration", lambda path: 9.0)
     app = create_app()
@@ -743,9 +747,77 @@ def test_director_media_route_returns_proxy_master_and_sync_offset(tmp_path, mon
 
     assert response.status_code == 200
     data = response.get_json()
-    assert data["video_url"] == "/api/v1/media/cache/director_proxies/proxy.mp4"
+    assert data["proxy_ready"] is True
+    assert data["video_url"] == "/api/v1/media/director-proxy/proxy.mp4"
     assert data["master_url"] == "/api/v1/wizard/master-preview"
     assert data["offset_sec"] == 12.34
+    assert data["duration_sec"] == 9.0
+
+
+def test_director_media_missing_proxy_returns_progress_job(tmp_path, monkeypatch):
+    project = create_project("Director", str(tmp_path / "Director.zuckervid"))
+    source = tmp_path / "wide360.mp4"
+    proxy = tmp_path / "global-proxy.mp4"
+    source.write_bytes(b"source")
+    project.data["inputs"]["master"] = {"path": str(tmp_path / "master.wav")}
+    Path(project.data["inputs"]["master"]["path"]).write_bytes(b"master")
+    project.data["inputs"]["videos"] = [{"path": str(source), "projection": "equirect", "probe": {"projection": "equirect"}}]
+    project.save()
+    monkeypatch.setattr("server.api.director_proxy_status", lambda record: {"ready": False, "path": str(proxy)})
+    monkeypatch.setattr("server.api._director_sync_offset", lambda project, record: 1.25)
+    monkeypatch.setattr("server.api._preview_source_duration", lambda path: 12.0)
+
+    def fake_ensure(record, progress=None):
+        if progress:
+            progress(55, "Preparing lightweight 360 preview — 55%")
+        return {"ready": True, "path": str(proxy), "duration_sec": 12.0, "size_bytes": 123, "width": 1280, "height": 640, "fps": 15}
+
+    monkeypatch.setattr("server.api.ensure_director_proxy", fake_ensure)
+    app = create_app()
+    app.config["ZUCKER_STATE"].project = project
+    client = app.test_client()
+
+    response = client.get("/api/v1/wizard/director-media")
+
+    assert response.status_code == 200
+    initial = response.get_json()
+    assert initial["proxy_ready"] is False
+    assert initial["job_id"]
+    for _ in range(20):
+        status = client.get(f"/api/v1/wizard/director-media/status?job_id={initial['job_id']}").get_json()
+        if status.get("proxy_ready"):
+            break
+        time.sleep(0.05)
+    assert status["proxy_ready"] is True
+    assert status["video_url"] == "/api/v1/media/director-proxy/global-proxy.mp4"
+    assert status["proxy_width"] == 1280
+    assert status["proxy_fps"] == 15
+
+
+def test_project_status_running_wins_over_existing_export_manifest(tmp_path):
+    project = create_project("Status", str(tmp_path / "Status.zuckervid"))
+    export_path = tmp_path / "done.mp4"
+    export_path.write_bytes(b"video")
+    manifest = project.artifacts_dir / "export_manifest.json"
+    write_artifact_json(manifest, {"exports": [{"path": str(export_path), "platform": "youtube"}]})
+    project.data["stages"]["export"] = {"status": "running", "outputs": {"export_manifest": str(manifest)}}
+
+    status = _project_wizard_status(project)
+
+    assert status["status"] == "running"
+
+
+def test_camera_move_smoothing_strength_is_persisted_and_stronger(tmp_path):
+    project = create_project("Moves", str(tmp_path / "Moves.zuckervid"))
+    samples = [{"t": index / 15, "yaw": 0 if index % 2 == 0 else 20, "pitch": 0, "fov": 100} for index in range(20)]
+
+    take = save_camera_move(project, "Strong", samples, smoothing="strong")
+
+    data = json.loads(Path(take["path"]).read_text(encoding="utf-8"))
+    assert data["smoothing"] == "strong"
+    raw_delta = max(sample["yaw"] for sample in data["raw"]) - min(sample["yaw"] for sample in data["raw"])
+    smooth_delta = max(sample["yaw"] for sample in data["smoothed"]) - min(sample["yaw"] for sample in data["smoothed"])
+    assert smooth_delta < raw_delta
 
 
 def test_adding_video_only_marks_ingest_and_dedupes_existing_clip(tmp_path, monkeypatch):
