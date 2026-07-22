@@ -59,6 +59,8 @@ def find_project_by_inputs(master: str, songs: str | None, videos: list[str]) ->
             project = load_project(str(project_json.parent))
         except ProjectError:
             continue
+        if project.refresh_input_records():
+            project.save()
         if project_input_signature(project) == wanted:
             return project
     return None

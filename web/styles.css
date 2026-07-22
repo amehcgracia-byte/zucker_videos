@@ -599,6 +599,16 @@ button:disabled {
   font-size: 13px;
 }
 
+.setup-warning {
+  border: 1px solid #b87928;
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: #f4e8cf;
+  color: #4b3410;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .spherical-fields,
 .camera-weight-fields {
   display: grid;

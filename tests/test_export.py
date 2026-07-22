@@ -407,9 +407,9 @@ def test_motion_filter_builds_bounded_ken_burns_zoom():
     graph = _motion_filter({"motion": {"type": "ken_burns", "zoom_start": 1.0, "zoom_end": 1.08, "pan_x": 0.5, "pan_y": 0.5}}, "youtube", 4.0)
 
     assert graph is not None
-    assert "zoompan=" in graph
-    assert "fps=30.000" in graph
-    assert "trim=start_frame=0:end_frame=120" in graph
+    assert "zoompan=" not in graph
+    assert "eval=frame" in graph
+    assert "crop=1920:1080" in graph
 
 
 def test_fixed_rear_export_cadence_passes_with_zoom_on_and_off(tmp_path):
@@ -435,8 +435,15 @@ def test_spherical_flat_filter_uses_signed_yaw_for_saved_singer_value():
 
     assert "yaw=-23.200" in graph
     assert "pitch=-28.800" in graph
-    assert "h_fov=74.800" in graph
+    assert "v_fov=95.000" in graph
     assert "interp=lanczos" in graph
+
+
+def test_v360_sendcmd_uses_vertical_fov_for_flat_reframes():
+    commands = _v360_motion_commands({"type": "audience", "yaw": 10, "pitch": 0, "fov": 74.8, "fov_delta_deg": 6}, 1.0, fov_command="v_fov")
+
+    assert any(" sphere v_fov " in command for command in commands)
+    assert not any(" sphere h_fov " in command for command in commands)
 
 
 def test_360_body_writes_spherical_metadata(tmp_path, monkeypatch):

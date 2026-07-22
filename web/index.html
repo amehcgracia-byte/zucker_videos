@@ -118,15 +118,15 @@
           </div>
           <div class="camera-weight-fields">
             <details data-camera-role="360">
-              <summary><span>360 camera</span><label>Weight<input data-field="weight" type="number" step="0.1" min="0" value="50" /></label></summary>
+              <summary><span>360 camera</span><label>Weight<input data-field="weight" type="text" inputmode="decimal" value="50" /></label></summary>
               <p>Use the 360 Shot Setup below for angle and shot frequency.</p>
             </details>
             <details data-camera-role="handheld">
-              <summary><span>Handheld / Sony</span><label>Weight<input data-field="weight" type="number" step="0.1" min="0" value="30" /></label></summary>
+              <summary><span>Handheld / Sony</span><label>Weight<input data-field="weight" type="text" inputmode="decimal" value="30" /></label></summary>
               <p>Stable-shot-only selection coming soon.</p>
             </details>
             <details data-camera-role="fixed_rear">
-              <summary><span>Fixed rear / iPhone</span><label>Weight<input data-field="weight" type="number" step="0.1" min="0" value="20" /></label></summary>
+              <summary><span>Fixed rear / iPhone</span><label>Weight<input data-field="weight" type="text" inputmode="decimal" value="20" /></label></summary>
               <label class="inline-toggle"><input id="fixedRearMotion" type="checkbox" checked /> Subtle zoom motion</label>
             </details>
           </div>
@@ -136,16 +136,17 @@
             <h2>360° Shot Setup</h2>
             <button id="reuseSphericalSetup" class="icon-button small" data-icon="retry" type="button">Reuse last setup</button>
           </div>
-          <p class="setup-hint">Per-shot relative weight: 0 excludes that 360 shot for this project while keeping the saved angle.</p>
+          <p class="setup-hint">Per-shot relative weight: 0 excludes that 360 shot for this project while keeping the saved angle. FOV is wider at higher values; 95-130 is recommended for normal shots from this source.</p>
+          <div id="sphericalWarnings" class="setup-warning" hidden></div>
           <div class="spherical-fields">
-            <fieldset data-spherical-landmark="full_stage"><legend>Full stage</legend><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></fieldset>
-            <fieldset data-spherical-landmark="singer"><legend>Singer</legend><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></fieldset>
-            <fieldset data-spherical-landmark="drummer"><legend>Drummer</legend><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></fieldset>
-            <fieldset data-spherical-landmark="left"><legend>Left side</legend><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></fieldset>
-            <fieldset data-spherical-landmark="right"><legend>Right side</legend><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></fieldset>
-            <fieldset data-spherical-landmark="audience"><legend>Audience</legend><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></fieldset>
-            <fieldset data-spherical-landmark="audience_stage_wide"><legend>Audience + stage</legend><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></fieldset>
-            <fieldset data-spherical-landmark="planet"><legend>Planet</legend><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></fieldset>
+            <fieldset data-spherical-landmark="full_stage"><legend>Full stage</legend><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>FOV<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></fieldset>
+            <fieldset data-spherical-landmark="singer"><legend>Singer</legend><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>FOV<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></fieldset>
+            <fieldset data-spherical-landmark="drummer"><legend>Drummer</legend><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>FOV<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></fieldset>
+            <fieldset data-spherical-landmark="left"><legend>Left side</legend><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>FOV<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></fieldset>
+            <fieldset data-spherical-landmark="right"><legend>Right side</legend><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>FOV<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></fieldset>
+            <fieldset data-spherical-landmark="audience"><legend>Audience</legend><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>FOV<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></fieldset>
+            <fieldset data-spherical-landmark="audience_stage_wide"><legend>Audience + stage</legend><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>FOV<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></fieldset>
+            <fieldset data-spherical-landmark="planet"><legend>Planet</legend><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>FOV<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></fieldset>
           </div>
         </div>
         <button id="startWizard" class="primary icon-button" data-icon="wand" disabled>Make it</button>

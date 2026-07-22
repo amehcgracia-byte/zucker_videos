@@ -14,7 +14,7 @@ from core.stages.cut import CutStage
 from core.stages.export import ExportStage
 from core.stages.ingest import IngestStage
 from core.stages.sync import SyncStage
-from server.api import create_app, _sanitize_camera_role_weights, _sanitize_spherical_landmarks
+from server.api import create_app, _can_reuse_prepared_project, _sanitize_camera_role_weights, _sanitize_spherical_landmarks
 from server.inbox import load_global_config
 from server.wizard import WizardJob, _store_audio_trim
 
@@ -648,6 +648,39 @@ def test_master_replacement_preserves_clip_cache_and_marks_sync_stale(tmp_path, 
     assert payload["stages"]["sync"]["status"] == "stale"
 
 
+def test_same_path_master_replacement_blocks_prepared_project_reuse(tmp_path):
+    folder = tmp_path / "Jam.zuckervid"
+    master = tmp_path / "master.wav"
+    video = tmp_path / "clip.mp4"
+    master.write_bytes(b"old")
+    video.write_bytes(b"video")
+    project = create_project("Jam", str(folder))
+    project.data["inputs"]["master"] = file_record(str(master))
+    project.data["inputs"]["videos"] = [file_record(str(video))]
+    for stage in ("sync", "cut", "edit", "export"):
+        project.data["stages"][stage]["status"] = "done"
+    project.save()
+
+    time.sleep(0.01)
+    master.write_bytes(b"new-audio-master")
+
+    assert _can_reuse_prepared_project(project, str(master), None, [str(video)]) is False
+    assert project.data["stages"]["sync"]["status"] == "stale"
+
+
+def test_spherical_landmarks_accept_comma_decimal_and_normalize_yaw():
+    result = _sanitize_spherical_landmarks(
+        {
+            "singer": {"yaw": "-23,2", "pitch": "-28,8", "fov": "74,8", "weight": "1,5"},
+            "right": {"yaw": "322,1", "pitch": "-15.0", "fov": "95.0", "weight": "0"},
+        }
+    )
+
+    assert result["singer"] == {"yaw": 336.8, "pitch": -28.8, "fov": 74.8, "weight": 1.5}
+    assert result["right"]["yaw"] == 322.1
+    assert result["right"]["weight"] == 0.0
+
+
 def test_adding_video_only_marks_ingest_and_dedupes_existing_clip(tmp_path, monkeypatch):
     monkeypatch.setattr("server.inbox.ffprobe", lambda path: valid_video_probe("2.5"))
     app = create_app()
@@ -888,7 +921,7 @@ def test_spherical_landmark_sanitizer_preserves_saved_values_and_defaults_blanks
     blank_defaults = _sanitize_spherical_landmarks({"singer": {"yaw": "-23.2", "pitch": "", "fov": "", "weight": ""}})
 
     assert landmarks["singer"] == {"yaw": 336.8, "pitch": -28.8, "fov": 74.8, "weight": 1.0}
-    assert blank_defaults["singer"] == {"yaw": 336.8, "pitch": 0.0, "fov": 74.8, "weight": 1.0}
+    assert blank_defaults["singer"] == {"yaw": 336.8, "pitch": 0.0, "fov": 95.0, "weight": 1.0}
 
 
 def test_camera_role_weight_sanitizer_allows_zero_exclusion():

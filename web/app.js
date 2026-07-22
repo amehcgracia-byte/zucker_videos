@@ -19,6 +19,17 @@ let cameraRoleWeights = { "360": 50, handheld: 30, fixed_rear: 20 };
 let fixedRearMotion = true;
 let savedAudioTrim = {};
 
+const LANDMARK_LABELS = {
+  full_stage: "Full stage",
+  singer: "Singer",
+  drummer: "Drummer",
+  left: "Left side",
+  right: "Right side",
+  audience: "Audience",
+  audience_stage_wide: "Audience + stage",
+  planet: "Planet",
+};
+
 function logFrontendError(message, stack = "") {
   fetch("/api/v1/wizard/frontend-log", {
     method: "POST",
@@ -107,6 +118,30 @@ function injectIcons() {
   document.querySelectorAll("[data-glyph]").forEach((node) => {
     node.innerHTML = icons[node.dataset.glyph] || "";
   });
+}
+
+function parseLocaleNumber(value) {
+  const text = String(value ?? "").trim().replace(/\s/g, "");
+  if (!text) return null;
+  let normalized = text;
+  if (text.includes(",") && text.includes(".")) {
+    normalized = text.lastIndexOf(",") > text.lastIndexOf(".") ? text.replace(/\./g, "").replace(",", ".") : text.replace(/,/g, "");
+  } else if (text.includes(",")) {
+    normalized = text.replace(",", ".");
+  }
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : null;
+}
+
+function formatCanonicalNumber(value) {
+  const number = parseLocaleNumber(value);
+  if (number == null) return "";
+  return Number(number.toFixed(3)).toString();
+}
+
+function normalizeYaw(value) {
+  const number = parseLocaleNumber(value);
+  return number == null ? null : ((number % 360) + 360) % 360;
 }
 
 function mergeDetected(result, source = "") {
@@ -491,9 +526,10 @@ function applySphericalSetup(values = {}) {
     const data = normalized[key] || {};
     group.querySelectorAll("[data-field]").forEach((input) => {
       const value = data[input.dataset.field];
-      if (value != null && input.value === "") input.value = Number(value).toString();
+      if (value != null && input.value === "") input.value = formatCanonicalNumber(value);
     });
   });
+  updateSphericalWarnings();
 }
 
 function sphericalLandmarksFromForm() {
@@ -502,14 +538,14 @@ function sphericalLandmarksFromForm() {
     const yawInput = group.querySelector('[data-field="yaw"]');
     const yawText = String(yawInput?.value || "").trim();
     if (!yawText) return;
-    const yaw = Number(yawText);
-    if (!Number.isFinite(yaw)) return;
-    const data = { yaw: ((yaw % 360) + 360) % 360 };
+    const yaw = normalizeYaw(yawText);
+    if (yaw == null) return;
+    const data = { yaw };
     for (const field of ["pitch", "fov", "weight"]) {
       const text = String(group.querySelector(`[data-field="${field}"]`)?.value || "").trim();
       if (!text) continue;
-      const value = Number(text);
-      if (Number.isFinite(value)) data[field] = value;
+      const value = parseLocaleNumber(text);
+      if (value != null) data[field] = value;
     }
     values[group.dataset.sphericalLandmark] = data;
   });
@@ -520,8 +556,8 @@ function cameraRoleWeightsFromForm() {
   const values = {};
   document.querySelectorAll("[data-camera-role]").forEach((group) => {
     const text = String(group.querySelector('[data-field="weight"]')?.value || "").trim();
-    const value = text ? Number(text) : NaN;
-    if (Number.isFinite(value)) values[group.dataset.cameraRole] = Math.max(0, value);
+    const value = text ? parseLocaleNumber(text) : null;
+    if (value != null) values[group.dataset.cameraRole] = Math.max(0, value);
   });
   return values;
 }
@@ -531,7 +567,7 @@ function applyCameraRoleWeights(values = {}) {
   document.querySelectorAll("[data-camera-role]").forEach((group) => {
     const input = group.querySelector('[data-field="weight"]');
     const value = normalized[group.dataset.cameraRole];
-    if (input && value != null) input.value = Number(value).toString();
+    if (input && value != null) input.value = formatCanonicalNumber(value);
   });
 }
 
@@ -539,8 +575,8 @@ function normalizeCameraRoleWeights(raw = {}) {
   const defaults = { "360": 50, handheld: 30, fixed_rear: 20 };
   const result = { ...defaults };
   for (const key of Object.keys(defaults)) {
-    const value = Number(raw[key]);
-    if (Number.isFinite(value)) result[key] = Math.max(0, value);
+    const value = parseLocaleNumber(raw[key]);
+    if (value != null) result[key] = Math.max(0, value);
   }
   return result;
 }
@@ -566,22 +602,47 @@ function normalizeSphericalSetup(raw = {}) {
     planet: "planet_yaw",
   };
   const defaults = {
-    full_stage: 110,
-    audience_stage_wide: 113.6,
+    full_stage: 120,
+    audience_stage_wide: 125,
     planet: 150,
   };
   const result = {};
   for (const [key, legacyKey] of Object.entries(legacy)) {
     const source = raw[key] && typeof raw[key] === "object" ? raw[key] : raw[legacyKey] != null ? { yaw: raw[legacyKey] } : null;
     if (!source || source.yaw == null) continue;
+    const yaw = normalizeYaw(source.yaw);
+    if (yaw == null) continue;
+    const pitch = parseLocaleNumber(source.pitch);
+    const fov = parseLocaleNumber(source.fov);
+    const weight = parseLocaleNumber(source.weight);
     result[key] = {
-      yaw: Number(source.yaw),
-      pitch: Number.isFinite(Number(source.pitch)) ? Number(source.pitch) : 0,
-      fov: Number.isFinite(Number(source.fov)) ? Number(source.fov) : defaults[key] || 74.8,
-      weight: Number.isFinite(Number(source.weight)) ? Number(source.weight) : 1,
+      yaw,
+      pitch: pitch != null ? pitch : 0,
+      fov: fov != null ? fov : defaults[key] || 95,
+      weight: weight != null ? weight : 1,
     };
   }
   return result;
+}
+
+function updateSphericalWarnings() {
+  const warning = document.querySelector("#sphericalWarnings");
+  if (!warning) return;
+  const values = sphericalLandmarksFromForm();
+  const enabled = Object.entries(values)
+    .filter(([, data]) => (data.weight == null ? 1 : data.weight) > 0 && data.yaw != null)
+    .map(([key, data]) => ({ key, yaw: data.yaw }));
+  const messages = [];
+  for (let i = 0; i < enabled.length; i += 1) {
+    for (let j = i + 1; j < enabled.length; j += 1) {
+      const delta = Math.abs(((enabled[j].yaw - enabled[i].yaw + 540) % 360) - 180);
+      if (delta <= 10) {
+        messages.push(`${LANDMARK_LABELS[enabled[i].key] || enabled[i].key} and ${LANDMARK_LABELS[enabled[j].key] || enabled[j].key} point at nearly the same angle.`);
+      }
+    }
+  }
+  warning.textContent = messages.join(" ");
+  warning.hidden = messages.length === 0;
 }
 
 function setupTrimControls(masterPath) {
@@ -636,10 +697,11 @@ async function waitForPreparedProject() {
   throw new Error(S.prepareTimeout);
 }
 
-async function startWizard() {
+async function startWizard(options = {}) {
+  const waitForPrepare = options.waitForPrepare !== false;
   const inputs = selectedInputs();
   setStep(3);
-  await waitForPreparedProject();
+  if (waitForPrepare) await waitForPreparedProject();
   await api("/wizard/start", {
     method: "POST",
     body: JSON.stringify({
@@ -997,8 +1059,14 @@ document.addEventListener("click", (event) => {
     applySphericalSetup(lastSphericalSetup);
   }
   if (target.id === "retryWizard" || target.id === "retryWizardSuccess") {
+    document.querySelector("#errorBox").hidden = true;
+    document.querySelector("#resultBox").hidden = true;
+    document.querySelector("#progressTitle").textContent = "Creating your video";
     setStep(3);
-    startWizard().catch((error) => showToast(error.message, true));
+    api("/wizard/reset")
+      .catch(() => {})
+      .then(() => startWizard({ waitForPrepare: false }))
+      .catch((error) => showToast(error.message, true));
   }
   if (target.id === "again") {
     document.querySelector("#errorBox").hidden = true;
@@ -1040,8 +1108,16 @@ document.addEventListener("change", (event) => {
   const target = event.target;
   if (target instanceof HTMLSelectElement && target.id === "masterSelect") {
     selectedMasterPath = target.value;
+    trimDefaultsAppliedFor = "";
+    setupTrimControls(selectedMasterPath);
     renderChips();
   }
+  if (target instanceof HTMLInputElement && target.closest("#sphericalSetup")) updateSphericalWarnings();
+});
+
+document.addEventListener("input", (event) => {
+  const target = event.target;
+  if (target instanceof HTMLInputElement && target.closest("#sphericalSetup")) updateSphericalWarnings();
 });
 
 document.querySelector("#videoName").value = todayName();

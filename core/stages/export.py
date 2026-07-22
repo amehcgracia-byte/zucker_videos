@@ -28,7 +28,7 @@ MIN_ACCEPTABLE_VIDEO_BITRATE = 2_500_000
 MAX_VIDEO_BITRATE = 18_000_000
 TARGET_EXPORT_FPS = 30.0
 TARGET_EXPORT_TIMESCALE = 30_000
-EXPORT_SEGMENT_RECIPE_VERSION = 13
+EXPORT_SEGMENT_RECIPE_VERSION = 14
 INTRO_DURATION = 10.2
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
@@ -1259,26 +1259,28 @@ def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> s
     zoom_end = max(zoom_start, min(1.12, zoom_end))
     pan_x = max(0.0, min(1.0, pan_x))
     pan_y = max(0.0, min(1.0, pan_y))
-    duration = max(0.1, float(duration))
-    frames = max(1, int(round(duration * TARGET_EXPORT_FPS)))
-    zoom_expr = f"'{zoom_start:.4f}+({zoom_end:.4f}-{zoom_start:.4f})*on/{max(1, frames - 1)}'"
+    frame_count = max(1, int(round(max(0.1, float(duration)) * TARGET_EXPORT_FPS)))
+    progress = f"min(1,n/{max(1, frame_count - 1)})"
+    zoom_expr = f"({zoom_start:.6f}+({zoom_end:.6f}-{zoom_start:.6f})*{progress})"
+    scaled_width = f"ceil({width}*{zoom_expr}/2)*2"
+    scaled_height = f"ceil({height}*{zoom_expr}/2)*2"
     return (
-        f"zoompan=z={zoom_expr}:x='(iw-iw/zoom)*{pan_x:.4f}':y='(ih-ih/zoom)*{pan_y:.4f}':"
-        f"d={frames}:s={width}x{height}:fps={TARGET_EXPORT_FPS:.3f},trim=start_frame=0:end_frame={frames},setpts=N/({TARGET_EXPORT_FPS:.3f}*TB)"
+        f"scale=w='{scaled_width}':h='{scaled_height}':eval=frame,"
+        f"crop={width}:{height}:x='(iw-{width})*{pan_x:.4f}':y='(ih-{height})*{pan_y:.4f}'"
     )
 
 
-def _v360_sendcmd_filter(shot: dict[str, Any] | None, duration: float | None, command_path: Path | None) -> str:
+def _v360_sendcmd_filter(shot: dict[str, Any] | None, duration: float | None, command_path: Path | None, fov_command: str | None = "h_fov") -> str:
     if not shot or command_path is None or duration is None or duration <= 0:
         return ""
-    commands = _v360_motion_commands(shot, float(duration))
+    commands = _v360_motion_commands(shot, float(duration), fov_command=fov_command)
     if not commands:
         return ""
     command_path.write_text("".join(commands), encoding="utf-8")
     return f"sendcmd=f={_escape_filter_path(command_path)},"
 
 
-def _v360_motion_commands(shot: dict[str, Any], duration: float) -> list[str]:
+def _v360_motion_commands(shot: dict[str, Any], duration: float, fov_command: str | None = "h_fov") -> list[str]:
     step = 1.0 / TARGET_EXPORT_FPS
     count = max(1, int(math.ceil(duration / step)))
     commands: list[str] = []
@@ -1287,7 +1289,8 @@ def _v360_motion_commands(shot: dict[str, Any], duration: float) -> list[str]:
         yaw, pitch, fov = _v360_motion_at(shot, duration, t)
         commands.append(f"{t:.6f} sphere yaw {yaw:.6f};\n")
         commands.append(f"{t:.6f} sphere pitch {pitch:.6f};\n")
-        commands.append(f"{t:.6f} sphere h_fov {fov:.6f};\n")
+        if fov_command:
+            commands.append(f"{t:.6f} sphere {fov_command} {fov:.6f};\n")
     return commands
 
 
@@ -1295,7 +1298,7 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
     duration = max(0.001, duration)
     target_yaw = _shot_yaw(shot)
     target_pitch = _shot_float(shot, "pitch", 0.0)
-    target_fov = _shot_float(shot, "fov", 100.0)
+    target_fov = _effective_flat_fov(shot)
     if shot.get("type") == "planet":
         yaw = target_yaw + _shot_float(shot, "spin_deg_per_sec", 18.0) * max(0.0, t)
         return _signed_yaw(yaw), target_pitch, target_fov
@@ -1318,6 +1321,7 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
     hold_amount = max(0.0, min(1.0, (t - pan_duration) / hold_duration))
     yaw += _shot_float(shot, "drift_yaw_deg", 0.0) * (hold_amount - 0.5)
     pitch += _shot_float(shot, "drift_pitch_deg", 0.0) * (hold_amount - 0.5)
+    fov += _shot_float(shot, "fov_delta_deg", 0.0) * (hold_amount - 0.5)
     return _signed_yaw(yaw), pitch, fov
 
 
@@ -1345,13 +1349,13 @@ def _export_source_filter(probe: dict[str, Any], shot: dict[str, Any] | None = N
     """Prepare source pixels for export while leaving fps conversion to the segment timing filter."""
     yaw = _shot_yaw(shot)
     pitch = _shot_float(shot, "pitch", 0.0)
-    fov = _shot_float(shot, "fov", 100.0)
-    command_prefix = _v360_sendcmd_filter(shot, duration, command_path)
+    fov = _effective_flat_fov(shot)
+    command_prefix = _v360_sendcmd_filter(shot, duration, command_path, fov_command="v_fov")
     if probe.get("projection") == "raw_insv":
-        fov = int(probe.get("insv_fov") or 190)
-        spatial = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov}:interp=lanczos,{command_prefix}v360@sphere=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={_shot_float(shot, 'fov', 100.0):.3f}:w=1920:h=1080:interp=lanczos"
+        insv_fov = int(probe.get("insv_fov") or 190)
+        spatial = f"v360=input=dfisheye:output=e:ih_fov={insv_fov}:iv_fov={insv_fov}:interp=lanczos,{command_prefix}v360@sphere=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:v_fov={fov:.3f}:w=1920:h=1080:interp=lanczos"
     elif probe.get("projection") == "equirect":
-        spatial = f"{command_prefix}v360@sphere=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={fov:.3f}:w=1920:h=1080:interp=lanczos"
+        spatial = f"{command_prefix}v360@sphere=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:v_fov={fov:.3f}:w=1920:h=1080:interp=lanczos"
     elif probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
         spatial = f"{SDR_TONEMAP_FILTER},scale=trunc(iw/2)*2:trunc(ih/2)*2"
     else:
@@ -1362,6 +1366,20 @@ def _export_source_filter(probe: dict[str, Any], shot: dict[str, Any] | None = N
 def _spherical_shot(segment: dict[str, Any]) -> dict[str, Any] | None:
     shot = segment.get("spherical_shot")
     return shot if isinstance(shot, dict) else None
+
+
+def _effective_flat_fov(shot: dict[str, Any] | None) -> float:
+    fov = _shot_float(shot, "fov", 100.0)
+    shot_type = str((shot or {}).get("type") or "")
+    if shot_type == "planet":
+        minimum = 140.0
+    elif shot_type in {"full_stage", "audience_stage_wide"}:
+        minimum = 115.0
+    elif shot_type:
+        minimum = 95.0
+    else:
+        minimum = 100.0
+    return max(minimum, min(190.0, fov))
 
 
 def _shot_float(shot: dict[str, Any] | None, key: str, fallback: float) -> float:

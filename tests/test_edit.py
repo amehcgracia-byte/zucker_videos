@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _youtube_multicam_plan
+from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _spherical_motion_profile, _youtube_multicam_plan
 from core.stages.cut import _segment_for_360, _select_360_clip
 
 
@@ -87,6 +87,27 @@ def test_youtube_plan_role_weight_zero_excludes_role():
     assert set(plan["camera_usage"]) == {"sony.mp4"}
 
 
+def test_spherical_landmark_migration_accepts_comma_decimal_and_zero_weight():
+    migrated = migrate_spherical_landmarks({"singer": {"yaw": "-23,2", "pitch": "-28,8", "fov": "74,8", "weight": "1"}, "right": {"yaw": "322,1", "weight": "0"}})
+
+    assert migrated["singer"]["yaw"] == 336.8
+    assert migrated["singer"]["pitch"] == -28.8
+    assert migrated["right"]["yaw"] == 322.1
+    assert migrated["right"]["weight"] == 0.0
+
+
+def test_spherical_motion_profiles_follow_shot_direction_rules():
+    singer = _spherical_motion_profile({"type": "singer", "yaw": 336.8, "pitch": -28.8, "fov": 95}, 1)
+    left = _spherical_motion_profile({"type": "left", "yaw": 47.6, "pitch": -15.9, "fov": 95}, 2)
+    right = _spherical_motion_profile({"type": "right", "yaw": 322.1, "pitch": -15, "fov": 95}, 3)
+    audience = _spherical_motion_profile({"type": "audience", "yaw": 203.7, "pitch": -15.5, "fov": 95}, 4)
+
+    assert singer["drift_pitch_deg"] > 0
+    assert left["drift_yaw_deg"] < 0
+    assert right["drift_yaw_deg"] > 0
+    assert abs(audience["fov_delta_deg"]) >= 5.0
+
+
 def test_youtube_plan_segment_lengths_stay_within_bounds():
     coverage = {
         "platform": "youtube",
@@ -145,7 +166,7 @@ def test_spherical_landmark_schema_migrates_yaw_only_values():
 
     assert migrated["singer"]["yaw"] == 336.8
     assert migrated["singer"]["pitch"] == 0.0
-    assert migrated["singer"]["fov"] == 74.8
+    assert migrated["singer"]["fov"] == 95.0
 
 
 def test_spherical_landmark_schema_preserves_saved_singer_values():

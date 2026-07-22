@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 from pathlib import Path
 from typing import Any
 
@@ -17,9 +18,9 @@ MAX_BARS_PER_SEGMENT = 2
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45
-SPHERICAL_DEFAULT_FOV = 74.8
-SPHERICAL_DRIFT_YAW_DEG = 4.0
-SPHERICAL_DRIFT_PITCH_DEG = 2.0
+SPHERICAL_DEFAULT_FOV = 95.0
+SPHERICAL_WIDE_FOV = 120.0
+SPHERICAL_AUDIENCE_STAGE_FOV = 125.0
 SPHERICAL_SHOT_ORDER = ("full_stage", "singer", "drummer", "left", "right", "audience", "audience_stage_wide", "planet")
 SPHERICAL_LANDMARKS = {
     "singer": ("singer_yaw", "Cantante", SPHERICAL_DEFAULT_FOV),
@@ -27,8 +28,8 @@ SPHERICAL_LANDMARKS = {
     "left": ("left_yaw", "Lado izquierdo", SPHERICAL_DEFAULT_FOV),
     "right": ("right_yaw", "Lado derecho", SPHERICAL_DEFAULT_FOV),
     "audience": ("audience_yaw", "Publico", SPHERICAL_DEFAULT_FOV),
-    "full_stage": ("full_stage_yaw", "Escenario completo", 110.0),
-    "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", 113.6),
+    "full_stage": ("full_stage_yaw", "Escenario completo", SPHERICAL_WIDE_FOV),
+    "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
 
@@ -202,7 +203,7 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any], sett
             include_planet = current_usage.get("Planeta", 0) == 0 and sum(current_usage.values()) >= 5
             shot = _next_weighted_spherical_shot(available_shots, _spherical_type_usage(segments), include_planet=include_planet)
             if shot:
-                segment["spherical_shot"] = shot
+                segment["spherical_shot"] = _spherical_motion_profile(shot, segment_index)
         elif fixed_rear_motion and _source_role(source) == "fixed_rear" and segment_index % 2 == 0:
             segment["motion"] = _ken_burns_motion(segment_index)
         segments.append(segment)
@@ -289,7 +290,7 @@ def build_spherical_shot_segments(base_segments: list[dict[str, Any]], landmarks
                 "clip_start_sec": round(float(base.get("clip_start_sec") or 0.0) + local, 6),
                 "master_start_sec": round(float(base.get("master_start_sec") or 0.0) + local, 6),
                 "duration_sec": round(hold, 6),
-                "spherical_shot": shot,
+                "spherical_shot": _spherical_motion_profile(shot, len(output)),
             }
             output.append(segment)
             elapsed += hold
@@ -347,11 +348,41 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]]) -> list[d
         }
         if shot_type == "planet":
             shot["spin_deg_per_sec"] = 18.0
-        else:
-            shot["drift_yaw_deg"] = SPHERICAL_DRIFT_YAW_DEG if len(shots) % 2 == 0 else -SPHERICAL_DRIFT_YAW_DEG
-            shot["drift_pitch_deg"] = SPHERICAL_DRIFT_PITCH_DEG if len(shots) % 3 != 1 else -SPHERICAL_DRIFT_PITCH_DEG
         shots.append(shot)
     return shots
+
+
+def _spherical_motion_profile(shot: dict[str, Any], index: int) -> dict[str, Any]:
+    """Attach deterministic subtle movement suited to the selected 360 shot type."""
+    shot = dict(shot)
+    shot_type = str(shot.get("type") or "")
+    if shot_type == "planet":
+        return shot
+    rng = random.Random(stable_fingerprint({"shot": shot_type, "yaw": round(float(shot.get("yaw") or 0.0), 3), "index": index}))
+    yaw_jitter = rng.uniform(-0.8, 0.8)
+    pitch_jitter = rng.uniform(-0.5, 0.5)
+    if shot_type == "singer":
+        shot["drift_yaw_deg"] = yaw_jitter
+        shot["drift_pitch_deg"] = rng.uniform(2.6, 4.0)
+    elif shot_type == "left":
+        shot["drift_yaw_deg"] = -rng.uniform(3.0, 5.0)
+        shot["drift_pitch_deg"] = pitch_jitter
+    elif shot_type == "right":
+        shot["drift_yaw_deg"] = rng.uniform(3.0, 5.0)
+        shot["drift_pitch_deg"] = pitch_jitter
+    elif shot_type == "audience":
+        shot["drift_yaw_deg"] = yaw_jitter
+        shot["drift_pitch_deg"] = pitch_jitter
+        shot["fov_delta_deg"] = rng.choice([-1.0, 1.0]) * rng.uniform(5.0, 9.0)
+    else:
+        if rng.random() < 0.5:
+            shot["drift_yaw_deg"] = rng.uniform(-3.0, 3.0)
+            shot["drift_pitch_deg"] = rng.uniform(-1.6, 1.6)
+        else:
+            shot["drift_yaw_deg"] = yaw_jitter
+            shot["drift_pitch_deg"] = pitch_jitter
+            shot["fov_delta_deg"] = rng.choice([-1.0, 1.0]) * rng.uniform(3.0, 6.0)
+    return shot
 
 
 def _next_weighted_spherical_shot(shots: list[dict[str, Any]], usage: dict[str, int], include_planet: bool = False) -> dict[str, Any] | None:
@@ -374,17 +405,29 @@ def _next_weighted_spherical_shot(shots: list[dict[str, Any]], usage: dict[str, 
     )
 
 def _landmark_yaw(value: Any, fallback: float | None) -> float | None:
-    try:
-        return float(value) % 360.0
-    except (TypeError, ValueError):
-        return fallback
+    number = _parse_float(value)
+    return number % 360.0 if number is not None else fallback
 
 
 def _landmark_weight(data: dict[str, Any], key: str, fallback: float) -> float:
+    number = _parse_float(data.get(key, fallback))
+    return number if number is not None else fallback
+
+
+def _parse_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(" ", "")
+    if "," in text and "." in text:
+        text = text.replace(".", "").replace(",", ".") if text.rfind(",") > text.rfind(".") else text.replace(",", "")
+    elif "," in text:
+        text = text.replace(",", ".")
     try:
-        return float(data.get(key, fallback))
+        return float(text)
     except (TypeError, ValueError):
-        return fallback
+        return None
 
 
 def _spherical_shot_usage(segments: list[dict[str, Any]]) -> dict[str, int]:

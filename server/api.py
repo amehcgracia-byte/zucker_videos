@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -381,6 +382,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             save_global_config(config)
         return jsonify({"ok": True})
 
+    @app.post("/api/v1/wizard/reset")
+    def api_wizard_reset() -> Response:
+        state.wizard.reset()
+        return jsonify({"ok": True})
+
     @app.get("/api/v1/wizard/report")
     def api_wizard_report() -> Response:
         return Response(wizard_report(state.wizard.status()), mimetype="text/plain")
@@ -685,6 +691,8 @@ def _can_reuse_prepared_project(project: Project | None, master: str, songs: str
     """Return True when a loaded project already has these inputs prepared through sync."""
     if not project:
         return False
+    if project.refresh_input_records():
+        project.save()
     stages = project.data.get("stages") or {}
     if stages.get("sync", {}).get("status") != "done":
         return False
@@ -702,6 +710,8 @@ def _can_reuse_prepared_project(project: Project | None, master: str, songs: str
 
 def _project_can_skip_prepare(project: Project) -> bool:
     """Return True when an existing project can resume at edit-choice time."""
+    if project.refresh_input_records():
+        project.save()
     stages = project.data.get("stages") or {}
     return stages.get("sync", {}).get("status") == "done" and _project_has_sync_candidates(project)
 
@@ -788,11 +798,8 @@ def _media_path(project: Project, kind: str, index: int) -> str:
 def _audio_trim_from_body(body: dict[str, Any]) -> dict[str, float] | None:
     start = body.get("trim_start_sec")
     end = body.get("trim_end_sec")
-    try:
-        start_value = float(start) if start not in (None, "") else None
-        end_value = float(end) if end not in (None, "") else None
-    except (TypeError, ValueError):
-        return None
+    start_value = _coerce_float(start)
+    end_value = _coerce_float(end)
     trim: dict[str, float] = {}
     if start_value is not None:
         trim["start_sec"] = max(0.0, start_value)
@@ -836,13 +843,13 @@ def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, float]]:
     if not isinstance(raw, dict):
         return {}
     defaults = {
-        "full_stage": {"legacy": "full_stage_yaw", "fov": 110.0},
-        "singer": {"legacy": "singer_yaw", "fov": 74.8},
-        "drummer": {"legacy": "drummer_yaw", "fov": 74.8},
-        "left": {"legacy": "left_yaw", "fov": 74.8},
-        "right": {"legacy": "right_yaw", "fov": 74.8},
-        "audience": {"legacy": "audience_yaw", "fov": 74.8},
-        "audience_stage_wide": {"legacy": "audience_stage_wide_yaw", "fov": 113.6},
+        "full_stage": {"legacy": "full_stage_yaw", "fov": 120.0},
+        "singer": {"legacy": "singer_yaw", "fov": 95.0},
+        "drummer": {"legacy": "drummer_yaw", "fov": 95.0},
+        "left": {"legacy": "left_yaw", "fov": 95.0},
+        "right": {"legacy": "right_yaw", "fov": 95.0},
+        "audience": {"legacy": "audience_yaw", "fov": 95.0},
+        "audience_stage_wide": {"legacy": "audience_stage_wide_yaw", "fov": 125.0},
         "planet": {"legacy": "planet_yaw", "fov": 150.0},
     }
     landmarks: dict[str, dict[str, float]] = {}
@@ -863,21 +870,36 @@ def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, float]]:
 
 
 def _optional_degrees(value: Any) -> float | None:
-    if value in (None, ""):
-        return None
-    try:
-        return round(float(value) % 360.0, 3)
-    except (TypeError, ValueError):
-        return None
+    number = _coerce_float(value)
+    return None if number is None else round(number % 360.0, 3)
 
 
 def _optional_float_setting(value: Any, fallback: float) -> float:
+    number = _coerce_float(value)
+    return fallback if number is None else round(number, 3)
+
+
+def _coerce_float(value: Any) -> float | None:
     if value in (None, ""):
-        return fallback
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) else None
+    text = str(value).strip().replace(" ", "")
+    if not text:
+        return None
+    if "," in text and "." in text:
+        text = text.replace(".", "").replace(",", ".") if text.rfind(",") > text.rfind(".") else text.replace(",", "")
+    elif "," in text:
+        text = text.replace(",", ".")
     try:
-        return round(float(value), 3)
+        number = float(text)
     except (TypeError, ValueError):
-        return fallback
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _enable_cors(app: Flask) -> None:
