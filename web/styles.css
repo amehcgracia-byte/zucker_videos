@@ -618,11 +618,52 @@ button:disabled {
 
 .spherical-fields fieldset {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 10px;
+}
+
+.spherical-fields label {
+  display: grid;
+  gap: 5px;
+}
+
+.range-copy,
+.raw-summary {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.shot-preview {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  object-fit: cover;
+}
+
+.shot-preview:not([src]) {
+  display: none;
+}
+
+.advanced-shot {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.advanced-shot summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.advanced-shot[open] {
+  display: grid;
+  gap: 8px;
 }
 
 .camera-weight-fields details {

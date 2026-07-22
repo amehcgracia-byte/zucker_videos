@@ -629,13 +629,31 @@ def _source_role(source: dict[str, Any]) -> str:
 
 
 def _ken_burns_motion(index: int) -> dict[str, Any]:
-    zoom = 1.06 + 0.01 * (index % 3)
+    rng = random.Random(stable_fingerprint({"fixed_camera_motion": index}))
+    targets = [
+        (0.5, 0.5, 5),
+        (0.44, 0.5, 1),
+        (0.56, 0.5, 1),
+        (0.5, 0.42, 1),
+        (0.5, 0.58, 1),
+    ]
+    total = sum(weight for _x, _y, weight in targets)
+    pick = rng.uniform(0.0, total)
+    pan_x, pan_y = 0.5, 0.5
+    cursor = 0.0
+    for x, y, weight in targets:
+        cursor += weight
+        if pick <= cursor:
+            pan_x, pan_y = x, y
+            break
+    zoom_delta = rng.uniform(0.09, 0.12)
+    zoom_in = rng.random() < 0.58
     return {
         "type": "ken_burns",
-        "zoom_start": 1.0,
-        "zoom_end": round(zoom, 3),
-        "pan_x": 0.5,
-        "pan_y": 0.5,
+        "zoom_start": round(1.0 if zoom_in else 1.0 + zoom_delta, 3),
+        "zoom_end": round(1.0 + zoom_delta if zoom_in else 1.0, 3),
+        "pan_x": round(pan_x, 3),
+        "pan_y": round(pan_y, 3),
     }
 
 

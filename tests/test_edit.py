@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _spherical_motion_profile, _youtube_multicam_plan
+from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _ken_burns_motion, _spherical_motion_profile, _youtube_multicam_plan
 from core.stages.cut import _segment_for_360, _select_360_clip
 
 
@@ -106,6 +106,18 @@ def test_spherical_motion_profiles_follow_shot_direction_rules():
     assert left["drift_yaw_deg"] < 0
     assert right["drift_yaw_deg"] > 0
     assert abs(audience["fov_delta_deg"]) >= 5.0
+
+
+def test_fixed_camera_motion_varies_target_direction_and_zoom_direction():
+    motions = [_ken_burns_motion(index) for index in range(20)]
+    targets = {(motion["pan_x"], motion["pan_y"]) for motion in motions}
+    zoom_in = [motion for motion in motions if motion["zoom_end"] > motion["zoom_start"]]
+    zoom_out = [motion for motion in motions if motion["zoom_end"] < motion["zoom_start"]]
+
+    assert len(targets) >= 3
+    assert zoom_in
+    assert zoom_out
+    assert max(abs(motion["zoom_end"] - motion["zoom_start"]) for motion in motions) >= 0.09
 
 
 def test_youtube_plan_segment_lengths_stay_within_bounds():

@@ -18,6 +18,7 @@ let lastSphericalSetup = {};
 let cameraRoleWeights = { "360": 50, handheld: 30, fixed_rear: 20 };
 let fixedRearMotion = true;
 let savedAudioTrim = {};
+let previewTimers = new Map();
 
 const LANDMARK_LABELS = {
   full_stage: "Full stage",
@@ -142,6 +143,33 @@ function formatCanonicalNumber(value) {
 function normalizeYaw(value) {
   const number = parseLocaleNumber(value);
   return number == null ? null : ((number % 360) + 360) % 360;
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function signedYawDelta(yaw, center) {
+  return ((yaw - center + 540) % 360) - 180;
+}
+
+function stageCenterYaw() {
+  const input = document.querySelector('fieldset[data-spherical-landmark="full_stage"] [data-field="yaw"]');
+  const value = normalizeYaw(input?.value);
+  return value == null ? 0 : value;
+}
+
+function weightToFrequency(weight) {
+  const value = parseLocaleNumber(weight);
+  if (value == null || value <= 0) return "0";
+  if (value <= 2) return "1";
+  if (value <= 8) return "5";
+  if (value <= 24) return "15";
+  return "40";
+}
+
+function selectedSphericalSourcePath() {
+  return detected.videos.find(isSphericalVideo)?.path || "";
 }
 
 function mergeDetected(result, source = "") {
@@ -528,6 +556,8 @@ function applySphericalSetup(values = {}) {
       const value = data[input.dataset.field];
       if (value != null && input.value === "") input.value = formatCanonicalNumber(value);
     });
+    syncFriendlyFromAdvanced(group);
+    queueSphericalPreview(group);
   });
   updateSphericalWarnings();
 }
@@ -643,6 +673,77 @@ function updateSphericalWarnings() {
   }
   warning.textContent = messages.join(" ");
   warning.hidden = messages.length === 0;
+}
+
+function syncFriendlyFromAdvanced(group) {
+  const yaw = normalizeYaw(group.querySelector('[data-field="yaw"]')?.value);
+  const pitch = parseLocaleNumber(group.querySelector('[data-field="pitch"]')?.value);
+  const fov = parseLocaleNumber(group.querySelector('[data-field="fov"]')?.value);
+  const weight = parseLocaleNumber(group.querySelector('[data-field="weight"]')?.value);
+  const direction = group.querySelector('[data-friendly="direction"]');
+  const height = group.querySelector('[data-friendly="height"]');
+  const zoom = group.querySelector('[data-friendly="zoom"]');
+  const frequency = group.querySelector('[data-friendly="frequency"]');
+  const center = group.dataset.sphericalLandmark === "full_stage" ? 0 : stageCenterYaw();
+  if (direction && yaw != null) direction.value = String(Math.round(signedYawDelta(yaw, center)));
+  if (height && pitch != null) height.value = String(clamp(pitch, -45, 20));
+  if (zoom && fov != null) zoom.value = String(clamp(fov, 65, 150));
+  if (frequency) frequency.value = weightToFrequency(weight);
+  updateRawSummary(group);
+}
+
+function syncAdvancedFromFriendly(group) {
+  const direction = parseLocaleNumber(group.querySelector('[data-friendly="direction"]')?.value);
+  const height = parseLocaleNumber(group.querySelector('[data-friendly="height"]')?.value);
+  const zoom = parseLocaleNumber(group.querySelector('[data-friendly="zoom"]')?.value);
+  const frequency = parseLocaleNumber(group.querySelector('[data-friendly="frequency"]')?.value);
+  const yawInput = group.querySelector('[data-field="yaw"]');
+  const pitchInput = group.querySelector('[data-field="pitch"]');
+  const fovInput = group.querySelector('[data-field="fov"]');
+  const weightInput = group.querySelector('[data-field="weight"]');
+  const center = group.dataset.sphericalLandmark === "full_stage" ? 0 : stageCenterYaw();
+  if (yawInput && direction != null) yawInput.value = formatCanonicalNumber(normalizeYaw(center + direction));
+  if (pitchInput && height != null) pitchInput.value = formatCanonicalNumber(height);
+  if (fovInput && zoom != null) fovInput.value = formatCanonicalNumber(zoom);
+  if (weightInput && frequency != null) weightInput.value = formatCanonicalNumber(frequency);
+  updateRawSummary(group);
+  updateSphericalWarnings();
+  queueSphericalPreview(group);
+}
+
+function updateRawSummary(group) {
+  const summary = group.querySelector(".raw-summary");
+  if (!summary) return;
+  const yaw = formatCanonicalNumber(group.querySelector('[data-field="yaw"]')?.value);
+  const pitch = formatCanonicalNumber(group.querySelector('[data-field="pitch"]')?.value);
+  const fov = formatCanonicalNumber(group.querySelector('[data-field="fov"]')?.value);
+  const weight = parseLocaleNumber(group.querySelector('[data-field="weight"]')?.value);
+  const frequency = weightToFrequency(weight);
+  const label = { 0: "Never", 1: "Rarely", 5: "Sometimes", 15: "Often", 40: "A lot" }[frequency] || "Sometimes";
+  summary.textContent = yaw ? `Exact: ${yaw}° direction, ${pitch || "0"}° height, zoom ${fov || "95"} · ${label}` : "";
+}
+
+function queueSphericalPreview(group) {
+  const image = group.querySelector("[data-preview]");
+  const source = selectedSphericalSourcePath();
+  const yaw = normalizeYaw(group.querySelector('[data-field="yaw"]')?.value);
+  const pitch = parseLocaleNumber(group.querySelector('[data-field="pitch"]')?.value);
+  const fov = parseLocaleNumber(group.querySelector('[data-field="fov"]')?.value);
+  if (!image || !source || yaw == null) return;
+  const key = group.dataset.sphericalLandmark;
+  clearTimeout(previewTimers.get(key));
+  previewTimers.set(
+    key,
+    setTimeout(() => {
+      const params = new URLSearchParams({
+        source,
+        yaw: formatCanonicalNumber(yaw),
+        pitch: formatCanonicalNumber(pitch ?? 0),
+        fov: formatCanonicalNumber(fov ?? 95),
+      });
+      image.src = `/api/v1/wizard/spherical-preview?${params.toString()}&t=${Date.now()}`;
+    }, 250)
+  );
 }
 
 function setupTrimControls(masterPath) {
@@ -1055,7 +1156,7 @@ document.addEventListener("click", (event) => {
     document.querySelector(target.id === "setTrimStart" ? "#trimStart" : "#trimEnd").value = secondsToTime(preview.currentTime || 0);
   }
   if (target.id === "reuseSphericalSetup") {
-    document.querySelectorAll("[data-field]").forEach((input) => (input.value = ""));
+    document.querySelectorAll("#sphericalSetup [data-field]").forEach((input) => (input.value = ""));
     applySphericalSetup(lastSphericalSetup);
   }
   if (target.id === "retryWizard" || target.id === "retryWizardSuccess") {
@@ -1112,12 +1213,31 @@ document.addEventListener("change", (event) => {
     setupTrimControls(selectedMasterPath);
     renderChips();
   }
-  if (target instanceof HTMLInputElement && target.closest("#sphericalSetup")) updateSphericalWarnings();
+  const sphericalGroup = target.closest?.("fieldset[data-spherical-landmark]");
+  if (sphericalGroup instanceof HTMLElement && target instanceof HTMLInputElement) {
+    if (target.dataset.friendly) syncAdvancedFromFriendly(sphericalGroup);
+    else {
+      syncFriendlyFromAdvanced(sphericalGroup);
+      updateSphericalWarnings();
+      queueSphericalPreview(sphericalGroup);
+    }
+  }
+  if (sphericalGroup instanceof HTMLElement && target instanceof HTMLSelectElement && target.dataset.friendly) {
+    syncAdvancedFromFriendly(sphericalGroup);
+  }
 });
 
 document.addEventListener("input", (event) => {
   const target = event.target;
-  if (target instanceof HTMLInputElement && target.closest("#sphericalSetup")) updateSphericalWarnings();
+  const sphericalGroup = target.closest?.("fieldset[data-spherical-landmark]");
+  if (!(sphericalGroup instanceof HTMLElement)) return;
+  if (target instanceof HTMLInputElement && target.dataset.friendly) {
+    syncAdvancedFromFriendly(sphericalGroup);
+  } else if (target instanceof HTMLInputElement) {
+    syncFriendlyFromAdvanced(sphericalGroup);
+    updateSphericalWarnings();
+    queueSphericalPreview(sphericalGroup);
+  }
 });
 
 document.querySelector("#videoName").value = todayName();

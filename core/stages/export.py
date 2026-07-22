@@ -1255,8 +1255,8 @@ def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> s
         pan_y = float(motion.get("pan_y", 0.5))
     except (TypeError, ValueError):
         return None
-    zoom_start = max(1.0, min(1.12, zoom_start))
-    zoom_end = max(zoom_start, min(1.12, zoom_end))
+    zoom_start = max(1.0, min(1.14, zoom_start))
+    zoom_end = max(1.0, min(1.14, zoom_end))
     pan_x = max(0.0, min(1.0, pan_x))
     pan_y = max(0.0, min(1.0, pan_y))
     frame_count = max(1, int(round(max(0.1, float(duration)) * TARGET_EXPORT_FPS)))

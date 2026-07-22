@@ -14,7 +14,7 @@ from core.stages.cut import CutStage
 from core.stages.export import ExportStage
 from core.stages.ingest import IngestStage
 from core.stages.sync import SyncStage
-from server.api import create_app, _can_reuse_prepared_project, _sanitize_camera_role_weights, _sanitize_spherical_landmarks
+from server.api import create_app, _can_reuse_prepared_project, _sanitize_camera_role_weights, _sanitize_spherical_landmarks, _spherical_preview_frame
 from server.inbox import load_global_config
 from server.wizard import WizardJob, _store_audio_trim
 
@@ -679,6 +679,32 @@ def test_spherical_landmarks_accept_comma_decimal_and_normalize_yaw():
     assert result["singer"] == {"yaw": 336.8, "pitch": -28.8, "fov": 74.8, "weight": 1.5}
     assert result["right"]["yaw"] == 322.1
     assert result["right"]["weight"] == 0.0
+
+
+def test_spherical_preview_frame_renders_cached_vertical_fov_jpeg(tmp_path, monkeypatch):
+    project = create_project("Preview", str(tmp_path / "Preview.zuckervid"))
+    source = tmp_path / "sphere.mp4"
+    source.write_bytes(b"video")
+    calls = []
+
+    monkeypatch.setattr("server.api.tool_status", lambda: {"ffmpeg_path": "ffmpeg"})
+    monkeypatch.setattr("server.api.ffprobe", lambda path: {"format": {"duration": "10"}})
+
+    def fake_run(command, capture_output, text, check):
+        calls.append(command)
+        Path(command[-1]).write_bytes(b"jpg")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("server.api.subprocess.run", fake_run)
+
+    first = _spherical_preview_frame(project, str(source), 336.8, -28.8, 80.0)
+    second = _spherical_preview_frame(project, str(source), 336.8, -28.8, 80.0)
+
+    assert first == second
+    assert first.read_bytes() == b"jpg"
+    assert len(calls) == 1
+    command_text = " ".join(calls[0])
+    assert "v360=input=equirect:output=flat:yaw=-23.200:pitch=-28.800:v_fov=80.000" in command_text
 
 
 def test_adding_video_only_marks_ingest_and_dedupes_existing_clip(tmp_path, monkeypatch):

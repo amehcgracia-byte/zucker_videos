@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
+import subprocess
 import sys
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +17,7 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
+from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.messages import t
 from core.project import Project, ProjectError, create_project, load_project
 from core.media_validation import record_media_path
@@ -292,6 +296,19 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not project or not project.data.get("inputs", {}).get("master"):
             return error_response("not_found", "Master media is not registered", 404)
         return send_file_with_range(project.data["inputs"]["master"]["path"])
+
+    @app.get("/api/v1/wizard/spherical-preview")
+    def api_wizard_spherical_preview() -> Response:
+        source = str(request.args.get("source") or "").strip()
+        yaw = _optional_degrees(request.args.get("yaw"))
+        pitch = _optional_float_setting(request.args.get("pitch"), 0.0)
+        fov = max(65.0, min(150.0, _optional_float_setting(request.args.get("fov"), 95.0)))
+        if not source or yaw is None:
+            return error_response("bad_request", "source and yaw are required", 400)
+        try:
+            return send_file_with_range(str(_spherical_preview_frame(state.project, source, yaw, pitch, fov)))
+        except (OSError, FFmpegError, ValueError) as exc:
+            return error_response("ffmpeg_error", str(exc), 500)
 
     @app.post("/api/v1/wizard/prepare")
     def api_wizard_prepare() -> Response:
@@ -900,6 +917,69 @@ def _coerce_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _spherical_preview_frame(project: Project | None, source: str, yaw: float, pitch: float, fov: float) -> Path:
+    source_path = Path(source).expanduser().resolve()
+    if not source_path.exists():
+        raise ValueError("360 source does not exist")
+    cache_root = (project.cache_dir if project else app_home() / "cache") / "spherical_previews"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    stat = source_path.stat()
+    key = sha256(json.dumps({"path": str(source_path), "size": stat.st_size, "mtime": stat.st_mtime, "yaw": round(yaw, 3), "pitch": round(pitch, 3), "fov": round(fov, 3)}, sort_keys=True).encode()).hexdigest()[:24]
+    output = cache_root / f"{key}.jpg"
+    if output.exists():
+        return output
+    status = tool_status()
+    ffmpeg = status.get("ffmpeg_path")
+    if not ffmpeg:
+        raise FFmpegError("ffmpeg is missing. Install it with: brew install ffmpeg")
+    duration = _preview_source_duration(source_path)
+    timestamp = max(0.0, min(duration * 0.35, max(0.0, duration - 0.1)))
+    tmp = output.with_suffix(".tmp.jpg")
+    filtergraph = (
+        f"v360=input=equirect:output=flat:yaw={_signed_degrees(yaw):.3f}:pitch={pitch:.3f}:v_fov={fov:.3f}:"
+        "w=480:h=270:interp=lanczos,format=yuvj420p"
+    )
+    command = [
+        str(ffmpeg),
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{timestamp:.3f}",
+        "-i",
+        str(source_path),
+        "-frames:v",
+        "1",
+        "-vf",
+        filtergraph,
+        "-q:v",
+        "3",
+        str(tmp),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        if tmp.exists():
+            tmp.unlink()
+        raise FFmpegError(result.stderr.strip() or "Could not render 360 preview")
+    os.replace(tmp, output)
+    return output
+
+
+def _preview_source_duration(path: Path) -> float:
+    try:
+        metadata = ffprobe(str(path))
+        value = (metadata.get("format") or {}).get("duration")
+        return max(0.1, float(value))
+    except Exception:
+        return 1.0
+
+
+def _signed_degrees(value: float) -> float:
+    value = float(value) % 360.0
+    return value - 360.0 if value > 180.0 else value
 
 
 def _enable_cors(app: Flask) -> None:
