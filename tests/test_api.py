@@ -14,7 +14,7 @@ from core.stages.cut import CutStage
 from core.stages.export import ExportStage
 from core.stages.ingest import IngestStage
 from core.stages.sync import SyncStage
-from server.api import create_app
+from server.api import create_app, _sanitize_camera_role_weights, _sanitize_spherical_landmarks
 from server.wizard import WizardJob
 
 
@@ -880,3 +880,17 @@ def test_sync_skips_ingest_demoted_clip(tmp_path, monkeypatch):
 
     payload = json.loads((project.artifacts_dir / "sync_map.json").read_text(encoding="utf-8"))
     assert payload["clips"] == {}
+
+
+def test_spherical_landmark_sanitizer_preserves_saved_values_and_defaults_blanks():
+    landmarks = _sanitize_spherical_landmarks({"singer": {"yaw": "-23.2", "pitch": "-28.8", "fov": "74.8", "weight": "1"}})
+    blank_defaults = _sanitize_spherical_landmarks({"singer": {"yaw": "-23.2", "pitch": "", "fov": "", "weight": ""}})
+
+    assert landmarks["singer"] == {"yaw": 336.8, "pitch": -28.8, "fov": 74.8, "weight": 1.0}
+    assert blank_defaults["singer"] == {"yaw": 336.8, "pitch": 0.0, "fov": 74.8, "weight": 1.0}
+
+
+def test_camera_role_weight_sanitizer_allows_zero_exclusion():
+    weights = _sanitize_camera_role_weights({"360": "0", "handheld": "1", "fixed_rear": ""})
+
+    assert weights == {"360": 0.0, "handheld": 1.0, "fixed_rear": 0.0}

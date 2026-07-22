@@ -111,6 +111,7 @@ class WizardRunner:
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
         spherical_landmarks: dict[str, float] | None,
+        camera_role_weights: dict[str, float] | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -130,6 +131,7 @@ class WizardRunner:
                         "song_choice": song_choice,
                         "audio_trim": audio_trim,
                         "spherical_landmarks": spherical_landmarks,
+                        "camera_role_weights": camera_role_weights,
                         "master_path": master_path,
                         "songs_path": songs_path,
                         "video_paths": video_paths,
@@ -151,6 +153,7 @@ class WizardRunner:
                 "song_choice": song_choice,
                 "audio_trim": audio_trim,
                 "spherical_landmarks": spherical_landmarks,
+                "camera_role_weights": camera_role_weights,
                 "master_path": master_path,
                 "songs_path": songs_path,
                 "video_paths": video_paths,
@@ -212,6 +215,7 @@ class WizardRunner:
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
         spherical_landmarks: dict[str, float] | None,
+        camera_role_weights: dict[str, float] | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -228,6 +232,7 @@ class WizardRunner:
                 "placeholder_logic": platform in {"instagram", "tiktok"},
             }
             _store_spherical_landmarks(project, spherical_landmarks)
+            _store_camera_role_weights(project, camera_role_weights)
             project.save()
 
             self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
@@ -240,6 +245,7 @@ class WizardRunner:
                 song_choice=song_choice,
                 audio_trim=audio_trim,
                 spherical_landmarks=spherical_landmarks,
+                camera_role_weights=camera_role_weights,
                 master_path=master_path,
                 songs_path=songs_path,
                 video_paths=video_paths,
@@ -300,6 +306,7 @@ class WizardRunner:
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
         spherical_landmarks: dict[str, float] | None,
+        camera_role_weights: dict[str, float] | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -314,6 +321,7 @@ class WizardRunner:
                 "placeholder_logic": platform in {"instagram", "tiktok"},
             }
             _store_spherical_landmarks(project, spherical_landmarks)
+            _store_camera_role_weights(project, camera_role_weights)
             project.save()
             self._run_stage(job, project, CutStage(), 48, 58, t("cutting_song"))
             self._run_stage(job, project, EditStage(), 58, 70, t("building_edit"))
@@ -365,6 +373,7 @@ class WizardRunner:
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
         spherical_landmarks: dict[str, float] | None,
+        camera_role_weights: dict[str, float] | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -390,6 +399,7 @@ class WizardRunner:
             song_choice=song_choice,
             audio_trim=audio_trim,
             spherical_landmarks=spherical_landmarks,
+            camera_role_weights=camera_role_weights,
             master_path=master_path,
             songs_path=songs_path,
             video_paths=video_paths,
@@ -530,6 +540,15 @@ def _store_spherical_landmarks(project: Project, landmarks: dict[str, float] | N
     project.data.setdefault("settings", {})["spherical_landmarks"] = dict(landmarks)
     config = load_global_config()
     config["spherical_landmarks"] = dict(landmarks)
+    save_global_config(config)
+
+
+def _store_camera_role_weights(project: Project, weights: dict[str, float] | None) -> None:
+    if weights is None:
+        return
+    project.data.setdefault("settings", {}).setdefault("edit", {})["camera_role_weights"] = dict(weights)
+    config = load_global_config()
+    config["camera_role_weights"] = dict(weights)
     save_global_config(config)
 
 

@@ -18,6 +18,8 @@ EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 0.5, "handheld": 0.3, "fixed_rear": 0.2}
 SPHERICAL_PAN_SEC = 0.45
 SPHERICAL_DEFAULT_FOV = 74.8
+SPHERICAL_DRIFT_YAW_DEG = 4.0
+SPHERICAL_DRIFT_PITCH_DEG = 2.0
 SPHERICAL_SHOT_ORDER = ("full_stage", "singer", "drummer", "left", "right", "audience", "audience_stage_wide", "planet")
 SPHERICAL_LANDMARKS = {
     "singer": ("singer_yaw", "Cantante", SPHERICAL_DEFAULT_FOV),
@@ -200,6 +202,8 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any], sett
             shot = _next_weighted_spherical_shot(available_shots, _spherical_type_usage(segments), include_planet=include_planet)
             if shot:
                 segment["spherical_shot"] = shot
+        elif _source_role(source) == "fixed_rear" and segment_index % 2 == 0:
+            segment["motion"] = _ken_burns_motion(segment_index)
         segments.append(segment)
         bar_index = next_index
         segment_index += 1
@@ -342,6 +346,9 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]]) -> list[d
         }
         if shot_type == "planet":
             shot["spin_deg_per_sec"] = 18.0
+        else:
+            shot["drift_yaw_deg"] = SPHERICAL_DRIFT_YAW_DEG if len(shots) % 2 == 0 else -SPHERICAL_DRIFT_YAW_DEG
+            shot["drift_pitch_deg"] = SPHERICAL_DRIFT_PITCH_DEG if len(shots) % 3 != 1 else -SPHERICAL_DRIFT_PITCH_DEG
         shots.append(shot)
     return shots
 
@@ -519,15 +526,18 @@ def _choose_source(
     role_weights: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     usage_counts = usage_counts or {}
-    candidates = [source for source in sources if _source_id(source) != previous_source] if len(sources) > 1 else sources
-    if not candidates:
-        candidates = sources
-    selection_stats = selection_stats or {}
     role_weights = role_weights or DEFAULT_CAMERA_ROLE_WEIGHTS
+    usable_sources = [source for source in sources if float(role_weights.get(_source_role(source), role_weights.get("handheld", 0.3))) > 0.0]
+    if not usable_sources:
+        usable_sources = sources
+    candidates = [source for source in usable_sources if _source_id(source) != previous_source] if len(usable_sources) > 1 else usable_sources
+    if not candidates:
+        candidates = usable_sources
+    selection_stats = selection_stats or {}
 
     def score(source: dict[str, Any]) -> tuple[float, int, float, str]:
         role = _source_role(source)
-        target_share = max(0.05, float(role_weights.get(role, role_weights.get("handheld", 0.3))))
+        target_share = max(0.001, float(role_weights.get(role, role_weights.get("handheld", 0.3))))
         chosen_seconds = float((selection_stats.get(_source_id(source)) or {}).get("chosen_seconds") or 0.0)
         return (chosen_seconds / target_share, usage_counts.get(_source_id(source), 0), -float(source.get("confidence") or 0.0), _source_id(source))
 
@@ -557,7 +567,7 @@ def _camera_role_weights(settings: dict[str, Any] | None) -> dict[str, float]:
     weights = {**DEFAULT_CAMERA_ROLE_WEIGHTS}
     for key in weights:
         try:
-            weights[key] = max(0.01, float(raw.get(key, weights[key])))
+            weights[key] = max(0.0, float(raw.get(key, weights[key])))
         except (TypeError, ValueError):
             pass
     total = sum(weights.values()) or 1.0
@@ -572,6 +582,17 @@ def _source_role(source: dict[str, Any]) -> str:
     if "iphone" in filename or filename.endswith(".mov"):
         return "fixed_rear"
     return "handheld"
+
+
+def _ken_burns_motion(index: int) -> dict[str, Any]:
+    zoom = 1.06 + 0.01 * (index % 3)
+    return {
+        "type": "ken_burns",
+        "zoom_start": 1.0,
+        "zoom_end": round(zoom, 3),
+        "pan_x": 0.5,
+        "pan_y": 0.5,
+    }
 
 
 def _round_to_frame(seconds: float, fps: float = EDIT_FPS) -> float:

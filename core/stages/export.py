@@ -27,7 +27,7 @@ MIN_ACCEPTABLE_VIDEO_BITRATE = 2_500_000
 MAX_VIDEO_BITRATE = 18_000_000
 TARGET_EXPORT_FPS = 30.0
 TARGET_EXPORT_TIMESCALE = 30_000
-EXPORT_SEGMENT_RECIPE_VERSION = 9
+EXPORT_SEGMENT_RECIPE_VERSION = 11
 INTRO_DURATION = 10.2
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
@@ -186,18 +186,19 @@ def _render_plan(
             lambda percent, detail: progress_callback(8 + int(percent * 2 / 100), detail),
         )
         segment_paths.append(intro_path)
-        for index, segment in enumerate(segments, start=1):
+        render_segments = _expand_spherical_render_segments(segments)
+        for index, segment in enumerate(render_segments, start=1):
             segment_duration = max(0.1, float(segment["duration_sec"]))
             base_percent = 10 + int(70 * rendered_duration / max(total_duration, 0.1))
 
             def segment_progress(local_percent: int, detail: str, *, index: int = index) -> None:
                 segment_share = 70 * segment_duration / max(total_duration, 0.1)
                 percent = base_percent + int(segment_share * local_percent / 100)
-                progress_callback(min(84, percent), f"Rendering segment {index}/{len(segments)}: {detail}")
+                progress_callback(min(84, percent), f"Rendering segment {index}/{len(render_segments)}: {detail}")
 
             color_profile = color_profiles.get(str(segment.get("clip_path")), {})
             intro_fade = index == 1
-            outro_fade = index == len(segments)
+            outro_fade = index == len(render_segments)
             intro_logo = False
             outro_logo = False
             segment_path = cached_segment_path(project, segment, platform, video_bitrate, overlay_config, color_profile, intro_fade, outro_fade, intro_logo, outro_logo)
@@ -504,7 +505,15 @@ def _spherical_segment_parts(segment: dict[str, Any], previous_shot: dict[str, A
             current += part_duration
             remaining -= part_duration
     elif remaining > 0.001:
-        parts.append(_spherical_part(segment, current, remaining, shot))
+        step = min(2.0, remaining)
+        static_start = current
+        static_duration = remaining
+        while remaining > 0.001:
+            part_duration = min(step, remaining)
+            midpoint = (current - static_start + part_duration / 2.0) / max(static_duration, 0.001)
+            parts.append(_spherical_part(segment, current, part_duration, _drifted_spherical_shot(shot, midpoint)))
+            current += part_duration
+            remaining -= part_duration
     return parts
 
 
@@ -521,6 +530,17 @@ def _spherical_part(segment: dict[str, Any], offset: float, duration: float, sho
 def _lerp_angle(start: float, end: float, amount: float) -> float:
     delta = ((end - start + 540.0) % 360.0) - 180.0
     return (start + delta * max(0.0, min(1.0, amount))) % 360.0
+
+
+def _drifted_spherical_shot(shot: dict[str, Any], amount: float) -> dict[str, Any]:
+    amount = max(0.0, min(1.0, amount))
+    yaw_delta = _shot_float(shot, "drift_yaw_deg", 0.0) * (amount - 0.5)
+    pitch_delta = _shot_float(shot, "drift_pitch_deg", 0.0) * (amount - 0.5)
+    return {
+        **shot,
+        "yaw": (_shot_float(shot, "yaw", 0.0) + yaw_delta) % 360.0,
+        "pitch": _shot_float(shot, "pitch", 0.0) + pitch_delta,
+    }
 
 
 def _render_360_body(
@@ -584,7 +604,7 @@ def _equirect_filtergraph(
     intro_fade: bool = False,
     outro_fade: bool = False,
 ) -> str:
-    yaw = _shot_float(shot, "yaw", 0.0)
+    yaw = _shot_yaw(shot)
     pitch = _shot_float(shot, "pitch", 0.0)
     if probe.get("projection") == "raw_insv":
         fov = int(probe.get("insv_fov") or 190)
@@ -784,6 +804,7 @@ def _render_segment(
         intro_logo=intro_logo,
         outro_logo=outro_logo,
         source_filter=_export_source_filter(source.get("probe") or {}, _spherical_shot(segment)),
+        motion_filter=_motion_filter(segment, platform, duration),
         frame_count=frame_count,
     )
     command_base = _segment_video_command_base(
@@ -1193,9 +1214,33 @@ def _base_video_filter(platform: str) -> str:
     return "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
 
 
+def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> str | None:
+    motion = segment.get("motion") or {}
+    if motion.get("type") != "ken_burns":
+        return None
+    width, height = _target_size(platform)
+    try:
+        zoom_start = float(motion.get("zoom_start", 1.0))
+        zoom_end = float(motion.get("zoom_end", 1.06))
+        pan_x = float(motion.get("pan_x", 0.5))
+        pan_y = float(motion.get("pan_y", 0.5))
+    except (TypeError, ValueError):
+        return None
+    zoom_start = max(1.0, min(1.12, zoom_start))
+    zoom_end = max(zoom_start, min(1.12, zoom_end))
+    pan_x = max(0.0, min(1.0, pan_x))
+    pan_y = max(0.0, min(1.0, pan_y))
+    duration = max(0.1, float(duration))
+    zoom_expr = f"({zoom_start:.4f}+({zoom_end:.4f}-{zoom_start:.4f})*min(t\\,{duration:.4f})/{duration:.4f})"
+    return (
+        f"scale=w='trunc({width}*{zoom_expr}/2)*2':h='trunc({height}*{zoom_expr}/2)*2':eval=frame,"
+        f"crop={width}:{height}:'(iw-ow)*{pan_x:.4f}':'(ih-oh)*{pan_y:.4f}'"
+    )
+
+
 def _export_source_filter(probe: dict[str, Any], shot: dict[str, Any] | None = None) -> str:
     """Prepare source pixels for export while leaving fps conversion to the segment timing filter."""
-    yaw = _shot_float(shot, "yaw", 0.0)
+    yaw = _shot_yaw(shot)
     pitch = _shot_float(shot, "pitch", 0.0)
     fov = _shot_float(shot, "fov", 100.0)
     if probe.get("projection") == "raw_insv":
@@ -1222,6 +1267,13 @@ def _shot_float(shot: dict[str, Any] | None, key: str, fallback: float) -> float
         return fallback
 
 
+def _shot_yaw(shot: dict[str, Any] | None) -> float:
+    yaw = _shot_float(shot, "yaw", 0.0) % 360.0
+    if yaw > 180.0:
+        yaw -= 360.0
+    return yaw
+
+
 def _spherical_shot_usage(segments: list[dict[str, Any]]) -> dict[str, int]:
     usage: dict[str, int] = {}
     for segment in segments:
@@ -1244,12 +1296,13 @@ def _segment_filtergraph(
     intro_logo: bool = False,
     outro_logo: bool = False,
     source_filter: str | None = None,
+    motion_filter: str | None = None,
     frame_count: int | None = None,
 ) -> str:
     filters = []
     if source_filter:
         filters.append(source_filter)
-    filters.extend([_base_video_filter(platform), _color_filter(color_profile)])
+    filters.extend([_base_video_filter(platform), motion_filter, _color_filter(color_profile)])
     filters.append(_exact_cadence_filter(frame_count) if frame_count else _constant_cadence_filter())
     if intro_fade:
         filters.append(f"fade=t=in:st=0:d={CONTENT_FADE_DURATION:.3f}")
@@ -1365,6 +1418,7 @@ def cached_segment_path(
             "intro_logo": intro_logo,
             "outro_logo": outro_logo,
             "spherical_shot": _spherical_shot(segment) or {},
+            "motion": segment.get("motion") or {},
             "normalization_version": NORMALIZATION_VERSION,
             "export_segment_recipe": EXPORT_SEGMENT_RECIPE_VERSION,
         }

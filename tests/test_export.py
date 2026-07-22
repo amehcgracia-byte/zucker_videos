@@ -22,8 +22,10 @@ from core.stages.export import (
     _cadence_checked_joined_video,
     cached_segment_path,
     _expand_spherical_render_segments,
+    _export_source_filter,
     _frame_pts_times,
     _equirect_filtergraph,
+    _motion_filter,
     _run_ffmpeg_progress,
     _render_360_body,
     _render_plan,
@@ -336,6 +338,46 @@ def test_spherical_render_parts_expand_pan_and_planet_motion():
     yaws = [round(float(part["spherical_shot"]["yaw"]), 1) for part in parts if part["spherical_shot"].get("type") == "planet"]
     assert len(yaws) > 1
     assert len(set(yaws)) > 1
+
+
+def test_spherical_render_parts_add_bounded_static_drift():
+    segments = [
+        {
+            "clip_path": "/tmp/360.mp4",
+            "clip_start_sec": 0,
+            "master_start_sec": 0,
+            "duration_sec": 3,
+            "spherical_shot": {"type": "singer", "label": "Cantante", "yaw": 336.8, "pitch": -28.8, "fov": 74.8, "drift_yaw_deg": 4, "drift_pitch_deg": 2},
+        }
+    ]
+
+    parts = _expand_spherical_render_segments(segments)
+
+    yaws = [part["spherical_shot"]["yaw"] for part in parts]
+    pitches = [part["spherical_shot"]["pitch"] for part in parts]
+    assert len(parts) > 1
+    assert min(yaws) >= 334.8
+    assert max(yaws) <= 338.8
+    assert min(pitches) >= -29.8
+    assert max(pitches) <= -27.8
+    assert yaws[0] != yaws[-1]
+
+
+def test_motion_filter_builds_bounded_ken_burns_zoom():
+    graph = _motion_filter({"motion": {"type": "ken_burns", "zoom_start": 1.0, "zoom_end": 1.08, "pan_x": 0.5, "pan_y": 0.5}}, "youtube", 4.0)
+
+    assert graph is not None
+    assert "scale=w='trunc(1920*" in graph
+    assert "(1.0000+(1.0800-1.0000)*min(t\\,4.0000)/4.0000)" in graph
+    assert "crop=1920:1080" in graph
+
+
+def test_spherical_flat_filter_uses_signed_yaw_for_saved_singer_value():
+    graph = _export_source_filter({"projection": "equirect"}, {"type": "singer", "yaw": 336.8, "pitch": -28.8, "fov": 74.8})
+
+    assert "yaw=-23.200" in graph
+    assert "pitch=-28.800" in graph
+    assert "h_fov=74.800" in graph
 
 
 def test_360_body_writes_spherical_metadata(tmp_path, monkeypatch):

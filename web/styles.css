@@ -591,13 +591,19 @@ button:disabled {
   font-size: 18px;
 }
 
-.spherical-fields {
+.spherical-fields,
+.camera-weight-fields {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 
-.spherical-fields fieldset {
+.camera-weight-fields {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.spherical-fields fieldset,
+.camera-weight-fields fieldset {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
@@ -606,14 +612,29 @@ button:disabled {
   padding: 10px;
 }
 
-.spherical-fields legend {
+.camera-weight-fields fieldset {
+  grid-template-columns: 1fr;
+}
+
+.spherical-fields legend,
+.camera-weight-fields legend {
   padding: 0 4px;
   font-weight: 800;
   color: var(--muted);
   grid-column: 1 / -1;
 }
 
-.spherical-fields input {
+.spherical-fields label,
+.camera-weight-fields label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--muted);
+}
+
+.spherical-fields input,
+.camera-weight-fields input {
   width: 100%;
   min-width: 0;
 }
@@ -837,6 +858,12 @@ pre {
 
 @media (max-width: 780px) {
   .platforms {
+    grid-template-columns: 1fr;
+  }
+
+  .spherical-fields,
+  .camera-weight-fields,
+  .trim-fields {
     grid-template-columns: 1fr;
   }
 

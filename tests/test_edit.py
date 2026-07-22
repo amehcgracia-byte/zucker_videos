@@ -70,6 +70,23 @@ def test_youtube_plan_role_weights_bias_eligible_camera_share():
     assert usage["360.mp4"] >= usage["sony.mp4"] >= usage["iphone.mov"]
 
 
+def test_youtube_plan_role_weight_zero_excludes_role():
+    coverage = {
+        "platform": "youtube",
+        "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 12.0},
+        "sources": [
+            {"path": "/tmp/360.mp4", "filename": "wide360.mp4", "projection": "equirect", "offset_sec": 0.0, "duration_sec": 12.0, "confidence": 8.0},
+            {"path": "/tmp/sony.mp4", "filename": "sony.mp4", "offset_sec": 0.0, "duration_sec": 12.0, "confidence": 10.0},
+            {"path": "/tmp/iphone.mov", "filename": "iphone.mov", "offset_sec": 0.0, "duration_sec": 12.0, "confidence": 9.0},
+        ],
+    }
+    beats = {"bars_sec": [0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0], "sections_sec": []}
+
+    plan = _youtube_multicam_plan(coverage, beats, {"edit": {"camera_role_weights": {"360": 0, "handheld": 1, "fixed_rear": 0}}})
+
+    assert set(plan["camera_usage"]) == {"sony.mp4"}
+
+
 def test_youtube_plan_segment_lengths_stay_within_bounds():
     coverage = {
         "platform": "youtube",
@@ -131,6 +148,12 @@ def test_spherical_landmark_schema_migrates_yaw_only_values():
     assert migrated["singer"]["fov"] == 74.8
 
 
+def test_spherical_landmark_schema_preserves_saved_singer_values():
+    migrated = migrate_spherical_landmarks({"singer": {"yaw": 336.8, "pitch": -28.8, "fov": 74.8, "weight": 1.0}})
+
+    assert migrated["singer"] == {"yaw": 336.8, "pitch": -28.8, "fov": 74.8, "weight": 1.0}
+
+
 def test_spherical_weights_exclude_zero_and_bias_frequency():
     base = [{"clip_path": "/tmp/360.mp4", "source_path": "/tmp/360.mp4", "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 60, "projection": "equirect"}]
 
@@ -146,6 +169,21 @@ def test_spherical_weights_exclude_zero_and_bias_frequency():
     types = [segment["spherical_shot"]["type"] for segment in segments]
     assert "audience" not in types
     assert types.count("singer") > types.count("left")
+
+
+def test_fixed_rear_segments_get_subtle_motion_on_some_holds():
+    coverage = {
+        "platform": "youtube",
+        "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 12.0},
+        "sources": [{"path": "/tmp/iphone.mov", "filename": "iphone.mov", "offset_sec": 0.0, "duration_sec": 12.0, "confidence": 9.0}],
+    }
+    beats = {"bars_sec": [0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0], "sections_sec": []}
+
+    plan = _youtube_multicam_plan(coverage, beats)
+
+    motions = [segment.get("motion") for segment in plan["segments"] if segment.get("motion")]
+    assert motions
+    assert all(motion["type"] == "ken_burns" for motion in motions)
 
 
 def test_youtube_plan_assigns_spherical_shots_to_360_segments():

@@ -247,6 +247,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         videos = body.get("videos") or []
         audio_trim = _audio_trim_from_body(body)
         spherical_landmarks = _spherical_landmarks_from_body(body)
+        camera_role_weights = _camera_role_weights_from_body(body)
         if platform not in {"youtube", "instagram", "tiktok", "360"}:
             return error_response("bad_request", "platform must be youtube, instagram, tiktok, or 360", 400)
         if not master:
@@ -267,6 +268,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 song_choice=body.get("song_index", body.get("song_choice")),
                 audio_trim=audio_trim,
                 spherical_landmarks=spherical_landmarks,
+                camera_role_weights=camera_role_weights,
                 master_path=master,
                 songs_path=songs,
                 video_paths=videos,
@@ -464,6 +466,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         config = load_global_config()
         config["dev"] = state.dev
         config["desktop"] = not state.dev
+        config.setdefault("camera_role_weights", {"360": 0.5, "handheld": 0.3, "fixed_rear": 0.2})
         return jsonify(config)
 
     @app.get("/api/v1/cache/status")
@@ -800,6 +803,23 @@ def _spherical_landmarks_from_body(body: dict[str, Any]) -> dict[str, dict[str, 
     if "spherical_landmarks" not in body:
         return None
     return _sanitize_spherical_landmarks(body.get("spherical_landmarks") or {})
+
+
+def _camera_role_weights_from_body(body: dict[str, Any]) -> dict[str, float] | None:
+    if "camera_role_weights" not in body:
+        return None
+    return _sanitize_camera_role_weights(body.get("camera_role_weights") or {})
+
+
+def _sanitize_camera_role_weights(raw: Any) -> dict[str, float]:
+    if not isinstance(raw, dict):
+        return {}
+    weights: dict[str, float] = {}
+    for key in ("360", "handheld", "fixed_rear"):
+        if key not in raw:
+            continue
+        weights[key] = max(0.0, _optional_float_setting(raw.get(key), 0.0))
+    return weights
 
 
 def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, float]]:

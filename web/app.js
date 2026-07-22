@@ -15,6 +15,7 @@ let currentStep = 1;
 let lastProgressReportAt = 0;
 let trimDefaultsAppliedFor = "";
 let lastSphericalSetup = {};
+let cameraRoleWeights = { "360": 0.5, handheld: 0.3, fixed_rear: 0.2 };
 
 function logFrontendError(message, stack = "") {
   fetch("/api/v1/wizard/frontend-log", {
@@ -72,6 +73,8 @@ async function apiForm(path, formData) {
 async function loadAppConfig() {
   appConfig = await api("/app/config");
   lastSphericalSetup = normalizeSphericalSetup(appConfig.spherical_landmarks || {});
+  cameraRoleWeights = normalizeCameraRoleWeights(appConfig.camera_role_weights || cameraRoleWeights);
+  applyCameraRoleWeights(cameraRoleWeights);
   window.NativeBridge?.configure(appConfig);
 }
 
@@ -147,6 +150,13 @@ async function resumeInputsFromProject() {
   chooseDefaultMaster();
   renderChips();
   document.querySelector("#videoName").value = project.name || document.querySelector("#videoName").value || todayName();
+  if (project.settings?.spherical_landmarks) {
+    lastSphericalSetup = normalizeSphericalSetup(project.settings.spherical_landmarks);
+  }
+  if (project.settings?.edit?.camera_role_weights) {
+    cameraRoleWeights = normalizeCameraRoleWeights(project.settings.edit.camera_role_weights);
+    applyCameraRoleWeights(cameraRoleWeights);
+  }
   if (inputs.songs?.path) {
     const result = await api("/wizard/songs", { method: "POST", body: JSON.stringify({ songs: inputs.songs.path }) });
     renderSongOptions(result.songs || []);
@@ -458,6 +468,7 @@ function renderSphericalSetup() {
   const panel = document.querySelector("#sphericalSetup");
   if (!panel) return;
   panel.hidden = !hasSphericalInput();
+  applyCameraRoleWeights(cameraRoleWeights);
   if (!panel.hidden) applySphericalSetup(lastSphericalSetup);
 }
 
@@ -477,16 +488,49 @@ function sphericalLandmarksFromForm() {
   const values = {};
   document.querySelectorAll("fieldset[data-spherical-landmark]").forEach((group) => {
     const yawInput = group.querySelector('[data-field="yaw"]');
-    const yaw = Number(yawInput?.value);
+    const yawText = String(yawInput?.value || "").trim();
+    if (!yawText) return;
+    const yaw = Number(yawText);
     if (!Number.isFinite(yaw)) return;
     const data = { yaw: ((yaw % 360) + 360) % 360 };
     for (const field of ["pitch", "fov", "weight"]) {
-      const value = Number(group.querySelector(`[data-field="${field}"]`)?.value);
+      const text = String(group.querySelector(`[data-field="${field}"]`)?.value || "").trim();
+      if (!text) continue;
+      const value = Number(text);
       if (Number.isFinite(value)) data[field] = value;
     }
     values[group.dataset.sphericalLandmark] = data;
   });
   return values;
+}
+
+function cameraRoleWeightsFromForm() {
+  const values = {};
+  document.querySelectorAll("fieldset[data-camera-role]").forEach((group) => {
+    const text = String(group.querySelector('[data-field="weight"]')?.value || "").trim();
+    const value = text ? Number(text) : NaN;
+    if (Number.isFinite(value)) values[group.dataset.cameraRole] = Math.max(0, value);
+  });
+  return values;
+}
+
+function applyCameraRoleWeights(values = {}) {
+  const normalized = normalizeCameraRoleWeights(values);
+  document.querySelectorAll("fieldset[data-camera-role]").forEach((group) => {
+    const input = group.querySelector('[data-field="weight"]');
+    const value = normalized[group.dataset.cameraRole];
+    if (input && value != null) input.value = Number(value).toString();
+  });
+}
+
+function normalizeCameraRoleWeights(raw = {}) {
+  const defaults = { "360": 0.5, handheld: 0.3, fixed_rear: 0.2 };
+  const result = { ...defaults };
+  for (const key of Object.keys(defaults)) {
+    const value = Number(raw[key]);
+    if (Number.isFinite(value)) result[key] = Math.max(0, value);
+  }
+  return result;
 }
 
 function normalizeSphericalSetup(raw = {}) {
@@ -581,6 +625,7 @@ async function startWizard() {
       trim_start_sec: timeToSeconds(document.querySelector("#trimStart").value),
       trim_end_sec: timeToSeconds(document.querySelector("#trimEnd").value),
       spherical_landmarks: sphericalLandmarksFromForm(),
+      camera_role_weights: cameraRoleWeightsFromForm(),
       master: inputs.master,
       songs: inputs.songs,
       videos: inputs.videos,
