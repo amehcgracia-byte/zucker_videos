@@ -134,7 +134,10 @@
         <div id="sphericalSetup" class="spherical-setup" hidden>
           <div class="setup-heading">
             <h2>360° Shot Setup</h2>
-            <button id="reuseSphericalSetup" class="icon-button small" data-icon="retry" type="button">Reuse last setup</button>
+            <div class="setup-actions">
+              <button id="openDirector" class="icon-button small" data-icon="sphere" type="button">360 Director</button>
+              <button id="reuseSphericalSetup" class="icon-button small" data-icon="retry" type="button">Reuse last setup</button>
+            </div>
           </div>
           <p class="setup-hint">Set each saved shot in stage language. Advanced keeps exact Insta360 Studio numbers available when needed.</p>
           <div id="sphericalWarnings" class="setup-warning" hidden></div>
@@ -223,6 +226,37 @@
         </div>
       </section>
     </main>
+    <section id="directorScreen" class="director-screen" hidden>
+      <div class="director-shell">
+        <header class="director-header">
+          <div>
+            <strong>360 Director</strong>
+            <span id="directorStatus">Load the 360 proxy to direct a take.</span>
+          </div>
+          <button id="closeDirector" class="icon-button small" data-icon="arrow" type="button">Back</button>
+        </header>
+        <div class="director-stage">
+          <canvas id="directorCanvas"></canvas>
+          <video id="directorVideo" playsinline muted preload="metadata" hidden></video>
+          <audio id="directorAudio" preload="metadata" hidden></audio>
+          <div id="directorHud" class="director-hud">Yaw 0° · Pitch 0° · Shot width 100°</div>
+        </div>
+        <div class="director-controls">
+          <button id="directorPlay" class="icon-button" data-icon="play" type="button">Play</button>
+          <label class="director-scrub">
+            <span id="directorTime">00:00</span>
+            <input id="directorScrub" type="range" min="0" max="1" step="0.01" value="0" />
+          </label>
+          <label>
+            Shot width
+            <input id="directorFov" type="range" min="65" max="150" step="0.1" value="100" />
+          </label>
+          <input id="directorTakeName" placeholder="Take name" />
+          <button id="directorRecord" class="icon-button" data-icon="sphere" type="button">Record camera moves</button>
+        </div>
+        <div id="directorTakes" class="director-takes"></div>
+      </div>
+    </section>
     <div id="toast" class="toast" hidden></div>
     <script src="/strings.js?v=editor-ui-4"></script>
     <script src="/native_bridge.js?v=editor-ui-4"></script>

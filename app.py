@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import multiprocessing
 import subprocess
 import socket
 import sys
 import threading
+import time
 from pathlib import Path
 
 from core.build_info import startup_label
@@ -66,6 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=APP_NAME)
     parser.add_argument("--dev", action="store_true", help="Run Flask only with CORS enabled")
     parser.add_argument("--project", help="Open an existing .zuckervid project folder")
+    parser.add_argument("--webgl-probe", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
@@ -75,6 +78,8 @@ def main() -> None:
     _configure_logging()
     logging.getLogger(__name__).info("Starting %s", startup_label())
     args = parse_args()
+    if args.webgl_probe:
+        raise SystemExit(_run_webgl_probe())
     config = load_global_config()
     project_path = args.project or config.get("last_project_path")
     if project_path and not Path(project_path).exists():
@@ -108,6 +113,71 @@ def main() -> None:
 
     window.events.loaded += on_loaded
     webview.start()
+
+
+def _run_webgl_probe() -> int:
+    """Check WebGL and bundled Three.js inside the pywebview runtime."""
+    import webview
+
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    three_source = (root / "web" / "vendor" / "three.module.min.js").read_text(encoding="utf-8")
+    result: dict[str, object] = {"ok": False, "three": False, "webgl": False, "error": "probe did not finish"}
+    html = f"""
+<!doctype html>
+<html>
+  <body>
+    <canvas id="probe" width="64" height="64"></canvas>
+    <script>
+      const moduleSource = {json.dumps(three_source)};
+      const moduleUrl = URL.createObjectURL(new Blob([moduleSource], {{ type: "text/javascript" }}));
+      import(moduleUrl).then((THREE) => {{
+      try {{
+        const canvas = document.getElementById("probe");
+        const gl = canvas.getContext("webgl2");
+        const renderer = new THREE.WebGLRenderer({{ canvas, context: gl, antialias: false }});
+        renderer.setSize(64, 64, false);
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 10);
+        camera.position.z = 2;
+        scene.add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial({{ color: 0x7fbf62 }})));
+        renderer.render(scene, camera);
+        window.__webglProbe = {{
+          ok: Boolean(gl && THREE.WebGLRenderer),
+          webgl: Boolean(gl),
+          three: Boolean(THREE.WebGLRenderer),
+          renderer: gl ? gl.getParameter(gl.RENDERER) : "",
+          pixel: Array.from(new Uint8Array(gl ? (() => {{ const p = new Uint8Array(4); gl.readPixels(32, 32, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, p); return p; }})() : [0, 0, 0, 0])),
+          error: null
+        }};
+      }} catch (error) {{
+        window.__webglProbe = {{ ok: false, webgl: false, three: Boolean(THREE && THREE.WebGLRenderer), error: String(error) }};
+      }}
+      }}).catch((error) => {{
+        window.__webglProbe = {{ ok: false, webgl: false, three: false, error: String(error) }};
+      }});
+    </script>
+  </body>
+</html>
+"""
+    window = webview.create_window("WebGL Probe", html=html, hidden=True, background_color="#ffffff")
+
+    def loaded() -> None:
+        nonlocal result
+        for _ in range(80):
+            try:
+                candidate = window.evaluate_js("window.__webglProbe || null")
+            except Exception as exc:
+                candidate = {"ok": False, "error": str(exc)}
+            if candidate:
+                result = candidate
+                break
+            time.sleep(0.05)
+        threading.Timer(0.1, window.destroy).start()
+
+    window.events.loaded += loaded
+    webview.start(debug=False)
+    print(json.dumps(result, sort_keys=True))
+    return 0 if result.get("ok") else 1
 
 
 def _open_file_dialog(allow_multiple: bool) -> list[str]:

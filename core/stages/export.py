@@ -12,6 +12,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+from core.camera_moves import interpolate_curve
 from core.ffmpeg import FFmpegError, tool_status
 from core.messages import t
 from core.media_validation import record_is_usable_camera_video, record_media_path
@@ -99,6 +100,7 @@ class ExportStage(Stage):
                 "max_export_bytes": MAX_EXPORT_BYTES,
                 "target_video_bitrate": bitrate_info["video_bitrate"],
                 "spherical_shot_usage": plan.get("spherical_shot_usage") or _spherical_shot_usage(segments),
+                "spherical_recording_usage": plan.get("spherical_recording_usage") or _spherical_recording_usage(segments),
                 "exports": [
                     {
                         "platform": platform,
@@ -109,6 +111,7 @@ class ExportStage(Stage):
                         "cut_count": int(plan.get("cut_count") or max(0, len(segments) - 1)),
                         "camera_usage": plan.get("camera_usage") or _camera_usage(segments),
                         "spherical_shot_usage": plan.get("spherical_shot_usage") or _spherical_shot_usage(segments),
+                        "spherical_recording_usage": plan.get("spherical_recording_usage") or _spherical_recording_usage(segments),
                         "excluded_clips": plan.get("excluded_clips") or [],
                         "clip_fates": clip_fates,
                     }
@@ -484,7 +487,7 @@ def _continuous_spherical_render_segments(segments: list[dict[str, Any]]) -> lis
     previous_shot: dict[str, Any] | None = None
     for segment in segments:
         shot = _spherical_shot(segment)
-        if shot and previous_shot and previous_shot.get("type") != shot.get("type"):
+        if shot and previous_shot and previous_shot.get("type") != shot.get("type") and shot.get("type") != "recorded_move":
             shot = {**shot, "previous_shot": previous_shot}
             output.append({**segment, "spherical_shot": shot})
         else:
@@ -1297,6 +1300,11 @@ def _v360_motion_commands(shot: dict[str, Any], duration: float, aspect_ratio: f
 
 def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[float, float, float]:
     duration = max(0.001, duration)
+    if shot.get("type") == "recorded_move":
+        interpolated = interpolate_curve(shot.get("curve") or [], max(0.0, min(duration, t)))
+        if interpolated:
+            yaw, pitch, fov = interpolated
+            return _signed_yaw(yaw), pitch, fov
     target_yaw = _shot_yaw(shot)
     target_pitch = _shot_float(shot, "pitch", 0.0)
     target_fov = _effective_flat_fov(shot)
@@ -1373,7 +1381,9 @@ def _spherical_shot(segment: dict[str, Any]) -> dict[str, Any] | None:
 def _effective_flat_fov(shot: dict[str, Any] | None) -> float:
     fov = _shot_float(shot, "fov", 100.0)
     shot_type = str((shot or {}).get("type") or "")
-    if shot_type == "planet":
+    if shot_type == "recorded_move":
+        minimum = 1.0
+    elif shot_type == "planet":
         minimum = 140.0
     elif shot_type in {"full_stage", "audience_stage_wide"}:
         minimum = 115.0
@@ -1413,6 +1423,23 @@ def _spherical_shot_usage(segments: list[dict[str, Any]]) -> dict[str, int]:
         if label:
             usage[label] = usage.get(label, 0) + 1
     return usage
+
+
+def _spherical_recording_usage(segments: list[dict[str, Any]]) -> dict[str, Any]:
+    recorded = 0
+    landmark = 0
+    takes: dict[str, int] = {}
+    for segment in segments:
+        shot = _spherical_shot(segment) or {}
+        if not shot:
+            continue
+        if shot.get("type") == "recorded_move":
+            recorded += 1
+            take = str(shot.get("recorded_take") or "Take")
+            takes[take] = takes.get(take, 0) + 1
+        else:
+            landmark += 1
+    return {"recorded_segments": recorded, "landmark_segments": landmark, "takes": takes}
 
 
 def _segment_filtergraph(

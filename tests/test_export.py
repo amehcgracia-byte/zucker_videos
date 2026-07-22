@@ -404,6 +404,26 @@ def test_v360_sendcmd_motion_progresses_smoothly_across_pan():
     assert len(commands) > 30
 
 
+def test_v360_sendcmd_follows_recorded_curve_samples():
+    shot = {
+        "type": "recorded_move",
+        "label": "Recorded take: Main",
+        "recorded_take": "Main",
+        "curve": [
+            {"t": 0.0, "yaw": 350, "pitch": -10, "fov": 90},
+            {"t": 1.0, "yaw": 355, "pitch": -8, "fov": 95},
+            {"t": 2.0, "yaw": 5, "pitch": -6, "fov": 100},
+        ],
+    }
+
+    yaws = [_v360_motion_at(shot, 2.0, value)[0] for value in (0.0, 0.5, 1.0, 1.5, 2.0)]
+    commands = _v360_motion_commands(shot, 2.0)
+
+    assert yaws == pytest.approx([-10.0, -7.5, -5.0, 0.0, 5.0])
+    assert any("sphere h_fov" in command for command in commands)
+    assert any("sphere v_fov" in command for command in commands)
+
+
 def test_motion_filter_builds_bounded_ken_burns_zoom():
     graph = _motion_filter({"motion": {"type": "ken_burns", "zoom_start": 1.0, "zoom_end": 1.08, "pan_x": 0.5, "pan_y": 0.5}}, "youtube", 4.0)
 

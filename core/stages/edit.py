@@ -7,6 +7,7 @@ import random
 from pathlib import Path
 from typing import Any
 
+from core.camera_moves import load_camera_moves, recorded_move_covering, recorded_shot_for_segment
 from core.messages import t
 from core.project import Project
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
@@ -52,6 +53,7 @@ class EditStage(Stage):
                 "cut": project.data["stages"]["cut"].get("fingerprint"),
                 "settings": project.data["settings"].get(self.name, {}),
                 "spherical_landmarks": project.data["settings"].get("spherical_landmarks", {}),
+                "camera_moves": _camera_moves_fingerprint(project),
             }
         )
 
@@ -67,13 +69,14 @@ class EditStage(Stage):
         progress_callback(10, t("analyzing_rhythm"))
         coverage = load_coverage(project)
         platform = str(coverage.get("platform") or "youtube")
+        recorded_moves = load_camera_moves(project)
         if platform != "youtube":
-            plan = _simple_plan(coverage, project.data.get("settings", {}))
+            plan = _simple_plan(coverage, project.data.get("settings", {}), recorded_moves=recorded_moves)
             beats = {"stage": self.name, "platform": platform, "beats_sec": [], "bars_sec": [], "sections_sec": [], "tempo": None, "placeholder_short_form": platform != "360"}
         else:
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, t("choosing_cameras"))
-            plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}))
+            plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}), recorded_moves=recorded_moves)
         write_artifact_json(artifact_path(project, "beats.json"), beats)
         write_artifact_json(artifact_path(project, "edit_plan.json"), plan)
         progress_callback(100, t("edit_plan_ready"))
@@ -134,13 +137,32 @@ def _beat_fingerprint(project: Project, coverage: dict[str, Any]) -> str:
     return stable_fingerprint({"master": project.data.get("inputs", {}).get("master"), "window": coverage.get("window")})
 
 
+def _camera_moves_fingerprint(project: Project) -> str:
+    path = project.artifacts_dir / "camera_moves"
+    if not path.exists():
+        return ""
+    entries = []
+    for item in sorted(path.glob("*.json")):
+        try:
+            stat = item.stat()
+        except OSError:
+            continue
+        entries.append({"name": item.name, "size": stat.st_size, "mtime": stat.st_mtime})
+    return stable_fingerprint(entries)
+
+
 def _fallback_beats(start: float, duration: float) -> list[float]:
     step = 0.5
     count = int(duration / step) + 1
     return [round(start + index * step, 3) for index in range(count + 1)]
 
 
-def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any], settings: dict[str, Any] | None = None) -> dict[str, Any]:
+def _youtube_multicam_plan(
+    coverage: dict[str, Any],
+    beats: dict[str, Any],
+    settings: dict[str, Any] | None = None,
+    recorded_moves: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     window = coverage.get("window") or {}
     start = float(window.get("start_sec") or 0.0)
     end = start + max(1.0, float(window.get("duration_sec") or 1.0))
@@ -198,12 +220,16 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any], sett
         chosen_stats["chosen_seconds"] += segment_end - segment_start
         segment = _segment_from_source(source, segment_start, segment_end, window.get("title") or t("full_video"))
         if _source_role(source) == "360":
-            current_usage = _spherical_shot_usage(segments)
-            available_shots = _available_spherical_shots(spherical_landmarks)
-            include_planet = current_usage.get("Planeta", 0) == 0 and sum(current_usage.values()) >= 5
-            shot = _next_weighted_spherical_shot(available_shots, _spherical_type_usage(segments), include_planet=include_planet)
-            if shot:
-                segment["spherical_shot"] = _spherical_motion_profile(shot, segment_index)
+            recorded = recorded_move_covering(recorded_moves or [], segment_start, segment_end)
+            if recorded:
+                segment["spherical_shot"] = recorded_shot_for_segment(recorded, segment_start, segment_end)
+            else:
+                current_usage = _spherical_shot_usage(segments)
+                available_shots = _available_spherical_shots(spherical_landmarks)
+                include_planet = current_usage.get("Planeta", 0) == 0 and sum(current_usage.values()) >= 5
+                shot = _next_weighted_spherical_shot(available_shots, _spherical_type_usage(segments), include_planet=include_planet)
+                if shot:
+                    segment["spherical_shot"] = _spherical_motion_profile(shot, segment_index)
         elif fixed_rear_motion and _source_role(source) == "fixed_rear" and segment_index % 2 == 0:
             segment["motion"] = _ken_burns_motion(segment_index)
         segments.append(segment)
@@ -229,15 +255,24 @@ def _youtube_multicam_plan(coverage: dict[str, Any], beats: dict[str, Any], sett
         "cut_count": max(0, len(segments) - 1),
         "camera_usage": usage,
         "spherical_shot_usage": _spherical_shot_usage(segments),
+        "spherical_recording_usage": _spherical_recording_usage(segments),
         "segments": segments,
     }
 
 
-def _simple_plan(coverage: dict[str, Any], project_settings: dict[str, Any] | None = None) -> dict[str, Any]:
+def _simple_plan(
+    coverage: dict[str, Any],
+    project_settings: dict[str, Any] | None = None,
+    recorded_moves: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     segments = _short_form_segments_from_best_coverage(coverage)
     platform = coverage.get("platform") or "youtube"
     if platform == "360":
-        segments = build_spherical_shot_segments(coverage.get("segments") or segments, (project_settings or {}).get("spherical_landmarks") or {})
+        segments = build_spherical_shot_segments(
+            coverage.get("segments") or segments,
+            (project_settings or {}).get("spherical_landmarks") or {},
+            recorded_moves=recorded_moves,
+        )
         usage = _spherical_shot_usage(segments)
     else:
         usage = {}
@@ -253,16 +288,22 @@ def _simple_plan(coverage: dict[str, Any], project_settings: dict[str, Any] | No
         "cut_count": max(0, len(segments) - 1),
         "camera_usage": _camera_usage(segments),
         "spherical_shot_usage": usage,
+        "spherical_recording_usage": _spherical_recording_usage(segments),
         "segments": segments,
     }
 
 
-def build_spherical_shot_segments(base_segments: list[dict[str, Any]], landmarks: dict[str, Any] | None) -> list[dict[str, Any]]:
+def build_spherical_shot_segments(
+    base_segments: list[dict[str, Any]],
+    landmarks: dict[str, Any] | None,
+    recorded_moves: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Split 360 source coverage into named virtual-camera holds."""
     if not base_segments:
         return []
     shots = _available_spherical_shots(migrate_spherical_landmarks(landmarks or {}))
-    if not shots:
+    has_recordings = bool(recorded_moves)
+    if not shots and not has_recordings:
         return list(base_segments)
     total_duration = sum(max(0.0, float(segment.get("duration_sec") or 0.0)) for segment in base_segments)
     planet_budget = 1 if total_duration >= 18.0 else 0
@@ -277,20 +318,24 @@ def build_spherical_shot_segments(base_segments: list[dict[str, Any]], landmarks
             hold = min(MAX_SEGMENT_SEC, remaining)
             if remaining - hold > 0.001 and remaining - hold < MIN_SEGMENT_SEC:
                 hold = max(MIN_SEGMENT_SEC, remaining / 2.0)
+            master_start = float(base.get("master_start_sec") or 0.0) + local
+            master_end = master_start + hold
+            recorded = recorded_move_covering(recorded_moves or [], master_start, master_end)
             shot = _next_weighted_spherical_shot(shots, usage, include_planet=False)
             if planet_budget > 0 and elapsed <= planet_after < elapsed + hold and any(item.get("type") == "planet" for item in shots):
                 shot = dict(next(item for item in shots if item.get("type") == "planet"))
                 shot["yaw_end"] = _landmark_yaw(float(shot.get("yaw") or 0.0) + _landmark_weight(shot, "spin_deg_per_sec", 22.0) * max(0.0, hold), 0.0)
                 planet_budget -= 1
-            if not shot:
+            if not shot and not recorded:
                 break
-            usage[str(shot.get("type"))] = usage.get(str(shot.get("type")), 0) + 1
+            if shot:
+                usage[str(shot.get("type"))] = usage.get(str(shot.get("type")), 0) + 1
             segment = {
                 **base,
                 "clip_start_sec": round(float(base.get("clip_start_sec") or 0.0) + local, 6),
-                "master_start_sec": round(float(base.get("master_start_sec") or 0.0) + local, 6),
+                "master_start_sec": round(master_start, 6),
                 "duration_sec": round(hold, 6),
-                "spherical_shot": _spherical_motion_profile(shot, len(output)),
+                "spherical_shot": recorded_shot_for_segment(recorded, master_start, master_end) if recorded else _spherical_motion_profile(shot or {}, len(output)),
             }
             output.append(segment)
             elapsed += hold
@@ -448,6 +493,23 @@ def _spherical_type_usage(segments: list[dict[str, Any]]) -> dict[str, int]:
         if shot_type:
             usage[shot_type] = usage.get(shot_type, 0) + 1
     return usage
+
+
+def _spherical_recording_usage(segments: list[dict[str, Any]]) -> dict[str, int]:
+    recorded = 0
+    landmark = 0
+    by_take: dict[str, int] = {}
+    for segment in segments:
+        if _source_role(segment) != "360":
+            continue
+        shot = segment.get("spherical_shot") or {}
+        if shot.get("type") == "recorded_move":
+            recorded += 1
+            take = str(shot.get("recorded_take") or "Take")
+            by_take[take] = by_take.get(take, 0) + 1
+        elif shot:
+            landmark += 1
+    return {"recorded_segments": recorded, "landmark_segments": landmark, "takes": by_take}
 
 
 def estimate_bar_starts(beat_times: list[float], start: float, duration: float) -> list[float]:

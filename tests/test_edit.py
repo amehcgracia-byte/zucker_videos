@@ -108,6 +108,28 @@ def test_spherical_motion_profiles_follow_shot_direction_rules():
     assert abs(audience["fov_delta_deg"]) >= 5.0
 
 
+def test_youtube_plan_prefers_recorded_360_curve_when_segment_is_covered():
+    coverage = {
+        "platform": "youtube",
+        "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 8.0},
+        "sources": [
+            {"path": "/tmp/360.mp4", "filename": "wide360.mp4", "projection": "equirect", "offset_sec": 0.0, "duration_sec": 8.0, "confidence": 8.0},
+        ],
+    }
+    beats = {"bars_sec": [0.0, 2.0, 4.0, 6.0, 8.0], "sections_sec": []}
+    move = {
+        "name": "Main take",
+        "smoothed": [{"t": index / 10, "yaw": index * 2, "pitch": -10, "fov": 100} for index in range(0, 81)],
+    }
+
+    plan = _youtube_multicam_plan(coverage, beats, recorded_moves=[move])
+
+    assert plan["segments"]
+    assert {segment["spherical_shot"]["type"] for segment in plan["segments"]} == {"recorded_move"}
+    assert plan["spherical_recording_usage"]["recorded_segments"] == len(plan["segments"])
+    assert plan["spherical_recording_usage"]["landmark_segments"] == 0
+
+
 def test_fixed_camera_motion_varies_target_direction_and_zoom_direction():
     motions = [_ken_burns_motion(index) for index in range(20)]
     targets = {(motion["pan_x"], motion["pan_y"]) for motion in motions}

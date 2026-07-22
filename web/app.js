@@ -21,6 +21,28 @@ let savedAudioTrim = {};
 let previewTimers = new Map();
 let previewVersions = new Map();
 let previewControllers = new Map();
+let director = {
+  ready: false,
+  loading: false,
+  media: null,
+  three: null,
+  renderer: null,
+  scene: null,
+  camera: null,
+  sphere: null,
+  texture: null,
+  gl: null,
+  yaw: 0,
+  pitch: 0,
+  fov: 100,
+  dragging: false,
+  dragX: 0,
+  dragY: 0,
+  recording: false,
+  recordTimer: null,
+  samples: [],
+  animation: null,
+};
 
 const LANDMARK_LABELS = {
   full_stage: "Full stage",
@@ -777,6 +799,323 @@ function queueSphericalPreview(group, quality = "final") {
   );
 }
 
+function directorStatus(message, isError = false) {
+  const node = document.querySelector("#directorStatus");
+  if (!node) return;
+  node.textContent = message;
+  node.style.color = isError ? "var(--bad)" : "";
+}
+
+async function openDirector() {
+  if (!hasSphericalInput()) {
+    showToast("Add a 360 clip before opening Director", true);
+    return;
+  }
+  document.querySelector("#directorScreen").hidden = false;
+  directorStatus("Loading 360 Director...");
+  try {
+    await setupDirector();
+    await loadDirectorTakes();
+  } catch (error) {
+    directorStatus(error.message, true);
+    showToast(error.message, true);
+  }
+}
+
+function closeDirector() {
+  stopDirectorRecording(false);
+  pauseDirector();
+  document.querySelector("#directorScreen").hidden = true;
+}
+
+async function setupDirector() {
+  if (director.loading) return;
+  director.loading = true;
+  const canvas = document.querySelector("#directorCanvas");
+  const video = document.querySelector("#directorVideo");
+  const audio = document.querySelector("#directorAudio");
+  const gl = canvas.getContext("webgl2");
+  if (!gl) throw new Error("WebGL2 is not available in this webview");
+  director.gl = gl;
+  const [THREE, media] = await Promise.all([import("/vendor/three.module.min.js"), api("/wizard/director-media")]);
+  director.media = media;
+  director.three = THREE;
+  video.src = `${media.video_url}?t=${Date.now()}`;
+  audio.src = `${media.master_url}?t=${Date.now()}`;
+  video.muted = true;
+  video.playsInline = true;
+  await Promise.all([waitForMedia(video), waitForMedia(audio).catch(() => {})]);
+  initDirectorScene(THREE, canvas, video);
+  wireDirectorEvents();
+  resizeDirector();
+  updateDirectorCamera();
+  director.ready = true;
+  director.loading = false;
+  directorStatus("WebGL active. Drag the view while the song plays, then record a take.");
+}
+
+function waitForMedia(media) {
+  if (Number.isFinite(media.duration) && media.duration > 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const done = () => {
+      cleanup();
+      resolve();
+    };
+    const fail = () => {
+      cleanup();
+      reject(new Error("Could not load Director media"));
+    };
+    const cleanup = () => {
+      media.removeEventListener("loadedmetadata", done);
+      media.removeEventListener("error", fail);
+    };
+    media.addEventListener("loadedmetadata", done, { once: true });
+    media.addEventListener("error", fail, { once: true });
+  });
+}
+
+function initDirectorScene(THREE, canvas, video) {
+  if (director.renderer) {
+    director.texture?.dispose?.();
+    director.renderer.dispose?.();
+  }
+  director.renderer = new THREE.WebGLRenderer({ canvas, context: director.gl, antialias: true });
+  director.scene = new THREE.Scene();
+  director.camera = new THREE.PerspectiveCamera(50, 16 / 9, 0.1, 1100);
+  const geometry = new THREE.SphereGeometry(500, 96, 64);
+  geometry.scale(-1, 1, 1);
+  director.texture = new THREE.VideoTexture(video);
+  director.texture.colorSpace = THREE.SRGBColorSpace;
+  director.sphere = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ map: director.texture }));
+  director.scene.add(director.sphere);
+  if (director.animation) cancelAnimationFrame(director.animation);
+  const render = () => {
+    director.animation = requestAnimationFrame(render);
+    syncDirectorAudio();
+    updateDirectorScrub();
+    director.renderer.render(director.scene, director.camera);
+  };
+  render();
+}
+
+function wireDirectorEvents() {
+  const canvas = document.querySelector("#directorCanvas");
+  if (canvas.dataset.wired) return;
+  canvas.dataset.wired = "1";
+  canvas.addEventListener("pointerdown", (event) => {
+    director.dragging = true;
+    director.dragX = event.clientX;
+    director.dragY = event.clientY;
+    canvas.classList.add("dragging");
+    canvas.setPointerCapture?.(event.pointerId);
+  });
+  canvas.addEventListener("pointermove", (event) => {
+    if (!director.dragging) return;
+    const dx = event.clientX - director.dragX;
+    const dy = event.clientY - director.dragY;
+    director.dragX = event.clientX;
+    director.dragY = event.clientY;
+    director.yaw = normalizeYaw(director.yaw - dx * 0.16) ?? 0;
+    director.pitch = clamp(director.pitch + dy * 0.12, -85, 85);
+    updateDirectorCamera();
+  });
+  const stopDrag = (event) => {
+    director.dragging = false;
+    canvas.classList.remove("dragging");
+    if (event?.pointerId != null) canvas.releasePointerCapture?.(event.pointerId);
+  };
+  canvas.addEventListener("pointerup", stopDrag);
+  canvas.addEventListener("pointercancel", stopDrag);
+  window.addEventListener("resize", resizeDirector);
+  document.querySelector("#directorFov").addEventListener("input", (event) => {
+    director.fov = Number(event.target.value) || 100;
+    updateDirectorCamera();
+  });
+  document.querySelector("#directorScrub").addEventListener("input", (event) => {
+    seekDirector(Number(event.target.value) || 0);
+  });
+}
+
+function resizeDirector() {
+  if (!director.renderer || !director.camera) return;
+  const canvas = document.querySelector("#directorCanvas");
+  const width = Math.max(320, canvas.clientWidth || 960);
+  const height = Math.max(180, canvas.clientHeight || Math.round(width * 9 / 16));
+  director.renderer.setSize(width, height, false);
+  director.camera.aspect = width / height;
+  updateDirectorCamera();
+}
+
+function updateDirectorCamera() {
+  if (!director.camera || !director.three) return;
+  const THREE = director.three;
+  const aspect = Math.max(0.1, director.camera.aspect || 16 / 9);
+  director.camera.fov = verticalFovFromHorizontal(director.fov, aspect);
+  director.camera.updateProjectionMatrix();
+  const yaw = THREE.MathUtils.degToRad(signedYawDelta(director.yaw, 0));
+  const pitch = THREE.MathUtils.degToRad(clamp(director.pitch, -85, 85));
+  const target = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
+  director.camera.lookAt(target);
+  document.querySelector("#directorHud").textContent = `Yaw ${formatCanonicalNumber(director.yaw)}° · Pitch ${formatCanonicalNumber(director.pitch)}° · Shot width ${formatCanonicalNumber(director.fov)}°`;
+}
+
+function verticalFovFromHorizontal(horizontalFov, aspect) {
+  const horizontal = clamp(Number(horizontalFov) || 100, 1, 179);
+  return (2 * Math.atan(Math.tan((horizontal * Math.PI) / 360) / Math.max(0.1, aspect)) * 180) / Math.PI;
+}
+
+async function toggleDirectorPlay() {
+  const video = document.querySelector("#directorVideo");
+  if (video.paused) await playDirector();
+  else pauseDirector();
+}
+
+async function playDirector() {
+  const video = document.querySelector("#directorVideo");
+  const audio = document.querySelector("#directorAudio");
+  syncDirectorAudio(true);
+  await Promise.all([video.play(), audio.play().catch(() => {})]);
+  document.querySelector("#directorPlay").textContent = "Pause";
+  injectIcons();
+}
+
+function pauseDirector() {
+  document.querySelector("#directorVideo")?.pause();
+  document.querySelector("#directorAudio")?.pause();
+  const button = document.querySelector("#directorPlay");
+  if (button) {
+    button.textContent = "Play";
+    button.dataset.icon = "play";
+    button.innerHTML = "Play";
+    injectIcons();
+  }
+}
+
+function seekDirector(time) {
+  const video = document.querySelector("#directorVideo");
+  const audio = document.querySelector("#directorAudio");
+  const duration = Number(video.duration || director.media?.duration_sec || 0);
+  const next = clamp(time, 0, duration || 0);
+  video.currentTime = next;
+  audio.currentTime = masterTimeForDirectorVideo(next);
+  updateDirectorScrub();
+}
+
+function syncDirectorAudio(force = false) {
+  const video = document.querySelector("#directorVideo");
+  const audio = document.querySelector("#directorAudio");
+  if (!video || !audio || !director.media || Number.isNaN(video.currentTime)) return;
+  const target = masterTimeForDirectorVideo(video.currentTime);
+  if (force || Math.abs((audio.currentTime || 0) - target) > 0.08) {
+    audio.currentTime = Math.max(0, Math.min(Number(audio.duration || target), target));
+  }
+  if (audio.paused !== video.paused) {
+    if (video.paused) audio.pause();
+    else audio.play().catch(() => {});
+  }
+}
+
+function masterTimeForDirectorVideo(videoTime) {
+  return Math.max(0, Number(director.media?.offset_sec || 0) + Number(videoTime || 0));
+}
+
+function updateDirectorScrub() {
+  const video = document.querySelector("#directorVideo");
+  const scrub = document.querySelector("#directorScrub");
+  if (!video || !scrub) return;
+  const duration = Number(video.duration || director.media?.duration_sec || 0);
+  scrub.max = String(Math.max(0.01, duration));
+  if (document.activeElement !== scrub) scrub.value = String(video.currentTime || 0);
+  document.querySelector("#directorTime").textContent = secondsToTime(masterTimeForDirectorVideo(video.currentTime || 0));
+}
+
+async function toggleDirectorRecording() {
+  if (director.recording) {
+    await stopDirectorRecording(true);
+    return;
+  }
+  director.samples = [];
+  director.recording = true;
+  document.querySelector("#directorRecord").textContent = "Stop recording";
+  directorStatus("Recording camera moves...");
+  sampleDirectorCamera();
+  director.recordTimer = setInterval(sampleDirectorCamera, 1000 / 15);
+}
+
+function sampleDirectorCamera() {
+  const video = document.querySelector("#directorVideo");
+  if (!director.recording || !video || video.paused) return;
+  const t = masterTimeForDirectorVideo(video.currentTime || 0);
+  const last = director.samples[director.samples.length - 1];
+  if (last && t <= last.t) return;
+  director.samples.push({
+    t,
+    video_time: video.currentTime || 0,
+    yaw: director.yaw,
+    pitch: director.pitch,
+    fov: director.fov,
+  });
+}
+
+async function stopDirectorRecording(save) {
+  if (!director.recording) return;
+  clearInterval(director.recordTimer);
+  director.recordTimer = null;
+  director.recording = false;
+  const button = document.querySelector("#directorRecord");
+  if (button) button.textContent = "Record camera moves";
+  if (!save) return;
+  if (director.samples.length < 2) {
+    directorStatus("Recording was too short.", true);
+    return;
+  }
+  const nameInput = document.querySelector("#directorTakeName");
+  const fallback = `Take ${new Date().toISOString().slice(0, 19).replace("T", " ").replaceAll(":", ".")}`;
+  const result = await api("/wizard/camera-moves", {
+    method: "POST",
+    body: JSON.stringify({
+      name: nameInput.value || fallback,
+      source_path: director.media?.source_path || "",
+      samples: director.samples,
+    }),
+  });
+  nameInput.value = "";
+  renderDirectorTakes(result.takes || []);
+  directorStatus(`Saved ${result.take?.name || "take"} with ${director.samples.length} samples.`);
+}
+
+async function loadDirectorTakes() {
+  const result = await api("/wizard/camera-moves");
+  renderDirectorTakes(result.takes || []);
+}
+
+function renderDirectorTakes(takes) {
+  const root = document.querySelector("#directorTakes");
+  if (!root) return;
+  if (!takes.length) {
+    root.innerHTML = "<small>No recorded takes yet.</small>";
+    return;
+  }
+  root.innerHTML = takes
+    .map((take) => {
+      const start = secondsToTime(take.start_master_sec || 0);
+      const end = secondsToTime(take.end_master_sec || 0);
+      return `<div class="director-take">
+        <div><strong>${escapeHtml(take.name)}</strong><small>${escapeHtml(start)}-${escapeHtml(end)} · ${Number(take.sample_count || 0)} samples</small></div>
+        <button class="icon-button small" data-icon="trash" data-delete-take="${escapeHtml(take.name)}" type="button">Delete</button>
+      </div>`;
+    })
+    .join("");
+  injectIcons();
+}
+
+async function deleteDirectorTake(name) {
+  const response = await fetch(`/api/v1/wizard/camera-moves/${encodeURIComponent(name)}`, { method: "DELETE" });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error?.message || "Could not delete take");
+  renderDirectorTakes(data.takes || []);
+}
+
 function setupTrimControls(masterPath) {
   const master = detected.master.find((item) => item.path === masterPath) || {};
   const duration = Number(master.duration || 0);
@@ -1054,13 +1393,18 @@ function renderSphericalShots(result) {
   const usage = result?.spherical_shot_usage || {};
   const entries = Object.entries(usage);
   const summary = entries.map(([label, count]) => `${label} x${count}`).join(", ");
+  const recording = result?.spherical_recording_usage || {};
+  const recordedCount = Number(recording.recorded_segments || 0);
+  const landmarkCount = Number(recording.landmark_segments || 0);
+  const recordingSummary =
+    recordedCount || landmarkCount ? `360 source: ${recordedCount} segments from recorded take, ${landmarkCount} from landmark shots.` : "";
   const existing = document.querySelector("#sphericalShotUsage");
   if (!entries.length) {
     if (existing) existing.remove();
     return;
   }
   const root = document.querySelector("#clipFates");
-  const html = `<div id="sphericalShotUsage" class="clip-fate used"><div><strong>360 shots</strong><span>${escapeHtml(summary)}</span></div></div>`;
+  const html = `<div id="sphericalShotUsage" class="clip-fate used"><div><strong>360 shots</strong><span>${escapeHtml(summary)}</span><small>${escapeHtml(recordingSummary)}</small></div></div>`;
   if (existing) existing.outerHTML = html;
   else root.insertAdjacentHTML("beforebegin", html);
 }
@@ -1189,6 +1533,13 @@ document.addEventListener("click", (event) => {
   if (target.id === "reuseSphericalSetup") {
     document.querySelectorAll("#sphericalSetup [data-field]").forEach((input) => (input.value = ""));
     applySphericalSetup(lastSphericalSetup);
+  }
+  if (target.id === "openDirector") openDirector().catch((error) => showToast(error.message, true));
+  if (target.id === "closeDirector") closeDirector();
+  if (target.id === "directorPlay") toggleDirectorPlay().catch((error) => showToast(error.message, true));
+  if (target.id === "directorRecord") toggleDirectorRecording().catch((error) => showToast(error.message, true));
+  if (target.dataset.deleteTake) {
+    deleteDirectorTake(target.dataset.deleteTake).catch((error) => showToast(error.message, true));
   }
   if (target.id === "retryWizard" || target.id === "retryWizardSuccess") {
     document.querySelector("#errorBox").hidden = true;

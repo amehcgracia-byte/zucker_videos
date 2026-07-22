@@ -20,9 +20,10 @@ from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
 from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.messages import t
 from core.project import Project, ProjectError, create_project, load_project
+from core.camera_moves import delete_camera_move, list_camera_moves, save_camera_move
 from core.media_validation import record_media_path
 from core.normalization import cache_status, cleanup_unreferenced_cache, migrate_project_normalization_cache
-from core.stages.sync import clear_manual_override, generate_preview, generate_thumbnail, set_manual_override
+from core.stages.sync import clear_manual_override, clip_id_for_record, generate_preview, generate_thumbnail, load_sync_map, set_manual_override
 from server.inbox import (
     app_home,
     classify_paths,
@@ -310,6 +311,52 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return send_file_with_range(str(_spherical_preview_frame(state.project, source, yaw, pitch, fov, quality=quality)))
         except (OSError, FFmpegError, ValueError) as exc:
             return error_response("ffmpeg_error", str(exc), 500)
+
+    @app.get("/api/v1/wizard/director-media")
+    def api_wizard_director_media() -> Response:
+        project = _require_project(state)
+        try:
+            record = _director_360_record(project)
+            proxy = _director_equirect_proxy(project, record)
+            offset = _director_sync_offset(project, record)
+            relative = proxy.relative_to(project.cache_dir)
+            return jsonify(
+                {
+                    "video_url": f"/api/v1/media/cache/{relative.as_posix()}",
+                    "master_url": "/api/v1/wizard/master-preview",
+                    "offset_sec": offset,
+                    "source_path": record.get("path"),
+                    "proxy_path": str(proxy),
+                    "duration_sec": _preview_source_duration(proxy),
+                }
+            )
+        except (OSError, FFmpegError, KeyError, ValueError) as exc:
+            return error_response("director_media_error", str(exc), 500)
+
+    @app.get("/api/v1/wizard/camera-moves")
+    def api_wizard_camera_moves() -> Response:
+        project = _require_project(state)
+        return jsonify({"takes": list_camera_moves(project)})
+
+    @app.post("/api/v1/wizard/camera-moves")
+    def api_wizard_save_camera_move() -> tuple[Response, int] | Response:
+        project = _require_project(state)
+        body = _json_body()
+        samples = body.get("samples") or body.get("raw") or []
+        if not isinstance(samples, list):
+            return error_response("bad_request", "samples must be a list", 400)
+        try:
+            take = save_camera_move(project, str(body.get("name") or ""), samples, str(body.get("source_path") or ""))
+            return jsonify({"take": take, "takes": list_camera_moves(project)}), 201
+        except ValueError as exc:
+            return error_response("bad_request", str(exc), 400)
+
+    @app.delete("/api/v1/wizard/camera-moves/<path:name>")
+    def api_wizard_delete_camera_move(name: str) -> Response:
+        project = _require_project(state)
+        if not delete_camera_move(project, name):
+            return error_response("not_found", "Camera move take not found", 404)
+        return jsonify({"ok": True, "takes": list_camera_moves(project)})
 
     @app.post("/api/v1/wizard/prepare")
     def api_wizard_prepare() -> Response:
@@ -782,6 +829,7 @@ def _export_result(project: Project) -> dict[str, Any] | None:
         "cut_count": export.get("cut_count"),
         "camera_usage": export.get("camera_usage"),
         "spherical_shot_usage": export.get("spherical_shot_usage") or manifest.get("spherical_shot_usage") or {},
+        "spherical_recording_usage": export.get("spherical_recording_usage") or manifest.get("spherical_recording_usage") or {},
         "warnings": export.get("warnings") or manifest.get("warnings") or [],
         "excluded_clips": export.get("excluded_clips") or [],
         "clip_fates": export.get("clip_fates") or [],
@@ -1004,6 +1052,97 @@ def _paired_flat_fov(horizontal_fov: float, aspect_ratio: float) -> tuple[float,
     aspect = max(0.1, float(aspect_ratio))
     vertical = math.degrees(2.0 * math.atan(math.tan(math.radians(horizontal) / 2.0) / aspect))
     return horizontal, max(1.0, min(179.0, vertical))
+
+
+def _director_360_record(project: Project) -> dict[str, Any]:
+    for record in project.data.get("inputs", {}).get("videos", []):
+        probe = record.get("probe") or {}
+        projection = str(record.get("projection") or probe.get("projection") or "").lower()
+        filename = str(record.get("path") or "").lower()
+        if projection in {"equirect", "raw_insv"} or record.get("raw_360") or filename.endswith((".insv", ".insp")):
+            return record
+    raise ValueError("No 360 clip is registered")
+
+
+def _director_equirect_proxy(project: Project, record: dict[str, Any]) -> Path:
+    source = Path(record.get("path") or record_media_path(record)).expanduser().resolve()
+    if not source.exists():
+        raise ValueError("360 source file is missing")
+    probe = record.get("probe") or {}
+    stat = source.stat()
+    key = sha256(
+        json.dumps(
+            {
+                "recipe": "director_equirect_proxy_v1",
+                "path": str(source),
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+                "projection": record.get("projection") or probe.get("projection"),
+                "raw": bool(record.get("raw_360") or probe.get("raw_360")),
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()[:24]
+    output = project.cache_dir / "director_proxies" / f"{key}.mp4"
+    if output.exists():
+        return output
+    output.parent.mkdir(parents=True, exist_ok=True)
+    ffmpeg = tool_status().get("ffmpeg_path")
+    if not ffmpeg:
+        raise FFmpegError("ffmpeg is missing. Install it with: brew install ffmpeg")
+    projection = str(record.get("projection") or probe.get("projection") or "").lower()
+    raw = projection == "raw_insv" or bool(record.get("raw_360") or probe.get("raw_360")) or source.suffix.lower() in {".insv", ".insp"}
+    if raw:
+        fov = int(probe.get("insv_fov") or 190)
+        spatial = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov}:interp=lanczos,"
+    else:
+        spatial = ""
+    filtergraph = f"{spatial}scale=1280:640:force_original_aspect_ratio=decrease,pad=1280:640:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
+    tmp = output.with_suffix(".tmp.mp4")
+    command = [
+        str(ffmpeg),
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source),
+        "-vf",
+        filtergraph,
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "28",
+        "-movflags",
+        "+faststart",
+        str(tmp),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        if tmp.exists():
+            tmp.unlink()
+        raise FFmpegError(result.stderr.strip() or "Could not generate 360 Director proxy")
+    os.replace(tmp, output)
+    return output
+
+
+def _director_sync_offset(project: Project, record: dict[str, Any]) -> float:
+    sync_map = load_sync_map(project, missing_ok=True) or {}
+    clips = sync_map.get("clips") or {}
+    clip_id = clip_id_for_record(record)
+    clip = clips.get(clip_id)
+    if not clip:
+        for item in clips.values():
+            if Path(str(item.get("source_path") or item.get("path") or "")).expanduser().resolve() == Path(str(record.get("path") or "")).expanduser().resolve():
+                clip = item
+                break
+    try:
+        return round(float((clip or {}).get("offset_sec") or 0.0), 6)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _enable_cors(app: Flask) -> None:
