@@ -501,17 +501,24 @@ def _run_ffmpeg_progress(command: list[str], duration: float, filename: str, pro
     assert process.stdout is not None
     current = 0
     last_emit = 0.0
-    for line in process.stdout:
-        match = re.match(r"out_time_ms=(\d+)", line.strip())
-        if not match or duration <= 0:
-            continue
-        seconds = int(match.group(1)) / 1_000_000
-        percent = max(current, min(99, int(seconds / duration * 100)))
-        now = time.monotonic()
-        if percent > current or now - last_emit >= 5:
-            current = percent
-            last_emit = now
-            progress(percent, f"{filename} — {percent}%")
+    try:
+        for line in process.stdout:
+            match = re.match(r"out_time_ms=(\d+)", line.strip())
+            if not match or duration <= 0:
+                continue
+            seconds = int(match.group(1)) / 1_000_000
+            percent = max(current, min(99, int(seconds / duration * 100)))
+            now = time.monotonic()
+            if percent > current or now - last_emit >= 5:
+                current = percent
+                last_emit = now
+                progress(percent, f"{filename} — {percent}%")
+    except BaseException:
+        # progress() can raise (e.g. a user cancellation) — don't leave the
+        # ffmpeg process running in the background when that happens.
+        process.kill()
+        process.wait()
+        raise
     _, stderr = process.communicate()
     if process.returncode != 0:
         raise FFmpegError((stderr or "").strip() or "ffmpeg normalization failed")

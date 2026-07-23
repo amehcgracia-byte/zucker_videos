@@ -57,6 +57,7 @@ STRINGS = {
     "building_edit": "Building the edit...",
     "exporting_video": "Exporting the video...",
     "done": "Done",
+    "cancelled": "Cancelled",
     "cannot_finish": "I couldn't finish the video",
     "cannot_prepare": "I couldn't prepare the files",
     "prepared_project_missing": "I couldn't find the prepared project",

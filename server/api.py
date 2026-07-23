@@ -472,6 +472,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         state.wizard.reset()
         return jsonify({"ok": True})
 
+    @app.post("/api/v1/wizard/cancel")
+    def api_wizard_cancel() -> Response:
+        cancelled = state.wizard.cancel()
+        if not cancelled:
+            return error_response("not_running", "No job is currently running", 409)
+        return jsonify({"ok": True})
+
     @app.get("/api/v1/wizard/report")
     def api_wizard_report() -> Response:
         return Response(wizard_report(state.wizard.status()), mimetype="text/plain")

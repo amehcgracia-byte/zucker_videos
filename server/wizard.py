@@ -23,6 +23,10 @@ from server.inbox import app_home, load_global_config, register_selected_inputs,
 LOGGER = logging.getLogger(__name__)
 
 
+class WizardCancelled(Exception):
+    """Raised from within a running stage's progress callback to unwind it cleanly."""
+
+
 @dataclass
 class WizardJob:
     """Process-local wizard job state."""
@@ -47,6 +51,26 @@ class WizardRunner:
     _job: WizardJob | None = None
     _thread: threading.Thread | None = None
     _prepared_project: Project | None = None
+    _cancel_event: threading.Event = field(default_factory=threading.Event)
+
+    def cancel(self) -> bool:
+        """Request that the currently running job stop as soon as possible.
+
+        Cooperative: the running stage notices this the next time it reports
+        progress (see ``_run_stage``) and unwinds via ``WizardCancelled``,
+        which also kills any in-flight ffmpeg subprocess immediately.
+        """
+        with self._lock:
+            if not self._job or self._job.status != "running":
+                return False
+            self._cancel_event.set()
+            return True
+
+    def _mark_cancelled(self, job: WizardJob) -> None:
+        job.status = "cancelled"
+        job.message = t("cancelled")
+        job.error = None
+        job.technical_details = None
 
     def prepare(self, *, name: str, master_path: str, songs_path: str | None, video_paths: list[str]) -> WizardJob:
         """Create/register a project and run ingest + sync while the user chooses an edit type."""
@@ -56,6 +80,7 @@ class WizardRunner:
             job = WizardJob(id="current", message=t("listening"))
             self._job = job
             self._prepared_project = None
+            self._cancel_event.clear()
             thread = threading.Thread(
                 target=self._prepare_project,
                 kwargs={"job": job, "name": name, "master_path": master_path, "songs_path": songs_path, "video_paths": video_paths},
@@ -75,6 +100,7 @@ class WizardRunner:
             _attach_project(job, project)
             self._job = job
             self._prepared_project = None
+            self._cancel_event.clear()
             thread = threading.Thread(
                 target=self._prepare_existing_project,
                 kwargs={"job": job, "project": project},
@@ -148,6 +174,7 @@ class WizardRunner:
                 return job
             job = WizardJob(id="current")
             self._job = job
+            self._cancel_event.clear()
             project = self._prepared_project
             target = self._finish if project else self._run
             kwargs = {
@@ -192,6 +219,7 @@ class WizardRunner:
             self._job = None
             self._thread = None
             self._prepared_project = None
+            self._cancel_event.clear()
 
     def rescue(self, project: Project, *, clip_id: str, offset_sec: float) -> WizardJob:
         """Apply a manual sync override and rerender cut/edit/export for the wizard."""
@@ -202,6 +230,7 @@ class WizardRunner:
             _attach_project(job, project)
             self._job = job
             self._prepared_project = None
+            self._cancel_event.clear()
             thread = threading.Thread(
                 target=self._rescue_and_rerender,
                 kwargs={"job": job, "project": project, "clip_id": clip_id, "offset_sec": offset_sec},
@@ -263,6 +292,9 @@ class WizardRunner:
                 songs_path=songs_path,
                 video_paths=video_paths,
             )
+        except WizardCancelled:
+            LOGGER.info("Wizard job cancelled")
+            self._mark_cancelled(job)
         except Exception as exc:
             LOGGER.exception("Wizard job failed")
             job.status = "failed"
@@ -284,6 +316,9 @@ class WizardRunner:
             job.progress = 95
             job.message = t("ready_to_edit")
             job.detail = t("choose_edit_type")
+        except WizardCancelled:
+            LOGGER.info("Wizard prepare cancelled")
+            self._mark_cancelled(job)
         except Exception as exc:
             LOGGER.exception("Wizard prepare failed")
             job.status = "failed"
@@ -302,6 +337,9 @@ class WizardRunner:
             job.progress = 95
             job.message = t("ready_to_edit")
             job.detail = t("choose_edit_type")
+        except WizardCancelled:
+            LOGGER.info("Wizard prepare (existing project) cancelled")
+            self._mark_cancelled(job)
         except Exception as exc:
             LOGGER.exception("Wizard prepare existing project failed")
             job.status = "failed"
@@ -374,6 +412,10 @@ class WizardRunner:
             elapsed = time.monotonic() - started_at
             if project.data["inputs"].get("videos") and elapsed < 1.0:
                 _write_stage_log(project, "wizard", t("suspiciously_fast", elapsed=elapsed))
+        except WizardCancelled:
+            LOGGER.info("Wizard finish cancelled")
+            _write_stage_log(project, "wizard", "CANCELLED by user")
+            self._mark_cancelled(job)
         except Exception as exc:
             LOGGER.exception("Wizard finish failed")
             _write_stage_log(project, "wizard", f"FAILED {traceback.format_exc()}")
@@ -402,7 +444,7 @@ class WizardRunner:
         job.message = t("waiting_for_sync")
         if prepare_thread:
             prepare_thread.join()
-        if job.status == "failed":
+        if job.status in {"failed", "cancelled"}:
             return
         with self._lock:
             project = self._prepared_project
@@ -465,6 +507,10 @@ class WizardRunner:
             }
             elapsed = time.monotonic() - started_at
             _write_stage_log(project, "wizard", f"RESCUE DONE clip_id={clip_id} elapsed={elapsed:.2f}s")
+        except WizardCancelled:
+            LOGGER.info("Wizard rescue rerender cancelled")
+            _write_stage_log(project, "wizard", "RESCUE CANCELLED by user")
+            self._mark_cancelled(job)
         except Exception as exc:
             LOGGER.exception("Wizard rescue rerender failed")
             _write_stage_log(project, "wizard", f"RESCUE FAILED {traceback.format_exc()}")
@@ -484,6 +530,8 @@ class WizardRunner:
 
         def progress(percent: int, detail: str) -> None:
             nonlocal last_logged_percent, last_logged_at
+            if self._cancel_event.is_set():
+                raise WizardCancelled()
             job.progress = start + int((end - start) * max(0, min(100, percent)) / 100)
             job.detail = detail
             now = time.monotonic()

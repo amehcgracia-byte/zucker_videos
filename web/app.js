@@ -89,6 +89,7 @@ const icons = {
   instagram: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="4" y="4" width="16" height="16" rx="5"></rect><circle cx="12" cy="12" r="3"></circle><path d="M17 7h.01"></path></svg>',
   tiktok: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 4v10.5a3.5 3.5 0 1 1-3-3.46"></path><path d="M14 4c1 3 2.7 4.7 5 5"></path></svg>',
   sphere: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"></circle><path d="M3 12h18"></path><path d="M12 3c3 2.4 4.5 5.4 4.5 9S15 18.6 12 21"></path><path d="M12 3c-3 2.4-4.5 5.4-4.5 9S9 18.6 12 21"></path></svg>',
+  close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 6l12 12M18 6 6 18"></path></svg>',
 };
 
 function todayName() {
@@ -1427,6 +1428,25 @@ async function startWizard(options = {}) {
   await pollStatus();
 }
 
+async function cancelWizard() {
+  if (!confirm("Stop this export? Progress so far will be lost.")) return;
+  const button = document.querySelector("#cancelWizard");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Cancelling…";
+  }
+  try {
+    await api("/wizard/cancel", { method: "POST" });
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Cancel";
+    }
+  }
+}
+
 function timeToSeconds(value) {
   const text = String(value || "").trim();
   if (!text) return null;
@@ -1479,6 +1499,9 @@ function renderWizardStatus(status) {
   document.querySelector("#elapsedTime").textContent = `${S.elapsed}: ${formatElapsed(elapsedSeconds())}`;
   document.querySelector("#etaTime").textContent = `${S.eta}: ${formatEta(etaSeconds(progress))}`;
   updateStageChecks(progress, status);
+  if (status.status === "running") {
+    document.querySelector("#progressTitle").textContent = "Creating your video";
+  }
   if (status.status === "failed") {
     clearInterval(pollTimer);
     pollTimer = null;
@@ -1502,6 +1525,15 @@ function renderWizardStatus(status) {
     document.querySelector("#resultVideo").src = `${latestResult.media_url}?t=${Date.now()}`;
     document.querySelector("#errorBox").hidden = true;
     document.querySelector("#resultBox").hidden = false;
+    setStep(4);
+  }
+  if (status.status === "cancelled") {
+    clearInterval(pollTimer);
+    pollTimer = null;
+    document.querySelector("#errorText").textContent = "Export cancelled.";
+    document.querySelector("#resultTitle").textContent = "Cancelled";
+    document.querySelector("#errorBox").hidden = false;
+    document.querySelector("#resultBox").hidden = true;
     setStep(4);
   }
   if (status.status === "waiting_choice") {
@@ -1824,6 +1856,7 @@ document.addEventListener("click", (event) => {
   if (target.id === "copyProgressReport" || target.id === "copyProgressReportResult") {
     copyReport().catch((error) => showToast(error.message, true));
   }
+  if (target.id === "cancelWizard") cancelWizard();
   if (target.id === "showFinder") {
     if (!latestResult?.path) {
       showToast("The exported file path is not available yet", true);

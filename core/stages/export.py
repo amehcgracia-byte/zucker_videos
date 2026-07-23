@@ -1157,15 +1157,22 @@ def _run_ffmpeg_progress(command: list[str], duration: float, label: str, progre
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     assert process.stdout is not None
     current = -1
-    for line in process.stdout:
-        match = re.match(r"out_time_ms=(\d+)", line.strip())
-        if not match or duration <= 0:
-            continue
-        seconds = int(match.group(1)) / 1_000_000
-        percent = max(current, min(99, int(seconds / duration * 100)))
-        if progress and percent > current:
-            current = percent
-            progress(percent, f"{label} — {percent}%")
+    try:
+        for line in process.stdout:
+            match = re.match(r"out_time_ms=(\d+)", line.strip())
+            if not match or duration <= 0:
+                continue
+            seconds = int(match.group(1)) / 1_000_000
+            percent = max(current, min(99, int(seconds / duration * 100)))
+            if progress and percent > current:
+                current = percent
+                progress(percent, f"{label} — {percent}%")
+    except BaseException:
+        # progress() can raise (e.g. a user cancellation) — don't leave the
+        # ffmpeg process running in the background when that happens.
+        process.kill()
+        process.wait()
+        raise
     _, stderr = process.communicate()
     if process.returncode != 0:
         raise FFmpegError((stderr or "").strip() or "ffmpeg export failed")

@@ -466,6 +466,88 @@ def test_wizard_orchestration_exports_tiny_media(tmp_path, monkeypatch):
     assert second_export_path.stat().st_size == pytest.approx(first_export_size, rel=0.05)
 
 
+def test_wizard_cancel_stops_a_running_job(tmp_path, monkeypatch):
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not available")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("core.stages.sync.sync_confidence_threshold", lambda project: 0.0)
+    monkeypatch.setattr("core.stages.cut.sync_confidence_threshold", lambda project: 0.0)
+    master = tmp_path / "master.wav"
+    video = tmp_path / "clip.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", str(master)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=321x241:rate=30:duration=3",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=3",
+            "-vf",
+            "select='not(eq(mod(n,5),0))'",
+            "-vsync",
+            "vfr",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv444p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(video),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    app = create_app()
+    client = app.test_client()
+    response = client.post(
+        "/api/v1/wizard/start",
+        json={"name": "CancelTest", "platform": "youtube", "master": str(master), "videos": [str(video)]},
+    )
+    assert response.status_code == 202
+
+    # Cancel essentially immediately — the job dataclass starts "running" the
+    # instant start() returns, before the background thread has necessarily
+    # done any real work, so this exercises the cooperative-cancel path
+    # rather than racing a job that might already be finishing.
+    cancel_response = client.post("/api/v1/wizard/cancel")
+    assert cancel_response.status_code == 200
+    assert cancel_response.get_json()["ok"] is True
+
+    deadline = time.time() + 30
+    status: dict = {}
+    while time.time() < deadline:
+        status = client.get("/api/v1/wizard/status").get_json()
+        if status["status"] in {"done", "failed", "cancelled"}:
+            break
+        time.sleep(0.05)
+
+    assert status["status"] == "cancelled", status
+    assert status.get("error") is None
+
+
+def test_wizard_cancel_returns_conflict_when_nothing_is_running(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    app = create_app()
+    client = app.test_client()
+
+    response = client.post("/api/v1/wizard/cancel")
+
+    assert response.status_code == 409
+
+
 def test_api_error_envelope_without_open_project():
     app = create_app()
     client = app.test_client()
