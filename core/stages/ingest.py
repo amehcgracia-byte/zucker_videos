@@ -12,6 +12,7 @@ from core.ffmpeg import ffprobe
 from core.media_validation import is_raw_360_path, raw_360_model_fov, validate_camera_video_metadata
 from core.messages import t
 from core.normalization import ensure_normalized_space, normalize_video_record
+from core.operator_avoidance import analyze_and_cache_operator_presence, role_for_record
 from core.project import Project
 from core.stages.base import ProgressCallback, Stage, stable_fingerprint
 
@@ -74,6 +75,7 @@ class IngestStage(Stage):
         ensure_normalized_space(project, valid_records)
         prepare_videos(project, valid_records, progress_callback)
         prepare_director_proxies(valid_records, progress_callback)
+        analyze_operator_presence(valid_records, progress_callback)
         progress_callback(100, "Ingest complete")
         return {}
 
@@ -126,3 +128,34 @@ def prepare_director_proxies(records: list[dict[str, Any]], progress_callback: P
             progress_callback(overall, message or f"Preparing lightweight 360 preview for {filename}")
 
         ensure_director_proxy(record, clip_progress)
+
+
+def analyze_operator_presence(records: list[dict[str, Any]], progress_callback: ProgressCallback) -> None:
+    """Scan non-Sony clips for a prominent camera operator, cached globally.
+
+    Sony (handheld) is skipped: it IS the operator's own camera and is never
+    the target of an avoidance adjustment.
+    """
+    candidates = [
+        record
+        for record in records
+        if role_for_record(str((record.get("probe") or {}).get("projection") or record.get("projection") or ""), Path(str(record.get("path") or "")).name) != "handheld"
+    ]
+    if not candidates:
+        return
+    total = len(candidates)
+    for index, record in enumerate(candidates, start=1):
+        analysis_path = (record.get("normalized") or {}).get("path") or record.get("path")
+        if not analysis_path:
+            continue
+        filename = Path(str(record.get("path") or "clip")).name
+
+        def clip_progress(percent: int, message: str) -> None:
+            overall = min(99, 97 + int((((index - 1) * 100) + percent) / max(1, total) * 2 / 100))
+            progress_callback(overall, message or f"Scanning {filename} for camera operator")
+
+        try:
+            analyze_and_cache_operator_presence(str(analysis_path), clip_progress)
+        except Exception:
+            # Detection is a best-effort quality pass; never fail ingest over it.
+            continue

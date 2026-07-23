@@ -44,8 +44,10 @@ PY
   --workpath "$BUILD" \
   --specpath "$BUILD" \
   --add-data "$ROOT/web:web" \
+  --add-data "$ROOT/assets/models:assets/models" \
   --add-data "$BUILD_INFO:." \
   --hidden-import librosa \
+  --hidden-import cv2 \
   --hidden-import scipy.signal \
   --hidden-import soundfile \
   --hidden-import audioread \

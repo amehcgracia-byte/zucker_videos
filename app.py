@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import multiprocessing
+import os
 import subprocess
 import socket
 import sys
@@ -69,6 +70,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dev", action="store_true", help="Run Flask only with CORS enabled")
     parser.add_argument("--project", help="Open an existing .zuckervid project folder")
     parser.add_argument("--webgl-probe", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--operator-avoidance-probe", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
@@ -80,6 +82,8 @@ def main() -> None:
     args = parse_args()
     if args.webgl_probe:
         raise SystemExit(_run_webgl_probe())
+    if args.operator_avoidance_probe:
+        raise SystemExit(_run_operator_avoidance_probe())
     config = load_global_config()
     project_path = args.project or config.get("last_project_path")
     if project_path and not Path(project_path).exists():
@@ -176,6 +180,45 @@ def _run_webgl_probe() -> int:
 
     window.events.loaded += loaded
     webview.start(debug=False)
+    print(json.dumps(result, sort_keys=True))
+    return 0 if result.get("ok") else 1
+
+
+def _run_operator_avoidance_probe() -> int:
+    """Run real MobileNet-SSD person detection from inside the packaged bundle.
+
+    Verifies the bundled cv2 + model files actually work from the frozen app,
+    not just from the dev venv. Prints a JSON result and returns 0/1.
+    """
+    import numpy as np
+
+    from core.operator_avoidance import _detect_frame, _detector
+
+    result: dict[str, object] = {"ok": False, "error": None}
+    try:
+        net = _detector()
+        if net is None:
+            result["error"] = "detector failed to load (model files missing or cv2 import failed)"
+        else:
+            result["detector_loaded"] = True
+            image_path = os.environ.get("ZUCKER_PROBE_IMAGE")
+            if image_path:
+                import cv2
+
+                frame = cv2.imread(image_path)
+                if frame is None:
+                    result["error"] = f"could not read image at {image_path}"
+                else:
+                    blobs = _detect_frame(net, frame)
+                    result["ok"] = True
+                    result["blobs_on_real_image"] = blobs
+            else:
+                frame = np.random.default_rng(0).integers(0, 255, (480, 640, 3), dtype=np.uint8)
+                blobs = _detect_frame(net, frame)
+                result["ok"] = True
+                result["blobs_on_random_noise"] = len(blobs)
+    except Exception as exc:
+        result["error"] = str(exc)
     print(json.dumps(result, sort_keys=True))
     return 0 if result.get("ok") else 1
 
