@@ -10,7 +10,7 @@ from typing import Any
 from core.camera_moves import load_camera_moves, recorded_move_covering, recorded_shot_for_segment
 from core.messages import t
 from core.project import Project
-from core.shot_quality import analyze_handheld_director_quality, director_quality_for_segment
+from core.shot_quality import DIRECTOR_SCORE_THRESHOLD, SHOT_QUALITY_VERSION, analyze_handheld_director_quality, director_quality_for_segment
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.cut import load_coverage
 
@@ -55,6 +55,8 @@ class EditStage(Stage):
                 "settings": project.data["settings"].get(self.name, {}),
                 "spherical_landmarks": project.data["settings"].get("spherical_landmarks", {}),
                 "camera_moves": _camera_moves_fingerprint(project),
+                "shot_quality_version": SHOT_QUALITY_VERSION,
+                "director_score_threshold": DIRECTOR_SCORE_THRESHOLD,
             }
         )
 

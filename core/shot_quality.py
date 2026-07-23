@@ -30,7 +30,7 @@ def score_director_window(signals: dict[str, float]) -> tuple[float, list[str]]:
         reasons.append("no face")
     if stability < 0.42:
         reasons.append("camera moving")
-    if sharpness < 0.32:
+    if sharpness < 0.05:
         reasons.append("blur")
     if exposure < 0.42:
         reasons.append("exposure")
@@ -52,16 +52,29 @@ def director_quality_for_segment(source: dict[str, Any], master_start: float, ma
     if not overlaps:
         return {"score": 1.0, "eligible": True, "reasons": []}
     total = sum(overlap for overlap, _window in overlaps) or 1.0
-    score = sum(overlap * float(window.get("score") or 0.0) for overlap, window in overlaps) / total
+    # Recompute score and reasons from raw signals so updated thresholds apply
+    # even when window data was cached under an older SHOT_QUALITY_VERSION.
+    # Eligibility is based on the weighted-average score alone; individual window
+    # reasons are surfaced for diagnostics but do not veto an otherwise good segment.
     reasons: dict[str, int] = {}
-    for _overlap, window in overlaps:
-        if bool(window.get("eligible", True)):
-            continue
-        for reason in window.get("reasons") or ["low director score"]:
-            reasons[str(reason)] = reasons.get(str(reason), 0) + 1
+    weighted_score = 0.0
+    for overlap, window in overlaps:
+        signals = window.get("signals")
+        if signals:
+            win_score, win_reasons = score_director_window(signals)
+            win_eligible = win_score >= DIRECTOR_SCORE_THRESHOLD and not win_reasons
+        else:
+            win_score = float(window.get("score") or 0.0)
+            win_reasons = window.get("reasons") or []
+            win_eligible = bool(window.get("eligible", True))
+        weighted_score += overlap * win_score
+        if not win_eligible:
+            for reason in win_reasons or ["low director score"]:
+                reasons[str(reason)] = reasons.get(str(reason), 0) + 1
+    score = weighted_score / total
     return {
         "score": round(score, 4),
-        "eligible": score >= DIRECTOR_SCORE_THRESHOLD and not reasons,
+        "eligible": score >= DIRECTOR_SCORE_THRESHOLD,
         "reasons": sorted(reasons, key=lambda key: (-reasons[key], key)),
     }
 

@@ -12,7 +12,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from core.camera_moves import interpolate_curve
+from core.camera_moves import clip_curve_for_segment, interpolate_curve, load_camera_moves, recorded_move_covering, recorded_shot_for_segment
 from core.ffmpeg import FFmpegError, tool_status
 from core.messages import t
 from core.media_validation import record_is_usable_camera_video, record_media_path
@@ -29,7 +29,7 @@ MIN_ACCEPTABLE_VIDEO_BITRATE = 2_500_000
 MAX_VIDEO_BITRATE = 18_000_000
 TARGET_EXPORT_FPS = 30.0
 TARGET_EXPORT_TIMESCALE = 30_000
-EXPORT_SEGMENT_RECIPE_VERSION = 14
+EXPORT_SEGMENT_RECIPE_VERSION = 15
 INTRO_DURATION = 10.2
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
@@ -87,6 +87,7 @@ class ExportStage(Stage):
         if bitrate_info["warning"]:
             warnings.append(bitrate_info["warning"])
         clip_fates = _clip_fates(project, plan, segments, content_duration)
+        _warn_unused_cameras(clip_fates, plan, warnings)
         write_artifact_json(
             path,
             {
@@ -343,7 +344,10 @@ def _render_360_plan(
 ) -> None:
     """Render a full equirectangular 360 clip with master audio and spherical metadata."""
     ffmpeg = _ffmpeg_path()
-    segment = _select_360_segment(project, segments)
+    # Build one body segment spanning the full song range from the selected 360 clip.
+    # Never split into per-edit-plan sub-segments; the 360 export is a single-pass
+    # passthrough (trim + spherical reframe + watermark + intro/outro).
+    segment = _build_360_body_segment(project, segments)
     duration = max(1.0, float(segment.get("duration_sec") or 1.0))
     temp_dir = output_path.parent / f".{output_path.stem}-360"
     if temp_dir.exists():
@@ -363,26 +367,20 @@ def _render_360_plan(
             lambda percent, detail: progress_callback(8 + int(percent * 4 / 100), detail),
         )
         body_paths: list[Path] = []
-        rendered_duration = 0.0
-        body_segments = _continuous_spherical_render_segments(segments if any(item.get("spherical_shot") for item in segments) else [segment])
-        for index, body_segment in enumerate(body_segments, start=1):
-            segment_path = temp_dir / f"body-{index:04d}.mp4"
-            segment_duration = max(0.1, float(body_segment.get("duration_sec") or 0.1))
-            base_percent = 12 + int(72 * rendered_duration / max(duration, 0.1))
-            _render_360_body(
-                project,
-                body_segment,
-                segment_path,
-                video_bitrate,
-                lambda percent, detail, base_percent=base_percent, segment_duration=segment_duration: progress_callback(
-                    min(83, base_percent + int(72 * segment_duration / max(duration, 0.1) * percent / 100)),
-                    f"Rendering 360: {detail}",
-                ),
-                intro_fade=index == 1,
-                outro_fade=index == len(body_segments),
-            )
-            body_paths.append(segment_path)
-            rendered_duration += segment_duration
+        segment_path = temp_dir / "body-0001.mp4"
+        _render_360_body(
+            project,
+            segment,
+            segment_path,
+            video_bitrate,
+            lambda percent, detail: progress_callback(
+                12 + int(72 * percent / 100),
+                f"Rendering 360: {detail}",
+            ),
+            intro_fade=True,
+            outro_fade=True,
+        )
+        body_paths.append(segment_path)
         _render_logo_clip(
             outro,
             "360",
@@ -443,6 +441,63 @@ def _render_360_plan(
         warnings.append("360 export uses the selected 360 clip full length with synced master audio; no multicam cuts.")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _build_360_body_segment(project: Project, segments: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return one body segment spanning the full song range from the 360 clip.
+
+    For directed mode with a recorded take, attach the full-range take curve as the
+    spherical_shot so the sendcmd path emits varying yaw/pitch for every frame.
+    For automatic mode, no spherical_shot is attached (plain equirect passthrough).
+    """
+    # Gather equirect segments from the edit plan (may be empty for non-360 plan).
+    equirect_segs = [s for s in segments if s.get("projection") in {"equirect", "raw_insv"}]
+
+    # Determine song start/end from the plan.
+    if equirect_segs:
+        first_seg = equirect_segs[0]
+        last_seg = equirect_segs[-1]
+        song_master_start = float(first_seg.get("master_start_sec") or 0.0)
+        song_master_end = float(last_seg.get("master_start_sec") or 0.0) + float(last_seg.get("duration_sec") or 0.0)
+        clip_start = float(first_seg.get("clip_start_sec") or 0.0)
+        song_duration = max(1.0, song_master_end - song_master_start)
+        base = first_seg
+    else:
+        base = _select_360_segment(project, segments)
+        song_master_start = float(base.get("master_start_sec") or 0.0)
+        clip_start = float(base.get("clip_start_sec") or 0.0)
+        song_duration = max(1.0, float(base.get("duration_sec") or 1.0))
+        song_master_end = song_master_start + song_duration
+
+    body: dict[str, Any] = {
+        **base,
+        "clip_start_sec": clip_start,
+        "master_start_sec": song_master_start,
+        "duration_sec": song_duration,
+    }
+    body.pop("spherical_shot", None)
+
+    # In directed mode, attach a recorded take covering the full song range.
+    edit_settings = (project.data.get("settings") or {}).get("edit") or {}
+    spherical_mode = str(edit_settings.get("spherical_mode") or "automatic").lower()
+    if spherical_mode == "directed":
+        recorded_moves = load_camera_moves(project)
+        recorded = recorded_move_covering(recorded_moves, song_master_start, song_master_end)
+        if recorded:
+            curve = clip_curve_for_segment(recorded, song_master_start, song_master_end)
+            if curve:
+                first_pt = curve[0]
+                body["spherical_shot"] = {
+                    "type": "recorded_move",
+                    "label": f"Recorded take: {recorded.get('name') or 'Take'}",
+                    "recorded_take": recorded.get("name") or "Take",
+                    "yaw": first_pt["yaw"],
+                    "pitch": first_pt["pitch"],
+                    "fov": first_pt["fov"],
+                    "curve": curve,
+                }
+
+    return body
 
 
 def _select_360_segment(project: Project, segments: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2008,6 +2063,26 @@ def _color_filter(color_profile: dict[str, Any]) -> str:
     brightness = max(-0.08, min(0.08, float(color_profile.get("brightness_adjust") or 0.0)))
     saturation = max(0.90, min(1.10, float(color_profile.get("saturation_adjust") or 1.0)))
     return f"eq=brightness={brightness:.4f}:saturation={saturation:.4f}"
+
+
+def _warn_unused_cameras(clip_fates: list[dict[str, Any]], plan: dict[str, Any], warnings: list[str]) -> None:
+    """Add a warning to the warnings list when an entire synced camera is absent from the edit."""
+    excluded_names = {str(item.get("filename") or "") for item in (plan.get("excluded_clips") or [])}
+    for fate in clip_fates:
+        filename = str(fate.get("filename") or "")
+        status = str(fate.get("status") or "")
+        if status in {"excluded", "not_covering"} and filename and filename not in excluded_names:
+            reason = str(fate.get("reason") or "")
+            if "quality rejected" in reason or "director" in reason.lower():
+                warnings.append(
+                    f"Camera {filename} was completely excluded by quality gating: {reason}"
+                )
+            elif status == "not_covering" and fate.get("covered_seconds", 0):
+                covered = float(fate.get("covered_seconds") or 0.0)
+                if covered > 30.0:
+                    warnings.append(
+                        f"Camera {filename} covered {covered:.0f}s of the edit window but was not selected for any segment."
+                    )
 
 
 def _clip_fates(project: Project, plan: dict[str, Any], segments: list[dict[str, Any]], total_duration: float) -> list[dict[str, Any]]:
