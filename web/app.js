@@ -1095,40 +1095,57 @@ function seekDirector(time) {
   updateDirectorScrub();
 }
 
-// D1 fix: throttle audio currentTime corrections — setting currentTime on every
-// animation frame (~60 Hz) resets the decode buffer and causes constant stuttering.
-// We only resync when the drift exceeds 0.35 s (large enough to be audible but rare
-// during smooth playback) or when force=true (seek / play start).
-// The play/pause mirror still runs every frame so the audio element tracks video
-// state instantly without affecting the decode stream.
-let _audioSyncLastAt = 0;
-const AUDIO_SYNC_INTERVAL_MS = 500; // resync at most twice per second during playback
-const AUDIO_DRIFT_THRESHOLD = 0.35;  // seconds; only seek audio when drift exceeds this
+// Audio is the timing master: it's a plain linear MP3 track that plays back
+// reliably on its own, whereas the video drives a WebGL VideoTexture and is
+// far more prone to visible stalls when seeked. So we let audio.currentTime
+// run natively and correct the VIDEO element to follow it — with a generous
+// tolerance and a throttled correction interval, so normal decode jitter
+// never triggers a seek, let alone a seek-every-frame loop (that was the
+// original stutter bug, just on the other element).
+let _videoSyncLastAt = 0;
+const VIDEO_SYNC_INTERVAL_MS = 1000; // soft-correct at most once a second during playback
+const VIDEO_SOFT_DRIFT_THRESHOLD = 0.2; // seconds; ignore drift below this entirely
+const VIDEO_HARD_DRIFT_THRESHOLD = 0.6; // seconds; resync immediately regardless of interval
 
 function syncDirectorAudio(force = false) {
   const video = document.querySelector("#directorVideo");
   const audio = document.querySelector("#directorAudio");
-  if (!video || !audio || !director.media || Number.isNaN(video.currentTime)) return;
-  const target = masterTimeForDirectorVideo(video.currentTime);
-  const end = Number(director.media?.trim_end_sec || target);
-  if (target >= end && !video.paused) {
+  if (!video || !audio || !director.media || Number.isNaN(audio.currentTime)) return;
+  const masterTime = Number(audio.currentTime || 0);
+  const end = Number(director.media?.trim_end_sec || masterTime);
+  if (masterTime >= end && !audio.paused) {
     pauseDirector();
     return;
   }
+  const targetVideoTime = videoTimeForMaster(masterTime);
   const now = performance.now();
-  const drift = Math.abs((audio.currentTime || 0) - target);
-  if (force || drift > AUDIO_DRIFT_THRESHOLD || (drift > 0.08 && now - _audioSyncLastAt > AUDIO_SYNC_INTERVAL_MS)) {
-    audio.currentTime = Math.max(0, Math.min(Number(audio.duration || target), target));
-    _audioSyncLastAt = now;
+  const drift = Math.abs((video.currentTime || 0) - targetVideoTime);
+  if (force || drift > VIDEO_HARD_DRIFT_THRESHOLD || (drift > VIDEO_SOFT_DRIFT_THRESHOLD && now - _videoSyncLastAt > VIDEO_SYNC_INTERVAL_MS)) {
+    video.currentTime = Math.max(0, Math.min(Number(video.duration || targetVideoTime), targetVideoTime));
+    _videoSyncLastAt = now;
   }
-  if (audio.paused !== video.paused) {
-    if (video.paused) audio.pause();
-    else audio.play().catch(() => {});
+  if (video.paused !== audio.paused) {
+    if (audio.paused) video.pause();
+    else video.play().catch(() => {});
   }
 }
 
 function masterTimeForDirectorVideo(videoTime) {
   return Math.max(0, Number(director.media?.offset_sec || 0) + Number(videoTime || 0));
+}
+
+// Audio is the timing master (see syncDirectorAudio) — prefer its
+// currentTime directly wherever "what master-timeline position are we at
+// right now" is needed (scrub display, recording samples, take preview),
+// since the video element is only ever a generously-tolerant follower and
+// can legitimately lag/lead by a few hundred ms.
+function masterTimeNow() {
+  const audio = document.querySelector("#directorAudio");
+  if (audio && director.media && !Number.isNaN(audio.currentTime)) {
+    return Math.max(0, Number(audio.currentTime || 0));
+  }
+  const video = document.querySelector("#directorVideo");
+  return masterTimeForDirectorVideo(video?.currentTime || 0);
 }
 
 function localDirectorTimeToMaster(localTime) {
@@ -1146,7 +1163,7 @@ function updateDirectorScrub() {
   const scrub = document.querySelector("#directorScrub");
   if (!video || !scrub) return;
   const duration = Number(director.media?.duration_sec || video.duration || 0);
-  const local = clamp(masterTimeForDirectorVideo(video.currentTime || 0) - Number(director.media?.trim_start_sec || 0), 0, duration || 0);
+  const local = clamp(masterTimeNow() - Number(director.media?.trim_start_sec || 0), 0, duration || 0);
   scrub.max = String(Math.max(0.01, duration));
   if (document.activeElement !== scrub) scrub.value = String(local);
   document.querySelector("#directorTime").textContent = `${secondsToTime(local)} / ${secondsToTime(duration)}`;
@@ -1172,7 +1189,7 @@ async function toggleDirectorRecording() {
 function sampleDirectorCamera() {
   const video = document.querySelector("#directorVideo");
   if (!director.recording || !video || video.paused) return;
-  const t = masterTimeForDirectorVideo(video.currentTime || 0);
+  const t = masterTimeNow();
   const trimEnd = Number(director.media?.trim_end_sec || Infinity);
   if (t > trimEnd) return;
   const last = director.samples[director.samples.length - 1];
@@ -1261,7 +1278,7 @@ function previewDirectorTake() {
 
 function applyDirectorPreviewCurve() {
   if (!director.previewingTake || !director.smoothedSamples.length || director.recording) return;
-  const masterTime = masterTimeForDirectorVideo(document.querySelector("#directorVideo")?.currentTime || 0);
+  const masterTime = masterTimeNow();
   const sample = interpolateDirectorSample(director.smoothedSamples, masterTime);
   if (!sample) return;
   director.yaw = sample.yaw;

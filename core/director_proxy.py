@@ -99,6 +99,7 @@ def ensure_director_proxy(record: dict[str, Any], progress: Progress | None = No
             tmp.unlink()
         _run_proxy_command(_proxy_command(source, tmp, filtergraph, "libx264"), duration, source.name, progress)
         encode_path = "software"
+    _verify_proxy_output(tmp, duration, source.name)
     os.replace(tmp, output)
     elapsed = time.monotonic() - start
     result = director_proxy_status(record)
@@ -195,6 +196,41 @@ def _run_proxy_command(command: list[str], duration: float, filename: str, progr
     _, stderr = process.communicate()
     if process.returncode != 0:
         raise FFmpegError((stderr or "").strip() or "Could not generate 360 Director proxy")
+
+
+def _verify_proxy_output(path: Path, expected_duration: float, filename: str) -> None:
+    """Refuse to serve a proxy that's truncated or fails to decode cleanly.
+
+    A partial proxy (killed encode, disk-full remux, truncated source read)
+    would otherwise get renamed into place and served as "ready" — the
+    Director would then play video that stops partway through and, since
+    audio keeps running against a separately-loaded master track, looks like
+    a sync bug rather than what it actually is: bad input.
+    """
+    try:
+        metadata = ffprobe(str(path))
+    except Exception as exc:
+        path.unlink(missing_ok=True)
+        raise FFmpegError(f"360 Director preview for {filename} could not be verified after encoding: {exc}") from exc
+    actual_duration = float((metadata.get("format") or {}).get("duration") or 0.0)
+    tolerance = max(3.0, expected_duration * 0.05)
+    if actual_duration <= 0.0 or actual_duration < expected_duration - tolerance:
+        path.unlink(missing_ok=True)
+        raise FFmpegError(
+            f"360 Director preview for {filename} looks truncated: got {actual_duration:.1f}s, "
+            f"expected about {expected_duration:.1f}s. Re-run to regenerate it."
+        )
+    ffmpeg = tool_status().get("ffmpeg_path")
+    if not ffmpeg:
+        return
+    result = subprocess.run(
+        [str(ffmpeg), "-v", "error", "-xerror", "-nostdin", "-i", str(path), "-f", "null", "-"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        path.unlink(missing_ok=True)
+        raise FFmpegError(f"360 Director preview for {filename} failed to decode cleanly: {(result.stderr or '').strip()}")
 
 
 def _source_duration(record: dict[str, Any]) -> float:

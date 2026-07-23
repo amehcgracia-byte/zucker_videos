@@ -23,6 +23,31 @@
   --bad: #a43b3b;
   --ok: var(--green-700);
   --shadow: 0 24px 80px rgba(49, 95, 37, 0.08);
+  --nav-bg: rgba(255, 255, 255, 0.94);
+  --toast-bg: var(--green-50);
+  --toast-bad-bg: #f7e6e2;
+  --highlight-bg: var(--green-100);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --primary: var(--green-400);
+  --primary-dark: var(--green-300);
+  --accent: var(--green-400);
+  --accent-strong: var(--green-300);
+  --bg: #101a0f;
+  --text: #e8f5e2;
+  --muted: #a7c2a1;
+  --line: #3d5a38;
+  --panel: #172515;
+  --panel-strong: #1d2e1a;
+  --bad: #e2897d;
+  --ok: var(--green-400);
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+  --nav-bg: rgba(16, 26, 15, 0.9);
+  --toast-bg: #1a2e17;
+  --toast-bad-bg: #2a1512;
+  --highlight-bg: #2f4a28;
 }
 
 * {
@@ -34,24 +59,33 @@ body {
   min-height: 100vh;
   position: relative;
   color: var(--text);
-  background: #ffffff;
+  background: var(--bg);
   font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  transition: background-color 160ms ease, color 160ms ease;
 }
 
-/* Same emblem used for the DMG installer background, applied as a faint,
-   fixed backdrop. Kept low-opacity and z-indexed behind all content so text
-   and controls stay at full contrast (WCAG AA unaffected). */
+/* Same emblem used for the DMG installer background, applied as a visible-
+   but-subtle backdrop that scrolls with the page (not pinned to the
+   viewport). Sits behind all content via z-index, so text/control contrast
+   is unaffected. */
 body::before {
   content: "";
-  position: fixed;
-  inset: 0;
-  z-index: -1;
+  position: absolute;
+  top: 6vh;
+  left: 0;
+  right: 0;
+  height: min(640px, 60vmin);
+  z-index: 0;
   background-image: url("/logo_watermark.png");
   background-repeat: no-repeat;
-  background-position: center 10vh;
+  background-position: center top;
   background-size: min(640px, 60vmin);
-  opacity: 0.05;
+  opacity: 0.12;
   pointer-events: none;
+}
+
+:root[data-theme="dark"] body::before {
+  opacity: 0.16;
 }
 
 button,
@@ -110,7 +144,7 @@ audio {
   align-items: center;
   gap: 12px;
   padding: 10px max(16px, calc((100vw - 980px) / 2));
-  background: rgba(255, 255, 255, 0.94);
+  background: var(--nav-bg);
   border-bottom: 1px solid var(--line);
   backdrop-filter: blur(12px);
 }
@@ -119,6 +153,12 @@ audio {
   display: inline-flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.nav-actions {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
 }
 
 .step-nav,
@@ -138,7 +178,7 @@ audio {
 
 .new-project {
   border-color: var(--green-600);
-  background: #fff;
+  background: var(--panel);
   color: var(--green-900);
 }
 
@@ -194,7 +234,7 @@ h1 {
   border-radius: 12px;
   padding: 14px 16px;
   color: var(--text);
-  background: #fff;
+  background: var(--panel);
 }
 
 .project-shelf {
@@ -236,7 +276,7 @@ h1 {
   border: 1px solid var(--line);
   border-radius: 16px;
   padding: 10px 12px;
-  background: rgba(233, 246, 228, 0.92);
+  background: var(--highlight-bg);
 }
 
 .project-row > div {
@@ -267,7 +307,7 @@ h1 {
   border: 2px dashed var(--accent);
   border-radius: 28px;
   padding: 32px;
-  background: rgba(255, 255, 255, 0.96);
+  background: var(--nav-bg);
   display: grid;
   align-content: center;
   gap: 24px;
@@ -345,7 +385,7 @@ h1 {
 
 .rescue-button {
   border-color: var(--accent);
-  background: var(--green-100);
+  background: var(--highlight-bg);
   font-weight: 800;
 }
 
@@ -353,7 +393,7 @@ h1 {
   border: 1px solid var(--accent);
   border-radius: 18px;
   padding: 16px;
-  background: var(--green-50);
+  background: var(--highlight-bg);
 }
 
 .rescue-panel[hidden] {
@@ -411,7 +451,7 @@ h1 {
 
 .chip.info {
   border-color: var(--green-600);
-  background: var(--green-100);
+  background: var(--highlight-bg);
 }
 
 .chip-remove {
@@ -444,7 +484,7 @@ h1 {
   border: 1px solid var(--accent);
   border-radius: 999px;
   padding: 8px 12px;
-  background: var(--green-100);
+  background: var(--highlight-bg);
   font-weight: 800;
 }
 
@@ -559,7 +599,7 @@ button:disabled {
   display: grid;
   place-items: center;
   border-radius: 18px;
-  background: var(--green-100);
+  background: var(--highlight-bg);
   color: var(--accent-strong);
 }
 
@@ -579,7 +619,7 @@ button:disabled {
 .platform-card.selected,
 .song-option.selected {
   border-color: var(--accent-strong);
-  background: var(--green-100);
+  background: var(--highlight-bg);
 }
 
 .trim-box,
@@ -591,7 +631,7 @@ button:disabled {
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #fff;
+  background: var(--panel);
 }
 
 .spherical-setup[hidden] {
@@ -784,7 +824,7 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 28px;
   padding: 26px;
-  background: rgba(255, 255, 255, 0.96);
+  background: var(--nav-bg);
 }
 
 .progress-details {
@@ -812,7 +852,7 @@ button:disabled {
   height: 18px;
   border-radius: 999px;
   overflow: hidden;
-  background: var(--green-200);
+  background: var(--highlight-bg);
 }
 
 #progressBar {
@@ -861,7 +901,7 @@ button:disabled {
 .stage-checks span.done {
   color: var(--ok);
   border-color: rgba(79, 140, 59, 0.35);
-  background: var(--green-100);
+  background: var(--highlight-bg);
 }
 
 .stage-checks span.done::before {
@@ -922,12 +962,12 @@ pre {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 12px;
-  background: #fff;
+  background: var(--panel);
 }
 
 .spherical-mode label:has(input:checked) {
   border-color: var(--green-700);
-  background: var(--green-50);
+  background: var(--highlight-bg);
 }
 
 .spherical-mode span {
@@ -944,7 +984,7 @@ pre {
   border: 1px solid var(--green-300);
   border-radius: 12px;
   padding: 14px;
-  background: var(--green-50);
+  background: var(--highlight-bg);
 }
 
 .director-entry.directed {
@@ -966,7 +1006,7 @@ pre {
   position: fixed;
   inset: 0;
   z-index: 40;
-  background: #ffffff;
+  background: var(--panel);
   padding: 18px;
   overflow: auto;
 }
@@ -1049,7 +1089,7 @@ pre {
   bottom: 12px;
   border-radius: 8px;
   padding: 6px 8px;
-  background: rgba(255, 255, 255, 0.86);
+  background: var(--nav-bg);
   color: var(--text);
   font-weight: 750;
 }
@@ -1116,13 +1156,13 @@ pre {
   border: 1px solid var(--accent);
   border-radius: 14px;
   padding: 12px 14px;
-  background: var(--green-50);
+  background: var(--toast-bg);
   color: var(--accent-strong);
 }
 
 .toast.error {
   border-color: var(--bad);
-  background: #f7e6e2;
+  background: var(--toast-bad-bg);
   color: var(--bad);
 }
 

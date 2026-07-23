@@ -96,23 +96,44 @@ def test_spherical_landmark_migration_accepts_comma_decimal_and_zero_weight():
     assert migrated["right"]["weight"] == 0.0
 
 
-def test_spherical_motion_profiles_follow_shot_direction_rules():
-    singer = _spherical_motion_profile({"type": "singer", "yaw": 336.8, "pitch": -28.8, "fov": 95}, 1)
-    left = _spherical_motion_profile({"type": "left", "yaw": 47.6, "pitch": -15.9, "fov": 95}, 2)
-    right = _spherical_motion_profile({"type": "right", "yaw": 322.1, "pitch": -15, "fov": 95}, 3)
-    audience = _spherical_motion_profile({"type": "audience", "yaw": 203.7, "pitch": -15.5, "fov": 95}, 4)
-    full = _spherical_motion_profile({"type": "full_stage", "yaw": 11.5, "pitch": -34.3, "fov": 120}, 5)
-    audience_stage = _spherical_motion_profile({"type": "audience_stage_wide", "yaw": 298.1, "pitch": -12.2, "fov": 125}, 6)
-    planet = _spherical_motion_profile({"type": "planet", "yaw": 6, "pitch": -23.5, "fov": 150}, 7)
+def test_spherical_motion_profile_never_leaves_a_shot_frozen():
+    # General rule: a static-source segment (here, every non-planet 360
+    # landmark type) always gets a clearly perceptible drift on at least one
+    # axis -- never all three near zero, which would look like a frozen hold.
+    for shot_type in ("singer", "left", "right", "audience", "full_stage", "audience_stage_wide", "unknown_type", ""):
+        for index in range(6):
+            shot = _spherical_motion_profile({"type": shot_type, "yaw": 10.0, "pitch": -15.0, "fov": 95}, index)
+            magnitudes = [abs(shot["drift_yaw_deg"]), abs(shot["drift_pitch_deg"]), abs(shot["fov_delta_deg"])]
+            assert max(magnitudes) >= 2.0, (shot_type, index, shot)
 
-    assert singer["fov_delta_deg"] > 0
-    assert left["drift_yaw_deg"] < 0
-    assert right["drift_yaw_deg"] > 0
-    assert audience["fov_delta_deg"] < 0
-    assert full["fov_delta_deg"] < 0
-    assert audience_stage["drift_yaw_deg"] < 0
+
+def test_spherical_motion_profile_varies_across_instances():
+    # Same shot type at different segment indices should not all move the
+    # same fixed way -- this is what makes it "randomized per instance"
+    # rather than a hardcoded per-type direction.
+    profiles = [_spherical_motion_profile({"type": "singer", "yaw": 10.0, "pitch": -15.0, "fov": 95}, index) for index in range(8)]
+    signatures = {(p["drift_yaw_deg"], p["drift_pitch_deg"], p["fov_delta_deg"]) for p in profiles}
+    assert len(signatures) > 1
+
+
+def test_spherical_motion_profile_is_deterministic_for_cache_stability():
+    first = _spherical_motion_profile({"type": "left", "yaw": 47.6, "pitch": -15.9, "fov": 95}, 2)
+    second = _spherical_motion_profile({"type": "left", "yaw": 47.6, "pitch": -15.9, "fov": 95}, 2)
+    assert first == second
+
+
+def test_spherical_motion_profile_keeps_planet_spin_untouched():
+    planet = _spherical_motion_profile({"type": "planet", "yaw": 6, "pitch": -23.5, "fov": 150}, 7)
     assert planet["projection"] == "tiny_planet"
     assert planet["pitch"] == -90.0
+
+
+def test_spherical_motion_profile_treats_missing_shot_as_a_moving_hold():
+    # When no landmark shot is available at all (e.g. nothing configured),
+    # the segment must still get motion rather than a frozen passthrough.
+    shot = _spherical_motion_profile({}, 3)
+    magnitudes = [abs(shot["drift_yaw_deg"]), abs(shot["drift_pitch_deg"]), abs(shot["fov_delta_deg"])]
+    assert max(magnitudes) >= 3.0
 
 
 def test_youtube_plan_prefers_recorded_360_curve_when_segment_is_covered():
@@ -363,3 +384,26 @@ def test_youtube_plan_assigns_spherical_shots_to_360_segments():
 
     assert any(segment.get("spherical_shot") for segment in plan["segments"])
     assert plan["spherical_shot_usage"]
+
+
+def test_youtube_plan_360_segments_always_get_a_moving_shot_even_with_no_landmarks_configured():
+    # Regression guard: with no spherical landmarks configured at all (so
+    # _next_weighted_spherical_shot has nothing to pick), a 360 segment must
+    # still get a spherical_shot with real motion -- never fall through to an
+    # unset shot, which renders as a frozen equirect passthrough.
+    coverage = {
+        "platform": "youtube",
+        "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 8.0},
+        "sources": [{"path": "/tmp/360.mp4", "filename": "wide360.mp4", "projection": "equirect", "offset_sec": 0.0, "duration_sec": 8.0, "confidence": 8.0}],
+    }
+    beats = {"bars_sec": [0.0, 2.0, 4.0, 6.0, 8.0], "sections_sec": []}
+
+    plan = _youtube_multicam_plan(coverage, beats, {"spherical_landmarks": {}})
+
+    spherical_segments = [segment for segment in plan["segments"] if segment.get("clip_path") == "/tmp/360.mp4" or segment.get("source_path") == "/tmp/360.mp4"]
+    assert spherical_segments
+    for segment in spherical_segments:
+        shot = segment.get("spherical_shot")
+        assert shot, "360 segment must always carry a spherical_shot, not a frozen passthrough"
+        magnitudes = [abs(shot.get("drift_yaw_deg") or 0.0), abs(shot.get("drift_pitch_deg") or 0.0), abs(shot.get("fov_delta_deg") or 0.0)]
+        assert max(magnitudes) >= 2.0

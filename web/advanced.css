@@ -9,6 +9,29 @@
   --ok: #287a3e;
   --warn: #a26800;
   --bad: #a43b3b;
+  --bg: #ffffff;
+  --nav-bg: rgba(255, 255, 255, 0.94);
+  --toast-bad-bg: #fff5f3;
+  --toast-ok-bg: #f2faf8;
+  --highlight-bg: #e8f3f1;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ink: #e9f3e4;
+  --muted: #a9c2a4;
+  --line: #324a30;
+  --panel: #182219;
+  --accent: #5fb3ac;
+  --accent-2: #d99566;
+  --ok: #8fd66f;
+  --warn: #e0b74a;
+  --bad: #e2897d;
+  --bg: #10160f;
+  --nav-bg: rgba(16, 22, 15, 0.9);
+  --toast-bad-bg: #2a1512;
+  --toast-ok-bg: #16302d;
+  --highlight-bg: #243a24;
 }
 
 * {
@@ -19,24 +42,33 @@ body {
   margin: 0;
   position: relative;
   color: var(--ink);
-  background: #ffffff;
+  background: var(--bg);
   font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  transition: background-color 160ms ease, color 160ms ease;
 }
 
-/* Same emblem used for the DMG installer background, applied as a faint,
-   fixed backdrop. Kept low-opacity and z-indexed behind all content so text
-   and controls stay at full contrast (WCAG AA unaffected). */
+/* Same emblem used for the DMG installer background, applied as a visible-
+   but-subtle backdrop that scrolls with the page (not pinned to the
+   viewport). Sits behind all content via z-index, so text/control contrast
+   is unaffected. */
 body::before {
   content: "";
-  position: fixed;
-  inset: 0;
-  z-index: -1;
+  position: absolute;
+  top: 6vh;
+  left: 0;
+  right: 0;
+  height: min(640px, 60vmin);
+  z-index: 0;
   background-image: url("/logo_watermark.png");
   background-repeat: no-repeat;
-  background-position: center 10vh;
+  background-position: center top;
   background-size: min(640px, 60vmin);
-  opacity: 0.05;
+  opacity: 0.12;
   pointer-events: none;
+}
+
+:root[data-theme="dark"] body::before {
+  opacity: 0.16;
 }
 
 .topbar {
@@ -82,7 +114,7 @@ button {
   min-height: 34px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #fff;
+  background: var(--panel);
   color: var(--ink);
   padding: 0 12px;
   cursor: pointer;
@@ -177,7 +209,7 @@ main {
   min-height: 112px;
   border: 1px dashed var(--accent);
   border-radius: 8px;
-  background: #f7fbfa;
+  background: var(--panel);
   color: var(--muted);
   text-align: center;
 }
@@ -187,7 +219,7 @@ main {
 }
 
 .drop-zone.dragging {
-  background: #e8f3f1;
+  background: var(--highlight-bg);
   border-style: solid;
 }
 
@@ -197,7 +229,7 @@ main {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 10px 12px;
-  background: #fff;
+  background: var(--panel);
   color: var(--muted);
 }
 
@@ -234,7 +266,7 @@ main {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 12px;
-  background: #fff;
+  background: var(--panel);
 }
 
 .detected-group h3,
@@ -383,7 +415,7 @@ th {
   border: 1px solid var(--line);
   border-radius: 6px;
   overflow: hidden;
-  background: #fff;
+  background: var(--panel);
 }
 
 #progressBar {
@@ -416,7 +448,7 @@ th {
   margin-bottom: 18px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #fff;
+  background: var(--panel);
   overflow: hidden;
   color: var(--muted);
 }
@@ -425,7 +457,7 @@ th {
   position: relative;
   height: 34px;
   border-bottom: 1px solid var(--line);
-  background: #f4f6f2;
+  background: var(--panel);
 }
 
 .song-marker {
@@ -539,13 +571,13 @@ small {
   padding: 12px 14px;
   border: 1px solid var(--bad);
   border-radius: 8px;
-  background: #fff5f3;
+  background: var(--toast-bad-bg);
   color: var(--bad);
 }
 
 .toast:not(.error) {
   border-color: var(--accent);
-  background: #f2faf8;
+  background: var(--toast-ok-bg);
   color: var(--accent);
 }
 

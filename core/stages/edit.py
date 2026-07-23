@@ -253,8 +253,10 @@ def _youtube_multicam_plan(
                 available_shots = _available_spherical_shots(spherical_landmarks)
                 include_planet = current_usage.get("Planeta", 0) == 0 and sum(current_usage.values()) >= 5
                 shot = _next_weighted_spherical_shot(available_shots, _spherical_type_usage(segments), include_planet=include_planet)
-                if shot:
-                    segment["spherical_shot"] = _spherical_motion_profile(shot, segment_index)
+                # Always attach a shot with motion, even with no configured landmarks
+                # (shot=None) — a 360 segment must never fall back to a frozen,
+                # motionless equirect passthrough.
+                segment["spherical_shot"] = _spherical_motion_profile(shot or {}, segment_index)
         elif fixed_rear_motion and _source_role(source) == "fixed_rear" and segment_index % 2 == 0:
             segment["motion"] = _ken_burns_motion(segment_index)
         _apply_operator_avoidance(segment, source, operator_samples_cache)
@@ -426,8 +428,21 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]]) -> list[d
     return shots
 
 
+_SPHERICAL_MOTION_AXES = ("yaw", "pitch", "fov")
+
+
 def _spherical_motion_profile(shot: dict[str, Any], index: int) -> dict[str, Any]:
-    """Attach deterministic subtle movement suited to the selected 360 shot type."""
+    """Attach subtle, randomized-but-reproducible movement to a 360 landmark shot.
+
+    General rule: a segment from a static source (automatic-mode 360 landmark
+    holds included) never renders as a frozen frame — same principle as the
+    iPhone/fixed-camera Ken Burns treatment (_ken_burns_motion). One axis
+    (yaw/pitch/fov, chosen per instance) gets a clearly perceptible drift so
+    motion is never accidentally near-zero; the other two get smaller,
+    independently randomized secondary variation for natural variety. Seeded
+    deterministically by shot type + segment index, so re-running the edit
+    stage against the same plan reproduces identical motion (cache-stable).
+    """
     shot = dict(shot)
     shot_type = str(shot.get("type") or "")
     if shot_type == "planet":
@@ -435,20 +450,16 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int) -> dict[str, Any
         shot["fov"] = max(240.0, float(shot.get("fov") or 240.0))
         shot["projection"] = "tiny_planet"
         return shot
-    if shot_type == "singer":
-        shot["fov_delta_deg"] = 8.0
-    elif shot_type == "left":
-        shot["drift_yaw_deg"] = -4.0
-    elif shot_type == "right":
-        shot["drift_yaw_deg"] = 4.0
-    elif shot_type == "audience":
-        shot["fov_delta_deg"] = -8.0
-    elif shot_type == "full_stage":
-        shot["fov_delta_deg"] = -7.0
-    elif shot_type == "audience_stage_wide":
-        shot["drift_yaw_deg"] = -5.0
-    else:
-        shot["fov_delta_deg"] = -5.0 if index % 2 == 0 else 5.0
+    rng = random.Random(stable_fingerprint({"spherical_motion_v2": shot_type, "index": index}))
+    primary = rng.choice(_SPHERICAL_MOTION_AXES)
+
+    def signed(low: float, high: float) -> float:
+        magnitude = rng.uniform(low, high)
+        return magnitude if rng.random() < 0.5 else -magnitude
+
+    shot["drift_yaw_deg"] = round(signed(3.0, 6.0) if primary == "yaw" else signed(0.0, 2.5), 2)
+    shot["drift_pitch_deg"] = round(signed(2.0, 4.0) if primary == "pitch" else signed(0.0, 1.5), 2)
+    shot["fov_delta_deg"] = round(signed(5.0, 9.0) if primary == "fov" else signed(0.0, 3.0), 2)
     return shot
 
 
