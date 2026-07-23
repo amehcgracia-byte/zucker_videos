@@ -9,6 +9,7 @@ from typing import Any
 
 from core.camera_moves import load_camera_moves, recorded_move_covering, recorded_shot_for_segment
 from core.messages import t
+from core.operator_avoidance import OPERATOR_AVOIDANCE_VERSION, avoidance_for_segment, load_cached_operator_presence
 from core.project import Project
 from core.shot_quality import DIRECTOR_SCORE_THRESHOLD, SHOT_QUALITY_VERSION, analyze_handheld_director_quality, director_quality_for_segment
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
@@ -57,6 +58,7 @@ class EditStage(Stage):
                 "camera_moves": _camera_moves_fingerprint(project),
                 "shot_quality_version": SHOT_QUALITY_VERSION,
                 "director_score_threshold": DIRECTOR_SCORE_THRESHOLD,
+                "operator_avoidance_version": OPERATOR_AVOIDANCE_VERSION,
             }
         )
 
@@ -193,7 +195,9 @@ def _youtube_multicam_plan(
     segments: list[dict[str, Any]] = []
     gaps: list[dict[str, float]] = []
     previous_source: str | None = None
+    previous_framing: dict[str, Any] | None = None  # C: track framing for consecutive-duplicate detection
     usage_counts: dict[str, int] = {}
+    operator_samples_cache: dict[str, list[dict[str, Any]]] = {}
     selection_stats = _selection_stats_template(sources, start, end)
     project_settings = settings or {}
     edit_settings = project_settings.get("edit") if "edit" in project_settings else project_settings
@@ -228,7 +232,12 @@ def _youtube_multicam_plan(
             stats = selection_stats.setdefault(_source_id(source), _selection_stats_for_source(source, start, end))
             stats["eligible_segments"] += 1
             stats["eligible_seconds"] += segment_end - segment_start
-        source = _choose_source(available, previous_source, usage_counts, selection_stats, role_weights)
+        # C: try ranked candidates until we find one whose framing differs from previous,
+        # preventing consecutive identical shots from the same source.
+        source = _choose_source_avoiding_identical_framing(
+            available, previous_source, previous_framing, usage_counts, selection_stats, role_weights,
+            segment_start, segment_end, segment_index, spherical_landmarks, use_recorded_360, recorded_moves or [],
+        )
         previous_source = _source_id(source)
         usage_counts[previous_source] = usage_counts.get(previous_source, 0) + 1
         chosen_stats = selection_stats.setdefault(previous_source, _selection_stats_for_source(source, start, end))
@@ -248,6 +257,8 @@ def _youtube_multicam_plan(
                     segment["spherical_shot"] = _spherical_motion_profile(shot, segment_index)
         elif fixed_rear_motion and _source_role(source) == "fixed_rear" and segment_index % 2 == 0:
             segment["motion"] = _ken_burns_motion(segment_index)
+        _apply_operator_avoidance(segment, source, operator_samples_cache)
+        previous_framing = _framing_descriptor(source, segment)
         segments.append(segment)
         bar_index = next_index
         segment_index += 1
@@ -705,6 +716,128 @@ def _choose_source(
     return sorted(candidates, key=score)[0]
 
 
+def _choose_source_avoiding_identical_framing(
+    sources: list[dict[str, Any]],
+    previous_source: str | None,
+    previous_framing: dict[str, Any] | None,
+    usage_counts: dict[str, int],
+    selection_stats: dict[str, dict[str, Any]],
+    role_weights: dict[str, float],
+    segment_start: float,
+    segment_end: float,
+    segment_index: int,
+    spherical_landmarks: dict[str, dict[str, float]],
+    use_recorded_360: bool,
+    recorded_moves: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Pick the best source while avoiding consecutive near-identical framing (Issue C).
+
+    Consecutive segments from the same source are only acceptable when their framing
+    differs meaningfully: for 360 sources the shot type must differ; for non-360 sources
+    the same source is already barred by _choose_source.  When the best candidate would
+    produce near-identical framing to the previous segment, the next-best candidate that
+    does not is preferred.  If no alternative exists the best candidate is kept.
+    """
+    # Build a ranked list of all candidates.
+    usage_counts_copy = dict(usage_counts)
+    role_weights_copy = dict(role_weights)
+    ranked: list[dict[str, Any]] = []
+    # Produce a sorted list by calling _choose_source iteratively isn't clean; instead
+    # replicate the sort key inline.
+    def score(src: dict[str, Any]) -> tuple:
+        role = _source_role(src)
+        target_share = max(0.001, float(role_weights_copy.get(role, role_weights_copy.get("handheld", 0.3))))
+        chosen_seconds = float((selection_stats.get(_source_id(src)) or {}).get("chosen_seconds") or 0.0)
+        director_bonus = float(src.get("director_segment_score") or 1.0) if role == "handheld" else 1.0
+        # Penalise repeating the previous source (same as _choose_source does via candidate filter)
+        same_as_prev = 1 if _source_id(src) == previous_source else 0
+        return (same_as_prev, chosen_seconds / target_share, usage_counts_copy.get(_source_id(src), 0), -director_bonus, -float(src.get("confidence") or 0.0), _source_id(src))
+
+    usable = [src for src in sources if float(role_weights_copy.get(_source_role(src), role_weights_copy.get("handheld", 0.3))) > 0.0] or list(sources)
+    ranked = sorted(usable, key=score)
+
+    if not ranked:
+        return _choose_source(sources, previous_source, usage_counts, selection_stats, role_weights)
+
+    for candidate in ranked:
+        framing = _predict_framing(candidate, segment_start, segment_end, segment_index, spherical_landmarks, use_recorded_360, recorded_moves)
+        if previous_framing is None or not _framing_nearly_identical(framing, previous_framing):
+            return candidate
+
+    # All candidates produce identical framing — fall back to the best-ranked one.
+    return ranked[0]
+
+
+def _predict_framing(
+    source: dict[str, Any],
+    segment_start: float,
+    segment_end: float,
+    segment_index: int,
+    spherical_landmarks: dict[str, dict[str, float]],
+    use_recorded_360: bool,
+    recorded_moves: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Return a framing descriptor for what this source would look like as the next segment."""
+    role = _source_role(source)
+    if role == "360":
+        if use_recorded_360:
+            recorded = recorded_move_covering(recorded_moves, segment_start, segment_end)
+            if recorded:
+                return {"source": _source_id(source), "type": "recorded_move", "take": recorded.get("name") or ""}
+        shots = _available_spherical_shots(spherical_landmarks)
+        # We cannot predict usage at this point without side-effects; use the shot order
+        # position as a proxy (it will be weighted the same way).
+        shot_type = str(shots[0].get("type") or "") if shots else "unknown"
+        return {"source": _source_id(source), "type": "spherical", "shot": shot_type}
+    # For non-360 sources, the source identity alone determines "sameness" since
+    # ken_burns seeds differ by index and iPhone/Sony framing changes continuously.
+    return {"source": _source_id(source), "type": role}
+
+
+def _framing_descriptor(source: dict[str, Any], segment: dict[str, Any]) -> dict[str, Any]:
+    """Return the actual framing descriptor for a segment that has been fully built."""
+    role = _source_role(source)
+    shot = segment.get("spherical_shot")
+    if shot and role == "360":
+        shot_type = str(shot.get("type") or "")
+        if shot_type == "recorded_move":
+            return {"source": _source_id(source), "type": "recorded_move", "take": shot.get("recorded_take") or ""}
+        return {"source": _source_id(source), "type": "spherical", "shot": shot_type,
+                "yaw": float(shot.get("yaw") or 0.0), "fov": float(shot.get("fov") or 100.0)}
+    return {"source": _source_id(source), "type": role}
+
+
+def _framing_nearly_identical(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Return True when two framing descriptors represent consecutively identical shots.
+
+    Rules:
+    - Different source → never identical.
+    - Same source, non-360 role → identical (same camera, same framing, no motion).
+    - Same source, 360 recorded_move → never identical (curves are always different).
+    - Same source, 360 spherical: identical when same shot type AND yaw within 5° AND fov within 10%.
+    """
+    if a.get("source") != b.get("source"):
+        return False
+    role_a = a.get("type")
+    role_b = b.get("type")
+    # recorded_move takes always differ (continuous curve changes)
+    if role_a == "recorded_move" or role_b == "recorded_move":
+        return False
+    if role_a == "spherical" and role_b == "spherical":
+        if a.get("shot") != b.get("shot"):
+            return False
+        yaw_a = float(a.get("yaw") or 0.0)
+        yaw_b = float(b.get("yaw") or 0.0)
+        yaw_delta = abs(((yaw_a - yaw_b + 180.0) % 360.0) - 180.0)
+        fov_a = float(a.get("fov") or 100.0)
+        fov_b = float(b.get("fov") or 100.0)
+        fov_ratio = abs(fov_a - fov_b) / max(fov_a, fov_b, 1.0)
+        return yaw_delta < 5.0 and fov_ratio < 0.10
+    # Same non-360 source back-to-back (the _choose_source candidate filter already
+    # mostly prevents this; this catches edge cases where only one source is available).
+    return role_a == role_b
+
+
 def _segment_from_source(source: dict[str, Any], start: float, end: float, title: str) -> dict[str, Any]:
     offset = float(source.get("offset_sec") or 0.0)
     start = _round_to_frame(start)
@@ -743,6 +876,40 @@ def _source_role(source: dict[str, Any]) -> str:
     if "iphone" in filename or filename.endswith(".mov"):
         return "fixed_rear"
     return "handheld"
+
+
+def _apply_operator_avoidance(segment: dict[str, Any], source: dict[str, Any], samples_cache: dict[str, list[dict[str, Any]]]) -> None:
+    """Nudge a segment's framing away from a detected camera operator, if any.
+
+    Reads cached per-clip detections only (never runs detection here — that
+    happens once during ingest); Sony (handheld) is skipped entirely.
+    """
+    role = _source_role(source)
+    if role not in {"360", "fixed_rear"}:
+        return
+    analysis_path = str(source.get("path") or "")
+    if not analysis_path:
+        return
+    if analysis_path not in samples_cache:
+        samples_cache[analysis_path] = load_cached_operator_presence(analysis_path)
+    samples = samples_cache[analysis_path]
+    if not samples:
+        return
+    current_yaw = float((segment.get("spherical_shot") or {}).get("yaw") or 0.0)
+    adjustment = avoidance_for_segment(role, samples, float(segment["clip_start_sec"]), float(segment["duration_sec"]), current_yaw)
+    if not adjustment:
+        return
+    segment["operator_avoidance"] = adjustment
+    if adjustment["type"] == "yaw_shift":
+        shot = segment.get("spherical_shot")
+        if not shot:
+            return
+        shift = float(adjustment["yaw_deg"])
+        shot["yaw"] = (float(shot.get("yaw") or 0.0) + shift) % 360.0
+        for sample in shot.get("curve") or []:
+            sample["yaw"] = (float(sample.get("yaw") or 0.0) + shift) % 360.0
+    elif adjustment["type"] == "zoom_crop":
+        segment["motion"] = {"type": "zoom_crop", "zoom": adjustment["zoom"], "cx": adjustment["cx"], "cy": adjustment["cy"]}
 
 
 def _ken_burns_motion(index: int) -> dict[str, Any]:

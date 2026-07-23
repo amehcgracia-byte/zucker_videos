@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _ken_burns_motion, _spherical_motion_profile, _youtube_multicam_plan
+from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _ken_burns_motion, _spherical_motion_profile, _youtube_multicam_plan, _framing_nearly_identical
 from core.stages.cut import _segment_for_360, _select_360_clip
 
 
@@ -195,6 +195,71 @@ def test_360_selection_prefers_studio_export_and_uses_full_clip():
     assert segment["master_start_sec"] == 5.0
     assert segment["duration_sec"] == 12.0
     assert segment["projection"] == "equirect"
+
+
+# ---------------------------------------------------------------------------
+# Issue C: consecutive near-identical shot detection
+# ---------------------------------------------------------------------------
+
+
+def test_framing_nearly_identical_different_sources_always_false():
+    a = {"source": "/a.mp4", "type": "fixed_rear"}
+    b = {"source": "/b.mp4", "type": "fixed_rear"}
+    assert not _framing_nearly_identical(a, b)
+
+
+def test_framing_nearly_identical_same_source_same_role_is_true():
+    a = {"source": "/iphone.mov", "type": "fixed_rear"}
+    b = {"source": "/iphone.mov", "type": "fixed_rear"}
+    assert _framing_nearly_identical(a, b)
+
+
+def test_framing_nearly_identical_recorded_move_is_always_false():
+    a = {"source": "/360.mp4", "type": "recorded_move", "take": "Take 1"}
+    b = {"source": "/360.mp4", "type": "recorded_move", "take": "Take 1"}
+    assert not _framing_nearly_identical(a, b)
+
+
+def test_framing_nearly_identical_spherical_same_shot_within_thresholds():
+    a = {"source": "/360.mp4", "type": "spherical", "shot": "singer", "yaw": 100.0, "fov": 95.0}
+    b = {"source": "/360.mp4", "type": "spherical", "shot": "singer", "yaw": 102.0, "fov": 96.0}
+    assert _framing_nearly_identical(a, b)
+
+
+def test_framing_nearly_identical_spherical_different_shot_type():
+    a = {"source": "/360.mp4", "type": "spherical", "shot": "singer", "yaw": 100.0, "fov": 95.0}
+    b = {"source": "/360.mp4", "type": "spherical", "shot": "drummer", "yaw": 102.0, "fov": 95.0}
+    assert not _framing_nearly_identical(a, b)
+
+
+def test_framing_nearly_identical_spherical_large_yaw_shift():
+    a = {"source": "/360.mp4", "type": "spherical", "shot": "singer", "yaw": 100.0, "fov": 95.0}
+    b = {"source": "/360.mp4", "type": "spherical", "shot": "singer", "yaw": 115.0, "fov": 95.0}
+    assert not _framing_nearly_identical(a, b)
+
+
+def test_youtube_plan_avoids_consecutive_identical_spherical_shots():
+    """When only one 360 source is available, consecutive segments must differ in shot type."""
+    coverage = {
+        "platform": "youtube",
+        "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 24.0},
+        "sources": [
+            {"path": "/tmp/360.mp4", "filename": "wide360.mp4", "projection": "equirect", "offset_sec": 0.0, "duration_sec": 24.0, "confidence": 8.0},
+        ],
+    }
+    beats = {"bars_sec": [0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0], "sections_sec": []}
+    settings = {"spherical_landmarks": {"singer": {"yaw": 0.0, "weight": 1}, "drummer": {"yaw": 90.0, "weight": 1}}}
+
+    plan = _youtube_multicam_plan(coverage, beats, settings)
+
+    # No two consecutive 360 segments should have identical shot types.
+    segs_360 = [s for s in plan["segments"] if s.get("spherical_shot")]
+    consecutive_same_type = sum(
+        1 for i in range(1, len(segs_360))
+        if segs_360[i]["spherical_shot"].get("type") == segs_360[i - 1]["spherical_shot"].get("type")
+        and segs_360[i]["spherical_shot"].get("type") not in {"recorded_move"}
+    )
+    assert consecutive_same_type == 0, f"Found {consecutive_same_type} consecutive identical spherical shot pairs"
 
 
 def test_spherical_landmark_map_allows_missing_entries_without_crash():
