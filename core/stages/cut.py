@@ -15,6 +15,10 @@ from core.stages.sync import load_song_boundaries, load_sync_map, sync_confidenc
 
 LOGGER = logging.getLogger(__name__)
 
+REEL_DEFAULT_DURATION_SEC = 25.0
+REEL_MIN_DURATION_SEC = 15.0
+REEL_MAX_DURATION_SEC = 40.0
+
 
 class CutStage(Stage):
     """Plan usable synced clip coverage for the requested wizard window."""
@@ -50,16 +54,36 @@ class CutStage(Stage):
         songs = load_song_boundaries(project)
         song_choice = wizard.get("song_choice")
         window = _selected_window(songs, song_choice, sync_map, wizard)
+        if platform == "reel":
+            reel_duration = max(REEL_MIN_DURATION_SEC, min(REEL_MAX_DURATION_SEC, float(wizard.get("reel_duration_sec") or REEL_DEFAULT_DURATION_SEC)))
+            master_path = str((project.data.get("inputs", {}).get("master") or {}).get("path") or "")
+            window = _pick_energetic_window(master_path, window, reel_duration)
+        warnings_360: list[str] = []
         if platform == "360":
             clip = _select_360_clip(selection["clips"])
             if not clip:
                 raise ValueError("No registered 360 clip is available for 360 export")
-            segment = _segment_for_360(clip)
-            window = {"title": segment["title"], "start_sec": segment["master_start_sec"], "duration_sec": segment["duration_sec"]}
+            # Passthrough mode must trim to the song's own Start/End range, not
+            # the 360 camera's own recording extent (which previously silently
+            # replaced the requested window entirely -- if the camera started
+            # later or stopped earlier than the chosen song range, the "song"
+            # window shrank to match, producing a truncated export).
+            segment = _segment_for_360(clip, window)
+            if segment["duration_sec"] <= 0:
+                raise ValueError(
+                    "The registered 360 clip does not cover any of the selected song range "
+                    f"(song {window['start_sec']:.1f}-{window['start_sec'] + window['duration_sec']:.1f}s, "
+                    f"clip covers {segment['clip_offset_sec']:.1f}-{segment['clip_offset_sec'] + float(clip.get('duration_sec') or 0):.1f}s)"
+                )
+            if segment["duration_sec"] < window["duration_sec"] - 0.5:
+                warnings_360.append(
+                    f"360 clip only covers {segment['duration_sec']:.1f}s of the {window['duration_sec']:.1f}s song range; export was trimmed to what the camera actually recorded."
+                )
+            window = {**window, "start_sec": segment["master_start_sec"], "duration_sec": segment["duration_sec"]}
         else:
             clip = _first_covering_clip(selection["clips"], window) or _longest_clip(selection["clips"])
             segment = _segment_for_platform(clip, window, platform)
-        warnings = selection["warnings"]
+        warnings = selection["warnings"] + warnings_360
         if warnings:
             segment["warnings"] = warnings
 
@@ -122,6 +146,50 @@ def _optional_float(value: Any, fallback: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return fallback
+
+
+def _pick_energetic_window(master_path: str, window: dict[str, Any], target_duration: float) -> dict[str, Any]:
+    """Narrow the song window to its highest-energy target_duration-second
+    stretch (reel mode), reusing RMS energy over the master track as a cheap,
+    dependency-light proxy for "high energy" -- a full chorus/drop detector
+    would be a much larger undertaking than a short-form auto-highlight
+    needs. Falls back to the middle of the range if analysis fails for any
+    reason (missing librosa, unreadable file, etc.) so reel export still
+    works, just without the highlight-picking.
+    """
+    start = float(window.get("start_sec") or 0.0)
+    duration = max(0.0, float(window.get("duration_sec") or 0.0))
+    if duration <= target_duration:
+        # Nothing to trim -- the available range is already no longer than
+        # what was asked for, so use all of it rather than claiming a
+        # duration longer than what actually exists.
+        return window
+    if not master_path or not Path(master_path).exists():
+        best_start_local = max(0.0, (duration - target_duration) / 2.0)
+    else:
+        try:
+            import librosa
+            import numpy as np
+
+            y, sr = librosa.load(master_path, sr=22050, mono=True, offset=start, duration=duration)
+            hop = 512
+            rms = librosa.feature.rms(y=y, hop_length=hop)[0]
+            frame_times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=hop)
+            frame_duration = hop / sr
+            window_frames = max(1, int(round(target_duration / frame_duration)))
+            if window_frames >= len(rms):
+                best_start_local = 0.0
+            else:
+                energy = rms.astype("float64") ** 2
+                cumulative = np.concatenate([[0.0], np.cumsum(energy)])
+                scores = cumulative[window_frames:] - cumulative[:-window_frames]
+                best_index = int(np.argmax(scores))
+                best_start_local = float(frame_times[best_index]) if best_index < len(frame_times) else 0.0
+        except Exception:
+            LOGGER.warning("Reel energy analysis failed for %s; falling back to the middle of the range", master_path, exc_info=True)
+            best_start_local = max(0.0, (duration - target_duration) / 2.0)
+    best_start = start + max(0.0, min(max(0.0, duration - target_duration), best_start_local))
+    return {**window, "start_sec": best_start, "duration_sec": target_duration, "trim_start_sec": best_start, "trim_end_sec": best_start + target_duration}
 
 
 def _selectable_synced_clips(project: Project, sync_map: dict[str, Any]) -> dict[str, Any]:
@@ -269,15 +337,26 @@ def _segment_for_platform(clip: dict[str, Any], window: dict[str, Any], platform
     }
 
 
-def _segment_for_360(clip: dict[str, Any]) -> dict[str, Any]:
+def _segment_for_360(clip: dict[str, Any], window: dict[str, Any]) -> dict[str, Any]:
+    """Build the passthrough segment for 360 export: the intersection of the
+    song's chosen Start/End range with whatever the 360 camera actually
+    covers -- never the camera's own full recording extent regardless of
+    what the song range asked for.
+    """
     clip_offset = float(clip.get("offset_sec") or 0)
-    duration = max(1.0, float(clip.get("duration_sec") or 1))
+    clip_duration = float(clip.get("duration_sec") or 0)
+    window_start = float(window["start_sec"])
+    window_end = window_start + float(window["duration_sec"])
+    start = max(window_start, clip_offset)
+    end = min(window_end, clip_offset + clip_duration)
+    duration = max(0.0, end - start)
+    source_start = max(0.0, start - clip_offset)
     return {
         "title": clip.get("filename") or t("full_video"),
         "clip_path": clip["path"],
         "source_path": clip.get("source_path") or clip["path"],
-        "clip_start_sec": 0.0,
-        "master_start_sec": max(0.0, clip_offset),
+        "clip_start_sec": source_start,
+        "master_start_sec": start,
         "duration_sec": duration,
         "clip_offset_sec": clip_offset,
         "confidence": float(clip.get("confidence") or 0.0),

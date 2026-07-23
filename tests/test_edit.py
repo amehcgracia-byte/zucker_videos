@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
+
+import pytest
+
 from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _ken_burns_motion, _spherical_motion_profile, _youtube_multicam_plan, _framing_nearly_identical
-from core.stages.cut import _segment_for_360, _select_360_clip
+from core.stages.cut import _pick_energetic_window, _segment_for_360, _select_360_clip
 
 
 def test_estimate_bar_starts_groups_beats_in_fours():
@@ -30,6 +35,29 @@ def test_youtube_plan_excludes_missing_sources_and_cuts_on_bars():
     assert {segment["master_start_sec"] for segment in plan["segments"]}.issubset({0.0, 2.0, 4.0, 6.0})
     assert plan["cut_count"] == 2
     assert all("eligible_segments" in item for item in plan["selection_diagnostics"])
+
+
+def test_reel_uses_real_multicam_plan_not_the_placeholder():
+    # Reel must reuse the exact same real bar-aligned multicam logic as
+    # YouTube, not the old "single best clip, middle excerpt" placeholder --
+    # and the plan must correctly report platform="reel" (previously
+    # _youtube_multicam_plan hardcoded "youtube" regardless of the actual
+    # platform, which would have mislabeled reel exports).
+    coverage = {
+        "platform": "reel",
+        "window": {"title": "Highlight", "start_sec": 0.0, "duration_sec": 8.0},
+        "sources": [
+            {"path": "/tmp/a.mp4", "filename": "a.mp4", "offset_sec": 0.0, "duration_sec": 8.0, "confidence": 9.0},
+            {"path": "/tmp/b.mp4", "filename": "b.mp4", "offset_sec": 0.0, "duration_sec": 8.0, "confidence": 8.0},
+        ],
+    }
+    beats = {"bars_sec": [0.0, 2.0, 4.0, 6.0, 8.0], "sections_sec": [4.0]}
+
+    plan = _youtube_multicam_plan(coverage, beats)
+
+    assert plan["platform"] == "reel"
+    assert plan["cut_count"] == 2
+    assert "beat-aligned multicam" in plan["real_edit_logic"]
 
 
 def test_youtube_plan_does_not_starve_lower_confidence_camera():
@@ -207,15 +235,45 @@ def test_360_selection_prefers_studio_export_and_uses_full_clip():
         {"path": "/tmp/raw.insv", "filename": "raw.insv", "projection": "raw_insv", "offset_sec": 3.0, "duration_sec": 10.0},
         {"path": "/tmp/studio.mp4", "filename": "studio.mp4", "projection": "equirect", "offset_sec": 5.0, "duration_sec": 12.0},
     ]
+    window = {"title": "Full video", "start_sec": 5.0, "duration_sec": 12.0}
 
     clip = _select_360_clip(clips)
-    segment = _segment_for_360(clip)
+    segment = _segment_for_360(clip, window)
 
     assert clip["filename"] == "studio.mp4"
     assert segment["clip_start_sec"] == 0.0
     assert segment["master_start_sec"] == 5.0
     assert segment["duration_sec"] == 12.0
     assert segment["projection"] == "equirect"
+
+
+def test_360_segment_trims_to_the_song_window_not_the_clips_own_extent():
+    """Regression guard: passthrough 360 export must follow the song's own
+    Start/End range. Previously the window was replaced entirely by the 360
+    clip's own recording extent, so a song trimmed to a short highlight would
+    silently export the camera's ENTIRE (much longer) recording instead, or a
+    camera that started late would silently shrink the exported song range.
+    """
+    clip = {"path": "/tmp/360.mp4", "filename": "360.mp4", "projection": "equirect", "offset_sec": 100.0, "duration_sec": 600.0}
+
+    # Song window asks for a short 30s highlight starting well inside the clip.
+    window = {"title": "Highlight", "start_sec": 200.0, "duration_sec": 30.0}
+    segment = _segment_for_360(clip, window)
+    assert segment["master_start_sec"] == 200.0
+    assert segment["duration_sec"] == 30.0
+    assert segment["clip_start_sec"] == 100.0
+
+    # Song window extends past where the camera stops recording -- clipped to
+    # what's actually available, not silently expanded or left at full length.
+    window_overrun = {"title": "Full video", "start_sec": 650.0, "duration_sec": 200.0}
+    segment_overrun = _segment_for_360(clip, window_overrun)
+    assert segment_overrun["master_start_sec"] == 650.0
+    assert segment_overrun["duration_sec"] == pytest.approx(50.0)
+
+    # Song window doesn't overlap the clip's coverage at all.
+    window_none = {"title": "Full video", "start_sec": 0.0, "duration_sec": 50.0}
+    segment_none = _segment_for_360(clip, window_none)
+    assert segment_none["duration_sec"] == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -407,3 +465,48 @@ def test_youtube_plan_360_segments_always_get_a_moving_shot_even_with_no_landmar
         assert shot, "360 segment must always carry a spherical_shot, not a frozen passthrough"
         magnitudes = [abs(shot.get("drift_yaw_deg") or 0.0), abs(shot.get("drift_pitch_deg") or 0.0), abs(shot.get("fov_delta_deg") or 0.0)]
         assert max(magnitudes) >= 2.0
+
+
+# ---------------------------------------------------------------------------
+# Reel mode: auto-highlight window picking
+# ---------------------------------------------------------------------------
+
+
+def test_pick_energetic_window_finds_the_loud_section(tmp_path):
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+    master = tmp_path / "master.wav"
+    # Quiet (0-20s), loud (20-30s), quiet again (30-50s). The loud section is
+    # exactly where a highlight reel should land.
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=20:sample_rate=22050",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=10:sample_rate=22050",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=20:sample_rate=22050",
+            "-filter_complex",
+            "[0:a]volume=0.02[quiet1];[1:a]volume=1.0[loud];[2:a]volume=0.02[quiet2];[quiet1][loud][quiet2]concat=n=3:v=0:a=1[out]",
+            "-map", "[out]",
+            str(master),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    window = {"title": "Full video", "start_sec": 0.0, "duration_sec": 50.0}
+
+    picked = _pick_energetic_window(str(master), window, target_duration=8.0)
+
+    assert picked["duration_sec"] == pytest.approx(8.0)
+    # The picked window should sit within the loud stretch (20-30s), not spill
+    # far into either quiet section.
+    assert 18.0 <= picked["start_sec"] <= 24.0
+
+
+def test_pick_energetic_window_falls_back_to_middle_when_shorter_than_target():
+    window = {"title": "Full video", "start_sec": 10.0, "duration_sec": 5.0}
+
+    picked = _pick_energetic_window("/nonexistent/master.wav", window, target_duration=20.0)
+
+    assert picked["start_sec"] == 10.0
+    assert picked["duration_sec"] == 5.0

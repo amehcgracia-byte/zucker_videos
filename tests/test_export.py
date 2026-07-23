@@ -25,14 +25,12 @@ from core.stages.export import (
     _expand_spherical_render_segments,
     _export_source_filter,
     _frame_pts_times,
-    _equirect_filtergraph,
     _motion_filter,
     _paired_flat_fov,
     _v360_motion_at,
     _v360_motion_commands,
     _run_ffmpeg_progress,
     SPHERE_V360_LABEL,
-    _render_360_body,
     _render_plan,
     _render_segment,
     _audio_rms,
@@ -43,6 +41,7 @@ from core.stages.export import (
     _verify_video_cadence,
     _clip_fates,
     _segment_filtergraph,
+    _probe_video_profile,
     color_sample_commands,
     color_correction_for_profile,
     measure_clip_color,
@@ -322,15 +321,6 @@ def test_join_fast_path_skips_cfr_rewrite_when_cadence_passes(tmp_path, monkeypa
     assert calls == []
 
 
-def test_360_filtergraph_preserves_equirectangular_shape():
-    graph = _equirect_filtergraph({"projection": "equirect"}, 4.0, 120, has_watermark=True, shot={"yaw": 90, "pitch": 0})
-
-    assert "v360@sphere=input=equirect:output=equirect:yaw=90.000:pitch=0.000" in graph
-    assert "scale=3840:1920" in graph
-    assert "fps=fps=30.000:round=near:start_time=0,trim=start_frame=0:end_frame=120,setpts=N/(30.000*TB)" in graph
-    assert "overlay=W-w-80:H-h-80" in graph
-
-
 def test_spherical_render_parts_expand_pan_and_planet_motion():
     segments = [
         {"clip_path": "/tmp/360.mp4", "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 3, "spherical_shot": {"type": "singer", "label": "Cantante", "yaw": 20, "pitch": 0, "fov": 80}},
@@ -483,89 +473,6 @@ def test_paired_flat_fov_uses_projection_math_for_16x9():
 
     assert h_fov == 150.0
     assert round(v_fov, 3) == 129.058
-
-
-def test_360_body_writes_spherical_metadata(tmp_path, monkeypatch):
-    project = create_project("Sphere", str(tmp_path / "Sphere.zuckervid"))
-    source = tmp_path / "sphere.mp4"
-    master = tmp_path / "master.wav"
-    output = tmp_path / "body.mp4"
-    source.write_bytes(b"source")
-    master.write_bytes(b"master")
-    record = file_record(str(source))
-    record["probe"] = {"valid_video": True, "projection": "equirect", "duration": 5.0, "width": 3840, "height": 1920, "fps": 30.0}
-    project.data["inputs"]["videos"] = [record]
-    commands = []
-
-    monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
-    monkeypatch.setattr("core.stages.export._watermark_path", lambda: None)
-
-    def fake_progress(command, duration, label, progress):
-        commands.append(command)
-        output.write_bytes(b"body")
-
-    monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", fake_progress)
-
-    _render_360_body(
-        project,
-        {"clip_path": str(source), "source_path": str(source), "clip_start_sec": 0, "master_start_sec": 1, "duration_sec": 3, "projection": "equirect"},
-        output,
-        4_000_000,
-        lambda percent, detail: None,
-    )
-
-    command = commands[0]
-    assert "projection=equirectangular" in command
-    assert "spherical_video=true" in command
-    assert command[command.index("-ss") + 1] == "0.000"
-    assert command[command.index("-filter_complex") + 1].count("3840:1920") >= 1
-    assert str(master) not in command
-    assert "-an" in command
-
-
-@pytest.mark.slow
-def test_360_body_renders_distinct_landmark_yaws(tmp_path, monkeypatch):
-    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
-        pytest.skip("ffmpeg/ffprobe not available")
-    monkeypatch.setattr("core.stages.export._watermark_path", lambda: None)
-    project = create_project("Sphere Move", str(tmp_path / "Sphere Move.zuckervid"))
-    source = tmp_path / "sphere.mp4"
-    first = tmp_path / "first.mp4"
-    second = tmp_path / "second.mp4"
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc2=size=640x320:rate=25:duration=2",
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            str(source),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    record = file_record(str(source))
-    record["probe"] = {"valid_video": True, "projection": "equirect", "duration": 2.0, "width": 640, "height": 320, "fps": 25.0}
-    project.data["inputs"]["videos"] = [record]
-    base = {"clip_path": str(source), "source_path": str(source), "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 1, "projection": "equirect"}
-
-    _render_360_body(project, {**base, "spherical_shot": {"type": "singer", "yaw": 0, "pitch": 0, "fov": 80}}, first, 4_000_000, lambda percent, detail: None)
-    _render_360_body(project, {**base, "spherical_shot": {"type": "drummer", "yaw": 120, "pitch": 0, "fov": 80}}, second, 4_000_000, lambda percent, detail: None)
-
-    assert _frame_md5(first, 0.5) != _frame_md5(second, 0.5)
-    probe = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "stream_tags=projection,spherical_video:format_tags=projection,spherical_video", "-of", "json", str(second)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    assert "equirectangular" in probe.stdout
 
 
 def test_render_segment_falls_back_to_proxy_when_original_decode_fails(tmp_path, monkeypatch):
@@ -785,6 +692,110 @@ def test_export_join_normalizes_mixed_fps_segments(tmp_path, monkeypatch):
     _verify_moving_segment(output, 5.5, "mixed-fps final", "joined output")
 
 
+def test_copy_trim_video_uses_stream_copy_not_a_reencode(tmp_path, monkeypatch):
+    """White-box check on the trim step itself: it must ask ffmpeg to copy
+    the video stream (no bitrate/encoder flags), which is what actually makes
+    this mode a passthrough rather than a fast re-encode.
+    """
+    from core.stages.export import _copy_trim_video
+
+    commands = []
+    monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", lambda command, duration, label, progress: commands.append(command))
+
+    _copy_trim_video("/tmp/source.mp4", tmp_path / "body.mp4", 5.0, 8.0, None)
+
+    command = commands[0]
+    assert command[command.index("-c") + 1] == "copy"
+    assert "-b:v" not in command
+    assert "-crf" not in command
+    assert command[command.index("-map") + 1] == "0:v:0"
+    assert "-an" in command
+    # -ss before -i (input-side seek), not after -- see _copy_trim_video's
+    # docstring for why the post-input form silently miscounts duration.
+    assert command.index("-ss") < command.index("-i")
+
+
+@pytest.mark.slow
+def test_360_export_is_a_true_passthrough_not_a_reencode(tmp_path, monkeypatch):
+    """360 mode must only trim + swap audio + add intro/outro -- never
+    reproject, cut, or apply motion. Verifies: correct total duration (trim
+    range + intro/outro, not the camera's own full recording length), the
+    final audio is the MASTER track (not the camera's own on-board audio),
+    and spherical metadata survives. (The trim step's use of a real stream
+    copy, not a re-encode, is verified separately at the command level in
+    test_copy_trim_video_uses_stream_copy_not_a_reencode.)
+    """
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not available")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project = create_project("Passthrough360", str(tmp_path / "Passthrough360.zuckervid"))
+    master = tmp_path / "master.wav"
+    source = tmp_path / "360source.mp4"
+    # Distinct tones so we can tell master audio apart from the source's own audio.
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=880:duration=60", str(master)], check=True, capture_output=True, text=True)
+    # A short GOP mirrors real camera footage (long GOPs are unusual for
+    # handheld/action cams) and keeps the input-seek keyframe snap small.
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc2=size=640x320:rate=25:duration=20",
+            "-f", "lavfi", "-i", "sine=frequency=220:duration=20",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "25", "-c:a", "aac",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    record = file_record(str(source))
+    record.update({"projection": "equirect", "probe": {"valid_video": True, "projection": "equirect", "duration": 20.0, "width": 640, "height": 320, "fps": 25.0, "video_codec": "h264"}})
+    project.data["inputs"]["master"] = file_record(str(master))
+    project.data["inputs"]["videos"] = [record]
+    project.data["settings"]["wizard"] = {"platform": "360"}
+    clip_start = 5.0
+    body_duration = 8.0
+    write_artifact_json(
+        project.artifacts_dir / "edit_plan.json",
+        {
+            "platform": "360",
+            "segments": [
+                {
+                    "filename": "360source.mp4",
+                    "clip_path": str(source),
+                    "source_path": str(source),
+                    "clip_start_sec": clip_start,
+                    "master_start_sec": 15.0,
+                    "duration_sec": body_duration,
+                    "projection": "equirect",
+                }
+            ],
+        },
+    )
+
+    ExportStage().run(project, lambda percent, message: None)
+
+    manifest = json.loads((project.artifacts_dir / "export_manifest.json").read_text(encoding="utf-8"))
+    export_entry = manifest["exports"][0]
+    output = Path(export_entry["path"])
+    assert output.exists()
+    assert any("passthrough" in warning for warning in export_entry["warnings"])
+    assert any("watermark is skipped" in warning for warning in export_entry["warnings"])
+
+    duration = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(output)], check=True, capture_output=True, text=True).stdout.strip())
+    assert duration == pytest.approx(body_duration + 10.2 + 10.2, abs=1.5)
+
+    # Final audio must be the MASTER track (880 Hz), not the source clip's
+    # own on-board audio (220 Hz).
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "stream_tags=projection,spherical_video:format_tags=projection,spherical_video", "-of", "json", str(output)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "equirectangular" in probe.stdout
+    assert _audio_rms(output, 15.0, 1.0) > 0.01
+
+
 @pytest.mark.slow
 def test_two_segment_export_contains_bottom_right_watermark(tmp_path, monkeypatch):
     if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
@@ -928,7 +939,7 @@ def test_final_audio_verifier_allows_source_level_change_and_smooth_fade_stack(t
             "-vf",
             "fps=30,setpts=N/(30*TB),format=yuv420p",
             "-af",
-            f"afade=t=in:st=10.200:d=1.500,afade=t=out:st={source_duration - 1.5:.3f}:d=1.500",
+            f"afade=t=in:st=0.000:d=1.500,afade=t=out:st={source_duration - 1.5:.3f}:d=1.500",
             "-c:v",
             "libx264",
             "-pix_fmt",
@@ -961,8 +972,8 @@ def test_final_audio_verifier_allows_source_level_change_and_smooth_fade_stack(t
         content_end=source_duration,
     )
     curve = _audio_gain_curve_samples(source_duration, 10.2, source_duration)
-    fade_in = [gain for timestamp, gain in curve if 10.2 <= timestamp <= 11.7]
-    steady = [gain for timestamp, gain in curve if 11.7 < timestamp < source_duration - 1.5]
+    fade_in = [gain for timestamp, gain in curve if 0.0 <= timestamp <= 1.5]
+    steady = [gain for timestamp, gain in curve if 1.5 < timestamp < source_duration - 1.5]
     assert fade_in == sorted(fade_in)
     assert all(gain == pytest.approx(1.0) for gain in steady)
 

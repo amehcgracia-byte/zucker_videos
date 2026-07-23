@@ -15,7 +15,7 @@ from typing import Any
 
 from core.camera_moves import clip_curve_for_segment, interpolate_curve, load_camera_moves, normalize_recorded_samples, recorded_move_covering, recorded_shot_for_segment
 from core.operator_avoidance import count_avoidance_adjustments
-from core.ffmpeg import FFmpegError, tool_status
+from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.messages import t
 from core.media_validation import record_is_usable_camera_video, record_media_path
 from core.normalization import EVEN_SDR_FILTER, NORMALIZATION_VERSION, SDR_TONEMAP_FILTER, global_cache_root, global_segment_path, source_cache_key
@@ -353,13 +353,26 @@ def _render_360_plan(
     warnings: list[str],
     progress_callback: ProgressCallback,
 ) -> None:
-    """Render a full equirectangular 360 clip with master audio and spherical metadata."""
-    ffmpeg = _ffmpeg_path()
-    # Build one body segment spanning the full song range from the selected 360 clip.
-    # Never split into per-edit-plan sub-segments; the 360 export is a single-pass
-    # passthrough (trim + spherical reframe + watermark + intro/outro).
-    segment = _build_360_body_segment(project, segments)
-    duration = max(1.0, float(segment.get("duration_sec") or 1.0))
+    """Direct passthrough export: the original 360 clip already works fine in
+    YouTube/VLC, so this mode does nothing but trim it to the song's Start/End
+    range (stream copy, no body re-encode), replace its audio with the synced
+    master track, and bookend it with intro/outro logos re-encoded to match
+    the source's own codec/resolution/fps so the concat needs no re-encode
+    either. No reprojection, motion, beat cuts, camera selection, or operator
+    avoidance -- and no watermark, since compositing one would require
+    re-encoding the whole body.
+    """
+    del project  # kept in the signature to match the other _render_*_plan functions
+    if not segments:
+        raise FFmpegError("No 360 segment to export")
+    segment = segments[0]
+    source_path = str(segment.get("source_path") or segment.get("clip_path") or "")
+    if not source_path or not Path(source_path).exists():
+        raise FFmpegError(f"360 source file is missing: {source_path or '(none)'}")
+    profile = _probe_video_profile(source_path)
+    clip_start = max(0.0, float(segment.get("clip_start_sec") or 0.0))
+    duration = max(0.1, float(segment.get("duration_sec") or 0.0))
+
     temp_dir = output_path.parent / f".{output_path.stem}-360"
     if temp_dir.exists():
         shutil.rmtree(temp_dir)
@@ -369,42 +382,34 @@ def _render_360_plan(
         body = temp_dir / "body.mp4"
         outro = temp_dir / "outro.mp4"
         joined = temp_dir / "joined.mp4"
-        _render_logo_clip(
+        _render_matched_logo_clip(
             intro,
-            "360",
+            profile,
             "intro",
             INTRO_DURATION,
             video_bitrate,
             lambda percent, detail: progress_callback(8 + int(percent * 4 / 100), detail),
         )
-        body_paths: list[Path] = []
-        segment_path = temp_dir / "body-0001.mp4"
-        _render_360_body(
-            project,
-            segment,
-            segment_path,
-            video_bitrate,
-            lambda percent, detail: progress_callback(
-                12 + int(72 * percent / 100),
-                f"Rendering 360: {detail}",
-            ),
-            intro_fade=True,
-            outro_fade=True,
+        _copy_trim_video(
+            source_path,
+            body,
+            clip_start,
+            duration,
+            lambda percent, detail: progress_callback(12 + int(percent * 60 / 100), detail),
         )
-        body_paths.append(segment_path)
-        _render_logo_clip(
+        _render_matched_logo_clip(
             outro,
-            "360",
+            profile,
             "outro",
             OUTRO_DURATION,
             video_bitrate,
-            lambda percent, detail: progress_callback(84 + int(percent * 4 / 100), detail),
+            lambda percent, detail: progress_callback(72 + int(percent * 4 / 100), detail),
         )
         concat_path = temp_dir / "concat.txt"
-        concat_path.write_text("".join(_concat_file_line(path) for path in [intro, *body_paths, outro]), encoding="utf-8")
+        concat_path.write_text("".join(_concat_file_line(path) for path in [intro, body, outro]), encoding="utf-8")
         _run_ffmpeg_progress(
             [
-                ffmpeg,
+                _ffmpeg_path(),
                 "-y",
                 "-hide_banner",
                 "-loglevel",
@@ -425,112 +430,193 @@ def _render_360_plan(
             ],
             duration + INTRO_DURATION + OUTRO_DURATION,
             t("joining_segments"),
-            lambda percent, detail: progress_callback(88 + int(percent * 4 / 100), detail),
+            lambda percent, detail: progress_callback(76 + int(percent * 8 / 100), detail),
         )
-        cfr_joined = _cadence_checked_joined_video(
-            joined,
-            temp_dir / "joined-cfr.mp4",
-            video_bitrate,
-            lambda percent, detail: progress_callback(91 + int(percent * 1 / 100), detail),
-            extra_args=_spherical_metadata_args(),
-        )
-        real_duration = _media_duration(str(cfr_joined))
+        # No cadence-normalization fallback here: that path assumes the fixed
+        # TARGET_EXPORT_FPS and would re-encode (and resample) the body to
+        # force it, which is exactly the re-encode this mode exists to avoid.
+        # The source's own native fps is preserved as-is.
+        real_duration = _media_duration(str(joined))
         audio_start, audio_delay = _audio_mux_start_and_delay([segment])
         _mux_continuous_master_audio(
-            cfr_joined,
+            joined,
             master_path,
             output_path,
             audio_start,
             real_duration,
             video_bitrate,
-            lambda percent, detail: progress_callback(92 + int(percent * 3 / 100), detail),
+            lambda percent, detail: progress_callback(84 + int(percent * 14 / 100), detail),
             extra_args=_spherical_metadata_args(),
             content_start=INTRO_DURATION,
             content_end=max(INTRO_DURATION, real_duration - OUTRO_DURATION),
             audio_delay=audio_delay,
         )
-        warnings.append("360 export uses the selected 360 clip full length with synced master audio; no multicam cuts.")
+        warnings.append(
+            "360 export is a direct passthrough: the original clip is trimmed via stream copy "
+            "(no re-encode of the body) and only the synced master audio plus intro/outro logos "
+            "are added. The watermark is skipped in this mode -- overlaying it would require "
+            "re-encoding the whole body, and preserving the source's original quality and 360 "
+            "metadata matters more here."
+        )
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def _build_360_body_segment(project: Project, segments: list[dict[str, Any]]) -> dict[str, Any]:
-    """Return one body segment spanning the full song range from the 360 clip.
-
-    For directed mode with a recorded take, attach the full-range take curve as the
-    spherical_shot so the sendcmd path emits varying yaw/pitch for every frame.
-    For automatic mode, no spherical_shot is attached (plain equirect passthrough).
+def _probe_video_profile(path: str) -> dict[str, Any]:
+    """Probe the exact codec/resolution/fps of a source file, so intro/outro
+    logos can be re-encoded to match it closely enough for a stream-copy
+    concat to work without touching the body.
     """
-    # Gather equirect segments from the edit plan (may be empty for non-360 plan).
-    equirect_segs = [s for s in segments if s.get("projection") in {"equirect", "raw_insv"}]
-
-    # Determine song start/end from the plan.
-    if equirect_segs:
-        first_seg = equirect_segs[0]
-        last_seg = equirect_segs[-1]
-        song_master_start = float(first_seg.get("master_start_sec") or 0.0)
-        song_master_end = float(last_seg.get("master_start_sec") or 0.0) + float(last_seg.get("duration_sec") or 0.0)
-        clip_start = float(first_seg.get("clip_start_sec") or 0.0)
-        song_duration = max(1.0, song_master_end - song_master_start)
-        base = first_seg
-    else:
-        base = _select_360_segment(project, segments)
-        song_master_start = float(base.get("master_start_sec") or 0.0)
-        clip_start = float(base.get("clip_start_sec") or 0.0)
-        song_duration = max(1.0, float(base.get("duration_sec") or 1.0))
-        song_master_end = song_master_start + song_duration
-
-    body: dict[str, Any] = {
-        **base,
-        "clip_start_sec": clip_start,
-        "master_start_sec": song_master_start,
-        "duration_sec": song_duration,
-    }
-    body.pop("spherical_shot", None)
-
-    # In directed mode, attach a recorded take covering the full song range.
-    edit_settings = (project.data.get("settings") or {}).get("edit") or {}
-    spherical_mode = str(edit_settings.get("spherical_mode") or "automatic").lower()
-    if spherical_mode == "directed":
-        recorded_moves = load_camera_moves(project)
-        recorded = recorded_move_covering(recorded_moves, song_master_start, song_master_end)
-        if recorded:
-            curve = clip_curve_for_segment(recorded, song_master_start, song_master_end)
-            if curve:
-                first_pt = curve[0]
-                body["spherical_shot"] = {
-                    "type": "recorded_move",
-                    "label": f"Recorded take: {recorded.get('name') or 'Take'}",
-                    "recorded_take": recorded.get("name") or "Take",
-                    "yaw": first_pt["yaw"],
-                    "pitch": first_pt["pitch"],
-                    "fov": first_pt["fov"],
-                    "curve": curve,
-                }
-
-    return body
-
-
-def _select_360_segment(project: Project, segments: list[dict[str, Any]]) -> dict[str, Any]:
-    for segment in segments:
-        if segment.get("projection") in {"equirect", "raw_insv"}:
-            return segment
-    records = project.data.get("inputs", {}).get("videos", [])
-    candidates = [record for record in records if (record.get("probe") or {}).get("projection") in {"equirect", "raw_insv"} or record.get("projection") in {"equirect", "raw_insv"}]
-    if not candidates:
-        raise ValueError("No 360 clip is registered")
-    preferred = sorted(candidates, key=lambda record: 0 if (record.get("probe") or {}).get("projection") == "equirect" or record.get("projection") == "equirect" else 1)[0]
-    normalized = preferred.get("normalized") or {}
+    metadata = ffprobe(path)
+    streams = metadata.get("streams") or []
+    video = next((stream for stream in streams if stream.get("codec_type") == "video"), {})
     return {
-        "title": Path(str(preferred.get("path"))).stem,
-        "clip_path": normalized.get("path") or preferred.get("path"),
-        "source_path": preferred.get("path"),
-        "clip_start_sec": 0.0,
-        "master_start_sec": 0.0,
-        "duration_sec": float((preferred.get("probe") or {}).get("duration") or preferred.get("duration") or 1.0),
-        "projection": preferred.get("projection") or (preferred.get("probe") or {}).get("projection"),
-        "filename": Path(str(preferred.get("path"))).name,
+        "codec_name": str(video.get("codec_name") or "h264").lower(),
+        "width": int(video.get("width") or 1920),
+        "height": int(video.get("height") or 1080),
+        "fps": _parse_frame_rate(video.get("avg_frame_rate") or video.get("r_frame_rate")) or 30.0,
+        "pix_fmt": str(video.get("pix_fmt") or "yuv420p"),
     }
+
+
+def _parse_frame_rate(value: Any) -> float | None:
+    text = str(value or "")
+    if "/" in text:
+        left, right = text.split("/", 1)
+        try:
+            denom = float(right)
+            return round(float(left) / denom, 6) if denom else None
+        except (TypeError, ValueError):
+            return None
+    try:
+        return round(float(text), 6)
+    except (TypeError, ValueError):
+        return None
+
+
+def _matching_encoders(codec_name: str) -> tuple[str, str]:
+    """Return (hardware_codec, software_codec) matching the source's own
+    codec family, so intro/outro concat cleanly with a stream-copied body.
+    """
+    if codec_name in {"hevc", "h265"}:
+        return "hevc_videotoolbox", "libx265"
+    return "h264_videotoolbox", "libx264"
+
+
+def _copy_trim_video(source_path: str, output_path: Path, start: float, duration: float, progress_callback: ProgressCallback | None) -> None:
+    """Trim the source to [start, start+duration) via stream copy -- no re-encode.
+
+    -ss is given BEFORE -i (input-side seeking): ffmpeg snaps to the nearest
+    preceding keyframe, so the body may start up to one GOP earlier than the
+    exact requested instant, but decodes cleanly from its very first frame in
+    any player. Post-input -ss (with -c copy) gives frame-accurate output but
+    starts mid-GOP, which some strict players show as a brief garbled frame --
+    a worse tradeoff than a small, sync-compensated timing offset. Note:
+    -avoid_negative_ts make_zero must NOT be added here -- combined with
+    pre-input -ss it made ffmpeg (observed on ffmpeg 7.x) misinterpret -t as
+    an absolute input cutoff instead of an output duration, silently
+    truncating the trim.
+    """
+    command = [
+        _ffmpeg_path(),
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-progress",
+        "pipe:1",
+        "-ss",
+        f"{start:.3f}",
+        "-i",
+        str(source_path),
+        "-t",
+        f"{duration:.3f}",
+        "-map",
+        "0:v:0",
+        "-c",
+        "copy",
+        "-an",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+    _run_ffmpeg_progress(command, duration, "Trimming 360 source", progress_callback)
+
+
+def _render_matched_logo_clip(
+    output_path: Path,
+    profile: dict[str, Any],
+    kind: str,
+    duration: float,
+    video_bitrate: int,
+    progress_callback: ProgressCallback | None,
+) -> None:
+    """Render a video-only intro/outro logo clip matching the source's own
+    codec family, resolution, fps, and pixel format, so it can be joined to
+    the stream-copied body via a plain concat (no re-encode of the body).
+    """
+    ffmpeg = _ffmpeg_path()
+    logo = _intro_logo_path() or _logo_path()
+    width, height, fps = profile["width"], profile["height"], profile["fps"]
+    command = [
+        ffmpeg,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-progress",
+        "pipe:1",
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=c=0x000000:s={width}x{height}:r={fps:.3f}:d={duration:.3f}",
+    ]
+    if logo:
+        command.extend(["-loop", "1", "-t", f"{duration:.3f}", "-i", str(logo)])
+    filter_complex = _logo_filtergraph_matched(kind, duration, bool(logo), height)
+    command.extend(
+        [
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[v]",
+            "-pix_fmt",
+            profile["pix_fmt"],
+            "-r",
+            f"{fps:.3f}",
+            "-fps_mode",
+            "cfr",
+            "-an",
+            "-movflags",
+            "+faststart",
+        ]
+    )
+    hw_codec, sw_codec = _matching_encoders(profile["codec_name"])
+    try:
+        _run_ffmpeg_progress(command + _video_encode_args(hw_codec, video_bitrate) + [str(output_path)], duration, f"{kind.title()} logo", progress_callback)
+    except FFmpegError:
+        if output_path.exists():
+            output_path.unlink()
+        _run_ffmpeg_progress(command + _video_encode_args(sw_codec, video_bitrate) + [str(output_path)], duration, f"{kind.title()} logo", progress_callback)
+
+
+def _logo_filtergraph_matched(kind: str, duration: float, has_logo: bool, height: int) -> str:
+    video = f"[0:v]format=yuv420p,{_constant_cadence_filter()}[bg]"
+    if not has_logo:
+        return f"{video};[bg]copy[v]"
+    logo_height = int(height * 0.72)
+    fade_in = 3.45
+    fade_out = 3.00
+    black_hold = 1.50
+    fade_out_start = max(0.0, duration - black_hold - fade_out)
+    fade = f"fade=t=in:st={black_hold:.2f}:d={fade_in:.2f}:alpha=1,fade=t=out:st={fade_out_start:.2f}:d={fade_out:.2f}:alpha=1"
+    return (
+        f"{video};"
+        f"[1:v]format=rgba,scale=-1:{logo_height},{fade}[logo];"
+        f"[bg][logo]overlay=(W-w)/2:(H-h)/2:format=auto[v]"
+    )
 
 
 def _expand_spherical_render_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -626,101 +712,6 @@ def _drifted_spherical_shot(shot: dict[str, Any], amount: float) -> dict[str, An
         "yaw": (_shot_float(shot, "yaw", 0.0) + yaw_delta) % 360.0,
         "pitch": _shot_float(shot, "pitch", 0.0) + pitch_delta,
     }
-
-
-def _render_360_body(
-    project: Project,
-    segment: dict[str, Any],
-    output_path: Path,
-    video_bitrate: int,
-    progress_callback: ProgressCallback | None,
-    intro_fade: bool = False,
-    outro_fade: bool = False,
-) -> None:
-    ffmpeg = _ffmpeg_path()
-    duration = max(0.1, float(segment["duration_sec"]))
-    frame_count = _segment_frame_count(segment)
-    source = _segment_source_info(project, segment)
-    watermark = _watermark_path()
-    shot = _spherical_shot(segment)
-    filter_complex = _equirect_filtergraph(
-        source.get("probe") or {},
-        duration,
-        frame_count,
-        bool(watermark),
-        shot=shot,
-        intro_fade=intro_fade,
-        outro_fade=outro_fade,
-        command_path=output_path.with_suffix(".sendcmd.txt"),
-    )
-    command = _segment_video_command_base(ffmpeg, source["source_path"], segment, duration)
-    if watermark:
-        command.extend(["-loop", "1", "-i", str(watermark)])
-    command.extend(
-        [
-            "-filter_complex",
-            filter_complex,
-            "-map",
-            "[v]",
-            "-pix_fmt",
-            "yuv420p",
-            "-r",
-            f"{TARGET_EXPORT_FPS:.3f}",
-            "-fps_mode",
-            "cfr",
-            "-video_track_timescale",
-            str(TARGET_EXPORT_TIMESCALE),
-            "-an",
-            "-frames:v",
-            str(frame_count),
-            "-movflags",
-            "+faststart+use_metadata_tags",
-            *_spherical_metadata_args(),
-        ]
-    )
-    command.extend(_video_encode_args("h264_videotoolbox", video_bitrate))
-    command.append(str(output_path))
-    try:
-        _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
-    except FFmpegError:
-        if output_path.exists():
-            output_path.unlink()
-        command = command[: command.index("-c:v")] + _video_encode_args("libx264", video_bitrate) + [str(output_path)]
-        _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
-
-
-def _equirect_filtergraph(
-    probe: dict[str, Any],
-    duration: float,
-    frame_count: int | None,
-    has_watermark: bool,
-    shot: dict[str, Any] | None = None,
-    intro_fade: bool = False,
-    outro_fade: bool = False,
-    command_path: Path | None = None,
-) -> str:
-    yaw = _shot_yaw(shot)
-    pitch = _shot_float(shot, "pitch", 0.0)
-    command_prefix = _v360_sendcmd_filter(shot, duration, command_path)
-    if probe.get("projection") == "raw_insv":
-        fov = int(probe.get("insv_fov") or 190)
-        base_filter = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov}:interp=lanczos,{command_prefix}{SPHERE_V360_LABEL}=input=equirect:output=equirect:yaw={yaw:.3f}:pitch={pitch:.3f}:interp=lanczos,scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
-    else:
-        base_filter = f"{command_prefix}{SPHERE_V360_LABEL}=input=equirect:output=equirect:yaw={yaw:.3f}:pitch={pitch:.3f}:interp=lanczos,scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
-    timing = _exact_cadence_filter(frame_count) if frame_count else _constant_cadence_filter()
-    filters = f"{base_filter},{timing},tpad=stop_mode=clone:stop_duration={1.0 / TARGET_EXPORT_FPS:.6f},format=yuv420p"
-    if intro_fade:
-        filters += f",fade=t=in:st=0:d={CONTENT_FADE_DURATION:.3f}"
-    if outro_fade:
-        filters += f",fade=t=out:st={max(0.0, duration - CONTENT_FADE_DURATION):.3f}:d={CONTENT_FADE_DURATION:.3f}"
-    graph = f"[0:v]{filters}[base]"
-    if not has_watermark:
-        return f"{graph};[base]copy[v]"
-    return (
-        f"{graph};"
-        "[1:v]format=rgba,scale=-1:96,colorchannelmixer=aa=0.70[wm];"
-        "[base][wm]overlay=W-w-80:H-h-80:format=auto[v]"
-    )
 
 
 def _spherical_metadata_args() -> list[str]:
@@ -832,6 +823,8 @@ def _outro_master_start(segments: list[dict[str, Any]]) -> float:
 def _target_size(platform: str) -> tuple[int, int]:
     if platform in {"instagram", "tiktok"}:
         return 608, 1080
+    if platform == "reel":
+        return 1080, 1920
     if platform == "360":
         return 3840, 1920
     return 1920, 1080
@@ -1270,7 +1263,14 @@ def _mux_continuous_master_audio(
         filters.append(f"adelay={delay_ms}:all=1")
     filters.extend(["apad", f"atrim=0:{duration:.3f}", "asetpts=PTS-STARTPTS"])
     if content_start is not None:
-        filters.append(f"afade=t=in:st={max(0.0, content_start):.3f}:d={CONTENT_FADE_DURATION:.3f}")
+        # L-cut: audio fades in from the very start of the timeline (under
+        # the intro logo), not once the intro finishes -- ffmpeg's afade is
+        # silent before its own start point, so fading in at content_start
+        # meant the intro played with no sound at all until the video content
+        # began. By the time content_start arrives the fade is long done
+        # (CONTENT_FADE_DURATION << INTRO_DURATION), so this only affects the
+        # first ~1.5s of the intro, not the cut point itself.
+        filters.append(f"afade=t=in:st=0.000:d={CONTENT_FADE_DURATION:.3f}")
     if content_end is not None:
         filters.append(f"afade=t=out:st={max(0.0, content_end - CONTENT_FADE_DURATION):.3f}:d={CONTENT_FADE_DURATION:.3f}")
     audio_filter = ",".join(filters) + "[a]"
@@ -1314,6 +1314,8 @@ def _mux_continuous_master_audio(
 def _base_video_filter(platform: str) -> str:
     if platform in {"instagram", "tiktok"}:
         return "scale=608:1080:force_original_aspect_ratio=increase,crop=608:1080,setsar=1,format=yuv420p"
+    if platform == "reel":
+        return "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,format=yuv420p"
     if platform == "360":
         return "scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
     return "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
@@ -1994,11 +1996,12 @@ def _expected_master_rms(
 
 
 def _audio_gain_at(timestamp: float, total_duration: float | None, content_start: float | None, content_end: float | None) -> float:
+    # L-cut: the intro fade-in runs from t=0 (see _mux_continuous_master_audio),
+    # not from content_start -- audio plays under the intro logo, already at
+    # full volume well before video content begins.
     gain = 1.0
-    if content_start is not None and timestamp < content_start:
-        gain = 1.0
-    if content_start is not None and content_start <= timestamp < content_start + CONTENT_FADE_DURATION:
-        gain *= max(0.0, min(1.0, (timestamp - content_start) / CONTENT_FADE_DURATION))
+    if content_start is not None and timestamp < CONTENT_FADE_DURATION:
+        gain *= max(0.0, min(1.0, timestamp / CONTENT_FADE_DURATION))
     if content_end is not None and content_end - CONTENT_FADE_DURATION < timestamp <= content_end:
         gain *= max(0.0, min(1.0, (content_end - timestamp) / CONTENT_FADE_DURATION))
     if content_end is not None and timestamp > content_end:
@@ -2025,7 +2028,7 @@ def _time_overlaps_audio_fade(
 def _audio_fade_windows(total_duration: float | None, content_start: float | None, content_end: float | None) -> list[tuple[float, float]]:
     windows: list[tuple[float, float]] = []
     if content_start is not None:
-        windows.append((max(0.0, content_start), max(0.0, content_start + CONTENT_FADE_DURATION)))
+        windows.append((0.0, CONTENT_FADE_DURATION))
     if content_end is not None:
         windows.append((max(0.0, content_end - CONTENT_FADE_DURATION), max(0.0, content_end)))
     if total_duration is not None:
@@ -2312,7 +2315,7 @@ def _text_filters(platform: str, duration: float, config: dict[str, Any]) -> lis
             filters.append(_drawtext(text, "x=64:y=h-th-92:fontsize=46:enable='between(t,0,4)'"))
         else:
             filters.append(_drawtext(title, "x=(w-tw)/2:y=(h-th)/2:fontsize=54:enable='between(t,0,4)'"))
-    if platform in {"instagram", "tiktok"} and handle:
+    if platform in {"instagram", "tiktok", "reel"} and handle:
         filters.append(_drawtext(handle, f"x=(w-tw)/2:y=h-th-130:fontsize=38:enable='gte(t,{max(0.0, duration - 4):.3f})'"))
     return filters
 
@@ -2574,6 +2577,34 @@ def _video_encode_args(codec: str, video_bitrate: int) -> list[str]:
             str(int(video_bitrate * 2)),
             "-profile:v",
             "high",
+        ]
+    if codec == "hevc_videotoolbox":
+        return [
+            "-c:v",
+            codec,
+            "-b:v",
+            str(video_bitrate),
+            "-maxrate",
+            str(int(video_bitrate * 1.2)),
+            "-bufsize",
+            str(int(video_bitrate * 2)),
+            "-tag:v",
+            "hvc1",
+        ]
+    if codec == "libx265":
+        return [
+            "-c:v",
+            "libx265",
+            "-preset",
+            "veryfast",
+            "-b:v",
+            str(video_bitrate),
+            "-maxrate",
+            str(int(video_bitrate * 1.2)),
+            "-bufsize",
+            str(int(video_bitrate * 2)),
+            "-tag:v",
+            "hvc1",
         ]
     return [
         "-c:v",

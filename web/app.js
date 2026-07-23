@@ -48,6 +48,27 @@ let director = {
   animation: null,
 };
 
+// Result screen's read-only 360 viewer -- same sphere-mapping approach as
+// the Director (drag to look around), but no recording/take machinery: the
+// exported file already has its audio embedded and needs no separate sync.
+let result360 = {
+  ready: false,
+  three: null,
+  renderer: null,
+  scene: null,
+  camera: null,
+  sphere: null,
+  texture: null,
+  gl: null,
+  yaw: 0,
+  pitch: 0,
+  fov: 100,
+  dragging: false,
+  dragX: 0,
+  dragY: 0,
+  animation: null,
+};
+
 const LANDMARK_LABELS = {
   full_stage: "Full stage",
   singer: "Singer",
@@ -1057,6 +1078,142 @@ function verticalFovFromHorizontal(horizontalFov, aspect) {
   return (2 * Math.atan(Math.tan((horizontal * Math.PI) / 360) / Math.max(0.1, aspect)) * 180) / Math.PI;
 }
 
+async function setupResult360Viewer(videoUrl) {
+  const canvas = document.querySelector("#result360Canvas");
+  const video = document.querySelector("#result360Video");
+  teardownResult360Viewer();
+  video.src = videoUrl;
+  video.playsInline = true;
+  const gl = canvas.getContext("webgl2");
+  if (!gl) throw new Error("WebGL2 is not available in this webview");
+  result360.gl = gl;
+  const THREE = await import("/vendor/three.module.min.js");
+  result360.three = THREE;
+  result360.renderer = new THREE.WebGLRenderer({ canvas, context: gl, antialias: true });
+  result360.scene = new THREE.Scene();
+  result360.camera = new THREE.PerspectiveCamera(50, 16 / 9, 0.1, 1100);
+  const geometry = new THREE.SphereGeometry(500, 96, 64);
+  geometry.scale(-1, 1, 1);
+  result360.texture = new THREE.VideoTexture(video);
+  result360.texture.colorSpace = THREE.SRGBColorSpace;
+  result360.sphere = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ map: result360.texture }));
+  result360.scene.add(result360.sphere);
+  result360.yaw = 0;
+  result360.pitch = 0;
+  result360.fov = 100;
+  wireResult360Events(canvas);
+  resizeResult360();
+  document.querySelector("#result360Play").textContent = "Play";
+  const render = () => {
+    result360.animation = requestAnimationFrame(render);
+    updateResult360Scrub();
+    result360.renderer.render(result360.scene, result360.camera);
+  };
+  render();
+  result360.ready = true;
+}
+
+function teardownResult360Viewer() {
+  if (result360.animation) cancelAnimationFrame(result360.animation);
+  result360.animation = null;
+  result360.texture?.dispose?.();
+  result360.renderer?.dispose?.();
+  const video = document.querySelector("#result360Video");
+  if (video) video.pause();
+  result360.ready = false;
+}
+
+function wireResult360Events(canvas) {
+  if (canvas.dataset.wired) return;
+  canvas.dataset.wired = "1";
+  canvas.addEventListener("pointerdown", (event) => {
+    result360.dragging = true;
+    result360.dragX = event.clientX;
+    result360.dragY = event.clientY;
+    canvas.classList.add("dragging");
+    canvas.setPointerCapture?.(event.pointerId);
+  });
+  canvas.addEventListener("pointermove", (event) => {
+    if (!result360.dragging) return;
+    const dx = event.clientX - result360.dragX;
+    const dy = event.clientY - result360.dragY;
+    result360.dragX = event.clientX;
+    result360.dragY = event.clientY;
+    result360.yaw = normalizeYaw(result360.yaw - dx * 0.16) ?? 0;
+    result360.pitch = clamp(result360.pitch + dy * 0.12, -85, 85);
+    updateResult360Camera();
+  });
+  const stopDrag = (event) => {
+    result360.dragging = false;
+    canvas.classList.remove("dragging");
+    if (event?.pointerId != null) canvas.releasePointerCapture?.(event.pointerId);
+  };
+  canvas.addEventListener("pointerup", stopDrag);
+  canvas.addEventListener("pointercancel", stopDrag);
+  canvas.addEventListener(
+    "wheel",
+    (event) => {
+      event.preventDefault();
+      const delta = event.deltaY > 0 ? 3 : -3;
+      result360.fov = clamp((result360.fov || 100) + delta, 30, 150);
+      updateResult360Camera();
+    },
+    { passive: false }
+  );
+  window.addEventListener("resize", resizeResult360);
+}
+
+function resizeResult360() {
+  if (!result360.renderer || !result360.camera) return;
+  const canvas = document.querySelector("#result360Canvas");
+  const width = Math.max(320, canvas.clientWidth || 960);
+  const height = Math.max(180, canvas.clientHeight || Math.round((width * 9) / 16));
+  result360.renderer.setSize(width, height, false);
+  result360.camera.aspect = width / height;
+  updateResult360Camera();
+}
+
+function updateResult360Camera() {
+  if (!result360.camera || !result360.three) return;
+  const THREE = result360.three;
+  const aspect = Math.max(0.1, result360.camera.aspect || 16 / 9);
+  result360.camera.fov = verticalFovFromHorizontal(result360.fov, aspect);
+  result360.camera.updateProjectionMatrix();
+  const yaw = THREE.MathUtils.degToRad(signedYawDelta(result360.yaw, 0));
+  const pitch = THREE.MathUtils.degToRad(clamp(result360.pitch, -85, 85));
+  const target = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
+  result360.camera.lookAt(target);
+  document.querySelector("#result360Hud").textContent = `Yaw ${formatCanonicalNumber(result360.yaw)}° · Pitch ${formatCanonicalNumber(result360.pitch)}°`;
+}
+
+function toggleResult360Play() {
+  const video = document.querySelector("#result360Video");
+  if (!video) return;
+  if (video.paused) {
+    video.play().catch(() => {});
+    document.querySelector("#result360Play").textContent = "Pause";
+  } else {
+    video.pause();
+    document.querySelector("#result360Play").textContent = "Play";
+  }
+}
+
+function seekResult360(time) {
+  const video = document.querySelector("#result360Video");
+  if (!video || !Number.isFinite(video.duration)) return;
+  video.currentTime = clamp(Number(time) || 0, 0, video.duration);
+}
+
+function updateResult360Scrub() {
+  const video = document.querySelector("#result360Video");
+  const scrub = document.querySelector("#result360Scrub");
+  if (!video || !scrub || !Number.isFinite(video.duration)) return;
+  scrub.max = String(Math.max(0.01, video.duration));
+  if (document.activeElement !== scrub) scrub.value = String(video.currentTime || 0);
+  document.querySelector("#result360Time").textContent = `${secondsToTime(video.currentTime || 0)} / ${secondsToTime(video.duration || 0)}`;
+  if (video.ended) document.querySelector("#result360Play").textContent = "Play";
+}
+
 async function toggleDirectorPlay() {
   const video = document.querySelector("#directorVideo");
   if (video.paused) await playDirector();
@@ -1539,7 +1696,26 @@ function renderWizardStatus(status) {
     document.querySelector("#resultSummary").textContent = resultSummary(latestResult);
     renderClipFates(latestResult);
     renderSphericalShots(latestResult);
-    document.querySelector("#resultVideo").src = `${latestResult.media_url}?t=${Date.now()}`;
+    const mediaUrl = `${latestResult.media_url}?t=${Date.now()}`;
+    if (latestResult.platform === "360") {
+      document.querySelector("#resultVideo").hidden = true;
+      document.querySelector("#result360Player").hidden = false;
+      document.querySelector("#result360Controls").hidden = false;
+      setupResult360Viewer(mediaUrl).catch((error) => {
+        logFrontendError(`360 result viewer failed: ${error.message}`, error.stack || "");
+        // Fall back to the plain player rather than leaving the result blank.
+        document.querySelector("#resultVideo").hidden = false;
+        document.querySelector("#result360Player").hidden = true;
+        document.querySelector("#result360Controls").hidden = true;
+        document.querySelector("#resultVideo").src = mediaUrl;
+      });
+    } else {
+      teardownResult360Viewer();
+      document.querySelector("#resultVideo").hidden = false;
+      document.querySelector("#result360Player").hidden = true;
+      document.querySelector("#result360Controls").hidden = true;
+      document.querySelector("#resultVideo").src = mediaUrl;
+    }
     document.querySelector("#errorBox").hidden = true;
     document.querySelector("#resultBox").hidden = false;
     setStep(4);
@@ -1882,9 +2058,10 @@ document.addEventListener("click", (event) => {
     revealNative(latestResult?.path, S.reveal).catch((error) => showToast(error.message, true));
   }
   if (target.id === "fullscreenResult") {
-    const video = document.querySelector("#resultVideo");
-    video?.requestFullscreen?.().catch((error) => showToast(error.message, true));
+    const element = latestResult?.platform === "360" ? document.querySelector("#result360Player") : document.querySelector("#resultVideo");
+    element?.requestFullscreen?.().catch((error) => showToast(error.message, true));
   }
+  if (target.id === "result360Play") toggleResult360Play();
   if (target.id === "statusStrip") setStep(3);
   const rescueButton = target.closest?.("[data-rescue]");
   if (rescueButton instanceof HTMLElement) {
@@ -1938,6 +2115,10 @@ document.addEventListener("input", (event) => {
     updateSphericalWarnings();
     queueSphericalPreview(sphericalGroup, "drag");
   }
+});
+
+document.querySelector("#result360Scrub").addEventListener("input", (event) => {
+  seekResult360(Number(event.target.value) || 0);
 });
 
 document.querySelector("#videoName").value = todayName();

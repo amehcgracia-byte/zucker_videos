@@ -75,9 +75,14 @@ class EditStage(Stage):
         coverage = load_coverage(project)
         platform = str(coverage.get("platform") or "youtube")
         recorded_moves = load_camera_moves(project)
-        if platform == "youtube":
+        # Reel reuses the exact same real multicam logic as YouTube (bar-aligned
+        # cuts, camera weights, operator avoidance, motion on static shots) --
+        # only the window (narrowed to a short energetic highlight by cut.py)
+        # and the render target size/framing differ.
+        real_multicam = platform in {"youtube", "reel"}
+        if real_multicam:
             coverage = _with_director_quality(project, coverage, progress_callback)
-        if platform != "youtube":
+        if not real_multicam:
             plan = _simple_plan(coverage, project.data.get("settings", {}), recorded_moves=recorded_moves)
             beats = {"stage": self.name, "platform": platform, "beats_sec": [], "bars_sec": [], "sections_sec": [], "tempo": None, "placeholder_short_form": platform != "360"}
         else:
@@ -129,7 +134,7 @@ def _load_or_analyze_beats(project: Project, coverage: dict[str, Any], progress_
     progress_callback(45, t("rhythm_ready"))
     return {
         "stage": "edit",
-        "platform": "youtube",
+        "platform": coverage.get("platform") or "youtube",
         "fingerprint": _beat_fingerprint(project, coverage),
         "window_start_sec": start,
         "window_duration_sec": duration,
@@ -273,9 +278,9 @@ def _youtube_multicam_plan(
         usage[Path(str(segment.get("clip_path"))).name] = usage.get(Path(str(segment.get("clip_path"))).name, 0) + 1
     return {
         "stage": "edit",
-        "platform": "youtube",
+        "platform": coverage.get("platform") or "youtube",
         "title": window.get("title") or t("full_video"),
-        "real_edit_logic": "youtube beat-aligned multicam v1",
+        "real_edit_logic": "youtube beat-aligned multicam v1" if (coverage.get("platform") or "youtube") == "youtube" else "reel beat-aligned multicam (vertical highlight)",
         "warnings": warnings,
         "excluded_clips": coverage.get("excluded_clips") or [],
         "clip_diagnostics": coverage.get("clip_diagnostics") or [],
@@ -294,31 +299,42 @@ def _simple_plan(
     project_settings: dict[str, Any] | None = None,
     recorded_moves: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    segments = _short_form_segments_from_best_coverage(coverage)
     platform = coverage.get("platform") or "youtube"
-    edit_settings = ((project_settings or {}).get("edit") if "edit" in (project_settings or {}) else project_settings) or {}
-    use_recorded_360 = str(edit_settings.get("spherical_mode") or "automatic").lower() == "directed"
     if platform == "360":
-        segments = build_spherical_shot_segments(
-            coverage.get("segments") or segments,
-            (project_settings or {}).get("spherical_landmarks") or {},
-            recorded_moves=recorded_moves if use_recorded_360 else None,
-        )
-        usage = _spherical_shot_usage(segments)
-    else:
-        usage = {}
+        # Passthrough mode: no camera selection, reprojection, motion, or any
+        # other editing logic. The single segment cut.py already computed
+        # (song window intersected with what the 360 camera covers) IS the
+        # plan -- export.py trims/copies the original file directly.
+        segments = coverage.get("segments") or []
+        return {
+            "stage": "edit",
+            "platform": platform,
+            "placeholder_logic": None,
+            "real_edit_logic": "360 passthrough: original clip trimmed to the song range, untouched",
+            "warnings": coverage.get("warnings") or [],
+            "excluded_clips": coverage.get("excluded_clips") or [],
+            "clip_diagnostics": coverage.get("clip_diagnostics") or [],
+            "gaps": [],
+            "cut_count": 0,
+            "camera_usage": _camera_usage(segments),
+            "spherical_shot_usage": {},
+            "spherical_recording_usage": {},
+            "segments": segments,
+        }
+    segments = _short_form_segments_from_best_coverage(coverage)
+    edit_settings = ((project_settings or {}).get("edit") if "edit" in (project_settings or {}) else project_settings) or {}
     return {
         "stage": "edit",
         "platform": platform,
-        "placeholder_logic": "short-form middle excerpt; multicam/highlight logic pending" if platform != "360" else None,
-        "real_edit_logic": "360 virtual camera shot rotation from manual landmark map" if platform == "360" else None,
+        "placeholder_logic": "short-form middle excerpt; multicam/highlight logic pending",
+        "real_edit_logic": None,
         "warnings": coverage.get("warnings") or [],
         "excluded_clips": coverage.get("excluded_clips") or [],
         "clip_diagnostics": coverage.get("clip_diagnostics") or [],
         "gaps": [],
         "cut_count": max(0, len(segments) - 1),
         "camera_usage": _camera_usage(segments),
-        "spherical_shot_usage": usage,
+        "spherical_shot_usage": {},
         "spherical_recording_usage": _spherical_recording_usage(segments, edit_settings.get("spherical_mode"), recorded_moves),
         "segments": segments,
     }

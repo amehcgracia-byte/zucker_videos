@@ -43,7 +43,15 @@ from server.projects import delete_project_folder, find_project_by_inputs, input
 from server.wizard import WizardRunner, wizard_report, wizard_song_options
 
 LOGGER = logging.getLogger(__name__)
+# This limit only matters for a plain browser tab (--dev mode), which has no
+# choice but to upload file bytes over HTTP. The packaged desktop app
+# references files in place by path (see handleDrop's file.path branch in
+# web/app.js) and never needs to buffer a whole video through this server, so
+# it gets no cap at all -- real camera/360 footage routinely runs many GB,
+# and this used to block it even in the desktop app whenever the drag-drop
+# path-detection fell through to the upload fallback.
 BROWSER_UPLOAD_MAX_BYTES = 512 * 1024 * 1024
+DESKTOP_UPLOAD_MAX_BYTES = None
 
 
 @dataclass
@@ -61,7 +69,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     """Create and configure the Flask application."""
     root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
     app = Flask(__name__, static_folder=str(root / "web"), static_url_path="")
-    app.config["MAX_CONTENT_LENGTH"] = BROWSER_UPLOAD_MAX_BYTES
+    app.config["MAX_CONTENT_LENGTH"] = BROWSER_UPLOAD_MAX_BYTES if dev else DESKTOP_UPLOAD_MAX_BYTES
     load_global_config()
     state = AppState(engine=PipelineEngine(), dev=dev, wizard=WizardRunner())
     if project_path:
@@ -83,7 +91,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.errorhandler(RequestEntityTooLarge)
     def api_upload_too_large(_: RequestEntityTooLarge) -> tuple[Response, int]:
-        limit_mb = app.config["MAX_CONTENT_LENGTH"] // (1024 * 1024)
+        limit_mb = int(app.config["MAX_CONTENT_LENGTH"] or 0) // (1024 * 1024)
         return error_response(
             "upload_too_large",
             f"Browser uploads are limited to {limit_mb} MB. Put large videos in the Inbox or use the desktop folder picker.",
@@ -192,9 +200,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.post("/api/v1/inputs/upload")
     def api_inputs_upload() -> Response:
         project = _require_project(state)
-        max_bytes = int(app.config["MAX_CONTENT_LENGTH"])
-        if request.content_length and request.content_length > max_bytes:
-            limit_mb = max_bytes // (1024 * 1024)
+        max_bytes = app.config["MAX_CONTENT_LENGTH"]
+        if max_bytes is not None and request.content_length and request.content_length > max_bytes:
+            limit_mb = int(max_bytes) // (1024 * 1024)
             return error_response(
                 "upload_too_large",
                 f"Browser uploads are limited to {limit_mb} MB. Put large videos in the Inbox or use the desktop folder picker.",
@@ -217,9 +225,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.post("/api/v1/wizard/upload")
     def api_wizard_upload() -> Response:
-        max_bytes = int(app.config["MAX_CONTENT_LENGTH"])
-        if request.content_length and request.content_length > max_bytes:
-            limit_mb = max_bytes // (1024 * 1024)
+        max_bytes = app.config["MAX_CONTENT_LENGTH"]
+        if max_bytes is not None and request.content_length and request.content_length > max_bytes:
+            limit_mb = int(max_bytes) // (1024 * 1024)
             return error_response(
                 "upload_too_large",
                 f"Browser uploads are limited to {limit_mb} MB. Put large videos in the Inbox or use the desktop folder picker.",
@@ -259,8 +267,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         camera_role_weights = _camera_role_weights_from_body(body)
         fixed_rear_motion = _fixed_rear_motion_from_body(body)
         spherical_mode = _spherical_mode_from_body(body)
-        if platform not in {"youtube", "instagram", "tiktok", "360"}:
-            return error_response("bad_request", "platform must be youtube, instagram, tiktok, or 360", 400)
+        if platform not in {"youtube", "instagram", "tiktok", "reel", "360"}:
+            return error_response("bad_request", "platform must be youtube, reel, instagram, tiktok, or 360", 400)
         if not master:
             return error_response("missing_master", t("missing_master"), 400)
         if not isinstance(videos, list) or not all(isinstance(path, str) for path in videos) or not videos:

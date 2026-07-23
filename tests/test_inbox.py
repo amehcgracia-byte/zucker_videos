@@ -319,6 +319,24 @@ def test_upload_endpoint_returns_json_error_when_too_large(tmp_path):
     assert "Inbox" in payload["error"]["message"]
 
 
+def test_desktop_mode_has_no_upload_size_cap(tmp_path, monkeypatch):
+    # The packaged desktop app references files by path (see handleDrop's
+    # file.path branch) and never needs to buffer whole videos through this
+    # server -- real camera/360 footage is routinely multi-GB, so the upload
+    # cap must not apply here at all.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    app = create_app(dev=False)
+    assert app.config["MAX_CONTENT_LENGTH"] is None
+
+
+def test_dev_mode_keeps_a_browser_upload_cap(tmp_path, monkeypatch):
+    # A plain browser tab has no choice but to upload file bytes over HTTP,
+    # so --dev mode keeps a (generous) safety cap.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    app = create_app(dev=True)
+    assert app.config["MAX_CONTENT_LENGTH"] == 512 * 1024 * 1024
+
+
 def test_songs_suggestion_scans_master_folder_and_inbox(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     inbox = tmp_path / "ZuckerVideos" / "Inbox"

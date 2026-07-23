@@ -188,11 +188,21 @@ def recorded_shot_for_segment(move: dict[str, Any], start_sec: float, end_sec: f
     }
 
 
-# A recorded take is handheld, deliberate motion — even a fast whip-pan doesn't
-# sustain much beyond this rate. If a clipped segment implies more than this,
-# that's a time-mapping bug (e.g. the whole take's curve dumped into one short
-# segment instead of just the samples that fall within it), not real motion.
-MAX_PLAUSIBLE_YAW_RATE_DEG_PER_SEC = 90.0
+# A recorded take is handheld, deliberate motion. Real fast whip-pans in
+# practice peak in the low hundreds of deg/s (observed up to ~340°/s in real
+# takes) — this ceiling sits well above that so it never flags genuine human
+# motion, while still catching a time-mapping bug (e.g. the whole take's
+# rotation dumped into a short segment, or a giant multi-minute body segment
+# where a bug compounds many samples' worth of motion into a few frames),
+# which produces rates an order of magnitude higher.
+#
+# This is checked LOCALLY between each pair of consecutive samples, not as
+# total-travel-over-duration: an aggregate check scales its own tolerance
+# with duration, so for the 360 "body" export (one segment spanning the
+# whole song, minutes long) the allowed travel becomes tens of thousands of
+# degrees — meaningless as a guard. A local rate check catches the same bug
+# regardless of how long the segment is.
+MAX_PLAUSIBLE_YAW_RATE_DEG_PER_SEC = 720.0
 
 
 def clip_curve_for_segment(move: dict[str, Any], start_sec: float, end_sec: float) -> list[dict[str, float]]:
@@ -213,23 +223,27 @@ def clip_curve_for_segment(move: dict[str, Any], start_sec: float, end_sec: floa
             local_t = round(min(duration, last_local + 0.000001), 6)
         last_local = local_t
         output.append({"t": local_t, "yaw": sample["yaw"], "pitch": sample["pitch"], "fov": sample["fov"]})
-    _assert_plausible_yaw_rate(output, duration, start_sec, end_sec)
+    _assert_plausible_yaw_rate(output, start_sec, end_sec)
     return output
 
 
-def _assert_plausible_yaw_rate(curve: list[dict[str, float]], duration: float, start_sec: float, end_sec: float) -> None:
-    if len(curve) < 2 or duration <= 0:
-        return
-    unwrapped = _unwrap_yaws([sample["yaw"] for sample in curve])
-    travel = max(unwrapped) - min(unwrapped)
-    limit = MAX_PLAUSIBLE_YAW_RATE_DEG_PER_SEC * duration
-    if travel > limit:
-        raise ValueError(
-            f"Implausible yaw travel in clipped curve for segment [{start_sec:.2f}, {end_sec:.2f}]s: "
-            f"{travel:.1f}° over {duration:.2f}s (limit {limit:.1f}° at "
-            f"{MAX_PLAUSIBLE_YAW_RATE_DEG_PER_SEC:.0f}°/s) — likely a curve time-mapping bug, "
-            "not real recorded motion."
-        )
+def _assert_plausible_yaw_rate(curve: list[dict[str, float]], start_sec: float, end_sec: float) -> None:
+    for left, right in zip(curve, curve[1:]):
+        dt = right["t"] - left["t"]
+        if dt <= 0:
+            continue
+        # Short-path (shortest-arc) delta — the same wrap-safe distance the
+        # renderer's own interpolation uses, so a natural 359°->1° pan across
+        # the seam reads as ~2°, not ~358°.
+        delta = abs(((right["yaw"] - left["yaw"] + 180.0) % 360.0) - 180.0)
+        rate = delta / dt
+        if rate > MAX_PLAUSIBLE_YAW_RATE_DEG_PER_SEC:
+            raise ValueError(
+                f"Implausible yaw rate in clipped curve for segment [{start_sec:.2f}, {end_sec:.2f}]s: "
+                f"{rate:.1f}°/s between local t={left['t']:.3f}s and t={right['t']:.3f}s "
+                f"(limit {MAX_PLAUSIBLE_YAW_RATE_DEG_PER_SEC:.0f}°/s) — likely a curve time-mapping bug, "
+                "not real recorded motion."
+            )
 
 
 def interpolate_curve(curve: list[dict[str, Any]], t: float) -> tuple[float, float, float] | None:

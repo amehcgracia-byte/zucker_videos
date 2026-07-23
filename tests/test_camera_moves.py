@@ -103,18 +103,39 @@ def test_clip_curve_raises_when_yaw_rate_is_implausible():
         "smoothed": [{"t": index * 0.01, "yaw": (index * 30.0) % 360.0, "pitch": 0.0, "fov": 100.0} for index in range(201)],
     }
 
-    with pytest.raises(ValueError, match="Implausible yaw travel"):
+    with pytest.raises(ValueError, match="Implausible yaw rate"):
         clip_curve_for_segment(move, 0.0, 2.0)
 
 
+def test_clip_curve_raises_on_a_long_body_segment_too_not_just_short_ones():
+    """The guard must check LOCAL rate, not total-travel-over-duration: an
+    aggregate check's tolerance grows with duration, so for the 360 "body"
+    export (one segment spanning the whole multi-minute song) it would
+    become meaninglessly large. A local check catches the bug regardless of
+    how long the enclosing segment is.
+    """
+    move = {
+        "name": "Broken take",
+        "smoothed": [{"t": index * 0.01, "yaw": (index * 30.0) % 360.0, "pitch": 0.0, "fov": 100.0} for index in range(201)],
+    }
+
+    # Same implausible burst, but clipped as part of a much longer segment —
+    # an aggregate/duration-scaled check would have allowed this.
+    with pytest.raises(ValueError, match="Implausible yaw rate"):
+        clip_curve_for_segment(move, 0.0, 600.0)
+
+
 def test_clip_curve_allows_a_fast_but_plausible_pan():
+    # A single fast whip-pan just under the local-rate ceiling: 140 degrees
+    # in 0.2s = 700 deg/s (real takes have been observed peaking around
+    # 300-340 deg/s, so this is already a generous margin above real motion).
     move = {
         "name": "Fast pan",
         "smoothed": [
             {"t": 0.0, "yaw": 0.0, "pitch": 0.0, "fov": 100.0},
-            {"t": 3.0, "yaw": MAX_PLAUSIBLE_YAW_RATE_DEG_PER_SEC * 3.0 - 5.0, "pitch": 0.0, "fov": 100.0},
+            {"t": 0.2, "yaw": 140.0, "pitch": 0.0, "fov": 100.0},
         ],
     }
 
-    curve = clip_curve_for_segment(move, 0.0, 3.0)
-    assert curve[-1]["yaw"] == pytest.approx(MAX_PLAUSIBLE_YAW_RATE_DEG_PER_SEC * 3.0 - 5.0)
+    curve = clip_curve_for_segment(move, 0.0, 0.2)
+    assert curve[-1]["yaw"] == pytest.approx(140.0)
