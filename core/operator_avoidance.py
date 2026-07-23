@@ -21,8 +21,8 @@ from core.stages.base import stable_fingerprint
 
 LOGGER = logging.getLogger(__name__)
 
-CACHE_VERSION = 1
-OPERATOR_AVOIDANCE_VERSION = 1
+CACHE_VERSION = 2
+OPERATOR_AVOIDANCE_VERSION = 2
 
 # Sample the clip at ~2fps: dense enough to catch the operator stepping into
 # frame, cheap enough not to meaningfully slow ingest.
@@ -32,11 +32,19 @@ DETECTION_FPS = 2.0
 # a foreground camera-operator figure worth avoiding.
 OPERATOR_AREA_THRESHOLD = 0.08
 
+# Minimum fraction of frame area a secondary person-blob must occupy to be
+# treated as a real subject of interest (the singer/band) rather than noise.
+SUBJECT_AREA_THRESHOLD = 0.02
+
 # Maximum yaw shift we will apply to a 360 segment to avoid the operator.
 MAX_360_YAW_SHIFT_DEG = 20.0
 
-# iPhone/fixed crop zoom factor when the operator is detected.
-IPHONE_OPERATOR_ZOOM = 1.35
+# iPhone/fixed crop defaults when the operator is detected but no distinct
+# subject is found: roughly 50% zoom-in, biased toward the right side of the
+# frame, and vertically centered (not pushed toward the top).
+IPHONE_OPERATOR_ZOOM = 1.5
+IPHONE_AVOIDANCE_CX = 0.65
+IPHONE_AVOIDANCE_CY = 0.5
 
 PERSON_CLASS = 15  # COCO class index for 'person' in MobileNet-SSD
 
@@ -164,15 +172,20 @@ def _detect_clip_presence(path: str, progress_callback: Any = None) -> list[dict
             if index % step == 0:
                 blobs = _detect_frame(net, frame)
                 if blobs:
-                    dominant = max(blobs, key=lambda blob: blob["area_fraction"])
-                    samples.append(
-                        {
-                            "t": round(index / fps, 2),
-                            "area_fraction": round(dominant["area_fraction"], 4),
-                            "cx": round(dominant["cx"], 4),
-                            "cy": round(dominant["cy"], 4),
-                        }
-                    )
+                    ranked = sorted(blobs, key=lambda blob: blob["area_fraction"], reverse=True)
+                    dominant = ranked[0]
+                    sample = {
+                        "t": round(index / fps, 2),
+                        "area_fraction": round(dominant["area_fraction"], 4),
+                        "cx": round(dominant["cx"], 4),
+                        "cy": round(dominant["cy"], 4),
+                    }
+                    subject = _secondary_subject(ranked, dominant)
+                    if subject:
+                        sample["subject_area_fraction"] = round(subject["area_fraction"], 4)
+                        sample["subject_cx"] = round(subject["cx"], 4)
+                        sample["subject_cy"] = round(subject["cy"], 4)
+                    samples.append(sample)
                 if progress_callback and frame_total:
                     progress_callback(min(99, int(index / frame_total * 100)), "Scanning for camera operator")
             index += 1
@@ -208,6 +221,22 @@ def _detect_frame(net: Any, frame: Any) -> list[dict[str, float]]:
             }
         )
     return blobs
+
+
+def _secondary_subject(ranked_blobs: list[dict[str, float]], dominant: dict[str, float]) -> dict[str, float] | None:
+    """Pick the largest detected person that is not the operator, if any.
+
+    ``ranked_blobs`` is sorted largest-first; ``dominant`` (assumed to be the
+    operator, since they're typically closest to the lens) is skipped along
+    with anything close enough to its centre to be the same detection.
+    """
+    for blob in ranked_blobs[1:]:
+        if blob["area_fraction"] < SUBJECT_AREA_THRESHOLD:
+            break
+        if abs(blob["cx"] - dominant["cx"]) < 0.08 and abs(blob["cy"] - dominant["cy"]) < 0.08:
+            continue
+        return blob
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +297,9 @@ def avoidance_for_segment(
     if role == "360":
         return _avoidance_360(dominant, current_yaw or 0.0)
     if role == "fixed_rear":
-        return _avoidance_iphone(dominant)
+        subject_candidates = [s for s in window if float(s.get("subject_area_fraction") or 0.0) >= SUBJECT_AREA_THRESHOLD]
+        subject = max(subject_candidates, key=lambda s: float(s.get("subject_area_fraction") or 0.0)) if subject_candidates else None
+        return _avoidance_iphone(dominant, subject)
     return None
 
 
@@ -287,16 +318,40 @@ def _avoidance_360(blob: dict[str, Any], current_yaw: float) -> dict[str, Any] |
     return {"type": "yaw_shift", "yaw_deg": round(shift, 1)}
 
 
-def _avoidance_iphone(blob: dict[str, Any]) -> dict[str, Any] | None:
+def _avoidance_iphone(blob: dict[str, Any], subject: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """Propose a zoom-to-singer crop that pushes the operator off-frame.
 
-    The operator is assumed to be in the lower portion of the frame. Zooming in
-    and biasing the crop anchor slightly upward (cy=0.42) keeps the singer centred
-    while the bottom edge crops out the operator's back.
+    When a distinct subject (the singer, or whoever isn't the operator) was
+    detected in the window, crop toward them directly. Otherwise fall back to
+    a right-of-centre, vertically-centred default: the operator in these clips
+    is consistently framed toward the left/bottom, so biasing right keeps the
+    band in frame without needing a precise subject fix.
     """
     area = float(blob.get("area_fraction", 0.0))
-    zoom = IPHONE_OPERATOR_ZOOM + min(0.25, area * 1.5)
-    return {"type": "zoom_crop", "zoom": round(zoom, 2), "cx": 0.5, "cy": 0.42}
+    zoom = IPHONE_OPERATOR_ZOOM + min(0.1, area * 0.5)
+    if subject is not None:
+        cx = _centered_pan(float(subject.get("subject_cx", 0.5)), zoom)
+        cy = _centered_pan(float(subject.get("subject_cy", 0.5)), zoom)
+        cx = max(0.15, min(0.85, cx))
+        cy = max(0.25, min(0.75, cy))
+    else:
+        cx, cy = IPHONE_AVOIDANCE_CX, IPHONE_AVOIDANCE_CY
+    return {"type": "zoom_crop", "zoom": round(zoom, 2), "cx": round(cx, 3), "cy": round(cy, 3)}
+
+
+def _centered_pan(source_fraction: float, zoom: float) -> float:
+    """Convert a point's fractional position in the *source* frame into the
+    ``pan`` value ``_zoom_crop_filter`` needs so that point lands at the
+    centre of the zoomed-and-cropped output.
+
+    ``_zoom_crop_filter`` scales the frame by ``zoom`` then crops a window at
+    ``x = (scaled_width - width) * pan``. For a source point at fraction ``p``
+    to end up centred in that window: ``pan = (zoom*p - 0.5) / (zoom - 1)``
+    (the target ``width`` cancels out, so this only needs ``zoom``).
+    """
+    if zoom <= 1.0:
+        return 0.5
+    return (zoom * source_fraction - 0.5) / (zoom - 1.0)
 
 
 # ---------------------------------------------------------------------------

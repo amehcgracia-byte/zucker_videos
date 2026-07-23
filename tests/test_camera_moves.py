@@ -5,6 +5,7 @@ import json
 import pytest
 
 from core.camera_moves import (
+    MAX_PLAUSIBLE_YAW_RATE_DEG_PER_SEC,
     clip_curve_for_segment,
     interpolate_curve,
     normalize_recorded_samples,
@@ -58,3 +59,62 @@ def test_clip_curve_interpolates_segment_boundaries():
     assert curve[0]["t"] == pytest.approx(0.0)
     assert curve[-1]["t"] == pytest.approx(1.0)
     assert midpoint == pytest.approx((20.0, -4.0, 95.0))
+
+
+def test_clip_curve_does_not_compress_a_long_take_into_a_short_segment():
+    """Regression guard: a segment must only see the samples inside its own
+    window, at the take's real rate — not the whole take's motion rescaled to
+    fit the segment's short duration (which would look like many fast spins).
+    """
+    # A 10-minute take that slowly completes ~2 full rotations overall.
+    total_duration = 600.0
+    sample_rate = 15.0
+    count = int(total_duration * sample_rate)
+    move = {
+        "name": "Long take",
+        "smoothed": [
+            {"t": index / sample_rate, "yaw": (index / sample_rate) * (720.0 / total_duration) % 360.0, "pitch": 0.0, "fov": 100.0}
+            for index in range(count)
+        ],
+    }
+
+    # A 6-second segment plucked from the middle of the take.
+    curve = clip_curve_for_segment(move, 300.0, 306.0)
+
+    assert curve[0]["t"] == pytest.approx(0.0)
+    assert curve[-1]["t"] == pytest.approx(6.0)
+    unwrapped_travel = abs(curve[-1]["yaw"] - curve[0]["yaw"])
+    # At 720deg/600s the segment should show ~7.2 degrees, nowhere near a full
+    # rotation (360deg), let alone "5+ rotations".
+    assert unwrapped_travel < 30.0
+
+
+def test_clip_curve_raises_when_yaw_rate_is_implausible():
+    """If a bug ever dumps a whole take's rotation into one short segment
+    again, this must fail loudly instead of silently shipping a spinning shot.
+
+    Samples are stored wrapped to [0, 360), like real recorded data, so this
+    builds many closely-spaced steps (each < 180 deg apart, so unwrap keeps
+    following the same direction) that add up to several full rotations in
+    2 seconds — exactly the "whole take crammed into one short segment" shape.
+    """
+    move = {
+        "name": "Broken take",
+        "smoothed": [{"t": index * 0.01, "yaw": (index * 30.0) % 360.0, "pitch": 0.0, "fov": 100.0} for index in range(201)],
+    }
+
+    with pytest.raises(ValueError, match="Implausible yaw travel"):
+        clip_curve_for_segment(move, 0.0, 2.0)
+
+
+def test_clip_curve_allows_a_fast_but_plausible_pan():
+    move = {
+        "name": "Fast pan",
+        "smoothed": [
+            {"t": 0.0, "yaw": 0.0, "pitch": 0.0, "fov": 100.0},
+            {"t": 3.0, "yaw": MAX_PLAUSIBLE_YAW_RATE_DEG_PER_SEC * 3.0 - 5.0, "pitch": 0.0, "fov": 100.0},
+        ],
+    }
+
+    curve = clip_curve_for_segment(move, 0.0, 3.0)
+    assert curve[-1]["yaw"] == pytest.approx(MAX_PLAUSIBLE_YAW_RATE_DEG_PER_SEC * 3.0 - 5.0)

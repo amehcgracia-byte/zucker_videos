@@ -10,6 +10,7 @@ let pollTimer = null;
 let appConfig = { dev: true, desktop: false };
 let progressStartedAt = null;
 let progressSamples = [];
+let etaSmoothedSeconds = null;
 let rescueClipId = null;
 let currentStep = 1;
 let lastProgressReportAt = 0;
@@ -1531,6 +1532,7 @@ function updateTiming(status, progress) {
   if (!progressStartedAt || progress < (previous?.progress || 0)) {
     progressStartedAt = now;
     progressSamples = [];
+    etaSmoothedSeconds = null;
   }
   const last = progressSamples[progressSamples.length - 1];
   if (!last || progress !== last.progress) {
@@ -1545,12 +1547,27 @@ function elapsedSeconds() {
 
 function etaSeconds(progress) {
   const elapsed = elapsedSeconds();
-  if (elapsed < 30 || progress <= 0 || progress >= 100 || progressSamples.length < 2) return null;
+  if (elapsed < 30 || progress <= 0 || progress >= 100 || progressSamples.length < 2) {
+    etaSmoothedSeconds = null;
+    return null;
+  }
   const first = progressSamples[0];
   const last = progressSamples[progressSamples.length - 1];
+  // Rolling throughput observed so far *this run* — not a fixed assumption —
+  // over the last ~12 progress samples (see updateTiming).
   const rate = (last.progress - first.progress) / ((last.time - first.time) / 1000);
-  if (rate <= 0) return null;
-  return (100 - progress) / rate;
+  if (rate <= 0) return etaSmoothedSeconds;
+  const raw = (100 - progress) / rate;
+  if (etaSmoothedSeconds == null) {
+    etaSmoothedSeconds = raw;
+  } else {
+    // A single slow/fast sample (e.g. hitting an expensive 360 motion
+    // segment) shouldn't make the displayed estimate lurch; cap how much it
+    // can jump upward in one tick and blend the rest in smoothly.
+    const maxUp = etaSmoothedSeconds * 1.25 + 10;
+    etaSmoothedSeconds = etaSmoothedSeconds * 0.7 + Math.min(raw, maxUp) * 0.3;
+  }
+  return etaSmoothedSeconds;
 }
 
 function formatElapsed(seconds) {

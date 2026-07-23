@@ -185,7 +185,8 @@ def _render_plan(
     temp_dir.mkdir(parents=True)
     segment_paths: list[Path] = []
     total_duration = _plan_duration(segments)
-    rendered_duration = 0.0
+    total_weight = _plan_render_weight(segments)
+    rendered_weight = 0.0
     color_profiles = _color_profiles_for_segments(project, segments, warnings)
     overlay_config = _overlay_config(platform, segments[0])
     verify_motion = bool(project.data.get("settings", {}).get("export", {}).get("verify_motion", True))
@@ -203,10 +204,11 @@ def _render_plan(
         render_segments = _continuous_spherical_render_segments(segments)
         for index, segment in enumerate(render_segments, start=1):
             segment_duration = max(0.1, float(segment["duration_sec"]))
-            base_percent = 10 + int(70 * rendered_duration / max(total_duration, 0.1))
+            segment_weight = max(0.1, _segment_render_weight(segment))
+            base_percent = 10 + int(70 * rendered_weight / max(total_weight, 0.1))
 
-            def segment_progress(local_percent: int, detail: str, *, index: int = index) -> None:
-                segment_share = 70 * segment_duration / max(total_duration, 0.1)
+            def segment_progress(local_percent: int, detail: str, *, index: int = index, segment_weight: float = segment_weight) -> None:
+                segment_share = 70 * segment_weight / max(total_weight, 0.1)
                 percent = base_percent + int(segment_share * local_percent / 100)
                 progress_callback(min(84, percent), f"Rendering segment {index}/{len(render_segments)}: {detail}")
 
@@ -267,7 +269,7 @@ def _render_plan(
                     Path(str(source_info.get("source_path") or segment.get("clip_path"))).name,
                 )
             segment_paths.append(segment_path)
-            rendered_duration += segment_duration
+            rendered_weight += segment_weight
         outro_path = temp_dir / "outro.mp4"
         _render_logo_clip(
             outro_path,
@@ -2592,6 +2594,26 @@ def _bitrate_for_duration(duration: float) -> dict[str, Any]:
 
 def _plan_duration(segments: list[dict[str, Any]]) -> float:
     return sum(max(0.0, float(segment.get("duration_sec") or 0.0)) for segment in segments)
+
+
+# 360 segments run every frame through a v360 equirect reprojection plus a
+# per-frame sendcmd motion track (and a frame-diff motion verification pass),
+# which is substantially more ffmpeg work per second of output than a plain
+# flat crop/scale segment. Weighting the progress bar by this instead of raw
+# duration keeps "N% done" honest instead of racing ahead on cheap segments
+# and then stalling through the expensive ones.
+SPHERICAL_SEGMENT_COST_MULTIPLIER = 3.5
+
+
+def _segment_render_weight(segment: dict[str, Any]) -> float:
+    duration = max(0.0, float(segment.get("duration_sec") or 0.0))
+    if _spherical_shot(segment):
+        return duration * SPHERICAL_SEGMENT_COST_MULTIPLIER
+    return duration
+
+
+def _plan_render_weight(segments: list[dict[str, Any]]) -> float:
+    return sum(_segment_render_weight(segment) for segment in segments)
 
 
 def _camera_usage(segments: list[dict[str, Any]]) -> dict[str, int]:
