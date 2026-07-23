@@ -1015,6 +1015,16 @@ function wireDirectorEvents() {
   document.querySelector("#directorScrub").addEventListener("input", (event) => {
     seekDirector(Number(event.target.value) || 0);
   });
+  // D2: mouse wheel controls FOV (zoom) directly on the sphere canvas.
+  // Scrolling up (negative deltaY) zooms in (smaller FOV); down zooms out.
+  canvas.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    const delta = event.deltaY > 0 ? 3 : -3;
+    director.fov = clamp((director.fov || 100) + delta, 30, 150);
+    const fovSlider = document.querySelector("#directorFov");
+    if (fovSlider) fovSlider.value = String(director.fov);
+    updateDirectorCamera();
+  }, { passive: false });
 }
 
 function resizeDirector() {
@@ -1083,6 +1093,16 @@ function seekDirector(time) {
   updateDirectorScrub();
 }
 
+// D1 fix: throttle audio currentTime corrections — setting currentTime on every
+// animation frame (~60 Hz) resets the decode buffer and causes constant stuttering.
+// We only resync when the drift exceeds 0.35 s (large enough to be audible but rare
+// during smooth playback) or when force=true (seek / play start).
+// The play/pause mirror still runs every frame so the audio element tracks video
+// state instantly without affecting the decode stream.
+let _audioSyncLastAt = 0;
+const AUDIO_SYNC_INTERVAL_MS = 500; // resync at most twice per second during playback
+const AUDIO_DRIFT_THRESHOLD = 0.35;  // seconds; only seek audio when drift exceeds this
+
 function syncDirectorAudio(force = false) {
   const video = document.querySelector("#directorVideo");
   const audio = document.querySelector("#directorAudio");
@@ -1093,8 +1113,11 @@ function syncDirectorAudio(force = false) {
     pauseDirector();
     return;
   }
-  if (force || Math.abs((audio.currentTime || 0) - target) > 0.08) {
+  const now = performance.now();
+  const drift = Math.abs((audio.currentTime || 0) - target);
+  if (force || drift > AUDIO_DRIFT_THRESHOLD || (drift > 0.08 && now - _audioSyncLastAt > AUDIO_SYNC_INTERVAL_MS)) {
     audio.currentTime = Math.max(0, Math.min(Number(audio.duration || target), target));
+    _audioSyncLastAt = now;
   }
   if (audio.paused !== video.paused) {
     if (video.paused) audio.pause();
