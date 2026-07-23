@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 import re
 import shutil
 import subprocess
@@ -12,7 +13,8 @@ import math
 from pathlib import Path
 from typing import Any
 
-from core.camera_moves import clip_curve_for_segment, interpolate_curve, load_camera_moves, recorded_move_covering, recorded_shot_for_segment
+from core.camera_moves import clip_curve_for_segment, interpolate_curve, load_camera_moves, normalize_recorded_samples, recorded_move_covering, recorded_shot_for_segment
+from core.operator_avoidance import count_avoidance_adjustments
 from core.ffmpeg import FFmpegError, tool_status
 from core.messages import t
 from core.media_validation import record_is_usable_camera_video, record_media_path
@@ -29,7 +31,12 @@ MIN_ACCEPTABLE_VIDEO_BITRATE = 2_500_000
 MAX_VIDEO_BITRATE = 18_000_000
 TARGET_EXPORT_FPS = 30.0
 TARGET_EXPORT_TIMESCALE = 30_000
-EXPORT_SEGMENT_RECIPE_VERSION = 15
+# The reframing v360 instance is labelled so sendcmd can drive it per frame.
+# The sendcmd target MUST be this exact label: ffmpeg matches the command target
+# against the filter's instance name ("v360@sphere"), NOT the bare "@id" suffix.
+# Targeting just "sphere" silently matches nothing, freezing all 360 motion.
+SPHERE_V360_LABEL = "v360@sphere"
+EXPORT_SEGMENT_RECIPE_VERSION = 18
 INTRO_DURATION = 10.2
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
@@ -102,6 +109,7 @@ class ExportStage(Stage):
                 "target_video_bitrate": bitrate_info["video_bitrate"],
                 "spherical_shot_usage": plan.get("spherical_shot_usage") or _spherical_shot_usage(segments),
                 "spherical_recording_usage": plan.get("spherical_recording_usage") or _spherical_recording_usage(segments),
+                "operator_avoidance_segments": count_avoidance_adjustments(segments),
                 "exports": [
                     {
                         "platform": platform,
@@ -113,6 +121,7 @@ class ExportStage(Stage):
                         "camera_usage": plan.get("camera_usage") or _camera_usage(segments),
                         "spherical_shot_usage": plan.get("spherical_shot_usage") or _spherical_shot_usage(segments),
                         "spherical_recording_usage": plan.get("spherical_recording_usage") or _spherical_recording_usage(segments),
+                        "operator_avoidance_segments": count_avoidance_adjustments(segments),
                         "excluded_clips": plan.get("excluded_clips") or [],
                         "clip_fates": clip_fates,
                     }
@@ -693,9 +702,9 @@ def _equirect_filtergraph(
     command_prefix = _v360_sendcmd_filter(shot, duration, command_path)
     if probe.get("projection") == "raw_insv":
         fov = int(probe.get("insv_fov") or 190)
-        base_filter = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov}:interp=lanczos,{command_prefix}v360@sphere=input=equirect:output=equirect:yaw={yaw:.3f}:pitch={pitch:.3f}:interp=lanczos,scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
+        base_filter = f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov}:interp=lanczos,{command_prefix}{SPHERE_V360_LABEL}=input=equirect:output=equirect:yaw={yaw:.3f}:pitch={pitch:.3f}:interp=lanczos,scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
     else:
-        base_filter = f"{command_prefix}v360@sphere=input=equirect:output=equirect:yaw={yaw:.3f}:pitch={pitch:.3f}:interp=lanczos,scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
+        base_filter = f"{command_prefix}{SPHERE_V360_LABEL}=input=equirect:output=equirect:yaw={yaw:.3f}:pitch={pitch:.3f}:interp=lanczos,scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2"
     timing = _exact_cadence_filter(frame_count) if frame_count else _constant_cadence_filter()
     filters = f"{base_filter},{timing},tpad=stop_mode=clone:stop_duration={1.0 / TARGET_EXPORT_FPS:.6f},format=yuv420p"
     if intro_fade:
@@ -1303,8 +1312,15 @@ def _base_video_filter(platform: str) -> str:
 
 def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> str | None:
     motion = segment.get("motion") or {}
-    if motion.get("type") != "ken_burns":
-        return None
+    motion_type = motion.get("type")
+    if motion_type == "ken_burns":
+        return _ken_burns_filter(motion, platform, duration)
+    if motion_type == "zoom_crop":
+        return _zoom_crop_filter(motion, platform)
+    return None
+
+
+def _ken_burns_filter(motion: dict[str, Any], platform: str, duration: float) -> str | None:
     width, height = _target_size(platform)
     try:
         zoom_start = float(motion.get("zoom_start", 1.0))
@@ -1328,6 +1344,30 @@ def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> s
     )
 
 
+def _zoom_crop_filter(motion: dict[str, Any], platform: str) -> str | None:
+    """Static (non-animated) zoom+crop, used by operator-avoidance adjustments.
+
+    Wider zoom range than ken_burns (up to 1.6x) since this needs to push a
+    prominent foreground operator fully off-frame, not just add subtle motion.
+    """
+    width, height = _target_size(platform)
+    try:
+        zoom = float(motion.get("zoom", 1.35))
+        pan_x = float(motion.get("cx", 0.5))
+        pan_y = float(motion.get("cy", 0.5))
+    except (TypeError, ValueError):
+        return None
+    zoom = max(1.0, min(1.6, zoom))
+    pan_x = max(0.0, min(1.0, pan_x))
+    pan_y = max(0.0, min(1.0, pan_y))
+    scaled_width = f"ceil({width}*{zoom:.6f}/2)*2"
+    scaled_height = f"ceil({height}*{zoom:.6f}/2)*2"
+    return (
+        f"scale=w='{scaled_width}':h='{scaled_height}',"
+        f"crop={width}:{height}:x='(iw-{width})*{pan_x:.4f}':y='(ih-{height})*{pan_y:.4f}'"
+    )
+
+
 def _v360_sendcmd_filter(shot: dict[str, Any] | None, duration: float | None, command_path: Path | None, aspect_ratio: float = 16.0 / 9.0) -> str:
     if not shot or command_path is None or duration is None or duration <= 0:
         return ""
@@ -1342,15 +1382,57 @@ def _v360_motion_commands(shot: dict[str, Any], duration: float, aspect_ratio: f
     step = 1.0 / TARGET_EXPORT_FPS
     count = max(1, int(math.ceil(duration / step)))
     commands: list[str] = []
+    # A recorded-move curve can hold thousands of samples and is sampled once per frame.
+    # Pre-normalise it a single time and interpolate with a bisect lookup so sendcmd
+    # generation is O(frames * log N) instead of O(frames * N); the previous per-frame
+    # re-normalisation made long 360 exports take minutes just to emit the command file.
+    curve_sampler = _recorded_curve_sampler(shot)
     for index in range(count + 1):
         t = min(duration, index * step)
-        yaw, pitch, fov = _v360_motion_at(shot, duration, t)
+        if curve_sampler is not None:
+            yaw, pitch, fov = curve_sampler(max(0.0, min(duration, t)))
+            yaw = _signed_yaw(yaw)
+        else:
+            yaw, pitch, fov = _v360_motion_at(shot, duration, t)
         h_fov, v_fov = _paired_motion_fov(shot, fov, aspect_ratio)
-        commands.append(f"{t:.6f} sphere yaw {yaw:.6f};\n")
-        commands.append(f"{t:.6f} sphere pitch {pitch:.6f};\n")
-        commands.append(f"{t:.6f} sphere h_fov {h_fov:.6f};\n")
-        commands.append(f"{t:.6f} sphere v_fov {v_fov:.6f};\n")
+        commands.append(f"{t:.6f} {SPHERE_V360_LABEL} yaw {yaw:.6f};\n")
+        commands.append(f"{t:.6f} {SPHERE_V360_LABEL} pitch {pitch:.6f};\n")
+        commands.append(f"{t:.6f} {SPHERE_V360_LABEL} h_fov {h_fov:.6f};\n")
+        commands.append(f"{t:.6f} {SPHERE_V360_LABEL} v_fov {v_fov:.6f};\n")
     return commands
+
+
+def _recorded_curve_sampler(shot: dict[str, Any]):
+    """Return a fast per-frame interpolator for a recorded-move curve, or None.
+
+    Normalises the curve once and interpolates by bisect.  The returned callable
+    reproduces the exact math of ``camera_moves.interpolate_curve`` (endpoint clamp,
+    shortest-arc yaw lerp, linear pitch/fov) without re-normalising on every frame.
+    """
+    if not shot or shot.get("type") != "recorded_move":
+        return None
+    samples = normalize_recorded_samples(shot.get("curve") or [])
+    if not samples:
+        return None
+    times = [float(s["t"]) for s in samples]
+    first, last = samples[0], samples[-1]
+
+    def sample(t: float) -> tuple[float, float, float]:
+        if t <= times[0]:
+            return first["yaw"], first["pitch"], first["fov"]
+        if t >= times[-1]:
+            return last["yaw"], last["pitch"], last["fov"]
+        index = bisect.bisect_right(times, t) - 1
+        left = samples[index]
+        right = samples[index + 1]
+        span = max(0.000001, right["t"] - left["t"])
+        amount = (t - left["t"]) / span
+        yaw = _lerp_angle(left["yaw"], right["yaw"], amount)
+        pitch = left["pitch"] + (right["pitch"] - left["pitch"]) * amount
+        fov = left["fov"] + (right["fov"] - left["fov"]) * amount
+        return yaw, pitch, fov
+
+    return sample
 
 
 def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[float, float, float]:
@@ -1419,9 +1501,9 @@ def _export_source_filter(probe: dict[str, Any], shot: dict[str, Any] | None = N
     output_projection = "sg" if (shot or {}).get("type") == "planet" else "flat"
     if probe.get("projection") == "raw_insv":
         insv_fov = int(probe.get("insv_fov") or 190)
-        spatial = f"v360=input=dfisheye:output=e:ih_fov={insv_fov}:iv_fov={insv_fov}:interp=lanczos,{command_prefix}v360@sphere=input=equirect:output={output_projection}:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:w=1920:h=1080:interp=lanczos"
+        spatial = f"v360=input=dfisheye:output=e:ih_fov={insv_fov}:iv_fov={insv_fov}:interp=lanczos,{command_prefix}{SPHERE_V360_LABEL}=input=equirect:output={output_projection}:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:w=1920:h=1080:interp=lanczos"
     elif probe.get("projection") == "equirect":
-        spatial = f"{command_prefix}v360@sphere=input=equirect:output={output_projection}:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:w=1920:h=1080:interp=lanczos"
+        spatial = f"{command_prefix}{SPHERE_V360_LABEL}=input=equirect:output={output_projection}:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:w=1920:h=1080:interp=lanczos"
     elif probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
         spatial = f"{SDR_TONEMAP_FILTER},scale=trunc(iw/2)*2:trunc(ih/2)*2"
     else:

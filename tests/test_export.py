@@ -31,6 +31,7 @@ from core.stages.export import (
     _v360_motion_at,
     _v360_motion_commands,
     _run_ffmpeg_progress,
+    SPHERE_V360_LABEL,
     _render_360_body,
     _render_plan,
     _render_segment,
@@ -472,9 +473,9 @@ def test_spherical_flat_filter_uses_signed_yaw_for_saved_singer_value():
 def test_v360_sendcmd_always_pairs_horizontal_and_vertical_fov():
     commands = _v360_motion_commands({"type": "audience", "yaw": 10, "pitch": 0, "fov": 95, "fov_delta_deg": 6}, 1.0)
 
-    assert any(" sphere h_fov " in command for command in commands)
-    assert any(" sphere v_fov " in command for command in commands)
-    assert sum(" sphere h_fov " in command for command in commands) == sum(" sphere v_fov " in command for command in commands)
+    assert any(f" {SPHERE_V360_LABEL} h_fov " in command for command in commands)
+    assert any(f" {SPHERE_V360_LABEL} v_fov " in command for command in commands)
+    assert sum(f" {SPHERE_V360_LABEL} h_fov " in command for command in commands) == sum(f" {SPHERE_V360_LABEL} v_fov " in command for command in commands)
 
 
 def test_paired_flat_fov_uses_projection_math_for_16x9():
