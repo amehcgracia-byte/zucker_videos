@@ -3,6 +3,10 @@ const S = window.UI_STRINGS || {};
 let selectedPlatform = null;
 let selectedSong = null;
 let selectedMasterPath = null;
+// Inbox clips set aside because they belong to a different session than the
+// chosen song. Kept (not discarded) so "Show all clips" can restore them.
+let setAsideVideos = [];
+let sessionFilterDisabled = false;
 let currentSongs = [];
 let latestResult = null;
 let latestStatus = null;
@@ -345,6 +349,7 @@ function filename(path) {
 
 function renderChips() {
   const root = document.querySelector("#chips");
+  applySessionFilter();
   const items = [...detected.videos, ...detected.master, ...detected.songs, ...detected.ignored];
   root.innerHTML = items
     .map(
@@ -381,6 +386,16 @@ function renderChips() {
       </label>`
     );
   }
+  if (setAsideVideos.length) {
+    root.insertAdjacentHTML(
+      "beforeend",
+      `<span class="chip info session-filter-chip">
+        Showing the ${detected.videos.length} clip${detected.videos.length === 1 ? "" : "s"} recorded around this song
+        <small>${setAsideVideos.length} other Inbox clip${setAsideVideos.length === 1 ? "" : "s"} hidden</small>
+        <button type="button" id="showAllClips">Show all</button>
+      </span>`
+    );
+  }
   const hasVideo = detected.videos.length > 0;
   const hasMaster = detected.master.length > 0;
   const hasSongs = detected.songs.length > 0;
@@ -404,6 +419,63 @@ function renderRaw360Callout() {
 
 function hasSphericalInput() {
   return detected.videos.some(isSphericalVideo);
+}
+
+// --- Inbox filtering by the chosen song -------------------------------------
+// The Inbox accumulates every clip the user has ever dropped in, but only one
+// song is processed at a time. A clip's wall-clock recording range is derived
+// from its file mtime (when writing finished, i.e. the end of the recording)
+// and its duration; the chosen master audio gives the session's own range.
+// Clips whose range doesn't overlap the session are set aside.
+//
+// Two deliberate safety rules, because silently hiding a user's footage is far
+// worse than showing too much: the filter is only applied when it both keeps
+// at least one clip AND actually excludes something, and it is always
+// reversible from the banner it puts on screen.
+const SESSION_MATCH_TOLERANCE_SEC = 2 * 60 * 60; // generous: clocks and copy times drift
+
+function itemTimeRange(item) {
+  const mtime = Number(item?.mtime || 0);
+  if (!mtime) return null;
+  const duration = Number(item?.duration || item?.probe?.duration || 0) || 0;
+  const end = mtime * 1000;
+  return { start: end - duration * 1000, end };
+}
+
+function clipsMatchingSession(videos, master) {
+  const session = itemTimeRange(master);
+  if (!session) return null;
+  const keep = [];
+  const setAside = [];
+  for (const video of videos) {
+    const range = itemTimeRange(video);
+    // A clip we can't place in time is always kept -- never discard on ignorance.
+    const overlaps =
+      !range ||
+      (range.start - SESSION_MATCH_TOLERANCE_SEC * 1000 <= session.end &&
+        range.end + SESSION_MATCH_TOLERANCE_SEC * 1000 >= session.start);
+    (overlaps ? keep : setAside).push(video);
+  }
+  if (!keep.length || !setAside.length) return null;
+  return { keep, setAside };
+}
+
+function applySessionFilter() {
+  if (sessionFilterDisabled) return;
+  const master = detected.master.find((item) => item.path === selectedMasterPath) || detected.master[0];
+  if (!master) return;
+  const split = clipsMatchingSession(detected.videos, master);
+  if (!split) return;
+  setAsideVideos = [...setAsideVideos, ...split.setAside];
+  detected.videos = split.keep;
+}
+
+function restoreSetAsideVideos() {
+  if (!setAsideVideos.length) return;
+  sessionFilterDisabled = true;
+  detected.videos = [...detected.videos, ...setAsideVideos];
+  setAsideVideos = [];
+  renderChips();
 }
 
 function removeDetectedItem(kind, path) {
@@ -2155,6 +2227,7 @@ document.addEventListener("click", (event) => {
   const rawTarget = event.target;
   const target = rawTarget instanceof HTMLElement ? rawTarget.closest("button, [data-remove-kind], [data-open-project], [data-delete-project], [data-rescue]") || rawTarget : rawTarget;
   if (!(target instanceof HTMLElement)) return;
+  if (target.id === "showAllClips") restoreSetAsideVideos();
   if (target.id === "confirmFiles") prepareStep2().catch((error) => showToast(error.message, true));
   if (target.id === "newProject") newProject().catch((error) => showToast(error.message, true));
   if (target.id === "refreshProjects") loadProjects().catch((error) => showToast(error.message, true));
@@ -2262,6 +2335,11 @@ document.addEventListener("change", (event) => {
     selectedMasterPath = target.value;
     trimDefaultsAppliedFor = "";
     setupTrimControls(selectedMasterPath);
+    // Put previously set-aside clips back in the pool so the newly chosen
+    // song's own session decides which clips are relevant, rather than
+    // inheriting the previous song's filtering.
+    detected.videos = [...detected.videos, ...setAsideVideos];
+    setAsideVideos = [];
     renderChips();
   }
   if (target instanceof HTMLInputElement && target.name === "sphericalMode") {

@@ -1253,3 +1253,19 @@ pre {
     grid-template-columns: 1fr;
   }
 }
+
+.session-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.session-filter-chip button {
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
