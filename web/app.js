@@ -1732,44 +1732,53 @@ async function pollStatus() {
 const PLAYFUL_PROGRESS_MESSAGES = {
   "Listening to your videos...": [
     "Listening to your videos...",
-    "Eavesdropping on your footage...",
-    "Getting acquainted with your clips...",
-    "Scouting your videos for usable audio...",
-    "Giving your footage a once-over...",
-    "Peeking into every camera angle...",
-    "Sniffing out the good takes...",
+    "Earwigging the footage",
+    "Sound-checking every angle",
+    "Auditioning the takes",
+    "Tuning into the clips",
+    "Listening for the downbeat",
+    "Scouting the setlist",
+    "Soundchecking the room",
   ],
   "Syncing with the audio...": [
     "Syncing with the audio...",
-    "Lining up every camera to the beat...",
-    "Matching waveforms like a detective...",
-    "Untangling who was filming when...",
-    "Nudging clips into perfect alignment...",
-    "Getting everyone singing from the same page...",
+    "Pacing the bars",
+    "Counting in the cameras",
+    "Locking to the groove",
+    "Tuning the timeline",
+    "Metronoming the multicam",
+    "Harmonising the angles",
+    "Getting everyone on the one",
   ],
   "Cutting the song...": [
     "Cutting the song...",
-    "Counting beats and finding the drops...",
-    "Mapping out the song's structure...",
-    "Marking where the magic happens...",
-    "Chasing down the chorus...",
-    "Studying the song's every twist...",
+    "Beeboping the frames",
+    "Chasing the chorus",
+    "Marking the drops",
+    "Phrasing the verses",
+    "Mapping the middle eight",
+    "Syncopating the segments",
+    "Riffing on the arrangement",
   ],
   "Building the edit...": [
     "Building the edit...",
-    "Picking the best angle for every beat...",
-    "Auditioning camera angles...",
-    "Directing from the editing chair...",
-    "Playing traffic cop with camera cuts...",
-    "Assembling your highlight reel...",
+    "Rocking the cuts out",
+    "Grooving the angles",
+    "Swinging the shots",
+    "Funkying the transitions",
+    "Riffing on the edit",
+    "Improvising the b-roll",
+    "Choreographing the cameras",
   ],
   "Exporting the video...": [
     "Exporting the video...",
-    "Rendering the final cut...",
-    "Baking your video into shape...",
-    "Squeezing pixels into place...",
-    "Polishing the final export...",
-    "Putting the finishing touches on...",
+    "Mixing the magic",
+    "Jamming the pixels",
+    "Enchanting the film",
+    "Mastering the final cut",
+    "Bouncing down the reel",
+    "Polishing the encore",
+    "Pressing the record",
   ],
 };
 
@@ -1810,7 +1819,7 @@ function renderWizardStatus(status) {
   document.querySelector("#progressMessage").textContent = playfulProgressMessage(status.message) || S.working;
   document.querySelector("#progressDetail").textContent = status.detail || currentSubtask(status) || S.nextStep;
   document.querySelector("#elapsedTime").textContent = `${S.elapsed}: ${formatElapsed(elapsedSeconds())}`;
-  document.querySelector("#etaTime").textContent = `${S.eta}: ${formatEta(etaSeconds(progress))}`;
+  document.querySelector("#etaTime").textContent = `${S.eta}: ${formatEta(etaSeconds(progress, status))}`;
   updateStageChecks(progress, status);
   if (status.status === "running") {
     document.querySelector("#progressTitle").textContent = "Creating your video";
@@ -1886,7 +1895,7 @@ function renderStatusStrip(status, progress) {
   }
   strip.hidden = false;
   const detail = currentSubtask(status) || status.message || S.working;
-  document.querySelector("#statusStripText").textContent = `${detail} · ${Math.round(progress)}% · ${formatEta(etaSeconds(progress))}`;
+  document.querySelector("#statusStripText").textContent = `${detail} · ${Math.round(progress)}% · ${formatEta(etaSeconds(progress, status))}`;
 }
 
 function currentSubtask(status) {
@@ -1913,19 +1922,41 @@ function elapsedSeconds() {
   return progressStartedAt ? Math.max(0, (Date.now() - progressStartedAt) / 1000) : 0;
 }
 
-function etaSeconds(progress) {
+// Predicted whole-run seconds from the backend, derived from throughput this
+// machine actually measured on previous exports (core/throughput.py). It is
+// available from the first poll after the cut stage — long before the in-run
+// rate estimate below has anything trustworthy to say.
+function backendEtaSeconds(status, progress) {
+  const total = Number(status?.estimated_total_seconds || 0);
+  if (!total || !Number.isFinite(total)) return null;
   const elapsed = elapsedSeconds();
-  if (elapsed < 30 || progress <= 0 || progress >= 100 || progressSamples.length < 2) {
+  const byProgress = progress > 0 ? total * (1 - progress / 100) : total;
+  // Never claim less time than the run has already overshot by.
+  return Math.max(byProgress, total - elapsed, 0);
+}
+
+function etaSeconds(progress, status) {
+  const elapsed = elapsedSeconds();
+  if (progress <= 0 || progress >= 100 || progressSamples.length < 2) {
     etaSmoothedSeconds = null;
-    return null;
+    return backendEtaSeconds(status, progress);
   }
   const first = progressSamples[0];
   const last = progressSamples[progressSamples.length - 1];
   // Rolling throughput observed so far *this run* — not a fixed assumption —
   // over the last ~12 progress samples (see updateTiming).
   const rate = (last.progress - first.progress) / ((last.time - first.time) / 1000);
-  if (rate <= 0) return etaSmoothedSeconds;
+  if (rate <= 0) return etaSmoothedSeconds ?? backendEtaSeconds(status, progress);
   const raw = (100 - progress) / rate;
+  if (elapsed < 30) {
+    // Too early for the in-run rate to mean anything: the first stages fly by
+    // and then rendering crawls, which is exactly how the old estimate ended up
+    // promising "1-3 minutes" for a much longer job. Prefer the measured
+    // machine history, and blend the two only once both are meaningful.
+    const backend = backendEtaSeconds(status, progress);
+    if (backend != null) return backend;
+    return null;
+  }
   if (etaSmoothedSeconds == null) {
     etaSmoothedSeconds = raw;
   } else {
@@ -1944,7 +1975,10 @@ function formatElapsed(seconds) {
 }
 
 function formatEta(seconds) {
-  if (seconds == null || !Number.isFinite(seconds)) return S.calculating;
+  // Honest by construction: with nothing measured to go on we say we are still
+  // estimating rather than showing an optimistic placeholder.
+  if (seconds == null || !Number.isFinite(seconds)) return "estimating…";
+  if (seconds < 90) return `~${Math.max(5, Math.round(seconds / 5) * 5)} s remaining`;
   return `~${Math.max(1, Math.round(seconds / 60))} min remaining`;
 }
 

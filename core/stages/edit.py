@@ -21,6 +21,19 @@ MAX_BARS_PER_SEGMENT = 2
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45
+# Automatic 360 motion budget, expressed as a fraction of the shot's visible
+# field (h_fov) rather than in absolute degrees -- see
+# _spherical_motion_profile for why absolute degrees was the bug. The target
+# is motion a viewer barely registers as movement but which keeps the shot
+# alive: a few percent of frame width across the WHOLE segment.
+SPHERICAL_PRIMARY_DRIFT_FRACTION = (0.03, 0.06)
+SPHERICAL_SECONDARY_DRIFT_FRACTION = (0.0, 0.025)
+# Hard ceiling enforced at render time, in fraction of h_fov per second. Any
+# automatic motion (drift, tiny-planet spin, inter-shot reframe) is clamped
+# to this, so a short segment can never turn a whole-segment drift budget
+# into a fast pan. Guarded by a regression test.
+SPHERICAL_MAX_MOTION_FRACTION_PER_SEC = 0.06
+PLANET_SPIN_FRACTION_PER_SEC = 0.05
 SPHERICAL_DEFAULT_FOV = 95.0
 SPHERICAL_WIDE_FOV = 120.0
 SPHERICAL_AUDIENCE_STAGE_FOV = 125.0
@@ -371,7 +384,11 @@ def build_spherical_shot_segments(
             shot = _next_weighted_spherical_shot(shots, usage, include_planet=False)
             if planet_budget > 0 and elapsed <= planet_after < elapsed + hold and any(item.get("type") == "planet" for item in shots):
                 shot = dict(next(item for item in shots if item.get("type") == "planet"))
-                shot["yaw_end"] = _landmark_yaw(float(shot.get("yaw") or 0.0) + _landmark_weight(shot, "spin_deg_per_sec", 22.0) * max(0.0, hold), 0.0)
+                # No "yaw_end" hint is written here: nothing ever read it, and
+                # it encoded a spin in absolute deg/s, which is exactly the
+                # FOV-blind magnitude this motion rework removes. The planet's
+                # spin now comes solely from spin_fov_fraction_per_sec, applied
+                # (and clamped) at render time.
                 planet_budget -= 1
             if not shot and not recorded:
                 break
@@ -453,11 +470,23 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int) -> dict[str, Any
     General rule: a segment from a static source (automatic-mode 360 landmark
     holds included) never renders as a frozen frame — same principle as the
     iPhone/fixed-camera Ken Burns treatment (_ken_burns_motion). One axis
-    (yaw/pitch/fov, chosen per instance) gets a clearly perceptible drift so
+    (yaw/pitch/fov, chosen per instance) gets a slightly larger drift so
     motion is never accidentally near-zero; the other two get smaller,
     independently randomized secondary variation for natural variety. Seeded
     deterministically by shot type + segment index, so re-running the edit
     stage against the same plan reproduces identical motion (cache-stable).
+
+    Magnitudes are stored as a FRACTION OF THE SHOT'S VISIBLE FIELD, not as
+    absolute degrees. Absolute degrees were the bug: the same ±6° drift is a
+    gentle nudge across a 140° wide shot but a big swing across a 73° one
+    (the user's "singer"/"drummer" landmarks are both ~73°), because it
+    covers nearly twice the fraction of what the viewer can actually see. The
+    render side (``core.stages.export._v360_motion_at``) multiplies these
+    fractions by the shot's real rendered h_fov and additionally clamps the
+    result to a per-second ceiling, so motion reads as equally subtle at
+    every zoom level and can never whip regardless of segment length. This is
+    the same class of fix already applied to the Director's mouse
+    sensitivity in 6fc6a61.
     """
     shot = dict(shot)
     shot_type = str(shot.get("type") or "")
@@ -465,17 +494,25 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int) -> dict[str, Any
         shot["pitch"] = -90.0
         shot["fov"] = max(240.0, float(shot.get("fov") or 240.0))
         shot["projection"] = "tiny_planet"
+        # The tiny-planet spin is a deliberate signature effect, but it is
+        # still held to the same fraction-of-field budget so it reads as a
+        # slow rotation rather than a carousel.
+        shot["spin_fov_fraction_per_sec"] = PLANET_SPIN_FRACTION_PER_SEC
         return shot
-    rng = random.Random(stable_fingerprint({"spherical_motion_v2": shot_type, "index": index}))
+    rng = random.Random(stable_fingerprint({"spherical_motion_v3": shot_type, "index": index}))
     primary = rng.choice(_SPHERICAL_MOTION_AXES)
 
     def signed(low: float, high: float) -> float:
         magnitude = rng.uniform(low, high)
         return magnitude if rng.random() < 0.5 else -magnitude
 
-    shot["drift_yaw_deg"] = round(signed(3.0, 6.0) if primary == "yaw" else signed(0.0, 2.5), 2)
-    shot["drift_pitch_deg"] = round(signed(2.0, 4.0) if primary == "pitch" else signed(0.0, 1.5), 2)
-    shot["fov_delta_deg"] = round(signed(5.0, 9.0) if primary == "fov" else signed(0.0, 3.0), 2)
+    primary_range = SPHERICAL_PRIMARY_DRIFT_FRACTION
+    secondary_range = SPHERICAL_SECONDARY_DRIFT_FRACTION
+    shot["drift_yaw_fraction"] = round(signed(*primary_range) if primary == "yaw" else signed(*secondary_range), 5)
+    shot["drift_pitch_fraction"] = round(signed(*primary_range) if primary == "pitch" else signed(*secondary_range), 5)
+    shot["fov_delta_fraction"] = round(signed(*primary_range) if primary == "fov" else signed(*secondary_range), 5)
+    # Legacy absolute-degree keys are deliberately NOT written any more; the
+    # render side treats their absence as "use the fraction keys".
     return shot
 
 

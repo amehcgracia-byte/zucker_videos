@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _ken_burns_motion, _spherical_motion_profile, _youtube_multicam_plan, _framing_nearly_identical
+from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, SPHERICAL_PRIMARY_DRIFT_FRACTION, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _ken_burns_motion, _spherical_motion_profile, _youtube_multicam_plan, _framing_nearly_identical
 from core.stages.cut import _pick_energetic_window, _segment_for_360, _select_360_clip
 
 
@@ -124,15 +124,37 @@ def test_spherical_landmark_migration_accepts_comma_decimal_and_zero_weight():
     assert migrated["right"]["weight"] == 0.0
 
 
+_DRIFT_KEYS = ("drift_yaw_fraction", "drift_pitch_fraction", "fov_delta_fraction")
+
+
 def test_spherical_motion_profile_never_leaves_a_shot_frozen():
     # General rule: a static-source segment (here, every non-planet 360
-    # landmark type) always gets a clearly perceptible drift on at least one
-    # axis -- never all three near zero, which would look like a frozen hold.
+    # landmark type) always gets a perceptible drift on at least one axis --
+    # never all three near zero, which would look like a frozen hold.
     for shot_type in ("singer", "left", "right", "audience", "full_stage", "audience_stage_wide", "unknown_type", ""):
         for index in range(6):
             shot = _spherical_motion_profile({"type": shot_type, "yaw": 10.0, "pitch": -15.0, "fov": 95}, index)
-            magnitudes = [abs(shot["drift_yaw_deg"]), abs(shot["drift_pitch_deg"]), abs(shot["fov_delta_deg"])]
-            assert max(magnitudes) >= 2.0, (shot_type, index, shot)
+            magnitudes = [abs(shot[key]) for key in _DRIFT_KEYS]
+            assert max(magnitudes) >= SPHERICAL_PRIMARY_DRIFT_FRACTION[0], (shot_type, index, shot)
+
+
+def test_spherical_motion_profile_is_expressed_as_a_fraction_of_the_visible_field():
+    """Motion magnitudes must be FOV-relative, never absolute degrees.
+
+    Absolute degrees was the original bug: the same drift reads as gentle
+    across a 140-degree shot and as a swing across a 73-degree one. Storing a
+    fraction is what makes a shot feel equally subtle at every zoom level.
+    """
+    for fov in (73.0, 95.0, 140.0):
+        shot = _spherical_motion_profile({"type": "singer", "yaw": 10.0, "pitch": -15.0, "fov": fov}, 1)
+        # The authored magnitudes are FOV-independent...
+        assert all(key in shot for key in _DRIFT_KEYS)
+        # ...and no legacy absolute-degree key is written any more.
+        assert "drift_yaw_deg" not in shot
+        assert "drift_pitch_deg" not in shot
+        assert "fov_delta_deg" not in shot
+        for key in _DRIFT_KEYS:
+            assert abs(shot[key]) <= SPHERICAL_PRIMARY_DRIFT_FRACTION[1]
 
 
 def test_spherical_motion_profile_varies_across_instances():
@@ -140,7 +162,7 @@ def test_spherical_motion_profile_varies_across_instances():
     # same fixed way -- this is what makes it "randomized per instance"
     # rather than a hardcoded per-type direction.
     profiles = [_spherical_motion_profile({"type": "singer", "yaw": 10.0, "pitch": -15.0, "fov": 95}, index) for index in range(8)]
-    signatures = {(p["drift_yaw_deg"], p["drift_pitch_deg"], p["fov_delta_deg"]) for p in profiles}
+    signatures = {tuple(p[key] for key in _DRIFT_KEYS) for p in profiles}
     assert len(signatures) > 1
 
 
@@ -154,14 +176,86 @@ def test_spherical_motion_profile_keeps_planet_spin_untouched():
     planet = _spherical_motion_profile({"type": "planet", "yaw": 6, "pitch": -23.5, "fov": 150}, 7)
     assert planet["projection"] == "tiny_planet"
     assert planet["pitch"] == -90.0
+    # The signature tiny-planet spin is held to the same fraction-of-field
+    # budget as every other automatic motion.
+    assert planet["spin_fov_fraction_per_sec"] <= SPHERICAL_MAX_MOTION_FRACTION_PER_SEC
 
 
 def test_spherical_motion_profile_treats_missing_shot_as_a_moving_hold():
     # When no landmark shot is available at all (e.g. nothing configured),
     # the segment must still get motion rather than a frozen passthrough.
     shot = _spherical_motion_profile({}, 3)
-    magnitudes = [abs(shot["drift_yaw_deg"]), abs(shot["drift_pitch_deg"]), abs(shot["fov_delta_deg"])]
-    assert max(magnitudes) >= 3.0
+    magnitudes = [abs(shot[key]) for key in _DRIFT_KEYS]
+    assert max(magnitudes) >= SPHERICAL_PRIMARY_DRIFT_FRACTION[0]
+
+
+@pytest.mark.parametrize("segment_duration", [0.5, 2.0, 3.5, 6.0])
+def test_automatic_360_motion_never_exceeds_the_fov_fraction_budget(segment_duration):
+    """Regression guard for "automatic 360 shots swing wildly".
+
+    Renders a realistic automatic-mode plan (landmarks spread right around
+    the sphere, as in a real venue setup) through the SAME per-frame sampler
+    the export's v360 sendcmd uses, and asserts no axis ever moves faster
+    than the published budget as a fraction of the visible field.
+
+    The original defect measured up to 295 deg/s -- 265% of the visible field
+    every second -- because a landmark change panned 100-plus degrees across a
+    0.45s transition, and because drift magnitudes were absolute degrees that
+    ignored how wide the shot actually was.
+    """
+    from core.stages.edit import _available_spherical_shots, _next_weighted_spherical_shot, _spherical_type_usage
+    from core.stages.export import _continuous_spherical_render_segments, _effective_flat_fov, _v360_motion_at
+
+    # Landmarks deliberately spread around the full sphere: this is what makes
+    # a naive inter-shot pan whip across the frame.
+    landmarks = {
+        "full_stage": {"yaw": 355.0, "pitch": -26.3, "fov": 114.8, "weight": 15.0},
+        "singer": {"yaw": 21.0, "pitch": -23.4, "fov": 73.9, "weight": 5.0},
+        "drummer": {"yaw": 324.0, "pitch": -25.3, "fov": 73.3, "weight": 5.0},
+        "left": {"yaw": 308.0, "pitch": -15.9, "fov": 100.0, "weight": 40.0},
+        "audience": {"yaw": 175.0, "pitch": -12.9, "fov": 111.4, "weight": 15.0},
+        "audience_stage_wide": {"yaw": 72.0, "pitch": -14.3, "fov": 138.8, "weight": 15.0},
+    }
+    shots = _available_spherical_shots(landmarks)
+    segments = []
+    for index in range(14):
+        shot = _next_weighted_spherical_shot(shots, _spherical_type_usage(segments))
+        segments.append(
+            {
+                "clip_start_sec": index * segment_duration,
+                "master_start_sec": index * segment_duration,
+                "duration_sec": segment_duration,
+                "spherical_shot": _spherical_motion_profile(shot or {}, index),
+            }
+        )
+
+    moved_at_all = 0
+    for segment in _continuous_spherical_render_segments(segments):
+        shot = segment["spherical_shot"]
+        fov = _effective_flat_fov(shot)
+        frames = [
+            _v360_motion_at(shot, segment_duration, min(segment_duration, step / 30.0))
+            for step in range(int(segment_duration * 30) + 1)
+        ]
+        for (yaw_a, pitch_a, fov_a), (yaw_b, pitch_b, fov_b) in zip(frames, frames[1:]):
+            dt = 1.0 / 30.0
+            yaw_delta = abs(((yaw_b - yaw_a + 180.0) % 360.0) - 180.0)
+            for delta in (yaw_delta, abs(pitch_b - pitch_a), abs(fov_b - fov_a)):
+                rate_fraction = delta / dt / fov
+                assert rate_fraction <= SPHERICAL_MAX_MOTION_FRACTION_PER_SEC + 1e-6, (
+                    f"automatic 360 motion of {rate_fraction * 100:.1f}% of the visible field per second "
+                    f"exceeds the {SPHERICAL_MAX_MOTION_FRACTION_PER_SEC * 100:.0f}% budget"
+                )
+        travel = max(
+            abs(((frames[-1][0] - frames[0][0] + 180.0) % 360.0) - 180.0),
+            abs(frames[-1][1] - frames[0][1]),
+            abs(frames[-1][2] - frames[0][2]),
+        )
+        if travel / fov >= 0.002:
+            moved_at_all += 1
+
+    # ...and the shots must still be alive, not clamped into frozen holds.
+    assert moved_at_all == len(segments)
 
 
 def test_youtube_plan_prefers_recorded_360_curve_when_segment_is_covered():
@@ -463,8 +557,8 @@ def test_youtube_plan_360_segments_always_get_a_moving_shot_even_with_no_landmar
     for segment in spherical_segments:
         shot = segment.get("spherical_shot")
         assert shot, "360 segment must always carry a spherical_shot, not a frozen passthrough"
-        magnitudes = [abs(shot.get("drift_yaw_deg") or 0.0), abs(shot.get("drift_pitch_deg") or 0.0), abs(shot.get("fov_delta_deg") or 0.0)]
-        assert max(magnitudes) >= 2.0
+        magnitudes = [abs(shot.get(key) or 0.0) for key in _DRIFT_KEYS]
+        assert max(magnitudes) >= SPHERICAL_PRIMARY_DRIFT_FRACTION[0]
 
 
 # ---------------------------------------------------------------------------

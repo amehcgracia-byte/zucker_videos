@@ -23,7 +23,7 @@ from core.project import Project
 from core.spherical_metadata import SphericalMetadataError, inject_spherical_metadata
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.cut import load_coverage
-from core.stages.edit import load_edit_plan
+from core.stages.edit import PLANET_SPIN_FRACTION_PER_SEC, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, load_edit_plan
 
 LOGGER = logging.getLogger(__name__)
 MAX_EXPORT_BYTES = int(1.9 * 1024 * 1024 * 1024)
@@ -87,7 +87,23 @@ class ExportStage(Stage):
         if bitrate_info["warning"]:
             progress_callback(6, bitrate_info["warning"])
         if platform == "360":
-            _render_360_plan(project, segments, master["path"], output_path, bitrate_info["video_bitrate"], warnings, progress_callback)
+            # The End trim the user actually set, so the outro can let the rest
+            # of the song play out when the camera stopped recording early --
+            # without spilling into audio the user trimmed away.
+            window = plan.get("window") or {}
+            song_end_sec = window.get("trim_end_sec")
+            if song_end_sec is None and window.get("start_sec") is not None:
+                song_end_sec = float(window.get("start_sec") or 0.0) + float(window.get("duration_sec") or 0.0)
+            _render_360_plan(
+                project,
+                segments,
+                master["path"],
+                output_path,
+                bitrate_info["video_bitrate"],
+                warnings,
+                progress_callback,
+                song_end_sec=float(song_end_sec) if song_end_sec is not None else None,
+            )
         else:
             _render_plan(project, segments, master["path"], output_path, platform, bitrate_info["video_bitrate"], warnings, progress_callback)
         progress_callback(95, t("saving_result"))
@@ -353,6 +369,7 @@ def _render_360_plan(
     video_bitrate: int,
     warnings: list[str],
     progress_callback: ProgressCallback,
+    song_end_sec: float | None = None,
 ) -> None:
     """Direct passthrough export: the original 360 clip already works fine in
     YouTube/VLC, so this mode does nothing but trim it to the song's Start/End
@@ -399,11 +416,15 @@ def _render_360_plan(
             lambda percent, detail: progress_callback(12 + int(percent * 60 / 100), detail),
             codec_name=profile.get("codec_name"),
         )
+        audio_start, audio_delay = _audio_mux_start_and_delay([segment])
+        outro_duration = _outro_duration_for_remaining_music(
+            master_path, audio_start, audio_delay, INTRO_DURATION + duration, song_end_sec
+        )
         _render_matched_logo_clip(
             outro,
             profile,
             "outro",
-            OUTRO_DURATION,
+            outro_duration,
             video_bitrate,
             lambda percent, detail: progress_callback(72 + int(percent * 4 / 100), detail),
         )
@@ -414,7 +435,7 @@ def _render_360_plan(
             joined,
             profile,
             video_bitrate,
-            duration + INTRO_DURATION + OUTRO_DURATION,
+            duration + INTRO_DURATION + outro_duration,
             temp_dir,
             lambda percent, detail: progress_callback(76 + int(percent * 8 / 100), detail),
         )
@@ -423,7 +444,6 @@ def _render_360_plan(
         # force it, which is exactly the re-encode this mode exists to avoid.
         # The source's own native fps is preserved as-is.
         real_duration = _media_duration(str(joined))
-        audio_start, audio_delay = _audio_mux_start_and_delay([segment])
         muxed = temp_dir / "muxed.mp4"
         _mux_continuous_master_audio(
             joined,
@@ -435,7 +455,12 @@ def _render_360_plan(
             lambda percent, detail: progress_callback(84 + int(percent * 10 / 100), detail),
             extra_args=_spherical_metadata_args(),
             content_start=INTRO_DURATION,
-            content_end=max(INTRO_DURATION, real_duration - OUTRO_DURATION),
+            # L-cut at BOTH ends: the music is already playing under the intro
+            # logo (content_start fades it in from t=0), and it keeps playing
+            # under the outro logo, fading out only at the very end of the
+            # timeline. Fading at the end of the BODY instead left the outro
+            # silent and chopped the tail off the song.
+            content_end=real_duration,
             audio_delay=audio_delay,
         )
         # ffmpeg's `-metadata` flags above (belt-and-braces, plus `-strict
@@ -650,7 +675,19 @@ def _copy_trim_video(
     sound. `-tag:v hvc1` rewrites just that four-character-code box tag
     (verified bit-identical to the source via frame MD5 -- this is not a
     re-encode), so a stream-copied HEVC body plays back correctly.
+
+    End boundary: because the input-side seek lands on the keyframe at or
+    BEFORE `start`, asking for exactly `duration` seconds from there ends the
+    output up to one GOP EARLIER than the requested end -- which is precisely
+    the reported "the 360 export cuts the song early, the End trim is
+    ignored". `-t` is therefore measured from the keyframe ffmpeg actually
+    snapped to, so the requested end instant is always included.
     """
+    snapped_start = _preceding_keyframe(source_path, start)
+    # Measure the requested end from the keyframe ffmpeg will actually land on,
+    # not from the requested start, so the snap eats into the head (already
+    # sync-compensated) instead of truncating the tail.
+    copy_duration = max(0.1, (start + duration) - snapped_start)
     command = [
         _ffmpeg_path(),
         "-y",
@@ -665,7 +702,7 @@ def _copy_trim_video(
         "-i",
         str(source_path),
         "-t",
-        f"{duration:.3f}",
+        f"{copy_duration:.3f}",
         "-map",
         "0:v:0",
         "-c",
@@ -678,7 +715,87 @@ def _copy_trim_video(
         "+faststart",
         str(output_path),
     ]
-    _run_ffmpeg_progress(command, duration, "Trimming 360 source", progress_callback)
+    _run_ffmpeg_progress(command, copy_duration, "Trimming 360 source", progress_callback)
+
+
+MAX_OUTRO_DURATION = 45.0
+
+
+def _outro_duration_for_remaining_music(
+    master_path: str,
+    audio_start: float,
+    audio_delay: float,
+    content_end: float,
+    song_end_sec: float | None = None,
+) -> float:
+    """Length of the outro logo, extended so the song can finish underneath it.
+
+    The outro is normally OUTRO_DURATION long. When the picture ends before
+    the song does -- the common 360 case, where the camera stopped recording
+    partway through the chosen range -- the outro is stretched (up to
+    MAX_OUTRO_DURATION) so the rest of the song plays out under the logo
+    rather than being chopped off mid-phrase.
+
+    "The song" means the user's chosen Start/End range, NOT the whole master
+    file: `song_end_sec` is the End trim. Falling back to the file's full
+    length would happily play minutes of audio the user explicitly trimmed
+    away. Shorter than the default is never returned -- the outro logo still
+    needs its own time to read.
+    """
+    del master_path  # only the chosen range matters, never the file's full length
+    if song_end_sec is None:
+        # No End trim known for this plan: keep the default outro rather than
+        # guessing from the master file's length, which would play back audio
+        # the user may have deliberately trimmed away.
+        return OUTRO_DURATION
+    end_master_sec = float(song_end_sec)
+    if end_master_sec <= 0:
+        return OUTRO_DURATION
+    # Master-track position playing at the instant the picture ends.
+    master_at_content_end = max(0.0, audio_start + max(0.0, content_end - audio_delay))
+    remaining = float(end_master_sec) - master_at_content_end
+    if remaining <= OUTRO_DURATION:
+        return OUTRO_DURATION
+    return round(min(MAX_OUTRO_DURATION, remaining), 3)
+
+
+def _preceding_keyframe(source_path: str, start: float) -> float:
+    """Return the keyframe timestamp at or just before `start` (or `start`).
+
+    ffmpeg's input-side seek lands here, so this is what the trim's duration
+    has to be measured from. Probing is limited to a window around `start` so
+    a multi-hour camera file costs a fraction of a second to inspect.
+    """
+    if start <= 0.0:
+        return 0.0
+    status = tool_status()
+    if not status.get("ffprobe_path"):
+        return start
+    window_start = max(0.0, start - 30.0)
+    command = [
+        str(status["ffprobe_path"]),
+        "-v", "error",
+        "-read_intervals", f"{window_start:.3f}%{start + 0.5:.3f}",
+        "-select_streams", "v:0",
+        "-skip_frame", "nokey",
+        "-show_entries", "frame=best_effort_timestamp_time",
+        "-of", "csv=p=0",
+        str(Path(source_path)),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return start
+    times: list[float] = []
+    for line in result.stdout.splitlines():
+        text = line.strip().rstrip(",")
+        if not text or text == "N/A":
+            continue
+        try:
+            times.append(float(text))
+        except ValueError:
+            continue
+    candidates = [value for value in times if value <= start + 0.001]
+    return max(candidates) if candidates else start
 
 
 def _render_matched_logo_clip(
@@ -1584,6 +1701,31 @@ def _recorded_curve_sampler(shot: dict[str, Any]):
     return sample
 
 
+def _automatic_drift_degrees(shot: dict[str, Any], axis: str, visible_fov: float, duration: float) -> float:
+    """Total travel (degrees) for one automatic-motion axis over the segment.
+
+    Motion is authored as a fraction of the shot's visible field (see
+    ``core.stages.edit._spherical_motion_profile``); here it is resolved
+    against the FOV the segment is actually rendered at, then clamped so the
+    resulting rate can never exceed SPHERICAL_MAX_MOTION_FRACTION_PER_SEC of
+    that field per second. The clamp matters because the fraction describes
+    travel across the WHOLE segment: without it, a short segment would turn
+    the same budget into a fast pan.
+
+    Legacy plans (cached before this rework) carry absolute ``*_deg`` values
+    instead. Those are honoured but pushed through the identical clamp, so an
+    already-cached edit plan cannot resurrect the old runaway motion.
+    """
+    fraction = shot.get(f"{axis}_fraction")
+    if fraction is None:
+        legacy = _shot_float(shot, f"{axis}_deg", 0.0)
+        travel = legacy
+    else:
+        travel = _shot_float(shot, f"{axis}_fraction", 0.0) * visible_fov
+    ceiling = SPHERICAL_MAX_MOTION_FRACTION_PER_SEC * visible_fov * max(0.001, duration)
+    return max(-ceiling, min(ceiling, travel))
+
+
 def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[float, float, float]:
     duration = max(0.001, duration)
     if shot.get("type") == "recorded_move":
@@ -1595,28 +1737,44 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
     target_pitch = _shot_float(shot, "pitch", 0.0)
     target_fov = _effective_flat_fov(shot)
     if shot.get("type") == "planet":
-        yaw = target_yaw + _shot_float(shot, "spin_deg_per_sec", 18.0) * max(0.0, t)
+        spin_per_sec = _shot_float(shot, "spin_fov_fraction_per_sec", PLANET_SPIN_FRACTION_PER_SEC)
+        spin_per_sec = min(spin_per_sec, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC) * target_fov
+        yaw = target_yaw + spin_per_sec * max(0.0, t)
         return _signed_yaw(yaw), target_pitch, target_fov
 
+    # A change of 360 landmark is a change of FRAMING, and it renders as a
+    # CUT, not a pan. Panning between landmarks was the dominant source of the
+    # "swings wildly" report: the user's landmarks are spread right around the
+    # sphere (e.g. audience at yaw 175 -> audience_stage_wide at 72), and
+    # sweeping 100-plus degrees across the 0.45 s transition worked out at
+    # 230-295 deg/s, i.e. up to 265% of the visible field every second. A
+    # multicam edit cuts between angles; only a genuine near-identical reframe
+    # is worth easing through, and that case still has to fit inside the same
+    # per-second budget as every other automatic motion.
     previous = shot.get("previous_shot") if isinstance(shot.get("previous_shot"), dict) else None
     pan_duration = 0.0
     yaw = target_yaw
     pitch = target_pitch
     fov = target_fov
     if previous:
-        pan_duration = min(_shot_float(shot, "transition_sec", 0.45), duration / 3.0)
-        if pan_duration > 0 and t < pan_duration:
-            amount = max(0.0, min(1.0, t / pan_duration))
-            yaw = _lerp_signed_yaw(_shot_yaw(previous), target_yaw, amount)
-            pitch = _lerp_float(_shot_float(previous, "pitch", target_pitch), target_pitch, amount)
-            fov = _lerp_float(_shot_float(previous, "fov", target_fov), target_fov, amount)
-            return _signed_yaw(yaw), pitch, fov
+        requested = min(_shot_float(shot, "transition_sec", 0.45), duration / 3.0)
+        previous_yaw = _shot_yaw(previous)
+        distance = abs(((target_yaw - previous_yaw + 180.0) % 360.0) - 180.0)
+        budget = SPHERICAL_MAX_MOTION_FRACTION_PER_SEC * target_fov * max(0.001, requested)
+        if requested > 0 and distance <= budget:
+            pan_duration = requested
+            if t < pan_duration:
+                amount = max(0.0, min(1.0, t / pan_duration))
+                yaw = _lerp_signed_yaw(previous_yaw, target_yaw, amount)
+                pitch = _lerp_float(_shot_float(previous, "pitch", target_pitch), target_pitch, amount)
+                fov = _lerp_float(_shot_float(previous, "fov", target_fov), target_fov, amount)
+                return _signed_yaw(yaw), pitch, fov
 
     hold_duration = max(0.001, duration - pan_duration)
     hold_amount = max(0.0, min(1.0, (t - pan_duration) / hold_duration))
-    yaw += _shot_float(shot, "drift_yaw_deg", 0.0) * (hold_amount - 0.5)
-    pitch += _shot_float(shot, "drift_pitch_deg", 0.0) * (hold_amount - 0.5)
-    fov += _shot_float(shot, "fov_delta_deg", 0.0) * (hold_amount - 0.5)
+    yaw += _automatic_drift_degrees(shot, "drift_yaw", target_fov, hold_duration) * (hold_amount - 0.5)
+    pitch += _automatic_drift_degrees(shot, "drift_pitch", target_fov, hold_duration) * (hold_amount - 0.5)
+    fov += _automatic_drift_degrees(shot, "fov_delta", target_fov, hold_duration) * (hold_amount - 0.5)
     return _signed_yaw(yaw), pitch, fov
 
 

@@ -18,6 +18,7 @@ from core.stages.edit import EditStage
 from core.stages.export import ExportStage
 from core.stages.ingest import IngestStage
 from core.stages.sync import SyncStage, load_song_boundaries, set_manual_override
+from core.throughput import estimated_export_seconds, record_export_throughput
 from server.inbox import app_home, load_global_config, register_selected_inputs, save_global_config
 
 LOGGER = logging.getLogger(__name__)
@@ -41,6 +42,12 @@ class WizardJob:
     result: dict[str, Any] | None = None
     project_path: str | None = None
     logs_path: str | None = None
+    # Wall-clock seconds this machine is expected to take for the whole run,
+    # predicted from previously measured throughput before any rendering
+    # starts. None means "not enough history yet" -- the UI must then say it is
+    # still estimating rather than show an optimistic guess.
+    estimated_total_seconds: float | None = None
+    started_at: float | None = None
 
 
 @dataclass
@@ -379,7 +386,12 @@ class WizardRunner:
             _store_fixed_rear_motion(project, fixed_rear_motion)
             _store_spherical_mode(project, spherical_mode)
             project.save()
+            job.started_at = time.time()
             self._run_stage(job, project, CutStage(), 48, 58, t("cutting_song"))
+            # The cut stage is what establishes the song window, so this is the
+            # earliest point a grounded estimate can be made -- and it is still
+            # before any rendering, which is the part that actually takes time.
+            job.estimated_total_seconds = _predicted_total_seconds(project, platform)
             self._run_stage(job, project, EditStage(), 58, 70, t("building_edit"))
             outputs = self._run_stage(job, project, ExportStage(), 70, 100, t("exporting_video"))
             manifest_path = Path(outputs["export_manifest"])
@@ -412,6 +424,7 @@ class WizardRunner:
             elapsed = time.monotonic() - started_at
             if project.data["inputs"].get("videos") and elapsed < 1.0:
                 _write_stage_log(project, "wizard", t("suspiciously_fast", elapsed=elapsed))
+            _remember_export_throughput(project, platform, export, elapsed)
         except WizardCancelled:
             LOGGER.info("Wizard finish cancelled")
             _write_stage_log(project, "wizard", "CANCELLED by user")
@@ -652,6 +665,51 @@ def _store_spherical_mode(project: Project, mode: str | None) -> None:
     config = load_global_config()
     config["spherical_mode"] = value
     save_global_config(config)
+
+
+def _remember_export_throughput(project: Project, platform: str, export: dict[str, Any], elapsed: float) -> None:
+    """Fold this run's measured speed into the machine's rolling average.
+
+    Best-effort only: a failure to record throughput must never turn a
+    successful export into a failed job, so every error is swallowed.
+    """
+    try:
+        from core.ffmpeg import ffprobe
+
+        export_path = str(export.get("path") or "")
+        if not export_path:
+            return
+        probe = ffprobe(export_path)
+        output_duration = float((probe.get("format") or {}).get("duration") or 0.0)
+        segment_count = int(export.get("cut_count") or 0) or 1
+        config = load_global_config()
+        save_global_config(record_export_throughput(config, platform, output_duration, elapsed, segment_count))
+    except Exception:  # noqa: BLE001 - telemetry must never break an export
+        LOGGER.debug("Could not record export throughput", exc_info=True)
+
+
+def _predicted_total_seconds(project: Project, platform: str) -> float | None:
+    """Predict the whole run's wall-clock time before any rendering starts."""
+    try:
+        from core.stages.cut import load_coverage
+
+        try:
+            coverage = load_coverage(project)
+        except (FileNotFoundError, OSError, ValueError):
+            return None
+        window = coverage.get("window") or {}
+        content = float(window.get("duration_sec") or 0.0)
+        if content <= 0:
+            return None
+        # Intro and outro logos are rendered too, so they count toward the wait.
+        from core.stages.export import INTRO_DURATION, OUTRO_DURATION
+
+        total_output = content + INTRO_DURATION + OUTRO_DURATION
+        segments = len(coverage.get("segments") or []) or 1
+        return estimated_export_seconds(load_global_config(), platform, total_output, segments)
+    except Exception:  # noqa: BLE001 - an estimate is never worth failing over
+        LOGGER.debug("Could not predict export duration", exc_info=True)
+        return None
 
 
 def _write_stage_log(project: Project, stage_name: str, line: str) -> None:

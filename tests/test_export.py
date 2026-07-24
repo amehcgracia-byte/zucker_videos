@@ -819,6 +819,50 @@ def test_360_export_is_a_true_passthrough_not_a_reencode(tmp_path, monkeypatch):
     assert "Spherical Mapping" in side_data_types
 
 
+def test_copy_trim_video_measures_duration_from_the_snapped_keyframe(tmp_path, monkeypatch):
+    """The 360 End trim must not be eaten by the input-side keyframe snap.
+
+    ffmpeg's pre-input -ss lands on the keyframe at or before the requested
+    start. Asking for exactly `duration` seconds from there ends the output up
+    to one GOP EARLY -- the reported "360 export cuts the song early". The
+    duration must therefore be measured from the snapped keyframe.
+    """
+    from core.stages.export import _copy_trim_video
+
+    monkeypatch.setattr("core.stages.export._preceding_keyframe", lambda path, start: 6.0)
+    commands = []
+    monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", lambda command, duration, label, progress: commands.append(command))
+
+    _copy_trim_video("/tmp/source.mp4", tmp_path / "body.mp4", 8.0, 10.0, None)
+
+    command = commands[0]
+    # Requested 8.0 -> 18.0, but ffmpeg starts at the 6.0 keyframe, so it must
+    # copy 12.0s (not 10.0s) to still contain the requested end instant.
+    assert float(command[command.index("-t") + 1]) == pytest.approx(12.0, abs=0.01)
+
+
+def test_outro_extends_so_the_trimmed_song_can_finish_but_never_past_the_end_trim():
+    """L-cut at the end: remaining music plays under the outro logo.
+
+    "Remaining music" is bounded by the user's End trim, never by the master
+    file's full length -- otherwise the outro would play back audio the user
+    deliberately trimmed away.
+    """
+    from core.stages.export import MAX_OUTRO_DURATION, OUTRO_DURATION, _outro_duration_for_remaining_music
+
+    # Picture ends at timeline 40s (== master 40s here); End trim at 65s
+    # leaves 25s of song, so the outro stretches to cover it.
+    assert _outro_duration_for_remaining_music("/tmp/m.wav", 0.0, 0.0, 40.0, song_end_sec=65.0) == pytest.approx(25.0)
+    # Only a couple of seconds left: the outro keeps its normal length.
+    assert _outro_duration_for_remaining_music("/tmp/m.wav", 0.0, 0.0, 40.0, song_end_sec=43.0) == OUTRO_DURATION
+    # Song already finished before the picture did.
+    assert _outro_duration_for_remaining_music("/tmp/m.wav", 0.0, 0.0, 40.0, song_end_sec=30.0) == OUTRO_DURATION
+    # Never unbounded.
+    assert _outro_duration_for_remaining_music("/tmp/m.wav", 0.0, 0.0, 40.0, song_end_sec=9999.0) == MAX_OUTRO_DURATION
+    # Unknown End trim must NOT fall back to the master file's length.
+    assert _outro_duration_for_remaining_music("/tmp/m.wav", 0.0, 0.0, 40.0, song_end_sec=None) == OUTRO_DURATION
+
+
 @pytest.mark.slow
 def test_360_export_of_hevc_source_decodes_cleanly_not_black(tmp_path, monkeypatch):
     """Regression test for a real "black frame with audio" bug: many 360
