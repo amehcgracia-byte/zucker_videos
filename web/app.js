@@ -201,6 +201,23 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+// Pointer-drag-to-camera sensitivity for the 360 viewers (Director capture
+// and the Result preview). Calibrated at REFERENCE_FOV_DEG (the default
+// "shot width" of 100deg): a 100px drag there yields 10deg yaw / 7.5deg
+// pitch. Scaled by dragSensitivityScale() below so the same physical mouse
+// movement always sweeps the same PROPORTION of the current view, instead
+// of a fixed degrees-per-pixel value that feels increasingly "hard"/twitchy
+// the more a user zooms in (a narrower FOV means the same fixed degree
+// change covers a much bigger fraction of what's actually visible).
+const YAW_DEG_PER_PX = 0.10;
+const PITCH_DEG_PER_PX = 0.075;
+const REFERENCE_FOV_DEG = 100;
+
+function dragSensitivityScale(currentFov) {
+  const fov = Number(currentFov) || REFERENCE_FOV_DEG;
+  return clamp(fov / REFERENCE_FOV_DEG, 0.3, 2.0);
+}
+
 function signedYawDelta(yaw, center) {
   return ((yaw - center + 540) % 360) - 180;
 }
@@ -1019,8 +1036,9 @@ function wireDirectorEvents() {
     const dy = event.clientY - director.dragY;
     director.dragX = event.clientX;
     director.dragY = event.clientY;
-    director.yaw = normalizeYaw(director.yaw - dx * 0.16) ?? 0;
-    director.pitch = clamp(director.pitch + dy * 0.12, -85, 85);
+    const sensitivity = dragSensitivityScale(director.fov);
+    director.yaw = normalizeYaw(director.yaw - dx * YAW_DEG_PER_PX * sensitivity) ?? 0;
+    director.pitch = clamp(director.pitch + dy * PITCH_DEG_PER_PX * sensitivity, -85, 85);
     updateDirectorCamera();
   });
   const stopDrag = (event) => {
@@ -1123,6 +1141,48 @@ function teardownResult360Viewer() {
   result360.ready = false;
 }
 
+function showResultPlaybackWarning(message) {
+  const el = document.querySelector("#resultPlaybackWarning");
+  if (!el) return;
+  el.textContent = message;
+  el.hidden = false;
+}
+
+function hideResultPlaybackWarning() {
+  const el = document.querySelector("#resultPlaybackWarning");
+  if (el) el.hidden = true;
+}
+
+// Some codec/profile mismatches (e.g. a video tagged in a way this webview's
+// decoder rejects) don't fire a proper `error` event -- the container and
+// audio track are perfectly valid, so the element loads and plays sound
+// normally, it just never produces a video frame. That reads to a user as
+// "black screen with audio". Since no error event catches this, watch the
+// decoded frame size directly: once playback is underway, a real video
+// track reports a non-zero videoWidth/videoHeight within a couple of
+// seconds. If it never does, the file's picture genuinely can't be
+// decoded here -- show a fallback message rather than leave a silent black
+// rectangle with no explanation.
+function watchForUndecodableVideo(video) {
+  if (!video) return;
+  const exportedFileIsFine = "This export finished normally -- its picture just can't be decoded by this preview. " +
+    "Open the exported file directly (e.g. in QuickTime or VLC) to view it.";
+  const onError = () => showResultPlaybackWarning(exportedFileIsFine);
+  video.addEventListener("error", onError, { once: true });
+  const checkFrameSize = () => {
+    if (video.videoWidth > 0 && video.videoHeight > 0) return;
+    if (video.error) return; // the "error" listener above already handled it
+    showResultPlaybackWarning(exportedFileIsFine);
+  };
+  video.addEventListener(
+    "playing",
+    () => {
+      setTimeout(checkFrameSize, 2000);
+    },
+    { once: true }
+  );
+}
+
 function wireResult360Events(canvas) {
   if (canvas.dataset.wired) return;
   canvas.dataset.wired = "1";
@@ -1139,8 +1199,9 @@ function wireResult360Events(canvas) {
     const dy = event.clientY - result360.dragY;
     result360.dragX = event.clientX;
     result360.dragY = event.clientY;
-    result360.yaw = normalizeYaw(result360.yaw - dx * 0.16) ?? 0;
-    result360.pitch = clamp(result360.pitch + dy * 0.12, -85, 85);
+    const sensitivity = dragSensitivityScale(result360.fov);
+    result360.yaw = normalizeYaw(result360.yaw - dx * YAW_DEG_PER_PX * sensitivity) ?? 0;
+    result360.pitch = clamp(result360.pitch + dy * PITCH_DEG_PER_PX * sensitivity, -85, 85);
     updateResult360Camera();
   });
   const stopDrag = (event) => {
@@ -1661,6 +1722,84 @@ async function pollStatus() {
   }
 }
 
+// Playful, rotating variants for the main progress bar's headline message,
+// keyed by the exact factual string the backend sends (core/messages.py).
+// The detail line right underneath stays factual as-is -- this only
+// touches the big headline text, in the spirit of Claude Code's own
+// varied "Pondering...", "Noodling..." style working messages. Each pool's
+// first entry is the original plain phrasing, so a stage that's barely
+// begun still shows something sensible before rotation kicks in.
+const PLAYFUL_PROGRESS_MESSAGES = {
+  "Listening to your videos...": [
+    "Listening to your videos...",
+    "Eavesdropping on your footage...",
+    "Getting acquainted with your clips...",
+    "Scouting your videos for usable audio...",
+    "Giving your footage a once-over...",
+    "Peeking into every camera angle...",
+    "Sniffing out the good takes...",
+  ],
+  "Syncing with the audio...": [
+    "Syncing with the audio...",
+    "Lining up every camera to the beat...",
+    "Matching waveforms like a detective...",
+    "Untangling who was filming when...",
+    "Nudging clips into perfect alignment...",
+    "Getting everyone singing from the same page...",
+  ],
+  "Cutting the song...": [
+    "Cutting the song...",
+    "Counting beats and finding the drops...",
+    "Mapping out the song's structure...",
+    "Marking where the magic happens...",
+    "Chasing down the chorus...",
+    "Studying the song's every twist...",
+  ],
+  "Building the edit...": [
+    "Building the edit...",
+    "Picking the best angle for every beat...",
+    "Auditioning camera angles...",
+    "Directing from the editing chair...",
+    "Playing traffic cop with camera cuts...",
+    "Assembling your highlight reel...",
+  ],
+  "Exporting the video...": [
+    "Exporting the video...",
+    "Rendering the final cut...",
+    "Baking your video into shape...",
+    "Squeezing pixels into place...",
+    "Polishing the final export...",
+    "Putting the finishing touches on...",
+  ],
+};
+
+const PROGRESS_MESSAGE_ROTATE_MS = 2800;
+let progressMessageRotation = { key: null, order: [], index: 0, at: 0 };
+
+function playfulProgressMessage(rawMessage) {
+  const pool = PLAYFUL_PROGRESS_MESSAGES[rawMessage];
+  if (!pool || pool.length <= 1) {
+    progressMessageRotation = { key: null, order: [], index: 0, at: 0 };
+    return rawMessage;
+  }
+  const now = Date.now();
+  if (progressMessageRotation.key !== rawMessage) {
+    // Entering this stage fresh: keep the plain phrasing first, then
+    // shuffle the rest so a long-running stage doesn't always cycle
+    // through the playful variants in the same order.
+    const rest = pool.slice(1);
+    for (let i = rest.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [rest[i], rest[j]] = [rest[j], rest[i]];
+    }
+    progressMessageRotation = { key: rawMessage, order: [pool[0], ...rest], index: 0, at: now };
+  } else if (now - progressMessageRotation.at >= PROGRESS_MESSAGE_ROTATE_MS) {
+    progressMessageRotation.index = (progressMessageRotation.index + 1) % progressMessageRotation.order.length;
+    progressMessageRotation.at = now;
+  }
+  return progressMessageRotation.order[progressMessageRotation.index];
+}
+
 function renderWizardStatus(status) {
   latestStatus = status;
   const progress = Number(status.progress || 0);
@@ -1668,7 +1807,7 @@ function renderWizardStatus(status) {
   renderStatusStrip(status, progress);
   document.querySelector("#progressBar").style.width = `${progress}%`;
   document.querySelector("#progressPercent").textContent = `${Math.round(progress)}%`;
-  document.querySelector("#progressMessage").textContent = status.message || S.working;
+  document.querySelector("#progressMessage").textContent = playfulProgressMessage(status.message) || S.working;
   document.querySelector("#progressDetail").textContent = status.detail || currentSubtask(status) || S.nextStep;
   document.querySelector("#elapsedTime").textContent = `${S.elapsed}: ${formatElapsed(elapsedSeconds())}`;
   document.querySelector("#etaTime").textContent = `${S.eta}: ${formatEta(etaSeconds(progress))}`;
@@ -1696,6 +1835,7 @@ function renderWizardStatus(status) {
     document.querySelector("#resultSummary").textContent = resultSummary(latestResult);
     renderClipFates(latestResult);
     renderSphericalShots(latestResult);
+    hideResultPlaybackWarning();
     const mediaUrl = `${latestResult.media_url}?t=${Date.now()}`;
     if (latestResult.platform === "360") {
       document.querySelector("#resultVideo").hidden = true;
@@ -1708,13 +1848,16 @@ function renderWizardStatus(status) {
         document.querySelector("#result360Player").hidden = true;
         document.querySelector("#result360Controls").hidden = true;
         document.querySelector("#resultVideo").src = mediaUrl;
+        watchForUndecodableVideo(document.querySelector("#resultVideo"));
       });
+      watchForUndecodableVideo(document.querySelector("#result360Video"));
     } else {
       teardownResult360Viewer();
       document.querySelector("#resultVideo").hidden = false;
       document.querySelector("#result360Player").hidden = true;
       document.querySelector("#result360Controls").hidden = true;
       document.querySelector("#resultVideo").src = mediaUrl;
+      watchForUndecodableVideo(document.querySelector("#resultVideo"));
     }
     document.querySelector("#errorBox").hidden = true;
     document.querySelector("#resultBox").hidden = false;

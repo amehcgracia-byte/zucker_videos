@@ -20,6 +20,7 @@ from core.messages import t
 from core.media_validation import record_is_usable_camera_video, record_media_path
 from core.normalization import EVEN_SDR_FILTER, NORMALIZATION_VERSION, SDR_TONEMAP_FILTER, global_cache_root, global_segment_path, source_cache_key
 from core.project import Project
+from core.spherical_metadata import SphericalMetadataError, inject_spherical_metadata
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.cut import load_coverage
 from core.stages.edit import load_edit_plan
@@ -396,6 +397,7 @@ def _render_360_plan(
             clip_start,
             duration,
             lambda percent, detail: progress_callback(12 + int(percent * 60 / 100), detail),
+            codec_name=profile.get("codec_name"),
         )
         _render_matched_logo_clip(
             outro,
@@ -405,11 +407,111 @@ def _render_360_plan(
             video_bitrate,
             lambda percent, detail: progress_callback(72 + int(percent * 4 / 100), detail),
         )
+        concat_reencoded = _concat_360_segments(
+            intro,
+            body,
+            outro,
+            joined,
+            profile,
+            video_bitrate,
+            duration + INTRO_DURATION + OUTRO_DURATION,
+            temp_dir,
+            lambda percent, detail: progress_callback(76 + int(percent * 8 / 100), detail),
+        )
+        # No cadence-normalization fallback here: that path assumes the fixed
+        # TARGET_EXPORT_FPS and would re-encode (and resample) the body to
+        # force it, which is exactly the re-encode this mode exists to avoid.
+        # The source's own native fps is preserved as-is.
+        real_duration = _media_duration(str(joined))
+        audio_start, audio_delay = _audio_mux_start_and_delay([segment])
+        muxed = temp_dir / "muxed.mp4"
+        _mux_continuous_master_audio(
+            joined,
+            master_path,
+            muxed,
+            audio_start,
+            real_duration,
+            video_bitrate,
+            lambda percent, detail: progress_callback(84 + int(percent * 10 / 100), detail),
+            extra_args=_spherical_metadata_args(),
+            content_start=INTRO_DURATION,
+            content_end=max(INTRO_DURATION, real_duration - OUTRO_DURATION),
+            audio_delay=audio_delay,
+        )
+        # ffmpeg's `-metadata` flags above (belt-and-braces, plus `-strict
+        # unofficial` on every stream-copy step) only ever produce cosmetic
+        # udta string tags -- confirmed empirically: even with
+        # +use_metadata_tags a stream-copied/remuxed file has zero real
+        # uuid/sv3d/st3d spherical box structures, so VLC/YouTube see it as a
+        # flat rectangle. This final injection step writes the actual Google
+        # Spherical Video V2 boxes (vendored, pure Python, no external
+        # install) and hard-fails the export if they don't verifiably land.
+        try:
+            inject_spherical_metadata(str(muxed), str(output_path))
+        except SphericalMetadataError as exc:
+            raise FFmpegError(f"360 export failed spherical metadata verification: {exc}") from exc
+        passthrough_note = (
+            "360 export is a direct passthrough: the original clip is trimmed via stream copy "
+            "(no re-encode of the body) and only the synced master audio plus intro/outro logos "
+            "are added. "
+            if not concat_reencoded
+            else "360 export trims the original clip via stream copy, but the body had to be "
+            "re-encoded once when joining the intro/outro logos: ffmpeg's HEVC decoder cannot "
+            "reliably play back a stream-copied concatenation of independently-encoded HEVC "
+            "segments (confirmed empirically -- it produces a black frame with sound, playable "
+            "audio but broken video references), so this mode re-encodes only at the join step, "
+            "at a bitrate matched to the source, to guarantee the exported file actually plays. "
+        )
+        warnings.append(
+            passthrough_note
+            + "The watermark is skipped in this mode -- overlaying it would require "
+            "re-encoding the whole body, and preserving the source's original quality and 360 "
+            "metadata matters more here. Spherical metadata (sv3d/st3d boxes) is injected fresh "
+            "into the final file and verified via ffprobe so YouTube/VLC recognize it as 360."
+        )
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _concat_360_segments(
+    intro: Path,
+    body: Path,
+    outro: Path,
+    joined: Path,
+    profile: dict[str, Any],
+    video_bitrate: int,
+    total_duration: float,
+    temp_dir: Path,
+    progress_callback: ProgressCallback,
+) -> bool:
+    """Join intro+body+outro into `joined`. Returns True if the body had to be re-encoded.
+
+    For H.264 sources this is a genuine stream-copy passthrough (`-c copy`
+    via the concat demuxer) -- verified to produce clean, correctly
+    decoding output even when the intro/outro were encoded by a different
+    encoder than the body.
+
+    For HEVC sources, stream-copy concatenation of independently-encoded
+    segments is NOT safe: empirically confirmed (real hevc_videotoolbox
+    intro/outro + libx265/HEVC body, joined via `-f concat -c copy`) to
+    produce a file whose HEVC decoder throws "Could not find ref with POC
+    N" / "Error constructing the frame RPS" throughout the body -- it plays
+    as a black frame with audio, because the concatenated bitstream's
+    reference picture sets don't line up across the encoder boundary even
+    though each segment decodes perfectly on its own. Decoding each segment
+    and re-joining with the `concat` FILTER (not the demuxer) sidesteps
+    this entirely, since the filter operates on already-decoded frames, at
+    the cost of one re-encode of the joined result (still never touches
+    per-frame content, only the container-level stream-copy boundary).
+    """
+    codec_name = str(profile.get("codec_name") or "h264").lower()
+    ffmpeg = _ffmpeg_path()
+    if codec_name not in {"hevc", "h265"}:
         concat_path = temp_dir / "concat.txt"
         concat_path.write_text("".join(_concat_file_line(path) for path in [intro, body, outro]), encoding="utf-8")
         _run_ffmpeg_progress(
             [
-                _ffmpeg_path(),
+                ffmpeg,
                 "-y",
                 "-hide_banner",
                 "-loglevel",
@@ -425,41 +527,58 @@ def _render_360_plan(
                 str(concat_path),
                 "-c",
                 "copy",
+                "-strict",
+                "unofficial",
                 *_spherical_metadata_args(),
                 str(joined),
             ],
-            duration + INTRO_DURATION + OUTRO_DURATION,
+            total_duration,
             t("joining_segments"),
-            lambda percent, detail: progress_callback(76 + int(percent * 8 / 100), detail),
+            progress_callback,
         )
-        # No cadence-normalization fallback here: that path assumes the fixed
-        # TARGET_EXPORT_FPS and would re-encode (and resample) the body to
-        # force it, which is exactly the re-encode this mode exists to avoid.
-        # The source's own native fps is preserved as-is.
-        real_duration = _media_duration(str(joined))
-        audio_start, audio_delay = _audio_mux_start_and_delay([segment])
-        _mux_continuous_master_audio(
-            joined,
-            master_path,
-            output_path,
-            audio_start,
-            real_duration,
-            video_bitrate,
-            lambda percent, detail: progress_callback(84 + int(percent * 14 / 100), detail),
-            extra_args=_spherical_metadata_args(),
-            content_start=INTRO_DURATION,
-            content_end=max(INTRO_DURATION, real_duration - OUTRO_DURATION),
-            audio_delay=audio_delay,
+        return False
+
+    filter_complex = "[0:v:0][1:v:0][2:v:0]concat=n=3:v=1:a=0[v]"
+    base_command = [
+        ffmpeg,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-progress",
+        "pipe:1",
+        "-i",
+        str(intro),
+        "-i",
+        str(body),
+        "-i",
+        str(outro),
+        "-filter_complex",
+        filter_complex,
+        "-map",
+        "[v]",
+        "-pix_fmt",
+        profile["pix_fmt"],
+    ]
+    tail = ["-strict", "unofficial", *_spherical_metadata_args(), str(joined)]
+    try:
+        _run_ffmpeg_progress(
+            base_command + _video_encode_args("hevc_videotoolbox", video_bitrate) + tail,
+            total_duration,
+            t("joining_segments"),
+            progress_callback,
         )
-        warnings.append(
-            "360 export is a direct passthrough: the original clip is trimmed via stream copy "
-            "(no re-encode of the body) and only the synced master audio plus intro/outro logos "
-            "are added. The watermark is skipped in this mode -- overlaying it would require "
-            "re-encoding the whole body, and preserving the source's original quality and 360 "
-            "metadata matters more here."
+    except FFmpegError:
+        if joined.exists():
+            joined.unlink()
+        _run_ffmpeg_progress(
+            base_command + _video_encode_args("libx265", video_bitrate) + tail,
+            total_duration,
+            t("joining_segments"),
+            progress_callback,
         )
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    return True
 
 
 def _probe_video_profile(path: str) -> dict[str, Any]:
@@ -503,7 +622,14 @@ def _matching_encoders(codec_name: str) -> tuple[str, str]:
     return "h264_videotoolbox", "libx264"
 
 
-def _copy_trim_video(source_path: str, output_path: Path, start: float, duration: float, progress_callback: ProgressCallback | None) -> None:
+def _copy_trim_video(
+    source_path: str,
+    output_path: Path,
+    start: float,
+    duration: float,
+    progress_callback: ProgressCallback | None,
+    codec_name: str | None = None,
+) -> None:
     """Trim the source to [start, start+duration) via stream copy -- no re-encode.
 
     -ss is given BEFORE -i (input-side seeking): ffmpeg snaps to the nearest
@@ -516,6 +642,14 @@ def _copy_trim_video(source_path: str, output_path: Path, start: float, duration
     pre-input -ss it made ffmpeg (observed on ffmpeg 7.x) misinterpret -t as
     an absolute input cutoff instead of an output duration, silently
     truncating the trim.
+
+    HEVC sources: many non-Apple 360 cameras tag their HEVC video 'hev1'
+    rather than 'hvc1'. WebKit's <video> element (the packaged app's Result
+    player) silently refuses to decode 'hev1' -- it demuxes and plays the
+    audio track fine but never produces a video frame, showing black with
+    sound. `-tag:v hvc1` rewrites just that four-character-code box tag
+    (verified bit-identical to the source via frame MD5 -- this is not a
+    re-encode), so a stream-copied HEVC body plays back correctly.
     """
     command = [
         _ffmpeg_path(),
@@ -536,6 +670,9 @@ def _copy_trim_video(source_path: str, output_path: Path, start: float, duration
         "0:v:0",
         "-c",
         "copy",
+        "-strict",
+        "unofficial",
+        *(["-tag:v", "hvc1"] if codec_name in {"hevc", "h265"} else []),
         "-an",
         "-movflags",
         "+faststart",
@@ -1297,6 +1434,7 @@ def _mux_continuous_master_audio(
         "[a]",
         "-c:v",
         "copy",
+        *(["-strict", "unofficial"] if extra_args else []),
         "-c:a",
         "aac",
         "-b:a",

@@ -66,25 +66,33 @@ body {
 
 /* Same emblem used for the DMG installer background, applied as a visible-
    but-subtle backdrop that scrolls with the page (not pinned to the
-   viewport). Sits behind all content via z-index, so text/control contrast
-   is unaffected. */
-body::before {
+   viewport). A real <img> element (not a body::before background-image):
+   WebKit has a documented quirk where a background painted on <body>
+   itself can get promoted to the viewport/canvas background and rendered
+   fixed regardless of the declared `position`, which is exactly the "won't
+   scroll" symptom this had in the packaged app's WKWebView even though the
+   same CSS scrolled fine in a plain browser. A genuine image element,
+   positioned absolute within the document (not the viewport), sidesteps
+   that promotion entirely and scrolls with the rest of the page like any
+   other absolutely-positioned content. Sits behind all content via
+   z-index, so text/control contrast is unaffected.
+*/
+#backdropLogo {
   content: "";
   position: absolute;
   top: 6vh;
-  left: 0;
-  right: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(640px, 60vmin);
   height: min(640px, 60vmin);
   z-index: 0;
-  background-image: url("/logo_watermark.png");
-  background-repeat: no-repeat;
-  background-position: center top;
-  background-size: min(640px, 60vmin);
+  object-fit: contain;
   opacity: 0.12;
   pointer-events: none;
+  user-select: none;
 }
 
-:root[data-theme="dark"] body::before {
+:root[data-theme="dark"] #backdropLogo {
   opacity: 0.16;
 }
 
@@ -440,6 +448,15 @@ h1 {
   overflow-wrap: anywhere;
   font-size: 13px;
   font-weight: 750;
+}
+
+#resultPlaybackWarning {
+  border: 1px solid #b87928;
+  background: #f4e8cf;
+  color: #4b3410;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
 }
 
 .chip.warning {

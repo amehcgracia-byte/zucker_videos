@@ -9,6 +9,7 @@
     <script src="/theme.js?v=editor-ui-4"></script>
   </head>
   <body>
+    <img id="backdropLogo" src="/logo_watermark.png" alt="" aria-hidden="true" />
     <button id="statusStrip" class="status-strip" hidden>
       <span class="status-dot"></span>
       <span id="statusStripText">Working...</span>
@@ -219,6 +220,7 @@
               <input id="result360Scrub" type="range" min="0" max="1" step="0.01" value="0" />
             </label>
           </div>
+          <p id="resultPlaybackWarning" class="result-summary" hidden></p>
           <strong id="resultFilename"></strong>
           <p id="resultSummary" class="result-summary"></p>
           <div id="clipFates" class="clip-fates"></div>

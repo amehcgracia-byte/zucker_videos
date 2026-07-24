@@ -795,6 +795,174 @@ def test_360_export_is_a_true_passthrough_not_a_reencode(tmp_path, monkeypatch):
     assert "equirectangular" in probe.stdout
     assert _audio_rms(output, 15.0, 1.0) > 0.01
 
+    # The cosmetic -metadata tags above are NOT enough for real players to
+    # recognize the file as 360 (ffmpeg drops the real box structures on
+    # stream copy) -- so the export pipeline injects real Google Spherical
+    # Video V2 boxes as a final stage. Verify those boxes actually exist,
+    # both at the raw byte level and via ffprobe's structured side_data,
+    # which is what an ffmpeg-based player actually consults.
+    output_bytes = output.read_bytes()
+    assert b"sv3d" in output_bytes
+    assert b"st3d" in output_bytes
+    side_data_probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", str(output)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    streams = json.loads(side_data_probe.stdout)["streams"]
+    side_data_types = {
+        entry.get("side_data_type")
+        for stream in streams
+        for entry in (stream.get("side_data_list") or [])
+    }
+    assert "Spherical Mapping" in side_data_types
+
+
+@pytest.mark.slow
+def test_360_export_of_hevc_source_decodes_cleanly_not_black(tmp_path, monkeypatch):
+    """Regression test for a real "black frame with audio" bug: many 360
+    cameras record HEVC tagged 'hev1', and even after fixing that tag, a
+    stream-copied concat of the (independently-encoded) intro/outro logos
+    with an HEVC body produces a file whose decoder can't resolve reference
+    pictures across the encoder boundary -- confirmed empirically (ffmpeg
+    throws "Could not find ref with POC N" / "Error constructing the frame
+    RPS" throughout the body) even though intro, body, and outro each decode
+    perfectly fine on their own. The fix re-encodes only the join step for
+    HEVC sources. This test decodes the real exported file end-to-end and
+    fails if ffmpeg reports any reference/frame construction errors -- the
+    exact symptom a user would see as a black screen with sound.
+    """
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not available")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project = create_project("Hevc360", str(tmp_path / "Hevc360.zuckervid"))
+    master = tmp_path / "master.wav"
+    source = tmp_path / "360source_hevc.mp4"
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=880:duration=20", str(master)], check=True, capture_output=True, text=True)
+    # Many non-Apple 360/action cameras tag their HEVC video 'hev1' rather
+    # than 'hvc1' -- reproduce that here rather than assuming 'hvc1'.
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc2=size=640x320:rate=25:duration=8",
+            "-f", "lavfi", "-i", "sine=frequency=220:duration=8",
+            "-c:v", "libx265", "-tag:v", "hev1", "-pix_fmt", "yuv420p", "-c:a", "aac",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    record = file_record(str(source))
+    record.update({"projection": "equirect", "probe": {"valid_video": True, "projection": "equirect", "duration": 8.0, "width": 640, "height": 320, "fps": 25.0, "video_codec": "hevc"}})
+    project.data["inputs"]["master"] = file_record(str(master))
+    project.data["inputs"]["videos"] = [record]
+    project.data["settings"]["wizard"] = {"platform": "360"}
+    write_artifact_json(
+        project.artifacts_dir / "edit_plan.json",
+        {
+            "platform": "360",
+            "segments": [
+                {
+                    "filename": "360source_hevc.mp4",
+                    "clip_path": str(source),
+                    "source_path": str(source),
+                    "clip_start_sec": 0.0,
+                    "master_start_sec": 10.0,
+                    "duration_sec": 5.0,
+                    "projection": "equirect",
+                }
+            ],
+        },
+    )
+
+    ExportStage().run(project, lambda percent, message: None)
+
+    manifest = json.loads((project.artifacts_dir / "export_manifest.json").read_text(encoding="utf-8"))
+    export_entry = manifest["exports"][0]
+    output = Path(export_entry["path"])
+    assert output.exists()
+    assert any("re-encoded once when joining" in warning for warning in export_entry["warnings"])
+
+    tag = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_tag_string", "-of", "default=nw=1:nk=1", str(output)],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert tag == "hvc1"
+
+    # The actual regression check: decode the whole file and fail on any
+    # reference/frame-construction error -- this is precisely what produces
+    # a black picture with working audio in a real player.
+    decode = subprocess.run(
+        ["ffmpeg", "-y", "-i", str(output), "-f", "null", "-"],
+        capture_output=True, text=True,
+    )
+    lowered = decode.stderr.lower()
+    assert "could not find ref" not in lowered
+    assert "error constructing the frame rps" not in lowered
+
+
+@pytest.mark.slow
+def test_360_export_fails_loudly_when_spherical_metadata_verification_fails(tmp_path, monkeypatch):
+    """If the spherical metadata injector ever produces a file that fails
+    verification (a regression, a corrupt box, an ffprobe that can't see the
+    side_data), the export must hard-fail rather than silently ship a 360
+    file that plays as a flat rectangle -- this is the automated guard
+    requested so this class of bug can never ship silently again.
+    """
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not available")
+    from core.ffmpeg import FFmpegError
+    from core.spherical_metadata import SphericalMetadataError
+
+    def _boom(*_args, **_kwargs):
+        raise SphericalMetadataError("simulated verification failure")
+
+    monkeypatch.setattr("core.stages.export.inject_spherical_metadata", _boom)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project = create_project("Passthrough360Fail", str(tmp_path / "Passthrough360Fail.zuckervid"))
+    master = tmp_path / "master.wav"
+    source = tmp_path / "360source.mp4"
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=880:duration=10", str(master)], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc2=size=640x320:rate=25:duration=5",
+            "-f", "lavfi", "-i", "sine=frequency=220:duration=5",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "25", "-c:a", "aac",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    record = file_record(str(source))
+    record.update({"projection": "equirect", "probe": {"valid_video": True, "projection": "equirect", "duration": 5.0, "width": 640, "height": 320, "fps": 25.0, "video_codec": "h264"}})
+    project.data["inputs"]["master"] = file_record(str(master))
+    project.data["inputs"]["videos"] = [record]
+    project.data["settings"]["wizard"] = {"platform": "360"}
+    write_artifact_json(
+        project.artifacts_dir / "edit_plan.json",
+        {
+            "platform": "360",
+            "segments": [
+                {
+                    "filename": "360source.mp4",
+                    "clip_path": str(source),
+                    "source_path": str(source),
+                    "clip_start_sec": 0.0,
+                    "master_start_sec": 5.0,
+                    "duration_sec": 3.0,
+                    "projection": "equirect",
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(FFmpegError, match="spherical metadata verification"):
+        ExportStage().run(project, lambda percent, message: None)
+
 
 @pytest.mark.slow
 def test_two_segment_export_contains_bottom_right_watermark(tmp_path, monkeypatch):
