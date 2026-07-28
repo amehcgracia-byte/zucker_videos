@@ -368,6 +368,38 @@ Media endpoints support HTTP `Range` requests and return `206 Partial Content` w
 
 Coverage includes project roundtrip and atomic-write behavior, engine dependency/cache/staleness/failure behavior, API project and stage polling, the stage readiness matrix, inbox classification, register-from-inbox, upload fallback and upload-size errors, songs-json suggestions, missing input detection, sync confidence and offset math, manual overrides, error envelopes, media `Range` responses, and a marked slow generated-media sync integration test.
 
+### Auditing 360 Motion
+
+Automatic 360 motion cannot be trusted to instrumentation: several fixes looked
+correct in the sendcmd stream handed to ffmpeg and still shipped motion that
+read as wild. `tools/audit_360.py` renders a real export and measures the
+delivered pixels with dense optical flow, reporting apparent motion per segment
+as a percentage of frame width per second.
+
+```bash
+.venv/bin/python -m tools.audit_360 --synthetic   # never touches real media
+.venv/bin/python -m tools.audit_360               # uses the last project's 360 clip
+```
+
+It carries two controls and fails loudly rather than reporting numbers it
+cannot trust: a static camera that must read ~0%/s (otherwise the measurement
+is inventing motion) and a deliberate 80° pan that must read high (otherwise
+the measurement is blind, and a still hold proves nothing). It also verifies
+the landmarks rendered as genuinely different framings, which catches the silent
+failure where a segment's source does not match its input record, the v360
+reframing is dropped, and the export is a flat passthrough that measures as
+perfectly still.
+
+Run it on a **real** 360 clip to judge hold magnitudes. On the synthetic source
+the hold reading is dominated by the test texture's spatial frequency rather
+than by the motion (the same render measures 11.2%/s or 0.017%/s depending on
+how coarse the noise is), so those rows are reported as `(info)` and excluded
+from the verdict; the structural checks still apply. The authored motion budget
+is guaranteed exactly and cheaply by
+`tests/test_edit.py::test_automatic_360_motion_never_exceeds_the_fov_fraction_budget`,
+which checks the sendcmd stream ffmpeg is handed. `tests/test_audit_360.py` runs
+the synthetic audit as a slow test.
+
 ## Building The macOS App
 
 PyInstaller is used for packaging because this app is already a Python Flask + pywebview process. Briefcase would add an app-template layer without improving the current runtime model.

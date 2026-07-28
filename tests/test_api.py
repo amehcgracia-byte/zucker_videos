@@ -15,7 +15,16 @@ from core.stages.cut import CutStage
 from core.stages.export import ExportStage
 from core.stages.ingest import IngestStage
 from core.stages.sync import SyncStage
-from server.api import create_app, _can_reuse_prepared_project, _project_wizard_status, _sanitize_camera_role_weights, _sanitize_spherical_landmarks, _spherical_preview_frame
+from server.api import (
+    MAX_PREVIEW_FOV,
+    STEREOGRAPHIC_PREVIEW_FOV_THRESHOLD,
+    create_app,
+    _can_reuse_prepared_project,
+    _project_wizard_status,
+    _sanitize_camera_role_weights,
+    _sanitize_spherical_landmarks,
+    _spherical_preview_frame,
+)
 from server.inbox import load_global_config
 from server.wizard import WizardJob, _store_audio_trim
 
@@ -788,6 +797,42 @@ def test_spherical_preview_frame_renders_cached_vertical_fov_jpeg(tmp_path, monk
     assert len(calls) == 1
     command_text = " ".join(calls[0])
     assert "v360=input=equirect:output=flat:yaw=-23.200:pitch=-28.800:h_fov=80.000:v_fov=50.534" in command_text
+
+
+def test_wide_shot_preview_is_stereographic_like_the_export(tmp_path, monkeypatch):
+    # The preview exists to show what will be rendered. A wide shot renders
+    # stereographically (a rectilinear view tears as it nears 180 deg), so a
+    # preview that stayed flat would show a framing the export never produces.
+    project = create_project("WidePreview", str(tmp_path / "WidePreview.zuckervid"))
+    source = tmp_path / "sphere.mp4"
+    source.write_bytes(b"video")
+    calls = []
+
+    monkeypatch.setattr("server.api.tool_status", lambda: {"ffmpeg_path": "ffmpeg"})
+    monkeypatch.setattr("server.api.ffprobe", lambda path: {"format": {"duration": "10"}})
+
+    def fake_run(command, capture_output, text, check):
+        calls.append(command)
+        Path(command[-1]).write_bytes(b"jpg")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("server.api.subprocess.run", fake_run)
+
+    _spherical_preview_frame(project, str(source), 0.0, -20.0, 240.0, quality="final")
+
+    assert "v360=input=equirect:output=sg:" in " ".join(calls[0])
+    assert "h_fov=240.000" in " ".join(calls[0])
+
+
+def test_preview_and_export_agree_on_when_a_shot_goes_stereographic():
+    # server.api deliberately keeps its own copies of this geometry rather than
+    # importing the export stage into the web server (as it already does for
+    # _paired_flat_fov). Pin the copies together so they cannot drift into
+    # previewing one projection and rendering the other.
+    from core.stages import export
+
+    assert STEREOGRAPHIC_PREVIEW_FOV_THRESHOLD == export.STEREOGRAPHIC_FOV_THRESHOLD
+    assert MAX_PREVIEW_FOV == export.MAX_SPHERICAL_FOV
 
 
 def test_camera_move_routes_save_list_and_delete_take(tmp_path):

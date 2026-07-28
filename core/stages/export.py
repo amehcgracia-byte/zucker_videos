@@ -1136,7 +1136,9 @@ def _render_segment(
             command_recorder,
         )
     sendcmd_path = output_path.with_suffix(".sendcmd.txt")
-    source_filter = _export_source_filter(source.get("probe") or {}, _spherical_shot(segment), duration=duration, command_path=sendcmd_path)
+    segment_probe = source.get("probe") or {}
+    _warn_if_spherical_framing_was_dropped(segment, segment_probe, warnings)
+    source_filter = _export_source_filter(segment_probe, _spherical_shot(segment), duration=duration, command_path=sendcmd_path)
     filter_complex = _segment_filtergraph(
         platform,
         duration,
@@ -1805,7 +1807,12 @@ def _export_source_filter(probe: dict[str, Any], shot: dict[str, Any] | None = N
     fov = _effective_flat_fov(shot)
     h_fov, v_fov = _paired_motion_fov(shot, fov, 16.0 / 9.0)
     command_prefix = _v360_sendcmd_filter(shot, duration, command_path, aspect_ratio=16.0 / 9.0)
-    output_projection = "sg" if (shot or {}).get("type") == "planet" else "flat"
+    # A rectilinear ("flat") view degenerates as it approaches 180° -- the edges
+    # stretch to infinity -- so anything genuinely wide has to be stereographic
+    # ("sg", the tiny-planet projection), which stays sane out past 300° and is
+    # what gives the "see the whole sphere" look. Planet is always sg; ordinary
+    # wide shots switch over once flat would start tearing.
+    output_projection = "sg" if _use_stereographic(shot) else "flat"
     if probe.get("projection") == "raw_insv":
         insv_fov = int(probe.get("insv_fov") or 190)
         spatial = f"v360=input=dfisheye:output=e:ih_fov={insv_fov}:iv_fov={insv_fov}:interp=lanczos,{command_prefix}{SPHERE_V360_LABEL}=input=equirect:output={output_projection}:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:w=1920:h=1080:interp=lanczos"
@@ -1823,27 +1830,105 @@ def _spherical_shot(segment: dict[str, Any]) -> dict[str, Any] | None:
     return shot if isinstance(shot, dict) else None
 
 
+def _warn_if_spherical_framing_was_dropped(segment: dict[str, Any], probe: dict[str, Any], warnings: list[str]) -> None:
+    """Warn loudly when a 360 segment is about to render as a flat passthrough.
+
+    A segment that declares a spherical_shot (or an equirect/raw_insv
+    projection) but whose resolved probe reports neither projection will NOT get
+    the v360 reframing -- it renders as a flat, letterboxed passthrough of the
+    raw equirect, with every landmark identical and no motion. That used to
+    happen silently (e.g. when a segment's source path didn't resolve to its
+    input record, so the probe came back empty). This surfaces it instead of
+    shipping a broken 360 render with no indication anything went wrong.
+    """
+    wants_spherical = bool(_spherical_shot(segment)) or str(segment.get("projection") or "") in {"equirect", "raw_insv"}
+    if not wants_spherical:
+        return
+    if str(probe.get("projection") or "") in {"equirect", "raw_insv"}:
+        return
+    name = Path(str(segment.get("source_path") or segment.get("clip_path") or "")).name or "(unknown)"
+    warnings.append(
+        f"360 framing was dropped for {name}: the segment asked for a spherical shot but its "
+        "source probe reported no equirect/raw_insv projection, so it rendered as a flat "
+        "passthrough. This usually means the segment's source did not match a prepared input record."
+    )
+
+
+# Widest horizontal field the stereographic path accepts. v360 stays coherent
+# well past this, but ~300° already shows essentially the whole sphere and is a
+# sane ceiling. Above STEREOGRAPHIC_FOV_THRESHOLD a shot renders stereographic
+# (tiny-planet) rather than rectilinear.
+MAX_SPHERICAL_FOV = 300.0
+STEREOGRAPHIC_FOV_THRESHOLD = 170.0
+
+
+def _shot_peak_fov(shot: dict[str, Any] | None) -> float:
+    """The widest horizontal field the shot ever reaches, over its whole duration.
+
+    A recorded take can zoom during the move, so its authored ``fov`` is only
+    the starting field; the curve is what says how wide it actually gets.
+    """
+    fov = _effective_flat_fov(shot)
+    if str((shot or {}).get("type") or "") == "recorded_move":
+        curve = (shot or {}).get("curve") or []
+        widest = [_shot_float(sample, "fov", fov) for sample in curve if isinstance(sample, dict)]
+        if widest:
+            fov = max(fov, min(MAX_SPHERICAL_FOV, max(widest)))
+    return fov
+
+
+def _use_stereographic(shot: dict[str, Any] | None) -> bool:
+    """Decide flat vs stereographic ONCE per segment, from the shot alone.
+
+    Deliberately independent of the instantaneous per-frame FOV. The output
+    projection is baked into the filtergraph when the segment is built, while
+    h_fov/v_fov are driven per frame through sendcmd -- so if the two disagreed
+    about which projection is in play they would pair the vertical field by
+    different rules mid-shot. A shot sitting near the threshold with a little
+    fov drift did exactly that: v_fov jumped ~162 deg to 120 deg partway
+    through, a visible pop in an otherwise still hold. Keying off the widest
+    field the shot ever reaches keeps one projection for the whole segment.
+    """
+    return str((shot or {}).get("type") or "") == "planet" or _shot_peak_fov(shot) > STEREOGRAPHIC_FOV_THRESHOLD
+
+
 def _effective_flat_fov(shot: dict[str, Any] | None) -> float:
     fov = _shot_float(shot, "fov", 100.0)
     shot_type = str((shot or {}).get("type") or "")
     if shot_type == "recorded_move":
         minimum = 1.0
     elif shot_type == "planet":
-        return max(220.0, min(320.0, fov))
+        return max(220.0, min(MAX_SPHERICAL_FOV, fov))
     elif shot_type in {"full_stage", "audience_stage_wide"}:
         minimum = 115.0
     elif shot_type:
         minimum = 95.0
     else:
         minimum = 100.0
-    return max(minimum, min(190.0, fov))
+    # Ordinary shots may now be pulled right back to the full-sphere look; the
+    # stereographic path (selected in _export_source_filter) handles the wide
+    # end, so the cap is no longer the rectilinear 190°.
+    return max(minimum, min(MAX_SPHERICAL_FOV, fov))
 
 
 def _paired_motion_fov(shot: dict[str, Any] | None, fov: float, aspect_ratio: float) -> tuple[float, float]:
+    if not _use_stereographic(shot):
+        return _paired_flat_fov(fov, aspect_ratio)
+    aspect = max(0.1, float(aspect_ratio))
     if (shot or {}).get("type") == "planet":
-        horizontal = max(220.0, min(320.0, float(fov)))
-        return horizontal, max(160.0, min(260.0, horizontal / max(0.1, float(aspect_ratio))))
-    return _paired_flat_fov(fov, aspect_ratio)
+        # Planet keeps its original, deliberately un-aspect-paired framing: the
+        # tiny-planet look is a signature effect rather than a geometric view,
+        # and every existing planet shot was authored against these numbers.
+        horizontal = max(220.0, min(MAX_SPHERICAL_FOV, float(fov)))
+        return horizontal, max(160.0, min(260.0, horizontal / aspect))
+    # Ordinary wide shots pair by aspect. Stereographic tolerates a vertical
+    # field well beyond the rectilinear 179° ceiling, so there is no flat clamp
+    # -- but no arbitrary floor either: a floor makes the vertical field exceed
+    # the horizontal one whenever a recorded take zooms in during a move (the
+    # segment stays stereographic for its widest moment), which renders as a
+    # vertically stretched frame.
+    horizontal = max(1.0, min(MAX_SPHERICAL_FOV, float(fov)))
+    return horizontal, max(1.0, min(MAX_SPHERICAL_FOV, horizontal / aspect))
 
 
 def _paired_flat_fov(horizontal_fov: float, aspect_ratio: float) -> tuple[float, float]:

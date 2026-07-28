@@ -14,6 +14,7 @@ from core.project import create_project, file_record
 from core.stages.base import write_artifact_json
 from core.stages.export import (
     MAX_EXPORT_BYTES,
+    MAX_SPHERICAL_FOV,
     MIN_ACCEPTABLE_VIDEO_BITRATE,
     TARGET_EXPORT_FPS,
     ExportStage,
@@ -22,11 +23,16 @@ from core.stages.export import (
     _cadence_checked_joined_video,
     cached_segment_path,
     _continuous_spherical_render_segments,
+    _effective_flat_fov,
     _expand_spherical_render_segments,
     _export_source_filter,
     _frame_pts_times,
     _motion_filter,
     _paired_flat_fov,
+    _paired_motion_fov,
+    _shot_peak_fov,
+    _use_stereographic,
+    _warn_if_spherical_framing_was_dropped,
     _v360_motion_at,
     _v360_motion_commands,
     _run_ffmpeg_progress,
@@ -421,6 +427,106 @@ def test_planet_uses_stereographic_tiny_planet_projection():
     assert "output=sg" in graph
     assert "pitch=-90.000" in graph
     assert "h_fov=260.000" in graph
+
+
+def test_wide_shots_render_stereographic_and_narrow_ones_stay_rectilinear():
+    # A rectilinear ("flat") view tears as it approaches 180 deg, so a shot
+    # pulled back to the full-sphere look has to switch to stereographic. An
+    # ordinary shot must NOT: sg would visibly bend a normal 95 deg framing.
+    wide = _export_source_filter({"projection": "equirect"}, {"type": "full_stage", "yaw": 0, "pitch": -20, "fov": 240})
+    narrow = _export_source_filter({"projection": "equirect"}, {"type": "singer", "yaw": 0, "pitch": -20, "fov": 95})
+
+    assert "output=sg" in wide
+    assert "h_fov=240.000" in wide
+    assert "output=flat" in narrow
+    assert "output=sg" not in narrow
+
+
+def test_shot_wider_than_the_old_rectilinear_cap_is_no_longer_clamped_to_190():
+    # Regression guard for the authored range: the UI now offers up to 300 deg,
+    # so the export must actually render it rather than silently clamping.
+    assert _effective_flat_fov({"type": "audience", "fov": 260}) == 260.0
+    assert _effective_flat_fov({"type": "audience", "fov": 400}) == MAX_SPHERICAL_FOV
+
+
+def test_projection_choice_is_fixed_per_segment_so_fov_drift_cannot_pop_the_framing():
+    """The flat/sg decision must not depend on the instantaneous FOV.
+
+    The output projection is baked into the filtergraph once, while h_fov/v_fov
+    are driven per frame by sendcmd. When the two disagreed, a shot sitting near
+    the threshold with a little fov drift paired its vertical field by flat
+    rules for part of the segment and stereographic rules for the rest --
+    v_fov jumped from ~162 deg to 120 deg partway through an otherwise still
+    hold, a visible pop.
+    """
+    shot = {"type": "audience_stage_wide", "yaw": 72.0, "pitch": -14.3, "fov": 170.0, "fov_delta_fraction": 0.04}
+    assert not _use_stereographic(shot)  # 170 is not past the threshold...
+
+    # ...so every frame of the segment, including ones whose drifting FOV
+    # crosses 170, must stay on the flat pairing and vary smoothly.
+    verticals = [_paired_motion_fov(shot, fov, 16.0 / 9.0)[1] for fov in (166.0, 168.0, 170.0, 172.0, 174.0)]
+    assert verticals == sorted(verticals)
+    steps = [b - a for a, b in zip(verticals, verticals[1:])]
+    assert max(steps) < 2.5 * min(steps), verticals
+
+
+def test_a_recorded_take_that_zooms_wide_is_stereographic_for_its_whole_duration():
+    # The authored `fov` is only where a recorded move STARTS; the curve says
+    # how wide it gets. Picking the projection from the start value would flip
+    # projection mid-take, so the widest moment decides for the whole segment.
+    zooming_out = {
+        "type": "recorded_move",
+        "fov": 90.0,
+        "curve": [{"t": 0.0, "yaw": 0, "pitch": 0, "fov": 90.0}, {"t": 4.0, "yaw": 0, "pitch": 0, "fov": 280.0}],
+    }
+
+    assert _shot_peak_fov(zooming_out) == 280.0
+    assert _use_stereographic(zooming_out)
+    # ...and while it is still zoomed in, the vertical field must stay NARROWER
+    # than the horizontal one. A floor on the stereographic vertical field made
+    # v_fov exceed h_fov here, which renders as a vertically stretched frame.
+    h_fov, v_fov = _paired_motion_fov(zooming_out, 90.0, 16.0 / 9.0)
+    assert v_fov < h_fov
+
+
+def test_planet_framing_is_unchanged_by_the_wide_shot_support():
+    # Planet's pairing is a deliberately un-aspect-paired signature look, not a
+    # geometric view. Generalising the stereographic path must not restyle every
+    # existing planet shot.
+    for fov in (220.0, 250.0, 300.0):
+        h_fov, v_fov = _paired_motion_fov({"type": "planet", "fov": fov}, fov, 16.0 / 9.0)
+        assert h_fov == fov
+        assert v_fov == max(160.0, min(260.0, fov / (16.0 / 9.0)))
+
+
+def test_warns_when_a_360_segment_loses_its_framing_and_renders_flat():
+    # A segment that wants a spherical shot but whose probe reports no
+    # projection gets NO v360 reframing: it renders as a flat letterboxed
+    # passthrough, identical for every landmark and with no motion. That used to
+    # happen silently whenever a segment's source failed to match its input
+    # record.
+    warnings: list[str] = []
+    segment = {"source_path": "/tmp/insta360.mp4", "spherical_shot": {"type": "singer", "yaw": 10, "fov": 95}}
+    _warn_if_spherical_framing_was_dropped(segment, {}, warnings)
+
+    assert len(warnings) == 1
+    assert "insta360.mp4" in warnings[0]
+    assert "360 framing was dropped" in warnings[0]
+
+
+def test_no_dropped_framing_warning_for_healthy_360_or_ordinary_flat_segments():
+    healthy: list[str] = []
+    _warn_if_spherical_framing_was_dropped(
+        {"source_path": "/tmp/insta360.mp4", "spherical_shot": {"type": "singer", "fov": 95}},
+        {"projection": "equirect"},
+        healthy,
+    )
+    assert healthy == []
+
+    # An iPhone/Sony segment never asked for spherical framing in the first place.
+    flat: list[str] = []
+    _warn_if_spherical_framing_was_dropped({"source_path": "/tmp/iphone.mov"}, {}, flat)
+    assert flat == []
 
 
 def test_motion_filter_builds_bounded_ken_burns_zoom():

@@ -78,22 +78,37 @@ body {
    z-index, so text/control contrast is unaffected.
 */
 #backdropLogo {
-  content: "";
   position: absolute;
-  top: 6vh;
+  top: 60px;
+  /* Centred WITHOUT a transform. `transform: translateX(-50%)` promotes the
+     element to its own composited layer and makes it a stacking context; in
+     WKWebView (the packaged app's engine, unlike plain Chrome where it looked
+     fine) that promoted layer sat behind the page background and the backdrop
+     vanished entirely. The old body::before had no transform, which is why
+     this only broke when it became a real element. left+margin-left centres it
+     with ordinary box geometry and no layer promotion.
+     Sizes avoid min()/vmin for the same "keep it boring" reason. */
   left: 50%;
-  transform: translateX(-50%);
-  width: min(640px, 60vmin);
-  height: min(640px, 60vmin);
+  margin-left: -300px;
+  width: 600px;
+  height: 600px;
   z-index: 0;
   object-fit: contain;
-  opacity: 0.12;
+  opacity: 0.14;
   pointer-events: none;
   user-select: none;
 }
 
+@media (max-width: 700px) {
+  #backdropLogo {
+    margin-left: -180px;
+    width: 360px;
+    height: 360px;
+  }
+}
+
 :root[data-theme="dark"] #backdropLogo {
-  opacity: 0.16;
+  opacity: 0.18;
 }
 
 button,
@@ -717,6 +732,12 @@ button:disabled {
   border-radius: 6px;
   background: var(--panel);
   object-fit: cover;
+  cursor: grab;
+  touch-action: none;
+}
+
+.shot-preview.dragging {
+  cursor: grabbing;
 }
 
 .shot-preview:not([src]) {
@@ -770,6 +791,23 @@ button:disabled {
   font-size: 13px;
   font-weight: 800;
   color: var(--ink);
+}
+
+/* The automatic-360-movement toggle is the one inline toggle that carries an
+   explanation. .inline-toggle is a single-row flex container, so without this
+   the <small> becomes a sibling flex item and the sentence is laid out on the
+   same line as the label. Wrap it onto its own line, indented past the
+   checkbox so it reads as a note under the label it belongs to. */
+.motion-toggle {
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+
+.motion-toggle small {
+  flex: 0 0 100%;
+  padding-left: 24px;
+  font-weight: 600;
+  color: var(--muted);
 }
 
 .spherical-fields legend {

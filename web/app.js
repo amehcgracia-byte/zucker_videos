@@ -145,6 +145,7 @@ async function loadAppConfig() {
   applyCameraRoleWeights(cameraRoleWeights);
   fixedRearMotion = appConfig.fixed_rear_motion !== false;
   applyFixedRearMotion(fixedRearMotion);
+  applySphericalMotion(appConfig.spherical_motion === true);
   sphericalMode = appConfig.spherical_mode === "directed" ? "directed" : "automatic";
   applySphericalMode(sphericalMode);
   savedAudioTrim = appConfig.audio_trim_by_master || {};
@@ -216,6 +217,13 @@ function clamp(value, min, max) {
 const YAW_DEG_PER_PX = 0.10;
 const PITCH_DEG_PER_PX = 0.075;
 const REFERENCE_FOV_DEG = 100;
+// Shots can be pulled right back to a full-sphere / tiny-planet look. The
+// stored value (and the server-side preview + export) goes this wide via a
+// stereographic projection; the live WebGL viewers clamp their own perspective
+// camera to <180° internally (verticalFovFromHorizontal), so this only widens
+// what can be authored, not what a rectilinear camera is asked to render.
+const MIN_SHOT_FOV = 30;
+const MAX_SHOT_FOV = 300;
 
 function dragSensitivityScale(currentFov) {
   const fov = Number(currentFov) || REFERENCE_FOV_DEG;
@@ -305,6 +313,9 @@ async function resumeInputsFromProject() {
   if (project.settings?.edit && "fixed_rear_motion" in project.settings.edit) {
     fixedRearMotion = project.settings.edit.fixed_rear_motion !== false;
     applyFixedRearMotion(fixedRearMotion);
+  }
+  if (project.settings?.edit && "spherical_motion" in project.settings.edit) {
+    applySphericalMotion(project.settings.edit.spherical_motion === true);
   }
   if (project.settings?.edit?.spherical_mode) {
     applySphericalMode(project.settings.edit.spherical_mode);
@@ -803,6 +814,16 @@ function applyFixedRearMotion(enabled) {
   if (input) input.checked = enabled !== false;
 }
 
+function sphericalMotionFromForm() {
+  // Opt-in and OFF by default: automatic 360 movement only when explicitly on.
+  return document.querySelector("#sphericalMotion")?.checked === true;
+}
+
+function applySphericalMotion(enabled) {
+  const input = document.querySelector("#sphericalMotion");
+  if (input) input.checked = enabled === true;
+}
+
 function normalizeSphericalSetup(raw = {}) {
   const legacy = {
     full_stage: "full_stage_yaw",
@@ -870,9 +891,79 @@ function syncFriendlyFromAdvanced(group) {
   const center = group.dataset.sphericalLandmark === "full_stage" ? 0 : stageCenterYaw();
   if (direction && yaw != null) direction.value = String(Math.round(signedYawDelta(yaw, center)));
   if (height && pitch != null) height.value = String(clamp(pitch, -45, 20));
-  if (zoom && fov != null) zoom.value = String(clamp(fov, 65, 150));
+  if (zoom && fov != null) zoom.value = String(clamp(fov, 65, MAX_SHOT_FOV));
   if (frequency) frequency.value = weightToFrequency(weight);
   updateRawSummary(group);
+}
+
+// Drag-to-look positioning for each 360 landmark, mirroring the Director/Result
+// viewers: drag the shot image to aim, wheel to zoom. The numeric fields stay
+// the source of truth and update live (kept visible, secondary), so the same
+// interaction model works everywhere. Reuses the exact drag sensitivity of the
+// live viewers (YAW_DEG_PER_PX / PITCH_DEG_PER_PX / dragSensitivityScale).
+function wireLandmarkDragToLook() {
+  const panel = document.querySelector("#sphericalSetup");
+  if (!panel || panel.dataset.dragWired) return;
+  panel.dataset.dragWired = "1";
+  let active = null;
+
+  const landmarkFov = (group) => parseLocaleNumber(group.querySelector('[data-field="fov"]')?.value) || 100;
+
+  panel.addEventListener("pointerdown", (event) => {
+    const image = event.target.closest?.(".shot-preview");
+    const group = image?.closest("fieldset[data-spherical-landmark]");
+    if (!image || !group) return;
+    active = { group, image, x: event.clientX, y: event.clientY };
+    image.classList.add("dragging");
+    image.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+  });
+
+  panel.addEventListener("pointermove", (event) => {
+    if (!active) return;
+    const dx = event.clientX - active.x;
+    const dy = event.clientY - active.y;
+    active.x = event.clientX;
+    active.y = event.clientY;
+    const group = active.group;
+    const sensitivity = dragSensitivityScale(landmarkFov(group));
+    const yawInput = group.querySelector('[data-field="yaw"]');
+    const pitchInput = group.querySelector('[data-field="pitch"]');
+    const yaw = normalizeYaw((parseLocaleNumber(yawInput?.value) || 0) - dx * YAW_DEG_PER_PX * sensitivity) ?? 0;
+    const pitch = clamp((parseLocaleNumber(pitchInput?.value) || 0) + dy * PITCH_DEG_PER_PX * sensitivity, -85, 85);
+    if (yawInput) yawInput.value = formatCanonicalNumber(yaw);
+    if (pitchInput) pitchInput.value = formatCanonicalNumber(pitch);
+    syncFriendlyFromAdvanced(group);
+    queueSphericalPreview(group, "drag");
+  });
+
+  const stop = (event) => {
+    if (!active) return;
+    active.image.classList.remove("dragging");
+    active.image.releasePointerCapture?.(event.pointerId);
+    updateSphericalWarnings();
+    queueSphericalPreview(active.group, "final"); // sharpen once the drag ends
+    active = null;
+  };
+  panel.addEventListener("pointerup", stop);
+  panel.addEventListener("pointercancel", stop);
+
+  panel.addEventListener(
+    "wheel",
+    (event) => {
+      const image = event.target.closest?.(".shot-preview");
+      const group = image?.closest("fieldset[data-spherical-landmark]");
+      if (!image || !group) return;
+      event.preventDefault();
+      const fovInput = group.querySelector('[data-field="fov"]');
+      const delta = event.deltaY > 0 ? 4 : -4;
+      const fov = clamp((parseLocaleNumber(fovInput?.value) || 100) + delta, MIN_SHOT_FOV, MAX_SHOT_FOV);
+      if (fovInput) fovInput.value = formatCanonicalNumber(fov);
+      syncFriendlyFromAdvanced(group);
+      queueSphericalPreview(group, "drag");
+    },
+    { passive: false }
+  );
 }
 
 function syncAdvancedFromFriendly(group, previewQuality = "drag") {
@@ -1133,7 +1224,7 @@ function wireDirectorEvents() {
   canvas.addEventListener("wheel", (event) => {
     event.preventDefault();
     const delta = event.deltaY > 0 ? 3 : -3;
-    director.fov = clamp((director.fov || 100) + delta, 30, 150);
+    director.fov = clamp((director.fov || 100) + delta, MIN_SHOT_FOV, MAX_SHOT_FOV);
     const fovSlider = document.querySelector("#directorFov");
     if (fovSlider) fovSlider.value = String(director.fov);
     updateDirectorCamera();
@@ -1288,7 +1379,7 @@ function wireResult360Events(canvas) {
     (event) => {
       event.preventDefault();
       const delta = event.deltaY > 0 ? 3 : -3;
-      result360.fov = clamp((result360.fov || 100) + delta, 30, 150);
+      result360.fov = clamp((result360.fov || 100) + delta, MIN_SHOT_FOV, MAX_SHOT_FOV);
       updateResult360Camera();
     },
     { passive: false }
@@ -1725,6 +1816,7 @@ async function startWizard(options = {}) {
       spherical_landmarks: sphericalLandmarksFromForm(),
       camera_role_weights: cameraRoleWeightsFromForm(),
       fixed_rear_motion: fixedRearMotionFromForm(),
+      spherical_motion: sphericalMotionFromForm(),
       spherical_mode: sphericalModeFromForm(),
       master: inputs.master,
       songs: inputs.songs,
@@ -1821,6 +1913,7 @@ const PLAYFUL_PROGRESS_MESSAGES = {
     "Metronoming the multicam",
     "Harmonising the angles",
     "Getting everyone on the one",
+    "Beeboping the beats",
   ],
   "Cutting the song...": [
     "Cutting the song...",
@@ -1831,6 +1924,7 @@ const PLAYFUL_PROGRESS_MESSAGES = {
     "Mapping the middle eight",
     "Syncopating the segments",
     "Riffing on the arrangement",
+    "Crescendoing the cuts",
   ],
   "Building the edit...": [
     "Building the edit...",
@@ -1841,6 +1935,7 @@ const PLAYFUL_PROGRESS_MESSAGES = {
     "Riffing on the edit",
     "Improvising the b-roll",
     "Choreographing the cameras",
+    "Serenading the segments",
   ],
   "Exporting the video...": [
     "Exporting the video...",
@@ -1851,6 +1946,8 @@ const PLAYFUL_PROGRESS_MESSAGES = {
     "Bouncing down the reel",
     "Polishing the encore",
     "Pressing the record",
+    "Motivating the colours",
+    "Reverbing the render",
   ],
 };
 
@@ -2380,6 +2477,7 @@ document.querySelector("#videoName").value = todayName();
 
 async function boot() {
   injectIcons();
+  wireLandmarkDragToLook();
   await loadAppConfig();
   const status = await api("/wizard/status");
   if (["running", "waiting_choice", "done", "failed"].includes(status.status)) {

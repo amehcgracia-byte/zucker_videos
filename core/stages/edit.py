@@ -224,6 +224,8 @@ def _youtube_multicam_plan(
     use_recorded_360 = spherical_mode == "directed"
     role_weights = _camera_role_weights(edit_settings)
     fixed_rear_motion = bool(edit_settings.get("fixed_rear_motion", True))
+    # Automatic 360 motion is opt-in and off unless the user asks for it.
+    spherical_motion = bool(edit_settings.get("spherical_motion", False))
     bar_index = 0
     segment_index = 0
     while bar_index < len(bar_times) - 1:
@@ -274,7 +276,7 @@ def _youtube_multicam_plan(
                 # Always attach a shot with motion, even with no configured landmarks
                 # (shot=None) — a 360 segment must never fall back to a frozen,
                 # motionless equirect passthrough.
-                segment["spherical_shot"] = _spherical_motion_profile(shot or {}, segment_index)
+                segment["spherical_shot"] = _spherical_motion_profile(shot or {}, segment_index, enabled=spherical_motion)
         elif fixed_rear_motion and _source_role(source) == "fixed_rear" and segment_index % 2 == 0:
             segment["motion"] = _ken_burns_motion(segment_index)
         _apply_operator_avoidance(segment, source, operator_samples_cache)
@@ -357,6 +359,7 @@ def build_spherical_shot_segments(
     base_segments: list[dict[str, Any]],
     landmarks: dict[str, Any] | None,
     recorded_moves: list[dict[str, Any]] | None = None,
+    spherical_motion: bool = False,
 ) -> list[dict[str, Any]]:
     """Split 360 source coverage into named virtual-camera holds."""
     if not base_segments:
@@ -399,7 +402,7 @@ def build_spherical_shot_segments(
                 "clip_start_sec": round(float(base.get("clip_start_sec") or 0.0) + local, 6),
                 "master_start_sec": round(master_start, 6),
                 "duration_sec": round(hold, 6),
-                "spherical_shot": recorded_shot_for_segment(recorded, master_start, master_end) if recorded else _spherical_motion_profile(shot or {}, len(output)),
+                "spherical_shot": recorded_shot_for_segment(recorded, master_start, master_end) if recorded else _spherical_motion_profile(shot or {}, len(output), enabled=spherical_motion),
             }
             output.append(segment)
             elapsed += hold
@@ -464,17 +467,20 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]]) -> list[d
 _SPHERICAL_MOTION_AXES = ("yaw", "pitch", "fov")
 
 
-def _spherical_motion_profile(shot: dict[str, Any], index: int) -> dict[str, Any]:
+def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = False) -> dict[str, Any]:
     """Attach subtle, randomized-but-reproducible movement to a 360 landmark shot.
 
-    General rule: a segment from a static source (automatic-mode 360 landmark
-    holds included) never renders as a frozen frame — same principle as the
-    iPhone/fixed-camera Ken Burns treatment (_ken_burns_motion). One axis
-    (yaw/pitch/fov, chosen per instance) gets a slightly larger drift so
-    motion is never accidentally near-zero; the other two get smaller,
-    independently randomized secondary variation for natural variety. Seeded
-    deterministically by shot type + segment index, so re-running the edit
-    stage against the same plan reproduces identical motion (cache-stable).
+    Automatic motion is OPT-IN (``enabled``, default False). Unpredictable
+    movement is worse than none: with the toggle off a landmark shot renders as
+    a clean, completely still hold, and movement comes only from a recorded
+    Director take or from deliberately switching this on.
+
+    When enabled: one axis (yaw/pitch/fov, chosen per instance) gets a slightly
+    larger drift so motion is never accidentally near-zero; the other two get
+    smaller, independently randomized secondary variation for natural variety.
+    Seeded deterministically by shot type + segment index, so re-running the
+    edit stage against the same plan reproduces identical motion
+    (cache-stable).
 
     Magnitudes are stored as a FRACTION OF THE SHOT'S VISIBLE FIELD, not as
     absolute degrees. Absolute degrees were the bug: the same ±6° drift is a
@@ -496,8 +502,17 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int) -> dict[str, Any
         shot["projection"] = "tiny_planet"
         # The tiny-planet spin is a deliberate signature effect, but it is
         # still held to the same fraction-of-field budget so it reads as a
-        # slow rotation rather than a carousel.
-        shot["spin_fov_fraction_per_sec"] = PLANET_SPIN_FRACTION_PER_SEC
+        # slow rotation rather than a carousel. With motion off it holds still
+        # like every other shot.
+        shot["spin_fov_fraction_per_sec"] = PLANET_SPIN_FRACTION_PER_SEC if enabled else 0.0
+        return shot
+    if not enabled:
+        # Explicit zeros rather than absent keys: the render side falls back to
+        # legacy absolute-degree fields when the fraction keys are missing, and
+        # a cached plan carrying those would otherwise reintroduce motion.
+        shot["drift_yaw_fraction"] = 0.0
+        shot["drift_pitch_fraction"] = 0.0
+        shot["fov_delta_fraction"] = 0.0
         return shot
     rng = random.Random(stable_fingerprint({"spherical_motion_v3": shot_type, "index": index}))
     primary = rng.choice(_SPHERICAL_MOTION_AXES)

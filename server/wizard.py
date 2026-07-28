@@ -146,6 +146,7 @@ class WizardRunner:
         spherical_landmarks: dict[str, float] | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
+        spherical_motion: bool | None,
         spherical_mode: str | None,
         master_path: str,
         songs_path: str | None,
@@ -168,6 +169,7 @@ class WizardRunner:
                         "spherical_landmarks": spherical_landmarks,
                         "camera_role_weights": camera_role_weights,
                         "fixed_rear_motion": fixed_rear_motion,
+                        "spherical_motion": spherical_motion,
                         "spherical_mode": spherical_mode,
                         "master_path": master_path,
                         "songs_path": songs_path,
@@ -193,6 +195,7 @@ class WizardRunner:
                 "spherical_landmarks": spherical_landmarks,
                 "camera_role_weights": camera_role_weights,
                 "fixed_rear_motion": fixed_rear_motion,
+                "spherical_motion": spherical_motion,
                 "spherical_mode": spherical_mode,
                 "master_path": master_path,
                 "songs_path": songs_path,
@@ -259,6 +262,7 @@ class WizardRunner:
         spherical_landmarks: dict[str, float] | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
+        spherical_motion: bool | None,
         spherical_mode: str | None,
         master_path: str,
         songs_path: str | None,
@@ -279,6 +283,7 @@ class WizardRunner:
             _store_spherical_landmarks(project, spherical_landmarks)
             _store_camera_role_weights(project, camera_role_weights)
             _store_fixed_rear_motion(project, fixed_rear_motion)
+            _store_spherical_motion(project, spherical_motion)
             _store_spherical_mode(project, spherical_mode)
             project.save()
 
@@ -294,6 +299,7 @@ class WizardRunner:
                 spherical_landmarks=spherical_landmarks,
                 camera_role_weights=camera_role_weights,
                 fixed_rear_motion=fixed_rear_motion,
+                spherical_motion=spherical_motion,
                 spherical_mode=spherical_mode,
                 master_path=master_path,
                 songs_path=songs_path,
@@ -366,6 +372,7 @@ class WizardRunner:
         spherical_landmarks: dict[str, float] | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
+        spherical_motion: bool | None,
         spherical_mode: str | None,
         master_path: str,
         songs_path: str | None,
@@ -384,6 +391,7 @@ class WizardRunner:
             _store_spherical_landmarks(project, spherical_landmarks)
             _store_camera_role_weights(project, camera_role_weights)
             _store_fixed_rear_motion(project, fixed_rear_motion)
+            _store_spherical_motion(project, spherical_motion)
             _store_spherical_mode(project, spherical_mode)
             project.save()
             job.started_at = time.time()
@@ -449,6 +457,7 @@ class WizardRunner:
         spherical_landmarks: dict[str, float] | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
+        spherical_motion: bool | None,
         spherical_mode: str | None,
         master_path: str,
         songs_path: str | None,
@@ -477,6 +486,7 @@ class WizardRunner:
             spherical_landmarks=spherical_landmarks,
             camera_role_weights=camera_role_weights,
             fixed_rear_motion=fixed_rear_motion,
+            spherical_motion=spherical_motion,
             spherical_mode=spherical_mode,
             master_path=master_path,
             songs_path=songs_path,
@@ -643,6 +653,16 @@ def _store_camera_role_weights(project: Project, weights: dict[str, float] | Non
     project.data.setdefault("settings", {}).setdefault("edit", {})["camera_role_weights"] = dict(weights)
     config = load_global_config()
     config["camera_role_weights"] = dict(weights)
+    save_global_config(config)
+
+
+def _store_spherical_motion(project: Project, enabled: bool | None) -> None:
+    """Persist the opt-in automatic 360 motion toggle (default off)."""
+    if enabled is None:
+        return
+    project.data.setdefault("settings", {}).setdefault("edit", {})["spherical_motion"] = bool(enabled)
+    config = load_global_config()
+    config["spherical_motion"] = bool(enabled)
     save_global_config(config)
 
 

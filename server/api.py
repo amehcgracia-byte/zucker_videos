@@ -266,6 +266,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         spherical_landmarks = _spherical_landmarks_from_body(body)
         camera_role_weights = _camera_role_weights_from_body(body)
         fixed_rear_motion = _fixed_rear_motion_from_body(body)
+        spherical_motion = _spherical_motion_from_body(body)
         spherical_mode = _spherical_mode_from_body(body)
         if platform not in {"youtube", "instagram", "tiktok", "reel", "360"}:
             return error_response("bad_request", "platform must be youtube, reel, instagram, tiktok, or 360", 400)
@@ -289,6 +290,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 spherical_landmarks=spherical_landmarks,
                 camera_role_weights=camera_role_weights,
                 fixed_rear_motion=fixed_rear_motion,
+                spherical_motion=spherical_motion,
                 spherical_mode=spherical_mode,
                 master_path=master,
                 songs_path=songs,
@@ -576,6 +578,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         config["desktop"] = not state.dev
         config.setdefault("camera_role_weights", {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0})
         config.setdefault("fixed_rear_motion", True)
+        config.setdefault("spherical_motion", False)
         config.setdefault("spherical_mode", "automatic")
         config.setdefault("audio_trim_by_master", {})
         return jsonify(config)
@@ -934,6 +937,12 @@ def _camera_role_weights_from_body(body: dict[str, Any]) -> dict[str, float] | N
     return _sanitize_camera_role_weights(body.get("camera_role_weights") or {})
 
 
+def _spherical_motion_from_body(body: dict[str, Any]) -> bool | None:
+    if "spherical_motion" not in body:
+        return None
+    return bool(body.get("spherical_motion"))
+
+
 def _fixed_rear_motion_from_body(body: dict[str, Any]) -> bool | None:
     if "fixed_rear_motion" not in body:
         return None
@@ -1021,6 +1030,12 @@ def _coerce_float(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+# Wide-FOV preview: above this the preview switches to stereographic to
+# match the export's wide/tiny-planet rendering (see export._use_stereographic).
+STEREOGRAPHIC_PREVIEW_FOV_THRESHOLD = 170.0
+MAX_PREVIEW_FOV = 300.0
+
+
 def _spherical_preview_frame(project: Project | None, source: str, yaw: float, pitch: float, fov: float, quality: str = "final") -> Path:
     source_path = Path(source).expanduser().resolve()
     if not source_path.exists():
@@ -1029,7 +1044,15 @@ def _spherical_preview_frame(project: Project | None, source: str, yaw: float, p
     cache_root.mkdir(parents=True, exist_ok=True)
     stat = source_path.stat()
     size = (320, 180) if quality == "drag" else (480, 270)
-    h_fov, v_fov = _paired_flat_fov(fov, size[0] / size[1])
+    # Match the export: rectilinear ("flat") tears as it nears 180°, so a
+    # genuinely wide shot previews stereographically (the tiny-planet look),
+    # which is what actually renders. See core.stages.export._use_stereographic.
+    stereographic = float(fov) > STEREOGRAPHIC_PREVIEW_FOV_THRESHOLD
+    if stereographic:
+        h_fov = max(1.0, min(MAX_PREVIEW_FOV, float(fov)))
+        v_fov = max(120.0, min(MAX_PREVIEW_FOV, h_fov / max(0.1, size[0] / size[1])))
+    else:
+        h_fov, v_fov = _paired_flat_fov(fov, size[0] / size[1])
     key = sha256(
         json.dumps(
             {
@@ -1055,8 +1078,9 @@ def _spherical_preview_frame(project: Project | None, source: str, yaw: float, p
     duration = _preview_source_duration(source_path)
     timestamp = max(0.0, min(duration * 0.35, max(0.0, duration - 0.1)))
     tmp = output.with_suffix(".tmp.jpg")
+    projection = "sg" if stereographic else "flat"
     filtergraph = (
-        f"v360=input=equirect:output=flat:yaw={_signed_degrees(yaw):.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:"
+        f"v360=input=equirect:output={projection}:yaw={_signed_degrees(yaw):.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:"
         f"w={size[0]}:h={size[1]}:interp=lanczos,format=yuvj420p"
     )
     command = [
