@@ -85,7 +85,10 @@ def main() -> None:
     if args.operator_avoidance_probe:
         raise SystemExit(_run_operator_avoidance_probe())
     config = load_global_config()
-    project_path = args.project or config.get("last_project_path")
+    # A normal relaunch is intentionally a fresh Step 1 session. Existing
+    # projects remain on disk and are available from the project shelf; only an
+    # explicit --project request should reopen one automatically.
+    project_path = args.project
     if project_path and not Path(project_path).exists():
         project_path = None
     app = create_app(project_path=project_path, dev=args.dev)

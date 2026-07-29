@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 import shutil
 import subprocess
@@ -10,6 +11,8 @@ import sys
 import json
 import logging
 import math
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -134,6 +137,7 @@ class ExportStage(Stage):
                 "spherical_shot_usage": plan.get("spherical_shot_usage") or _spherical_shot_usage(segments),
                 "spherical_recording_usage": plan.get("spherical_recording_usage") or _spherical_recording_usage(segments),
                 "operator_avoidance_segments": count_avoidance_adjustments(segments),
+                "performance": project.data.pop("_export_performance", None),
                 "exports": [
                     {
                         "platform": platform,
@@ -209,8 +213,6 @@ def _render_plan(
     temp_dir.mkdir(parents=True)
     segment_paths: list[Path] = []
     total_duration = _plan_duration(segments)
-    total_weight = _plan_render_weight(segments)
-    rendered_weight = 0.0
     color_profiles = _color_profiles_for_segments(project, segments, warnings)
     overlay_config = _overlay_config(platform, segments[0])
     verify_motion = bool(project.data.get("settings", {}).get("export", {}).get("verify_motion", True))
@@ -226,74 +228,28 @@ def _render_plan(
         )
         segment_paths.append(intro_path)
         render_segments = _continuous_spherical_render_segments(segments)
-        for index, segment in enumerate(render_segments, start=1):
-            segment_duration = max(0.1, float(segment["duration_sec"]))
-            segment_weight = max(0.1, _segment_render_weight(segment))
-            base_percent = 10 + int(70 * rendered_weight / max(total_weight, 0.1))
-
-            def segment_progress(local_percent: int, detail: str, *, index: int = index, segment_weight: float = segment_weight) -> None:
-                segment_share = 70 * segment_weight / max(total_weight, 0.1)
-                percent = base_percent + int(segment_share * local_percent / 100)
-                progress_callback(min(84, percent), f"Rendering segment {index}/{len(render_segments)}: {detail}")
-
-            color_profile = color_profiles.get(str(segment.get("clip_path")), {})
-            intro_fade = index == 1
-            outro_fade = index == len(render_segments)
-            intro_logo = False
-            outro_logo = False
-            segment_path = cached_segment_path(project, segment, platform, video_bitrate, overlay_config, color_profile, intro_fade, outro_fade, intro_logo, outro_logo)
-            source_info = _segment_source_info(project, segment)
-            command_line = "cached segment"
-            if not segment_path.exists():
-                tmp_segment = temp_dir / f"segment-{index:04d}.mp4"
-                commands: list[list[str]] = []
-                rendered_from = _render_segment(
-                    project,
-                    segment,
-                    master_path,
-                    tmp_segment,
-                    platform,
-                    video_bitrate,
-                    overlay_config,
-                    color_profile,
-                    segment_progress,
-                    intro_fade=intro_fade,
-                    outro_fade=outro_fade,
-                    intro_logo=intro_logo,
-                    outro_logo=outro_logo,
-                    warnings=warnings,
-                    command_recorder=commands,
+        segment_workers = max(1, min(4, int(project.data.get("settings", {}).get("export", {}).get("segment_workers", 2))))
+        render_started = time.perf_counter()
+        render_stats: list[dict[str, Any]] = []
+        progress_lock = threading.Lock()
+        futures = []
+        with ThreadPoolExecutor(max_workers=segment_workers) as executor:
+            for index, segment in enumerate(render_segments, start=1):
+                futures.append(
+                    executor.submit(
+                        _render_segment_job,
+                        project, index, segment, len(render_segments), temp_dir, master_path,
+                        platform, video_bitrate, overlay_config,
+                        color_profiles.get(str(segment.get("clip_path")), {}), verify_motion,
+                        progress_callback, progress_lock,
+                    )
                 )
-                if commands:
-                    command_line = " ".join(commands[-1])
-                segment_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(tmp_segment, segment_path)
-                if rendered_from == "proxy":
-                    warnings.append(f"Used proxy fallback for {Path(str(segment.get('source_path') or segment.get('clip_path'))).name}")
-            _verify_segment_frame_duration(segment_path, _segment_frame_count(segment), Path(str(source_info.get("source_path") or segment.get("clip_path"))).name)
-            if verify_motion:
-                command_line = _verify_or_rebuild_segment(
-                    project,
-                    segment,
-                    master_path,
-                    segment_path,
-                    temp_dir / f"segment-{index:04d}.mp4",
-                    platform,
-                    video_bitrate,
-                    overlay_config,
-                    color_profile,
-                    segment_progress,
-                    intro_fade,
-                    outro_fade,
-                    intro_logo,
-                    outro_logo,
-                    warnings,
-                    command_line,
-                    segment_duration,
-                    Path(str(source_info.get("source_path") or segment.get("clip_path"))).name,
-                )
-            segment_paths.append(segment_path)
-            rendered_weight += segment_weight
+            results = [future.result() for future in as_completed(futures)]
+        results.sort(key=lambda item: int(item["index"]))
+        for result in results:
+            segment_paths.append(result["path"])
+            warnings.extend(result["warnings"])
+            render_stats.append({key: result[key] for key in ("index", "cached", "ffmpeg_sec", "verify_sec", "total_sec")})
         outro_path = temp_dir / "outro.mp4"
         _render_logo_clip(
             outro_path,
@@ -364,6 +320,12 @@ def _render_plan(
                 content_start=INTRO_DURATION,
                 content_end=max(INTRO_DURATION, real_duration - OUTRO_DURATION),
             )
+        project.data["_export_performance"] = {
+            "segment_count": len(render_segments),
+            "segment_workers": segment_workers,
+            "wall_sec": round(time.perf_counter() - render_started, 3),
+            "segments": sorted(render_stats, key=lambda item: item["index"]),
+        }
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -1239,6 +1201,78 @@ def _render_segment(
                 outro_logo,
                 command_recorder,
             )
+
+
+def _render_segment_job(
+    project: Project,
+    index: int,
+    segment: dict[str, Any],
+    render_count: int,
+    temp_dir: Path,
+    master_path: str,
+    platform: str,
+    video_bitrate: int,
+    overlay_config: dict[str, Any],
+    color_profile: dict[str, Any],
+    verify_motion: bool,
+    progress_callback: ProgressCallback,
+    progress_lock: threading.Lock,
+) -> dict[str, Any]:
+    """Render and verify one segment; safe to run in an export worker."""
+    started = time.perf_counter()
+    segment_duration = max(0.1, float(segment["duration_sec"]))
+    base_percent = 10 + int(70 * (index - 1) / max(1, render_count))
+
+    def segment_progress(local_percent: int, detail: str) -> None:
+        percent = base_percent + int((70 / max(1, render_count)) * local_percent / 100)
+        with progress_lock:
+            progress_callback(min(84, percent), f"Rendering segment {index}/{render_count}: {detail}")
+
+    intro_fade = index == 1
+    outro_fade = index == render_count
+    color_profile = color_profile or {}
+    segment_path = cached_segment_path(project, segment, platform, video_bitrate, overlay_config, color_profile, intro_fade, outro_fade, False, False)
+    source_info = _segment_source_info(project, segment)
+    label = Path(str(source_info.get("source_path") or segment.get("clip_path"))).name
+    command_line = "cached segment"
+    local_warnings: list[str] = []
+    cached = segment_path.exists()
+    ffmpeg_started = time.perf_counter()
+    if not cached:
+        tmp_segment = temp_dir / f"segment-{index:04d}.mp4"
+        commands: list[list[str]] = []
+        rendered_from = _render_segment(
+            project, segment, master_path, tmp_segment, platform, video_bitrate,
+            overlay_config, color_profile, segment_progress,
+            intro_fade=intro_fade, outro_fade=outro_fade,
+            warnings=local_warnings, command_recorder=commands,
+        )
+        if commands:
+            command_line = " ".join(commands[-1])
+        segment_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(tmp_segment, segment_path)
+        if rendered_from == "proxy":
+            local_warnings.append(f"Used proxy fallback for {label}")
+    ffmpeg_sec = time.perf_counter() - ffmpeg_started
+    verify_started = time.perf_counter()
+    _verify_segment_frame_duration(segment_path, _segment_frame_count(segment), label)
+    if verify_motion:
+        command_line = _verify_or_rebuild_segment(
+            project, segment, master_path, segment_path,
+            temp_dir / f"segment-{index:04d}.mp4", platform, video_bitrate,
+            overlay_config, color_profile, segment_progress,
+            intro_fade, outro_fade, False, False, local_warnings,
+            command_line, segment_duration, label,
+        )
+    return {
+        "index": index,
+        "path": segment_path,
+        "warnings": local_warnings,
+        "cached": cached,
+        "ffmpeg_sec": round(ffmpeg_sec, 3),
+        "verify_sec": round(time.perf_counter() - verify_started, 3),
+        "total_sec": round(time.perf_counter() - started, 3),
+    }
 
 
 def _render_proxy_segment(

@@ -703,6 +703,10 @@ function renderSphericalSetup() {
   const panel = document.querySelector("#sphericalSetup");
   if (!panel) return;
   panel.hidden = !hasSphericalInput();
+  if (!panel.dataset.initialized) {
+    panel.open = false;
+    panel.dataset.initialized = "1";
+  }
   if (!panel.hidden) {
     applySphericalSetup(lastSphericalSetup);
     refreshDirectorEntryStatus().catch(() => {});
@@ -2291,6 +2295,11 @@ async function confirmRescue() {
   }
   document.querySelector("#rescuePanel").hidden = true;
   document.querySelector("#resultBox").hidden = true;
+  const sphericalPanel = document.querySelector("#sphericalSetup");
+  if (sphericalPanel) {
+    sphericalPanel.open = false;
+    sphericalPanel.dataset.initialized = "";
+  }
   setStep(3);
   await api("/wizard/rescue", { method: "POST", body: JSON.stringify({ clip_id: rescueClipId, offset_sec: offset }) });
   ensureStatusPolling();
