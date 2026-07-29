@@ -20,7 +20,10 @@ MAX_SEGMENT_SEC = 6.0
 MAX_BARS_PER_SEGMENT = 2
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
-SPHERICAL_PAN_SEC = 0.45
+SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
+SPHERICAL_SWEEP_SPEED_DEG_PER_SEC = 60.0
+SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC = 30.0
+SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 120.0
 # Automatic 360 motion budget, expressed as a fraction of the shot's visible
 # field (h_fov) rather than in absolute degrees -- see
 # _spherical_motion_profile for why absolute degrees was the bug. The target
@@ -226,6 +229,8 @@ def _youtube_multicam_plan(
     fixed_rear_motion = bool(edit_settings.get("fixed_rear_motion", True))
     # Automatic 360 motion is opt-in and off unless the user asks for it.
     spherical_motion = bool(edit_settings.get("spherical_motion", False))
+    spherical_sweep = bool(edit_settings.get("spherical_sweep", True))
+    sweep_speed = max(SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC, min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, float(edit_settings.get("sweep_speed_deg_per_sec", SPHERICAL_SWEEP_SPEED_DEG_PER_SEC))))
     bar_index = 0
     segment_index = 0
     while bar_index < len(bar_times) - 1:
@@ -270,7 +275,7 @@ def _youtube_multicam_plan(
                 segment["spherical_shot"] = recorded_shot_for_segment(recorded, segment_start, segment_end)
             else:
                 current_usage = _spherical_shot_usage(segments)
-                available_shots = _available_spherical_shots(spherical_landmarks)
+                available_shots = _available_spherical_shots(spherical_landmarks, spherical_sweep, sweep_speed)
                 include_planet = current_usage.get("Planeta", 0) == 0 and sum(current_usage.values()) >= 5
                 shot = _next_weighted_spherical_shot(available_shots, _spherical_type_usage(segments), include_planet=include_planet)
                 # Always attach a shot with motion, even with no configured landmarks
@@ -434,7 +439,7 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, floa
     return migrated
 
 
-def _available_spherical_shots(landmarks: dict[str, dict[str, float]]) -> list[dict[str, Any]]:
+def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_enabled: bool = False, sweep_speed: float = SPHERICAL_SWEEP_SPEED_DEG_PER_SEC) -> list[dict[str, Any]]:
     shots: list[dict[str, Any]] = []
     for shot_type in SPHERICAL_SHOT_ORDER:
         key, label, default_fov = SPHERICAL_LANDMARKS[shot_type]
@@ -457,6 +462,8 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]]) -> list[d
             "fov": _landmark_weight(data, "fov", default_fov),
             "weight": weight,
             "transition_sec": SPHERICAL_PAN_SEC,
+            "sweep_enabled": sweep_enabled,
+            "sweep_speed_deg_per_sec": sweep_speed,
         }
         if shot_type == "planet":
             shot["spin_deg_per_sec"] = 18.0

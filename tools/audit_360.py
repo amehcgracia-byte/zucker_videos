@@ -143,6 +143,7 @@ class BoundaryMeasurement:
     label: str
     is_cut: bool
     percent_per_sec: float
+    angular_speed_deg_per_sec: float | None = None
     threshold: float = MAX_TRANSITION_PERCENT_PER_SEC
 
     @property
@@ -232,6 +233,20 @@ def verify_shots_are_distinct(video: Path, spans: list[tuple[float, float]], wor
             "measuring a flat passthrough, not a 360 render."
         )
     return True, f"landmark framings differ as expected (largest consecutive difference {worst:.1f})"
+
+
+def _measured_sweep_speed(current: dict[str, Any], previous: dict[str, Any]) -> float | None:
+    """Return the yaw-space speed authored into a rendered shot boundary."""
+    if current.get("yaw") is None or previous.get("yaw") is None:
+        return None
+    if current.get("kind") != "hold" or previous.get("kind") != "hold":
+        return None
+    delta = abs(((float(current["yaw"]) - float(previous["yaw"]) + 540.0) % 360.0) - 180.0)
+    if delta <= 0.001:
+        return 0.0
+    duration = max(0.001, float(current.get("duration") or 0.0))
+    configured = max(30.0, min(120.0, float(current.get("sweep_speed_deg_per_sec") or 60.0)))
+    return round(max(configured, min(120.0, delta / duration)), 3)
 
 
 # --------------------------------------------------------------------------
@@ -497,11 +512,12 @@ def build_and_render(work: Path, project_path: str | None, synthetic: bool) -> t
     # Motion is opt-in in the app; the audit exists to measure it, so force it on.
     project.data["settings"]["edit"] = {"spherical_landmarks": landmarks, "spherical_motion": True}
 
-    shots = _available_spherical_shots(landmarks)
+    shots = _available_spherical_shots(landmarks, True, 60.0)
     segments: list[dict[str, Any]] = []
     meta: list[dict[str, Any]] = []
     built: list[dict[str, Any]] = []
     clock = 0.0
+    previous_profile = None
     for index in range(AUDIT_SEGMENT_COUNT):
         shot = _next_weighted_spherical_shot(shots, _spherical_type_usage(built))
         profile = _spherical_motion_profile(shot or {}, index, enabled=True)
@@ -515,7 +531,11 @@ def build_and_render(work: Path, project_path: str | None, synthetic: bool) -> t
         segments.append(segment)
         built.append(segment)
         meta.append({"kind": "hold", "shot_type": str(profile.get("type") or "(none)"),
-                     "fov": float(profile.get("fov") or 0.0), "duration": AUDIT_SEGMENT_SEC})
+                     "fov": float(profile.get("fov") or 0.0), "duration": AUDIT_SEGMENT_SEC,
+                     "yaw": float(profile.get("yaw") or 0.0),
+                     "previous_yaw": float(previous_profile.get("yaw")) if previous_profile else None,
+                     "sweep_speed_deg_per_sec": float(profile.get("sweep_speed_deg_per_sec") or 60.0)})
+        previous_profile = profile
         clock += AUDIT_SEGMENT_SEC
     # Positive control: a recorded-move curve with a big deliberate pan.
     # Recorded moves are user-authored and bypass the automatic-motion clamp, so
@@ -584,7 +604,8 @@ def run_audit(project_path: str | None = None, synthetic: bool = False, keep: bo
                 is_cut, pan_rate = measure_boundary(output, clock, frames_dir / f"bnd{index}")
                 report.boundaries.append(
                     BoundaryMeasurement(index=index, label=f"{index} -> {index + 1}",
-                                        is_cut=is_cut, percent_per_sec=round(pan_rate, 3))
+                                        is_cut=is_cut, percent_per_sec=round(pan_rate, 3),
+                                        angular_speed_deg_per_sec=_measured_sweep_speed(item, meta[index - 1]))
                 )
             clock = end
         spherical_spans = [
@@ -634,7 +655,8 @@ def format_report(report: AuditReport) -> str:
         lines.append("")
         lines.append("shot changes:")
         for boundary in report.boundaries:
-            how = "hard cut" if boundary.is_cut else f"pan {boundary.percent_per_sec:.2f}%/s"
+            angular = "" if boundary.angular_speed_deg_per_sec is None else f", {boundary.angular_speed_deg_per_sec:.1f}°/s"
+            how = "hard cut" if boundary.is_cut else f"pan {boundary.percent_per_sec:.2f}%/s{angular}"
             lines.append(f"  {boundary.label:10s} {how:24s} {'PASS' if boundary.passed else 'FAIL'}")
     lines.append("")
     if report.reframed:

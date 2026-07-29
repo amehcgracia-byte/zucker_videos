@@ -148,6 +148,7 @@ async function loadAppConfig() {
   applySphericalMotion(appConfig.spherical_motion === true);
   sphericalMode = appConfig.spherical_mode === "directed" ? "directed" : "automatic";
   applySphericalMode(sphericalMode);
+  applySphericalSweep(appConfig.spherical_sweep !== false, appConfig.sweep_speed_deg_per_sec || 60);
   savedAudioTrim = appConfig.audio_trim_by_master || {};
   window.NativeBridge?.configure(appConfig);
 }
@@ -319,6 +320,9 @@ async function resumeInputsFromProject() {
   }
   if (project.settings?.edit?.spherical_mode) {
     applySphericalMode(project.settings.edit.spherical_mode);
+  }
+  if (project.settings?.edit) {
+    applySphericalSweep(project.settings.edit.spherical_sweep !== false, project.settings.edit.sweep_speed_deg_per_sec || 60);
   }
   if (inputs.songs?.path) {
     const result = await api("/wizard/songs", { method: "POST", body: JSON.stringify({ songs: inputs.songs.path }) });
@@ -822,6 +826,23 @@ function sphericalMotionFromForm() {
 function applySphericalMotion(enabled) {
   const input = document.querySelector("#sphericalMotion");
   if (input) input.checked = enabled === true;
+}
+
+function sphericalSweepFromForm() {
+  return document.querySelector("#sphericalSweep")?.checked !== false;
+}
+
+function sweepSpeedFromForm() {
+  return Math.max(30, Math.min(120, Number(document.querySelector("#sweepSpeed")?.value) || 60));
+}
+
+function applySphericalSweep(enabled, speed) {
+  const toggle = document.querySelector("#sphericalSweep");
+  const input = document.querySelector("#sweepSpeed");
+  const output = document.querySelector("#sweepSpeedValue");
+  if (toggle) toggle.checked = enabled !== false;
+  if (input) input.value = String(Math.max(30, Math.min(120, Number(speed) || 60)));
+  if (output) output.value = `${sweepSpeedFromForm()}°/s`;
 }
 
 function normalizeSphericalSetup(raw = {}) {
@@ -1818,6 +1839,8 @@ async function startWizard(options = {}) {
       fixed_rear_motion: fixedRearMotionFromForm(),
       spherical_motion: sphericalMotionFromForm(),
       spherical_mode: sphericalModeFromForm(),
+      spherical_sweep: sphericalSweepFromForm(),
+      sweep_speed_deg_per_sec: sweepSpeedFromForm(),
       master: inputs.master,
       songs: inputs.songs,
       videos: inputs.videos,
@@ -2458,6 +2481,10 @@ document.addEventListener("change", (event) => {
 
 document.addEventListener("input", (event) => {
   const target = event.target;
+  if (target instanceof HTMLInputElement && target.id === "sweepSpeed") {
+    const output = document.querySelector("#sweepSpeedValue");
+    if (output) output.value = `${sweepSpeedFromForm()}°/s`;
+  }
   const sphericalGroup = target.closest?.("fieldset[data-spherical-landmark]");
   if (!(sphericalGroup instanceof HTMLElement)) return;
   if (target instanceof HTMLInputElement && target.dataset.friendly) {

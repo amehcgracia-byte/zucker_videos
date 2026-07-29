@@ -268,6 +268,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         fixed_rear_motion = _fixed_rear_motion_from_body(body)
         spherical_motion = _spherical_motion_from_body(body)
         spherical_mode = _spherical_mode_from_body(body)
+        spherical_sweep = _spherical_sweep_from_body(body)
+        sweep_speed_deg_per_sec = _sweep_speed_from_body(body)
         if platform not in {"youtube", "instagram", "tiktok", "reel", "360"}:
             return error_response("bad_request", "platform must be youtube, reel, instagram, tiktok, or 360", 400)
         if not master:
@@ -292,6 +294,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 fixed_rear_motion=fixed_rear_motion,
                 spherical_motion=spherical_motion,
                 spherical_mode=spherical_mode,
+                spherical_sweep=spherical_sweep,
+                sweep_speed_deg_per_sec=sweep_speed_deg_per_sec,
                 master_path=master,
                 songs_path=songs,
                 video_paths=videos,
@@ -580,6 +584,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         config.setdefault("fixed_rear_motion", True)
         config.setdefault("spherical_motion", False)
         config.setdefault("spherical_mode", "automatic")
+        config.setdefault("spherical_sweep", True)
+        config.setdefault("sweep_speed_deg_per_sec", 60.0)
         config.setdefault("audio_trim_by_master", {})
         return jsonify(config)
 
@@ -956,6 +962,18 @@ def _spherical_mode_from_body(body: dict[str, Any]) -> str | None:
     return value if value in {"automatic", "directed"} else "automatic"
 
 
+def _spherical_sweep_from_body(body: dict[str, Any]) -> bool | None:
+    if "spherical_sweep" not in body:
+        return None
+    return bool(body.get("spherical_sweep"))
+
+
+def _sweep_speed_from_body(body: dict[str, Any]) -> float | None:
+    if "sweep_speed_deg_per_sec" not in body:
+        return None
+    return max(30.0, min(120.0, _optional_float_setting(body.get("sweep_speed_deg_per_sec"), 60.0)))
+
+
 def _sanitize_camera_role_weights(raw: Any) -> dict[str, float]:
     if not isinstance(raw, dict):
         return {}
@@ -991,7 +1009,7 @@ def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, float]]:
         if yaw is None:
             continue
         pitch = _optional_float_setting(source.get("pitch"), 0.0)
-        fov = max(1.0, min(190.0, _optional_float_setting(source.get("fov"), float(meta["fov"]))))
+        fov = max(1.0, min(MAX_PREVIEW_FOV, _optional_float_setting(source.get("fov"), float(meta["fov"]))))
         weight = max(0.0, _optional_float_setting(source.get("weight"), 1.0))
         landmarks[key] = {"yaw": yaw, "pitch": pitch, "fov": fov, "weight": weight}
     return landmarks

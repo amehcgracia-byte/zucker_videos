@@ -23,7 +23,14 @@ from core.project import Project
 from core.spherical_metadata import SphericalMetadataError, inject_spherical_metadata
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.cut import load_coverage
-from core.stages.edit import PLANET_SPIN_FRACTION_PER_SEC, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, load_edit_plan
+from core.stages.edit import (
+    PLANET_SPIN_FRACTION_PER_SEC,
+    SPHERICAL_MAX_MOTION_FRACTION_PER_SEC,
+    SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC,
+    SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC,
+    SPHERICAL_SWEEP_SPEED_DEG_PER_SEC,
+    load_edit_plan,
+)
 
 LOGGER = logging.getLogger(__name__)
 MAX_EXPORT_BYTES = int(1.9 * 1024 * 1024 * 1024)
@@ -911,8 +918,10 @@ def _spherical_segment_parts(segment: dict[str, Any], previous_shot: dict[str, A
     current = 0.0
     start_yaw = _shot_float(previous_shot, "yaw", _shot_float(shot, "yaw", 0.0))
     target_yaw = _shot_float(shot, "yaw", 0.0)
-    if previous_shot and previous_shot.get("type") != shot.get("type") and duration > 1.0:
-        pan_duration = min(_shot_float(shot, "transition_sec", 0.45), duration / 3.0)
+    if previous_shot and previous_shot.get("type") != shot.get("type") and duration > 1.0 and bool(shot.get("sweep_enabled", True)):
+        distance = abs(_shortest_yaw_delta(start_yaw, target_yaw))
+        speed = max(_sweep_speed(shot), min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, distance / max(duration, 0.001)))
+        pan_duration = min(duration, distance / speed if speed > 0 else 0.0)
         pan_steps = max(3, min(12, int(round(pan_duration / 0.05))))
         for index in range(pan_steps):
             part_duration = pan_duration / pan_steps
@@ -1744,26 +1753,24 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
         yaw = target_yaw + spin_per_sec * max(0.0, t)
         return _signed_yaw(yaw), target_pitch, target_fov
 
-    # A change of 360 landmark is a change of FRAMING, and it renders as a
-    # CUT, not a pan. Panning between landmarks was the dominant source of the
-    # "swings wildly" report: the user's landmarks are spread right around the
-    # sphere (e.g. audience at yaw 175 -> audience_stage_wide at 72), and
-    # sweeping 100-plus degrees across the 0.45 s transition worked out at
-    # 230-295 deg/s, i.e. up to 265% of the visible field every second. A
-    # multicam edit cuts between angles; only a genuine near-identical reframe
-    # is worth easing through, and that case still has to fit inside the same
-    # per-second budget as every other automatic motion.
+    # Landmark changes are intentional sweeps. Their duration is determined by
+    # angular distance and a project-level degrees/second setting, never by the
+    # legacy fixed 0.45s transition. If a sweep cannot fit in this segment we
+    # use the bounded max speed so it remains a sweep, not a whip.
     previous = shot.get("previous_shot") if isinstance(shot.get("previous_shot"), dict) else None
     pan_duration = 0.0
     yaw = target_yaw
     pitch = target_pitch
     fov = target_fov
     if previous:
-        requested = min(_shot_float(shot, "transition_sec", 0.45), duration / 3.0)
         previous_yaw = _shot_yaw(previous)
-        distance = abs(((target_yaw - previous_yaw + 180.0) % 360.0) - 180.0)
-        budget = SPHERICAL_MAX_MOTION_FRACTION_PER_SEC * target_fov * max(0.001, requested)
-        if requested > 0 and distance <= budget:
+        distance = abs(_shortest_yaw_delta(previous_yaw, target_yaw))
+        if not bool(shot.get("sweep_enabled", True)):
+            requested = 0.0
+        else:
+            speed = max(_sweep_speed(shot), min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, distance / duration))
+            requested = min(duration, distance / speed if speed > 0 else 0.0)
+        if requested > 0 and distance > 0:
             pan_duration = requested
             if t < pan_duration:
                 amount = max(0.0, min(1.0, t / pan_duration))
@@ -1785,8 +1792,17 @@ def _lerp_float(start: float, end: float, amount: float) -> float:
 
 
 def _lerp_signed_yaw(start: float, end: float, amount: float) -> float:
-    delta = ((end - start + 540.0) % 360.0) - 180.0
+    delta = _shortest_yaw_delta(start, end)
     return start + delta * max(0.0, min(1.0, amount))
+
+
+def _shortest_yaw_delta(start: float, end: float) -> float:
+    return ((end - start + 540.0) % 360.0) - 180.0
+
+
+def _sweep_speed(shot: dict[str, Any] | None) -> float:
+    value = _shot_float(shot, "sweep_speed_deg_per_sec", SPHERICAL_SWEEP_SPEED_DEG_PER_SEC)
+    return max(SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC, min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, value))
 
 
 def _signed_yaw(value: float) -> float:

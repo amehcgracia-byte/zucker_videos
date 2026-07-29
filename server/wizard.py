@@ -148,6 +148,8 @@ class WizardRunner:
         fixed_rear_motion: bool | None,
         spherical_motion: bool | None,
         spherical_mode: str | None,
+        spherical_sweep: bool | None,
+        sweep_speed_deg_per_sec: float | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -171,6 +173,8 @@ class WizardRunner:
                         "fixed_rear_motion": fixed_rear_motion,
                         "spherical_motion": spherical_motion,
                         "spherical_mode": spherical_mode,
+                        "spherical_sweep": spherical_sweep,
+                        "sweep_speed_deg_per_sec": sweep_speed_deg_per_sec,
                         "master_path": master_path,
                         "songs_path": songs_path,
                         "video_paths": video_paths,
@@ -197,6 +201,8 @@ class WizardRunner:
                 "fixed_rear_motion": fixed_rear_motion,
                 "spherical_motion": spherical_motion,
                 "spherical_mode": spherical_mode,
+                "spherical_sweep": spherical_sweep,
+                "sweep_speed_deg_per_sec": sweep_speed_deg_per_sec,
                 "master_path": master_path,
                 "songs_path": songs_path,
                 "video_paths": video_paths,
@@ -264,6 +270,8 @@ class WizardRunner:
         fixed_rear_motion: bool | None,
         spherical_motion: bool | None,
         spherical_mode: str | None,
+        spherical_sweep: bool | None,
+        sweep_speed_deg_per_sec: float | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -285,6 +293,7 @@ class WizardRunner:
             _store_fixed_rear_motion(project, fixed_rear_motion)
             _store_spherical_motion(project, spherical_motion)
             _store_spherical_mode(project, spherical_mode)
+            _store_spherical_sweep(project, spherical_sweep, sweep_speed_deg_per_sec)
             project.save()
 
             self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
@@ -301,6 +310,8 @@ class WizardRunner:
                 fixed_rear_motion=fixed_rear_motion,
                 spherical_motion=spherical_motion,
                 spherical_mode=spherical_mode,
+                spherical_sweep=spherical_sweep,
+                sweep_speed_deg_per_sec=sweep_speed_deg_per_sec,
                 master_path=master_path,
                 songs_path=songs_path,
                 video_paths=video_paths,
@@ -374,6 +385,8 @@ class WizardRunner:
         fixed_rear_motion: bool | None,
         spherical_motion: bool | None,
         spherical_mode: str | None,
+        spherical_sweep: bool | None,
+        sweep_speed_deg_per_sec: float | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -393,6 +406,7 @@ class WizardRunner:
             _store_fixed_rear_motion(project, fixed_rear_motion)
             _store_spherical_motion(project, spherical_motion)
             _store_spherical_mode(project, spherical_mode)
+            _store_spherical_sweep(project, spherical_sweep, sweep_speed_deg_per_sec)
             project.save()
             job.started_at = time.time()
             self._run_stage(job, project, CutStage(), 48, 58, t("cutting_song"))
@@ -459,6 +473,8 @@ class WizardRunner:
         fixed_rear_motion: bool | None,
         spherical_motion: bool | None,
         spherical_mode: str | None,
+        spherical_sweep: bool | None,
+        sweep_speed_deg_per_sec: float | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -488,6 +504,8 @@ class WizardRunner:
             fixed_rear_motion=fixed_rear_motion,
             spherical_motion=spherical_motion,
             spherical_mode=spherical_mode,
+            spherical_sweep=spherical_sweep,
+            sweep_speed_deg_per_sec=sweep_speed_deg_per_sec,
             master_path=master_path,
             songs_path=songs_path,
             video_paths=video_paths,
@@ -684,6 +702,21 @@ def _store_spherical_mode(project: Project, mode: str | None) -> None:
     project.data.setdefault("settings", {}).setdefault("edit", {})["spherical_mode"] = value
     config = load_global_config()
     config["spherical_mode"] = value
+    save_global_config(config)
+
+
+def _store_spherical_sweep(project: Project, enabled: bool | None, speed: float | None) -> None:
+    if enabled is None and speed is None:
+        return
+    edit = project.data.setdefault("settings", {}).setdefault("edit", {})
+    config = load_global_config()
+    if enabled is not None:
+        edit["spherical_sweep"] = bool(enabled)
+        config["spherical_sweep"] = bool(enabled)
+    if speed is not None:
+        value = max(30.0, min(120.0, float(speed)))
+        edit["sweep_speed_deg_per_sec"] = value
+        config["sweep_speed_deg_per_sec"] = value
     save_global_config(config)
 
 

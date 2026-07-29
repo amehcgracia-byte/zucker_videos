@@ -50,7 +50,7 @@ def normalize_recorded_samples(samples: list[dict[str, Any]]) -> list[dict[str, 
             "t": round(max(0.0, t), 6),
             "yaw": round(yaw % 360.0, 6),
             "pitch": round(max(-89.0, min(89.0, pitch)), 6),
-            "fov": round(max(1.0, min(179.0, fov)), 6),
+            "fov": round(max(1.0, min(300.0, fov)), 6),
         }
         if sample.get("video_time") is not None:
             try:
