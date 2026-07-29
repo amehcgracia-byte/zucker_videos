@@ -30,13 +30,14 @@ SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 120.0
 # is motion a viewer barely registers as movement but which keeps the shot
 # alive: a few percent of frame width across the WHOLE segment.
 SPHERICAL_PRIMARY_DRIFT_FRACTION = (0.03, 0.06)
-SPHERICAL_SECONDARY_DRIFT_FRACTION = (0.0, 0.025)
 # Hard ceiling enforced at render time, in fraction of h_fov per second. Any
 # automatic motion (drift, tiny-planet spin, inter-shot reframe) is clamped
 # to this, so a short segment can never turn a whole-segment drift budget
 # into a fast pan. Guarded by a regression test.
 SPHERICAL_MAX_MOTION_FRACTION_PER_SEC = 0.06
-PLANET_SPIN_FRACTION_PER_SEC = 0.05
+# Planet is a special effect, not the default visual language of a normal
+# 360 edit. Keep its optional rotation at a deliberately gentle absolute rate.
+PLANET_SPIN_DEG_PER_SEC = 5.0
 SPHERICAL_DEFAULT_FOV = 95.0
 SPHERICAL_WIDE_FOV = 120.0
 SPHERICAL_AUDIENCE_STAGE_FOV = 125.0
@@ -466,12 +467,9 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_ena
             "sweep_speed_deg_per_sec": sweep_speed,
         }
         if shot_type == "planet":
-            shot["spin_deg_per_sec"] = 18.0
+            shot["spin_deg_per_sec"] = PLANET_SPIN_DEG_PER_SEC
         shots.append(shot)
     return shots
-
-
-_SPHERICAL_MOTION_AXES = ("yaw", "pitch", "fov")
 
 
 def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = False) -> dict[str, Any]:
@@ -482,9 +480,8 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
     a clean, completely still hold, and movement comes only from a recorded
     Director take or from deliberately switching this on.
 
-    When enabled: one axis (yaw/pitch/fov, chosen per instance) gets a slightly
-    larger drift so motion is never accidentally near-zero; the other two get
-    smaller, independently randomized secondary variation for natural variety.
+    When enabled: only yaw gets a small drift. Pitch and FOV are deliberately
+    held so a normal automatic shot never animates multiple axes at once.
     Seeded deterministically by shot type + segment index, so re-running the
     edit stage against the same plan reproduces identical motion
     (cache-stable).
@@ -511,7 +508,10 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
         # still held to the same fraction-of-field budget so it reads as a
         # slow rotation rather than a carousel. With motion off it holds still
         # like every other shot.
-        shot["spin_fov_fraction_per_sec"] = PLANET_SPIN_FRACTION_PER_SEC if enabled else 0.0
+        shot["spin_deg_per_sec"] = PLANET_SPIN_DEG_PER_SEC
+        shot["spin_fov_fraction_per_sec"] = (
+            PLANET_SPIN_DEG_PER_SEC / max(1.0, float(shot["fov"])) if enabled else 0.0
+        )
         return shot
     if not enabled:
         # Explicit zeros rather than absent keys: the render side falls back to
@@ -521,18 +521,15 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
         shot["drift_pitch_fraction"] = 0.0
         shot["fov_delta_fraction"] = 0.0
         return shot
-    rng = random.Random(stable_fingerprint({"spherical_motion_v3": shot_type, "index": index}))
-    primary = rng.choice(_SPHERICAL_MOTION_AXES)
+    rng = random.Random(stable_fingerprint({"spherical_motion_v4": shot_type, "index": index}))
 
     def signed(low: float, high: float) -> float:
         magnitude = rng.uniform(low, high)
         return magnitude if rng.random() < 0.5 else -magnitude
 
-    primary_range = SPHERICAL_PRIMARY_DRIFT_FRACTION
-    secondary_range = SPHERICAL_SECONDARY_DRIFT_FRACTION
-    shot["drift_yaw_fraction"] = round(signed(*primary_range) if primary == "yaw" else signed(*secondary_range), 5)
-    shot["drift_pitch_fraction"] = round(signed(*primary_range) if primary == "pitch" else signed(*secondary_range), 5)
-    shot["fov_delta_fraction"] = round(signed(*primary_range) if primary == "fov" else signed(*secondary_range), 5)
+    shot["drift_yaw_fraction"] = round(signed(*SPHERICAL_PRIMARY_DRIFT_FRACTION), 5)
+    shot["drift_pitch_fraction"] = 0.0
+    shot["fov_delta_fraction"] = 0.0
     # Legacy absolute-degree keys are deliberately NOT written any more; the
     # render side treats their absence as "use the fraction keys".
     return shot

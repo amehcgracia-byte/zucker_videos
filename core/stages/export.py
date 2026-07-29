@@ -27,7 +27,7 @@ from core.spherical_metadata import SphericalMetadataError, inject_spherical_met
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.cut import load_coverage
 from core.stages.edit import (
-    PLANET_SPIN_FRACTION_PER_SEC,
+    PLANET_SPIN_DEG_PER_SEC,
     SPHERICAL_MAX_MOTION_FRACTION_PER_SEC,
     SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC,
     SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC,
@@ -876,11 +876,13 @@ def _spherical_segment_parts(segment: dict[str, Any], previous_shot: dict[str, A
     duration = max(0.0, float(segment.get("duration_sec") or 0.0))
     if duration <= 0.001:
         return []
+    if duration < 2.0:
+        return [_spherical_part(segment, 0.0, duration, shot)]
     parts: list[dict[str, Any]] = []
     current = 0.0
     start_yaw = _shot_float(previous_shot, "yaw", _shot_float(shot, "yaw", 0.0))
     target_yaw = _shot_float(shot, "yaw", 0.0)
-    if previous_shot and previous_shot.get("type") != shot.get("type") and duration > 1.0 and bool(shot.get("sweep_enabled", True)):
+    if previous_shot and previous_shot.get("type") != shot.get("type") and duration >= 2.0 and bool(shot.get("sweep_enabled", True)):
         distance = abs(_shortest_yaw_delta(start_yaw, target_yaw))
         speed = max(_sweep_speed(shot), min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, distance / max(duration, 0.001)))
         pan_duration = min(duration, distance / speed if speed > 0 else 0.0)
@@ -1781,9 +1783,17 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
     target_yaw = _shot_yaw(shot)
     target_pitch = _shot_float(shot, "pitch", 0.0)
     target_fov = _effective_flat_fov(shot)
+    # A sub-two-second cut is a hold. There is not enough screen time for a
+    # graceful move, so do not let a sweep, drift, or planet spin leak into it.
+    if duration < 2.0:
+        return _signed_yaw(target_yaw), target_pitch, target_fov
     if shot.get("type") == "planet":
-        spin_per_sec = _shot_float(shot, "spin_fov_fraction_per_sec", PLANET_SPIN_FRACTION_PER_SEC)
-        spin_per_sec = min(spin_per_sec, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC) * target_fov
+        authored_fraction = shot.get("spin_fov_fraction_per_sec")
+        if authored_fraction is None:
+            spin_per_sec = _shot_float(shot, "spin_deg_per_sec", PLANET_SPIN_DEG_PER_SEC)
+        else:
+            spin_per_sec = _shot_float(authored_fraction, 0.0) * target_fov
+        spin_per_sec = min(max(0.0, spin_per_sec), PLANET_SPIN_DEG_PER_SEC)
         yaw = target_yaw + spin_per_sec * max(0.0, t)
         return _signed_yaw(yaw), target_pitch, target_fov
 
@@ -1809,8 +1819,11 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
             if t < pan_duration:
                 amount = max(0.0, min(1.0, t / pan_duration))
                 yaw = _lerp_signed_yaw(previous_yaw, target_yaw, amount)
-                pitch = _lerp_float(_shot_float(previous, "pitch", target_pitch), target_pitch, amount)
-                fov = _lerp_float(_shot_float(previous, "fov", target_fov), target_fov, amount)
+                # Set pitch/FOV at the shot boundary and animate yaw alone.
+                # Interpolating all three axes is what made otherwise gentle
+                # pans read as agitated.
+                pitch = target_pitch
+                fov = target_fov
                 return _signed_yaw(yaw), pitch, fov
 
     hold_duration = max(0.001, duration - pan_duration)
@@ -1819,10 +1832,6 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
     pitch += _automatic_drift_degrees(shot, "drift_pitch", target_fov, hold_duration) * (hold_amount - 0.5)
     fov += _automatic_drift_degrees(shot, "fov_delta", target_fov, hold_duration) * (hold_amount - 0.5)
     return _signed_yaw(yaw), pitch, fov
-
-
-def _lerp_float(start: float, end: float, amount: float) -> float:
-    return start + (end - start) * max(0.0, min(1.0, amount))
 
 
 def _lerp_signed_yaw(start: float, end: float, amount: float) -> float:

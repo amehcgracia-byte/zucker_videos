@@ -150,6 +150,8 @@ def test_spherical_motion_profile_never_leaves_a_shot_frozen_when_enabled():
             shot = _spherical_motion_profile({"type": shot_type, "yaw": 10.0, "pitch": -15.0, "fov": 95}, index, enabled=True)
             magnitudes = [abs(shot[key]) for key in _DRIFT_KEYS]
             assert max(magnitudes) >= SPHERICAL_PRIMARY_DRIFT_FRACTION[0], (shot_type, index, shot)
+            assert shot["drift_pitch_fraction"] == 0.0
+            assert shot["fov_delta_fraction"] == 0.0
 
 
 def test_spherical_motion_profile_is_expressed_as_a_fraction_of_the_visible_field():

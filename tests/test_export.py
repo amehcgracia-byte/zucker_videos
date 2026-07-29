@@ -378,6 +378,35 @@ def test_spherical_pan_steps_keep_angle_increments_small():
     assert max(deltas) <= 10.0
 
 
+def test_shortest_yaw_delta_crossing_zero_takes_short_positive_path():
+    from core.stages.export import _shortest_yaw_delta
+
+    assert _shortest_yaw_delta(349.0, 17.0) == 28.0
+
+
+@pytest.mark.parametrize("duration", [0.1, 1.0, 1.999])
+def test_short_360_segments_hold_all_view_axes(duration):
+    shot = {
+        "type": "singer",
+        "yaw": 17.0,
+        "pitch": -12.0,
+        "fov": 95.0,
+        "previous_shot": {"type": "left", "yaw": 349.0, "pitch": -30.0, "fov": 140.0},
+        "sweep_enabled": True,
+        "sweep_speed_deg_per_sec": 33.0,
+        "drift_yaw_fraction": 0.06,
+    }
+    assert _v360_motion_at(shot, duration, 0.0) == (17.0, -12.0, 95.0)
+    assert _v360_motion_at(shot, duration, duration) == (17.0, -12.0, 95.0)
+
+
+def test_planet_spin_is_capped_at_five_degrees_per_second():
+    planet = {"type": "planet", "yaw": 0.0, "pitch": -90.0, "fov": 240.0, "spin_deg_per_sec": 18.0}
+    start = _v360_motion_at(planet, 4.0, 0.0)[0]
+    end = _v360_motion_at(planet, 4.0, 4.0)[0]
+    assert (end - start) % 360.0 == 20.0
+
+
 def test_continuous_spherical_segments_keep_cut_count_flat():
     segments = [
         {"clip_path": "/tmp/360.mp4", "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 3, "spherical_shot": {"type": "singer", "label": "Cantante", "yaw": 20, "pitch": 0, "fov": 80}},
