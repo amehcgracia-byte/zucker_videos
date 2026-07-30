@@ -678,9 +678,12 @@ def _store_spherical_motion(project: Project, enabled: bool | None) -> None:
     """Persist the opt-in automatic 360 motion toggle (default off)."""
     if enabled is None:
         return
-    project.data.setdefault("settings", {}).setdefault("edit", {})["spherical_motion"] = bool(enabled)
+    edit_settings = project.data.setdefault("settings", {}).setdefault("edit", {})
+    edit_settings["spherical_motion"] = bool(enabled)
+    edit_settings["spherical_hold_motion"] = "subtle" if enabled else "none"
     config = load_global_config()
     config["spherical_motion"] = bool(enabled)
+    config["spherical_hold_motion"] = "subtle" if enabled else "none"
     save_global_config(config)
 
 

@@ -21,7 +21,7 @@ MAX_BARS_PER_SEGMENT = 2
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
-SPHERICAL_MOTION_PLAN_VERSION = 4
+SPHERICAL_MOTION_PLAN_VERSION = 5
 SPHERICAL_SWEEP_SPEED_DEG_PER_SEC = 60.0
 SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC = 30.0
 SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 120.0
@@ -39,6 +39,7 @@ SPHERICAL_MAX_MOTION_FRACTION_PER_SEC = 0.06
 # Planet is a special effect, not the default visual language of a normal
 # 360 edit. Keep its optional rotation at a deliberately gentle absolute rate.
 PLANET_SPIN_DEG_PER_SEC = 5.0
+SPHERICAL_HOLD_MOTION_DEG_PER_SEC = 0.75
 SPHERICAL_DEFAULT_FOV = 95.0
 SPHERICAL_WIDE_FOV = 120.0
 SPHERICAL_AUDIENCE_STAGE_FOV = 125.0
@@ -234,6 +235,9 @@ def _youtube_multicam_plan(
     fixed_rear_motion = bool(edit_settings.get("fixed_rear_motion", True))
     # Automatic 360 motion is opt-in and off unless the user asks for it.
     spherical_motion = bool(edit_settings.get("spherical_motion", False))
+    hold_motion = str(edit_settings.get("spherical_hold_motion") or ("subtle" if spherical_motion else "none")).lower()
+    if hold_motion not in {"none", "subtle"}:
+        hold_motion = "subtle" if spherical_motion else "none"
     spherical_sweep = bool(edit_settings.get("spherical_sweep", True))
     sweep_speed = max(SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC, min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, float(edit_settings.get("sweep_speed_deg_per_sec", SPHERICAL_SWEEP_SPEED_DEG_PER_SEC))))
     bar_index = 0
@@ -286,7 +290,7 @@ def _youtube_multicam_plan(
                 # Always attach a shot with motion, even with no configured landmarks
                 # (shot=None) — a 360 segment must never fall back to a frozen,
                 # motionless equirect passthrough.
-                segment["spherical_shot"] = _spherical_motion_profile(shot or {}, segment_index, enabled=spherical_motion)
+                segment["spherical_shot"] = _spherical_motion_profile(shot or {}, segment_index, enabled=spherical_motion, hold_motion=hold_motion)
         elif fixed_rear_motion and _source_role(source) == "fixed_rear" and segment_index % 2 == 0:
             segment["motion"] = _ken_burns_motion(segment_index)
         _apply_operator_avoidance(segment, source, operator_samples_cache)
@@ -370,6 +374,7 @@ def build_spherical_shot_segments(
     landmarks: dict[str, Any] | None,
     recorded_moves: list[dict[str, Any]] | None = None,
     spherical_motion: bool = False,
+    spherical_hold_motion: str | None = None,
 ) -> list[dict[str, Any]]:
     """Split 360 source coverage into named virtual-camera holds."""
     if not base_segments:
@@ -412,7 +417,7 @@ def build_spherical_shot_segments(
                 "clip_start_sec": round(float(base.get("clip_start_sec") or 0.0) + local, 6),
                 "master_start_sec": round(master_start, 6),
                 "duration_sec": round(hold, 6),
-                "spherical_shot": recorded_shot_for_segment(recorded, master_start, master_end) if recorded else _spherical_motion_profile(shot or {}, len(output), enabled=spherical_motion),
+                "spherical_shot": recorded_shot_for_segment(recorded, master_start, master_end) if recorded else _spherical_motion_profile(shot or {}, len(output), enabled=spherical_motion, hold_motion=spherical_hold_motion),
             }
             output.append(segment)
             elapsed += hold
@@ -479,7 +484,7 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_ena
     return shots
 
 
-def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = False) -> dict[str, Any]:
+def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = False, hold_motion: str | None = None) -> dict[str, Any]:
     """Attach subtle, randomized-but-reproducible movement to a 360 landmark shot.
 
     Automatic motion is OPT-IN (``enabled``, default False). Unpredictable
@@ -487,9 +492,9 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
     a clean, completely still hold, and movement comes only from a recorded
     Director take or from deliberately switching this on.
 
-    Normal landmark shots are always static holds, even when the project-level
-    motion toggle is enabled. The ``enabled`` argument remains for API/schema
-    compatibility and controls only the explicit Planet spin.
+    Normal landmark shots have optional near-static hold motion. ``none``
+    locks the view; ``subtle`` adds at most 0.75 degrees/second of yaw drift.
+    The project-level toggle remains backward-compatible.
 
     Magnitudes are stored as a FRACTION OF THE SHOT'S VISIBLE FIELD, not as
     absolute degrees. Absolute degrees were the bug: the same ±6° drift is a
@@ -521,7 +526,12 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
         return shot
     # Explicit zeros prevent legacy render fallbacks from reviving wandering
     # in a cached or hand-edited plan.
+    mode = str(hold_motion or ("subtle" if enabled else "none")).lower()
+    if mode not in {"none", "subtle"}:
+        mode = "subtle" if enabled else "none"
     shot["sweep_enabled"] = False
+    shot["hold_motion"] = mode
+    shot["hold_motion_rate_deg_per_sec"] = SPHERICAL_HOLD_MOTION_DEG_PER_SEC if mode == "subtle" else 0.0
     shot["drift_yaw_fraction"] = 0.0
     shot["drift_pitch_fraction"] = 0.0
     shot["fov_delta_fraction"] = 0.0

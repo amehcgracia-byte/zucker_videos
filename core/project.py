@@ -49,6 +49,8 @@ def default_settings() -> dict[str, Any]:
             "style": "coverage_first",
             "camera_role_weights": {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0},
             "fixed_rear_motion": True,
+            "spherical_motion": True,
+            "spherical_hold_motion": "subtle",
             "spherical_mode": "automatic",
             "spherical_sweep": True,
             "sweep_speed_deg_per_sec": 60.0,

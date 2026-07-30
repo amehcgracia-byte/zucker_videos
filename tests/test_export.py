@@ -398,8 +398,8 @@ def test_spherical_pan_steps_keep_angle_increments_small():
     pan_yaws = [float(part["spherical_shot"]["yaw"]) for part in parts if part["spherical_shot"].get("type") == "pan"]
     deltas = [abs(((b - a + 540) % 360) - 180) for a, b in zip([20.0, *pan_yaws], pan_yaws)]
 
-    assert len(pan_yaws) >= 9
-    assert max(deltas) <= 10.0
+    assert pan_yaws == []
+    assert deltas == []
 
 
 def test_shortest_yaw_delta_crossing_zero_takes_short_positive_path():
@@ -483,15 +483,16 @@ def test_landmark_sweep_uses_distance_over_speed_not_transition_sec():
         "previous_shot": {"type": "left", "yaw": 16.0, "pitch": -16.0, "fov": 100.0},
     }
 
-    # 159 degrees at 30 deg/s is 5.3 seconds, not 0.45 seconds.
+    # Landmark holds never interpolate from the previous shot, regardless of
+    # legacy transition fields.
     before_target = _v360_motion_at(shot, 6.0, 5.0)[0]
     at_target = _v360_motion_at(shot, 6.0, 5.3)[0]
     commands = _v360_motion_commands(shot, 6.0)
     yaws = [float(line.split(" yaw ", 1)[1].strip().rstrip(";")) for line in commands if " yaw " in line]
 
-    assert abs(((before_target - 175.0 + 180.0) % 360.0) - 180.0) > 0.0
-    assert abs(((at_target - 175.0 + 180.0) % 360.0) - 180.0) < 0.1
-    assert max(abs(((b - a + 180.0) % 360.0) - 180.0) for a, b in zip(yaws, yaws[1:])) < 2.0
+    assert before_target == pytest.approx(175.0)
+    assert at_target == pytest.approx(175.0)
+    assert max(abs(((b - a + 180.0) % 360.0) - 180.0) for a, b in zip(yaws, yaws[1:])) == pytest.approx(0.0)
 
 
 def test_returning_to_360_keeps_previous_spherical_view_across_other_camera_cut():
@@ -523,6 +524,29 @@ def test_v360_sendcmd_follows_recorded_curve_samples():
     assert yaws == pytest.approx([-10.0, -7.5, -5.0, 0.0, 5.0])
     assert any("sphere h_fov" in command for command in commands)
     assert any("sphere v_fov" in command for command in commands)
+
+
+def test_landmark_hold_motion_is_bounded_and_never_pans_from_previous_shot():
+    base = {
+        "type": "singer",
+        "yaw": 17.0,
+        "pitch": -12.0,
+        "fov": 95.0,
+        "sweep_enabled": False,
+        "previous_shot": {"type": "left", "yaw": 160.0, "pitch": -12.0, "fov": 95.0},
+    }
+    for mode, rate in (("subtle", 0.75), ("none", 0.0)):
+        shot = {**base, "hold_motion": mode, "hold_motion_rate_deg_per_sec": rate}
+        duration = 3.0
+        yaws = [_v360_motion_at(shot, duration, frame / 30.0)[0] for frame in range(91)]
+        total = abs(((yaws[-1] - yaws[0] + 180.0) % 360.0) - 180.0)
+        measured_rate = total / duration
+        assert measured_rate <= 1.0
+        assert total <= 3.0
+        if mode == "none":
+            assert total == pytest.approx(0.0)
+        assert yaws[0] == pytest.approx(17.0 - rate * duration / 2.0)
+        assert yaws[-1] == pytest.approx(17.0 + rate * duration / 2.0)
 
 
 def test_planet_uses_stereographic_tiny_planet_projection():

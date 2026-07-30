@@ -823,7 +823,7 @@ function applyFixedRearMotion(enabled) {
 }
 
 function sphericalMotionFromForm() {
-  // Opt-in and OFF by default: automatic 360 movement only when explicitly on.
+  // Checked means subtle hold motion; unchecked means a perfectly locked hold.
   return document.querySelector("#sphericalMotion")?.checked === true;
 }
 

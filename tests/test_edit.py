@@ -164,14 +164,14 @@ def test_spherical_motion_is_opt_in_and_off_by_default():
     assert planet["spin_fov_fraction_per_sec"] == 0.0
 
 
-def test_spherical_motion_profile_keeps_normal_landmarks_static_even_when_enabled():
-    # The project motion toggle must not turn ordinary landmark holds into
-    # wandering shots.
+def test_spherical_motion_profile_uses_near_static_hold_motion_when_enabled():
+    # The project motion toggle adds only the configured subtle hold rate.
     for shot_type in ("singer", "left", "right", "audience", "full_stage", "audience_stage_wide", "unknown_type", ""):
         for index in range(6):
             shot = _spherical_motion_profile({"type": shot_type, "yaw": 10.0, "pitch": -15.0, "fov": 95}, index, enabled=True)
             assert all(shot[key] == 0.0 for key in _DRIFT_KEYS), (shot_type, index, shot)
             assert shot["sweep_enabled"] is False
+            assert shot["hold_motion_rate_deg_per_sec"] == 0.75
             assert shot["drift_pitch_fraction"] == 0.0
             assert shot["fov_delta_fraction"] == 0.0
 
@@ -192,6 +192,7 @@ def test_spherical_motion_profile_is_expressed_as_a_fraction_of_the_visible_fiel
         assert "drift_pitch_deg" not in shot
         assert "fov_delta_deg" not in shot
         assert all(shot[key] == 0.0 for key in _DRIFT_KEYS)
+        assert shot["hold_motion_rate_deg_per_sec"] == 0.75
 
 
 def test_spherical_motion_profile_is_identical_across_static_instances():
@@ -288,7 +289,8 @@ def test_automatic_360_motion_never_exceeds_the_fov_fraction_budget(segment_dura
 
     # A sub-two-second segment is intentionally a static hold; longer shots
     # still receive the small automatic drift that keeps them alive.
-    assert moved_at_all == 0
+    expected_moving = 0 if segment_duration < 2.0 else len(segments)
+    assert moved_at_all == expected_moving
 
 
 def test_youtube_plan_prefers_recorded_360_curve_when_segment_is_covered():

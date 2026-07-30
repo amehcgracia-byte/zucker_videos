@@ -49,11 +49,11 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
 EXPORT_SEGMENT_RECIPE_VERSION = 19
-SPHERICAL_MOTION_RECIPE_VERSION = 4
+SPHERICAL_MOTION_RECIPE_VERSION = 5
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
 SPHERICAL_NORMAL_FOV_MIN = 70.0
 SPHERICAL_NORMAL_FOV_MAX = 100.0
-SPHERICAL_MAX_HOLD_YAW_DEG = 4.0
+SPHERICAL_MAX_HOLD_YAW_DEG = 3.0
 INTRO_DURATION = 10.2
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
@@ -902,7 +902,7 @@ def _spherical_segment_parts(segment: dict[str, Any], previous_shot: dict[str, A
     current = 0.0
     start_yaw = _shot_float(previous_shot, "yaw", _shot_float(shot, "yaw", 0.0))
     target_yaw = _shot_float(shot, "yaw", 0.0)
-    if previous_shot and previous_shot.get("type") != shot.get("type") and duration >= 2.0 and bool(shot.get("sweep_enabled", True)):
+    if previous_shot and previous_shot.get("type") != shot.get("type") and duration >= 2.0 and bool(shot.get("sweep_enabled", False)):
         distance = abs(_shortest_yaw_delta(start_yaw, target_yaw))
         speed = max(_sweep_speed(shot), min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, distance / max(duration, 0.001)))
         pan_duration = min(duration, distance / speed if speed > 0 else 0.0)
@@ -1783,12 +1783,16 @@ def _automatic_drift_degrees(shot: dict[str, Any], axis: str, visible_fov: float
     instead. Those are honoured but pushed through the identical clamp, so an
     already-cached edit plan cannot resurrect the old runaway motion.
     """
-    fraction = shot.get(f"{axis}_fraction")
-    if fraction is None:
-        legacy = _shot_float(shot, f"{axis}_deg", 0.0)
-        travel = legacy
+    hold_rate = shot.get("hold_motion_rate_deg_per_sec") if axis == "drift_yaw" else None
+    if hold_rate is not None:
+        travel = _shot_float(shot, "hold_motion_rate_deg_per_sec", 0.0) * max(0.001, duration)
     else:
-        travel = _shot_float(shot, f"{axis}_fraction", 0.0) * visible_fov
+        fraction = shot.get(f"{axis}_fraction")
+        if fraction is None:
+            legacy = _shot_float(shot, f"{axis}_deg", 0.0)
+            travel = legacy
+        else:
+            travel = _shot_float(shot, f"{axis}_fraction", 0.0) * visible_fov
     ceiling = SPHERICAL_MAX_MOTION_FRACTION_PER_SEC * visible_fov * max(0.001, duration)
     travel = max(-ceiling, min(ceiling, travel))
     if axis == "drift_yaw":
@@ -1832,7 +1836,7 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
     if previous:
         previous_yaw = _shot_yaw(previous)
         distance = abs(_shortest_yaw_delta(previous_yaw, target_yaw))
-        if not bool(shot.get("sweep_enabled", True)):
+        if not bool(shot.get("sweep_enabled", False)):
             requested = 0.0
         else:
             # Normal case: duration is distance / requested angular speed.
@@ -2222,7 +2226,8 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "sweep_speed_min": SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC,
         "sweep_speed_max": SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC,
         "transition_policy": "shortest_yaw_delta_at_angular_speed_v3_cross_cut_returns",
-        "axis_policy": "normal_landmark_static_holds_planet_only_motion_v2",
+        "axis_policy": "normal_landmark_near_static_hold_motion_v3",
+        "hold_motion_rate_deg_per_sec": 0.75,
         "short_segment_static_sec": SPHERICAL_SHORT_SEGMENT_STATIC_SEC,
         "normal_fov_min": SPHERICAL_NORMAL_FOV_MIN,
         "normal_fov_max": SPHERICAL_NORMAL_FOV_MAX,
