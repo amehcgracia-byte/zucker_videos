@@ -1792,7 +1792,7 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
         if authored_fraction is None:
             spin_per_sec = _shot_float(shot, "spin_deg_per_sec", PLANET_SPIN_DEG_PER_SEC)
         else:
-            spin_per_sec = _shot_float(authored_fraction, 0.0) * target_fov
+            spin_per_sec = _shot_float(shot, "spin_fov_fraction_per_sec", 0.0) * target_fov
         spin_per_sec = min(max(0.0, spin_per_sec), PLANET_SPIN_DEG_PER_SEC)
         yaw = target_yaw + spin_per_sec * max(0.0, t)
         return _signed_yaw(yaw), target_pitch, target_fov

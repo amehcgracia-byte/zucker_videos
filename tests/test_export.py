@@ -407,6 +407,24 @@ def test_planet_spin_is_capped_at_five_degrees_per_second():
     assert (end - start) % 360.0 == 20.0
 
 
+def test_enabled_landmark_motion_generates_sendcmd_without_signature_errors():
+    shot = {
+        "type": "singer",
+        "yaw": 17.0,
+        "pitch": -12.0,
+        "fov": 95.0,
+        "drift_yaw_fraction": 0.04,
+        "drift_pitch_fraction": 0.0,
+        "fov_delta_fraction": 0.0,
+    }
+
+    samples = [_v360_motion_at(shot, 3.0, t) for t in (0.0, 1.5, 3.0)]
+    commands = _v360_motion_commands(shot, 3.0)
+
+    assert len(commands) == 4 * (int(3.0 * TARGET_EXPORT_FPS) + 1)
+    assert samples[0][0] != samples[-1][0]
+
+
 def test_continuous_spherical_segments_keep_cut_count_flat():
     segments = [
         {"clip_path": "/tmp/360.mp4", "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 3, "spherical_shot": {"type": "singer", "label": "Cantante", "yaw": 20, "pitch": 0, "fov": 80}},
