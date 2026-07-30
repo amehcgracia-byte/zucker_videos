@@ -462,6 +462,39 @@ def test_v360_sendcmd_motion_progresses_smoothly_across_pan():
     assert len(commands) > 30
 
 
+def test_landmark_sweep_uses_distance_over_speed_not_transition_sec():
+    shot = {
+        "type": "audience",
+        "yaw": 175.0,
+        "pitch": -12.0,
+        "fov": 111.0,
+        "transition_sec": 0.45,
+        "sweep_speed_deg_per_sec": 30.0,
+        "previous_shot": {"type": "left", "yaw": 16.0, "pitch": -16.0, "fov": 100.0},
+    }
+
+    # 159 degrees at 30 deg/s is 5.3 seconds, not 0.45 seconds.
+    before_target = _v360_motion_at(shot, 6.0, 5.0)[0]
+    at_target = _v360_motion_at(shot, 6.0, 5.3)[0]
+    commands = _v360_motion_commands(shot, 6.0)
+    yaws = [float(line.split(" yaw ", 1)[1].rstrip(";")) for line in commands if " yaw " in line]
+
+    assert abs(((before_target - 175.0 + 180.0) % 360.0) - 180.0) > 0.0
+    assert abs(((at_target - 175.0 + 180.0) % 360.0) - 180.0) < 0.1
+    assert max(abs(((b - a + 180.0) % 360.0) - 180.0) for a, b in zip(yaws, yaws[1:])) < 2.0
+
+
+def test_returning_to_360_keeps_previous_spherical_view_across_other_camera_cut():
+    segments = [
+        {"duration_sec": 3, "spherical_shot": {"type": "left", "yaw": 16, "pitch": -16, "fov": 100}},
+        {"duration_sec": 3},
+        {"duration_sec": 3, "spherical_shot": {"type": "audience", "yaw": 175, "pitch": -12, "fov": 111, "sweep_speed_deg_per_sec": 30}},
+    ]
+
+    rendered = _continuous_spherical_render_segments(segments)
+    assert rendered[2]["spherical_shot"]["previous_shot"]["yaw"] == 16
+
+
 def test_v360_sendcmd_follows_recorded_curve_samples():
     shot = {
         "type": "recorded_move",

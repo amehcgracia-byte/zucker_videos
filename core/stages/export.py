@@ -870,7 +870,12 @@ def _continuous_spherical_render_segments(segments: list[dict[str, Any]]) -> lis
             output.append({**segment, "spherical_shot": shot})
         else:
             output.append(segment)
-        previous_shot = _spherical_shot(segment)
+        # Keep the last 360 view through intervening non-360 cuts. When the
+        # edit returns to the equirectangular camera, the return sweep should
+        # still start from the prior 360 view rather than silently resetting
+        # the transition state.
+        if shot:
+            previous_shot = _spherical_shot(segment)
     return output
 
 
@@ -1815,7 +1820,15 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
         if not bool(shot.get("sweep_enabled", True)):
             requested = 0.0
         else:
-            speed = max(_sweep_speed(shot), min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, distance / duration))
+            # Normal case: duration is distance / requested angular speed.
+            # If that does not fit this short segment, use the bounded speed
+            # needed to fit it. This never consults the legacy transition_sec.
+            requested_speed = _sweep_speed(shot)
+            available_speed = distance / duration if duration > 0 else 0.0
+            speed = min(
+                SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC,
+                max(requested_speed, available_speed),
+            )
             requested = min(duration, distance / speed if speed > 0 else 0.0)
         if requested > 0 and distance > 0:
             pan_duration = requested

@@ -21,6 +21,7 @@ MAX_BARS_PER_SEGMENT = 2
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
+SPHERICAL_MOTION_PLAN_VERSION = 2
 SPHERICAL_SWEEP_SPEED_DEG_PER_SEC = 60.0
 SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC = 30.0
 SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 120.0
@@ -76,6 +77,7 @@ class EditStage(Stage):
                 "shot_quality_version": SHOT_QUALITY_VERSION,
                 "director_score_threshold": DIRECTOR_SCORE_THRESHOLD,
                 "operator_avoidance_version": OPERATOR_AVOIDANCE_VERSION,
+                "spherical_motion_plan_version": SPHERICAL_MOTION_PLAN_VERSION,
             }
         )
 
@@ -462,7 +464,6 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_ena
             "pitch": _landmark_weight(data, "pitch", 0.0),
             "fov": _landmark_weight(data, "fov", default_fov),
             "weight": weight,
-            "transition_sec": SPHERICAL_PAN_SEC,
             "sweep_enabled": sweep_enabled,
             "sweep_speed_deg_per_sec": sweep_speed,
         }
