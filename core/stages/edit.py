@@ -466,7 +466,10 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_ena
             "pitch": _landmark_weight(data, "pitch", 0.0),
             "fov": _landmark_weight(data, "fov", default_fov),
             "weight": weight,
-            "sweep_enabled": sweep_enabled,
+            # Landmark shots are multicam holds. Only the explicit Planet
+            # effect may sweep automatically; recorded Director takes bypass
+            # this landmark path entirely.
+            "sweep_enabled": bool(sweep_enabled) if shot_type == "planet" else False,
             "sweep_speed_deg_per_sec": sweep_speed,
         }
         shot["fov"] = _plan_spherical_fov(shot)
@@ -484,11 +487,9 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
     a clean, completely still hold, and movement comes only from a recorded
     Director take or from deliberately switching this on.
 
-    When enabled: only yaw gets a small drift. Pitch and FOV are deliberately
-    held so a normal automatic shot never animates multiple axes at once.
-    Seeded deterministically by shot type + segment index, so re-running the
-    edit stage against the same plan reproduces identical motion
-    (cache-stable).
+    Normal landmark shots are always static holds, even when the project-level
+    motion toggle is enabled. The ``enabled`` argument remains for API/schema
+    compatibility and controls only the explicit Planet spin.
 
     Magnitudes are stored as a FRACTION OF THE SHOT'S VISIBLE FIELD, not as
     absolute degrees. Absolute degrees were the bug: the same ±6° drift is a
@@ -518,25 +519,12 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
             PLANET_SPIN_DEG_PER_SEC / max(1.0, float(shot["fov"])) if enabled else 0.0
         )
         return shot
-    if not enabled:
-        # Explicit zeros rather than absent keys: the render side falls back to
-        # legacy absolute-degree fields when the fraction keys are missing, and
-        # a cached plan carrying those would otherwise reintroduce motion.
-        shot["drift_yaw_fraction"] = 0.0
-        shot["drift_pitch_fraction"] = 0.0
-        shot["fov_delta_fraction"] = 0.0
-        return shot
-    rng = random.Random(stable_fingerprint({"spherical_motion_v4": shot_type, "index": index}))
-
-    def signed(low: float, high: float) -> float:
-        magnitude = rng.uniform(low, high)
-        return magnitude if rng.random() < 0.5 else -magnitude
-
-    shot["drift_yaw_fraction"] = round(signed(*SPHERICAL_PRIMARY_DRIFT_FRACTION), 5)
+    # Explicit zeros prevent legacy render fallbacks from reviving wandering
+    # in a cached or hand-edited plan.
+    shot["sweep_enabled"] = False
+    shot["drift_yaw_fraction"] = 0.0
     shot["drift_pitch_fraction"] = 0.0
     shot["fov_delta_fraction"] = 0.0
-    # Legacy absolute-degree keys are deliberately NOT written any more; the
-    # render side treats their absence as "use the fraction keys".
     return shot
 
 

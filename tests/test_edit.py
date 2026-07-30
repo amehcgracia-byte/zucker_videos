@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, SPHERICAL_PRIMARY_DRIFT_FRACTION, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _available_spherical_shots, _ken_burns_motion, _spherical_motion_profile, _youtube_multicam_plan, _framing_nearly_identical
+from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _available_spherical_shots, _ken_burns_motion, _spherical_motion_profile, _youtube_multicam_plan, _framing_nearly_identical
 from core.stages.cut import _pick_energetic_window, _segment_for_360, _select_360_clip
 
 
@@ -26,13 +26,17 @@ def test_generated_landmark_plan_clamps_normal_fov_but_preserves_planet_range():
                 "full_stage": {"yaw": 30, "fov": 120},
                 "planet": {"yaw": 40, "fov": 280},
             }
-        )
+        ),
+        sweep_enabled=True,
     )
     by_type = {shot["type"]: shot for shot in shots}
     assert by_type["singer"]["fov"] == 74.0
     assert by_type["audience"]["fov"] == 100.0
     assert by_type["full_stage"]["fov"] == 100.0
     assert by_type["planet"]["fov"] == 280.0
+    assert by_type["singer"]["sweep_enabled"] is False
+    assert by_type["audience"]["sweep_enabled"] is False
+    assert by_type["planet"]["sweep_enabled"] is True
 
 
 def test_youtube_plan_excludes_missing_sources_and_cuts_on_bars():
@@ -160,14 +164,14 @@ def test_spherical_motion_is_opt_in_and_off_by_default():
     assert planet["spin_fov_fraction_per_sec"] == 0.0
 
 
-def test_spherical_motion_profile_never_leaves_a_shot_frozen_when_enabled():
-    # With motion explicitly ON, every non-planet landmark gets a perceptible
-    # drift on at least one axis -- never all three near zero.
+def test_spherical_motion_profile_keeps_normal_landmarks_static_even_when_enabled():
+    # The project motion toggle must not turn ordinary landmark holds into
+    # wandering shots.
     for shot_type in ("singer", "left", "right", "audience", "full_stage", "audience_stage_wide", "unknown_type", ""):
         for index in range(6):
             shot = _spherical_motion_profile({"type": shot_type, "yaw": 10.0, "pitch": -15.0, "fov": 95}, index, enabled=True)
-            magnitudes = [abs(shot[key]) for key in _DRIFT_KEYS]
-            assert max(magnitudes) >= SPHERICAL_PRIMARY_DRIFT_FRACTION[0], (shot_type, index, shot)
+            assert all(shot[key] == 0.0 for key in _DRIFT_KEYS), (shot_type, index, shot)
+            assert shot["sweep_enabled"] is False
             assert shot["drift_pitch_fraction"] == 0.0
             assert shot["fov_delta_fraction"] == 0.0
 
@@ -181,23 +185,20 @@ def test_spherical_motion_profile_is_expressed_as_a_fraction_of_the_visible_fiel
     """
     for fov in (73.0, 95.0, 140.0):
         shot = _spherical_motion_profile({"type": "singer", "yaw": 10.0, "pitch": -15.0, "fov": fov}, 1, enabled=True)
-        # The authored magnitudes are FOV-independent...
+        # Static landmark plans carry explicit zero fractions...
         assert all(key in shot for key in _DRIFT_KEYS)
         # ...and no legacy absolute-degree key is written any more.
         assert "drift_yaw_deg" not in shot
         assert "drift_pitch_deg" not in shot
         assert "fov_delta_deg" not in shot
-        for key in _DRIFT_KEYS:
-            assert abs(shot[key]) <= SPHERICAL_PRIMARY_DRIFT_FRACTION[1]
+        assert all(shot[key] == 0.0 for key in _DRIFT_KEYS)
 
 
-def test_spherical_motion_profile_varies_across_instances():
-    # Same shot type at different segment indices should not all move the
-    # same fixed way -- this is what makes it "randomized per instance"
-    # rather than a hardcoded per-type direction.
+def test_spherical_motion_profile_is_identical_across_static_instances():
+    # Static landmark holds must not vary by segment index.
     profiles = [_spherical_motion_profile({"type": "singer", "yaw": 10.0, "pitch": -15.0, "fov": 95}, index, enabled=True) for index in range(8)]
     signatures = {tuple(p[key] for key in _DRIFT_KEYS) for p in profiles}
-    assert len(signatures) > 1
+    assert len(signatures) == 1
 
 
 def test_spherical_motion_profile_is_deterministic_for_cache_stability():
@@ -215,12 +216,9 @@ def test_spherical_motion_profile_keeps_planet_spin_untouched():
     assert planet["spin_fov_fraction_per_sec"] <= SPHERICAL_MAX_MOTION_FRACTION_PER_SEC
 
 
-def test_spherical_motion_profile_treats_missing_shot_as_a_moving_hold_when_enabled():
-    # When no landmark shot is available at all (e.g. nothing configured) but
-    # motion is on, the segment still gets motion rather than a frozen hold.
+def test_spherical_motion_profile_treats_missing_shot_as_a_static_hold_when_enabled():
     shot = _spherical_motion_profile({}, 3, enabled=True)
-    magnitudes = [abs(shot[key]) for key in _DRIFT_KEYS]
-    assert max(magnitudes) >= SPHERICAL_PRIMARY_DRIFT_FRACTION[0]
+    assert all(shot[key] == 0.0 for key in _DRIFT_KEYS)
 
 
 @pytest.mark.parametrize("segment_duration", [0.5, 2.0, 3.5, 6.0])
@@ -290,8 +288,7 @@ def test_automatic_360_motion_never_exceeds_the_fov_fraction_budget(segment_dura
 
     # A sub-two-second segment is intentionally a static hold; longer shots
     # still receive the small automatic drift that keeps them alive.
-    expected_moving = 0 if segment_duration < 2.0 else len(segments)
-    assert moved_at_all == expected_moving
+    assert moved_at_all == 0
 
 
 def test_youtube_plan_prefers_recorded_360_curve_when_segment_is_covered():
@@ -598,15 +595,15 @@ def test_youtube_plan_360_segments_always_carry_a_shot_and_move_only_when_motion
         assert shot, "360 segment must always carry a spherical_shot, not a frozen passthrough"
         assert all(abs(shot.get(key) or 0.0) == 0.0 for key in _DRIFT_KEYS)
 
-    # Motion explicitly on -> the same shots now drift.
+    # Motion explicitly on -> normal landmark shots remain static holds.
     moving_plan = _youtube_multicam_plan(coverage, beats, {"spherical_landmarks": {}, "edit": {"spherical_motion": True}})
     moving = spherical_segments(moving_plan)
     assert moving
     for segment in moving:
         shot = segment.get("spherical_shot")
         assert shot
-        magnitudes = [abs(shot.get(key) or 0.0) for key in _DRIFT_KEYS]
-        assert max(magnitudes) >= SPHERICAL_PRIMARY_DRIFT_FRACTION[0]
+        assert all(abs(shot.get(key) or 0.0) == 0.0 for key in _DRIFT_KEYS)
+        assert shot.get("sweep_enabled") is False
 
 
 # ---------------------------------------------------------------------------
