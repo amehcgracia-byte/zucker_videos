@@ -49,7 +49,7 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
 EXPORT_SEGMENT_RECIPE_VERSION = 19
-SPHERICAL_MOTION_RECIPE_VERSION = 1
+SPHERICAL_MOTION_RECIPE_VERSION = 2
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
 INTRO_DURATION = 10.2
 OUTRO_DURATION = 10.2
@@ -2208,7 +2208,7 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "sweep_speed_default": SPHERICAL_SWEEP_SPEED_DEG_PER_SEC,
         "sweep_speed_min": SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC,
         "sweep_speed_max": SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC,
-        "transition_policy": "shortest_yaw_delta_at_angular_speed_v2",
+        "transition_policy": "shortest_yaw_delta_at_angular_speed_v3_cross_cut_returns",
         "axis_policy": "automatic_yaw_only_pitch_fov_held_v1",
         "short_segment_static_sec": SPHERICAL_SHORT_SEGMENT_STATIC_SEC,
         "planet_spin_deg_per_sec": PLANET_SPIN_DEG_PER_SEC,

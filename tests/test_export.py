@@ -319,7 +319,7 @@ def test_cached_segment_path_includes_spherical_motion_recipe_version(tmp_path, 
     segment = {"clip_path": str(source), "source_path": str(source), "clip_start_sec": 0, "duration_sec": 3}
 
     first = cached_segment_path(project, segment, "youtube", 4_000_000, {}, {}, False, False)
-    monkeypatch.setattr("core.stages.export.SPHERICAL_MOTION_RECIPE_VERSION", 2)
+    monkeypatch.setattr("core.stages.export.SPHERICAL_MOTION_RECIPE_VERSION", 99)
     second = cached_segment_path(project, segment, "youtube", 4_000_000, {}, {}, False, False)
 
     assert first != second
