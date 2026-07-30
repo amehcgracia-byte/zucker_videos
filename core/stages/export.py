@@ -94,7 +94,8 @@ class ExportStage(Stage):
         if not master:
             raise ValueError(t("missing_master_for_export"))
         platform = plan.get("platform") or project.data["settings"].get("wizard", {}).get("platform") or "youtube"
-        output_path = _output_path(project, platform)
+        run_id = _export_run_id()
+        output_path = _output_path(project, platform, run_id)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         content_duration = _plan_duration(segments)
         duration = content_duration + INTRO_DURATION + OUTRO_DURATION
@@ -147,6 +148,8 @@ class ExportStage(Stage):
                 "exports": [
                     {
                         "platform": platform,
+                        "run_id": run_id,
+                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                         "path": str(output_path),
                         "filename": output_path.name,
                         "duration_sec": duration,
@@ -166,9 +169,15 @@ class ExportStage(Stage):
         return self.outputs(project)
 
 
-def _output_path(project: Project, platform: str) -> Path:
+def _export_run_id() -> str:
+    """Return a collision-proof, human-sortable ID for one export run."""
+    return time.strftime("%Y%m%d-%H%M%S") + f"-{time.time_ns() % 1_000_000_000:09d}"
+
+
+def _output_path(project: Project, platform: str, run_id: str | None = None) -> Path:
     safe_name = "".join(ch if ch.isalnum() or ch in " ._-" else "-" for ch in project.data["name"]).strip() or "video"
-    return project.exports_dir / f"{safe_name}-{platform}.mp4"
+    suffix = f"-{run_id}" if run_id else ""
+    return project.exports_dir / f"{safe_name}-{platform}{suffix}.mp4"
 
 
 def _frame_normalized_segments(segments: list[dict[str, Any]], fps: float = TARGET_EXPORT_FPS) -> list[dict[str, Any]]:

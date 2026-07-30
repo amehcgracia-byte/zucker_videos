@@ -39,6 +39,8 @@ from core.stages.export import (
     SPHERE_V360_LABEL,
     _render_plan,
     _render_segment,
+    _export_run_id,
+    _output_path,
     _audio_rms,
     _frame_normalized_segments,
     _frame_md5,
@@ -52,6 +54,14 @@ from core.stages.export import (
     color_correction_for_profile,
     measure_clip_color,
 )
+
+
+def test_each_export_run_gets_a_distinct_result_path(tmp_path):
+    project = create_project("Run", str(tmp_path / "project"))
+    first = _output_path(project, "youtube", _export_run_id())
+    second = _output_path(project, "youtube", _export_run_id())
+    assert first != second
+    assert first.name.endswith(".mp4")
 
 
 class FakeProcess:

@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, SPHERICAL_PRIMARY_DRIFT_FRACTION, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _ken_burns_motion, _spherical_motion_profile, _youtube_multicam_plan, _framing_nearly_identical
+from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, SPHERICAL_PRIMARY_DRIFT_FRACTION, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _available_spherical_shots, _ken_burns_motion, _spherical_motion_profile, _youtube_multicam_plan, _framing_nearly_identical
 from core.stages.cut import _pick_energetic_window, _segment_for_360, _select_360_clip
 
 
@@ -15,6 +15,24 @@ def test_estimate_bar_starts_groups_beats_in_fours():
     bars = estimate_bar_starts(beats, 0.0, 8.0)
 
     assert bars[:5] == [0.0, 2.0, 4.0, 6.0, 8.0]
+
+
+def test_generated_landmark_plan_clamps_normal_fov_but_preserves_planet_range():
+    shots = _available_spherical_shots(
+        migrate_spherical_landmarks(
+            {
+                "singer": {"yaw": 10, "fov": 74},
+                "audience": {"yaw": 20, "fov": 111.4},
+                "full_stage": {"yaw": 30, "fov": 120},
+                "planet": {"yaw": 40, "fov": 280},
+            }
+        )
+    )
+    by_type = {shot["type"]: shot for shot in shots}
+    assert by_type["singer"]["fov"] == 74.0
+    assert by_type["audience"]["fov"] == 100.0
+    assert by_type["full_stage"]["fov"] == 100.0
+    assert by_type["planet"]["fov"] == 280.0
 
 
 def test_youtube_plan_excludes_missing_sources_and_cuts_on_bars():

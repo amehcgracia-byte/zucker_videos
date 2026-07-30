@@ -21,7 +21,7 @@ MAX_BARS_PER_SEGMENT = 2
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
-SPHERICAL_MOTION_PLAN_VERSION = 3
+SPHERICAL_MOTION_PLAN_VERSION = 4
 SPHERICAL_SWEEP_SPEED_DEG_PER_SEC = 60.0
 SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC = 30.0
 SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 120.0
@@ -42,6 +42,8 @@ PLANET_SPIN_DEG_PER_SEC = 5.0
 SPHERICAL_DEFAULT_FOV = 95.0
 SPHERICAL_WIDE_FOV = 120.0
 SPHERICAL_AUDIENCE_STAGE_FOV = 125.0
+SPHERICAL_NORMAL_FOV_MIN = 70.0
+SPHERICAL_NORMAL_FOV_MAX = 100.0
 SPHERICAL_SHOT_ORDER = ("full_stage", "singer", "drummer", "left", "right", "audience", "audience_stage_wide", "planet")
 SPHERICAL_LANDMARKS = {
     "singer": ("singer_yaw", "Cantante", SPHERICAL_DEFAULT_FOV),
@@ -467,6 +469,7 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_ena
             "sweep_enabled": sweep_enabled,
             "sweep_speed_deg_per_sec": sweep_speed,
         }
+        shot["fov"] = _plan_spherical_fov(shot)
         if shot_type == "planet":
             shot["spin_deg_per_sec"] = PLANET_SPIN_DEG_PER_SEC
         shots.append(shot)
@@ -501,6 +504,7 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
     """
     shot = dict(shot)
     shot_type = str(shot.get("type") or "")
+    shot["fov"] = _plan_spherical_fov(shot)
     if shot_type == "planet":
         shot["pitch"] = -90.0
         shot["fov"] = max(240.0, float(shot.get("fov") or 240.0))
@@ -534,6 +538,20 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
     # Legacy absolute-degree keys are deliberately NOT written any more; the
     # render side treats their absence as "use the fraction keys".
     return shot
+
+
+def _plan_spherical_fov(shot: dict[str, Any]) -> float:
+    """Return the FOV written into a generated plan for a spherical shot."""
+    shot_type = str(shot.get("type") or "")
+    try:
+        fov = float(shot.get("fov") or SPHERICAL_DEFAULT_FOV)
+    except (TypeError, ValueError):
+        fov = SPHERICAL_DEFAULT_FOV
+    if shot_type == "planet":
+        return max(220.0, min(300.0, fov))
+    if shot_type == "recorded_move":
+        return max(1.0, min(300.0, fov))
+    return max(SPHERICAL_NORMAL_FOV_MIN, min(SPHERICAL_NORMAL_FOV_MAX, fov))
 
 
 def _next_weighted_spherical_shot(shots: list[dict[str, Any]], usage: dict[str, int], include_planet: bool = False) -> dict[str, Any] | None:
