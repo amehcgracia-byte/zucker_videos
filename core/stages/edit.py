@@ -21,7 +21,7 @@ MAX_BARS_PER_SEGMENT = 2
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
-SPHERICAL_MOTION_PLAN_VERSION = 2
+SPHERICAL_MOTION_PLAN_VERSION = 3
 SPHERICAL_SWEEP_SPEED_DEG_PER_SEC = 60.0
 SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC = 30.0
 SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 120.0
@@ -30,7 +30,7 @@ SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 120.0
 # _spherical_motion_profile for why absolute degrees was the bug. The target
 # is motion a viewer barely registers as movement but which keeps the shot
 # alive: a few percent of frame width across the WHOLE segment.
-SPHERICAL_PRIMARY_DRIFT_FRACTION = (0.03, 0.06)
+SPHERICAL_PRIMARY_DRIFT_FRACTION = (0.01, 0.03)
 # Hard ceiling enforced at render time, in fraction of h_fov per second. Any
 # automatic motion (drift, tiny-planet spin, inter-shot reframe) is clamped
 # to this, so a short segment can never turn a whole-segment drift budget

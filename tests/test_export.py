@@ -477,7 +477,7 @@ def test_landmark_sweep_uses_distance_over_speed_not_transition_sec():
     before_target = _v360_motion_at(shot, 6.0, 5.0)[0]
     at_target = _v360_motion_at(shot, 6.0, 5.3)[0]
     commands = _v360_motion_commands(shot, 6.0)
-    yaws = [float(line.split(" yaw ", 1)[1].rstrip(";")) for line in commands if " yaw " in line]
+    yaws = [float(line.split(" yaw ", 1)[1].strip().rstrip(";")) for line in commands if " yaw " in line]
 
     assert abs(((before_target - 175.0 + 180.0) % 360.0) - 180.0) > 0.0
     assert abs(((at_target - 175.0 + 180.0) % 360.0) - 180.0) < 0.1
@@ -527,7 +527,7 @@ def test_wide_shots_render_stereographic_and_narrow_ones_stay_rectilinear():
     # A rectilinear ("flat") view tears as it approaches 180 deg, so a shot
     # pulled back to the full-sphere look has to switch to stereographic. An
     # ordinary shot must NOT: sg would visibly bend a normal 95 deg framing.
-    wide = _export_source_filter({"projection": "equirect"}, {"type": "full_stage", "yaw": 0, "pitch": -20, "fov": 240})
+    wide = _export_source_filter({"projection": "equirect"}, {"type": "planet", "yaw": 0, "pitch": -90, "fov": 240})
     narrow = _export_source_filter({"projection": "equirect"}, {"type": "singer", "yaw": 0, "pitch": -20, "fov": 95})
 
     assert "output=sg" in wide
@@ -539,8 +539,31 @@ def test_wide_shots_render_stereographic_and_narrow_ones_stay_rectilinear():
 def test_shot_wider_than_the_old_rectilinear_cap_is_no_longer_clamped_to_190():
     # Regression guard for the authored range: the UI now offers up to 300 deg,
     # so the export must actually render it rather than silently clamping.
-    assert _effective_flat_fov({"type": "audience", "fov": 260}) == 260.0
-    assert _effective_flat_fov({"type": "audience", "fov": 400}) == MAX_SPHERICAL_FOV
+    assert _effective_flat_fov({"type": "audience", "fov": 260}) == 100.0
+    assert _effective_flat_fov({"type": "audience", "fov": 400}) == 100.0
+    assert _effective_flat_fov({"type": "planet", "fov": 300}) == 300.0
+
+
+def test_normal_landmark_fov_stays_natural_and_reaches_v360_unchanged_when_in_range():
+    assert _effective_flat_fov({"type": "drummer", "fov": 73.3}) == 73.3
+    assert _effective_flat_fov({"type": "singer", "fov": 95.0}) == 95.0
+    assert _effective_flat_fov({"type": "audience", "fov": 111.4}) == 100.0
+    assert "output=flat" in _export_source_filter({"projection": "equirect"}, {"type": "audience", "fov": 260})
+
+
+def test_automatic_hold_yaw_travel_is_capped_to_a_few_degrees():
+    shot = {
+        "type": "singer",
+        "yaw": 90.0,
+        "pitch": -20.0,
+        "fov": 95.0,
+        "drift_yaw_fraction": 1.0,
+        "drift_pitch_fraction": 0.0,
+        "fov_delta_fraction": 0.0,
+    }
+    start = _v360_motion_at(shot, 4.0, 0.0)[0]
+    end = _v360_motion_at(shot, 4.0, 4.0)[0]
+    assert abs(((end - start + 180.0) % 360.0) - 180.0) <= 4.1
 
 
 def test_projection_choice_is_fixed_per_segment_so_fov_drift_cannot_pop_the_framing():
@@ -655,8 +678,8 @@ def test_spherical_flat_filter_uses_signed_yaw_for_saved_singer_value():
 
     assert "yaw=-23.200" in graph
     assert "pitch=-28.800" in graph
-    assert "h_fov=95.000" in graph
-    assert "v_fov=63.088" in graph
+    assert "h_fov=74.800" in graph
+    assert "v_fov=46.542" in graph
     assert "interp=lanczos" in graph
 
 

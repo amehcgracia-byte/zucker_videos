@@ -270,8 +270,10 @@ def test_automatic_360_motion_never_exceeds_the_fov_fraction_budget(segment_dura
         if travel / fov >= 0.002:
             moved_at_all += 1
 
-    # ...and the shots must still be alive, not clamped into frozen holds.
-    assert moved_at_all == len(segments)
+    # A sub-two-second segment is intentionally a static hold; longer shots
+    # still receive the small automatic drift that keeps them alive.
+    expected_moving = 0 if segment_duration < 2.0 else len(segments)
+    assert moved_at_all == expected_moving
 
 
 def test_youtube_plan_prefers_recorded_360_curve_when_segment_is_covered():

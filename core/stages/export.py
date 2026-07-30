@@ -49,8 +49,11 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
 EXPORT_SEGMENT_RECIPE_VERSION = 19
-SPHERICAL_MOTION_RECIPE_VERSION = 2
+SPHERICAL_MOTION_RECIPE_VERSION = 3
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
+SPHERICAL_NORMAL_FOV_MIN = 70.0
+SPHERICAL_NORMAL_FOV_MAX = 100.0
+SPHERICAL_MAX_HOLD_YAW_DEG = 4.0
 INTRO_DURATION = 10.2
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
@@ -1778,7 +1781,10 @@ def _automatic_drift_degrees(shot: dict[str, Any], axis: str, visible_fov: float
     else:
         travel = _shot_float(shot, f"{axis}_fraction", 0.0) * visible_fov
     ceiling = SPHERICAL_MAX_MOTION_FRACTION_PER_SEC * visible_fov * max(0.001, duration)
-    return max(-ceiling, min(ceiling, travel))
+    travel = max(-ceiling, min(ceiling, travel))
+    if axis == "drift_yaw":
+        travel = max(-SPHERICAL_MAX_HOLD_YAW_DEG, min(SPHERICAL_MAX_HOLD_YAW_DEG, travel))
+    return travel
 
 
 def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[float, float, float]:
@@ -1964,26 +1970,24 @@ def _use_stereographic(shot: dict[str, Any] | None) -> bool:
     through, a visible pop in an otherwise still hold. Keying off the widest
     field the shot ever reaches keeps one projection for the whole segment.
     """
-    return str((shot or {}).get("type") or "") == "planet" or _shot_peak_fov(shot) > STEREOGRAPHIC_FOV_THRESHOLD
+    shot_type = str((shot or {}).get("type") or "")
+    if shot_type == "planet":
+        return True
+    if shot_type not in {"recorded_move", ""}:
+        return False
+    return _shot_peak_fov(shot) > STEREOGRAPHIC_FOV_THRESHOLD
 
 
 def _effective_flat_fov(shot: dict[str, Any] | None) -> float:
     fov = _shot_float(shot, "fov", 100.0)
     shot_type = str((shot or {}).get("type") or "")
     if shot_type == "recorded_move":
-        minimum = 1.0
+        return max(1.0, min(MAX_SPHERICAL_FOV, fov))
     elif shot_type == "planet":
         return max(220.0, min(MAX_SPHERICAL_FOV, fov))
-    elif shot_type in {"full_stage", "audience_stage_wide"}:
-        minimum = 115.0
-    elif shot_type:
-        minimum = 95.0
-    else:
-        minimum = 100.0
-    # Ordinary shots may now be pulled right back to the full-sphere look; the
-    # stereographic path (selected in _export_source_filter) handles the wide
-    # end, so the cap is no longer the rectilinear 190°.
-    return max(minimum, min(MAX_SPHERICAL_FOV, fov))
+    # Normal landmark views stay rectilinear-ish. Planet is the only automatic
+    # shot allowed to enter the extreme wide-FOV range.
+    return max(SPHERICAL_NORMAL_FOV_MIN, min(SPHERICAL_NORMAL_FOV_MAX, fov))
 
 
 def _paired_motion_fov(shot: dict[str, Any] | None, fov: float, aspect_ratio: float) -> tuple[float, float]:
@@ -2211,6 +2215,9 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "transition_policy": "shortest_yaw_delta_at_angular_speed_v3_cross_cut_returns",
         "axis_policy": "automatic_yaw_only_pitch_fov_held_v1",
         "short_segment_static_sec": SPHERICAL_SHORT_SEGMENT_STATIC_SEC,
+        "normal_fov_min": SPHERICAL_NORMAL_FOV_MIN,
+        "normal_fov_max": SPHERICAL_NORMAL_FOV_MAX,
+        "max_hold_yaw_deg": SPHERICAL_MAX_HOLD_YAW_DEG,
         "planet_spin_deg_per_sec": PLANET_SPIN_DEG_PER_SEC,
         "automatic_yaw_drift_fraction": SPHERICAL_PRIMARY_DRIFT_FRACTION,
         "automatic_motion_fraction_per_sec": SPHERICAL_MAX_MOTION_FRACTION_PER_SEC,
