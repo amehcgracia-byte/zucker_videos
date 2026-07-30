@@ -311,6 +311,20 @@ def test_cached_segment_path_includes_spherical_shot_recipe(tmp_path, monkeypatc
     assert first != second
 
 
+def test_cached_segment_path_includes_spherical_motion_recipe_version(tmp_path, monkeypatch):
+    project = create_project("Motion cache", str(tmp_path / "Motion cache.zuckervid"))
+    source = tmp_path / "360.mp4"
+    source.write_bytes(b"360")
+    project.data["inputs"]["videos"] = [{"path": str(source), "normalized": {}, "cache_key": "source"}]
+    segment = {"clip_path": str(source), "source_path": str(source), "clip_start_sec": 0, "duration_sec": 3}
+
+    first = cached_segment_path(project, segment, "youtube", 4_000_000, {}, {}, False, False)
+    monkeypatch.setattr("core.stages.export.SPHERICAL_MOTION_RECIPE_VERSION", 2)
+    second = cached_segment_path(project, segment, "youtube", 4_000_000, {}, {}, False, False)
+
+    assert first != second
+
+
 def test_join_fast_path_skips_cfr_rewrite_when_cadence_passes(tmp_path, monkeypatch):
     source = tmp_path / "joined.mp4"
     fallback = tmp_path / "fallback.mp4"

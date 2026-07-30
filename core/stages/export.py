@@ -31,6 +31,7 @@ from core.stages.edit import (
     SPHERICAL_MAX_MOTION_FRACTION_PER_SEC,
     SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC,
     SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC,
+    SPHERICAL_PRIMARY_DRIFT_FRACTION,
     SPHERICAL_SWEEP_SPEED_DEG_PER_SEC,
     load_edit_plan,
 )
@@ -47,7 +48,9 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # against the filter's instance name ("v360@sphere"), NOT the bare "@id" suffix.
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
-EXPORT_SEGMENT_RECIPE_VERSION = 18
+EXPORT_SEGMENT_RECIPE_VERSION = 19
+SPHERICAL_MOTION_RECIPE_VERSION = 1
+SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
 INTRO_DURATION = 10.2
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
@@ -876,7 +879,7 @@ def _spherical_segment_parts(segment: dict[str, Any], previous_shot: dict[str, A
     duration = max(0.0, float(segment.get("duration_sec") or 0.0))
     if duration <= 0.001:
         return []
-    if duration < 2.0:
+    if duration < SPHERICAL_SHORT_SEGMENT_STATIC_SEC:
         return [_spherical_part(segment, 0.0, duration, shot)]
     parts: list[dict[str, Any]] = []
     current = 0.0
@@ -1785,7 +1788,7 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
     target_fov = _effective_flat_fov(shot)
     # A sub-two-second cut is a hold. There is not enough screen time for a
     # graceful move, so do not let a sweep, drift, or planet spin leak into it.
-    if duration < 2.0:
+    if duration < SPHERICAL_SHORT_SEGMENT_STATIC_SEC:
         return _signed_yaw(target_yaw), target_pitch, target_fov
     if shot.get("type") == "planet":
         authored_fraction = shot.get("spin_fov_fraction_per_sec")
@@ -2156,6 +2159,7 @@ def cached_segment_path(
 ) -> Path:
     """Return the global cache path for a rendered segment recipe."""
     source = _segment_source_info(project, segment)
+    spherical_motion_recipe = _spherical_motion_cache_recipe()
     recipe = stable_fingerprint(
         {
             "cache_key": source["cache_key"],
@@ -2175,9 +2179,31 @@ def cached_segment_path(
             "motion": segment.get("motion") or {},
             "normalization_version": NORMALIZATION_VERSION,
             "export_segment_recipe": EXPORT_SEGMENT_RECIPE_VERSION,
+            # Authored shot JSON alone is not enough: renderer-side motion
+            # semantics can change while the plan stays byte-for-byte equal.
+            "spherical_motion_recipe": spherical_motion_recipe,
+            "spherical_motion_recipe_hash": stable_fingerprint(spherical_motion_recipe),
         }
     )[:24]
     return global_segment_path(recipe)
+
+
+def _spherical_motion_cache_recipe() -> dict[str, Any]:
+    """Describe every renderer rule whose change must invalidate 360 caches."""
+    return {
+        "version": SPHERICAL_MOTION_RECIPE_VERSION,
+        "sweep_speed_default": SPHERICAL_SWEEP_SPEED_DEG_PER_SEC,
+        "sweep_speed_min": SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC,
+        "sweep_speed_max": SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC,
+        "transition_policy": "shortest_yaw_delta_at_angular_speed_v2",
+        "axis_policy": "automatic_yaw_only_pitch_fov_held_v1",
+        "short_segment_static_sec": SPHERICAL_SHORT_SEGMENT_STATIC_SEC,
+        "planet_spin_deg_per_sec": PLANET_SPIN_DEG_PER_SEC,
+        "automatic_yaw_drift_fraction": SPHERICAL_PRIMARY_DRIFT_FRACTION,
+        "automatic_motion_fraction_per_sec": SPHERICAL_MAX_MOTION_FRACTION_PER_SEC,
+        "v360_target": SPHERE_V360_LABEL,
+        "target_fps": TARGET_EXPORT_FPS,
+    }
 
 
 def _verify_moving_segment(path: Path, duration: float, label: str, command_line: str) -> None:
