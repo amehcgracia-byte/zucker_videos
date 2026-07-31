@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from core.build_info import build_info
 from core.camera_moves import clip_curve_for_segment, interpolate_curve, limit_yaw_velocity, load_camera_moves, normalize_recorded_samples, recorded_move_covering, recorded_shot_for_segment
 from core.operator_avoidance import count_avoidance_adjustments
 from core.ffmpeg import FFmpegError, ffprobe, tool_status
@@ -59,7 +60,7 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
 EXPORT_SEGMENT_RECIPE_VERSION = 19
-SPHERICAL_MOTION_RECIPE_VERSION = 11
+SPHERICAL_MOTION_RECIPE_VERSION = 12
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
@@ -1288,7 +1289,16 @@ def _render_segment_job(
     label = Path(str(source_info.get("source_path") or segment.get("clip_path"))).name
     command_line = "cached segment"
     local_warnings: list[str] = []
-    cached = segment_path.exists()
+    cached = segment_path.exists() and _segment_cache_stamp_matches(segment_path, segment)
+    if segment_path.exists() and not cached:
+        LOGGER.warning(
+            "Rejecting stale or unverifiable segment cache %s; recipe=%s commit=%s",
+            segment_path,
+            SPHERICAL_MOTION_RECIPE_VERSION,
+            build_info().get("git_commit", "unknown"),
+        )
+        segment_path.unlink(missing_ok=True)
+        _segment_cache_stamp_path(segment_path).unlink(missing_ok=True)
     ffmpeg_started = time.perf_counter()
     if not cached:
         tmp_segment = temp_dir / f"segment-{index:04d}.mp4"
@@ -1316,6 +1326,8 @@ def _render_segment_job(
             intro_fade, outro_fade, False, False, local_warnings,
             command_line, segment_duration, label,
         )
+    _write_segment_cache_stamp(segment_path, segment)
+    _require_segment_cache_stamp(segment_path, segment)
     # The global cache is the reusable store; concat receives a per-export
     # copy so two timeline entries can never alias the same pathname, even if
     # their recipes are identical. This makes ordering and boundary auditing
@@ -1323,10 +1335,13 @@ def _render_segment_job(
     # mixed concat input.
     concat_path = temp_dir / f"segment-{index:04d}-concat.mp4"
     shutil.copy2(segment_path, concat_path)
+    shutil.copy2(_segment_cache_stamp_path(segment_path), _segment_cache_stamp_path(concat_path))
+    _require_segment_cache_stamp(concat_path, segment)
     return {
         "index": index,
         "path": concat_path,
         "cache_path": segment_path,
+        "cache_stamp": _segment_cache_stamp_path(segment_path),
         "spherical_identity": _spherical_cache_identity(segment),
         "warnings": local_warnings,
         "cached": cached,
@@ -2275,6 +2290,48 @@ def cached_segment_path(
         }
     )[:24]
     return global_segment_path(recipe)
+
+
+def _segment_cache_stamp_path(segment_path: Path) -> Path:
+    """Return the attestation sidecar for a rendered segment."""
+    return segment_path.with_suffix(segment_path.suffix + ".json")
+
+
+def _segment_cache_stamp_payload(segment: dict[str, Any]) -> dict[str, Any]:
+    recipe = _spherical_motion_cache_recipe()
+    return {
+        "schema": 1,
+        "export_segment_recipe": EXPORT_SEGMENT_RECIPE_VERSION,
+        "spherical_motion_recipe_version": SPHERICAL_MOTION_RECIPE_VERSION,
+        "spherical_motion_recipe_hash": stable_fingerprint(recipe),
+        "git_commit": build_info().get("git_commit", "unknown"),
+        "spherical_identity": _spherical_cache_identity(segment),
+    }
+
+
+def _segment_cache_stamp_matches(segment_path: Path, segment: dict[str, Any]) -> bool:
+    """Accept a cache file only when its render attestation matches this run."""
+    stamp_path = _segment_cache_stamp_path(segment_path)
+    if not segment_path.exists() or not stamp_path.exists():
+        return False
+    try:
+        actual = json.loads(stamp_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    expected = _segment_cache_stamp_payload(segment)
+    return all(actual.get(key) == value for key, value in expected.items())
+
+
+def _write_segment_cache_stamp(segment_path: Path, segment: dict[str, Any]) -> None:
+    stamp_path = _segment_cache_stamp_path(segment_path)
+    temporary = stamp_path.with_suffix(stamp_path.suffix + ".tmp")
+    temporary.write_text(json.dumps(_segment_cache_stamp_payload(segment), sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(stamp_path)
+
+
+def _require_segment_cache_stamp(segment_path: Path, segment: dict[str, Any]) -> None:
+    if not _segment_cache_stamp_matches(segment_path, segment):
+        raise FFmpegError(f"Segment cache attestation mismatch; refusing to assemble {segment_path}")
 
 
 def _spherical_cache_identity(segment: dict[str, Any]) -> dict[str, Any] | None:

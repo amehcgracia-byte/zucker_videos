@@ -40,6 +40,9 @@ from core.stages.export import (
     SPHERE_V360_LABEL,
     _render_plan,
     _render_segment,
+    _segment_cache_stamp_matches,
+    _segment_cache_stamp_path,
+    _write_segment_cache_stamp,
     _export_run_id,
     _output_path,
     _audio_rms,
@@ -334,6 +337,26 @@ def test_cached_segment_path_includes_spherical_motion_recipe_version(tmp_path, 
     second = cached_segment_path(project, segment, "youtube", 4_000_000, {}, {}, False, False)
 
     assert first != second
+
+
+def test_segment_cache_attestation_rejects_missing_or_changed_recipe(tmp_path, monkeypatch):
+    segment_path = tmp_path / "segment.mp4"
+    segment_path.write_bytes(b"rendered")
+    segment = {
+        "clip_path": str(tmp_path / "source.mp4"),
+        "source_path": str(tmp_path / "source.mp4"),
+        "clip_start_sec": 0,
+        "duration_sec": 3,
+        "spherical_shot": {"type": "singer", "yaw": 10, "pitch": 0, "fov": 90},
+    }
+
+    assert not _segment_cache_stamp_matches(segment_path, segment)
+    _write_segment_cache_stamp(segment_path, segment)
+    assert _segment_cache_stamp_matches(segment_path, segment)
+
+    monkeypatch.setattr("core.stages.export.SPHERICAL_MOTION_RECIPE_VERSION", 13)
+    assert not _segment_cache_stamp_matches(segment_path, segment)
+    assert _segment_cache_stamp_path(segment_path).exists()
 
 
 def test_join_fast_path_skips_cfr_rewrite_when_cadence_passes(tmp_path, monkeypatch):
