@@ -80,6 +80,18 @@ if ! "$APP_BUNDLE/Contents/MacOS/$APP_NAME" --selftest >"$SELFTEST_LOG" 2>&1; th
 fi
 cat "$SELFTEST_LOG"
 
+"$PYTHON" - <<PY
+import json
+from pathlib import Path
+
+bundle_info = Path("$APP_BUNDLE/Contents/Resources/build_info.json")
+actual = json.loads(bundle_info.read_text(encoding="utf-8"))["git_commit"]
+expected = "$COMMIT"
+if actual != expected:
+    raise SystemExit(f"Packaged build_info commit {actual!r} does not match HEAD {expected!r}")
+print(f"Verified packaged build_info git_commit={actual}")
+PY
+
 mkdir -p "$DMG_ROOT"
 cp -R "$APP_BUNDLE" "$DMG_ROOT/"
 ln -s /Applications "$DMG_ROOT/Applications"
