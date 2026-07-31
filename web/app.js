@@ -1044,6 +1044,7 @@ function queueSphericalPreview(group, quality = "final") {
         yaw: formatCanonicalNumber(yaw),
         pitch: formatCanonicalNumber(pitch ?? 0),
         fov: formatCanonicalNumber(fov ?? 95),
+        shot_type: key,
         quality,
       });
       const nextSrc = `/api/v1/wizard/spherical-preview?${params.toString()}`;

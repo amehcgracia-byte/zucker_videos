@@ -21,13 +21,13 @@ MAX_BARS_PER_SEGMENT = 2
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
-SPHERICAL_MOTION_PLAN_VERSION = 8
-# Temporary debugging isolation: every generated 360 view is a locked pose.
-# Keep this explicit and versioned so no prior moving plan can be reused.
-FORCE_STATIC_360_ISOLATION = True
-SPHERICAL_SWEEP_SPEED_DEG_PER_SEC = 60.0
-SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC = 30.0
-SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 120.0
+SPHERICAL_MOTION_PLAN_VERSION = 9
+# Retained as a versioned emergency switch for diagnostics; normal builds use
+# the shared gentle hold/sweep motion below.
+FORCE_STATIC_360_ISOLATION = False
+SPHERICAL_SWEEP_SPEED_DEG_PER_SEC = 30.0
+SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC = 20.0
+SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 30.0
 # Automatic 360 motion budget, expressed as a fraction of the shot's visible
 # field (h_fov) rather than in absolute degrees -- see
 # _spherical_motion_profile for why absolute degrees was the bug. The target
@@ -237,15 +237,14 @@ def _youtube_multicam_plan(
     project_settings = settings or {}
     edit_settings = project_settings.get("edit") if "edit" in project_settings else project_settings
     spherical_landmarks = migrate_spherical_landmarks(project_settings.get("spherical_landmarks") or {})
-    # Isolation mode deliberately ignores the project mode and all saved
-    # Director takes. This lets us prove whether movement is outside shot
-    # motion parameters.
-    spherical_mode = "automatic"
-    use_recorded_360 = False
+    spherical_mode = str(edit_settings.get("spherical_mode") or "automatic").lower()
+    use_recorded_360 = spherical_mode == "directed"
     role_weights = _camera_role_weights(edit_settings)
     fixed_rear_motion = bool(edit_settings.get("fixed_rear_motion", True))
-    # Automatic 360 motion is opt-in and off unless the user asks for it.
-    spherical_motion = bool(edit_settings.get("spherical_motion", False))
+    # Motion is intentionally gentle but enabled by default now that preview
+    # and render share one coordinate conversion. Users can still choose
+    # ``spherical_hold_motion=none`` for locked landmarks.
+    spherical_motion = bool(edit_settings.get("spherical_motion", True))
     hold_motion = str(edit_settings.get("spherical_hold_motion") or ("subtle" if spherical_motion else "none")).lower()
     if hold_motion not in {"none", "subtle"}:
         hold_motion = "subtle" if spherical_motion else "none"
@@ -499,15 +498,12 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_ena
             "pitch": _landmark_weight(data, "pitch", 0.0),
             "fov": _landmark_weight(data, "fov", default_fov),
             "weight": weight,
-            # Landmark shots are multicam holds. Only the explicit Planet
-            # effect may sweep automatically; recorded Director takes bypass
-            # this landmark path entirely.
-            "sweep_enabled": False,
-            "sweep_speed_deg_per_sec": 0.0,
+            "sweep_enabled": bool(sweep_enabled),
+            "sweep_speed_deg_per_sec": max(SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC, min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, float(sweep_speed))) if sweep_enabled else 0.0,
         }
         shot["fov"] = _plan_spherical_fov(shot)
         if shot_type == "planet":
-            shot["spin_deg_per_sec"] = 0.0
+            shot["spin_deg_per_sec"] = PLANET_SPIN_DEG_PER_SEC if sweep_enabled else 0.0
         shots.append(shot)
     return shots
 
@@ -547,10 +543,9 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
         # still held to the same fraction-of-field budget so it reads as a
         # slow rotation rather than a carousel. With motion off it holds still
         # like every other shot.
-        shot["spin_deg_per_sec"] = 0.0
+        shot["spin_deg_per_sec"] = PLANET_SPIN_DEG_PER_SEC if enabled else 0.0
         shot["spin_fov_fraction_per_sec"] = 0.0
-        shot["sweep_enabled"] = False
-        shot["sweep_speed_deg_per_sec"] = 0.0
+        shot["sweep_enabled"] = bool(shot.get("sweep_enabled", False)) and enabled
         shot["hold_motion"] = "none"
         shot["hold_motion_rate_deg_per_sec"] = 0.0
         shot["drift_yaw_fraction"] = 0.0
@@ -559,10 +554,12 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
         return shot
     # Explicit zeros prevent legacy render fallbacks from reviving wandering
     # in a cached or hand-edited plan.
-    mode = "none"
-    shot["sweep_enabled"] = False
+    mode = str(hold_motion or ("subtle" if enabled else "none")).lower()
+    if mode not in {"none", "subtle"}:
+        mode = "subtle" if enabled else "none"
+    shot["sweep_enabled"] = bool(shot.get("sweep_enabled", False)) and enabled
     shot["hold_motion"] = mode
-    shot["hold_motion_rate_deg_per_sec"] = 0.0
+    shot["hold_motion_rate_deg_per_sec"] = SPHERICAL_HOLD_MOTION_DEG_PER_SEC if mode == "subtle" and enabled else 0.0
     shot["drift_yaw_fraction"] = 0.0
     shot["drift_pitch_fraction"] = 0.0
     shot["fov_delta_fraction"] = 0.0
@@ -1070,6 +1067,12 @@ def _apply_operator_avoidance(segment: dict[str, Any], source: dict[str, Any], s
     """
     role = _source_role(source)
     if role not in {"360", "fixed_rear"}:
+        return
+    # A landmark preview has no segment timestamp, so it cannot reproduce a
+    # time-varying operator-avoidance yaw shift. Keep 360 landmark coordinates
+    # identical in the plan, preview, and renderer; fixed-rear framing keeps
+    # the avoidance adjustment.
+    if role == "360":
         return
     analysis_path = str(source.get("path") or "")
     if not analysis_path:

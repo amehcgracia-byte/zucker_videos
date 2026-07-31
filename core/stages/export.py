@@ -24,6 +24,16 @@ from core.media_validation import record_is_usable_camera_video, record_media_pa
 from core.normalization import EVEN_SDR_FILTER, NORMALIZATION_VERSION, SDR_TONEMAP_FILTER, global_cache_root, global_segment_path, source_cache_key
 from core.project import Project
 from core.spherical_metadata import SphericalMetadataError, inject_spherical_metadata
+from core.spherical_view import (
+    MAX_SPHERICAL_FOV,
+    NORMAL_FOV_MAX,
+    NORMAL_FOV_MIN,
+    STEREOGRAPHIC_FOV_THRESHOLD,
+    effective_fov,
+    paired_flat_fov,
+    signed_yaw,
+    view_parameters,
+)
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.cut import load_coverage
 from core.stages.edit import (
@@ -49,12 +59,12 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
 EXPORT_SEGMENT_RECIPE_VERSION = 19
-SPHERICAL_MOTION_RECIPE_VERSION = 8
-# Debugging isolation: all 360 output is a single locked pose per segment.
-FORCE_STATIC_360_ISOLATION = True
+SPHERICAL_MOTION_RECIPE_VERSION = 9
+# Emergency diagnostic switch; normal exports use the bounded motion path.
+FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
-SPHERICAL_NORMAL_FOV_MIN = 70.0
-SPHERICAL_NORMAL_FOV_MAX = 100.0
+SPHERICAL_NORMAL_FOV_MIN = NORMAL_FOV_MIN
+SPHERICAL_NORMAL_FOV_MAX = NORMAL_FOV_MAX
 SPHERICAL_MAX_HOLD_YAW_DEG = 3.0
 INTRO_DURATION = 10.2
 OUTRO_DURATION = 10.2
@@ -909,11 +919,12 @@ def _spherical_segment_parts(segment: dict[str, Any], previous_shot: dict[str, A
     if previous_shot and previous_shot.get("type") != shot.get("type") and duration >= 2.0 and bool(shot.get("sweep_enabled", False)):
         distance = abs(_shortest_yaw_delta(start_yaw, target_yaw))
         speed = max(_sweep_speed(shot), min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, distance / max(duration, 0.001)))
-        pan_duration = min(duration, distance / speed if speed > 0 else 0.0)
+        full_pan_duration = distance / speed if speed > 0 else 0.0
+        pan_duration = min(duration, full_pan_duration)
         pan_steps = max(3, min(12, int(round(pan_duration / 0.05))))
         for index in range(pan_steps):
             part_duration = pan_duration / pan_steps
-            amount = (index + 1) / pan_steps
+            amount = min(1.0, (current + part_duration) / max(0.001, full_pan_duration))
             parts.append(_spherical_part(segment, current, part_duration, {**shot, "type": "pan", "label": shot.get("label"), "yaw": _lerp_angle(start_yaw, target_yaw, amount)}))
             current += part_duration
     remaining = max(0.0, duration - current)
@@ -957,11 +968,10 @@ def _lerp_angle(start: float, end: float, amount: float) -> float:
 def _drifted_spherical_shot(shot: dict[str, Any], amount: float) -> dict[str, Any]:
     amount = max(0.0, min(1.0, amount))
     yaw_delta = _shot_float(shot, "drift_yaw_deg", 0.0) * (amount - 0.5)
-    pitch_delta = _shot_float(shot, "drift_pitch_deg", 0.0) * (amount - 0.5)
     return {
         **shot,
         "yaw": (_shot_float(shot, "yaw", 0.0) + yaw_delta) % 360.0,
-        "pitch": _shot_float(shot, "pitch", 0.0) + pitch_delta,
+        "pitch": _shot_float(shot, "pitch", 0.0),
     }
 
 
@@ -1864,11 +1874,11 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
                 SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC,
                 max(requested_speed, available_speed),
             )
-            requested = min(duration, distance / speed if speed > 0 else 0.0)
+            requested = distance / speed if speed > 0 else 0.0
         if requested > 0 and distance > 0:
             pan_duration = requested
-            if t < pan_duration:
-                amount = max(0.0, min(1.0, t / pan_duration))
+            if t <= min(duration, pan_duration):
+                amount = max(0.0, min(1.0, t / max(0.001, pan_duration)))
                 yaw = _lerp_signed_yaw(previous_yaw, target_yaw, amount)
                 # Set pitch/FOV at the shot boundary and animate yaw alone.
                 # Interpolating all three axes is what made otherwise gentle
@@ -1879,14 +1889,15 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
 
     hold_duration = max(0.001, duration - pan_duration)
     hold_amount = max(0.0, min(1.0, (t - pan_duration) / hold_duration))
-    yaw += _automatic_drift_degrees(shot, "drift_yaw", target_fov, hold_duration) * (hold_amount - 0.5)
-    pitch += _automatic_drift_degrees(shot, "drift_pitch", target_fov, hold_duration) * (hold_amount - 0.5)
-    fov += _automatic_drift_degrees(shot, "fov_delta", target_fov, hold_duration) * (hold_amount - 0.5)
+    yaw += _automatic_drift_degrees(shot, "drift_yaw", target_fov, hold_duration) * hold_amount
+    # Automatic landmark motion is yaw-only. Pitch and FOV are framing
+    # choices, not simultaneous animated axes; recorded Director takes are
+    # the sole exception because their curve is explicitly user-authored.
     return _signed_yaw(yaw), pitch, fov
 
 
 def _static_360_pose(shot: dict[str, Any] | None) -> tuple[float, float, float]:
-    """Return the one fixed pose used by the 360 isolation build."""
+    """Return the fixed pose used when diagnostic isolation is explicitly on."""
     return (
         _signed_yaw(_shot_yaw(shot)),
         _shot_float(shot, "pitch", 0.0),
@@ -1921,17 +1932,24 @@ def _escape_filter_path(path: Path) -> str:
 
 def _export_source_filter(probe: dict[str, Any], shot: dict[str, Any] | None = None, duration: float | None = None, command_path: Path | None = None) -> str:
     """Prepare source pixels for export while leaving fps conversion to the segment timing filter."""
-    yaw = _shot_yaw(shot)
-    pitch = _shot_float(shot, "pitch", 0.0)
-    fov = _effective_flat_fov(shot)
-    h_fov, v_fov = _paired_motion_fov(shot, fov, 16.0 / 9.0)
+    view = view_parameters(
+        _shot_yaw(shot),
+        _shot_float(shot, "pitch", 0.0),
+        _shot_float(shot, "fov", 100.0),
+        16.0 / 9.0,
+        str((shot or {}).get("type") or ""),
+    )
+    yaw = float(view["yaw"])
+    pitch = float(view["pitch"])
+    h_fov = float(view["h_fov"])
+    v_fov = float(view["v_fov"])
     command_prefix = _v360_sendcmd_filter(shot, duration, command_path, aspect_ratio=16.0 / 9.0)
     # A rectilinear ("flat") view degenerates as it approaches 180° -- the edges
     # stretch to infinity -- so anything genuinely wide has to be stereographic
     # ("sg", the tiny-planet projection), which stays sane out past 300° and is
     # what gives the "see the whole sphere" look. Planet is always sg; ordinary
     # wide shots switch over once flat would start tearing.
-    output_projection = "sg" if _use_stereographic(shot) else "flat"
+    output_projection = str(view["projection"])
     if probe.get("projection") == "raw_insv":
         insv_fov = int(probe.get("insv_fov") or 190)
         spatial = f"v360=input=dfisheye:output=e:ih_fov={insv_fov}:iv_fov={insv_fov}:interp=lanczos,{command_prefix}{SPHERE_V360_LABEL}=input=equirect:output={output_projection}:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:w=1920:h=1080:interp=lanczos"
@@ -2017,42 +2035,23 @@ def _use_stereographic(shot: dict[str, Any] | None) -> bool:
 
 
 def _effective_flat_fov(shot: dict[str, Any] | None) -> float:
-    fov = _shot_float(shot, "fov", 100.0)
-    shot_type = str((shot or {}).get("type") or "")
-    if shot_type == "recorded_move":
-        return max(1.0, min(MAX_SPHERICAL_FOV, fov))
-    elif shot_type == "planet":
-        return max(220.0, min(MAX_SPHERICAL_FOV, fov))
-    # Normal landmark views stay rectilinear-ish. Planet is the only automatic
-    # shot allowed to enter the extreme wide-FOV range.
-    return max(SPHERICAL_NORMAL_FOV_MIN, min(SPHERICAL_NORMAL_FOV_MAX, fov))
+    return effective_fov(_shot_float(shot, "fov", 100.0), str((shot or {}).get("type") or ""))
 
 
 def _paired_motion_fov(shot: dict[str, Any] | None, fov: float, aspect_ratio: float) -> tuple[float, float]:
-    if not _use_stereographic(shot):
-        return _paired_flat_fov(fov, aspect_ratio)
-    aspect = max(0.1, float(aspect_ratio))
-    if (shot or {}).get("type") == "planet":
-        # Planet keeps its original, deliberately un-aspect-paired framing: the
-        # tiny-planet look is a signature effect rather than a geometric view,
-        # and every existing planet shot was authored against these numbers.
-        horizontal = max(220.0, min(MAX_SPHERICAL_FOV, float(fov)))
-        return horizontal, max(160.0, min(260.0, horizontal / aspect))
-    # Ordinary wide shots pair by aspect. Stereographic tolerates a vertical
-    # field well beyond the rectilinear 179° ceiling, so there is no flat clamp
-    # -- but no arbitrary floor either: a floor makes the vertical field exceed
-    # the horizontal one whenever a recorded take zooms in during a move (the
-    # segment stays stereographic for its widest moment), which renders as a
-    # vertically stretched frame.
-    horizontal = max(1.0, min(MAX_SPHERICAL_FOV, float(fov)))
-    return horizontal, max(1.0, min(MAX_SPHERICAL_FOV, horizontal / aspect))
+    params = view_parameters(
+        _shot_float(shot, "yaw", 0.0),
+        _shot_float(shot, "pitch", 0.0),
+        fov,
+        aspect_ratio,
+        str((shot or {}).get("type") or ""),
+        projection_hint="sg" if _use_stereographic(shot) else "flat",
+    )
+    return float(params["h_fov"]), float(params["v_fov"])
 
 
 def _paired_flat_fov(horizontal_fov: float, aspect_ratio: float) -> tuple[float, float]:
-    horizontal = max(1.0, min(179.0, float(horizontal_fov)))
-    aspect = max(0.1, float(aspect_ratio))
-    vertical = math.degrees(2.0 * math.atan(math.tan(math.radians(horizontal) / 2.0) / aspect))
-    return horizontal, max(1.0, min(179.0, vertical))
+    return paired_flat_fov(horizontal_fov, aspect_ratio)
 
 
 def _shot_float(shot: dict[str, Any] | None, key: str, fallback: float) -> float:
@@ -2252,8 +2251,8 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "sweep_speed_min": SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC,
         "sweep_speed_max": SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC,
         "transition_policy": "shortest_yaw_delta_at_angular_speed_v3_cross_cut_returns",
-        "axis_policy": "all_360_static_isolation_v1",
-        "hold_motion_rate_deg_per_sec": 0.0,
+        "axis_policy": "yaw_only_sweep_and_yaw_hold_v2",
+        "hold_motion_rate_deg_per_sec": 0.75,
         "landmark_hold_min_sec": 6.0,
         "landmark_hold_target_sec": 8.0,
         "landmark_hold_max_sec": 12.0,
@@ -2263,7 +2262,9 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "normal_fov_min": SPHERICAL_NORMAL_FOV_MIN,
         "normal_fov_max": SPHERICAL_NORMAL_FOV_MAX,
         "max_hold_yaw_deg": SPHERICAL_MAX_HOLD_YAW_DEG,
-        "planet_spin_deg_per_sec": 0.0,
+        "planet_spin_deg_per_sec": PLANET_SPIN_DEG_PER_SEC,
+        "shared_view_parameters_version": 1,
+        "operator_avoidance_360": "disabled_for_preview_render_coordinate_parity",
         "automatic_yaw_drift_fraction": SPHERICAL_PRIMARY_DRIFT_FRACTION,
         "automatic_motion_fraction_per_sec": SPHERICAL_MAX_MOTION_FRACTION_PER_SEC,
         "v360_target": SPHERE_V360_LABEL,

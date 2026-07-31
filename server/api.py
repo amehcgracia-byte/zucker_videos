@@ -22,6 +22,12 @@ from core.director_proxy import director_proxy_status, ensure_director_proxy, is
 from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.messages import t
 from core.project import Project, ProjectError, create_project, load_project
+from core.spherical_view import (
+    MAX_SPHERICAL_FOV,
+    STEREOGRAPHIC_FOV_THRESHOLD,
+    paired_flat_fov,
+    view_parameters,
+)
 from core.camera_moves import delete_camera_move, list_camera_moves, save_camera_move
 from core.media_validation import record_media_path
 from core.normalization import cache_status, cleanup_unreferenced_cache, global_cache_root, migrate_project_normalization_cache
@@ -322,12 +328,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         source = str(request.args.get("source") or "").strip()
         yaw = _optional_degrees(request.args.get("yaw"))
         pitch = _optional_float_setting(request.args.get("pitch"), 0.0)
-        fov = max(65.0, min(150.0, _optional_float_setting(request.args.get("fov"), 95.0)))
+        fov = _optional_float_setting(request.args.get("fov"), 95.0)
+        shot_type = str(request.args.get("shot_type") or "")
         quality = str(request.args.get("quality") or "final").strip().lower()
         if not source or yaw is None:
             return error_response("bad_request", "source and yaw are required", 400)
+        timestamp = _optional_float_setting(request.args.get("timestamp"), None)
         try:
-            return send_file_with_range(str(_spherical_preview_frame(state.project, source, yaw, pitch, fov, quality=quality)))
+            return send_file_with_range(str(_spherical_preview_frame(state.project, source, yaw, pitch, fov, quality=quality, shot_type=shot_type, timestamp_sec=timestamp)))
         except (OSError, FFmpegError, ValueError) as exc:
             return error_response("ffmpeg_error", str(exc), 500)
 
@@ -1051,27 +1059,22 @@ def _coerce_float(value: Any) -> float | None:
 
 # Wide-FOV preview: above this the preview switches to stereographic to
 # match the export's wide/tiny-planet rendering (see export._use_stereographic).
-STEREOGRAPHIC_PREVIEW_FOV_THRESHOLD = 170.0
-MAX_PREVIEW_FOV = 300.0
+STEREOGRAPHIC_PREVIEW_FOV_THRESHOLD = STEREOGRAPHIC_FOV_THRESHOLD
+MAX_PREVIEW_FOV = MAX_SPHERICAL_FOV
 
 
-def _spherical_preview_frame(project: Project | None, source: str, yaw: float, pitch: float, fov: float, quality: str = "final") -> Path:
-    source_path = Path(source).expanduser().resolve()
+def _spherical_preview_frame(project: Project | None, source: str, yaw: float, pitch: float, fov: float, quality: str = "final", shot_type: str = "", timestamp_sec: float | None = None) -> Path:
+    source_path = _spherical_preview_source(project, source)
     if not source_path.exists():
         raise ValueError("360 source does not exist")
     cache_root = (project.cache_dir if project else app_home() / "cache") / "spherical_previews"
     cache_root.mkdir(parents=True, exist_ok=True)
     stat = source_path.stat()
     size = (320, 180) if quality == "drag" else (480, 270)
-    # Match the export: rectilinear ("flat") tears as it nears 180°, so a
-    # genuinely wide shot previews stereographically (the tiny-planet look),
-    # which is what actually renders. See core.stages.export._use_stereographic.
-    stereographic = float(fov) > STEREOGRAPHIC_PREVIEW_FOV_THRESHOLD
-    if stereographic:
-        h_fov = max(1.0, min(MAX_PREVIEW_FOV, float(fov)))
-        v_fov = max(120.0, min(MAX_PREVIEW_FOV, h_fov / max(0.1, size[0] / size[1])))
-    else:
-        h_fov, v_fov = _paired_flat_fov(fov, size[0] / size[1])
+    view = view_parameters(yaw, pitch, fov, size[0] / size[1], shot_type)
+    h_fov = float(view["h_fov"])
+    v_fov = float(view["v_fov"])
+    projection = str(view["projection"])
     key = sha256(
         json.dumps(
             {
@@ -1082,7 +1085,10 @@ def _spherical_preview_frame(project: Project | None, source: str, yaw: float, p
                 "pitch": round(pitch, 3),
                 "h_fov": round(h_fov, 3),
                 "v_fov": round(v_fov, 3),
+                "projection": projection,
+                "shot_type": shot_type,
                 "preview_size": size,
+                "timestamp_sec": None if timestamp_sec is None else round(float(timestamp_sec), 3),
             },
             sort_keys=True,
         ).encode()
@@ -1095,11 +1101,11 @@ def _spherical_preview_frame(project: Project | None, source: str, yaw: float, p
     if not ffmpeg:
         raise FFmpegError("ffmpeg is missing. Install it with: brew install ffmpeg")
     duration = _preview_source_duration(source_path)
-    timestamp = max(0.0, min(duration * 0.35, max(0.0, duration - 0.1)))
+    timestamp = duration * 0.35 if timestamp_sec is None else float(timestamp_sec)
+    timestamp = max(0.0, min(timestamp, max(0.0, duration - 0.1)))
     tmp = output.with_suffix(".tmp.jpg")
-    projection = "sg" if stereographic else "flat"
     filtergraph = (
-        f"v360=input=equirect:output={projection}:yaw={_signed_degrees(yaw):.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:"
+        f"v360=input=equirect:output={projection}:yaw={float(view['yaw']):.3f}:pitch={float(view['pitch']):.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:"
         f"w={size[0]}:h={size[1]}:interp=lanczos,format=yuvj420p"
     )
     command = [
@@ -1127,6 +1133,18 @@ def _spherical_preview_frame(project: Project | None, source: str, yaw: float, p
         raise FFmpegError(result.stderr.strip() or "Could not render 360 preview")
     os.replace(tmp, output)
     return output
+
+
+def _spherical_preview_source(project: Project | None, source: str) -> Path:
+    """Resolve the UI path to the source selected by the export stage.
+
+    Spherical export deliberately uses ``source_path`` (the original equirect
+    media), not the flat analysis proxy. Returning the proxy here would feed a
+    reprojected preview back through v360 and create a second coordinate
+    mismatch.
+    """
+    requested = Path(source).expanduser().resolve()
+    return requested
 
 
 def _preview_source_duration(path: Path) -> float:
