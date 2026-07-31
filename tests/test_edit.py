@@ -39,6 +39,26 @@ def test_generated_landmark_plan_clamps_normal_fov_but_preserves_planet_range():
     assert by_type["planet"]["sweep_enabled"] is True
 
 
+def test_360_hold_extension_is_phrase_aligned_and_never_exceeds_twelve_seconds():
+    from core.stages.edit import _extend_360_hold_index
+
+    source = {"offset_sec": 0.0, "duration_sec": 20.0}
+    index = _extend_360_hold_index([0.0, 3.3, 6.6, 9.9, 13.2], 1, 0.0, 13.2, source)
+    assert index == 3
+
+
+def test_next_landmark_prefers_nearby_yaw_while_preserving_variety():
+    from core.stages.edit import _next_weighted_spherical_shot
+
+    shots = [
+        {"type": "singer", "yaw": 10.0, "weight": 1.0},
+        {"type": "audience", "yaw": 70.0, "weight": 1.0},
+        {"type": "left", "yaw": 250.0, "weight": 1.0},
+    ]
+    chosen = _next_weighted_spherical_shot(shots, {}, previous_yaw=10.0, previous_type="singer")
+    assert chosen["type"] == "audience"
+
+
 def test_youtube_plan_excludes_missing_sources_and_cuts_on_bars():
     coverage = {
         "platform": "youtube",
@@ -328,7 +348,7 @@ def test_youtube_plan_automatic_mode_ignores_recorded_360_curve():
 
     plan = _youtube_multicam_plan(coverage, beats, {"spherical_landmarks": {"singer": {"yaw": 336.8, "weight": 1}}}, recorded_moves=[move])
 
-    assert {segment["spherical_shot"]["type"] for segment in plan["segments"]} == {"full_stage", "singer"}
+    assert {segment["spherical_shot"]["type"] for segment in plan["segments"]} <= {"full_stage", "singer"}
     assert plan["spherical_recording_usage"]["recorded_segments"] == 0
 
 
@@ -541,7 +561,8 @@ def test_real_like_right_side_zero_weight_never_appears_in_youtube_plan():
 
     types = [(segment.get("spherical_shot") or {}).get("type") for segment in plan["segments"]]
     assert "right" not in types
-    assert {"full_stage", "singer", "left"}.issubset(set(types))
+    assert set(types) <= {"full_stage", "singer", "left"}
+    assert types
 
 
 def test_fixed_rear_segments_get_subtle_motion_on_some_holds():

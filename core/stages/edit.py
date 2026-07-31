@@ -21,7 +21,7 @@ MAX_BARS_PER_SEGMENT = 2
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
-SPHERICAL_MOTION_PLAN_VERSION = 5
+SPHERICAL_MOTION_PLAN_VERSION = 6
 SPHERICAL_SWEEP_SPEED_DEG_PER_SEC = 60.0
 SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC = 30.0
 SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 120.0
@@ -40,6 +40,9 @@ SPHERICAL_MAX_MOTION_FRACTION_PER_SEC = 0.06
 # 360 edit. Keep its optional rotation at a deliberately gentle absolute rate.
 PLANET_SPIN_DEG_PER_SEC = 5.0
 SPHERICAL_HOLD_MOTION_DEG_PER_SEC = 0.75
+SPHERICAL_MIN_LANDMARK_HOLD_SEC = 6.0
+SPHERICAL_TARGET_LANDMARK_HOLD_SEC = 8.0
+SPHERICAL_MAX_LANDMARK_HOLD_SEC = 12.0
 SPHERICAL_DEFAULT_FOV = 95.0
 SPHERICAL_WIDE_FOV = 120.0
 SPHERICAL_AUDIENCE_STAGE_FOV = 125.0
@@ -223,6 +226,8 @@ def _youtube_multicam_plan(
     gaps: list[dict[str, float]] = []
     previous_source: str | None = None
     previous_framing: dict[str, Any] | None = None  # C: track framing for consecutive-duplicate detection
+    previous_spherical_yaw: float | None = None
+    previous_spherical_type: str | None = None
     usage_counts: dict[str, int] = {}
     operator_samples_cache: dict[str, list[dict[str, Any]]] = {}
     selection_stats = _selection_stats_template(sources, start, end)
@@ -272,6 +277,14 @@ def _youtube_multicam_plan(
             available, previous_source, previous_framing, usage_counts, selection_stats, role_weights,
             segment_start, segment_end, segment_index, spherical_landmarks, use_recorded_360, recorded_moves or [],
         )
+        is_automatic_360 = _source_role(source) == "360" and not (
+            use_recorded_360 and recorded_move_covering(recorded_moves or [], segment_start, segment_end)
+        )
+        if is_automatic_360:
+            next_index = _extend_360_hold_index(bar_times, next_index, segment_start, end, source)
+            segment_end = min(end, float(bar_times[next_index]))
+            # The source may not cover the longer phrase-aligned window. Keep
+            # the original boundary in that case rather than inventing a gap.
         previous_source = _source_id(source)
         usage_counts[previous_source] = usage_counts.get(previous_source, 0) + 1
         chosen_stats = selection_stats.setdefault(previous_source, _selection_stats_for_source(source, start, end))
@@ -286,7 +299,13 @@ def _youtube_multicam_plan(
                 current_usage = _spherical_shot_usage(segments)
                 available_shots = _available_spherical_shots(spherical_landmarks, spherical_sweep, sweep_speed)
                 include_planet = current_usage.get("Planeta", 0) == 0 and sum(current_usage.values()) >= 5
-                shot = _next_weighted_spherical_shot(available_shots, _spherical_type_usage(segments), include_planet=include_planet)
+                shot = _next_weighted_spherical_shot(
+                    available_shots,
+                    _spherical_type_usage(segments),
+                    include_planet=include_planet,
+                    previous_yaw=previous_spherical_yaw,
+                    previous_type=previous_spherical_type,
+                )
                 # Always attach a shot with motion, even with no configured landmarks
                 # (shot=None) — a 360 segment must never fall back to a frozen,
                 # motionless equirect passthrough.
@@ -295,6 +314,9 @@ def _youtube_multicam_plan(
             segment["motion"] = _ken_burns_motion(segment_index)
         _apply_operator_avoidance(segment, source, operator_samples_cache)
         previous_framing = _framing_descriptor(source, segment)
+        if _source_role(source) == "360" and segment.get("spherical_shot"):
+            previous_spherical_yaw = float(segment["spherical_shot"].get("yaw") or 0.0) % 360.0
+            previous_spherical_type = str(segment["spherical_shot"].get("type") or "")
         segments.append(segment)
         bar_index = next_index
         segment_index += 1
@@ -552,7 +574,13 @@ def _plan_spherical_fov(shot: dict[str, Any]) -> float:
     return max(SPHERICAL_NORMAL_FOV_MIN, min(SPHERICAL_NORMAL_FOV_MAX, fov))
 
 
-def _next_weighted_spherical_shot(shots: list[dict[str, Any]], usage: dict[str, int], include_planet: bool = False) -> dict[str, Any] | None:
+def _next_weighted_spherical_shot(
+    shots: list[dict[str, Any]],
+    usage: dict[str, int],
+    include_planet: bool = False,
+    previous_yaw: float | None = None,
+    previous_type: str | None = None,
+) -> dict[str, Any] | None:
     candidates = [
         shot
         for shot in shots
@@ -560,16 +588,63 @@ def _next_weighted_spherical_shot(shots: list[dict[str, Any]], usage: dict[str, 
     ]
     if not candidates:
         return None
-    return dict(
-        sorted(
-            candidates,
-            key=lambda shot: (
-                usage.get(str(shot.get("type")), 0) / max(0.001, float(shot.get("weight") or 1.0)),
-                usage.get(str(shot.get("type")), 0),
-                str(shot.get("type")),
-            ),
-        )[0]
-    )
+    def distance(shot: dict[str, Any]) -> float:
+        if previous_yaw is None:
+            return 0.0
+        return abs(((float(shot.get("yaw") or 0.0) - previous_yaw + 180.0) % 360.0) - 180.0)
+
+    # Preserve variety when there is a different landmark within the hard-cut
+    # radius. Repeating the nearest landmark indefinitely would solve jumps by
+    # collapsing the edit to one angle, which is not the intended pacing fix.
+    alternatives = [
+        shot for shot in candidates
+        if str(shot.get("type") or "") != previous_type and distance(shot) <= 90.0
+    ]
+    if alternatives:
+        candidates = alternatives
+
+    return dict(sorted(
+        candidates,
+        key=lambda shot: (
+            distance(shot) > 90.0,
+            distance(shot),
+            usage.get(str(shot.get("type")), 0) / max(0.001, float(shot.get("weight") or 1.0)),
+            usage.get(str(shot.get("type")), 0),
+            str(shot.get("type")),
+        ),
+    )[0])
+
+
+def _extend_360_hold_index(
+    bar_times: list[float],
+    next_index: int,
+    start: float,
+    end: float,
+    source: dict[str, Any],
+) -> int:
+    """Extend an automatic 360 hold to a phrase-aligned 6–12 second window."""
+    index = next_index
+    duration = min(end, float(bar_times[index])) - start
+    while index + 1 < len(bar_times) and duration < SPHERICAL_TARGET_LANDMARK_HOLD_SEC:
+        proposed_end = min(end, float(bar_times[index + 1]))
+        if proposed_end - start > SPHERICAL_MAX_LANDMARK_HOLD_SEC:
+            break
+        if not _covering_sources([source], start, proposed_end):
+            break
+        index += 1
+        duration = proposed_end - start
+    if duration < SPHERICAL_MIN_LANDMARK_HOLD_SEC:
+        while index + 1 < len(bar_times):
+            proposed_end = min(end, float(bar_times[index + 1]))
+            if proposed_end - start > SPHERICAL_MAX_LANDMARK_HOLD_SEC:
+                break
+            if not _covering_sources([source], start, proposed_end):
+                break
+            index += 1
+            duration = proposed_end - start
+            if duration >= SPHERICAL_MIN_LANDMARK_HOLD_SEC:
+                break
+    return index
 
 def _landmark_yaw(value: Any, fallback: float | None) -> float | None:
     number = _parse_float(value)

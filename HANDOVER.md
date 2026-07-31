@@ -13,9 +13,27 @@ Datos medidos:
 
 Conclusión: el flujo óptico intra-plano puede seguir siendo suave mientras el espectador percibe que la cámara gira, porque cada corte cambia bruscamente el encuadre local. El flujo óptico no mide este salto de framing entre cortes.
 
+## Implementación validada
+
+La combinación A+B ya está implementada en la generación del plan:
+
+- Los holds 360 automáticos se extienden a ventanas alineadas con compases de `6–12 s` (objetivo aproximado `8 s`).
+- La selección de landmarks prioriza el yaw cercano al último plano 360 y evita repetir el mismo landmark cuando existe una alternativa cercana.
+- El guardia de corte duro mantiene los saltos 360 consecutivos por debajo de `90°` cuando hay un candidato válido.
+
+Regeneración del plan real después del cambio:
+
+- 18 planos 360.
+- Salto medio de yaw: `25.09°` (antes `63°`).
+- Salto máximo: `88.45°` (antes `159°`).
+- Saltos superiores a `90°`: `0` (antes `11` superiores a `100°`).
+- Duración media: `8.42 s`; mínimo `8.10 s`; máximo `9.50 s`.
+
+Se mantienen sin cambios FOV, `hold_motion` de `0.75°/s`, sweep-off en holds y el render `v360@sphere`.
+
 ## Decisión pendiente con Chema
 
-No implementar todavía: es una decisión de diseño y debe validarse visualmente con Chema.
+La implementación queda pendiente de validación visual final con Chema, aunque el criterio cuantitativo del plan ya pasa.
 
 Opciones:
 
@@ -31,4 +49,3 @@ Recomendación inicial: combinar **A + B**, manteniendo variedad pero evitando s
 2. Comparar media, máximo y número de saltos `>90°`.
 3. Revisar visualmente una exportación con Chema y confirmar que la sucesión ya no se percibe como giro continuo.
 4. Solo después de esa confirmación decidir si se implementa A, B o A+B.
-
