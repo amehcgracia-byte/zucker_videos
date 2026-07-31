@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core.camera_moves import clip_curve_for_segment, interpolate_curve, load_camera_moves, normalize_recorded_samples, recorded_move_covering, recorded_shot_for_segment
+from core.camera_moves import clip_curve_for_segment, interpolate_curve, limit_yaw_velocity, load_camera_moves, normalize_recorded_samples, recorded_move_covering, recorded_shot_for_segment
 from core.operator_avoidance import count_avoidance_adjustments
 from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.messages import t
@@ -49,7 +49,7 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
 EXPORT_SEGMENT_RECIPE_VERSION = 19
-SPHERICAL_MOTION_RECIPE_VERSION = 6
+SPHERICAL_MOTION_RECIPE_VERSION = 7
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
 SPHERICAL_NORMAL_FOV_MIN = 70.0
 SPHERICAL_NORMAL_FOV_MAX = 100.0
@@ -1744,7 +1744,7 @@ def _recorded_curve_sampler(shot: dict[str, Any]):
     """
     if not shot or shot.get("type") != "recorded_move":
         return None
-    samples = normalize_recorded_samples(shot.get("curve") or [])
+    samples = limit_yaw_velocity(shot.get("curve") or [])
     if not samples:
         return None
     times = [float(s["t"]) for s in samples]
@@ -1803,7 +1803,8 @@ def _automatic_drift_degrees(shot: dict[str, Any], axis: str, visible_fov: float
 def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[float, float, float]:
     duration = max(0.001, duration)
     if shot.get("type") == "recorded_move":
-        interpolated = interpolate_curve(shot.get("curve") or [], max(0.0, min(duration, t)))
+        safe_curve = limit_yaw_velocity(shot.get("curve") or [])
+        interpolated = interpolate_curve(safe_curve, max(0.0, min(duration, t)))
         if interpolated:
             yaw, pitch, fov = interpolated
             return _signed_yaw(yaw), pitch, fov
@@ -2232,6 +2233,7 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "landmark_hold_target_sec": 8.0,
         "landmark_hold_max_sec": 12.0,
         "landmark_selection_policy": "nearest_yaw_first_with_90_degree_hard_cut_guard_v1",
+        "recorded_yaw_max_rate_deg_per_sec": 40.0,
         "short_segment_static_sec": SPHERICAL_SHORT_SEGMENT_STATIC_SEC,
         "normal_fov_min": SPHERICAL_NORMAL_FOV_MIN,
         "normal_fov_max": SPHERICAL_NORMAL_FOV_MAX,

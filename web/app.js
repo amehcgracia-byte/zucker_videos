@@ -23,6 +23,7 @@ let lastSphericalSetup = {};
 let cameraRoleWeights = { "360": 50, handheld: 30, fixed_rear: 20 };
 let fixedRearMotion = true;
 let sphericalMode = "automatic";
+const MAX_RECORDED_YAW_RATE_DEG_PER_SEC = 40;
 let savedAudioTrim = {};
 let previewTimers = new Map();
 let previewVersions = new Map();
@@ -1637,9 +1638,9 @@ function smoothingRadius(strength) {
 
 function smoothDirectorSamples(samples, strength) {
   const radius = smoothingRadius(strength);
-  if (!Array.isArray(samples) || samples.length <= 2) return [...(samples || [])];
+  if (!Array.isArray(samples) || samples.length <= 2) return limitDirectorYawRate(samples || []);
   const yaws = unwrapYawSeries(samples.map((sample) => Number(sample.yaw || 0)));
-  return samples.map((sample, index) => {
+  const smoothed = samples.map((sample, index) => {
     const start = Math.max(0, index - radius);
     const end = Math.min(samples.length, index + radius + 1);
     const weighted = (values) => {
@@ -1659,6 +1660,25 @@ function smoothDirectorSamples(samples, strength) {
       fov: clamp(weighted(samples.map((item) => Number(item.fov || 100))), 1, 179),
     };
   });
+  return limitDirectorYawRate(smoothed);
+}
+
+function limitDirectorYawRate(samples, maxRate = MAX_RECORDED_YAW_RATE_DEG_PER_SEC) {
+  if (!Array.isArray(samples) || samples.length <= 1) return [...(samples || [])];
+  const unwrapped = unwrapYawSeries(samples.map((sample) => Number(sample.yaw || 0)));
+  const output = [{ ...samples[0], yaw: normalizeYaw(unwrapped[0]) }];
+  let previousYaw = unwrapped[0];
+  for (let index = 1; index < samples.length; index += 1) {
+    const previous = samples[index - 1];
+    const current = samples[index];
+    const dt = Math.max(0, Number(current.t || 0) - Number(previous.t || 0));
+    let delta = unwrapped[index] - previousYaw;
+    const maxDelta = Math.max(0, Number(maxRate) || 0) * dt;
+    if (Math.abs(delta) > maxDelta) delta = Math.sign(delta) * maxDelta;
+    previousYaw += delta;
+    output.push({ ...current, yaw: normalizeYaw(previousYaw) });
+  }
+  return output;
 }
 
 function unwrapYawSeries(yaws) {

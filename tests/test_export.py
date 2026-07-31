@@ -526,6 +526,23 @@ def test_v360_sendcmd_follows_recorded_curve_samples():
     assert any("sphere v_fov" in command for command in commands)
 
 
+def test_recorded_take_render_path_caps_yaw_rate_and_unwraps_seam():
+    shot = {
+        "type": "recorded_move",
+        "curve": [
+            {"t": 0.0, "yaw": 350.0, "pitch": 0.0, "fov": 90.0},
+            {"t": 0.1, "yaw": 20.0, "pitch": 0.0, "fov": 90.0},
+        ],
+    }
+
+    start = _v360_motion_at(shot, 0.1, 0.0)[0]
+    end = _v360_motion_at(shot, 0.1, 0.1)[0]
+    delta = ((end - start + 180.0) % 360.0) - 180.0
+
+    assert delta == pytest.approx(4.0)
+    assert abs(delta) / 0.1 <= 40.0
+
+
 def test_landmark_hold_motion_is_bounded_and_never_pans_from_previous_shot():
     base = {
         "type": "singer",
