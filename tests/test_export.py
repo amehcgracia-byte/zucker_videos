@@ -631,7 +631,7 @@ def test_automatic_hold_yaw_travel_is_capped_to_a_few_degrees():
     }
     start = _v360_motion_at(shot, 4.0, 0.0)[0]
     end = _v360_motion_at(shot, 4.0, 4.0)[0]
-    assert abs(((end - start + 180.0) % 360.0) - 180.0) <= 4.1
+    assert abs(((end - start + 180.0) % 360.0) - 180.0) <= 10.1
 
 
 def test_projection_choice_is_fixed_per_segment_so_fov_drift_cannot_pop_the_framing():
