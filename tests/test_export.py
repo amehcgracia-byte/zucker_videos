@@ -351,7 +351,7 @@ def test_join_fast_path_skips_cfr_rewrite_when_cadence_passes(tmp_path, monkeypa
     assert calls == []
 
 
-def test_spherical_render_parts_expand_pan_and_planet_motion():
+def test_spherical_render_parts_are_not_split_in_static_isolation_mode():
     segments = [
         {"clip_path": "/tmp/360.mp4", "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 3, "spherical_shot": {"type": "singer", "label": "Cantante", "yaw": 20, "pitch": 0, "fov": 80}},
         {"clip_path": "/tmp/360.mp4", "clip_start_sec": 3, "master_start_sec": 3, "duration_sec": 3, "spherical_shot": {"type": "planet", "label": "Planeta", "yaw": 40, "pitch": -65, "fov": 180, "spin_deg_per_sec": 22, "transition_sec": 0.45}},
@@ -361,11 +361,11 @@ def test_spherical_render_parts_expand_pan_and_planet_motion():
 
     assert sum(float(part["duration_sec"]) for part in parts) == pytest.approx(6.0)
     yaws = [round(float(part["spherical_shot"]["yaw"]), 1) for part in parts if part["spherical_shot"].get("type") == "planet"]
-    assert len(yaws) > 1
-    assert len(set(yaws)) > 1
+    assert len(yaws) == 1
+    assert len(set(yaws)) == 1
 
 
-def test_spherical_render_parts_add_bounded_static_drift():
+def test_spherical_render_parts_do_not_add_static_drift():
     segments = [
         {
             "clip_path": "/tmp/360.mp4",
@@ -380,12 +380,9 @@ def test_spherical_render_parts_add_bounded_static_drift():
 
     yaws = [part["spherical_shot"]["yaw"] for part in parts]
     pitches = [part["spherical_shot"]["pitch"] for part in parts]
-    assert len(parts) > 1
-    assert min(yaws) >= 334.8
-    assert max(yaws) <= 338.8
-    assert min(pitches) >= -29.8
-    assert max(pitches) <= -27.8
-    assert yaws[0] != yaws[-1]
+    assert len(parts) == 1
+    assert yaws == [336.8]
+    assert pitches == [-28.8]
 
 
 def test_spherical_pan_steps_keep_angle_increments_small():
@@ -424,14 +421,14 @@ def test_short_360_segments_hold_all_view_axes(duration):
     assert _v360_motion_at(shot, duration, duration) == (17.0, -12.0, 95.0)
 
 
-def test_planet_spin_is_capped_at_five_degrees_per_second():
+def test_planet_is_frozen_in_static_isolation_mode():
     planet = {"type": "planet", "yaw": 0.0, "pitch": -90.0, "fov": 240.0, "spin_deg_per_sec": 18.0}
     start = _v360_motion_at(planet, 4.0, 0.0)[0]
     end = _v360_motion_at(planet, 4.0, 4.0)[0]
-    assert (end - start) % 360.0 == 20.0
+    assert end == pytest.approx(start)
 
 
-def test_enabled_landmark_motion_generates_sendcmd_without_signature_errors():
+def test_sendcmd_has_one_constant_pose_in_static_isolation_mode():
     shot = {
         "type": "singer",
         "yaw": 17.0,
@@ -445,8 +442,9 @@ def test_enabled_landmark_motion_generates_sendcmd_without_signature_errors():
     samples = [_v360_motion_at(shot, 3.0, t) for t in (0.0, 1.5, 3.0)]
     commands = _v360_motion_commands(shot, 3.0)
 
-    assert len(commands) == 4 * (int(3.0 * TARGET_EXPORT_FPS) + 1)
-    assert samples[0][0] != samples[-1][0]
+    assert len(commands) == 4
+    assert samples[0] == samples[-1]
+    assert all(command.startswith("0.000000") for command in commands)
 
 
 def test_continuous_spherical_segments_keep_cut_count_flat():
@@ -461,15 +459,15 @@ def test_continuous_spherical_segments_keep_cut_count_flat():
     assert render_segments[1]["spherical_shot"]["previous_shot"]["type"] == "singer"
 
 
-def test_v360_sendcmd_motion_progresses_smoothly_across_pan():
+def test_v360_sendcmd_is_constant_even_for_a_legacy_pan_plan():
     shot = {"type": "left", "yaw": 100, "pitch": 0, "fov": 80, "transition_sec": 0.45, "previous_shot": {"type": "singer", "yaw": 20, "pitch": 0, "fov": 80}}
     samples = [_v360_motion_at(shot, 3.0, index * (1.0 / TARGET_EXPORT_FPS))[0] for index in range(10)]
     deltas = [abs(((b - a + 540) % 360) - 180) for a, b in zip(samples, samples[1:])]
     commands = _v360_motion_commands(shot, 3.0)
 
-    assert all(delta <= 7.0 for delta in deltas)
-    assert samples == sorted(samples)
-    assert len(commands) > 30
+    assert all(delta == pytest.approx(0.0) for delta in deltas)
+    assert samples[0] == samples[-1]
+    assert len(commands) == 4
 
 
 def test_landmark_sweep_uses_distance_over_speed_not_transition_sec():
@@ -492,7 +490,7 @@ def test_landmark_sweep_uses_distance_over_speed_not_transition_sec():
 
     assert before_target == pytest.approx(175.0)
     assert at_target == pytest.approx(175.0)
-    assert max(abs(((b - a + 180.0) % 360.0) - 180.0) for a, b in zip(yaws, yaws[1:])) == pytest.approx(0.0)
+    assert yaws == [175.0]
 
 
 def test_returning_to_360_keeps_previous_spherical_view_across_other_camera_cut():
@@ -521,7 +519,7 @@ def test_v360_sendcmd_follows_recorded_curve_samples():
     yaws = [_v360_motion_at(shot, 2.0, value)[0] for value in (0.0, 0.5, 1.0, 1.5, 2.0)]
     commands = _v360_motion_commands(shot, 2.0)
 
-    assert yaws == pytest.approx([-10.0, -7.5, -5.0, 0.0, 5.0])
+    assert yaws == pytest.approx([0.0] * 5)
     assert any("sphere h_fov" in command for command in commands)
     assert any("sphere v_fov" in command for command in commands)
 
@@ -539,8 +537,7 @@ def test_recorded_take_render_path_caps_yaw_rate_and_unwraps_seam():
     end = _v360_motion_at(shot, 0.1, 0.1)[0]
     delta = ((end - start + 180.0) % 360.0) - 180.0
 
-    assert delta == pytest.approx(4.0)
-    assert abs(delta) / 0.1 <= 40.0
+    assert delta == pytest.approx(0.0)
 
 
 def test_landmark_hold_motion_is_bounded_and_never_pans_from_previous_shot():
@@ -562,8 +559,8 @@ def test_landmark_hold_motion_is_bounded_and_never_pans_from_previous_shot():
         assert total <= 3.0
         if mode == "none":
             assert total == pytest.approx(0.0)
-        assert yaws[0] == pytest.approx(17.0 - rate * duration / 2.0)
-        assert yaws[-1] == pytest.approx(17.0 + rate * duration / 2.0)
+        assert yaws[0] == pytest.approx(17.0)
+        assert yaws[-1] == pytest.approx(17.0)
 
 
 def test_planet_uses_stereographic_tiny_planet_projection():

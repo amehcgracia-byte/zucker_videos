@@ -21,7 +21,10 @@ MAX_BARS_PER_SEGMENT = 2
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
-SPHERICAL_MOTION_PLAN_VERSION = 7
+SPHERICAL_MOTION_PLAN_VERSION = 8
+# Temporary debugging isolation: every generated 360 view is a locked pose.
+# Keep this explicit and versioned so no prior moving plan can be reused.
+FORCE_STATIC_360_ISOLATION = True
 SPHERICAL_SWEEP_SPEED_DEG_PER_SEC = 60.0
 SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC = 30.0
 SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 120.0
@@ -234,8 +237,11 @@ def _youtube_multicam_plan(
     project_settings = settings or {}
     edit_settings = project_settings.get("edit") if "edit" in project_settings else project_settings
     spherical_landmarks = migrate_spherical_landmarks(project_settings.get("spherical_landmarks") or {})
-    spherical_mode = str(edit_settings.get("spherical_mode") or "automatic").lower()
-    use_recorded_360 = spherical_mode == "directed"
+    # Isolation mode deliberately ignores the project mode and all saved
+    # Director takes. This lets us prove whether movement is outside shot
+    # motion parameters.
+    spherical_mode = "automatic"
+    use_recorded_360 = False
     role_weights = _camera_role_weights(edit_settings)
     fixed_rear_motion = bool(edit_settings.get("fixed_rear_motion", True))
     # Automatic 360 motion is opt-in and off unless the user asks for it.
@@ -402,7 +408,7 @@ def build_spherical_shot_segments(
     if not base_segments:
         return []
     shots = _available_spherical_shots(migrate_spherical_landmarks(landmarks or {}))
-    has_recordings = bool(recorded_moves)
+    has_recordings = bool(recorded_moves) and not FORCE_STATIC_360_ISOLATION
     if not shots and not has_recordings:
         return list(base_segments)
     total_duration = sum(max(0.0, float(segment.get("duration_sec") or 0.0)) for segment in base_segments)
@@ -420,7 +426,7 @@ def build_spherical_shot_segments(
                 hold = max(MIN_SEGMENT_SEC, remaining / 2.0)
             master_start = float(base.get("master_start_sec") or 0.0) + local
             master_end = master_start + hold
-            recorded = recorded_move_covering(recorded_moves or [], master_start, master_end)
+            recorded = None if FORCE_STATIC_360_ISOLATION else recorded_move_covering(recorded_moves or [], master_start, master_end)
             shot = _next_weighted_spherical_shot(shots, usage, include_planet=False)
             if planet_budget > 0 and elapsed <= planet_after < elapsed + hold and any(item.get("type") == "planet" for item in shots):
                 shot = dict(next(item for item in shots if item.get("type") == "planet"))
@@ -496,12 +502,12 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_ena
             # Landmark shots are multicam holds. Only the explicit Planet
             # effect may sweep automatically; recorded Director takes bypass
             # this landmark path entirely.
-            "sweep_enabled": bool(sweep_enabled) if shot_type == "planet" else False,
-            "sweep_speed_deg_per_sec": sweep_speed,
+            "sweep_enabled": False,
+            "sweep_speed_deg_per_sec": 0.0,
         }
         shot["fov"] = _plan_spherical_fov(shot)
         if shot_type == "planet":
-            shot["spin_deg_per_sec"] = PLANET_SPIN_DEG_PER_SEC
+            shot["spin_deg_per_sec"] = 0.0
         shots.append(shot)
     return shots
 
@@ -541,19 +547,22 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
         # still held to the same fraction-of-field budget so it reads as a
         # slow rotation rather than a carousel. With motion off it holds still
         # like every other shot.
-        shot["spin_deg_per_sec"] = PLANET_SPIN_DEG_PER_SEC
-        shot["spin_fov_fraction_per_sec"] = (
-            PLANET_SPIN_DEG_PER_SEC / max(1.0, float(shot["fov"])) if enabled else 0.0
-        )
+        shot["spin_deg_per_sec"] = 0.0
+        shot["spin_fov_fraction_per_sec"] = 0.0
+        shot["sweep_enabled"] = False
+        shot["sweep_speed_deg_per_sec"] = 0.0
+        shot["hold_motion"] = "none"
+        shot["hold_motion_rate_deg_per_sec"] = 0.0
+        shot["drift_yaw_fraction"] = 0.0
+        shot["drift_pitch_fraction"] = 0.0
+        shot["fov_delta_fraction"] = 0.0
         return shot
     # Explicit zeros prevent legacy render fallbacks from reviving wandering
     # in a cached or hand-edited plan.
-    mode = str(hold_motion or ("subtle" if enabled else "none")).lower()
-    if mode not in {"none", "subtle"}:
-        mode = "subtle" if enabled else "none"
+    mode = "none"
     shot["sweep_enabled"] = False
     shot["hold_motion"] = mode
-    shot["hold_motion_rate_deg_per_sec"] = SPHERICAL_HOLD_MOTION_DEG_PER_SEC if mode == "subtle" else 0.0
+    shot["hold_motion_rate_deg_per_sec"] = 0.0
     shot["drift_yaw_fraction"] = 0.0
     shot["drift_pitch_fraction"] = 0.0
     shot["fov_delta_fraction"] = 0.0

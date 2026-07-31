@@ -36,7 +36,8 @@ def test_generated_landmark_plan_clamps_normal_fov_but_preserves_planet_range():
     assert by_type["planet"]["fov"] == 280.0
     assert by_type["singer"]["sweep_enabled"] is False
     assert by_type["audience"]["sweep_enabled"] is False
-    assert by_type["planet"]["sweep_enabled"] is True
+    assert by_type["planet"]["sweep_enabled"] is False
+    assert by_type["planet"]["spin_deg_per_sec"] == 0.0
 
 
 def test_360_hold_extension_is_phrase_aligned_and_never_exceeds_twelve_seconds():
@@ -191,7 +192,7 @@ def test_spherical_motion_profile_uses_near_static_hold_motion_when_enabled():
             shot = _spherical_motion_profile({"type": shot_type, "yaw": 10.0, "pitch": -15.0, "fov": 95}, index, enabled=True)
             assert all(shot[key] == 0.0 for key in _DRIFT_KEYS), (shot_type, index, shot)
             assert shot["sweep_enabled"] is False
-            assert shot["hold_motion_rate_deg_per_sec"] == 0.75
+            assert shot["hold_motion_rate_deg_per_sec"] == 0.0
             assert shot["drift_pitch_fraction"] == 0.0
             assert shot["fov_delta_fraction"] == 0.0
 
@@ -212,7 +213,7 @@ def test_spherical_motion_profile_is_expressed_as_a_fraction_of_the_visible_fiel
         assert "drift_pitch_deg" not in shot
         assert "fov_delta_deg" not in shot
         assert all(shot[key] == 0.0 for key in _DRIFT_KEYS)
-        assert shot["hold_motion_rate_deg_per_sec"] == 0.75
+        assert shot["hold_motion_rate_deg_per_sec"] == 0.0
 
 
 def test_spherical_motion_profile_is_identical_across_static_instances():
@@ -234,7 +235,8 @@ def test_spherical_motion_profile_keeps_planet_spin_untouched():
     assert planet["pitch"] == -90.0
     # The signature tiny-planet spin is held to the same fraction-of-field
     # budget as every other automatic motion.
-    assert planet["spin_fov_fraction_per_sec"] <= SPHERICAL_MAX_MOTION_FRACTION_PER_SEC
+    assert planet["spin_fov_fraction_per_sec"] == 0.0
+    assert planet["spin_deg_per_sec"] == 0.0
 
 
 def test_spherical_motion_profile_treats_missing_shot_as_a_static_hold_when_enabled():
@@ -309,11 +311,10 @@ def test_automatic_360_motion_never_exceeds_the_fov_fraction_budget(segment_dura
 
     # A sub-two-second segment is intentionally a static hold; longer shots
     # still receive the small automatic drift that keeps them alive.
-    expected_moving = 0 if segment_duration < 2.0 else len(segments)
-    assert moved_at_all == expected_moving
+    assert moved_at_all == 0
 
 
-def test_youtube_plan_prefers_recorded_360_curve_when_segment_is_covered():
+def test_youtube_plan_ignores_recorded_360_curve_in_static_isolation_mode():
     coverage = {
         "platform": "youtube",
         "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 8.0},
@@ -330,9 +331,9 @@ def test_youtube_plan_prefers_recorded_360_curve_when_segment_is_covered():
     plan = _youtube_multicam_plan(coverage, beats, {"edit": {"spherical_mode": "directed"}}, recorded_moves=[move])
 
     assert plan["segments"]
-    assert {segment["spherical_shot"]["type"] for segment in plan["segments"]} == {"recorded_move"}
-    assert plan["spherical_recording_usage"]["recorded_segments"] == len(plan["segments"])
-    assert plan["spherical_recording_usage"]["landmark_segments"] == 0
+    assert "recorded_move" not in {segment["spherical_shot"]["type"] for segment in plan["segments"]}
+    assert plan["spherical_recording_usage"]["recorded_segments"] == 0
+    assert plan["spherical_recording_usage"]["mode"] == "automatic"
 
 
 def test_youtube_plan_automatic_mode_ignores_recorded_360_curve():

@@ -49,7 +49,9 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
 EXPORT_SEGMENT_RECIPE_VERSION = 19
-SPHERICAL_MOTION_RECIPE_VERSION = 7
+SPHERICAL_MOTION_RECIPE_VERSION = 8
+# Debugging isolation: all 360 output is a single locked pose per segment.
+FORCE_STATIC_360_ISOLATION = True
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
 SPHERICAL_NORMAL_FOV_MIN = 70.0
 SPHERICAL_NORMAL_FOV_MAX = 100.0
@@ -896,6 +898,8 @@ def _spherical_segment_parts(segment: dict[str, Any], previous_shot: dict[str, A
     duration = max(0.0, float(segment.get("duration_sec") or 0.0))
     if duration <= 0.001:
         return []
+    if FORCE_STATIC_360_ISOLATION:
+        return [_spherical_part(segment, 0.0, duration, shot)]
     if duration < SPHERICAL_SHORT_SEGMENT_STATIC_SEC:
         return [_spherical_part(segment, 0.0, duration, shot)]
     parts: list[dict[str, Any]] = []
@@ -1712,6 +1716,15 @@ def _v360_sendcmd_filter(shot: dict[str, Any] | None, duration: float | None, co
 
 
 def _v360_motion_commands(shot: dict[str, Any], duration: float, aspect_ratio: float = 16.0 / 9.0) -> list[str]:
+    if FORCE_STATIC_360_ISOLATION:
+        yaw, pitch, fov = _static_360_pose(shot)
+        h_fov, v_fov = _paired_motion_fov(shot, fov, aspect_ratio)
+        return [
+            f"0.000000 {SPHERE_V360_LABEL} yaw {yaw:.6f};\n",
+            f"0.000000 {SPHERE_V360_LABEL} pitch {pitch:.6f};\n",
+            f"0.000000 {SPHERE_V360_LABEL} h_fov {h_fov:.6f};\n",
+            f"0.000000 {SPHERE_V360_LABEL} v_fov {v_fov:.6f};\n",
+        ]
     step = 1.0 / TARGET_EXPORT_FPS
     count = max(1, int(math.ceil(duration / step)))
     commands: list[str] = []
@@ -1802,6 +1815,8 @@ def _automatic_drift_degrees(shot: dict[str, Any], axis: str, visible_fov: float
 
 def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[float, float, float]:
     duration = max(0.001, duration)
+    if FORCE_STATIC_360_ISOLATION:
+        return _static_360_pose(shot)
     if shot.get("type") == "recorded_move":
         safe_curve = limit_yaw_velocity(shot.get("curve") or [])
         interpolated = interpolate_curve(safe_curve, max(0.0, min(duration, t)))
@@ -1868,6 +1883,15 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
     pitch += _automatic_drift_degrees(shot, "drift_pitch", target_fov, hold_duration) * (hold_amount - 0.5)
     fov += _automatic_drift_degrees(shot, "fov_delta", target_fov, hold_duration) * (hold_amount - 0.5)
     return _signed_yaw(yaw), pitch, fov
+
+
+def _static_360_pose(shot: dict[str, Any] | None) -> tuple[float, float, float]:
+    """Return the one fixed pose used by the 360 isolation build."""
+    return (
+        _signed_yaw(_shot_yaw(shot)),
+        _shot_float(shot, "pitch", 0.0),
+        _effective_flat_fov(shot),
+    )
 
 
 def _lerp_signed_yaw(start: float, end: float, amount: float) -> float:
@@ -2223,12 +2247,13 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
     """Describe every renderer rule whose change must invalidate 360 caches."""
     return {
         "version": SPHERICAL_MOTION_RECIPE_VERSION,
+        "force_static_360_isolation": FORCE_STATIC_360_ISOLATION,
         "sweep_speed_default": SPHERICAL_SWEEP_SPEED_DEG_PER_SEC,
         "sweep_speed_min": SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC,
         "sweep_speed_max": SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC,
         "transition_policy": "shortest_yaw_delta_at_angular_speed_v3_cross_cut_returns",
-        "axis_policy": "normal_landmark_near_static_hold_motion_v3",
-        "hold_motion_rate_deg_per_sec": 0.75,
+        "axis_policy": "all_360_static_isolation_v1",
+        "hold_motion_rate_deg_per_sec": 0.0,
         "landmark_hold_min_sec": 6.0,
         "landmark_hold_target_sec": 8.0,
         "landmark_hold_max_sec": 12.0,
@@ -2238,7 +2263,7 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "normal_fov_min": SPHERICAL_NORMAL_FOV_MIN,
         "normal_fov_max": SPHERICAL_NORMAL_FOV_MAX,
         "max_hold_yaw_deg": SPHERICAL_MAX_HOLD_YAW_DEG,
-        "planet_spin_deg_per_sec": PLANET_SPIN_DEG_PER_SEC,
+        "planet_spin_deg_per_sec": 0.0,
         "automatic_yaw_drift_fraction": SPHERICAL_PRIMARY_DRIFT_FRACTION,
         "automatic_motion_fraction_per_sec": SPHERICAL_MAX_MOTION_FRACTION_PER_SEC,
         "v360_target": SPHERE_V360_LABEL,
