@@ -25,9 +25,9 @@ SPHERICAL_MOTION_PLAN_VERSION = 9
 # Retained as a versioned emergency switch for diagnostics; normal builds use
 # the shared gentle hold/sweep motion below.
 FORCE_STATIC_360_ISOLATION = False
-SPHERICAL_SWEEP_SPEED_DEG_PER_SEC = 30.0
-SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC = 20.0
-SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 30.0
+SPHERICAL_SWEEP_SPEED_DEG_PER_SEC = 20.0
+SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC = 15.0
+SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 20.0
 # Automatic 360 motion budget, expressed as a fraction of the shot's visible
 # field (h_fov) rather than in absolute degrees -- see
 # _spherical_motion_profile for why absolute degrees was the bug. The target
@@ -42,7 +42,7 @@ SPHERICAL_MAX_MOTION_FRACTION_PER_SEC = 0.06
 # Planet is a special effect, not the default visual language of a normal
 # 360 edit. Keep its optional rotation at a deliberately gentle absolute rate.
 PLANET_SPIN_DEG_PER_SEC = 5.0
-SPHERICAL_HOLD_MOTION_DEG_PER_SEC = 0.75
+SPHERICAL_HOLD_MOTION_DEG_PER_SEC = 0.4
 SPHERICAL_MIN_LANDMARK_HOLD_SEC = 6.0
 SPHERICAL_TARGET_LANDMARK_HOLD_SEC = 8.0
 SPHERICAL_MAX_LANDMARK_HOLD_SEC = 12.0
@@ -493,6 +493,7 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_ena
             continue
         shot = {
             "type": shot_type,
+            "shot_id": shot_type,
             "label": label,
             "yaw": yaw,
             "pitch": _landmark_weight(data, "pitch", 0.0),

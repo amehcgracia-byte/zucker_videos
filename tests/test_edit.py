@@ -192,7 +192,7 @@ def test_spherical_motion_profile_uses_near_static_hold_motion_when_enabled():
             shot = _spherical_motion_profile({"type": shot_type, "yaw": 10.0, "pitch": -15.0, "fov": 95}, index, enabled=True)
             assert all(shot[key] == 0.0 for key in _DRIFT_KEYS), (shot_type, index, shot)
             assert shot["sweep_enabled"] is False
-            assert shot["hold_motion_rate_deg_per_sec"] == 0.75
+            assert shot["hold_motion_rate_deg_per_sec"] == 0.4
             assert shot["drift_pitch_fraction"] == 0.0
             assert shot["fov_delta_fraction"] == 0.0
 
@@ -213,7 +213,7 @@ def test_spherical_motion_profile_is_expressed_as_a_fraction_of_the_visible_fiel
         assert "drift_pitch_deg" not in shot
         assert "fov_delta_deg" not in shot
         assert all(shot[key] == 0.0 for key in _DRIFT_KEYS)
-        assert shot["hold_motion_rate_deg_per_sec"] == 0.75
+        assert shot["hold_motion_rate_deg_per_sec"] == 0.4
 
 
 def test_spherical_motion_profile_is_identical_across_static_instances():

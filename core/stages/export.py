@@ -59,7 +59,7 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
 EXPORT_SEGMENT_RECIPE_VERSION = 19
-SPHERICAL_MOTION_RECIPE_VERSION = 9
+SPHERICAL_MOTION_RECIPE_VERSION = 10
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
@@ -273,7 +273,21 @@ def _render_plan(
                 )
             results = [future.result() for future in as_completed(futures)]
         results.sort(key=lambda item: int(item["index"]))
+        expected_indices = list(range(1, len(render_segments) + 1))
+        actual_indices = [int(item["index"]) for item in results]
+        if actual_indices != expected_indices:
+            raise FFmpegError(f"Rendered segment order is not contiguous: {actual_indices}")
+        cache_owners: dict[str, dict[str, Any]] = {}
         for result in results:
+            path_key = str(result.get("cache_path") or result["path"])
+            identity = result.get("spherical_identity")
+            previous_identity = cache_owners.get(path_key)
+            if previous_identity is not None and previous_identity != identity:
+                raise FFmpegError(
+                    f"360 cache collision: {path_key} was produced for two different views: "
+                    f"{previous_identity} vs {identity}"
+                )
+            cache_owners[path_key] = identity
             segment_paths.append(result["path"])
             warnings.extend(result["warnings"])
             render_stats.append({key: result[key] for key in ("index", "cached", "ffmpeg_sec", "verify_sec", "total_sec")})
@@ -1300,9 +1314,18 @@ def _render_segment_job(
             intro_fade, outro_fade, False, False, local_warnings,
             command_line, segment_duration, label,
         )
+    # The global cache is the reusable store; concat receives a per-export
+    # copy so two timeline entries can never alias the same pathname, even if
+    # their recipes are identical. This makes ordering and boundary auditing
+    # unambiguous and prevents a future cache-key regression from producing a
+    # mixed concat input.
+    concat_path = temp_dir / f"segment-{index:04d}-concat.mp4"
+    shutil.copy2(segment_path, concat_path)
     return {
         "index": index,
-        "path": segment_path,
+        "path": concat_path,
+        "cache_path": segment_path,
+        "spherical_identity": _spherical_cache_identity(segment),
         "warnings": local_warnings,
         "cached": cached,
         "ffmpeg_sec": round(ffmpeg_sec, 3),
@@ -2230,6 +2253,7 @@ def cached_segment_path(
             "intro_logo": intro_logo,
             "outro_logo": outro_logo,
             "spherical_shot": _spherical_shot(segment) or {},
+            "spherical_view_identity": _spherical_cache_identity(segment),
             "motion": segment.get("motion") or {},
             "normalization_version": NORMALIZATION_VERSION,
             "export_segment_recipe": EXPORT_SEGMENT_RECIPE_VERSION,
@@ -2242,6 +2266,21 @@ def cached_segment_path(
     return global_segment_path(recipe)
 
 
+def _spherical_cache_identity(segment: dict[str, Any]) -> dict[str, Any] | None:
+    """Stable human-auditable identity for a rendered spherical viewpoint."""
+    shot = _spherical_shot(segment)
+    if not shot:
+        return None
+    return {
+        "shot_id": str(shot.get("shot_id") or shot.get("label") or shot.get("type") or "360"),
+        "type": str(shot.get("type") or ""),
+        "yaw": round(float(shot.get("yaw") or 0.0) % 360.0, 6),
+        "pitch": round(float(shot.get("pitch") or 0.0), 6),
+        "fov": round(float(shot.get("fov") or 0.0), 6),
+        "curve": stable_fingerprint(shot.get("curve") or []) if shot.get("type") == "recorded_move" else None,
+    }
+
+
 def _spherical_motion_cache_recipe() -> dict[str, Any]:
     """Describe every renderer rule whose change must invalidate 360 caches."""
     return {
@@ -2252,7 +2291,7 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "sweep_speed_max": SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC,
         "transition_policy": "shortest_yaw_delta_at_angular_speed_v3_cross_cut_returns",
         "axis_policy": "yaw_only_sweep_and_yaw_hold_v2",
-        "hold_motion_rate_deg_per_sec": 0.75,
+        "hold_motion_rate_deg_per_sec": 0.4,
         "landmark_hold_min_sec": 6.0,
         "landmark_hold_target_sec": 8.0,
         "landmark_hold_max_sec": 12.0,
@@ -2264,6 +2303,7 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "max_hold_yaw_deg": SPHERICAL_MAX_HOLD_YAW_DEG,
         "planet_spin_deg_per_sec": PLANET_SPIN_DEG_PER_SEC,
         "shared_view_parameters_version": 1,
+        "cache_view_identity_version": 1,
         "operator_avoidance_360": "disabled_for_preview_render_coordinate_parity",
         "automatic_yaw_drift_fraction": SPHERICAL_PRIMARY_DRIFT_FRACTION,
         "automatic_motion_fraction_per_sec": SPHERICAL_MAX_MOTION_FRACTION_PER_SEC,
