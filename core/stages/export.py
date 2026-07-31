@@ -59,13 +59,13 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
 EXPORT_SEGMENT_RECIPE_VERSION = 19
-SPHERICAL_MOTION_RECIPE_VERSION = 10
+SPHERICAL_MOTION_RECIPE_VERSION = 11
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
 SPHERICAL_NORMAL_FOV_MIN = NORMAL_FOV_MIN
 SPHERICAL_NORMAL_FOV_MAX = NORMAL_FOV_MAX
-SPHERICAL_MAX_HOLD_YAW_DEG = 3.0
+SPHERICAL_MAX_HOLD_YAW_DEG = 10.0
 INTRO_DURATION = 10.2
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
@@ -936,10 +936,12 @@ def _spherical_segment_parts(segment: dict[str, Any], previous_shot: dict[str, A
         full_pan_duration = distance / speed if speed > 0 else 0.0
         pan_duration = min(duration, full_pan_duration)
         pan_steps = max(3, min(12, int(round(pan_duration / 0.05))))
+        signed_delta = _shortest_yaw_delta(start_yaw, target_yaw)
         for index in range(pan_steps):
             part_duration = pan_duration / pan_steps
-            amount = min(1.0, (current + part_duration) / max(0.001, full_pan_duration))
-            parts.append(_spherical_part(segment, current, part_duration, {**shot, "type": "pan", "label": shot.get("label"), "yaw": _lerp_angle(start_yaw, target_yaw, amount)}))
+            advance = degrees_per_second_to_step(speed, current + part_duration)
+            amount = min(1.0, advance / max(0.001, distance))
+            parts.append(_spherical_part(segment, current, part_duration, {**shot, "type": "pan", "label": shot.get("label"), "yaw": (start_yaw + signed_delta * amount) % 360.0}))
             current += part_duration
     remaining = max(0.0, duration - current)
     if shot.get("type") == "planet" and remaining > 0.001:
@@ -1831,7 +1833,10 @@ def _automatic_drift_degrees(shot: dict[str, Any], axis: str, visible_fov: float
     """
     hold_rate = shot.get("hold_motion_rate_deg_per_sec") if axis == "drift_yaw" else None
     if hold_rate is not None:
-        travel = _shot_float(shot, "hold_motion_rate_deg_per_sec", 0.0) * max(0.001, duration)
+        travel = degrees_per_second_to_step(
+            _shot_float(shot, "hold_motion_rate_deg_per_sec", 0.0),
+            max(0.001, duration),
+        )
     else:
         fraction = shot.get(f"{axis}_fraction")
         if fraction is None:
@@ -1870,7 +1875,7 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
         else:
             spin_per_sec = _shot_float(shot, "spin_fov_fraction_per_sec", 0.0) * target_fov
         spin_per_sec = min(max(0.0, spin_per_sec), PLANET_SPIN_DEG_PER_SEC)
-        yaw = target_yaw + spin_per_sec * max(0.0, t)
+        yaw = target_yaw + degrees_per_second_to_step(spin_per_sec, max(0.0, t))
         return _signed_yaw(yaw), target_pitch, target_fov
 
     # Landmark changes are intentional sweeps. Their duration is determined by
@@ -1901,8 +1906,9 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
         if requested > 0 and distance > 0:
             pan_duration = requested
             if t <= min(duration, pan_duration):
-                amount = max(0.0, min(1.0, t / max(0.001, pan_duration)))
-                yaw = _lerp_signed_yaw(previous_yaw, target_yaw, amount)
+                delta = _shortest_yaw_delta(previous_yaw, target_yaw)
+                advance = min(abs(delta), degrees_per_second_to_step(speed, max(0.0, t)))
+                yaw = previous_yaw + (1.0 if delta >= 0.0 else -1.0) * advance
                 # Set pitch/FOV at the shot boundary and animate yaw alone.
                 # Interpolating all three axes is what made otherwise gentle
                 # pans read as agitated.
@@ -1940,6 +1946,11 @@ def _shortest_yaw_delta(start: float, end: float) -> float:
 def _sweep_speed(shot: dict[str, Any] | None) -> float:
     value = _shot_float(shot, "sweep_speed_deg_per_sec", SPHERICAL_SWEEP_SPEED_DEG_PER_SEC)
     return max(SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC, min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, value))
+
+
+def degrees_per_second_to_step(rate_deg_per_sec: float, step_seconds: float) -> float:
+    """Convert an angular velocity into the advance for one time step."""
+    return float(rate_deg_per_sec) * max(0.0, float(step_seconds))
 
 
 def _signed_yaw(value: float) -> float:

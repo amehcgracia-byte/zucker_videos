@@ -53,7 +53,7 @@ def default_settings() -> dict[str, Any]:
             "spherical_hold_motion": "subtle",
             "spherical_mode": "automatic",
             "spherical_sweep": True,
-            "sweep_speed_deg_per_sec": 60.0,
+            "sweep_speed_deg_per_sec": 20.0,
         },
         "spherical_landmarks": {},
         "export": {"format": "mp4", "resolution": "source", "transiciones_suaves": False, "segment_workers": 2},

@@ -35,6 +35,7 @@ from core.stages.export import (
     _warn_if_spherical_framing_was_dropped,
     _v360_motion_at,
     _v360_motion_commands,
+    degrees_per_second_to_step,
     _run_ffmpeg_progress,
     SPHERE_V360_LABEL,
     _render_plan,
@@ -563,6 +564,23 @@ def test_landmark_hold_motion_is_bounded_and_never_pans_from_previous_shot():
             assert total == pytest.approx(0.0)
         assert yaws[0] == pytest.approx(17.0)
         assert yaws[-1] == pytest.approx(19.25 if mode == "subtle" else 17.0)
+
+
+def test_hold_rate_is_converted_from_degrees_per_second_to_total_travel():
+    shot = {
+        "type": "audience",
+        "yaw": 175.0,
+        "pitch": -12.9,
+        "fov": 100.0,
+        "hold_motion": "subtle",
+        "hold_motion_rate_deg_per_sec": 0.4,
+        "sweep_enabled": False,
+    }
+    duration = 8.7
+    commands = _v360_motion_commands(shot, duration)
+    yaws = [float(line.split(" yaw ", 1)[1].rstrip(";\n")) for line in commands if " yaw " in line]
+    assert yaws[-1] - yaws[0] == pytest.approx(degrees_per_second_to_step(0.4, duration), rel=0.05)
+    assert yaws[-1] - yaws[0] < 10.0
 
 
 def test_planet_uses_stereographic_tiny_planet_projection():
