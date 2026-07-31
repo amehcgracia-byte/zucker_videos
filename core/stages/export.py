@@ -60,7 +60,7 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
 EXPORT_SEGMENT_RECIPE_VERSION = 19
-SPHERICAL_MOTION_RECIPE_VERSION = 12
+SPHERICAL_MOTION_RECIPE_VERSION = 13
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
@@ -950,7 +950,7 @@ def _spherical_segment_parts(segment: dict[str, Any], previous_shot: dict[str, A
         step = min(0.5, remaining)
         while remaining > 0.001:
             part_duration = min(step, remaining)
-            yaw = target_yaw + spin * (current + part_duration / 2.0)
+            yaw = target_yaw + degrees_per_second_to_step(spin, current + part_duration / 2.0)
             parts.append(_spherical_part(segment, current, part_duration, {**shot, "yaw": yaw % 360.0}))
             current += part_duration
             remaining -= part_duration
@@ -1795,6 +1795,23 @@ def _v360_motion_commands(shot: dict[str, Any], duration: float, aspect_ratio: f
         commands.append(f"{t:.6f} {SPHERE_V360_LABEL} pitch {pitch:.6f};\n")
         commands.append(f"{t:.6f} {SPHERE_V360_LABEL} h_fov {h_fov:.6f};\n")
         commands.append(f"{t:.6f} {SPHERE_V360_LABEL} v_fov {v_fov:.6f};\n")
+    if shot.get("type") != "recorded_move":
+        first_yaw = _v360_motion_at(shot, duration, 0.0)[0]
+        next_yaw = _v360_motion_at(shot, duration, min(step, duration))[0]
+        last_yaw = _v360_motion_at(shot, duration, duration)[0]
+        configured_rate = float(shot.get("hold_motion_rate_deg_per_sec") or 0.0)
+        LOGGER.info(
+            "360 motion emit path=%s shot=%s duration=%.3f fps=%.3f hold=%s "
+            "configured_deg_per_sec=%.6f yaw_start=%.6f yaw_step=%.6f yaw_end=%.6f",
+            __name__,
+            shot.get("label") or shot.get("type") or "360",
+            duration,
+            TARGET_EXPORT_FPS,
+            shot.get("hold_motion") or "none",
+            configured_rate,
+            _shortest_yaw_delta(first_yaw, next_yaw),
+            _shortest_yaw_delta(first_yaw, last_yaw),
+        )
     return commands
 
 
@@ -2360,6 +2377,7 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "transition_policy": "shortest_yaw_delta_at_angular_speed_v3_cross_cut_returns",
         "axis_policy": "yaw_only_sweep_and_yaw_hold_v2",
         "hold_motion_rate_deg_per_sec": 0.4,
+        "hold_motion_default": "none",
         "landmark_hold_min_sec": 6.0,
         "landmark_hold_target_sec": 8.0,
         "landmark_hold_max_sec": 12.0,

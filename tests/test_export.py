@@ -389,6 +389,22 @@ def test_spherical_render_parts_apply_gentle_planet_motion():
     assert max(b - a for a, b in zip(yaws, yaws[1:])) <= 15.0
 
 
+def test_planet_part_motion_uses_seconds_not_frames():
+    segments = [
+        {
+            "clip_path": "/tmp/360.mp4",
+            "clip_start_sec": 0,
+            "master_start_sec": 0,
+            "duration_sec": 3,
+            "spherical_shot": {"type": "planet", "yaw": 40, "pitch": -65, "fov": 180, "spin_deg_per_sec": 0.4},
+        }
+    ]
+
+    parts = _expand_spherical_render_segments(segments)
+    yaws = [float(part["spherical_shot"]["yaw"]) for part in parts]
+    assert max(yaws) - min(yaws) == pytest.approx(0.4 * 2.5, abs=0.05)
+
+
 def test_spherical_render_parts_do_not_add_static_drift():
     segments = [
         {
