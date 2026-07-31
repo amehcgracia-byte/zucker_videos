@@ -1633,7 +1633,7 @@ async function stopDirectorRecording(save) {
 }
 
 function smoothingRadius(strength) {
-  return { light: 2, medium: 5, strong: 9 }[String(strength || "medium")] || 5;
+  return { light: 3, medium: 7, strong: 12 }[String(strength || "medium")] || 7;
 }
 
 function smoothDirectorSamples(samples, strength) {

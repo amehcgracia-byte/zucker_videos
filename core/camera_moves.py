@@ -11,9 +11,9 @@ from typing import Any
 
 from core.project import Project
 
-CAMERA_MOVE_VERSION = 2
+CAMERA_MOVE_VERSION = 3
 DEFAULT_SAMPLE_RATE_HZ = 15.0
-SMOOTHING_RADII = {"light": 2, "medium": 5, "strong": 9}
+SMOOTHING_RADII = {"light": 3, "medium": 7, "strong": 12}
 # Recorded Director movement expresses where the user wanted to look, not the
 # exact hand velocity. Keep even the lightest smoothing comfortable enough for
 # a finished edit and make this a hard render-time guarantee.
@@ -177,7 +177,12 @@ def load_camera_moves(project: Project) -> list[dict[str, Any]]:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        samples = limit_yaw_velocity(data.get("smoothed") or data.get("raw") or [])
+        raw_samples = normalize_recorded_samples(data.get("raw") or [])
+        if raw_samples and int(data.get("version") or 1) < CAMERA_MOVE_VERSION:
+            strength = str(data.get("smoothing") or "medium")
+            samples = limit_yaw_velocity(smooth_camera_curve(raw_samples, radius=smoothing_radius(strength)))
+        else:
+            samples = limit_yaw_velocity(data.get("smoothed") or data.get("raw") or [])
         if len(samples) < 2:
             continue
         data["smoothed"] = samples
