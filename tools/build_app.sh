@@ -54,6 +54,9 @@ PY
   --hidden-import audioread \
   --hidden-import numba \
   --hidden-import llvmlite \
+  --hidden-import server.api \
+  --collect-submodules server \
+  --collect-submodules core \
   --exclude-module pytest \
   --exclude-module tests \
   --exclude-module scipy.tests \
@@ -67,6 +70,15 @@ find "$APP_BUNDLE" -type d -name tests -prune -exec rm -rf {} +
 find "$APP_BUNDLE" \( -iname '*pytest*' -o -iname '*_tests*' -o -iname '*tests*' \) -print -exec rm -rf {} +
 
 codesign --force --deep -s - "$APP_BUNDLE"
+
+# A successful PyInstaller invocation is not enough: import the app and
+# initialize Flask from the actual frozen executable before making a DMG.
+SELFTEST_LOG="$ROOT/build/packaged-selftest.log"
+if ! "$APP_BUNDLE/Contents/MacOS/$APP_NAME" --selftest >"$SELFTEST_LOG" 2>&1; then
+  cat "$SELFTEST_LOG" >&2
+  exit 1
+fi
+cat "$SELFTEST_LOG"
 
 mkdir -p "$DMG_ROOT"
 cp -R "$APP_BUNDLE" "$DMG_ROOT/"

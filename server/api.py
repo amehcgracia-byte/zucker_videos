@@ -594,7 +594,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         config.setdefault("spherical_hold_motion", "subtle")
         config.setdefault("spherical_mode", "automatic")
         config.setdefault("spherical_sweep", True)
-    config.setdefault("sweep_speed_deg_per_sec", 20.0)
+        config.setdefault("sweep_speed_deg_per_sec", 20.0)
         config.setdefault("audio_trim_by_master", {})
         return jsonify(config)
 

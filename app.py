@@ -71,6 +71,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project", help="Open an existing .zuckervid project folder")
     parser.add_argument("--webgl-probe", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--operator-avoidance-probe", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--selftest", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
@@ -84,6 +85,8 @@ def main() -> None:
         raise SystemExit(_run_webgl_probe())
     if args.operator_avoidance_probe:
         raise SystemExit(_run_operator_avoidance_probe())
+    if args.selftest:
+        raise SystemExit(_run_selftest())
     config = load_global_config()
     # A normal relaunch is intentionally a fresh Step 1 session. Existing
     # projects remain on disk and are available from the project shelf; only an
@@ -120,6 +123,23 @@ def main() -> None:
 
     window.events.loaded += on_loaded
     webview.start()
+
+
+def _run_selftest() -> int:
+    """Initialize the packaged Flask app and verify its UI entry point."""
+    try:
+        app = create_app(project_path=None, dev=False)
+        with app.test_client() as client:
+            response = client.get("/")
+        if response.status_code != 200:
+            print(json.dumps({"ok": False, "status": response.status_code}, sort_keys=True))
+            return 1
+        print(json.dumps({"ok": True, "status": response.status_code}, sort_keys=True))
+        return 0
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Packaged self-test failed")
+        print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
+        return 1
 
 
 def _run_webgl_probe() -> int:
