@@ -60,7 +60,7 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
 EXPORT_SEGMENT_RECIPE_VERSION = 19
-SPHERICAL_MOTION_RECIPE_VERSION = 13
+SPHERICAL_MOTION_RECIPE_VERSION = 14
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
@@ -305,6 +305,14 @@ def _render_plan(
         concat_path = temp_dir / "concat.txt"
         joined_video = temp_dir / "joined-video.mp4"
         concat_path.write_text("".join(_concat_file_line(path) for path in segment_paths), encoding="utf-8")
+        _write_export_link_audit(
+            project,
+            output_path,
+            render_segments,
+            results,
+            concat_path,
+            final_path=None,
+        )
         _run_ffmpeg_progress(
             [
                 ffmpeg,
@@ -348,6 +356,14 @@ def _render_plan(
             content_start=INTRO_DURATION,
             content_end=max(INTRO_DURATION, real_duration - OUTRO_DURATION),
             audio_delay=audio_delay,
+        )
+        _write_export_link_audit(
+            project,
+            output_path,
+            render_segments,
+            results,
+            concat_path,
+            final_path=output_path,
         )
         if verify_motion:
             _verify_joined_output(output_path, segments, timeline_offset=INTRO_DURATION)
@@ -1300,9 +1316,9 @@ def _render_segment_job(
         segment_path.unlink(missing_ok=True)
         _segment_cache_stamp_path(segment_path).unlink(missing_ok=True)
     ffmpeg_started = time.perf_counter()
+    commands: list[list[str]] = []
     if not cached:
         tmp_segment = temp_dir / f"segment-{index:04d}.mp4"
-        commands: list[list[str]] = []
         rendered_from = _render_segment(
             project, segment, master_path, tmp_segment, platform, video_bitrate,
             overlay_config, color_profile, segment_progress,
@@ -1342,6 +1358,8 @@ def _render_segment_job(
         "path": concat_path,
         "cache_path": segment_path,
         "cache_stamp": _segment_cache_stamp_path(segment_path),
+        "sendcmd_path": temp_dir / f"segment-{index:04d}.sendcmd.txt",
+        "ffmpeg_command": commands[-1] if commands else [],
         "spherical_identity": _spherical_cache_identity(segment),
         "warnings": local_warnings,
         "cached": cached,
@@ -1349,6 +1367,67 @@ def _render_segment_job(
         "verify_sec": round(time.perf_counter() - verify_started, 3),
         "total_sec": round(time.perf_counter() - started, 3),
     }
+
+
+def _write_export_link_audit(
+    project: Project,
+    output_path: Path,
+    render_segments: list[dict[str, Any]],
+    results: list[dict[str, Any]],
+    concat_path: Path,
+    final_path: Path | None,
+) -> None:
+    """Persist every 360 render link so a delivered export is bisectable."""
+    result_by_index = {int(item["index"]): item for item in results}
+    entries: list[dict[str, Any]] = []
+    for index, segment in enumerate(render_segments, start=1):
+        if not _spherical_shot(segment):
+            continue
+        result = result_by_index.get(index) or {}
+        sendcmd_path = Path(str(result.get("sendcmd_path") or ""))
+        stamp_path = Path(str(result.get("cache_stamp") or ""))
+        sendcmd = ""
+        if sendcmd_path.exists():
+            sendcmd = sendcmd_path.read_text(encoding="utf-8")
+        stamp: dict[str, Any] | None = None
+        if stamp_path.exists():
+            try:
+                candidate = json.loads(stamp_path.read_text(encoding="utf-8"))
+                stamp = candidate if isinstance(candidate, dict) else None
+            except (OSError, json.JSONDecodeError):
+                stamp = None
+        entries.append(
+            {
+                "index": index,
+                "master_start_sec": segment.get("master_start_sec"),
+                "duration_sec": segment.get("duration_sec"),
+                "spherical_shot": _spherical_shot(segment),
+                "sendcmd_path": str(sendcmd_path),
+                "sendcmd": sendcmd,
+                "cache_path": str(result.get("cache_path") or ""),
+                "concat_path": str(result.get("path") or ""),
+                "cache_stamp_path": str(stamp_path),
+                "cache_stamp": stamp,
+                "ffmpeg_command": result.get("ffmpeg_command") or [],
+                "cached": bool(result.get("cached")),
+            }
+        )
+    concat_entries = []
+    if concat_path.exists():
+        concat_entries = concat_path.read_text(encoding="utf-8").splitlines()
+    write_artifact_json(
+        artifact_path(project, "export_link_audit.json"),
+        {
+            "schema": 1,
+            "build": build_info(),
+            "spherical_motion_recipe": _spherical_motion_cache_recipe(),
+            "output_path": str(output_path),
+            "final_path": str(final_path) if final_path else None,
+            "concat_path": str(concat_path),
+            "concat_entries": concat_entries,
+            "segments": entries,
+        },
+    )
 
 
 def _render_proxy_segment(
