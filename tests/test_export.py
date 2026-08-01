@@ -403,6 +403,39 @@ def test_segment_cache_attestation_rejects_missing_or_changed_recipe(tmp_path, m
     assert _segment_cache_stamp_path(segment_path).exists()
 
 
+def test_segment_cache_attestation_rejects_rewritten_bytes(tmp_path):
+    segment_path = tmp_path / "segment.mp4"
+    segment_path.write_bytes(b"rendered")
+    segment = {
+        "clip_path": str(tmp_path / "source.mp4"),
+        "source_path": str(tmp_path / "source.mp4"),
+        "clip_start_sec": 0,
+        "duration_sec": 3,
+        "spherical_shot": {"type": "audience", "yaw": 175, "pitch": -12.9, "fov": 100},
+    }
+
+    _write_segment_cache_stamp(segment_path, segment)
+    assert _segment_cache_stamp_matches(segment_path, segment)
+    segment_path.write_bytes(b"different-render")
+    assert not _segment_cache_stamp_matches(segment_path, segment)
+
+
+def test_segment_cache_attestation_includes_full_spherical_shot(tmp_path):
+    segment_path = tmp_path / "segment.mp4"
+    segment_path.write_bytes(b"rendered")
+    segment = {
+        "clip_path": str(tmp_path / "source.mp4"),
+        "source_path": str(tmp_path / "source.mp4"),
+        "clip_start_sec": 0,
+        "duration_sec": 3,
+        "spherical_shot": {"type": "audience", "yaw": 175, "pitch": -12.9, "fov": 100, "hold_motion": "none"},
+    }
+
+    _write_segment_cache_stamp(segment_path, segment)
+    segment["spherical_shot"]["hold_motion"] = "subtle"
+    assert not _segment_cache_stamp_matches(segment_path, segment)
+
+
 def test_join_fast_path_skips_cfr_rewrite_when_cadence_passes(tmp_path, monkeypatch):
     source = tmp_path / "joined.mp4"
     fallback = tmp_path / "fallback.mp4"

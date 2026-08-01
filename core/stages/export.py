@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import bisect
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
 import re
 import shutil
 import subprocess
@@ -60,7 +61,10 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
 EXPORT_SEGMENT_RECIPE_VERSION = 19
-SPHERICAL_MOTION_RECIPE_VERSION = 16
+# v17 adds byte-level and full-shot attestation to segment sidecars.  A file
+# with a copied/reused sidecar is no longer accepted if its bytes or authored
+# motion fields differ from the current render.
+SPHERICAL_MOTION_RECIPE_VERSION = 17
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
@@ -2444,7 +2448,16 @@ def _segment_cache_stamp_payload(segment: dict[str, Any]) -> dict[str, Any]:
         "spherical_motion_recipe_hash": stable_fingerprint(recipe),
         "git_commit": build_info().get("git_commit", "unknown"),
         "spherical_identity": _spherical_cache_identity(segment),
+        "spherical_shot_fingerprint": stable_fingerprint(_spherical_shot(segment) or {}),
     }
+
+
+def _segment_sha256(segment_path: Path) -> str:
+    digest = hashlib.sha256()
+    with segment_path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _segment_cache_stamp_matches(segment_path: Path, segment: dict[str, Any]) -> bool:
@@ -2457,13 +2470,19 @@ def _segment_cache_stamp_matches(segment_path: Path, segment: dict[str, Any]) ->
     except (OSError, json.JSONDecodeError):
         return False
     expected = _segment_cache_stamp_payload(segment)
+    try:
+        expected["segment_sha256"] = _segment_sha256(segment_path)
+    except OSError:
+        return False
     return all(actual.get(key) == value for key, value in expected.items())
 
 
 def _write_segment_cache_stamp(segment_path: Path, segment: dict[str, Any]) -> None:
     stamp_path = _segment_cache_stamp_path(segment_path)
     temporary = stamp_path.with_suffix(stamp_path.suffix + ".tmp")
-    temporary.write_text(json.dumps(_segment_cache_stamp_payload(segment), sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    payload = _segment_cache_stamp_payload(segment)
+    payload["segment_sha256"] = _segment_sha256(segment_path)
+    temporary.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     temporary.replace(stamp_path)
 
 
