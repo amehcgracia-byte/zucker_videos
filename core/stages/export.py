@@ -64,7 +64,7 @@ EXPORT_SEGMENT_RECIPE_VERSION = 19
 # v17 adds byte-level and full-shot attestation to segment sidecars.  A file
 # with a copied/reused sidecar is no longer accepted if its bytes or authored
 # motion fields differ from the current render.
-SPHERICAL_MOTION_RECIPE_VERSION = 17
+SPHERICAL_MOTION_RECIPE_VERSION = 18
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
@@ -2073,9 +2073,21 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
                 fov = target_fov
                 return _signed_yaw(yaw), pitch, fov
 
-    hold_duration = max(0.001, duration - pan_duration)
-    hold_amount = max(0.0, min(1.0, (t - pan_duration) / hold_duration))
-    yaw += _automatic_drift_degrees(shot, "drift_yaw", target_fov, hold_duration) * hold_amount
+    # A hold rate is an angular velocity, not a per-command increment.  Resolve
+    # it against elapsed seconds at the command timestamp; this keeps the
+    # conversion explicit in the active sendcmd path and prevents a 0.4 deg/s
+    # setting from becoming 0.4 deg per 30-fps frame.
+    hold_elapsed = max(0.0, min(duration - pan_duration, t - pan_duration))
+    hold_rate = shot.get("hold_motion_rate_deg_per_sec")
+    if hold_rate is not None:
+        yaw += degrees_per_second_to_step(
+            _shot_float(shot, "hold_motion_rate_deg_per_sec", 0.0),
+            hold_elapsed,
+        )
+    else:
+        hold_duration = max(0.001, duration - pan_duration)
+        hold_amount = max(0.0, min(1.0, (t - pan_duration) / hold_duration))
+        yaw += _automatic_drift_degrees(shot, "drift_yaw", target_fov, hold_duration) * hold_amount
     # Automatic landmark motion is yaw-only. Pitch and FOV are framing
     # choices, not simultaneous animated axes; recorded Director takes are
     # the sole exception because their curve is explicitly user-authored.
@@ -2516,6 +2528,7 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "sweep_speed_max": SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC,
         "transition_policy": "shortest_yaw_delta_at_angular_speed_v3_cross_cut_returns",
         "axis_policy": "yaw_only_sweep_and_yaw_hold_v2",
+        "hold_step_policy": "deg_per_sec_times_elapsed_seconds_v1",
         "hold_motion_rate_deg_per_sec": 0.4,
         "hold_motion_default": "none",
         "landmark_hold_min_sec": 6.0,

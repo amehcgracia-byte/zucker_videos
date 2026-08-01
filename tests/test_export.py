@@ -699,6 +699,43 @@ def test_hold_rate_is_converted_from_degrees_per_second_to_total_travel():
     assert yaws[-1] - yaws[0] < 10.0
 
 
+@pytest.mark.parametrize(
+    ("shot", "expected_travel"),
+    [
+        (
+            {
+                "type": "planet",
+                "yaw": 10.0,
+                "pitch": -90.0,
+                "fov": 240.0,
+                "spin_deg_per_sec": 5.0,
+            },
+            5.0 * 8.9,
+        ),
+        (
+            {
+                "type": "audience",
+                "yaw": 120.0,
+                "pitch": -12.0,
+                "fov": 100.0,
+                "sweep_enabled": True,
+                "sweep_speed_deg_per_sec": 20.0,
+                "previous_shot": {"type": "left", "yaw": 30.0},
+            },
+            90.0,
+        ),
+    ],
+)
+def test_sendcmd_rate_fields_are_seconds_not_frames(shot, expected_travel):
+    commands = _v360_motion_commands(shot, 8.9)
+    yaws = [float(line.split(" yaw ", 1)[1].rstrip(";\n")) for line in commands if " yaw " in line]
+    travel = abs(((yaws[-1] - yaws[0] + 180.0) % 360.0) - 180.0)
+    assert travel == pytest.approx(expected_travel, rel=0.10, abs=0.1)
+    # A 30-fps implementation accidentally multiplying a deg/s value by the
+    # number of command steps would exceed this by roughly 30x.
+    assert travel < expected_travel * 1.2 + 0.2
+
+
 def test_planet_uses_stereographic_tiny_planet_projection():
     graph = _export_source_filter({"projection": "equirect"}, {"type": "planet", "yaw": 6, "pitch": -90, "fov": 260}, duration=3.0, command_path=None)
 
