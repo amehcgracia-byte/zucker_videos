@@ -308,6 +308,50 @@ def test_render_segment_uses_original_source_with_proxy_metadata(tmp_path, monke
     assert commands[0][commands[0].index("-video_track_timescale") + 1] == "30000"
 
 
+def test_spherical_proxy_fallback_keeps_v360_sendcmd(tmp_path, monkeypatch):
+    project = create_project("Spherical proxy", str(tmp_path / "Spherical proxy.zuckervid"))
+    source = tmp_path / "source.mp4"
+    proxy = tmp_path / "proxy.mp4"
+    master = tmp_path / "master.wav"
+    output = tmp_path / "segment.mp4"
+    for path in (source, proxy, master):
+        path.write_bytes(b"input")
+    record = file_record(str(source))
+    record["probe"] = {"valid_video": True, "projection": "equirect", "width": 1920, "height": 1080, "fps": 30.0}
+    record["cache_key"] = "spherical-clip"
+    record["normalized"] = {"path": str(proxy), "cache_key": "spherical-clip", "kind": "proxy"}
+    project.data["inputs"]["videos"] = [record]
+    commands = []
+    monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
+    monkeypatch.setattr("core.stages.export._watermark_path", lambda: None)
+    monkeypatch.setattr("core.stages.export._ffmpeg_supports_filter", lambda name: False)
+
+    def fake_progress(command, duration, label, progress):
+        commands.append(command)
+        output.write_bytes(b"segment")
+
+    monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", fake_progress)
+    rendered_from = _render_segment(
+        project,
+        {
+            "clip_path": str(proxy),
+            "source_path": str(source),
+            "clip_start_sec": 1,
+            "master_start_sec": 2,
+            "duration_sec": 3,
+            "spherical_shot": {"type": "audience", "yaw": 175, "pitch": -12.9, "fov": 100, "hold_motion": "none"},
+        },
+        str(master), output, "youtube", 4_000_000, force_proxy=True,
+    )
+
+    assert rendered_from == "proxy"
+    assert str(proxy) in commands[0]
+    filtergraph = commands[0][commands[0].index("-filter_complex") + 1]
+    assert "sendcmd=f=" in filtergraph
+    assert "v360@sphere" in filtergraph
+    assert output.with_suffix(".sendcmd.txt").exists()
+
+
 def test_cached_segment_path_includes_spherical_shot_recipe(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     project = create_project("Cache", str(tmp_path / "Cache.zuckervid"))
