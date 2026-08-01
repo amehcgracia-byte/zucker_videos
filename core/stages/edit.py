@@ -241,14 +241,14 @@ def _youtube_multicam_plan(
     use_recorded_360 = spherical_mode == "directed"
     role_weights = _camera_role_weights(edit_settings)
     fixed_rear_motion = bool(edit_settings.get("fixed_rear_motion", True))
-    # Motion is intentionally gentle but enabled by default now that preview
-    # and render share one coordinate conversion. Users can still choose
-    # ``spherical_hold_motion=none`` for locked landmarks.
-    spherical_motion = bool(edit_settings.get("spherical_motion", True))
+    # Static 360 holds are the safe shipped default. Motion remains an explicit
+    # project opt-in until a filter path that does not reconfigure v360 per
+    # frame is available.
+    spherical_motion = bool(edit_settings.get("spherical_motion", False))
     hold_motion = str(edit_settings.get("spherical_hold_motion") or "none").lower()
     if hold_motion not in {"none", "subtle"}:
         hold_motion = "none"
-    spherical_sweep = bool(edit_settings.get("spherical_sweep", True))
+    spherical_sweep = bool(edit_settings.get("spherical_sweep", False))
     sweep_speed = max(SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC, min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, float(edit_settings.get("sweep_speed_deg_per_sec", SPHERICAL_SWEEP_SPEED_DEG_PER_SEC))))
     bar_index = 0
     segment_index = 0

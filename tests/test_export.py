@@ -35,6 +35,7 @@ from core.stages.export import (
     _warn_if_spherical_framing_was_dropped,
     _v360_motion_at,
     _v360_motion_commands,
+    _v360_sendcmd_filter,
     degrees_per_second_to_step,
     _run_ffmpeg_progress,
     SPHERE_V360_LABEL,
@@ -587,6 +588,20 @@ def test_v360_sendcmd_is_constant_even_for_a_legacy_pan_plan():
     assert samples[0] == samples[-1]
     assert len(commands) > 4
     assert len({line.split(" yaw ", 1)[1] for line in commands if " yaw " in line}) == 1
+
+
+def test_static_hold_has_no_sendcmd_filter_or_commands():
+    shot = {
+        "type": "audience",
+        "yaw": 175.0,
+        "pitch": -12.9,
+        "fov": 100.0,
+        "hold_motion": "none",
+        "hold_motion_rate_deg_per_sec": 0.0,
+        "sweep_enabled": False,
+    }
+    assert _v360_motion_commands(shot, 8.9) == []
+    assert _v360_sendcmd_filter(shot, 8.9, Path("/tmp/static-hold.sendcmd")) == ""
 
 
 def test_landmark_sweep_uses_distance_over_speed_not_transition_sec():

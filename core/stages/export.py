@@ -64,7 +64,7 @@ EXPORT_SEGMENT_RECIPE_VERSION = 19
 # v17 adds byte-level and full-shot attestation to segment sidecars.  A file
 # with a copied/reused sidecar is no longer accepted if its bytes or authored
 # motion fields differ from the current render.
-SPHERICAL_MOTION_RECIPE_VERSION = 18
+SPHERICAL_MOTION_RECIPE_VERSION = 19
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
@@ -1891,6 +1891,8 @@ def _v360_sendcmd_filter(shot: dict[str, Any] | None, duration: float | None, co
 
 
 def _v360_motion_commands(shot: dict[str, Any], duration: float, aspect_ratio: float = 16.0 / 9.0) -> list[str]:
+    if not _shot_requires_runtime_motion(shot):
+        return []
     if FORCE_STATIC_360_ISOLATION:
         yaw, pitch, fov = _static_360_pose(shot)
         h_fov, v_fov = _paired_motion_fov(shot, fov, aspect_ratio)
@@ -1938,6 +1940,26 @@ def _v360_motion_commands(shot: dict[str, Any], duration: float, aspect_ratio: f
             _shortest_yaw_delta(first_yaw, last_yaw),
         )
     return commands
+
+
+def _shot_requires_runtime_motion(shot: dict[str, Any] | None) -> bool:
+    """Whether this shot needs the unsafe runtime v360 command path.
+
+    A static pose must stay a plain v360 filter. Even constant sendcmd events
+    reconfigure v360 and corrupt the event frame on the FFmpeg build we ship.
+    """
+    if not shot:
+        return False
+    if shot.get("type") == "recorded_move":
+        return bool(shot.get("curve"))
+    if shot.get("type") == "planet":
+        return float(shot.get("spin_deg_per_sec") or 0.0) > 0.0
+    if float(shot.get("hold_motion_rate_deg_per_sec") or 0.0) > 0.0:
+        return True
+    previous = shot.get("previous_shot") if isinstance(shot.get("previous_shot"), dict) else None
+    if previous and bool(shot.get("sweep_enabled", False)):
+        return abs(_shortest_yaw_delta(_shot_yaw(previous), _shot_yaw(shot))) > 1e-6
+    return any(float(shot.get(key) or 0.0) != 0.0 for key in ("drift_yaw_fraction", "drift_pitch_fraction", "fov_delta_fraction", "drift_yaw_deg", "drift_pitch_deg", "fov_delta_deg"))
 
 
 def _recorded_curve_sampler(shot: dict[str, Any]):
