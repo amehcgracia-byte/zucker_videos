@@ -60,7 +60,7 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
 EXPORT_SEGMENT_RECIPE_VERSION = 19
-SPHERICAL_MOTION_RECIPE_VERSION = 15
+SPHERICAL_MOTION_RECIPE_VERSION = 16
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
@@ -1174,6 +1174,12 @@ def _render_segment(
             intro_logo,
             outro_logo,
             command_recorder,
+            source_filter=_export_source_filter(
+                source.get("probe") or {},
+                _spherical_shot(segment),
+                duration=duration,
+                command_path=output_path.with_suffix(".sendcmd.txt"),
+            ) if _spherical_shot(segment) else None,
         )
     sendcmd_path = output_path.with_suffix(".sendcmd.txt")
     segment_probe = source.get("probe") or {}
@@ -1269,6 +1275,12 @@ def _render_segment(
                 intro_logo,
                 outro_logo,
                 command_recorder,
+                source_filter=_export_source_filter(
+                    source.get("probe") or {},
+                    _spherical_shot(segment),
+                    duration=duration,
+                    command_path=output_path.with_suffix(".sendcmd.txt"),
+                ) if _spherical_shot(segment) else None,
             )
 
 
@@ -1328,6 +1340,11 @@ def _render_segment_job(
             intro_fade=intro_fade, outro_fade=outro_fade,
             warnings=local_warnings, command_recorder=commands,
         )
+        if _spherical_shot(segment):
+            LOGGER.info(
+                "360 segment write index=%s path=%s rendered_from=%s commands=%s",
+                index, tmp_segment, rendered_from, len(commands),
+            )
         if commands:
             command_line = " ".join(commands[-1])
         segment_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1344,6 +1361,7 @@ def _render_segment_job(
             overlay_config, color_profile, segment_progress,
             intro_fade, outro_fade, False, False, local_warnings,
             command_line, segment_duration, label,
+            command_recorder=commands,
         )
     _write_segment_cache_stamp(segment_path, segment)
     _require_segment_cache_stamp(segment_path, segment)
@@ -1363,6 +1381,7 @@ def _render_segment_job(
         "cache_stamp": _segment_cache_stamp_path(segment_path),
         "sendcmd_path": temp_dir / f"segment-{index:04d}.sendcmd.txt",
         "ffmpeg_command": commands[-1] if commands else [],
+        "ffmpeg_commands": commands,
         "spherical_identity": _spherical_cache_identity(segment),
         "warnings": local_warnings,
         "cached": cached,
@@ -1414,6 +1433,7 @@ def _write_export_link_audit(
                 "cache_mtime": _path_mtime(result.get("cache_path")),
                 "concat_mtime": _path_mtime(result.get("path")),
                 "ffmpeg_command": result.get("ffmpeg_command") or [],
+                "ffmpeg_commands": result.get("ffmpeg_commands") or [],
                 "cached": bool(result.get("cached")),
             }
         )
@@ -1464,6 +1484,7 @@ def _render_proxy_segment(
     intro_logo: bool,
     outro_logo: bool,
     command_recorder: list[list[str]] | None,
+    source_filter: str | None = None,
 ) -> str:
     proxy_filter = _segment_filtergraph(
         platform,
@@ -1472,6 +1493,7 @@ def _render_proxy_segment(
         color_profile,
         bool(watermark),
         _ffmpeg_supports_filter("drawtext"),
+        source_filter=source_filter,
         intro_fade=intro_fade,
         outro_fade=outro_fade,
         intro_logo=intro_logo,
@@ -1535,6 +1557,7 @@ def _verify_or_rebuild_segment(
     command_line: str,
     segment_duration: float,
     label: str,
+    command_recorder: list[list[str]] | None = None,
 ) -> str:
     """Verify one rendered segment, rebuilding/falling back before final concat."""
     try:
@@ -1542,7 +1565,7 @@ def _verify_or_rebuild_segment(
         return command_line
     except FFmpegError as first_error:
         segment_path.unlink(missing_ok=True)
-        commands: list[list[str]] = []
+        commands = command_recorder if command_recorder is not None else []
         _render_segment(
             project,
             segment,
@@ -1560,6 +1583,8 @@ def _verify_or_rebuild_segment(
             warnings=warnings,
             command_recorder=commands,
         )
+        if _spherical_shot(segment):
+            LOGGER.info("360 segment repair write path=%s command=%s", tmp_segment, commands[-1] if commands else "missing")
         command_line = " ".join(commands[-1]) if commands else "rerender command unavailable"
         shutil.copy2(tmp_segment, segment_path)
         try:
@@ -1571,7 +1596,7 @@ def _verify_or_rebuild_segment(
             if not proxy_path or proxy_path == source_info.get("source_path"):
                 raise FFmpegError(f"{rerender_error}\nInitial verification failure: {first_error}") from rerender_error
             tmp_segment.unlink(missing_ok=True)
-            commands = []
+            commands = command_recorder if command_recorder is not None else []
             _render_segment(
                 project,
                 segment,
@@ -1590,6 +1615,8 @@ def _verify_or_rebuild_segment(
                 command_recorder=commands,
                 force_proxy=True,
             )
+            if _spherical_shot(segment):
+                LOGGER.info("360 segment proxy-repair write path=%s command=%s", tmp_segment, commands[-1] if commands else "missing")
             command_line = " ".join(commands[-1]) if commands else "proxy fallback command unavailable"
             shutil.copy2(tmp_segment, segment_path)
             _verify_moving_segment(segment_path, segment_duration, label, command_line)
