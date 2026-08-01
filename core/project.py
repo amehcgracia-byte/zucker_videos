@@ -56,7 +56,7 @@ def default_settings() -> dict[str, Any]:
             "sweep_speed_deg_per_sec": 20.0,
         },
         "spherical_landmarks": {},
-        "export": {"format": "mp4", "resolution": "source", "transiciones_suaves": False, "segment_workers": 2},
+        "export": {"format": "mp4", "resolution": "source", "transiciones_suaves": False, "segment_workers": 2, "force_rerender_segments": False},
     }
 
 

@@ -60,7 +60,7 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
 EXPORT_SEGMENT_RECIPE_VERSION = 19
-SPHERICAL_MOTION_RECIPE_VERSION = 14
+SPHERICAL_MOTION_RECIPE_VERSION = 15
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
@@ -1305,7 +1305,10 @@ def _render_segment_job(
     label = Path(str(source_info.get("source_path") or segment.get("clip_path"))).name
     command_line = "cached segment"
     local_warnings: list[str] = []
-    cached = segment_path.exists() and _segment_cache_stamp_matches(segment_path, segment)
+    force_rerender = bool(project.data.get("settings", {}).get("export", {}).get("force_rerender_segments", False))
+    cached = (not force_rerender) and segment_path.exists() and _segment_cache_stamp_matches(segment_path, segment)
+    if force_rerender and segment_path.exists():
+        LOGGER.warning("FORCE RERENDER: bypassing segment cache %s", segment_path)
     if segment_path.exists() and not cached:
         LOGGER.warning(
             "Rejecting stale or unverifiable segment cache %s; recipe=%s commit=%s",
@@ -1408,6 +1411,8 @@ def _write_export_link_audit(
                 "concat_path": str(result.get("path") or ""),
                 "cache_stamp_path": str(stamp_path),
                 "cache_stamp": stamp,
+                "cache_mtime": _path_mtime(result.get("cache_path")),
+                "concat_mtime": _path_mtime(result.get("path")),
                 "ffmpeg_command": result.get("ffmpeg_command") or [],
                 "cached": bool(result.get("cached")),
             }
@@ -1428,6 +1433,16 @@ def _write_export_link_audit(
             "segments": entries,
         },
     )
+
+
+def _path_mtime(value: Any) -> str | None:
+    """Return an ISO mtime while a temporary concat copy still exists."""
+    if not value:
+        return None
+    try:
+        return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(Path(str(value)).stat().st_mtime))
+    except (OSError, ValueError):
+        return None
 
 
 def _render_proxy_segment(
