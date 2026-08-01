@@ -14,6 +14,7 @@ let pollTimer = null;
 let appConfig = { dev: true, desktop: false };
 let progressStartedAt = null;
 let progressSamples = [];
+let progressFloor = 0;
 let etaSmoothedSeconds = null;
 let rescueClipId = null;
 let currentStep = 1;
@@ -588,6 +589,9 @@ async function newProject() {
   pollTimer = null;
   latestStatus = null;
   latestResult = null;
+  progressFloor = 0;
+  progressStartedAt = null;
+  progressSamples = [];
   selectedPlatform = null;
   selectedSong = null;
   currentSongs = [];
@@ -678,6 +682,9 @@ async function handleDrop(event) {
 
 async function prepareStep2() {
   const inputs = selectedInputs();
+  progressFloor = 0;
+  progressStartedAt = Date.now();
+  progressSamples = [];
   if (!inputs.master || !inputs.videos.length) return;
   api("/wizard/prepare", {
     method: "POST",
@@ -2028,7 +2035,9 @@ function playfulProgressMessage(rawMessage) {
 
 function renderWizardStatus(status) {
   latestStatus = status;
-  const progress = Number(status.progress || 0);
+  const reportedProgress = Math.max(0, Math.min(100, Number(status.progress || 0)));
+  const progress = Math.max(progressFloor, reportedProgress);
+  progressFloor = progress;
   updateTiming(status, progress);
   renderStatusStrip(status, progress);
   document.querySelector("#progressBar").style.width = `${progress}%`;
@@ -2123,7 +2132,7 @@ function updateTiming(status, progress) {
   if (status.status !== "running") return;
   const now = Date.now();
   const previous = progressSamples[progressSamples.length - 1];
-  if (!progressStartedAt || progress < (previous?.progress || 0)) {
+  if (!progressStartedAt) {
     progressStartedAt = now;
     progressSamples = [];
     etaSmoothedSeconds = null;

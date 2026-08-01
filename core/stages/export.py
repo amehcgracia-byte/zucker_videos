@@ -64,9 +64,10 @@ EXPORT_SEGMENT_RECIPE_VERSION = 19
 # v17 adds byte-level and full-shot attestation to segment sidecars.  A file
 # with a copied/reused sidecar is no longer accepted if its bytes or authored
 # motion fields differ from the current render.
-SPHERICAL_MOTION_RECIPE_VERSION = 19
+SPHERICAL_MOTION_RECIPE_VERSION = 20
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
+SPHERICAL_HOLD_COMMAND_COUNT = 2
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
 SPHERICAL_NORMAL_FOV_MIN = NORMAL_FOV_MIN
 SPHERICAL_NORMAL_FOV_MAX = NORMAL_FOV_MAX
@@ -1378,6 +1379,7 @@ def _render_segment_job(
     shutil.copy2(segment_path, concat_path)
     shutil.copy2(_segment_cache_stamp_path(segment_path), _segment_cache_stamp_path(concat_path))
     _require_segment_cache_stamp(concat_path, segment)
+    segment_progress(100, "complete")
     return {
         "index": index,
         "path": concat_path,
@@ -1902,16 +1904,23 @@ def _v360_motion_commands(shot: dict[str, Any], duration: float, aspect_ratio: f
             f"0.000000 {SPHERE_V360_LABEL} h_fov {h_fov:.6f};\n",
             f"0.000000 {SPHERE_V360_LABEL} v_fov {v_fov:.6f};\n",
         ]
-    step = 1.0 / TARGET_EXPORT_FPS
-    count = max(1, int(math.ceil(duration / step)))
     commands: list[str] = []
     # A recorded-move curve can hold thousands of samples and is sampled once per frame.
     # Pre-normalise it a single time and interpolate with a bisect lookup so sendcmd
     # generation is O(frames * log N) instead of O(frames * N); the previous per-frame
     # re-normalisation made long 360 exports take minutes just to emit the command file.
     curve_sampler = _recorded_curve_sampler(shot)
-    for index in range(count + 1):
-        t = min(duration, index * step)
+    # FFmpeg reconfigures v360 at every sendcmd event and corrupts the event
+    # frame on the shipped build. Keep the experiment to the minimum: opening
+    # pose plus one midpoint pose. Static holds return above and emit none.
+    event_count = max(2, int(SPHERICAL_HOLD_COMMAND_COUNT))
+    if shot.get("type") in {"planet", "recorded_move"}:
+        event_times = [0.0, duration]
+    else:
+        event_times = [0.0, duration / 2.0]
+        if event_count > 2:
+            event_times = [duration * index / (event_count - 1) for index in range(event_count)]
+    for t in event_times:
         if curve_sampler is not None:
             yaw, pitch, fov = curve_sampler(max(0.0, min(duration, t)))
             yaw = _signed_yaw(yaw)
@@ -1924,7 +1933,7 @@ def _v360_motion_commands(shot: dict[str, Any], duration: float, aspect_ratio: f
         commands.append(f"{t:.6f} {SPHERE_V360_LABEL} v_fov {v_fov:.6f};\n")
     if shot.get("type") != "recorded_move":
         first_yaw = _v360_motion_at(shot, duration, 0.0)[0]
-        next_yaw = _v360_motion_at(shot, duration, min(step, duration))[0]
+        next_yaw = _v360_motion_at(shot, duration, min(duration / 2.0, duration))[0]
         last_yaw = _v360_motion_at(shot, duration, duration)[0]
         configured_rate = float(shot.get("hold_motion_rate_deg_per_sec") or 0.0)
         LOGGER.info(
@@ -2551,8 +2560,9 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "transition_policy": "shortest_yaw_delta_at_angular_speed_v3_cross_cut_returns",
         "axis_policy": "yaw_only_sweep_and_yaw_hold_v2",
         "hold_step_policy": "deg_per_sec_times_elapsed_seconds_v1",
-        "hold_motion_rate_deg_per_sec": 0.4,
-        "hold_motion_default": "none",
+        "hold_motion_rate_deg_per_sec": 0.01,
+        "hold_motion_default": "subtle",
+        "sendcmd_event_policy": "two_absolute_poses_start_midpoint_v1",
         "landmark_hold_min_sec": 6.0,
         "landmark_hold_target_sec": 8.0,
         "landmark_hold_max_sec": 12.0,

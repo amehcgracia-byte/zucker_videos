@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 import threading
 import traceback
@@ -568,12 +569,31 @@ class WizardRunner:
         project.save()
         last_logged_percent = -1
         last_logged_at = 0.0
+        completed_segments: set[int] = set()
+        segment_total: int | None = None
 
         def progress(percent: int, detail: str) -> None:
-            nonlocal last_logged_percent, last_logged_at
+            nonlocal last_logged_percent, last_logged_at, segment_total
             if self._cancel_event.is_set():
                 raise WizardCancelled()
-            job.progress = start + int((end - start) * max(0, min(100, percent)) / 100)
+            safe_percent = max(0, min(100, int(percent)))
+            segment_match = re.search(r"Rendering segment (\d+)/(\d+):\s*(.*)$", str(detail or ""))
+            if segment_match:
+                segment_index = int(segment_match.group(1))
+                segment_total = int(segment_match.group(2))
+                if segment_match.group(3).strip().lower() == "complete":
+                    completed_segments.add(segment_index)
+                if completed_segments and segment_total:
+                    # Worker-local progress is deliberately not surfaced as a
+                    # step counter: parallel workers report out of order. The
+                    # label and the stage progress use completed work only.
+                    safe_percent = max(safe_percent, int(100 * len(completed_segments) / segment_total))
+                    detail = f"Rendering segments ({len(completed_segments)} of {segment_total} complete)"
+            candidate = start + int((end - start) * safe_percent / 100)
+            job.progress = max(job.progress, candidate)
+            if job.progress >= end and segment_total and len(completed_segments) < segment_total:
+                # Never expose a stage as complete while workers are pending.
+                job.progress = min(job.progress, end - 1)
             job.detail = detail
             now = time.monotonic()
             if percent != last_logged_percent or now - last_logged_at >= 5:
@@ -584,7 +604,7 @@ class WizardRunner:
         outputs = stage.run(project, progress)
         stage_state.update({"status": "done", "outputs": outputs, "error": None, "fingerprint": stage.inputs_fingerprint(project)})
         project.save()
-        job.progress = end
+        job.progress = max(job.progress, end)
         _write_stage_log(project, stage.name, f"DONE {stage.name}: {outputs}")
         return outputs
 

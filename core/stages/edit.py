@@ -42,7 +42,7 @@ SPHERICAL_MAX_MOTION_FRACTION_PER_SEC = 0.06
 # Planet is a special effect, not the default visual language of a normal
 # 360 edit. Keep its optional rotation at a deliberately gentle absolute rate.
 PLANET_SPIN_DEG_PER_SEC = 5.0
-SPHERICAL_HOLD_MOTION_DEG_PER_SEC = 0.4
+SPHERICAL_HOLD_MOTION_DEG_PER_SEC = 0.01
 SPHERICAL_MIN_LANDMARK_HOLD_SEC = 6.0
 SPHERICAL_TARGET_LANDMARK_HOLD_SEC = 8.0
 SPHERICAL_MAX_LANDMARK_HOLD_SEC = 12.0
@@ -518,7 +518,7 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
     Director take or from deliberately switching this on.
 
     Normal landmark shots have optional near-static hold motion. ``none``
-    locks the view; ``subtle`` adds at most 0.75 degrees/second of yaw drift.
+    locks the view; ``subtle`` adds at most 0.01 degrees/second of yaw drift.
     The project-level toggle remains backward-compatible.
 
     Magnitudes are stored as a FRACTION OF THE SHOT'S VISIBLE FIELD, not as

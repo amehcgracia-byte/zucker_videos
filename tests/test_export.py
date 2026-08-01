@@ -348,9 +348,9 @@ def test_spherical_proxy_fallback_keeps_v360_sendcmd(tmp_path, monkeypatch):
     assert rendered_from == "proxy"
     assert str(proxy) in commands[0]
     filtergraph = commands[0][commands[0].index("-filter_complex") + 1]
-    assert "sendcmd=f=" in filtergraph
+    assert "sendcmd=f=" not in filtergraph
     assert "v360@sphere" in filtergraph
-    assert output.with_suffix(".sendcmd.txt").exists()
+    assert not output.with_suffix(".sendcmd.txt").exists()
 
 
 def test_cached_segment_path_includes_spherical_shot_recipe(tmp_path, monkeypatch):
@@ -561,7 +561,8 @@ def test_sendcmd_emits_gentle_yaw_only_pose_motion():
     samples = [_v360_motion_at(shot, 3.0, t) for t in (0.0, 1.5, 3.0)]
     commands = _v360_motion_commands(shot, 3.0)
 
-    assert len(commands) > 4
+    assert len(commands) == 8
+    assert len({line.split()[0] for line in commands}) == 2
     assert samples[0][0] < samples[1][0] < samples[2][0]
     assert samples[0][1:] == samples[1][1:] == samples[2][1:]
 
@@ -586,8 +587,7 @@ def test_v360_sendcmd_is_constant_even_for_a_legacy_pan_plan():
 
     assert all(delta == pytest.approx(0.0) for delta in deltas)
     assert samples[0] == samples[-1]
-    assert len(commands) > 4
-    assert len({line.split(" yaw ", 1)[1] for line in commands if " yaw " in line}) == 1
+    assert commands == []
 
 
 def test_static_hold_has_no_sendcmd_filter_or_commands():
@@ -624,7 +624,7 @@ def test_landmark_sweep_uses_distance_over_speed_not_transition_sec():
 
     assert before_target == pytest.approx(175.0)
     assert at_target == pytest.approx(175.0)
-    assert yaws and all(yaw == pytest.approx(175.0) for yaw in yaws)
+    assert yaws == []
 
 
 def test_returning_to_360_keeps_previous_spherical_view_across_other_camera_cut():
@@ -710,7 +710,8 @@ def test_hold_rate_is_converted_from_degrees_per_second_to_total_travel():
     duration = 8.7
     commands = _v360_motion_commands(shot, duration)
     yaws = [float(line.split(" yaw ", 1)[1].rstrip(";\n")) for line in commands if " yaw " in line]
-    assert yaws[-1] - yaws[0] == pytest.approx(degrees_per_second_to_step(0.4, duration), rel=0.05)
+    assert len({line.split()[0] for line in commands}) == 2
+    assert yaws[-1] - yaws[0] == pytest.approx(degrees_per_second_to_step(0.4, duration / 2.0), rel=0.05)
     assert yaws[-1] - yaws[0] < 10.0
 
 
