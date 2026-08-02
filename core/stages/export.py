@@ -1227,8 +1227,8 @@ def _render_segment(
     )
     if watermark:
         command_base.extend(["-loop", "1", "-i", str(watermark)])
-    for image_path in reel_overlay_items:
-        command_base.extend(["-loop", "1", "-i", str(image_path)])
+    for item in reel_overlay_items:
+        command_base.extend(["-loop", "1", "-i", str(item["path"])])
     command_base.extend(
         [
             "-filter_complex",
@@ -1528,8 +1528,8 @@ def _render_proxy_segment(
     proxy_command = _segment_video_command_base(ffmpeg, proxy_path, segment, duration)
     if watermark:
         proxy_command.extend(["-loop", "1", "-i", str(watermark)])
-    for image_path in reel_overlay_items:
-        proxy_command.extend(["-loop", "1", "-i", str(image_path)])
+    for item in reel_overlay_items:
+        proxy_command.extend(["-loop", "1", "-i", str(item["path"])])
     proxy_command.extend(
         [
             "-filter_complex",
