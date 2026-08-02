@@ -2605,6 +2605,7 @@ document.addEventListener("click", (event) => {
     api("/wizard/review/replace", { method: "POST", body: JSON.stringify({ rejected }) }).then((result) => renderShotReview(result.items || [])).catch((error) => showToast(error.message, true));
   }
   if (target.id === "renderReviewed") {
+    if (shotReviewItems.some((item) => !item.keep)) { showToast("Replace or re-approve rejected shots before rendering", true); return; }
     api("/wizard/review/render", { method: "POST" }).then(() => { document.querySelector("#reviewBox").hidden = true; document.querySelector("#progressBox").hidden = false; setStep(3); ensureStatusPolling(); return pollStatus(); }).catch((error) => showToast(error.message, true));
   }
   if (target.id === "reuseReelOverlays") {
