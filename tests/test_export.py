@@ -41,6 +41,7 @@ from core.stages.export import (
     SPHERE_V360_LABEL,
     _render_plan,
     _render_segment,
+    _reel_overlay_items,
     _segment_cache_stamp_matches,
     _segment_cache_stamp_path,
     _write_segment_cache_stamp,
@@ -1715,6 +1716,34 @@ def _probe_stream_durations(path: Path) -> dict[str, float]:
         if stream.get("codec_type") in {"video", "audio"}:
             durations[stream["codec_type"]] = float(stream["duration"])
     return durations
+
+
+def test_reel_overlay_global_timing_and_position_are_converted_per_segment(tmp_path: Path) -> None:
+    from PIL import Image
+
+    flyer = tmp_path / "flyer.png"
+    Image.new("RGBA", (120, 80), (255, 0, 0, 255)).save(flyer)
+    config = {
+        "reel_origin_sec": 0.0,
+        "reel_texts": [{
+            "text": "MIDDLE", "x": 0.18, "y": 0.22, "size": 54,
+            "color": "#ffffff", "start_sec": 10.0, "duration_sec": 4.0,
+            "outline_color": "#ff0000", "outline_width": 3,
+            "shadow_color": "#000000", "shadow_blur": 2,
+        }],
+        "reel_images": [{"path": str(flyer), "x": 0.75, "y": 0.7, "width": 0.2, "start_sec": 11.0, "duration_sec": 2.0}],
+    }
+    assert _reel_overlay_items({"master_start_sec": 0.0, "duration_sec": 8.0}, config, "reel", tmp_path) == []
+    items = _reel_overlay_items({"master_start_sec": 8.0, "duration_sec": 8.0}, config, "reel", tmp_path)
+    assert len(items) == 2
+    assert items[0]["start_sec"] == pytest.approx(2.0)
+    assert items[0]["end_sec"] == pytest.approx(6.0)
+    assert items[1]["start_sec"] == pytest.approx(3.0)
+    assert items[1]["end_sec"] == pytest.approx(5.0)
+    alpha = Image.open(items[0]["path"]).getchannel("A")
+    bbox = alpha.getbbox()
+    assert bbox is not None
+    assert bbox[0] < 0.25 * 1080 and bbox[1] < 0.3 * 1920
 
 
 def _frame_luma(path: Path, timestamp: float) -> float:

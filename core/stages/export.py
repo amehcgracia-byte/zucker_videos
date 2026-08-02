@@ -3220,13 +3220,35 @@ def _reel_overlay_items(
     width, height = _target_size(platform)
     items: list[dict[str, Any]] = []
     try:
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image, ImageDraw, ImageFont, ImageFilter
     except Exception:
         LOGGER.exception("Pillow is required for Reel text overlays")
         return []
     overlay_specs = [("text", item) for item in config.get("reel_texts") or []]
     overlay_specs += [("image", item) for item in config.get("reel_images") or []]
+    segment_start = float(segment.get("master_start_sec") or 0.0) - float(config.get("reel_origin_sec") or 0.0)
+    segment_duration = max(0.0, float(segment.get("duration_sec") or 0.0))
+    segment_end = segment_start + segment_duration
+
+    def local_interval(raw: dict[str, Any]) -> tuple[float, float] | None:
+        """Convert Reel-global overlay time to this segment's filter clock."""
+        raw_start = max(0.0, float(raw.get("start_sec") or 0.0))
+        raw_end = raw_start + max(0.1, float(raw.get("duration_sec") or 3.0))
+        if raw_end <= segment_start or raw_start >= segment_end:
+            return None
+        return max(0.0, raw_start - segment_start), min(segment_duration, raw_end - segment_start)
+
+    def hex_rgba(value: Any, alpha: int) -> tuple[int, int, int, int]:
+        value = str(value or "#ffffff")
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+            value = "#ffffff"
+        return tuple(int(value[offset:offset + 2], 16) for offset in (1, 3, 5)) + (max(0, min(255, alpha)),)
+
     for index, (kind, raw) in enumerate(overlay_specs):
+        interval = local_interval(raw)
+        if interval is None:
+            continue
+        start, end = interval
         if kind == "image":
             try:
                 image = Image.open(str(raw.get("path"))).convert("RGBA")
@@ -3240,8 +3262,6 @@ def _reel_overlay_items(
                 canvas.alpha_composite(image, (x, y))
                 image_path = output_dir / f"reel-overlay-image-{index}.png"
                 canvas.save(image_path)
-                start = max(0.0, float(raw.get("start_sec") or 0.0) - float(config.get("reel_origin_sec") or 0.0))
-                end = min(float(segment.get("duration_sec") or 0.0), start + max(0.1, float(raw.get("duration_sec") or 3.0)))
                 items.append({"path": image_path, "start_sec": start, "end_sec": end, "animation": raw.get("animation") or "fade"})
             except Exception:
                 LOGGER.warning("Skipping unreadable Reel image overlay %s", raw.get("path"), exc_info=True)
@@ -3249,16 +3269,14 @@ def _reel_overlay_items(
         text = str(raw.get("text") or "").strip()
         if not text:
             continue
-        color = str(raw.get("color") or "#ffffff")
-        if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
-            color = "#ffffff"
         opacity = max(0.05, min(1.0, float(raw.get("opacity", 1.0))))
-        rgba = tuple(int(color[offset:offset + 2], 16) for offset in (1, 3, 5)) + (round(opacity * 255),)
+        rgba = hex_rgba(raw.get("color"), round(opacity * 255))
         size = max(18, min(160, int(float(raw.get("size") or 54))))
-        font = ImageFont.truetype(str(_font_path()), size) if _font_path() else ImageFont.load_default()
+        font = ImageFont.truetype(str(_font_path(raw.get("font"), raw.get("font_weight"))), size) if _font_path(raw.get("font"), raw.get("font_weight")) else ImageFont.load_default()
         image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
-        bbox = draw.multiline_textbbox((0, 0), text, font=font, stroke_width=max(0, int(raw.get("outline_width") or 2)))
+        outline = max(0, min(12, int(float(raw.get("outline_width") or 2))))
+        bbox = draw.multiline_textbbox((0, 0), text, font=font, stroke_width=outline)
         text_width, text_height = bbox[2] - bbox[0], bbox[3] - bbox[1]
         x = raw.get("x")
         y = raw.get("y")
@@ -3277,14 +3295,26 @@ def _reel_overlay_items(
             py = int(float(y) * height)
         if float(y) <= 1 and str(raw.get("position") or "").startswith("bottom"):
             py = int(float(y) * height - text_height)
-        outline = max(0, min(12, int(raw.get("outline_width") or 2)))
-        shadow = (0, 0, 0, round(opacity * 190))
-        draw.multiline_text((px + 3, py + 3), text, font=font, fill=shadow, stroke_width=outline, stroke_fill=shadow)
-        draw.multiline_text((px, py), text, font=font, fill=rgba, stroke_width=outline, stroke_fill=(0, 0, 0, round(opacity * 230)))
+        bg_alpha = round(opacity * max(0.0, min(1.0, float(raw.get("background_opacity") or 0.0))) * 255)
+        if bg_alpha:
+            padding = max(4, int(size * 0.18))
+            radius = max(0, min(80, int(float(raw.get("background_radius") or 0))))
+            draw.rounded_rectangle((px - padding, py - padding, px + text_width + padding, py + text_height + padding), radius=radius, fill=hex_rgba(raw.get("background_color"), bg_alpha))
+        shadow_color = hex_rgba(raw.get("shadow_color"), round(opacity * 220))
+        shadow_x = int(float(raw.get("shadow_offset_x") or 3))
+        shadow_y = int(float(raw.get("shadow_offset_y") or 3))
+        shadow_blur = max(0, min(30, int(float(raw.get("shadow_blur") or 4))))
+        if shadow_blur or shadow_x or shadow_y:
+            shadow_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            shadow_draw = ImageDraw.Draw(shadow_layer)
+            shadow_draw.multiline_text((px + shadow_x, py + shadow_y), text, font=font, fill=shadow_color, stroke_width=outline, stroke_fill=shadow_color)
+            if shadow_blur:
+                shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(shadow_blur))
+            image.alpha_composite(shadow_layer)
+            draw = ImageDraw.Draw(image)
+        draw.multiline_text((px, py), text, font=font, fill=rgba, stroke_width=outline, stroke_fill=hex_rgba(raw.get("outline_color"), round(opacity * 255)))
         image_path = output_dir / f"reel-overlay-text-{index}.png"
         image.save(image_path)
-        start = max(0.0, float(raw.get("start_sec") or 0.0) - float(config.get("reel_origin_sec") or 0.0))
-        end = min(float(segment.get("duration_sec") or 0.0), start + max(0.1, float(raw.get("duration_sec") or 3.0)))
         items.append({"path": image_path, "start_sec": start, "end_sec": end, "animation": raw.get("animation") or "fade"})
     return items
 
@@ -3405,10 +3435,21 @@ def _has_real_alpha(path: Path) -> bool:
         return False
 
 
-def _font_path() -> Path | None:
+def _font_path(preferred: Any = None, weight: Any = None) -> Path | None:
+    names = {
+        "verdana": "Verdana Bold.ttf",
+        "verdana bold": "Verdana Bold.ttf",
+        "arial": "Arial.ttf",
+        "bundled": "Verdana Bold.ttf",
+    }
+    preferred_name = names.get(str(preferred or "").strip().lower())
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "assets" / "fonts"
+    preferred_candidates = [root / preferred_name] if preferred_name else []
     for candidate in (
-        Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "assets" / "fonts" / "ReelSans.ttf",
-        Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "assets" / "fonts" / "Verdana Bold.ttf",
+        *preferred_candidates,
+        root / "ReelSans.ttf",
+        root / "Verdana Bold.ttf",
+        root / "Arial.ttf",
         Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
         Path("/System/Library/Fonts/SFNS.ttf"),
         Path("/Library/Fonts/Arial.ttf"),

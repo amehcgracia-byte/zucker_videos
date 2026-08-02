@@ -995,7 +995,30 @@ def _reel_text_overlays_from_body(body: dict[str, Any]) -> list[dict[str, Any]]:
         start = max(0.0, _coerce_float(item.get("start_sec")) or 0.0)
         duration = max(0.1, _coerce_float(item.get("duration_sec")) or 3.0)
         x = _coerce_float(item.get("x")); y = _coerce_float(item.get("y"))
-        result.append({"text": text, "color": color, "size": max(18.0, min(160.0, size)), "position": str(item.get("position") or "middle-center") if str(item.get("position") or "middle-center") in positions else "middle-center", "x": max(0.0, min(1.0, x)) if x is not None else None, "y": max(0.0, min(1.0, y)) if y is not None else None, "opacity": max(0.05, min(1.0, _coerce_float(item.get("opacity")) or 1.0)), "outline_width": max(0.0, min(12.0, _coerce_float(item.get("outline_width")) or 2.0)), "animation": str(item.get("animation") or "fade") if str(item.get("animation") or "fade") in {"none", "fade", "slide", "scale"} else "fade", "start_sec": start, "duration_sec": min(60.0, duration)})
+        def color_value(key: str, fallback: str) -> str:
+            value = str(item.get(key) or fallback).lower()
+            return value if re.fullmatch(r"#[0-9a-f]{6}", value) else fallback
+        animation = str(item.get("animation") or "fade")
+        result.append({
+            "text": text, "color": color, "size": max(18.0, min(160.0, size)),
+            "position": str(item.get("position") or "middle-center") if str(item.get("position") or "middle-center") in positions else "middle-center",
+            "x": max(0.0, min(1.0, x)) if x is not None else None,
+            "y": max(0.0, min(1.0, y)) if y is not None else None,
+            "opacity": max(0.05, min(1.0, _coerce_float(item.get("opacity")) or 1.0)),
+            "font": str(item.get("font") or "bundled")[:40],
+            "font_weight": str(item.get("font_weight") or "bold") if str(item.get("font_weight") or "bold") in {"normal", "bold"} else "bold",
+            "outline_color": color_value("outline_color", "#000000"),
+            "outline_width": max(0.0, min(12.0, _coerce_float(item.get("outline_width")) or 2.0)),
+            "shadow_color": color_value("shadow_color", "#000000"),
+            "shadow_offset_x": max(-40.0, min(40.0, _coerce_float(item.get("shadow_offset_x")) or 3.0)),
+            "shadow_offset_y": max(-40.0, min(40.0, _coerce_float(item.get("shadow_offset_y")) or 3.0)),
+            "shadow_blur": max(0.0, min(30.0, _coerce_float(item.get("shadow_blur")) or 4.0)),
+            "background_color": color_value("background_color", "#000000"),
+            "background_opacity": max(0.0, min(1.0, _coerce_float(item.get("background_opacity")) or 0.0)),
+            "background_radius": max(0.0, min(80.0, _coerce_float(item.get("background_radius")) or 0.0)),
+            "animation": animation if animation in {"none", "fade", "slide", "scale"} else "fade",
+            "start_sec": start, "duration_sec": min(60.0, duration)
+        })
     return result
 
 

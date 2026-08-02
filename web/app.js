@@ -27,6 +27,7 @@ let reelTextOverlays = [];
 let reelImageOverlays = [];
 let reelPlayhead = 0;
 let reelDrag = null;
+const reelPreviewImages = new Map();
 let sphericalMode = "automatic";
 const MAX_RECORDED_YAW_RATE_DEG_PER_SEC = 40;
 let savedAudioTrim = {};
@@ -778,12 +779,19 @@ function renderReelOptions() {
     <input data-reel-field="text" placeholder="Text" value="${escapeHtml(item.text)}" />
     <input data-reel-field="color" type="color" value="${item.color}" title="Colour" />
     <label>Size <input data-reel-field="size" type="number" min="18" max="160" value="${item.size}" /></label>
+    <label>Font <select data-reel-field="font"><option value="bundled" ${item.font === "bundled" ? "selected" : ""}>Verdana Bold</option><option value="arial" ${item.font === "arial" ? "selected" : ""}>Arial</option></select></label>
+    <label>Weight <select data-reel-field="font_weight"><option value="normal" ${item.font_weight === "normal" ? "selected" : ""}>Normal</option><option value="bold" ${item.font_weight !== "normal" ? "selected" : ""}>Bold</option></select></label>
     <label>Opacity <input data-reel-field="opacity" type="range" min="0.05" max="1" step="0.05" value="${item.opacity ?? 1}" /></label>
+    <label>Outline <input data-reel-field="outline_color" type="color" value="${item.outline_color || "#000000"}" /> <input data-reel-field="outline_width" type="number" min="0" max="12" value="${item.outline_width ?? 2}" /></label>
+    <label>Shadow <input data-reel-field="shadow_color" type="color" value="${item.shadow_color || "#000000"}" /> <input data-reel-field="shadow_blur" type="number" min="0" max="30" value="${item.shadow_blur ?? 4}" /></label>
+    <label>Box <input data-reel-field="background_color" type="color" value="${item.background_color || "#000000"}" /> <input data-reel-field="background_opacity" type="number" min="0" max="1" step="0.05" value="${item.background_opacity ?? 0}" /></label>
     <label>Style <select data-reel-field="animation"><option value="none" ${item.animation === "none" ? "selected" : ""}>None</option><option value="fade" ${item.animation !== "none" ? "selected" : ""}>Fade</option><option value="slide" ${item.animation === "slide" ? "selected" : ""}>Slide</option><option value="scale" ${item.animation === "scale" ? "selected" : ""}>Scale</option></select></label>
     <label>Start <input data-reel-field="start_sec" type="number" min="0" max="60" step="0.1" value="${item.start_sec}" /></label>
     <label>Duration <input data-reel-field="duration_sec" type="number" min="0.1" max="60" step="0.1" value="${item.duration_sec}" /></label>
     <button type="button" data-remove-reel-text="${index}">Remove</button>
   </div>`).join("");
+  const imageRoot = document.querySelector("#reelImageLines");
+  if (imageRoot) imageRoot.innerHTML = reelImageOverlays.map((item, index) => `<div class="reel-text-line" data-reel-image-index="${index}"><span>Flyer ${index + 1}</span><label>Width <input data-reel-image-field="width" type="number" min="0.05" max="1" step="0.01" value="${item.width ?? .35}" /></label><label>Opacity <input data-reel-image-field="opacity" type="number" min="0.05" max="1" step="0.05" value="${item.opacity ?? 1}" /></label><label>Start <input data-reel-image-field="start_sec" type="number" min="0" max="60" step="0.1" value="${item.start_sec ?? 0}" /></label><label>Duration <input data-reel-image-field="duration_sec" type="number" min="0.1" max="60" step="0.1" value="${item.duration_sec ?? 3}" /></label><button type="button" data-remove-reel-image="${index}">Remove</button></div>`).join("");
   renderReelTimeline();
   drawReelPreview();
 }
@@ -814,13 +822,22 @@ function drawReelPreview() {
   for (const item of reelTextOverlays) {
     if (reelPlayhead < Number(item.start_sec) || reelPlayhead > Number(item.start_sec) + Number(item.duration_sec)) continue;
     const [vertical, horizontalAlign] = item.position.split("-");
-    ctx.fillStyle = item.color; ctx.globalAlpha = Number(item.opacity ?? 1); ctx.font = `700 ${Math.max(12, Number(item.size) * canvas.width / 1080)}px sans-serif`;
+    ctx.fillStyle = item.color; ctx.globalAlpha = Number(item.opacity ?? 1); ctx.font = `${item.font_weight === "normal" ? "400" : "700"} ${Math.max(12, Number(item.size) * canvas.width / 1080)}px ${item.font === "arial" ? "Arial" : "Verdana"}`;
     ctx.textAlign = horizontalAlign === "left" ? "left" : horizontalAlign === "right" ? "right" : "center";
     const x = item.x != null ? Number(item.x) * canvas.width : horizontalAlign === "left" ? 18 : horizontalAlign === "right" ? canvas.width - 18 : canvas.width / 2;
     const y = item.y != null ? Number(item.y) * canvas.height : vertical === "top" ? 48 : vertical === "bottom" ? canvas.height - 48 : canvas.height / 2;
-    ctx.shadowColor = "rgba(0,0,0,.75)"; ctx.shadowBlur = 4;
+    if (Number(item.background_opacity || 0) > 0) { const metrics = ctx.measureText(item.text); ctx.fillStyle = item.background_color || "#000"; ctx.globalAlpha = Number(item.background_opacity) * Number(item.opacity ?? 1); ctx.fillRect(x - metrics.width / 2 - 8, y - Number(item.size) * canvas.width / 1080 - 8, metrics.width + 16, Number(item.size) * canvas.width / 1080 + 16); ctx.fillStyle = item.color; ctx.globalAlpha = Number(item.opacity ?? 1); }
+    ctx.shadowColor = item.shadow_color || "rgba(0,0,0,.75)"; ctx.shadowBlur = Number(item.shadow_blur ?? 4); ctx.shadowOffsetX = Number(item.shadow_offset_x ?? 3); ctx.shadowOffsetY = Number(item.shadow_offset_y ?? 3);
     ctx.fillText(item.text, x, y);
-    ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+    ctx.shadowBlur = 0; ctx.shadowOffsetX = 0; ctx.shadowOffsetY = 0; ctx.globalAlpha = 1;
+  }
+  for (const item of reelImageOverlays) {
+    if (reelPlayhead < Number(item.start_sec) || reelPlayhead > Number(item.start_sec) + Number(item.duration_sec)) continue;
+    let image = reelPreviewImages.get(item.path);
+    if (!image) { image = new Image(); image.onload = () => drawReelPreview(); image.src = item.path; reelPreviewImages.set(item.path, image); }
+    if (!image.complete || !image.naturalWidth) continue;
+    const iw = canvas.width * Number(item.width || .35); const ratio = image.naturalHeight / Math.max(1, image.naturalWidth); const ih = iw * ratio;
+    ctx.globalAlpha = Number(item.opacity ?? 1); ctx.drawImage(image, Number(item.x ?? .5) * canvas.width - iw / 2, Number(item.y ?? .5) * canvas.height - ih / 2, iw, ih); ctx.globalAlpha = 1;
   }
 }
 
@@ -2525,11 +2542,15 @@ document.addEventListener("click", (event) => {
   const target = rawTarget instanceof HTMLElement ? rawTarget.closest("button, [data-remove-kind], [data-open-project], [data-delete-project], [data-rescue]") || rawTarget : rawTarget;
   if (!(target instanceof HTMLElement)) return;
   if (target.id === "addReelText") {
-    reelTextOverlays.push({ text: "", color: "#ffffff", size: 54, position: "middle-center", x: 0.5, y: 0.5, opacity: 1, outline_width: 2, animation: "fade", start_sec: 0, duration_sec: 3 });
+    reelTextOverlays.push({ text: "", color: "#ffffff", size: 54, position: "middle-center", x: 0.5, y: 0.5, opacity: 1, font: "bundled", font_weight: "bold", outline_color: "#000000", outline_width: 2, shadow_color: "#000000", shadow_offset_x: 3, shadow_offset_y: 3, shadow_blur: 4, background_color: "#000000", background_opacity: 0, background_radius: 8, animation: "fade", start_sec: 0, duration_sec: 3 });
     renderReelOptions();
   }
   if (target.dataset.removeReelText != null) {
     reelTextOverlays.splice(Number(target.dataset.removeReelText), 1);
+    renderReelOptions();
+  }
+  if (target.dataset.removeReelImage != null) {
+    reelImageOverlays.splice(Number(target.dataset.removeReelImage), 1);
     renderReelOptions();
   }
   if (target.id === "showAllClips") restoreSetAsideVideos();
@@ -2639,10 +2660,18 @@ document.addEventListener("input", (event) => {
   const item = reelTextOverlays[index];
   if (!item) return;
   const field = input.dataset.reelField;
-  item[field] = ["size", "start_sec", "duration_sec"].includes(field) ? Number(input.value) : input.value;
-  if (["opacity"].includes(field)) item[field] = Number(input.value);
+  item[field] = ["size", "start_sec", "duration_sec", "opacity", "outline_width", "shadow_blur", "background_opacity", "background_radius", "shadow_offset_x", "shadow_offset_y"].includes(field) ? Number(input.value) : input.value;
   renderReelTimeline();
   drawReelPreview();
+});
+
+document.addEventListener("input", (event) => {
+  const input = event.target;
+  if (!(input instanceof HTMLElement) || !input.dataset.reelImageField) return;
+  const row = input.closest?.("[data-reel-image-index]"); if (!row) return;
+  const item = reelImageOverlays[Number(row.dataset.reelImageIndex)]; if (!item) return;
+  item[input.dataset.reelImageField] = ["width", "opacity", "start_sec", "duration_sec"].includes(input.dataset.reelImageField) ? Number(input.value) : input.value;
+  renderReelTimeline(); drawReelPreview();
 });
 
 document.addEventListener("change", (event) => {
@@ -2653,7 +2682,7 @@ document.addEventListener("change", (event) => {
     const form = new FormData(); form.append("file", input.files[0]);
     api("/wizard/reel-overlay", { method: "POST", body: form, headers: {} }).then((result) => {
       reelImageOverlays.push({ path: result.path, x: 0.5, y: 0.5, width: 0.35, opacity: 1, animation: "fade", start_sec: 0, duration_sec: 3 });
-      renderReelTimeline();
+      renderReelOptions();
     }).catch((error) => showToast(error.message, true));
   }
 });
@@ -2663,12 +2692,12 @@ document.addEventListener("pointerdown", (event) => {
   if (!(canvas && event.target === canvas)) return;
   const rect = canvas.getBoundingClientRect();
   const x = (event.clientX - rect.left) / rect.width, y = (event.clientY - rect.top) / rect.height;
-  const visible = reelTextOverlays.filter((item) => reelPlayhead >= Number(item.start_sec) && reelPlayhead <= Number(item.start_sec) + Number(item.duration_sec));
+  const visible = [...reelTextOverlays.map((item) => ({item, _kind: "text"})), ...reelImageOverlays.map((item) => ({item, _kind: "image"}))].filter(({item}) => reelPlayhead >= Number(item.start_sec) && reelPlayhead <= Number(item.start_sec) + Number(item.duration_sec));
   if (!visible.length) return;
   let best = visible[visible.length - 1];
   let bestDistance = Infinity;
-  for (const item of visible) { const distance = Math.hypot((Number(item.x ?? 0.5) - x), (Number(item.y ?? 0.5) - y)); if (distance < bestDistance) { best = item; bestDistance = distance; } }
-  reelDrag = { item: best, pointerId: event.pointerId };
+  for (const candidate of visible) { const item = candidate.item; const distance = Math.hypot((Number(item.x ?? 0.5) - x), (Number(item.y ?? 0.5) - y)); if (distance < bestDistance) { best = candidate; bestDistance = distance; } }
+  reelDrag = { item: best.item, kind: best._kind, pointerId: event.pointerId };
   canvas.setPointerCapture(event.pointerId);
 });
 document.addEventListener("pointermove", (event) => {
