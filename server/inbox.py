@@ -5,15 +5,23 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
 from core.ffmpeg import configure_tools, ffprobe
 from core.media_validation import VIDEO_EXTENSIONS, is_raw_360_path, raw_360_model_fov, static_rejection_reason, validate_camera_video_metadata
+from core.normalization import normalize_video_record
 from core.project import STAGE_NAMES, Project, file_record
+from core.stages.sync import load_or_compute_master_envelope, sync_clip, sync_confidence_threshold
+from core.stages.base import stable_fingerprint
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".aiff", ".aif"}
 LOGGER = logging.getLogger(__name__)
+_ANALYSIS_LOCK = threading.RLock()
+_ANALYSIS_THREAD: threading.Thread | None = None
+_ANALYSIS_STATUS: dict[str, Any] = {"status": "idle", "progress": 0, "detail": ""}
 
 
 def app_home() -> Path:
@@ -60,7 +68,166 @@ def scan_inbox(root: str | None = None) -> dict[str, Any]:
     """Scan and classify files in the configured inbox."""
     inbox = Path(root or load_global_config()["inbox_path"]).expanduser().resolve()
     inbox.mkdir(parents=True, exist_ok=True)
-    return classify_paths([str(inbox)], inbox_path=str(inbox))
+    result = classify_paths([str(inbox)], inbox_path=str(inbox))
+    result["analysis"] = inbox_analysis_snapshot()
+    return result
+
+
+def inbox_analysis_path() -> Path:
+    """Return the persistent global Inbox pre-analysis manifest."""
+    return app_home() / "Cache" / "inbox_analysis.json"
+
+
+def inbox_analysis_snapshot() -> dict[str, Any]:
+    """Return current Inbox analysis progress and cached match data."""
+    with _ANALYSIS_LOCK:
+        snapshot = dict(_ANALYSIS_STATUS)
+    path = inbox_analysis_path()
+    if path.exists():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            snapshot["masters"] = payload.get("masters") or []
+            snapshot["files"] = payload.get("files") or []
+            snapshot["completed_at"] = payload.get("completed_at")
+        except (OSError, json.JSONDecodeError):
+            pass
+    return snapshot
+
+
+def start_inbox_analysis(root: str | None = None) -> dict[str, Any]:
+    """Start one background scan; unchanged files reuse the global manifest."""
+    global _ANALYSIS_THREAD
+    with _ANALYSIS_LOCK:
+        if _ANALYSIS_THREAD and _ANALYSIS_THREAD.is_alive():
+            return inbox_analysis_snapshot()
+        _ANALYSIS_STATUS.update({"status": "running", "progress": 0, "detail": "Scanning Inbox"})
+        _ANALYSIS_THREAD = threading.Thread(target=_run_inbox_analysis, args=(root,), daemon=True, name="zucker-inbox-analysis")
+        _ANALYSIS_THREAD.start()
+    return inbox_analysis_snapshot()
+
+
+def _analysis_key(path: Path) -> str:
+    stat = path.stat()
+    return stable_fingerprint({"path": str(path.resolve()), "size": stat.st_size, "mtime": stat.st_mtime})[:32]
+
+
+def _write_inbox_analysis(payload: dict[str, Any]) -> None:
+    path = inbox_analysis_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _analysis_project() -> Project:
+    """Create a lightweight in-cache project context for shared normalization/audio caches."""
+    root = app_home() / "Cache" / "inbox-analysis-work"
+    project = Project(root, {"inputs": {}, "settings": {"sync": {"confidence_threshold": 6.0}}})
+    project.ensure_dirs()
+    return project
+
+
+def _run_inbox_analysis(root: str | None) -> None:
+    try:
+        inbox = Path(root or load_global_config()["inbox_path"]).expanduser().resolve()
+        files = [path for path in scan_input_paths([str(inbox)]) if path.suffix.lower() in VIDEO_EXTENSIONS or path.suffix.lower() in AUDIO_EXTENSIONS]
+        old: dict[str, Any] = {}
+        path = inbox_analysis_path()
+        if path.exists():
+            try:
+                old = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                old = {}
+        entries = dict(old.get("entries") or {})
+        current: list[dict[str, Any]] = []
+        current_payload = {
+            "schema": 1,
+            "entries": entries,
+            "files": current,
+            "masters": old.get("masters") or [],
+        }
+        total = max(1, len(files))
+        analysis_project = _analysis_project()
+        for index, media_path in enumerate(files, start=1):
+            try:
+                key = _analysis_key(media_path)
+            except OSError:
+                # Cameras and sync tools can move/rename files while the scan
+                # is running.  Skip that item and keep the work already done.
+                LOGGER.info("Skipping Inbox item that disappeared during scan: %s", media_path)
+                continue
+            cached = entries.get(key)
+            if cached and cached.get("path") == str(media_path):
+                entry = cached
+            else:
+                try:
+                    item = classify_file(media_path)
+                    entry = {**item, "analysis_key": key}
+                    if item.get("kind") == "videos":
+                        record = file_record(str(media_path))
+                        record.update(video_classification_metadata(media_path))
+                        normalized = normalize_video_record(analysis_project, record, lambda *_: None)
+                        entry["probe"] = record.get("probe") or item.get("probe") or {}
+                        entry["normalized"] = normalized
+                    elif item.get("kind") == "master":
+                        entry["duration"] = item.get("duration")
+                except OSError:
+                    LOGGER.info("Skipping Inbox item that became unavailable during analysis: %s", media_path)
+                    continue
+                entries[key] = entry
+            current.append(entry)
+            current_payload["files"] = current
+            current_payload["entries"] = entries
+            _write_inbox_analysis(current_payload)
+            with _ANALYSIS_LOCK:
+                _ANALYSIS_STATUS.update({"progress": int(index / total * 35), "detail": f"Preparing {media_path.name}"})
+        videos = [entry for entry in current if entry.get("kind") == "videos"]
+        masters = [entry for entry in current if entry.get("kind") == "master"]
+        master_results: list[dict[str, Any]] = []
+        pair_total = max(1, len(videos) * len(masters))
+        pair_index = 0
+        old_masters = {item.get("analysis_key"): item for item in old.get("masters") or []}
+        for master in masters:
+            master_record = file_record(master["path"])
+            analysis_project.data["inputs"]["master"] = master_record
+            master_key = master.get("analysis_key")
+            cached_master = old_masters.get(master_key)
+            cached_matches = (cached_master or {}).get("matches") or []
+            cached_video_keys = {match.get("video_analysis_key") for match in cached_matches}
+            current_video_keys = {video.get("analysis_key") for video in videos}
+            if cached_master and cached_video_keys == current_video_keys:
+                master_results.append(cached_master)
+                pair_index += len(videos)
+                continue
+            master_env = load_or_compute_master_envelope(analysis_project)
+            matches: list[dict[str, Any]] = []
+            for video in videos:
+                pair_index += 1
+                video_record = file_record(video["path"])
+                video_record.update({"probe": video.get("probe") or {}, "normalized": video.get("normalized") or {}})
+                result = sync_clip(analysis_project, video_record, master_env, sync_confidence_threshold(analysis_project))
+                start = float(result.get("offset_sec") or 0.0)
+                duration = float(result.get("duration_sec") or 0.0)
+                master_duration = float(master.get("duration") or 0.0)
+                overlap = max(0.0, min(master_duration, start + duration) - max(0.0, start))
+                matches.append({
+                    "path": video["path"], "confidence": result.get("confidence"), "offset_sec": start,
+                    "duration_sec": duration, "low_confidence": bool(result.get("low_confidence")),
+                    "unstable_sync": bool(result.get("unstable_sync")), "no_audio": bool(result.get("no_audio")),
+                    "master_overlap_sec": overlap, "master_overlap": overlap > 0.0,
+                    "video_analysis_key": video.get("analysis_key"),
+                })
+                with _ANALYSIS_LOCK:
+                    _ANALYSIS_STATUS.update({"progress": 35 + int(pair_index / pair_total * 60), "detail": f"Matching {video['filename']} to {master['filename']}"})
+            master_results.append({"path": master["path"], "filename": master["filename"], "duration": master.get("duration"), "analysis_key": master_key, "matches": matches})
+        payload = {"schema": 1, "completed_at": time.time(), "entries": {entry["analysis_key"]: entry for entry in current}, "files": current, "masters": master_results}
+        _write_inbox_analysis(payload)
+        with _ANALYSIS_LOCK:
+            _ANALYSIS_STATUS.update({"status": "done", "progress": 100, "detail": f"Inbox ready: {len(videos)} videos, {len(masters)} audio masters"})
+    except Exception as exc:  # analysis must never prevent the editor from opening
+        LOGGER.exception("Inbox pre-analysis failed")
+        with _ANALYSIS_LOCK:
+            _ANALYSIS_STATUS.update({"status": "failed", "progress": 0, "detail": str(exc)})
 
 
 def suggest_songs_json(master_path: str | None, inbox_path: str | None = None) -> list[dict[str, Any]]:

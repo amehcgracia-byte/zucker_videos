@@ -43,6 +43,8 @@ from core.stages.export import (
     _render_segment,
     _reel_overlay_items,
     _segment_filtergraph,
+    _segment_worker_count,
+    _stream_copy_eligible,
     _segment_cache_stamp_matches,
     _segment_cache_stamp_path,
     _write_segment_cache_stamp,
@@ -1175,6 +1177,17 @@ def test_copy_trim_video_uses_stream_copy_not_a_reencode(tmp_path, monkeypatch):
     # -ss before -i (input-side seek), not after -- see _copy_trim_video's
     # docstring for why the post-input form silently miscounts duration.
     assert command.index("-ss") < command.index("-i")
+
+
+def test_segment_worker_count_is_bounded_and_scales_with_cpu(tmp_path, monkeypatch):
+    project = create_project("workers", str(tmp_path / "workers.zuckervid"))
+    project.data["settings"]["export"]["segment_workers"] = 2
+    monkeypatch.setattr("core.stages.export.os", type("FakeOS", (), {
+        "cpu_count": staticmethod(lambda: 16),
+        "sysconf": staticmethod(lambda key: 1024 ** 3 if key == "SC_PAGE_SIZE" else 16),
+    }))
+    assert _segment_worker_count(project, 20) == 8
+    assert _segment_worker_count(project, 3) == 3
 
 
 @pytest.mark.slow

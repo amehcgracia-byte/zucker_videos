@@ -42,6 +42,7 @@ from server.inbox import (
     save_global_config,
     save_uploads,
     scan_inbox,
+    start_inbox_analysis,
     suggest_songs_json,
     unique_destination,
 )
@@ -183,6 +184,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return jsonify(scan_inbox())
         except OSError as exc:
             return error_response("inbox_error", str(exc), 500)
+
+    @app.post("/api/v1/inbox/analysis/start")
+    def api_inbox_analysis_start() -> Response:
+        try:
+            return jsonify(start_inbox_analysis())
+        except OSError as exc:
+            return error_response("inbox_analysis_error", str(exc), 500)
 
     @app.post("/api/v1/inbox/register")
     def api_inbox_register() -> Response:

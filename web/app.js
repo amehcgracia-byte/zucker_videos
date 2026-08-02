@@ -6,6 +6,9 @@ let selectedMasterPath = null;
 // Inbox clips set aside because they belong to a different session than the
 // chosen song. Kept (not discarded) so "Show all clips" can restore them.
 let setAsideVideos = [];
+let analysisSetAsideVideos = [];
+let inboxAnalysis = null;
+let inboxAnalysisTimer = null;
 let sessionFilterDisabled = false;
 let currentSongs = [];
 let latestResult = null;
@@ -309,6 +312,7 @@ function selectedSphericalSourcePath() {
 }
 
 function mergeDetected(result, source = "") {
+  if (result.analysis) inboxAnalysis = result.analysis;
   for (const key of ["master", "songs", "videos", "ignored"]) {
     const existing = new Set(detected[key].map((item) => item.path));
     for (const item of result[key] || []) {
@@ -323,6 +327,8 @@ function mergeDetected(result, source = "") {
 function clearDetected() {
   for (const key of ["master", "songs", "videos", "ignored"]) detected[key] = [];
   selectedMasterPath = null;
+  analysisSetAsideVideos = [];
+  inboxAnalysis = null;
 }
 
 function recordToDetectedItem(record, kind, source = "project") {
@@ -418,6 +424,11 @@ function filename(path) {
 
 function renderChips() {
   const root = document.querySelector("#chips");
+  if (analysisSetAsideVideos.length) {
+    detected.videos = [...detected.videos, ...analysisSetAsideVideos];
+    analysisSetAsideVideos = [];
+  }
+  applyInboxAnalysisFilter();
   applySessionFilter();
   const items = [...detected.videos, ...detected.master, ...detected.songs, ...detected.ignored];
   root.innerHTML = items
@@ -437,7 +448,7 @@ function renderChips() {
         </span>`
     )
     .join("");
-  if (detected.master.length > 1) {
+  if (detected.master.length > 1 && !document.querySelector("#inboxMasterSelect")) {
     const selected = selectedMasterPath || detected.master[0].path;
     root.insertAdjacentHTML(
       "afterbegin",
@@ -574,6 +585,74 @@ function formatDuration(seconds) {
 async function loadInbox() {
   const result = await api("/inbox");
   mergeDetected(result, "inbox");
+  renderInboxAnalysisStatus();
+  if (result.analysis?.status === "idle") {
+    await api("/inbox/analysis/start", { method: "POST" });
+    scheduleInboxAnalysisRefresh();
+  } else if (result.analysis?.status === "running") {
+    scheduleInboxAnalysisRefresh();
+  }
+}
+
+function scheduleInboxAnalysisRefresh() {
+  clearTimeout(inboxAnalysisTimer);
+  inboxAnalysisTimer = setTimeout(async () => {
+    try {
+      const result = await api("/inbox");
+      mergeDetected(result, "inbox");
+      renderInboxAnalysisStatus();
+      if (result.analysis?.status === "running") scheduleInboxAnalysisRefresh();
+    } catch (_error) {
+      // The ordinary Inbox scan remains usable if pre-analysis is unavailable.
+    }
+  }, 1500);
+}
+
+function renderInboxAnalysisStatus() {
+  const node = document.querySelector("#inboxAnalysisStatus");
+  if (!node) return;
+  const selector = document.querySelector("#inboxMasterSelect");
+  if (selector) {
+    const selected = selectedMasterPath || detected.master[0]?.path || "";
+    selector.innerHTML = detected.master.length
+      ? detected.master.map((item) => {
+          const duration = item.duration ? ` · ${formatDuration(item.duration)}` : "";
+          return `<option value="${escapeHtml(item.path)}" ${item.path === selected ? "selected" : ""}>${escapeHtml(
+            `${item.filename || filename(item.path)}${duration}`
+          )}</option>`;
+        }).join("")
+      : '<option value="">Scan Inbox to load audio masters…</option>';
+  }
+  const status = inboxAnalysis?.status || "idle";
+  if (status === "running") {
+    node.textContent = `${inboxAnalysis.detail || "Scanning Inbox"} · ${Number(inboxAnalysis.progress || 0)}%`;
+  } else if (status === "done") {
+    node.textContent = inboxAnalysis.detail || "Inbox pre-analysis ready";
+  } else if (status === "failed") {
+    node.textContent = `Inbox pre-analysis unavailable: ${inboxAnalysis.detail || "manual selection remains available"}`;
+  } else {
+    node.textContent = "Inbox pre-analysis has not run yet";
+  }
+}
+
+function applyInboxAnalysisFilter() {
+  if (!inboxAnalysis || inboxAnalysis.status !== "done") return;
+  const master = (inboxAnalysis.masters || []).find((item) => item.path === selectedMasterPath) || (inboxAnalysis.masters || [])[0];
+  if (!master) return;
+  const accepted = new Set(
+    (master.matches || [])
+      .filter((match) => !match.low_confidence && !match.no_audio && match.master_overlap)
+      .map((match) => match.path)
+  );
+  if (!accepted.size) return;
+  const keep = [];
+  for (const video of detected.videos) {
+    // Files added manually remain visible even when Inbox pre-analysis has no
+    // match for them; the user can always override the automatic filter.
+    if (video.source !== "inbox" || accepted.has(video.path)) keep.push(video);
+    else analysisSetAsideVideos.push(video);
+  }
+  detected.videos = keep;
 }
 
 async function loadProjects() {
@@ -2624,6 +2703,11 @@ document.addEventListener("click", (event) => {
     renderReelOptions();
   }
   if (target.id === "showAllClips") restoreSetAsideVideos();
+  if (target.id === "scanInbox") {
+    api("/inbox/analysis/start", { method: "POST" })
+      .then((status) => { inboxAnalysis = status; renderInboxAnalysisStatus(); scheduleInboxAnalysisRefresh(); })
+      .catch((error) => showToast(error.message, true));
+  }
   if (target.id === "confirmFiles") prepareStep2().catch((error) => showToast(error.message, true));
   if (target.id === "newProject") newProject().catch((error) => showToast(error.message, true));
   if (target.id === "refreshProjects") loadProjects().catch((error) => showToast(error.message, true));
@@ -2794,6 +2878,16 @@ document.addEventListener("toggle", (event) => {
 
 document.addEventListener("change", (event) => {
   const target = event.target;
+  if (target instanceof HTMLSelectElement && target.id === "inboxMasterSelect") {
+    selectedMasterPath = target.value || null;
+    trimDefaultsAppliedFor = "";
+    setupTrimControls(selectedMasterPath);
+    detected.videos = [...detected.videos, ...analysisSetAsideVideos, ...setAsideVideos];
+    analysisSetAsideVideos = [];
+    setAsideVideos = [];
+    sessionFilterDisabled = false;
+    renderChips();
+  }
   if (target instanceof HTMLSelectElement && target.id === "masterSelect") {
     selectedMasterPath = target.value;
     trimDefaultsAppliedFor = "";

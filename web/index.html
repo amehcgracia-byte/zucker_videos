@@ -46,6 +46,19 @@
           Video name
           <input id="videoName" />
         </label>
+        <div class="inbox-analysis-bar">
+          <div>
+            <strong>Inbox pre-analysis</strong>
+            <span id="inboxAnalysisStatus">Inbox pre-analysis has not run yet</span>
+          </div>
+          <label>
+            Master audio
+            <select id="inboxMasterSelect" aria-label="Master audio">
+              <option value="">Scan Inbox to load audio masters…</option>
+            </select>
+          </label>
+          <button id="scanInbox" class="icon-button small" type="button">Scan Inbox</button>
+        </div>
         <div id="dropZone" class="drop-zone">
           <div class="drop-copy">
             <strong>Drop your files here</strong>

@@ -5,6 +5,7 @@ from __future__ import annotations
 import bisect
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
+import os
 import re
 import shutil
 import subprocess
@@ -231,6 +232,26 @@ def _round_to_frame(seconds: float, fps: float = TARGET_EXPORT_FPS) -> float:
     return round(round(float(seconds) * fps) / fps, 6)
 
 
+def _segment_worker_count(project: Project, segment_count: int) -> int:
+    """Choose a bounded worker count without turning every FFmpeg into a fork bomb."""
+    configured = int(project.data.get("settings", {}).get("export", {}).get("segment_workers", 2) or 0)
+    if configured > 2:
+        return max(1, min(configured, segment_count or 1, 8))
+    cpu_count = max(2, int(os.cpu_count() or 2))
+    # FFmpeg itself uses several threads. Half the logical CPUs is a useful
+    # ceiling for concurrent encodes; the hard cap keeps memory and thermal
+    # pressure predictable on high-core machines.
+    workers = max(2, min(8, cpu_count // 2))
+    try:
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        physical_pages = int(os.sysconf("SC_PHYS_PAGES"))
+        memory_gib = (page_size * physical_pages) / (1024 ** 3)
+        workers = min(workers, max(2, int(memory_gib // 2)))
+    except (AttributeError, OSError, ValueError):
+        pass
+    return max(1, min(workers, segment_count or 1))
+
+
 def _render_plan(
     project: Project,
     segments: list[dict[str, Any]],
@@ -267,17 +288,21 @@ def _render_plan(
         segment_overlay_config["reel_texts"] = []
         segment_overlay_config["reel_images"] = []
     verify_motion = bool(project.data.get("settings", {}).get("export", {}).get("verify_motion", True))
+    phase_times: dict[str, float] = {}
+    export_started = time.perf_counter()
     try:
         include_bookends = platform not in {"reel", "reel_horizontal"}
         if include_bookends:
+            phase_started = time.perf_counter()
             intro_path = temp_dir / "intro.mp4"
             _render_logo_clip(
                 intro_path, platform, "intro", INTRO_DURATION, video_bitrate,
                 lambda percent, detail: progress_callback(8 + int(percent * 2 / 100), detail),
             )
             segment_paths.append(intro_path)
+            phase_times["intro_sec"] = round(time.perf_counter() - phase_started, 3)
         render_segments = _continuous_spherical_render_segments(segments)
-        segment_workers = max(1, min(4, int(project.data.get("settings", {}).get("export", {}).get("segment_workers", 2))))
+        segment_workers = _segment_worker_count(project, len(render_segments))
         render_started = time.perf_counter()
         render_stats: list[dict[str, Any]] = []
         progress_lock = threading.Lock()
@@ -312,14 +337,16 @@ def _render_plan(
             cache_owners[path_key] = identity
             segment_paths.append(result["path"])
             warnings.extend(result["warnings"])
-            render_stats.append({key: result[key] for key in ("index", "cached", "ffmpeg_sec", "verify_sec", "total_sec")})
+            render_stats.append({key: result[key] for key in ("index", "cached", "rendered_from", "ffmpeg_sec", "verify_sec", "total_sec")})
         if include_bookends:
+            phase_started = time.perf_counter()
             outro_path = temp_dir / "outro.mp4"
             _render_logo_clip(
                 outro_path, platform, "outro", OUTRO_DURATION, video_bitrate,
                 lambda percent, detail: progress_callback(82 + int(percent * 2 / 100), detail),
             )
             segment_paths.append(outro_path)
+            phase_times["outro_sec"] = round(time.perf_counter() - phase_started, 3)
         concat_path = temp_dir / "concat.txt"
         joined_video = temp_dir / "joined-video.mp4"
         concat_path.write_text("".join(_concat_file_line(path) for path in segment_paths), encoding="utf-8")
@@ -331,6 +358,7 @@ def _render_plan(
             concat_path,
             final_path=None,
         )
+        phase_started = time.perf_counter()
         _run_ffmpeg_progress(
             [
                 ffmpeg,
@@ -355,12 +383,15 @@ def _render_plan(
             t("joining_segments"),
             lambda percent, detail: progress_callback(84 + int(percent * 6 / 100), detail),
         )
+        phase_times["concat_sec"] = round(time.perf_counter() - phase_started, 3)
+        phase_started = time.perf_counter()
         cfr_video = _cadence_checked_joined_video(
             joined_video,
             temp_dir / "joined-video-cfr.mp4",
             video_bitrate,
             lambda percent, detail: progress_callback(89 + int(percent * 1 / 100), detail),
         )
+        phase_times["cadence_sec"] = round(time.perf_counter() - phase_started, 3)
         real_duration = _media_duration(str(cfr_video))
         video_for_mux = cfr_video
         if platform in {"reel", "reel_horizontal"} and (overlay_config.get("reel_texts") or overlay_config.get("reel_images")):
@@ -375,6 +406,7 @@ def _render_plan(
             )
             real_duration = _media_duration(str(video_for_mux))
         audio_start, audio_delay = _audio_mux_start_and_delay(segments) if include_bookends else (float(segments[0].get("master_start_sec") or 0.0), 0.0)
+        phase_started = time.perf_counter()
         _mux_continuous_master_audio(
             video_for_mux,
             master_path,
@@ -387,6 +419,7 @@ def _render_plan(
             content_end=max(INTRO_DURATION, real_duration - OUTRO_DURATION) if include_bookends else real_duration,
             audio_delay=audio_delay,
         )
+        phase_times["mux_sec"] = round(time.perf_counter() - phase_started, 3)
         _write_export_link_audit(
             project,
             output_path,
@@ -411,7 +444,10 @@ def _render_plan(
         project.data["_export_performance"] = {
             "segment_count": len(render_segments),
             "segment_workers": segment_workers,
+            "stream_copy_count": sum(1 for item in render_stats if item.get("rendered_from") == "stream_copy"),
             "wall_sec": round(time.perf_counter() - render_started, 3),
+            "total_wall_sec": round(time.perf_counter() - export_started, 3),
+            "phases": phase_times,
             "segments": sorted(render_stats, key=lambda item: item["index"]),
         }
     finally:
@@ -437,7 +473,6 @@ def _render_360_plan(
     avoidance -- and no watermark, since compositing one would require
     re-encoding the whole body.
     """
-    del project  # kept in the signature to match the other _render_*_plan functions
     if not segments:
         raise FFmpegError("No 360 segment to export")
     segment = segments[0]
@@ -452,11 +487,14 @@ def _render_360_plan(
     if temp_dir.exists():
         shutil.rmtree(temp_dir)
     temp_dir.mkdir(parents=True)
+    phase_times: dict[str, float] = {}
+    export_started = time.perf_counter()
     try:
         intro = temp_dir / "intro.mp4"
         body = temp_dir / "body.mp4"
         outro = temp_dir / "outro.mp4"
         joined = temp_dir / "joined.mp4"
+        phase_started = time.perf_counter()
         _render_matched_logo_clip(
             intro,
             profile,
@@ -465,6 +503,8 @@ def _render_360_plan(
             video_bitrate,
             lambda percent, detail: progress_callback(8 + int(percent * 4 / 100), detail),
         )
+        phase_times["intro_sec"] = round(time.perf_counter() - phase_started, 3)
+        phase_started = time.perf_counter()
         _copy_trim_video(
             source_path,
             body,
@@ -473,10 +513,12 @@ def _render_360_plan(
             lambda percent, detail: progress_callback(12 + int(percent * 60 / 100), detail),
             codec_name=profile.get("codec_name"),
         )
+        phase_times["body_trim_sec"] = round(time.perf_counter() - phase_started, 3)
         audio_start, audio_delay = _audio_mux_start_and_delay([segment])
         outro_duration = _outro_duration_for_remaining_music(
             master_path, audio_start, audio_delay, INTRO_DURATION + duration, song_end_sec
         )
+        phase_started = time.perf_counter()
         _render_matched_logo_clip(
             outro,
             profile,
@@ -485,6 +527,8 @@ def _render_360_plan(
             video_bitrate,
             lambda percent, detail: progress_callback(72 + int(percent * 4 / 100), detail),
         )
+        phase_times["outro_sec"] = round(time.perf_counter() - phase_started, 3)
+        phase_started = time.perf_counter()
         concat_reencoded = _concat_360_segments(
             intro,
             body,
@@ -496,12 +540,14 @@ def _render_360_plan(
             temp_dir,
             lambda percent, detail: progress_callback(76 + int(percent * 8 / 100), detail),
         )
+        phase_times["concat_sec"] = round(time.perf_counter() - phase_started, 3)
         # No cadence-normalization fallback here: that path assumes the fixed
         # TARGET_EXPORT_FPS and would re-encode (and resample) the body to
         # force it, which is exactly the re-encode this mode exists to avoid.
         # The source's own native fps is preserved as-is.
         real_duration = _media_duration(str(joined))
         muxed = temp_dir / "muxed.mp4"
+        phase_started = time.perf_counter()
         _mux_continuous_master_audio(
             joined,
             master_path,
@@ -520,6 +566,7 @@ def _render_360_plan(
             content_end=real_duration,
             audio_delay=audio_delay,
         )
+        phase_times["mux_sec"] = round(time.perf_counter() - phase_started, 3)
         # ffmpeg's `-metadata` flags above (belt-and-braces, plus `-strict
         # unofficial` on every stream-copy step) only ever produce cosmetic
         # udta string tags -- confirmed empirically: even with
@@ -529,7 +576,9 @@ def _render_360_plan(
         # Spherical Video V2 boxes (vendored, pure Python, no external
         # install) and hard-fails the export if they don't verifiably land.
         try:
+            phase_started = time.perf_counter()
             inject_spherical_metadata(str(muxed), str(output_path))
+            phase_times["metadata_sec"] = round(time.perf_counter() - phase_started, 3)
         except SphericalMetadataError as exc:
             raise FFmpegError(f"360 export failed spherical metadata verification: {exc}") from exc
         if not output_path.exists() or output_path.stat().st_size <= 0:
@@ -554,6 +603,14 @@ def _render_360_plan(
             "metadata matters more here. Spherical metadata (sv3d/st3d boxes) is injected fresh "
             "into the final file and verified via ffprobe so YouTube/VLC recognize it as 360."
         )
+        LOGGER.info("360 export performance total_sec=%.3f phases=%s", time.perf_counter() - export_started, phase_times)
+        project.data["_export_performance"] = {
+            "segment_count": 1,
+            "segment_workers": 1,
+            "total_wall_sec": round(time.perf_counter() - export_started, 3),
+            "phases": phase_times,
+            "concat_reencoded": bool(concat_reencoded),
+        }
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -623,6 +680,30 @@ def _concat_360_segments(
         )
         return False
 
+    # Some HEVC encoders do produce a valid stream-copy concat when the
+    # parameter sets and tags match. Try it first, then decode-check the
+    # assembled file before accepting it. Problematic camera/encoder pairs
+    # fall through to the existing safe re-encode path.
+    concat_path = temp_dir / "concat.txt"
+    concat_path.write_text("".join(_concat_file_line(path) for path in [intro, body, outro]), encoding="utf-8")
+    try:
+        _run_ffmpeg_progress(
+            [
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:1",
+                "-f", "concat", "-safe", "0", "-i", str(concat_path), "-c", "copy",
+                "-tag:v", "hvc1", "-strict", "unofficial", *_spherical_metadata_args(), str(joined),
+            ],
+            total_duration,
+            t("joining_segments"),
+            progress_callback,
+        )
+        _verify_video_decodes(joined)
+        LOGGER.info("HEVC 360 concat accepted stream-copy path=%s", joined)
+        return False
+    except (FFmpegError, OSError) as exc:
+        LOGGER.info("HEVC 360 stream-copy concat rejected; re-encoding join: %s", exc)
+        joined.unlink(missing_ok=True)
+
     filter_complex = "[0:v:0][1:v:0][2:v:0]concat=n=3:v=1:a=0[v]"
     base_command = [
         ffmpeg,
@@ -664,6 +745,19 @@ def _concat_360_segments(
             progress_callback,
         )
     return True
+
+
+def _verify_video_decodes(path: Path) -> None:
+    """Decode a video to null to catch broken HEVC reference chains."""
+    result = subprocess.run(
+        [_ffmpeg_path(), "-v", "error", "-i", str(path), "-map", "0:v:0", "-f", "null", "-"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        raise FFmpegError((result.stderr or "").strip() or f"Video decode verification failed for {path}")
 
 
 def _probe_video_profile(path: str) -> dict[str, Any]:
@@ -908,12 +1002,13 @@ def _render_matched_logo_clip(
         ]
     )
     hw_codec, sw_codec = _matching_encoders(profile["codec_name"])
+    matched_options = ["-g", "1", "-bf", "0"] if profile["codec_name"] in {"hevc", "h265"} else []
     try:
-        _run_ffmpeg_progress(command + _video_encode_args(hw_codec, video_bitrate) + [str(output_path)], duration, f"{kind.title()} logo", progress_callback)
+        _run_ffmpeg_progress(command + _video_encode_args(hw_codec, video_bitrate) + matched_options + [str(output_path)], duration, f"{kind.title()} logo", progress_callback)
     except FFmpegError:
         if output_path.exists():
             output_path.unlink()
-        _run_ffmpeg_progress(command + _video_encode_args(sw_codec, video_bitrate) + [str(output_path)], duration, f"{kind.title()} logo", progress_callback)
+        _run_ffmpeg_progress(command + _video_encode_args(sw_codec, video_bitrate) + matched_options + [str(output_path)], duration, f"{kind.title()} logo", progress_callback)
 
 
 def _logo_filtergraph_matched(kind: str, duration: float, has_logo: bool, height: int) -> str:
@@ -1374,12 +1469,32 @@ def _render_segment_job(
     commands: list[list[str]] = []
     if not cached:
         tmp_segment = temp_dir / f"segment-{index:04d}.mp4"
-        rendered_from = _render_segment(
-            project, segment, master_path, tmp_segment, platform, video_bitrate,
-            overlay_config, color_profile, segment_progress,
-            intro_fade=intro_fade, outro_fade=outro_fade,
-            warnings=local_warnings, command_recorder=commands,
-        )
+        rendered_from = "original"
+        if _stream_copy_eligible(project, segment, platform, overlay_config, color_profile, intro_fade, outro_fade):
+            try:
+                _copy_trim_video(
+                    source_info["source_path"], tmp_segment,
+                    float(segment.get("clip_start_sec") or 0.0), segment_duration,
+                    segment_progress, codec_name=(source_info.get("probe") or {}).get("video_codec"),
+                )
+                _verify_segment_frame_duration(tmp_segment, _segment_frame_count(segment), label)
+                rendered_from = "stream_copy"
+            except (FFmpegError, OSError) as exc:
+                LOGGER.info("Stream-copy fast path rejected for %s: %s", label, exc)
+                tmp_segment.unlink(missing_ok=True)
+                rendered_from = _render_segment(
+                    project, segment, master_path, tmp_segment, platform, video_bitrate,
+                    overlay_config, color_profile, segment_progress,
+                    intro_fade=intro_fade, outro_fade=outro_fade,
+                    warnings=local_warnings, command_recorder=commands,
+                )
+        else:
+            rendered_from = _render_segment(
+                project, segment, master_path, tmp_segment, platform, video_bitrate,
+                overlay_config, color_profile, segment_progress,
+                intro_fade=intro_fade, outro_fade=outro_fade,
+                warnings=local_warnings, command_recorder=commands,
+            )
         if _spherical_shot(segment):
             LOGGER.info(
                 "360 segment write index=%s path=%s rendered_from=%s commands=%s",
@@ -1426,10 +1541,43 @@ def _render_segment_job(
         "spherical_identity": _spherical_cache_identity(segment),
         "warnings": local_warnings,
         "cached": cached,
+        "rendered_from": rendered_from if not cached else "cache",
         "ffmpeg_sec": round(ffmpeg_sec, 3),
         "verify_sec": round(time.perf_counter() - verify_started, 3),
         "total_sec": round(time.perf_counter() - started, 3),
     }
+
+
+def _stream_copy_eligible(
+    project: Project,
+    segment: dict[str, Any],
+    platform: str,
+    overlay_config: dict[str, Any],
+    color_profile: dict[str, Any],
+    intro_fade: bool,
+    outro_fade: bool,
+) -> bool:
+    """Return true only where stream copy cannot change visible frames or cadence."""
+    if platform != "youtube" or intro_fade or outro_fade or color_profile:
+        return False
+    if _watermark_path() is not None or _spherical_shot(segment) or segment.get("motion"):
+        return False
+    if overlay_config.get("title") or overlay_config.get("band_name") or overlay_config.get("handle"):
+        return False
+    source = _segment_source_info(project, segment)
+    probe = source.get("probe") or {}
+    codec = str(probe.get("video_codec") or probe.get("codec_name") or "").lower()
+    fps = float(probe.get("fps") or 0.0)
+    width = int(probe.get("width") or 0)
+    height = int(probe.get("height") or 0)
+    if codec not in {"h264", "avc1"} or not bool(probe.get("cfr", True)):
+        return False
+    if abs(fps - TARGET_EXPORT_FPS) > 0.01 or (width, height) != _target_size(platform):
+        return False
+    start = float(segment.get("clip_start_sec") or 0.0)
+    if start > 0.001 and abs(_preceding_keyframe(source["source_path"], start) - start) > (1.0 / TARGET_EXPORT_FPS):
+        return False
+    return True
 
 
 def _write_export_link_audit(

@@ -4,6 +4,7 @@ import io
 import json
 
 from server.api import create_app
+import server.inbox as inbox
 from server.inbox import classify_paths, paired_insv_path, reconcile_registered_inputs, scan_input_paths
 from core.project import create_project, file_record
 
@@ -16,6 +17,48 @@ def valid_video_probe(duration: str = "3.0") -> dict:
             {"codec_type": "audio", "codec_name": "aac"},
         ],
     }
+
+
+def test_inbox_analysis_skips_files_moved_during_scan(tmp_path, monkeypatch):
+    """A camera import changing underneath the scan must not lose the scan."""
+    inbox_root = tmp_path / "Inbox"
+    inbox_root.mkdir()
+    vanished = inbox_root / "moved.mp4"
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(inbox, "scan_input_paths", lambda _paths: [vanished])
+    inbox._run_inbox_analysis(str(inbox_root))
+    status = inbox.inbox_analysis_snapshot()
+    assert status["status"] == "done"
+    assert status["files"] == []
+
+
+def test_inbox_analysis_persists_and_reuses_file_pairs(tmp_path, monkeypatch):
+    inbox_root = tmp_path / "Inbox"
+    inbox_root.mkdir()
+    video = inbox_root / "clip.mp4"
+    master = inbox_root / "song.wav"
+    video.write_bytes(b"video")
+    master.write_bytes(b"audio")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(inbox, "scan_input_paths", lambda _paths: [video, master])
+    monkeypatch.setattr(inbox, "classify_file", lambda path: {
+        "kind": "videos" if path.suffix == ".mp4" else "master",
+        "path": str(path), "filename": path.name, "size": path.stat().st_size,
+        "mtime": path.stat().st_mtime, "note": "test", "checked": True,
+        **({"probe": valid_video_probe()} if path.suffix == ".mp4" else {"duration": 3.0}),
+    })
+    monkeypatch.setattr(inbox, "video_classification_metadata", lambda _path: {"probe": valid_video_probe()})
+    monkeypatch.setattr(inbox, "normalize_video_record", lambda _project, record, _progress: {"path": record["path"]})
+    monkeypatch.setattr(inbox, "load_or_compute_master_envelope", lambda _project: {"samples": []})
+    monkeypatch.setattr(inbox, "sync_clip", lambda *_args: {"confidence": 8.0, "offset_sec": 0.0, "duration_sec": 3.0})
+    inbox._run_inbox_analysis(str(inbox_root))
+    first = inbox.inbox_analysis_snapshot()
+    assert first["status"] == "done"
+    assert len(first["masters"]) == 1
+    assert first["masters"][0]["matches"][0]["master_overlap"]
+    monkeypatch.setattr(inbox, "classify_file", lambda _path: (_ for _ in ()).throw(AssertionError("recomputed")))
+    inbox._run_inbox_analysis(str(inbox_root))
+    assert inbox.inbox_analysis_snapshot()["status"] == "done"
 
 
 def test_inbox_classification_extensions_and_invalid_songs(tmp_path, monkeypatch):
