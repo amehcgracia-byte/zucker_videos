@@ -15,9 +15,9 @@ from core.stages.sync import load_song_boundaries, load_sync_map, sync_confidenc
 
 LOGGER = logging.getLogger(__name__)
 
-REEL_DEFAULT_DURATION_SEC = 25.0
-REEL_MIN_DURATION_SEC = 15.0
-REEL_MAX_DURATION_SEC = 40.0
+REEL_DEFAULT_DURATION_SEC = 30.0
+REEL_MIN_DURATION_SEC = 20.0
+REEL_MAX_DURATION_SEC = 60.0
 
 
 class CutStage(Stage):
@@ -46,7 +46,7 @@ class CutStage(Stage):
         sync_map = load_sync_map(project) or {}
         wizard = project.data["settings"].get("wizard", {})
         platform = str(wizard.get("platform") or "youtube")
-        selection = _selectable_synced_clips(project, sync_map, allow_unsynced_360=platform == "360")
+        selection = _selectable_synced_clips(project, sync_map, allow_unsynced=platform in {"360", "reel"})
         if not selection["clips"]:
             diagnostics = selection["diagnostics"]
             LOGGER.error("Cut rejected all clips: %s", diagnostics)
@@ -196,7 +196,12 @@ def _pick_energetic_window(master_path: str, window: dict[str, Any], target_dura
     return {**window, "start_sec": best_start, "duration_sec": target_duration, "trim_start_sec": best_start, "trim_end_sec": best_start + target_duration}
 
 
-def _selectable_synced_clips(project: Project, sync_map: dict[str, Any], *, allow_unsynced_360: bool = False) -> dict[str, Any]:
+def _selectable_synced_clips(project: Project, sync_map: dict[str, Any], *, allow_unsynced: bool = False, allow_unsynced_360: bool | None = None) -> dict[str, Any]:
+    # Reel is intentionally not a sync edit: confidence, offsets and missing
+    # camera audio must not remove otherwise usable promo footage. Keep the
+    # old keyword as a compatibility shim for callers/tests.
+    if allow_unsynced_360 is not None:
+        allow_unsynced = allow_unsynced or allow_unsynced_360
     records_by_path: dict[str, dict[str, Any]] = {}
     for record in project.data.get("inputs", {}).get("videos", []):
         if record.get("path"):
@@ -234,7 +239,7 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any], *, allo
             "source_path": clip.get("source_path"),
         }
         diagnostics.append(diagnostic)
-        reason = _exclusion_reason(diagnostic, allow_unsynced_360=allow_unsynced_360 and diagnostic.get("projection") in {"equirect", "raw_insv"})
+        reason = _exclusion_reason(diagnostic, allow_unsynced=allow_unsynced)
         if reason:
             excluded.append({"filename": diagnostic["filename"], "reason": reason, "diagnostic": diagnostic})
             continue
@@ -245,20 +250,22 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any], *, allo
     return {"clips": selected, "warnings": [], "diagnostics": diagnostics, "excluded": excluded}
 
 
-def _exclusion_reason(diagnostic: dict[str, Any], *, allow_unsynced_360: bool = False) -> str | None:
+def _exclusion_reason(diagnostic: dict[str, Any], *, allow_unsynced: bool = False, allow_unsynced_360: bool | None = None) -> str | None:
+    if allow_unsynced_360 is not None:
+        allow_unsynced = allow_unsynced or allow_unsynced_360
     if not diagnostic["valid_video"]:
         return t("not_usable_camera_video")
-    if diagnostic.get("error") and not allow_unsynced_360:
+    if diagnostic.get("error") and not allow_unsynced:
         return str(diagnostic["error"])
-    if diagnostic.get("no_audio") and not allow_unsynced_360:
+    if diagnostic.get("no_audio") and not allow_unsynced:
         return t("no_sync_audio")
-    if diagnostic.get("unstable_sync") and not allow_unsynced_360:
+    if diagnostic.get("unstable_sync") and not allow_unsynced:
         verification = diagnostic.get("verification") or {}
         delta = verification.get("delta_sec")
         if isinstance(delta, (int, float)):
             return t("unstable_sync_detail", ms=delta * 1000)
         return t("unstable_sync")
-    if diagnostic.get("low_confidence") and not allow_unsynced_360 and not diagnostic.get("manual_override"):
+    if diagnostic.get("low_confidence") and not allow_unsynced and not diagnostic.get("manual_override"):
         return t("low_confidence_excluded_detail", confidence=float(diagnostic.get("confidence") or 0.0), threshold=float(diagnostic.get("threshold") or 0.0))
     return None
 

@@ -111,6 +111,16 @@
             </label>
           </div>
         </div>
+        <details id="reelOptions" class="reel-options" hidden>
+          <summary>Reel options</summary>
+          <div class="reel-option-grid">
+            <label>Duration <output id="reelDurationValue">30s</output><input id="reelDuration" type="range" min="20" max="60" step="1" value="30" /></label>
+            <label>Aspect ratio<select id="reelAspect"><option value="9:16">9:16 vertical</option><option value="16:9">16:9 horizontal</option></select></label>
+          </div>
+          <div class="setup-heading"><h2>Text overlays</h2><button id="addReelText" type="button" class="icon-button small">Add line</button></div>
+          <div id="reelTextLines"></div>
+          <canvas id="reelPreview" width="360" height="640" aria-label="Live Reel text preview"></canvas>
+        </details>
         <div id="cameraMix" class="camera-mix">
           <div class="setup-heading">
             <h2>Camera Mix</h2>

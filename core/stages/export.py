@@ -116,7 +116,7 @@ class ExportStage(Stage):
         output_path = _output_path(project, platform, run_id)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         content_duration = _plan_duration(segments)
-        duration = content_duration + INTRO_DURATION + OUTRO_DURATION
+        duration = content_duration if platform == "reel" else content_duration + INTRO_DURATION + OUTRO_DURATION
         bitrate_info = _bitrate_for_duration(duration)
         warnings = list(plan.get("warnings") or [])
         if bitrate_info["warning"]:
@@ -140,7 +140,8 @@ class ExportStage(Stage):
                 song_end_sec=float(song_end_sec) if song_end_sec is not None else None,
             )
         else:
-            _render_plan(project, segments, master["path"], output_path, platform, bitrate_info["video_bitrate"], warnings, progress_callback)
+            render_platform = "reel_horizontal" if platform == "reel" and str(plan.get("reel_aspect") or project.data.get("settings", {}).get("wizard", {}).get("reel_aspect") or "9:16") == "16:9" else platform
+            _render_plan(project, segments, master["path"], output_path, render_platform, bitrate_info["video_bitrate"], warnings, progress_callback)
         progress_callback(95, t("saving_result"))
         path = artifact_path(project, "export_manifest.json")
         if bitrate_info["warning"]:
@@ -249,18 +250,18 @@ def _render_plan(
     total_duration = _plan_duration(segments)
     color_profiles = _color_profiles_for_segments(project, segments, warnings)
     overlay_config = _overlay_config(platform, segments[0])
+    if platform in {"reel", "reel_horizontal"}:
+        overlay_config["reel_texts"] = list(project.data.get("settings", {}).get("wizard", {}).get("reel_text_overlays") or [])
     verify_motion = bool(project.data.get("settings", {}).get("export", {}).get("verify_motion", True))
     try:
-        intro_path = temp_dir / "intro.mp4"
-        _render_logo_clip(
-            intro_path,
-            platform,
-            "intro",
-            INTRO_DURATION,
-            video_bitrate,
-            lambda percent, detail: progress_callback(8 + int(percent * 2 / 100), detail),
-        )
-        segment_paths.append(intro_path)
+        include_bookends = platform not in {"reel", "reel_horizontal"}
+        if include_bookends:
+            intro_path = temp_dir / "intro.mp4"
+            _render_logo_clip(
+                intro_path, platform, "intro", INTRO_DURATION, video_bitrate,
+                lambda percent, detail: progress_callback(8 + int(percent * 2 / 100), detail),
+            )
+            segment_paths.append(intro_path)
         render_segments = _continuous_spherical_render_segments(segments)
         segment_workers = max(1, min(4, int(project.data.get("settings", {}).get("export", {}).get("segment_workers", 2))))
         render_started = time.perf_counter()
@@ -298,16 +299,13 @@ def _render_plan(
             segment_paths.append(result["path"])
             warnings.extend(result["warnings"])
             render_stats.append({key: result[key] for key in ("index", "cached", "ffmpeg_sec", "verify_sec", "total_sec")})
-        outro_path = temp_dir / "outro.mp4"
-        _render_logo_clip(
-            outro_path,
-            platform,
-            "outro",
-            OUTRO_DURATION,
-            video_bitrate,
-            lambda percent, detail: progress_callback(82 + int(percent * 2 / 100), detail),
-        )
-        segment_paths.append(outro_path)
+        if include_bookends:
+            outro_path = temp_dir / "outro.mp4"
+            _render_logo_clip(
+                outro_path, platform, "outro", OUTRO_DURATION, video_bitrate,
+                lambda percent, detail: progress_callback(82 + int(percent * 2 / 100), detail),
+            )
+            segment_paths.append(outro_path)
         concat_path = temp_dir / "concat.txt"
         joined_video = temp_dir / "joined-video.mp4"
         concat_path.write_text("".join(_concat_file_line(path) for path in segment_paths), encoding="utf-8")
@@ -339,7 +337,7 @@ def _render_plan(
                 "copy",
                 str(joined_video),
             ],
-            total_duration + INTRO_DURATION + OUTRO_DURATION,
+            total_duration + (INTRO_DURATION + OUTRO_DURATION if include_bookends else 0.0),
             t("joining_segments"),
             lambda percent, detail: progress_callback(84 + int(percent * 6 / 100), detail),
         )
@@ -350,7 +348,7 @@ def _render_plan(
             lambda percent, detail: progress_callback(89 + int(percent * 1 / 100), detail),
         )
         real_duration = _media_duration(str(cfr_video))
-        audio_start, audio_delay = _audio_mux_start_and_delay(segments)
+        audio_start, audio_delay = _audio_mux_start_and_delay(segments) if include_bookends else (float(segments[0].get("master_start_sec") or 0.0), 0.0)
         _mux_continuous_master_audio(
             cfr_video,
             master_path,
@@ -359,8 +357,8 @@ def _render_plan(
             real_duration,
             video_bitrate,
             lambda percent, detail: progress_callback(90 + int(percent * 5 / 100), detail),
-            content_start=INTRO_DURATION,
-            content_end=max(INTRO_DURATION, real_duration - OUTRO_DURATION),
+            content_start=INTRO_DURATION if include_bookends else 0.0,
+            content_end=max(INTRO_DURATION, real_duration - OUTRO_DURATION) if include_bookends else real_duration,
             audio_delay=audio_delay,
         )
         _write_export_link_audit(
@@ -371,18 +369,18 @@ def _render_plan(
             concat_path,
             final_path=output_path,
         )
-        if verify_motion:
+        if verify_motion and include_bookends:
             _verify_joined_output(output_path, segments, timeline_offset=INTRO_DURATION)
             _verify_final_audio(
                 output_path,
                 segments,
                 master_path,
                 audio_start,
-                timeline_offset=INTRO_DURATION,
+                timeline_offset=INTRO_DURATION if include_bookends else 0.0,
                 audio_delay=audio_delay,
                 duration=real_duration,
-                content_start=INTRO_DURATION,
-                content_end=max(INTRO_DURATION, real_duration - OUTRO_DURATION),
+                content_start=INTRO_DURATION if include_bookends else 0.0,
+                content_end=max(INTRO_DURATION, real_duration - OUTRO_DURATION) if include_bookends else real_duration,
             )
         project.data["_export_performance"] = {
             "segment_count": len(render_segments),
@@ -1128,6 +1126,8 @@ def _target_size(platform: str) -> tuple[int, int]:
         return 608, 1080
     if platform == "reel":
         return 1080, 1920
+    if platform == "reel_horizontal":
+        return 1920, 1080
     if platform == "360":
         return 3840, 1920
     return 1920, 1080
@@ -1208,6 +1208,7 @@ def _render_segment(
         source_filter=source_filter,
         motion_filter=_motion_filter(segment, platform, duration),
         frame_count=frame_count,
+        segment=segment,
     )
     command_base = _segment_video_command_base(
         ffmpeg,
@@ -1509,6 +1510,7 @@ def _render_proxy_segment(
         intro_logo=intro_logo,
         outro_logo=outro_logo,
         frame_count=frame_count,
+        segment=segment,
     )
     proxy_command = _segment_video_command_base(ffmpeg, proxy_path, segment, duration)
     if watermark:
@@ -1823,6 +1825,8 @@ def _base_video_filter(platform: str) -> str:
         return "scale=608:1080:force_original_aspect_ratio=increase,crop=608:1080,setsar=1,format=yuv420p"
     if platform == "reel":
         return "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,format=yuv420p"
+    if platform == "reel_horizontal":
+        return "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
     if platform == "360":
         return "scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
     return "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
@@ -1963,6 +1967,8 @@ def _shot_requires_runtime_motion(shot: dict[str, Any] | None) -> bool:
     """
     if not shot:
         return False
+    if "runtime_motion_enabled" in shot and not bool(shot.get("runtime_motion_enabled")):
+        return False
     if shot.get("type") == "recorded_move":
         return bool(shot.get("curve"))
     if shot.get("type") == "planet":
@@ -2046,6 +2052,8 @@ def _automatic_drift_degrees(shot: dict[str, Any], axis: str, visible_fov: float
 def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[float, float, float]:
     duration = max(0.001, duration)
     if FORCE_STATIC_360_ISOLATION:
+        return _static_360_pose(shot)
+    if "runtime_motion_enabled" in shot and not bool(shot.get("runtime_motion_enabled")):
         return _static_360_pose(shot)
     if shot.get("type") == "recorded_move":
         safe_curve = limit_yaw_velocity(shot.get("curve") or [])
@@ -2347,11 +2355,18 @@ def _segment_filtergraph(
     source_filter: str | None = None,
     motion_filter: str | None = None,
     frame_count: int | None = None,
+    segment: dict[str, Any] | None = None,
 ) -> str:
     filters = []
     if source_filter:
         filters.append(source_filter)
-    filters.extend([_base_video_filter(platform), motion_filter, _color_filter(color_profile)])
+    base_filter = _base_video_filter(platform)
+    if platform == "reel" and segment and segment.get("reel_subject_center") and not motion_filter:
+        center = segment["reel_subject_center"]
+        cx = max(0.0, min(1.0, float(center.get("x") or 0.5)))
+        cy = max(0.0, min(1.0, float(center.get("y") or 0.5)))
+        base_filter = f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:x='(iw-ow)*{cx:.4f}':y='(ih-oh)*{cy:.4f}',setsar=1,format=yuv420p"
+    filters.extend([base_filter, motion_filter, _color_filter(color_profile)])
     filters.append(_exact_cadence_filter(frame_count) if frame_count else _constant_cadence_filter())
     if intro_fade:
         filters.append(f"fade=t=in:st=0:d={CONTENT_FADE_DURATION:.3f}")
@@ -3163,8 +3178,21 @@ def _text_filters(platform: str, duration: float, config: dict[str, Any]) -> lis
             filters.append(_drawtext(text, "x=64:y=h-th-92:fontsize=46:enable='between(t,0,4)'"))
         else:
             filters.append(_drawtext(title, "x=(w-tw)/2:y=(h-th)/2:fontsize=54:enable='between(t,0,4)'"))
-    if platform in {"instagram", "tiktok", "reel"} and handle:
+    if platform in {"instagram", "tiktok", "reel", "reel_horizontal"} and handle:
         filters.append(_drawtext(handle, f"x=(w-tw)/2:y=h-th-130:fontsize=38:enable='gte(t,{max(0.0, duration - 4):.3f})'"))
+    for item in config.get("reel_texts") or []:
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        color = str(item.get("color") or "#ffffff").replace("#", "0x")
+        size = max(18.0, min(160.0, float(item.get("size") or 54.0)))
+        start = max(0.0, float(item.get("start_sec") or 0.0))
+        end = min(duration, start + max(0.1, float(item.get("duration_sec") or 3.0)))
+        position = str(item.get("position") or "middle-center")
+        x_map = {"left": "48", "center": "(w-tw)/2", "right": "w-tw-48"}
+        y_map = {"top": "48", "middle": "(h-th)/2", "bottom": "h-th-48"}
+        vertical, horizontal = (position.split("-", 1) if "-" in position else ("middle", "center"))
+        filters.append(_drawtext(text, f"x={x_map.get(horizontal, x_map['center'])}:y={y_map.get(vertical, y_map['middle'])}:fontsize={size:.1f}:fontcolor={color}:enable='between(t,{start:.3f},{end:.3f})'"))
     return filters
 
 

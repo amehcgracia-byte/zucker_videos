@@ -22,6 +22,7 @@ EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
 SPHERICAL_MOTION_PLAN_VERSION = 9
+REEL_PLAN_VERSION = 1
 # Retained as a versioned emergency switch for diagnostics; normal builds use
 # the shared gentle hold/sweep motion below.
 FORCE_STATIC_360_ISOLATION = False
@@ -42,7 +43,7 @@ SPHERICAL_MAX_MOTION_FRACTION_PER_SEC = 0.06
 # Planet is a special effect, not the default visual language of a normal
 # 360 edit. Keep its optional rotation at a deliberately gentle absolute rate.
 PLANET_SPIN_DEG_PER_SEC = 5.0
-SPHERICAL_HOLD_MOTION_DEG_PER_SEC = 0.01
+SPHERICAL_HOLD_MOTION_DEG_PER_SEC = 0.4
 SPHERICAL_MIN_LANDMARK_HOLD_SEC = 6.0
 SPHERICAL_TARGET_LANDMARK_HOLD_SEC = 8.0
 SPHERICAL_MAX_LANDMARK_HOLD_SEC = 12.0
@@ -87,6 +88,7 @@ class EditStage(Stage):
                 "director_score_threshold": DIRECTOR_SCORE_THRESHOLD,
                 "operator_avoidance_version": OPERATOR_AVOIDANCE_VERSION,
                 "spherical_motion_plan_version": SPHERICAL_MOTION_PLAN_VERSION,
+                "reel_plan_version": REEL_PLAN_VERSION,
             }
         )
 
@@ -107,10 +109,14 @@ class EditStage(Stage):
         # cuts, camera weights, operator avoidance, motion on static shots) --
         # only the window (narrowed to a short energetic highlight by cut.py)
         # and the render target size/framing differ.
-        real_multicam = platform in {"youtube", "reel"}
+        real_multicam = platform == "youtube"
         if real_multicam:
             coverage = _with_director_quality(project, coverage, progress_callback)
-        if not real_multicam:
+        if platform == "reel":
+            beats = _load_or_analyze_beats(project, coverage, progress_callback)
+            progress_callback(55, t("choosing_cameras"))
+            plan = _reel_promo_plan(coverage, beats, project.data.get("settings", {}))
+        elif not real_multicam:
             plan = _simple_plan(coverage, project.data.get("settings", {}), recorded_moves=recorded_moves)
             beats = {"stage": self.name, "platform": platform, "beats_sec": [], "bars_sec": [], "sections_sec": [], "tempo": None, "placeholder_short_form": platform != "360"}
         else:
@@ -204,6 +210,108 @@ def _with_director_quality(project: Project, coverage: dict[str, Any], progress_
     progress_callback(50, "Scoring Sony director camera")
     scored = analyze_handheld_director_quality(project, sources)
     return {**coverage, "sources": scored}
+
+
+def _reel_promo_plan(
+    coverage: dict[str, Any],
+    beats: dict[str, Any],
+    settings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build an unsynchronised, beat-cut promo plan.
+
+    The master timeline is used only for the music bed. Each video segment is
+    selected independently from the available camera material, so a source's
+    clip time is deliberately unrelated to ``master_start_sec``.
+    """
+    settings = settings or {}
+    wizard = settings.get("wizard") if isinstance(settings.get("wizard"), dict) else settings
+    window = coverage.get("window") or {}
+    start = float(window.get("start_sec") or 0.0)
+    requested = max(20.0, min(60.0, float(wizard.get("reel_duration_sec") or 30.0)))
+    duration = min(requested, float(window.get("duration_sec") or requested))
+    end = start + duration
+    sources = list(coverage.get("sources") or [])
+    if not sources and coverage.get("segments"):
+        sources = list(coverage["segments"])
+    if not sources:
+        raise ValueError("Reel has no usable video sources")
+
+    # Prefer existing visual-analysis signals, but rotate through sources so a
+    # single high-confidence camera cannot monopolise the promo.
+    sources.sort(key=lambda item: (
+        -float(item.get("shot_quality_score") or item.get("director_segment_score") or item.get("motion_score") or 0.0),
+        str(item.get("path") or item.get("source_path") or ""),
+    ))
+    bars = sorted({float(value) for value in (beats.get("bars_sec") or beats.get("beats_sec") or []) if start < float(value) < end})
+    boundaries = [start]
+    cursor = start
+    while cursor < end - 0.05:
+        candidates = [value for value in bars if value > cursor + 0.7]
+        next_cut = next((value for value in candidates if value - cursor >= 1.0), min(end, cursor + 2.0))
+        next_cut = min(end, max(cursor + 0.8, next_cut))
+        boundaries.append(next_cut)
+        cursor = next_cut
+    if boundaries[-1] < end:
+        boundaries.append(end)
+
+    landmarks = migrate_spherical_landmarks(settings.get("spherical_landmarks") or {})
+    spherical_shots = _available_spherical_shots(landmarks, sweep_enabled=False)
+    segments: list[dict[str, Any]] = []
+    previous_source = None
+    fixed_index = 0
+    for index, (master_start, master_end) in enumerate(zip(boundaries, boundaries[1:])):
+        seg_duration = max(0.1, master_end - master_start)
+        ordered = sorted(sources, key=lambda item: (
+            _source_id(item) == previous_source,
+            index % max(1, len(sources)) != sources.index(item),
+        ))
+        source = ordered[0]
+        previous_source = _source_id(source)
+        source_duration = max(seg_duration, float(source.get("duration_sec") or seg_duration))
+        # Deterministic spread over each source, independent of master time.
+        clip_start = max(0.0, ((index * 1.37) % max(0.1, source_duration - seg_duration))) if source_duration > seg_duration else 0.0
+        segment = {
+            "title": window.get("title") or t("full_video"),
+            "clip_path": source.get("path") or source.get("clip_path"),
+            "source_path": source.get("source_path") or source.get("path") or source.get("clip_path"),
+            "clip_start_sec": round(clip_start, 6),
+            "master_start_sec": round(master_start, 6),
+            "duration_sec": round(seg_duration, 6),
+            "clip_offset_sec": 0.0,
+            "filename": source.get("filename") or Path(str(source.get("path") or "video")).name,
+            "projection": source.get("projection"),
+            "reel_subject_center": {
+                "x": float(source.get("subject_center_x") or source.get("face_center_x") or 0.5),
+                "y": float(source.get("subject_center_y") or source.get("face_center_y") or 0.5),
+            },
+        }
+        role = _source_role(source)
+        if role == "360":
+            shot = dict(spherical_shots[index % len(spherical_shots)]) if spherical_shots else {
+                "type": "promo_360", "label": "360 promo", "yaw": 0.0, "pitch": 0.0, "fov": 95.0, "weight": 1.0,
+            }
+            segment["spherical_shot"] = _spherical_motion_profile(shot, index, enabled=False, hold_motion="none")
+        elif role == "fixed_rear" and bool(wizard.get("fixed_rear_motion", True)):
+            if fixed_index % 2 == 0:
+                segment["motion"] = _ken_burns_motion(fixed_index)
+            fixed_index += 1
+        segments.append(segment)
+    return {
+        "stage": "edit",
+        "platform": "reel",
+        "reel_plan_version": REEL_PLAN_VERSION,
+        "reel_duration_sec": round(duration, 6),
+        "reel_aspect": str(wizard.get("reel_aspect") or "9:16"),
+        "reel_text_overlays": list(wizard.get("reel_text_overlays") or []),
+        "title": window.get("title") or t("full_video"),
+        "real_edit_logic": "reel unsynchronised promo: independent dynamic source selection on master beats",
+        "warnings": coverage.get("warnings") or [],
+        "excluded_clips": coverage.get("excluded_clips") or [],
+        "clip_diagnostics": coverage.get("clip_diagnostics") or [],
+        "camera_usage": _camera_usage(segments),
+        "cut_count": max(0, len(segments) - 1),
+        "segments": segments,
+    }
 
 
 def _youtube_multicam_plan(
@@ -556,6 +664,7 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
         shot["pitch"] = -90.0
         shot["fov"] = max(240.0, float(shot.get("fov") or 240.0))
         shot["projection"] = "tiny_planet"
+        shot["runtime_motion_enabled"] = False
         # The tiny-planet spin is a deliberate signature effect, but it is
         # still held to the same fraction-of-field budget so it reads as a
         # slow rotation rather than a carousel. With motion off it holds still
@@ -575,6 +684,11 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
     if mode not in {"none", "subtle"}:
         mode = "subtle" if enabled else "none"
     shot["sweep_enabled"] = bool(shot.get("sweep_enabled", False)) and enabled
+    # Runtime sendcmd animation is disabled globally until the safe
+    # equirectangular reprojection path replaces FFmpeg's corrupting v360
+    # reconfiguration. Keep the authored subtle rate in the plan for future
+    # use, but make the shipped render pose static.
+    shot["runtime_motion_enabled"] = False
     shot["hold_motion"] = mode
     shot["hold_motion_rate_deg_per_sec"] = SPHERICAL_HOLD_MOTION_DEG_PER_SEC if mode == "subtle" and enabled else 0.0
     shot["drift_yaw_fraction"] = 0.0

@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _available_spherical_shots, _ken_burns_motion, _spherical_motion_profile, _youtube_multicam_plan, _framing_nearly_identical
+from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _available_spherical_shots, _ken_burns_motion, _spherical_motion_profile, _youtube_multicam_plan, _reel_promo_plan, _framing_nearly_identical
 from core.stages.cut import _pick_energetic_window, _segment_for_360, _select_360_clip
 
 
@@ -127,6 +127,28 @@ def test_reel_uses_real_multicam_plan_not_the_placeholder():
     assert plan["platform"] == "reel"
     assert plan["cut_count"] == 2
     assert "beat-aligned multicam" in plan["real_edit_logic"]
+
+
+def test_reel_plan_is_unsynchronised_and_carries_options():
+    coverage = {
+        "platform": "reel",
+        "window": {"title": "Promo", "start_sec": 100.0, "duration_sec": 30.0},
+        "sources": [
+            {"path": "/tmp/a.mp4", "source_path": "/tmp/a.mp4", "duration_sec": 40.0, "projection": None},
+            {"path": "/tmp/b.mp4", "source_path": "/tmp/b.mp4", "duration_sec": 40.0, "projection": None},
+        ],
+    }
+    plan = _reel_promo_plan(
+        coverage,
+        {"bars_sec": [100.0, 102.0, 104.0, 106.0, 108.0, 110.0, 112.0, 114.0, 116.0, 118.0, 120.0, 122.0, 124.0, 126.0, 128.0]},
+        {"wizard": {"reel_duration_sec": 30, "reel_aspect": "9:16", "reel_text_overlays": [{"text": "LIVE"}]}, "spherical_landmarks": {}},
+    )
+    assert plan["platform"] == "reel"
+    assert plan["reel_duration_sec"] == 30
+    assert plan["reel_aspect"] == "9:16"
+    assert plan["reel_text_overlays"][0]["text"] == "LIVE"
+    assert len({segment["clip_path"] for segment in plan["segments"]}) == 2
+    assert all(segment["master_start_sec"] != segment["clip_start_sec"] for segment in plan["segments"])
 
 
 def test_youtube_plan_does_not_starve_lower_confidence_camera():

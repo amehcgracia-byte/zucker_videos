@@ -23,6 +23,7 @@ let trimDefaultsAppliedFor = "";
 let lastSphericalSetup = {};
 let cameraRoleWeights = { "360": 50, handheld: 30, fixed_rear: 20 };
 let fixedRearMotion = true;
+let reelTextOverlays = [];
 let sphericalMode = "automatic";
 const MAX_RECORDED_YAW_RATE_DEG_PER_SEC = 40;
 let savedAudioTrim = {};
@@ -748,12 +749,62 @@ function applyEditTypeMode() {
   const cameraMix = document.querySelector("#cameraMix");
   const sphericalSetup = document.querySelector("#sphericalSetup");
   const songPicker = document.querySelector("#songPicker");
+  const reelOptions = document.querySelector("#reelOptions");
   if (cameraMix) cameraMix.hidden = passthrough360;
   if (sphericalSetup) {
     sphericalSetup.hidden = passthrough360;
     if (passthrough360) sphericalSetup.open = false;
   }
   if (songPicker && passthrough360) songPicker.hidden = true;
+  if (reelOptions) {
+    reelOptions.hidden = selectedPlatform !== "reel";
+    if (selectedPlatform !== "reel") reelOptions.open = false;
+    if (selectedPlatform === "reel") renderReelOptions();
+  }
+}
+
+function renderReelOptions() {
+  const root = document.querySelector("#reelTextLines");
+  if (!root) return;
+  const duration = Number(document.querySelector("#reelDuration")?.value || 30);
+  const value = document.querySelector("#reelDurationValue");
+  if (value) value.textContent = `${duration}s`;
+  root.innerHTML = reelTextOverlays.map((item, index) => `<div class="reel-text-line" data-reel-text-index="${index}">
+    <input data-reel-field="text" placeholder="Text" value="${escapeHtml(item.text)}" />
+    <input data-reel-field="color" type="color" value="${item.color}" title="Colour" />
+    <label>Size <input data-reel-field="size" type="number" min="18" max="160" value="${item.size}" /></label>
+    <select data-reel-field="position">${["top-left","top-center","top-right","middle-left","middle-center","middle-right","bottom-left","bottom-center","bottom-right"].map((p) => `<option value="${p}" ${p === item.position ? "selected" : ""}>${p}</option>`).join("")}</select>
+    <label>Start <input data-reel-field="start_sec" type="number" min="0" max="60" step="0.1" value="${item.start_sec}" /></label>
+    <label>Duration <input data-reel-field="duration_sec" type="number" min="0.1" max="60" step="0.1" value="${item.duration_sec}" /></label>
+    <button type="button" data-remove-reel-text="${index}">Remove</button>
+  </div>`).join("");
+  drawReelPreview();
+}
+
+function drawReelPreview() {
+  const canvas = document.querySelector("#reelPreview");
+  if (!canvas) return;
+  const horizontal = document.querySelector("#reelAspect")?.value === "16:9";
+  canvas.width = horizontal ? 640 : 360;
+  canvas.height = horizontal ? 360 : 640;
+  const ctx = canvas.getContext("2d");
+  const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+  gradient.addColorStop(0, "#182b38"); gradient.addColorStop(1, "#713f5a");
+  ctx.fillStyle = gradient; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "rgba(255,255,255,.72)"; ctx.font = "16px sans-serif"; ctx.textAlign = "center";
+  ctx.fillText("Reel preview", canvas.width / 2, canvas.height / 2);
+  for (const item of reelTextOverlays) {
+    const [vertical, horizontalAlign] = item.position.split("-");
+    ctx.fillStyle = item.color; ctx.font = `700 ${Math.max(12, Number(item.size) * canvas.width / 1080)}px sans-serif`;
+    ctx.textAlign = horizontalAlign === "left" ? "left" : horizontalAlign === "right" ? "right" : "center";
+    const x = horizontalAlign === "left" ? 18 : horizontalAlign === "right" ? canvas.width - 18 : canvas.width / 2;
+    const y = vertical === "top" ? 48 : vertical === "bottom" ? canvas.height - 48 : canvas.height / 2;
+    ctx.fillText(item.text, x, y);
+  }
+}
+
+function reelOptionsFromForm() {
+  return { duration: Number(document.querySelector("#reelDuration")?.value || 30), aspect: document.querySelector("#reelAspect")?.value || "9:16", texts: reelTextOverlays };
 }
 
 function renderSphericalSetup() {
@@ -1934,6 +1985,9 @@ async function startWizard(options = {}) {
       spherical_mode: sphericalModeFromForm(),
       spherical_sweep: sphericalSweepFromForm(),
       sweep_speed_deg_per_sec: sweepSpeedFromForm(),
+      reel_duration_sec: reelOptionsFromForm().duration,
+      reel_aspect: reelOptionsFromForm().aspect,
+      reel_text_overlays: reelOptionsFromForm().texts,
       master: inputs.master,
       songs: inputs.songs,
       videos: inputs.videos,
@@ -2447,6 +2501,14 @@ document.addEventListener("click", (event) => {
   const rawTarget = event.target;
   const target = rawTarget instanceof HTMLElement ? rawTarget.closest("button, [data-remove-kind], [data-open-project], [data-delete-project], [data-rescue]") || rawTarget : rawTarget;
   if (!(target instanceof HTMLElement)) return;
+  if (target.id === "addReelText") {
+    reelTextOverlays.push({ text: "", color: "#ffffff", size: 54, position: "middle-center", start_sec: 0, duration_sec: 3 });
+    renderReelOptions();
+  }
+  if (target.dataset.removeReelText != null) {
+    reelTextOverlays.splice(Number(target.dataset.removeReelText), 1);
+    renderReelOptions();
+  }
   if (target.id === "showAllClips") restoreSetAsideVideos();
   if (target.id === "confirmFiles") prepareStep2().catch((error) => showToast(error.message, true));
   if (target.id === "newProject") newProject().catch((error) => showToast(error.message, true));
@@ -2541,6 +2603,26 @@ document.addEventListener("click", (event) => {
   if (target.closest?.("#confirmRescue")) {
     confirmRescue().catch((error) => showToast(error.message, true));
   }
+});
+
+document.addEventListener("input", (event) => {
+  const input = event.target;
+  if (!(input instanceof HTMLElement)) return;
+  if (input.id === "reelDuration" || input.id === "reelAspect") { renderReelOptions(); return; }
+  const row = input.closest?.("[data-reel-text-index]");
+  if (!row || !input.dataset.reelField) return;
+  const index = Number(row.dataset.reelTextIndex);
+  const item = reelTextOverlays[index];
+  if (!item) return;
+  const field = input.dataset.reelField;
+  item[field] = ["size", "start_sec", "duration_sec"].includes(field) ? Number(input.value) : input.value;
+  drawReelPreview();
+});
+
+document.addEventListener("change", (event) => {
+  const input = event.target;
+  if (!(input instanceof HTMLElement)) return;
+  if (input.id === "reelAspect") drawReelPreview();
 });
 
 document.addEventListener("toggle", (event) => {

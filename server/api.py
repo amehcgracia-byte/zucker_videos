@@ -276,6 +276,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         spherical_mode = _spherical_mode_from_body(body)
         spherical_sweep = _spherical_sweep_from_body(body)
         sweep_speed_deg_per_sec = _sweep_speed_from_body(body)
+        reel_duration_sec = _reel_duration_from_body(body)
+        reel_aspect = _reel_aspect_from_body(body)
+        reel_text_overlays = _reel_text_overlays_from_body(body)
         if platform not in {"youtube", "instagram", "tiktok", "reel", "360"}:
             return error_response("bad_request", "platform must be youtube, reel, instagram, tiktok, or 360", 400)
         if not master:
@@ -302,6 +305,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 spherical_mode=spherical_mode,
                 spherical_sweep=spherical_sweep,
                 sweep_speed_deg_per_sec=sweep_speed_deg_per_sec,
+                reel_duration_sec=reel_duration_sec,
+                reel_aspect=reel_aspect,
+                reel_text_overlays=reel_text_overlays,
                 master_path=master,
                 songs_path=songs,
                 video_paths=videos,
@@ -938,6 +944,38 @@ def _audio_trim_from_body(body: dict[str, Any]) -> dict[str, float] | None:
     if trim and trim.get("end_sec", 1.0) <= trim.get("start_sec", 0.0):
         return None
     return trim or None
+
+
+def _reel_duration_from_body(body: dict[str, Any]) -> float:
+    value = _coerce_float(body.get("reel_duration_sec"))
+    return max(20.0, min(60.0, value if value is not None else 30.0))
+
+
+def _reel_aspect_from_body(body: dict[str, Any]) -> str:
+    return "16:9" if str(body.get("reel_aspect") or "9:16") == "16:9" else "9:16"
+
+
+def _reel_text_overlays_from_body(body: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = body.get("reel_text_overlays") or []
+    if not isinstance(raw, list):
+        return []
+    positions = {"top-left", "top-center", "top-right", "middle-left", "middle-center", "middle-right", "bottom-left", "bottom-center", "bottom-right"}
+    import re
+    result = []
+    for item in raw[:8]:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()[:200]
+        if not text:
+            continue
+        color = str(item.get("color") or "#ffffff").lower()
+        if not re.fullmatch(r"#[0-9a-f]{6}", color):
+            color = "#ffffff"
+        size = _coerce_float(item.get("size")) or 54.0
+        start = max(0.0, _coerce_float(item.get("start_sec")) or 0.0)
+        duration = max(0.1, _coerce_float(item.get("duration_sec")) or 3.0)
+        result.append({"text": text, "color": color, "size": max(18.0, min(160.0, size)), "position": str(item.get("position") or "middle-center") if str(item.get("position") or "middle-center") in positions else "middle-center", "start_sec": start, "duration_sec": min(60.0, duration)})
+    return result
 
 
 def _spherical_landmarks_from_body(body: dict[str, Any]) -> dict[str, dict[str, float]] | None:

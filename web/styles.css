@@ -1359,3 +1359,10 @@ pre {
   font-size: 12px;
   cursor: pointer;
 }
+.reel-options { margin: 18px 0; padding: 14px; border: 1px solid var(--line, #ccd5d9); border-radius: 12px; background: color-mix(in srgb, var(--panel, #fff) 92%, transparent); }
+.reel-options > summary { cursor: pointer; font-weight: 700; }
+.reel-option-grid { display: grid; grid-template-columns: repeat(2, minmax(180px, 1fr)); gap: 14px; margin: 14px 0; }
+.reel-text-line { display: grid; grid-template-columns: minmax(120px, 2fr) 44px 90px 150px 90px 90px auto; gap: 8px; align-items: center; margin: 10px 0; }
+.reel-text-line input, .reel-text-line select { min-width: 0; }
+#reelPreview { display: block; width: min(100%, 360px); max-height: 420px; object-fit: contain; margin: 16px auto 0; border-radius: 10px; background: #182b38; }
+@media (max-width: 800px) { .reel-text-line { grid-template-columns: 1fr 44px 1fr; } .reel-option-grid { grid-template-columns: 1fr; } }
