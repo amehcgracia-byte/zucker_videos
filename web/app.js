@@ -121,15 +121,17 @@ function auditBackdropRuntime() {
   };
   const scrollingElement = document.scrollingElement || document.documentElement;
   const scrollBefore = scrollingElement.scrollTop;
-  const topBefore = logo?.getBoundingClientRect().top ?? null;
+  const rectBefore = logo?.getBoundingClientRect() ?? null;
+  const topBefore = rectBefore?.top ?? null;
   const maxScroll = Math.max(0, scrollingElement.scrollHeight - scrollingElement.clientHeight);
   scrollingElement.scrollTop = maxScroll;
-  const topAfter = logo?.getBoundingClientRect().top ?? null;
+  const rectAfter = logo?.getBoundingClientRect() ?? null;
+  const topAfter = rectAfter?.top ?? null;
   const allBackdropNodes = [...document.querySelectorAll('[id*="backdrop"], [class*="backdrop"]')].map((element) => {
     const style = getComputedStyle(element);
     return { id: element.id || null, className: element.className || null, position: style.position, backgroundImage: style.backgroundImage, backgroundAttachment: style.backgroundAttachment, opacity: style.opacity };
   });
-  audit.scrollTest = { scrollingElement: scrollingElement.tagName, scrollBefore, scrollAfter: scrollingElement.scrollTop, scrollDelta: scrollingElement.scrollTop - scrollBefore, logoTopBefore: topBefore, logoTopAfter: topAfter, logoTopDelta: topAfter == null || topBefore == null ? null : topAfter - topBefore, maxScroll };
+  audit.scrollTest = { scrollingElement: scrollingElement.tagName, scrollBefore, scrollAfter: scrollingElement.scrollTop, scrollDelta: scrollingElement.scrollTop - scrollBefore, logoTopBefore: topBefore, logoTopAfter: topAfter, logoTopDelta: topAfter == null || topBefore == null ? null : topAfter - topBefore, logoSizeBefore: rectBefore ? { width: rectBefore.width, height: rectBefore.height } : null, logoSizeAfter: rectAfter ? { width: rectAfter.width, height: rectAfter.height } : null, maxScroll };
   audit.backdropNodes = allBackdropNodes;
   audit.ancestorChecks = chain.map((item) => ({ id: item.id, tag: item.tag, position: item.position, overflowY: item.overflowY }));
   scrollingElement.scrollTop = scrollBefore;
