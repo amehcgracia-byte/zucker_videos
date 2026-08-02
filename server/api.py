@@ -264,7 +264,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         destination_dir.mkdir(parents=True, exist_ok=True)
         destination = unique_destination(destination_dir / Path(storage.filename).name)
         storage.save(destination)
-        return jsonify({"path": str(destination.resolve())})
+        return jsonify({"path": str(destination.resolve()), "url": f"/api/v1/wizard/reel-overlay/{destination.name}"})
+
+    @app.get("/api/v1/wizard/reel-overlay/<path:filename>")
+    def api_wizard_reel_overlay_file(filename: str) -> Response:
+        # Browsers cannot load an absolute local path; serve only uploaded
+        # overlays from the dedicated directory.
+        return send_from_directory(app_home() / "ReelOverlays", Path(filename).name)
 
     @app.post("/api/v1/wizard/songs")
     def api_wizard_songs() -> Response:

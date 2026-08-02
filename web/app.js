@@ -833,11 +833,13 @@ function drawReelPreview() {
   }
   for (const item of reelImageOverlays) {
     if (reelPlayhead < Number(item.start_sec) || reelPlayhead > Number(item.start_sec) + Number(item.duration_sec)) continue;
-    let image = reelPreviewImages.get(item.path);
-    if (!image) { image = new Image(); image.onload = () => drawReelPreview(); image.src = item.path; reelPreviewImages.set(item.path, image); }
+    const previewPath = item.preview_url || item.path;
+    let image = reelPreviewImages.get(previewPath);
+    if (!image) { image = new Image(); image.onload = () => drawReelPreview(); image.src = previewPath; reelPreviewImages.set(previewPath, image); }
     if (!image.complete || !image.naturalWidth) continue;
     const iw = canvas.width * Number(item.width || .35); const ratio = image.naturalHeight / Math.max(1, image.naturalWidth); const ih = iw * ratio;
     ctx.globalAlpha = Number(item.opacity ?? 1); ctx.drawImage(image, Number(item.x ?? .5) * canvas.width - iw / 2, Number(item.y ?? .5) * canvas.height - ih / 2, iw, ih); ctx.globalAlpha = 1;
+    if (reelDrag?.item === item) { ctx.strokeStyle = "#fff"; ctx.setLineDash([4, 3]); ctx.strokeRect(Number(item.x ?? .5) * canvas.width - iw / 2, Number(item.y ?? .5) * canvas.height - ih / 2, iw, ih); ctx.setLineDash([]); ctx.fillStyle = "#fff"; ctx.fillRect(Number(item.x ?? .5) * canvas.width + iw / 2 - 8, Number(item.y ?? .5) * canvas.height + ih / 2 - 8, 12, 12); }
   }
 }
 
@@ -2681,7 +2683,7 @@ document.addEventListener("change", (event) => {
   if (input.id === "addReelImage" && input.files?.[0]) {
     const form = new FormData(); form.append("file", input.files[0]);
     api("/wizard/reel-overlay", { method: "POST", body: form, headers: {} }).then((result) => {
-      reelImageOverlays.push({ path: result.path, x: 0.5, y: 0.5, width: 0.35, opacity: 1, animation: "fade", start_sec: 0, duration_sec: 3 });
+      reelImageOverlays.push({ path: result.path, preview_url: result.url || result.path, x: 0.5, y: 0.5, width: 0.35, opacity: 1, animation: "fade", start_sec: 0, duration_sec: 3 });
       renderReelOptions();
     }).catch((error) => showToast(error.message, true));
   }
@@ -2697,14 +2699,16 @@ document.addEventListener("pointerdown", (event) => {
   let best = visible[visible.length - 1];
   let bestDistance = Infinity;
   for (const candidate of visible) { const item = candidate.item; const distance = Math.hypot((Number(item.x ?? 0.5) - x), (Number(item.y ?? 0.5) - y)); if (distance < bestDistance) { best = candidate; bestDistance = distance; } }
-  reelDrag = { item: best.item, kind: best._kind, pointerId: event.pointerId };
+  const resizing = best._kind === "image" && Math.abs(x - (Number(best.item.x ?? .5) + Number(best.item.width ?? .35) / 2)) < 0.08 && Math.abs(y - Number(best.item.y ?? .5)) < Number(best.item.width ?? .35) * 0.7;
+  reelDrag = { item: best.item, kind: best._kind, resizing, pointerId: event.pointerId };
   canvas.setPointerCapture(event.pointerId);
 });
 document.addEventListener("pointermove", (event) => {
   if (!reelDrag) return;
   const canvas = document.querySelector("#reelPreview"), rect = canvas.getBoundingClientRect();
-  reelDrag.item.x = Math.max(0.02, Math.min(0.98, (event.clientX - rect.left) / rect.width));
-  reelDrag.item.y = Math.max(0.02, Math.min(0.98, (event.clientY - rect.top) / rect.height));
+  const x = (event.clientX - rect.left) / rect.width, y = (event.clientY - rect.top) / rect.height;
+  if (reelDrag.kind === "image" && reelDrag.resizing) reelDrag.item.width = Math.max(0.05, Math.min(0.9, Math.abs(x - Number(reelDrag.item.x ?? .5)) * 2));
+  else { reelDrag.item.x = Math.max(0.02, Math.min(0.98, x)); reelDrag.item.y = Math.max(0.02, Math.min(0.98, y)); }
   drawReelPreview();
 });
 document.addEventListener("pointerup", () => { if (reelDrag) { reelDrag = null; renderReelTimeline(); } });
