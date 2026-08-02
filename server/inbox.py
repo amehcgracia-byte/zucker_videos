@@ -42,15 +42,24 @@ def load_global_config() -> dict[str, Any]:
         with path.open("r", encoding="utf-8") as fh:
             config = json.load(fh)
     else:
-        config = {"inbox_path": str(app_home() / "Inbox")}
+        config = {"inbox_path": str(app_home() / "Inbox"), "source_folders": [str(app_home() / "Inbox")]}
         save_global_config(config)
     config.setdefault("band_name", "")
     config.setdefault("handle", "")
     inbox = Path(config.get("inbox_path") or app_home() / "Inbox").expanduser()
     inbox.mkdir(parents=True, exist_ok=True)
     config["inbox_path"] = str(inbox.resolve())
+    previous_folders = config.get("source_folders")
+    configured = previous_folders
+    if not isinstance(configured, list):
+        configured = [config["inbox_path"]]
+    config["source_folders"] = normalize_source_folders(configured, default=str(inbox))
     tools = configure_tools(config.get("ffmpeg_path"), config.get("ffprobe_path"))
-    if config.get("ffmpeg_path") != tools["ffmpeg_path"] or config.get("ffprobe_path") != tools["ffprobe_path"]:
+    if (
+        config.get("ffmpeg_path") != tools["ffmpeg_path"]
+        or config.get("ffprobe_path") != tools["ffprobe_path"]
+        or previous_folders != config["source_folders"]
+    ):
         config.update(tools)
         save_global_config(config)
     return config
@@ -65,11 +74,86 @@ def save_global_config(config: dict[str, Any]) -> None:
 
 
 def scan_inbox(root: str | None = None) -> dict[str, Any]:
-    """Scan and classify files in the configured inbox."""
-    inbox = Path(root or load_global_config()["inbox_path"]).expanduser().resolve()
-    inbox.mkdir(parents=True, exist_ok=True)
-    result = classify_paths([str(inbox)], inbox_path=str(inbox))
+    """Scan configured source folders without requiring external drives online."""
+    config = load_global_config()
+    folders = [Path(root).expanduser().resolve()] if root else [Path(path) for path in config["source_folders"]]
+    result = classify_source_folders(folders)
     result["analysis"] = inbox_analysis_snapshot()
+    return result
+
+
+def normalize_source_folders(values: list[Any], default: str | None = None) -> list[str]:
+    """Normalize configured source roots while preserving unavailable volumes."""
+    candidates = values or ([default] if default else [])
+    normalized: list[str] = []
+    for value in candidates:
+        if not isinstance(value, str) or not value.strip():
+            continue
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            continue
+        resolved = str(path.resolve())
+        if resolved not in normalized:
+            normalized.append(resolved)
+    return normalized
+
+
+def configured_source_folders() -> list[dict[str, Any]]:
+    """Return configured source roots with mount status and a user-facing message."""
+    config = load_global_config()
+    folders: list[dict[str, Any]] = []
+    for raw in config.get("source_folders") or [config["inbox_path"]]:
+        path = Path(raw).expanduser().resolve()
+        exists = path.is_dir()
+        folders.append({
+            "path": str(path),
+            "name": path.name or str(path),
+            "available": exists,
+            "message": "" if exists else f"Source folder unavailable (drive not mounted): {path}",
+        })
+    return folders
+
+
+def classify_source_folders(folders: list[Path]) -> dict[str, Any]:
+    """Classify all configured roots recursively and group results by root."""
+    result: dict[str, Any] = {
+        "inbox_path": load_global_config()["inbox_path"],
+        "source_folders": [], "groups": [], "master": [], "songs": [], "videos": [], "ignored": [],
+        "missing_sources": [],
+    }
+    seen: set[Path] = set()
+    for folder in folders:
+        resolved = folder.expanduser().resolve()
+        available = resolved.is_dir()
+        folder_info = {
+            "path": str(resolved), "name": resolved.name or str(resolved), "available": available,
+            "message": "" if available else f"Source folder unavailable (drive not mounted): {resolved}",
+        }
+        result["source_folders"].append(folder_info)
+        if not available:
+            result["missing_sources"].append(folder_info["message"])
+            result["groups"].append({**folder_info, "master": [], "songs": [], "videos": [], "ignored": []})
+            continue
+        group = {**folder_info, "master": [], "songs": [], "videos": [], "ignored": []}
+        for child in scan_input_paths([str(resolved)]):
+            if child in seen:
+                continue
+            seen.add(child)
+            suffix = child.suffix.lower()
+            if suffix not in VIDEO_EXTENSIONS and suffix not in AUDIO_EXTENSIONS and suffix != ".json":
+                continue
+            try:
+                item = classify_file(child)
+            except OSError:
+                continue
+            item["source_folder"] = str(resolved)
+            group.setdefault(item["kind"], []).append(item)
+            result.setdefault(item["kind"], []).append(item)
+            log_classification_verdict(child, item)
+        result["groups"].append(group)
+    _prefer_studio_exports(result)
+    for group in result["groups"]:
+        _prefer_studio_exports(group)
     return result
 
 
@@ -111,6 +195,21 @@ def _analysis_key(path: Path) -> str:
     return stable_fingerprint({"path": str(path.resolve()), "size": stat.st_size, "mtime": stat.st_mtime})[:32]
 
 
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.expanduser().resolve().relative_to(root.expanduser().resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _source_folder_for_path(path: Path, roots: list[Path]) -> str | None:
+    for root in roots:
+        if _path_is_within(path, root):
+            return str(root.expanduser().resolve())
+    return None
+
+
 def _write_inbox_analysis(payload: dict[str, Any]) -> None:
     path = inbox_analysis_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -129,8 +228,10 @@ def _analysis_project() -> Project:
 
 def _run_inbox_analysis(root: str | None) -> None:
     try:
-        inbox = Path(root or load_global_config()["inbox_path"]).expanduser().resolve()
-        files = [path for path in scan_input_paths([str(inbox)]) if path.suffix.lower() in VIDEO_EXTENSIONS or path.suffix.lower() in AUDIO_EXTENSIONS]
+        config = load_global_config()
+        configured = [Path(path) for path in config.get("source_folders") or [config["inbox_path"]]]
+        selected_root = Path(root).expanduser().resolve() if root else None
+        scan_roots = [selected_root] if selected_root else configured
         old: dict[str, Any] = {}
         path = inbox_analysis_path()
         if path.exists():
@@ -139,7 +240,22 @@ def _run_inbox_analysis(root: str | None) -> None:
             except (OSError, json.JSONDecodeError):
                 old = {}
         entries = dict(old.get("entries") or {})
-        current: list[dict[str, Any]] = []
+        # A folder-specific rescan must not discard cached analysis for other
+        # roots, especially when their external drive is currently unplugged.
+        preserved = []
+        for cached_entry in entries.values():
+            cached_path = Path(str(cached_entry.get("path") or "")).expanduser()
+            if selected_root and _path_is_within(cached_path, selected_root):
+                continue
+            if not selected_root:
+                continue
+            preserved.append(cached_entry)
+        current: list[dict[str, Any]] = preserved
+        files = [
+            path for scan_root in scan_roots
+            for path in scan_input_paths([str(scan_root)])
+            if path.suffix.lower() in VIDEO_EXTENSIONS or path.suffix.lower() in AUDIO_EXTENSIONS
+        ]
         current_payload = {
             "schema": 1,
             "entries": entries,
@@ -162,7 +278,7 @@ def _run_inbox_analysis(root: str | None) -> None:
             else:
                 try:
                     item = classify_file(media_path)
-                    entry = {**item, "analysis_key": key}
+                    entry = {**item, "analysis_key": key, "source_folder": _source_folder_for_path(media_path, configured)}
                     if item.get("kind") == "videos":
                         record = file_record(str(media_path))
                         record.update(video_classification_metadata(media_path))
@@ -181,8 +297,8 @@ def _run_inbox_analysis(root: str | None) -> None:
             _write_inbox_analysis(current_payload)
             with _ANALYSIS_LOCK:
                 _ANALYSIS_STATUS.update({"progress": int(index / total * 35), "detail": f"Preparing {media_path.name}"})
-        videos = [entry for entry in current if entry.get("kind") == "videos"]
-        masters = [entry for entry in current if entry.get("kind") == "master"]
+        videos = [entry for entry in current if entry.get("kind") == "videos" and Path(str(entry.get("path") or "")).exists()]
+        masters = [entry for entry in current if entry.get("kind") == "master" and Path(str(entry.get("path") or "")).exists()]
         master_results: list[dict[str, Any]] = []
         pair_total = max(1, len(videos) * len(masters))
         pair_index = 0
@@ -220,7 +336,10 @@ def _run_inbox_analysis(root: str | None) -> None:
                 with _ANALYSIS_LOCK:
                     _ANALYSIS_STATUS.update({"progress": 35 + int(pair_index / pair_total * 60), "detail": f"Matching {video['filename']} to {master['filename']}"})
             master_results.append({"path": master["path"], "filename": master["filename"], "duration": master.get("duration"), "analysis_key": master_key, "matches": matches})
-        payload = {"schema": 1, "completed_at": time.time(), "entries": {entry["analysis_key"]: entry for entry in current}, "files": current, "masters": master_results}
+        # Keep offline entries in the manifest even though they cannot
+        # participate in this run's matching.  Their path/size/mtime keyed
+        # analysis is reusable when the external volume is reconnected.
+        payload = {"schema": 1, "completed_at": time.time(), "entries": entries, "files": list(entries.values()), "masters": master_results}
         _write_inbox_analysis(payload)
         with _ANALYSIS_LOCK:
             _ANALYSIS_STATUS.update({"status": "done", "progress": 100, "detail": f"Inbox ready: {len(videos)} videos, {len(masters)} audio masters"})
@@ -237,9 +356,9 @@ def suggest_songs_json(master_path: str | None, inbox_path: str | None = None) -
         master = Path(master_path).expanduser()
         if master.exists():
             roots.append(master.resolve().parent)
-    inbox = Path(inbox_path or load_global_config()["inbox_path"]).expanduser()
-    if inbox.exists():
-        roots.append(inbox.resolve())
+    config = load_global_config()
+    configured_roots = [Path(inbox_path).expanduser()] if inbox_path else [Path(path) for path in config.get("source_folders") or [config["inbox_path"]]]
+    roots.extend(root.resolve() for root in configured_roots if root.exists())
 
     suggestions: list[dict[str, Any]] = []
     seen: set[Path] = set()
@@ -382,9 +501,15 @@ def register_selected_inputs(
 ) -> dict[str, Any]:
     """Register selected input files, optionally copying them into the project."""
     copy_inputs = bool(project.data["settings"].setdefault("inputs", {}).get("copy_into_project", False))
+    # Configured source-folder media is deliberately referenced in place;
+    # copying a multi-GB external-drive file defeats the source-folder flow.
+    configured_roots = [Path(folder["path"]) for folder in configured_source_folders()]
     earliest_stale_stage: str | None = None
     if master_path:
-        registered_master = prepare_input_file(project, master_path, "master")
+        master_in_source = any(_path_is_within(Path(master_path), root) for root in configured_roots)
+        if master_in_source:
+            copy_inputs = False
+        registered_master = Path(master_path).expanduser().resolve() if master_in_source else prepare_input_file(project, master_path, "master")
         project.data["inputs"]["master"] = file_record(str(registered_master))
         earliest_stale_stage = _earliest_stage(earliest_stale_stage, "sync")
     if songs_path:
@@ -393,6 +518,8 @@ def register_selected_inputs(
         earliest_stale_stage = _earliest_stage(earliest_stale_stage, "cut")
     videos = list(project.data["inputs"].get("videos", [])) if append_videos else []
     for path in expand_video_paths(video_paths or []):
+        if any(_path_is_within(Path(path), root) for root in configured_roots):
+            copy_inputs = False
         registered_video = prepare_input_file(project, path, "video") if copy_inputs else Path(path).expanduser().resolve()
         record = file_record(str(registered_video))
         record.update(video_classification_metadata(registered_video))

@@ -51,6 +51,14 @@
             <strong>Inbox pre-analysis</strong>
             <span id="inboxAnalysisStatus">Inbox pre-analysis has not run yet</span>
           </div>
+          <div class="source-folder-settings">
+            <label>
+              Source folders
+              <input id="sourceFolderPath" type="text" placeholder="/Volumes/RAWVideos/…" spellcheck="false" />
+            </label>
+            <button id="addSourceFolder" class="icon-button small" type="button">Add folder</button>
+            <div id="sourceFolderList" class="source-folder-list"></div>
+          </div>
           <label>
             Master audio
             <select id="inboxMasterSelect" aria-label="Master audio">

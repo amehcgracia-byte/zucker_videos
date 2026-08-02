@@ -36,7 +36,9 @@ from core.shot_review import replace_slots, review_items
 from server.inbox import (
     app_home,
     classify_paths,
+    configured_source_folders,
     load_global_config,
+    normalize_source_folders,
     reconcile_registered_inputs,
     register_selected_inputs,
     save_global_config,
@@ -188,9 +190,29 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.post("/api/v1/inbox/analysis/start")
     def api_inbox_analysis_start() -> Response:
         try:
-            return jsonify(start_inbox_analysis())
+            body = request.get_json(silent=True) or {}
+            folder = body.get("folder")
+            return jsonify(start_inbox_analysis(folder if isinstance(folder, str) and folder.strip() else None))
         except OSError as exc:
             return error_response("inbox_analysis_error", str(exc), 500)
+
+    @app.get("/api/v1/settings/source-folders")
+    def api_source_folders() -> Response:
+        return jsonify({"source_folders": configured_source_folders()})
+
+    @app.post("/api/v1/settings/source-folders")
+    def api_save_source_folders() -> Response:
+        body = _json_body()
+        folders = body.get("source_folders", body.get("folders"))
+        if not isinstance(folders, list) or not all(isinstance(folder, str) for folder in folders):
+            return error_response("bad_request", "source_folders must be a list of absolute paths", 400)
+        normalized = normalize_source_folders(folders)
+        if not normalized:
+            return error_response("bad_request", "Add at least one absolute source folder", 400)
+        config = load_global_config()
+        config["source_folders"] = normalized
+        save_global_config(config)
+        return jsonify({"source_folders": configured_source_folders()})
 
     @app.post("/api/v1/inbox/register")
     def api_inbox_register() -> Response:

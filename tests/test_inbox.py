@@ -5,7 +5,7 @@ import json
 
 from server.api import create_app
 import server.inbox as inbox
-from server.inbox import classify_paths, paired_insv_path, reconcile_registered_inputs, scan_input_paths
+from server.inbox import classify_paths, paired_insv_path, reconcile_registered_inputs, scan_inbox, scan_input_paths
 from core.project import create_project, file_record
 
 
@@ -59,6 +59,67 @@ def test_inbox_analysis_persists_and_reuses_file_pairs(tmp_path, monkeypatch):
     monkeypatch.setattr(inbox, "classify_file", lambda _path: (_ for _ in ()).throw(AssertionError("recomputed")))
     inbox._run_inbox_analysis(str(inbox_root))
     assert inbox.inbox_analysis_snapshot()["status"] == "done"
+
+
+def test_source_folders_scan_recursively_and_report_unmounted_drive(tmp_path, monkeypatch):
+    inbox_root = tmp_path / "Inbox"
+    external_root = tmp_path / "Mounted" / "Session"
+    (external_root / "raw" / "sound").mkdir(parents=True)
+    inbox_root.mkdir()
+    (external_root / "raw" / "clip.mp4").write_bytes(b"video")
+    (external_root / "raw" / "sound" / "song.wav").write_bytes(b"audio")
+    missing = tmp_path / "Volumes" / "RAWVideos"
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    config = {"inbox_path": str(inbox_root), "source_folders": [str(external_root), str(missing)]}
+    monkeypatch.setattr(inbox, "load_global_config", lambda: config)
+    monkeypatch.setattr(inbox, "classify_file", lambda path: {
+        "kind": "videos" if path.suffix == ".mp4" else "master",
+        "path": str(path), "filename": path.name, "note": "test", "checked": True,
+        **({"probe": valid_video_probe()} if path.suffix == ".mp4" else {"duration": 3.0}),
+    })
+    result = scan_inbox()
+    assert [item["filename"] for item in result["videos"]] == ["clip.mp4"]
+    assert [item["filename"] for item in result["master"]] == ["song.wav"]
+    assert result["groups"][0]["path"] == str(external_root.resolve())
+    assert result["groups"][1]["available"] is False
+    assert "drive not mounted" in result["missing_sources"][0]
+
+
+def test_source_folder_settings_api_preserves_unavailable_absolute_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    app = create_app(dev=True)
+    client = app.test_client()
+    missing = str(tmp_path / "Volumes" / "RAWVideos")
+    response = client.post("/api/v1/settings/source-folders", json={"source_folders": [missing]})
+    assert response.status_code == 200
+    payload = response.get_json()["source_folders"][0]
+    assert payload["path"] == str((tmp_path / "Volumes" / "RAWVideos").resolve())
+    assert payload["available"] is False
+    assert "drive not mounted" in payload["message"]
+
+
+def test_configured_source_media_is_registered_in_place_even_if_copy_is_enabled(tmp_path, monkeypatch):
+    source = tmp_path / "external" / "session"
+    source.mkdir(parents=True)
+    video = source / "clip.mp4"
+    master = source / "song.wav"
+    video.write_bytes(b"video")
+    master.write_bytes(b"audio")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(inbox, "load_global_config", lambda: {
+        "inbox_path": str(tmp_path / "Inbox"), "source_folders": [str(source)],
+    })
+    monkeypatch.setattr(inbox, "classify_file", lambda path: {
+        "kind": "videos" if path.suffix == ".mp4" else "master",
+        "path": str(path), "filename": path.name, "note": "test", "checked": True,
+        **({"probe": valid_video_probe()} if path.suffix == ".mp4" else {"duration": 3.0}),
+    })
+    project = create_project("in-place", str(tmp_path / "in-place.zuckervid"))
+    project.data["settings"]["inputs"]["copy_into_project"] = True
+    inbox.register_selected_inputs(project, str(master), video_paths=[str(video)])
+    assert project.data["inputs"]["master"]["path"] == str(master.resolve())
+    assert project.data["inputs"]["videos"][0]["path"] == str(video.resolve())
+    assert not (project.folder / "inputs" / "videos" / video.name).exists()
 
 
 def test_inbox_classification_extensions_and_invalid_songs(tmp_path, monkeypatch):

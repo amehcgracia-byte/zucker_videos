@@ -9,6 +9,7 @@ let setAsideVideos = [];
 let analysisSetAsideVideos = [];
 let inboxAnalysis = null;
 let inboxAnalysisTimer = null;
+let sourceFolders = [];
 let sessionFilterDisabled = false;
 let currentSongs = [];
 let latestResult = null;
@@ -197,6 +198,8 @@ async function apiForm(path, formData) {
 
 async function loadAppConfig() {
   appConfig = await api("/app/config");
+  sourceFolders = appConfig.source_folders || [];
+  renderSourceFolders();
   lastSphericalSetup = normalizeSphericalSetup(appConfig.spherical_landmarks || {});
   cameraRoleWeights = normalizeCameraRoleWeights(appConfig.camera_role_weights || cameraRoleWeights);
   applyCameraRoleWeights(cameraRoleWeights);
@@ -313,6 +316,10 @@ function selectedSphericalSourcePath() {
 
 function mergeDetected(result, source = "") {
   if (result.analysis) inboxAnalysis = result.analysis;
+  if (result.source_folders) {
+    sourceFolders = result.source_folders;
+    renderSourceFolders();
+  }
   for (const key of ["master", "songs", "videos", "ignored"]) {
     const existing = new Set(detected[key].map((item) => item.path));
     for (const item of result[key] || []) {
@@ -430,10 +437,19 @@ function renderChips() {
   }
   applyInboxAnalysisFilter();
   applySessionFilter();
-  const items = [...detected.videos, ...detected.master, ...detected.songs, ...detected.ignored];
+  const items = [...detected.videos, ...detected.master, ...detected.songs, ...detected.ignored].sort((a, b) =>
+    String(a.source_folder || "￿").localeCompare(String(b.source_folder || "￿"))
+  );
+  let previousFolder = "";
   root.innerHTML = items
     .map(
-      (item) => `
+      (item) => {
+        const folder = item.source_folder || "";
+        const heading = folder && folder !== previousFolder
+          ? `<div class="source-folder-heading">${escapeHtml(sourceFolderName(folder))}</div>`
+          : "";
+        previousFolder = folder;
+        return `${heading}
         <span class="chip ${item.kind === "ignored" ? "muted" : ""} ${isHelpfulWarning(item) ? "warning" : ""} ${isRaw360(item) ? "info" : ""}" title="${escapeHtml(
         item.path
       )}">
@@ -445,7 +461,8 @@ function renderChips() {
           <button class="chip-remove" data-remove-kind="${escapeHtml(item.kind)}" data-remove-path="${escapeHtml(item.path)}" aria-label="Remove ${escapeHtml(
         item.filename || filename(item.path)
       )}">×</button>
-        </span>`
+        </span>`;
+      }
     )
     .join("");
   if (detected.master.length > 1 && !document.querySelector("#inboxMasterSelect")) {
@@ -592,6 +609,35 @@ async function loadInbox() {
   } else if (result.analysis?.status === "running") {
     scheduleInboxAnalysisRefresh();
   }
+}
+
+function sourceFolderName(path) {
+  const item = sourceFolders
+    .map((folder) => typeof folder === "string" ? { path: folder, name: filename(folder) } : folder)
+    .find((folder) => folder.path === path);
+  return item?.name || path;
+}
+
+function renderSourceFolders() {
+  const root = document.querySelector("#sourceFolderList");
+  if (!root) return;
+  root.innerHTML = sourceFolders.map((rawFolder) => {
+    const folder = typeof rawFolder === "string" ? { path: rawFolder, name: filename(rawFolder), available: true } : rawFolder;
+    return `
+    <div class="source-folder-row ${folder.available === false ? "unavailable" : ""}">
+      <span title="${escapeHtml(folder.path)}">${escapeHtml(folder.name || folder.path)}</span>
+      <small>${escapeHtml(folder.available === false ? (folder.message || "Drive not mounted") : folder.path)}</small>
+      <button type="button" data-rescan-folder="${escapeHtml(folder.path)}">Rescan</button>
+      <button type="button" data-remove-folder="${escapeHtml(folder.path)}" aria-label="Remove source folder">×</button>
+    </div>`;
+  }).join("");
+}
+
+async function saveSourceFolders(folders) {
+  const result = await api("/settings/source-folders", { method: "POST", body: JSON.stringify({ source_folders: folders }) });
+  sourceFolders = result.source_folders || [];
+  renderSourceFolders();
+  await loadInbox();
 }
 
 function scheduleInboxAnalysisRefresh() {
@@ -2672,7 +2718,7 @@ document.addEventListener("drop", (event) => {
 
 document.addEventListener("click", (event) => {
   const rawTarget = event.target;
-  const target = rawTarget instanceof HTMLElement ? rawTarget.closest("button, [data-remove-kind], [data-open-project], [data-delete-project], [data-rescue]") || rawTarget : rawTarget;
+  const target = rawTarget instanceof HTMLElement ? rawTarget.closest("button, [data-remove-kind], [data-open-project], [data-delete-project], [data-rescue], [data-rescan-folder], [data-remove-folder]") || rawTarget : rawTarget;
   if (!(target instanceof HTMLElement)) return;
   const reviewThumb = rawTarget instanceof HTMLElement ? rawTarget.closest("[data-review-thumb]") : null;
   if (reviewThumb) {
@@ -2706,6 +2752,26 @@ document.addEventListener("click", (event) => {
   if (target.id === "scanInbox") {
     api("/inbox/analysis/start", { method: "POST" })
       .then((status) => { inboxAnalysis = status; renderInboxAnalysisStatus(); scheduleInboxAnalysisRefresh(); })
+      .catch((error) => showToast(error.message, true));
+  }
+  if (target.id === "addSourceFolder") {
+    const input = document.querySelector("#sourceFolderPath");
+    const folder = input?.value.trim() || "";
+    if (!folder.startsWith("/")) { showToast("Source folder must be an absolute path", true); return; }
+    saveSourceFolders([...sourceFolders.map((item) => typeof item === "string" ? item : item.path), folder])
+      .then(() => { input.value = ""; showToast("Source folder added"); })
+      .catch((error) => showToast(error.message, true));
+  }
+  if (target.dataset.rescanFolder) {
+    api("/inbox/analysis/start", { method: "POST", body: JSON.stringify({ folder: target.dataset.rescanFolder }) })
+      .then((status) => { inboxAnalysis = status; renderInboxAnalysisStatus(); scheduleInboxAnalysisRefresh(); })
+      .catch((error) => showToast(error.message, true));
+  }
+  if (target.dataset.removeFolder) {
+    const remaining = sourceFolders
+      .map((item) => typeof item === "string" ? item : item.path)
+      .filter((path) => path !== target.dataset.removeFolder);
+    saveSourceFolders(remaining)
       .catch((error) => showToast(error.message, true));
   }
   if (target.id === "confirmFiles") prepareStep2().catch((error) => showToast(error.message, true));
