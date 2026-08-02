@@ -252,6 +252,20 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             saved.append(str(destination.resolve()))
         return jsonify(classify_paths(saved))
 
+    @app.post("/api/v1/wizard/reel-overlay")
+    def api_wizard_reel_overlay() -> Response:
+        storage = request.files.get("file")
+        if not storage or not storage.filename:
+            return error_response("bad_request", "file is required", 400)
+        suffix = Path(storage.filename).suffix.lower()
+        if suffix not in {".png", ".webp", ".jpg", ".jpeg"}:
+            return error_response("bad_request", "Reel overlays must be PNG, WEBP, or JPEG images", 400)
+        destination_dir = app_home() / "ReelOverlays"
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        destination = unique_destination(destination_dir / Path(storage.filename).name)
+        storage.save(destination)
+        return jsonify({"path": str(destination.resolve())})
+
     @app.post("/api/v1/wizard/songs")
     def api_wizard_songs() -> Response:
         body = _json_body()
@@ -279,6 +293,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         reel_duration_sec = _reel_duration_from_body(body)
         reel_aspect = _reel_aspect_from_body(body)
         reel_text_overlays = _reel_text_overlays_from_body(body)
+        reel_image_overlays = _reel_image_overlays_from_body(body)
         if platform not in {"youtube", "instagram", "tiktok", "reel", "360"}:
             return error_response("bad_request", "platform must be youtube, reel, instagram, tiktok, or 360", 400)
         if not master:
@@ -308,6 +323,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 reel_duration_sec=reel_duration_sec,
                 reel_aspect=reel_aspect,
                 reel_text_overlays=reel_text_overlays,
+                reel_image_overlays=reel_image_overlays,
                 master_path=master,
                 songs_path=songs,
                 video_paths=videos,
@@ -325,9 +341,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         project = state.project
         if not project and project_path:
             project = load_project(project_path)
+        requested = Path(str(request.args.get("path") or "")).expanduser().resolve()
+        if requested.exists() and requested.is_file() and requested.suffix.lower() in {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}:
+            return send_file_with_range(str(requested))
         if not project or not project.data.get("inputs", {}).get("master"):
             return error_response("not_found", "Master media is not registered", 404)
-        return send_file_with_range(project.data["inputs"]["master"]["path"])
+        master_path = project.data["inputs"]["master"]["path"]
+        return send_file_with_range(master_path)
 
     @app.get("/api/v1/wizard/spherical-preview")
     def api_wizard_spherical_preview() -> Response:
@@ -974,7 +994,26 @@ def _reel_text_overlays_from_body(body: dict[str, Any]) -> list[dict[str, Any]]:
         size = _coerce_float(item.get("size")) or 54.0
         start = max(0.0, _coerce_float(item.get("start_sec")) or 0.0)
         duration = max(0.1, _coerce_float(item.get("duration_sec")) or 3.0)
-        result.append({"text": text, "color": color, "size": max(18.0, min(160.0, size)), "position": str(item.get("position") or "middle-center") if str(item.get("position") or "middle-center") in positions else "middle-center", "start_sec": start, "duration_sec": min(60.0, duration)})
+        x = _coerce_float(item.get("x")); y = _coerce_float(item.get("y"))
+        result.append({"text": text, "color": color, "size": max(18.0, min(160.0, size)), "position": str(item.get("position") or "middle-center") if str(item.get("position") or "middle-center") in positions else "middle-center", "x": max(0.0, min(1.0, x)) if x is not None else None, "y": max(0.0, min(1.0, y)) if y is not None else None, "opacity": max(0.05, min(1.0, _coerce_float(item.get("opacity")) or 1.0)), "outline_width": max(0.0, min(12.0, _coerce_float(item.get("outline_width")) or 2.0)), "animation": str(item.get("animation") or "fade") if str(item.get("animation") or "fade") in {"none", "fade", "slide", "scale"} else "fade", "start_sec": start, "duration_sec": min(60.0, duration)})
+    return result
+
+
+def _reel_image_overlays_from_body(body: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = body.get("reel_image_overlays") or []
+    if not isinstance(raw, list):
+        return []
+    result = []
+    for item in raw[:8]:
+        if not isinstance(item, dict):
+            continue
+        path = Path(str(item.get("path") or "")).expanduser().resolve()
+        if not path.exists() or path.suffix.lower() not in {".png", ".webp", ".jpg", ".jpeg"}:
+            continue
+        start = max(0.0, _coerce_float(item.get("start_sec")) or 0.0)
+        duration = min(60.0, max(0.1, _coerce_float(item.get("duration_sec")) or 3.0))
+        x_value = _coerce_float(item.get("x")); y_value = _coerce_float(item.get("y"))
+        result.append({"path": str(path), "x": max(0.0, min(1.0, x_value if x_value is not None else 0.5)), "y": max(0.0, min(1.0, y_value if y_value is not None else 0.5)), "width": max(0.05, min(1.0, _coerce_float(item.get("width")) or 0.35)), "opacity": max(0.05, min(1.0, _coerce_float(item.get("opacity")) or 1.0)), "animation": str(item.get("animation") or "fade") if str(item.get("animation") or "fade") in {"none", "fade", "slide", "scale"} else "fade", "start_sec": start, "duration_sec": duration})
     return result
 
 

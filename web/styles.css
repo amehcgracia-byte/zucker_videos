@@ -1364,5 +1364,10 @@ pre {
 .reel-option-grid { display: grid; grid-template-columns: repeat(2, minmax(180px, 1fr)); gap: 14px; margin: 14px 0; }
 .reel-text-line { display: grid; grid-template-columns: minmax(120px, 2fr) 44px 90px 150px 90px 90px auto; gap: 8px; align-items: center; margin: 10px 0; }
 .reel-text-line input, .reel-text-line select { min-width: 0; }
+.reel-playhead-label { display: grid; gap: 6px; margin-top: 16px; }
+.reel-timeline { position: relative; height: 72px; margin: 10px 0; border-radius: 8px; background: repeating-linear-gradient(90deg, rgba(120,140,150,.15) 0, rgba(120,140,150,.15) 1px, transparent 1px, transparent 10%); overflow: hidden; }
+.reel-timeline-block { position: absolute; top: 12px; height: 22px; padding: 3px 6px; overflow: hidden; white-space: nowrap; border-radius: 5px; color: #10202a; background: #ffd166; font-size: 11px; }
+.reel-timeline-block.image { top: 40px; background: #83d6c5; }
+.file-button { display: inline-flex; align-items: center; cursor: pointer; }
 #reelPreview { display: block; width: min(100%, 360px); max-height: 420px; object-fit: contain; margin: 16px auto 0; border-radius: 10px; background: #182b38; }
 @media (max-width: 800px) { .reel-text-line { grid-template-columns: 1fr 44px 1fr; } .reel-option-grid { grid-template-columns: 1fr; } }

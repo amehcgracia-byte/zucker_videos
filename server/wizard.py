@@ -155,6 +155,7 @@ class WizardRunner:
         reel_duration_sec: float | None,
         reel_aspect: str | None,
         reel_text_overlays: list[dict[str, Any]] | None,
+        reel_image_overlays: list[dict[str, Any]] | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -183,6 +184,7 @@ class WizardRunner:
                         "reel_duration_sec": reel_duration_sec,
                         "reel_aspect": reel_aspect,
                         "reel_text_overlays": reel_text_overlays,
+                        "reel_image_overlays": reel_image_overlays,
                         "master_path": master_path,
                         "songs_path": songs_path,
                         "video_paths": video_paths,
@@ -214,6 +216,7 @@ class WizardRunner:
                 "reel_duration_sec": reel_duration_sec,
                 "reel_aspect": reel_aspect,
                 "reel_text_overlays": reel_text_overlays,
+                "reel_image_overlays": reel_image_overlays,
                 "master_path": master_path,
                 "songs_path": songs_path,
                 "video_paths": video_paths,
@@ -286,6 +289,7 @@ class WizardRunner:
         reel_duration_sec: float | None,
         reel_aspect: str | None,
         reel_text_overlays: list[dict[str, Any]] | None,
+        reel_image_overlays: list[dict[str, Any]] | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -304,6 +308,7 @@ class WizardRunner:
                 "reel_duration_sec": reel_duration_sec,
                 "reel_aspect": reel_aspect,
                 "reel_text_overlays": reel_text_overlays or [],
+                "reel_image_overlays": reel_image_overlays or [],
             }
             _store_audio_trim(master_path, audio_trim)
             _store_spherical_landmarks(project, spherical_landmarks)
@@ -335,6 +340,7 @@ class WizardRunner:
                 reel_duration_sec=reel_duration_sec,
                 reel_aspect=reel_aspect,
                 reel_text_overlays=reel_text_overlays,
+                reel_image_overlays=reel_image_overlays,
                 master_path=master_path,
                 songs_path=songs_path,
                 video_paths=video_paths,
@@ -413,6 +419,7 @@ class WizardRunner:
         reel_duration_sec: float | None,
         reel_aspect: str | None,
         reel_text_overlays: list[dict[str, Any]] | None,
+        reel_image_overlays: list[dict[str, Any]] | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -428,6 +435,7 @@ class WizardRunner:
                 "reel_duration_sec": reel_duration_sec,
                 "reel_aspect": reel_aspect,
                 "reel_text_overlays": reel_text_overlays or [],
+                "reel_image_overlays": reel_image_overlays or [],
             }
             _store_audio_trim(master_path, audio_trim)
             _store_spherical_landmarks(project, spherical_landmarks)
@@ -510,6 +518,7 @@ class WizardRunner:
         reel_duration_sec: float | None,
         reel_aspect: str | None,
         reel_text_overlays: list[dict[str, Any]] | None,
+        reel_image_overlays: list[dict[str, Any]] | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -544,6 +553,7 @@ class WizardRunner:
             reel_duration_sec=reel_duration_sec,
             reel_aspect=reel_aspect,
             reel_text_overlays=reel_text_overlays,
+            reel_image_overlays=reel_image_overlays,
             master_path=master_path,
             songs_path=songs_path,
             video_paths=video_paths,

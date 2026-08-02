@@ -24,6 +24,9 @@ let lastSphericalSetup = {};
 let cameraRoleWeights = { "360": 50, handheld: 30, fixed_rear: 20 };
 let fixedRearMotion = true;
 let reelTextOverlays = [];
+let reelImageOverlays = [];
+let reelPlayhead = 0;
+let reelDrag = null;
 let sphericalMode = "automatic";
 const MAX_RECORDED_YAW_RATE_DEG_PER_SEC = 40;
 let savedAudioTrim = {};
@@ -769,16 +772,28 @@ function renderReelOptions() {
   const duration = Number(document.querySelector("#reelDuration")?.value || 30);
   const value = document.querySelector("#reelDurationValue");
   if (value) value.textContent = `${duration}s`;
+  const playhead = document.querySelector("#reelPlayhead");
+  if (playhead) { playhead.max = String(duration); playhead.value = String(Math.min(duration, reelPlayhead)); reelPlayhead = Number(playhead.value); }
   root.innerHTML = reelTextOverlays.map((item, index) => `<div class="reel-text-line" data-reel-text-index="${index}">
     <input data-reel-field="text" placeholder="Text" value="${escapeHtml(item.text)}" />
     <input data-reel-field="color" type="color" value="${item.color}" title="Colour" />
     <label>Size <input data-reel-field="size" type="number" min="18" max="160" value="${item.size}" /></label>
-    <select data-reel-field="position">${["top-left","top-center","top-right","middle-left","middle-center","middle-right","bottom-left","bottom-center","bottom-right"].map((p) => `<option value="${p}" ${p === item.position ? "selected" : ""}>${p}</option>`).join("")}</select>
+    <label>Opacity <input data-reel-field="opacity" type="range" min="0.05" max="1" step="0.05" value="${item.opacity ?? 1}" /></label>
+    <label>Style <select data-reel-field="animation"><option value="none" ${item.animation === "none" ? "selected" : ""}>None</option><option value="fade" ${item.animation !== "none" ? "selected" : ""}>Fade</option><option value="slide" ${item.animation === "slide" ? "selected" : ""}>Slide</option><option value="scale" ${item.animation === "scale" ? "selected" : ""}>Scale</option></select></label>
     <label>Start <input data-reel-field="start_sec" type="number" min="0" max="60" step="0.1" value="${item.start_sec}" /></label>
     <label>Duration <input data-reel-field="duration_sec" type="number" min="0.1" max="60" step="0.1" value="${item.duration_sec}" /></label>
     <button type="button" data-remove-reel-text="${index}">Remove</button>
   </div>`).join("");
+  renderReelTimeline();
   drawReelPreview();
+}
+
+function renderReelTimeline() {
+  const root = document.querySelector("#reelTimeline");
+  if (!root) return;
+  const duration = Number(document.querySelector("#reelDuration")?.value || 30);
+  const items = [...reelTextOverlays.map((item, index) => ({ ...item, _index: index, _kind: "text" })), ...reelImageOverlays.map((item, index) => ({ ...item, _index: index, _kind: "image" }))];
+  root.innerHTML = items.map((item) => `<div class="reel-timeline-block ${item._kind}" style="left:${Math.max(0, Number(item.start_sec) / duration * 100)}%;width:${Math.max(1, Number(item.duration_sec) / duration * 100)}%">${item._kind === "text" ? escapeHtml(item.text || "Text") : "Image"}</div>`).join("");
 }
 
 function drawReelPreview() {
@@ -793,18 +808,24 @@ function drawReelPreview() {
   ctx.fillStyle = gradient; ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = "rgba(255,255,255,.72)"; ctx.font = "16px sans-serif"; ctx.textAlign = "center";
   ctx.fillText("Reel preview", canvas.width / 2, canvas.height / 2);
+  const safeX = canvas.width * 0.12, safeY = canvas.height * 0.10, safeW = canvas.width * 0.76, safeH = canvas.height * 0.72;
+  ctx.strokeStyle = "rgba(255,255,255,.42)"; ctx.setLineDash([6, 5]); ctx.strokeRect(safeX, safeY, safeW, safeH); ctx.setLineDash([]);
+  ctx.fillStyle = "rgba(255,255,255,.65)"; ctx.font = "11px sans-serif"; ctx.textAlign = "left"; ctx.fillText("Instagram safe zone", safeX + 6, safeY + 14);
   for (const item of reelTextOverlays) {
+    if (reelPlayhead < Number(item.start_sec) || reelPlayhead > Number(item.start_sec) + Number(item.duration_sec)) continue;
     const [vertical, horizontalAlign] = item.position.split("-");
-    ctx.fillStyle = item.color; ctx.font = `700 ${Math.max(12, Number(item.size) * canvas.width / 1080)}px sans-serif`;
+    ctx.fillStyle = item.color; ctx.globalAlpha = Number(item.opacity ?? 1); ctx.font = `700 ${Math.max(12, Number(item.size) * canvas.width / 1080)}px sans-serif`;
     ctx.textAlign = horizontalAlign === "left" ? "left" : horizontalAlign === "right" ? "right" : "center";
-    const x = horizontalAlign === "left" ? 18 : horizontalAlign === "right" ? canvas.width - 18 : canvas.width / 2;
-    const y = vertical === "top" ? 48 : vertical === "bottom" ? canvas.height - 48 : canvas.height / 2;
+    const x = item.x != null ? Number(item.x) * canvas.width : horizontalAlign === "left" ? 18 : horizontalAlign === "right" ? canvas.width - 18 : canvas.width / 2;
+    const y = item.y != null ? Number(item.y) * canvas.height : vertical === "top" ? 48 : vertical === "bottom" ? canvas.height - 48 : canvas.height / 2;
+    ctx.shadowColor = "rgba(0,0,0,.75)"; ctx.shadowBlur = 4;
     ctx.fillText(item.text, x, y);
+    ctx.shadowBlur = 0; ctx.globalAlpha = 1;
   }
 }
 
 function reelOptionsFromForm() {
-  return { duration: Number(document.querySelector("#reelDuration")?.value || 30), aspect: document.querySelector("#reelAspect")?.value || "9:16", texts: reelTextOverlays };
+  return { duration: Number(document.querySelector("#reelDuration")?.value || 30), aspect: document.querySelector("#reelAspect")?.value || "9:16", texts: reelTextOverlays, images: reelImageOverlays };
 }
 
 function renderSphericalSetup() {
@@ -1907,7 +1928,8 @@ function setupTrimControls(masterPath) {
   const preview = document.querySelector("#masterPreview");
   if (preview && preview.dataset.path !== masterPath) {
     preview.dataset.path = masterPath || "";
-    preview.src = `/api/v1/wizard/master-preview?t=${Date.now()}`;
+    preview.src = `/api/v1/wizard/master-preview?path=${encodeURIComponent(masterPath)}&t=${Date.now()}`;
+    preview.onerror = () => showToast("Could not load the master audio preview", true);
   }
   if (trimDefaultsAppliedFor !== masterPath) {
     const saved = savedAudioTrim[masterPath] || {};
@@ -1988,6 +2010,7 @@ async function startWizard(options = {}) {
       reel_duration_sec: reelOptionsFromForm().duration,
       reel_aspect: reelOptionsFromForm().aspect,
       reel_text_overlays: reelOptionsFromForm().texts,
+      reel_image_overlays: reelOptionsFromForm().images,
       master: inputs.master,
       songs: inputs.songs,
       videos: inputs.videos,
@@ -2502,7 +2525,7 @@ document.addEventListener("click", (event) => {
   const target = rawTarget instanceof HTMLElement ? rawTarget.closest("button, [data-remove-kind], [data-open-project], [data-delete-project], [data-rescue]") || rawTarget : rawTarget;
   if (!(target instanceof HTMLElement)) return;
   if (target.id === "addReelText") {
-    reelTextOverlays.push({ text: "", color: "#ffffff", size: 54, position: "middle-center", start_sec: 0, duration_sec: 3 });
+    reelTextOverlays.push({ text: "", color: "#ffffff", size: 54, position: "middle-center", x: 0.5, y: 0.5, opacity: 1, outline_width: 2, animation: "fade", start_sec: 0, duration_sec: 3 });
     renderReelOptions();
   }
   if (target.dataset.removeReelText != null) {
@@ -2609,6 +2632,7 @@ document.addEventListener("input", (event) => {
   const input = event.target;
   if (!(input instanceof HTMLElement)) return;
   if (input.id === "reelDuration" || input.id === "reelAspect") { renderReelOptions(); return; }
+  if (input.id === "reelPlayhead") { reelPlayhead = Number(input.value); document.querySelector("#reelPlayheadValue").textContent = `${reelPlayhead.toFixed(1)}s`; drawReelPreview(); return; }
   const row = input.closest?.("[data-reel-text-index]");
   if (!row || !input.dataset.reelField) return;
   const index = Number(row.dataset.reelTextIndex);
@@ -2616,6 +2640,8 @@ document.addEventListener("input", (event) => {
   if (!item) return;
   const field = input.dataset.reelField;
   item[field] = ["size", "start_sec", "duration_sec"].includes(field) ? Number(input.value) : input.value;
+  if (["opacity"].includes(field)) item[field] = Number(input.value);
+  renderReelTimeline();
   drawReelPreview();
 });
 
@@ -2623,7 +2649,36 @@ document.addEventListener("change", (event) => {
   const input = event.target;
   if (!(input instanceof HTMLElement)) return;
   if (input.id === "reelAspect") drawReelPreview();
+  if (input.id === "addReelImage" && input.files?.[0]) {
+    const form = new FormData(); form.append("file", input.files[0]);
+    api("/wizard/reel-overlay", { method: "POST", body: form, headers: {} }).then((result) => {
+      reelImageOverlays.push({ path: result.path, x: 0.5, y: 0.5, width: 0.35, opacity: 1, animation: "fade", start_sec: 0, duration_sec: 3 });
+      renderReelTimeline();
+    }).catch((error) => showToast(error.message, true));
+  }
 });
+
+document.addEventListener("pointerdown", (event) => {
+  const canvas = document.querySelector("#reelPreview");
+  if (!(canvas && event.target === canvas)) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = (event.clientX - rect.left) / rect.width, y = (event.clientY - rect.top) / rect.height;
+  const visible = reelTextOverlays.filter((item) => reelPlayhead >= Number(item.start_sec) && reelPlayhead <= Number(item.start_sec) + Number(item.duration_sec));
+  if (!visible.length) return;
+  let best = visible[visible.length - 1];
+  let bestDistance = Infinity;
+  for (const item of visible) { const distance = Math.hypot((Number(item.x ?? 0.5) - x), (Number(item.y ?? 0.5) - y)); if (distance < bestDistance) { best = item; bestDistance = distance; } }
+  reelDrag = { item: best, pointerId: event.pointerId };
+  canvas.setPointerCapture(event.pointerId);
+});
+document.addEventListener("pointermove", (event) => {
+  if (!reelDrag) return;
+  const canvas = document.querySelector("#reelPreview"), rect = canvas.getBoundingClientRect();
+  reelDrag.item.x = Math.max(0.02, Math.min(0.98, (event.clientX - rect.left) / rect.width));
+  reelDrag.item.y = Math.max(0.02, Math.min(0.98, (event.clientY - rect.top) / rect.height));
+  drawReelPreview();
+});
+document.addEventListener("pointerup", () => { if (reelDrag) { reelDrag = null; renderReelTimeline(); } });
 
 document.addEventListener("toggle", (event) => {
   const target = event.target;

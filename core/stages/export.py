@@ -249,9 +249,16 @@ def _render_plan(
     segment_paths: list[Path] = []
     total_duration = _plan_duration(segments)
     color_profiles = _color_profiles_for_segments(project, segments, warnings)
+    if platform in {"reel", "reel_horizontal"}:
+        # Reel overlays are composited as RGBA images below. Do not apply the
+        # multicam colour-normalisation profile to them: it was the source of
+        # the strong green cast reported on promo exports.
+        color_profiles = {}
     overlay_config = _overlay_config(platform, segments[0])
     if platform in {"reel", "reel_horizontal"}:
         overlay_config["reel_texts"] = list(project.data.get("settings", {}).get("wizard", {}).get("reel_text_overlays") or [])
+        overlay_config["reel_images"] = list(project.data.get("settings", {}).get("wizard", {}).get("reel_image_overlays") or [])
+        overlay_config["reel_origin_sec"] = float(segments[0].get("master_start_sec") or 0.0)
     verify_motion = bool(project.data.get("settings", {}).get("export", {}).get("verify_motion", True))
     try:
         include_bookends = platform not in {"reel", "reel_horizontal"}
@@ -275,7 +282,7 @@ def _render_plan(
                         _render_segment_job,
                         project, index, segment, len(render_segments), temp_dir, master_path,
                         platform, video_bitrate, overlay_config,
-                        color_profiles.get(str(segment.get("clip_path")), {}), verify_motion,
+            color_profiles.get(str(segment.get("clip_path")), {}), verify_motion,
                         progress_callback, progress_lock,
                     )
                 )
@@ -1194,6 +1201,7 @@ def _render_segment(
     segment_probe = source.get("probe") or {}
     _warn_if_spherical_framing_was_dropped(segment, segment_probe, warnings)
     source_filter = _export_source_filter(segment_probe, _spherical_shot(segment), duration=duration, command_path=sendcmd_path)
+    reel_overlay_items = _reel_overlay_items(segment, overlay_config or {}, platform, output_path.parent)
     filter_complex = _segment_filtergraph(
         platform,
         duration,
@@ -1209,6 +1217,7 @@ def _render_segment(
         motion_filter=_motion_filter(segment, platform, duration),
         frame_count=frame_count,
         segment=segment,
+        reel_overlay_items=reel_overlay_items,
     )
     command_base = _segment_video_command_base(
         ffmpeg,
@@ -1218,6 +1227,8 @@ def _render_segment(
     )
     if watermark:
         command_base.extend(["-loop", "1", "-i", str(watermark)])
+    for image_path in reel_overlay_items:
+        command_base.extend(["-loop", "1", "-i", str(image_path)])
     command_base.extend(
         [
             "-filter_complex",
@@ -1497,6 +1508,7 @@ def _render_proxy_segment(
     command_recorder: list[list[str]] | None,
     source_filter: str | None = None,
 ) -> str:
+    reel_overlay_items = _reel_overlay_items(segment, overlay_config, platform, output_path.parent)
     proxy_filter = _segment_filtergraph(
         platform,
         duration,
@@ -1511,10 +1523,13 @@ def _render_proxy_segment(
         outro_logo=outro_logo,
         frame_count=frame_count,
         segment=segment,
+        reel_overlay_items=reel_overlay_items,
     )
     proxy_command = _segment_video_command_base(ffmpeg, proxy_path, segment, duration)
     if watermark:
         proxy_command.extend(["-loop", "1", "-i", str(watermark)])
+    for image_path in reel_overlay_items:
+        proxy_command.extend(["-loop", "1", "-i", str(image_path)])
     proxy_command.extend(
         [
             "-filter_complex",
@@ -2356,6 +2371,7 @@ def _segment_filtergraph(
     motion_filter: str | None = None,
     frame_count: int | None = None,
     segment: dict[str, Any] | None = None,
+    reel_overlay_items: list[dict[str, Any]] | None = None,
 ) -> str:
     filters = []
     if source_filter:
@@ -2377,15 +2393,40 @@ def _segment_filtergraph(
     filters.append(f"tpad=stop_mode=clone:stop_duration={1.0 / TARGET_EXPORT_FPS:.6f}")
     filters.append("format=yuv420p")
     graph = f"[0:v]{','.join(filter for filter in filters if filter)}[base]"
+    overlay_items = reel_overlay_items or []
+    current_label = "base"
+    overlay_graph = []
+    overlay_start = 2 if has_watermark else 1
+    for index, item in enumerate(overlay_items):
+        output_label = f"reel_overlay_{index}"
+        input_index = overlay_start + index
+        fade = str(item.get("animation") or "fade").lower()
+        fade_in = "fade=t=in:st=0:d=0.25:alpha=1," if fade in {"fade", "slide", "scale"} else ""
+        fade_out = f"fade=t=out:st={max(0.0, float(item.get('end_sec') or duration) - 0.25):.3f}:d=0.25:alpha=1," if fade in {"fade", "slide", "scale"} else ""
+        overlay_graph.append(
+            f"[{input_index}:v]format=rgba,{fade_in}{fade_out}setpts=PTS-STARTPTS[reel_src_{index}];"
+            f"[{current_label}][reel_src_{index}]overlay=0:0:enable='between(t,{float(item.get('start_sec') or 0.0):.3f},{float(item.get('end_sec') or duration):.3f})':format=auto[{output_label}]"
+        )
+        current_label = output_label
+    if overlay_graph:
+        graph += ";" + ";".join(overlay_graph)
+        graph += f";[{current_label}]copy[composited]"
+        current_label = "composited"
     if not has_watermark:
-        return f"{graph};[base]copy[v]"
+        return f"{graph};[{current_label}]copy[v]"
     margin = 40 if platform == "youtube" else 28
     wm_height = 65 if platform == "youtube" else 58
     if not intro_logo and not outro_logo:
+        if overlay_items:
+            return (
+                f"{graph};"
+                f"[1:v]format=rgba,scale=-1:{wm_height},colorchannelmixer=aa=0.70[wm];"
+                f"[{current_label}][wm]overlay=W-w-{margin}:H-h-{margin}:format=auto[v]"
+            )
         return (
             f"{graph};"
             f"[1:v]format=rgba,scale=-1:{wm_height},colorchannelmixer=aa=0.70[wm];"
-            f"[base][wm]overlay=W-w-{margin}:H-h-{margin}:format=auto[v]"
+            f"[{current_label}][wm]overlay=W-w-{margin}:H-h-{margin}:format=auto[v]"
         )
     return _logo_overlay_filtergraph(graph, platform, duration, intro_logo, outro_logo, margin=margin, wm_height=wm_height)
 
@@ -3167,6 +3208,87 @@ def _selection_reason(base: str, selection: dict[str, Any] | None) -> str:
     return f"{base}; {covered:.1f}s overlaps the requested window"
 
 
+def _reel_overlay_items(
+    segment: dict[str, Any],
+    config: dict[str, Any],
+    platform: str,
+    output_dir: Path,
+) -> list[dict[str, Any]]:
+    """Rasterise Reel overlays so builds without libavfilter drawtext still work."""
+    if platform not in {"reel", "reel_horizontal"}:
+        return []
+    width, height = _target_size(platform)
+    items: list[dict[str, Any]] = []
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except Exception:
+        LOGGER.exception("Pillow is required for Reel text overlays")
+        return []
+    overlay_specs = [("text", item) for item in config.get("reel_texts") or []]
+    overlay_specs += [("image", item) for item in config.get("reel_images") or []]
+    for index, (kind, raw) in enumerate(overlay_specs):
+        if kind == "image":
+            try:
+                image = Image.open(str(raw.get("path"))).convert("RGBA")
+                max_width = max(40, int(width * max(0.05, min(1.0, float(raw.get("width") or 0.35)))))
+                image.thumbnail((max_width, height), Image.Resampling.LANCZOS)
+                alpha = image.getchannel("A").point(lambda value: round(value * max(0.05, min(1.0, float(raw.get("opacity") or 1.0)))))
+                image.putalpha(alpha)
+                canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+                x = int(float(raw.get("x") or 0.5) * width - image.width / 2)
+                y = int(float(raw.get("y") or 0.5) * height - image.height / 2)
+                canvas.alpha_composite(image, (x, y))
+                image_path = output_dir / f"reel-overlay-image-{index}.png"
+                canvas.save(image_path)
+                start = max(0.0, float(raw.get("start_sec") or 0.0) - float(config.get("reel_origin_sec") or 0.0))
+                end = min(float(segment.get("duration_sec") or 0.0), start + max(0.1, float(raw.get("duration_sec") or 3.0)))
+                items.append({"path": image_path, "start_sec": start, "end_sec": end, "animation": raw.get("animation") or "fade"})
+            except Exception:
+                LOGGER.warning("Skipping unreadable Reel image overlay %s", raw.get("path"), exc_info=True)
+            continue
+        text = str(raw.get("text") or "").strip()
+        if not text:
+            continue
+        color = str(raw.get("color") or "#ffffff")
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            color = "#ffffff"
+        opacity = max(0.05, min(1.0, float(raw.get("opacity", 1.0))))
+        rgba = tuple(int(color[offset:offset + 2], 16) for offset in (1, 3, 5)) + (round(opacity * 255),)
+        size = max(18, min(160, int(float(raw.get("size") or 54))))
+        font = ImageFont.truetype(str(_font_path()), size) if _font_path() else ImageFont.load_default()
+        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        bbox = draw.multiline_textbbox((0, 0), text, font=font, stroke_width=max(0, int(raw.get("outline_width") or 2)))
+        text_width, text_height = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        x = raw.get("x")
+        y = raw.get("y")
+        if x is None or y is None:
+            position = str(raw.get("position") or "middle-center")
+            vertical, horizontal = position.split("-", 1) if "-" in position else ("middle", "center")
+            x = {"left": 0.08, "center": 0.5, "right": 0.92}.get(horizontal, 0.5)
+            y = {"top": 0.08, "middle": 0.5, "bottom": 0.92}.get(vertical, 0.5)
+        px = int(float(x) * width - (text_width / 2 if float(x) <= 1 else 0))
+        py = int(float(y) * height - (text_height / 2 if float(y) <= 1 else 0))
+        if float(x) <= 1 and str(raw.get("position") or "").endswith("left"):
+            px = int(float(x) * width)
+        if float(x) <= 1 and str(raw.get("position") or "").endswith("right"):
+            px = int(float(x) * width - text_width)
+        if float(y) <= 1 and str(raw.get("position") or "").startswith("top"):
+            py = int(float(y) * height)
+        if float(y) <= 1 and str(raw.get("position") or "").startswith("bottom"):
+            py = int(float(y) * height - text_height)
+        outline = max(0, min(12, int(raw.get("outline_width") or 2)))
+        shadow = (0, 0, 0, round(opacity * 190))
+        draw.multiline_text((px + 3, py + 3), text, font=font, fill=shadow, stroke_width=outline, stroke_fill=shadow)
+        draw.multiline_text((px, py), text, font=font, fill=rgba, stroke_width=outline, stroke_fill=(0, 0, 0, round(opacity * 230)))
+        image_path = output_dir / f"reel-overlay-text-{index}.png"
+        image.save(image_path)
+        start = max(0.0, float(raw.get("start_sec") or 0.0) - float(config.get("reel_origin_sec") or 0.0))
+        end = min(float(segment.get("duration_sec") or 0.0), start + max(0.1, float(raw.get("duration_sec") or 3.0)))
+        items.append({"path": image_path, "start_sec": start, "end_sec": end, "animation": raw.get("animation") or "fade"})
+    return items
+
+
 def _text_filters(platform: str, duration: float, config: dict[str, Any]) -> list[str]:
     title = str(config.get("title") or "").strip()
     band = str(config.get("band_name") or "").strip()
@@ -3285,6 +3407,7 @@ def _has_real_alpha(path: Path) -> bool:
 
 def _font_path() -> Path | None:
     for candidate in (
+        Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "assets" / "fonts" / "ReelSans.ttf",
         Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
         Path("/System/Library/Fonts/SFNS.ttf"),
         Path("/Library/Fonts/Arial.ttf"),

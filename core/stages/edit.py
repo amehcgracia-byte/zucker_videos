@@ -303,6 +303,7 @@ def _reel_promo_plan(
         "reel_duration_sec": round(duration, 6),
         "reel_aspect": str(wizard.get("reel_aspect") or "9:16"),
         "reel_text_overlays": list(wizard.get("reel_text_overlays") or []),
+        "reel_image_overlays": list(wizard.get("reel_image_overlays") or []),
         "title": window.get("title") or t("full_video"),
         "real_edit_logic": "reel unsynchronised promo: independent dynamic source selection on master beats",
         "warnings": coverage.get("warnings") or [],
