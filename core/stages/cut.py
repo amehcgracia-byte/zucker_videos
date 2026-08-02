@@ -56,8 +56,12 @@ class CutStage(Stage):
         window = _selected_window(songs, song_choice, sync_map, wizard)
         if platform == "reel":
             reel_duration = max(REEL_MIN_DURATION_SEC, min(REEL_MAX_DURATION_SEC, float(wizard.get("reel_duration_sec") or REEL_DEFAULT_DURATION_SEC)))
-            master_path = str((project.data.get("inputs", {}).get("master") or {}).get("path") or "")
-            window = _pick_energetic_window(master_path, window, reel_duration)
+            # The Reel music bed is the exact master Start/End selection. The
+            # duration control limits that selection when it is longer, but
+            # never silently relocates it to an automatically detected energy
+            # peak.
+            if float(window.get("duration_sec") or 0.0) > reel_duration:
+                window = {**window, "duration_sec": reel_duration, "trim_end_sec": float(window["start_sec"]) + reel_duration}
         warnings_360: list[str] = []
         if platform == "360":
             clip = _select_360_clip(selection["clips"])
