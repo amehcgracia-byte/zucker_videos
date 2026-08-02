@@ -60,6 +60,32 @@ def test_next_landmark_prefers_nearby_yaw_while_preserving_variety():
     assert chosen["type"] == "audience"
 
 
+def test_weighted_landmark_rotation_does_not_lock_to_nearest_yaw():
+    from core.stages.edit import _next_weighted_spherical_shot
+
+    shots = [
+        {"type": "left", "yaw": 250.0, "weight": 40.0},
+        {"type": "audience", "yaw": 172.0, "weight": 15.0},
+        {"type": "full_stage", "yaw": 0.0, "weight": 15.0},
+        {"type": "singer", "yaw": 335.0, "weight": 5.0},
+    ]
+    usage, recent, previous_type, previous_yaw = {}, [], None, None
+    chosen = []
+    for _ in range(20):
+        shot = _next_weighted_spherical_shot(
+            shots, usage, previous_yaw=previous_yaw,
+            previous_type=previous_type, recent_types=recent,
+        )
+        chosen.append(shot["type"])
+        usage[shot["type"]] = usage.get(shot["type"], 0) + 1
+        previous_type, previous_yaw = shot["type"], shot["yaw"]
+        recent.append(previous_type)
+        del recent[:-4]
+    assert set(chosen) == {"left", "audience", "full_stage", "singer"}
+    assert chosen.count("left") >= 7
+    assert all(a != b for a, b in zip(chosen, chosen[1:]))
+
+
 def test_youtube_plan_excludes_missing_sources_and_cuts_on_bars():
     coverage = {
         "platform": "youtube",

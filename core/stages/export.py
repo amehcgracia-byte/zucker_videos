@@ -60,11 +60,11 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # against the filter's instance name ("v360@sphere"), NOT the bare "@id" suffix.
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
-EXPORT_SEGMENT_RECIPE_VERSION = 19
+EXPORT_SEGMENT_RECIPE_VERSION = 20
 # v17 adds byte-level and full-shot attestation to segment sidecars.  A file
 # with a copied/reused sidecar is no longer accepted if its bytes or authored
 # motion fields differ from the current render.
-SPHERICAL_MOTION_RECIPE_VERSION = 20
+SPHERICAL_MOTION_RECIPE_VERSION = 21
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_HOLD_COMMAND_COUNT = 2
@@ -2566,7 +2566,8 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "landmark_hold_min_sec": 6.0,
         "landmark_hold_target_sec": 8.0,
         "landmark_hold_max_sec": 12.0,
-        "landmark_selection_policy": "nearest_yaw_first_with_90_degree_hard_cut_guard_v1",
+        "landmark_selection_policy": "weighted_deficit_primary_recency_penalty_yaw_tiebreak_v2",
+        "fixed_camera_motion_policy": "half_of_fixed_rear_cuts_gentle_ken_burns_v2",
         "recorded_yaw_max_rate_deg_per_sec": 40.0,
         "short_segment_static_sec": SPHERICAL_SHORT_SEGMENT_STATIC_SEC,
         "normal_fov_min": SPHERICAL_NORMAL_FOV_MIN,

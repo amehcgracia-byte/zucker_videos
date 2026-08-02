@@ -231,6 +231,8 @@ def _youtube_multicam_plan(
     previous_framing: dict[str, Any] | None = None  # C: track framing for consecutive-duplicate detection
     previous_spherical_yaw: float | None = None
     previous_spherical_type: str | None = None
+    recent_spherical_types: list[str] = []
+    fixed_rear_motion_index = 0
     usage_counts: dict[str, int] = {}
     operator_samples_cache: dict[str, list[dict[str, Any]]] = {}
     selection_stats = _selection_stats_template(sources, start, end)
@@ -310,18 +312,26 @@ def _youtube_multicam_plan(
                     include_planet=include_planet,
                     previous_yaw=previous_spherical_yaw,
                     previous_type=previous_spherical_type,
+                    recent_types=recent_spherical_types,
                 )
                 # Always attach a shot with motion, even with no configured landmarks
                 # (shot=None) — a 360 segment must never fall back to a frozen,
                 # motionless equirect passthrough.
                 segment["spherical_shot"] = _spherical_motion_profile(shot or {}, segment_index, enabled=spherical_motion, hold_motion=hold_motion)
-        elif fixed_rear_motion and _source_role(source) == "fixed_rear" and segment_index % 2 == 0:
-            segment["motion"] = _ken_burns_motion(segment_index)
+        elif fixed_rear_motion and _source_role(source) == "fixed_rear":
+            # Count only fixed-camera cuts, not global timeline indices: this
+            # keeps the intended roughly-half cadence even when other cameras
+            # are inserted between iPhone shots.
+            if fixed_rear_motion_index % 2 == 0:
+                segment["motion"] = _ken_burns_motion(fixed_rear_motion_index)
+            fixed_rear_motion_index += 1
         _apply_operator_avoidance(segment, source, operator_samples_cache)
         previous_framing = _framing_descriptor(source, segment)
         if _source_role(source) == "360" and segment.get("spherical_shot"):
             previous_spherical_yaw = float(segment["spherical_shot"].get("yaw") or 0.0) % 360.0
             previous_spherical_type = str(segment["spherical_shot"].get("type") or "")
+            recent_spherical_types.append(previous_spherical_type)
+            del recent_spherical_types[:-4]
         segments.append(segment)
         bar_index = next_index
         segment_index += 1
@@ -345,6 +355,11 @@ def _youtube_multicam_plan(
         "cut_count": max(0, len(segments) - 1),
         "camera_usage": usage,
         "spherical_shot_usage": _spherical_shot_usage(segments),
+        "spherical_landmark_weights": {
+            shot_type: float(data.get("weight") or 0.0)
+            for shot_type, data in spherical_landmarks.items()
+            if isinstance(data, dict)
+        },
         "spherical_recording_usage": _spherical_recording_usage(segments, spherical_mode, recorded_moves),
         "segments": segments,
     }
@@ -587,6 +602,7 @@ def _next_weighted_spherical_shot(
     include_planet: bool = False,
     previous_yaw: float | None = None,
     previous_type: str | None = None,
+    recent_types: list[str] | None = None,
 ) -> dict[str, Any] | None:
     candidates = [
         shot
@@ -595,31 +611,30 @@ def _next_weighted_spherical_shot(
     ]
     if not candidates:
         return None
+    recent_types = recent_types or []
+
     def distance(shot: dict[str, Any]) -> float:
         if previous_yaw is None:
             return 0.0
         return abs(((float(shot.get("yaw") or 0.0) - previous_yaw + 180.0) % 360.0) - 180.0)
 
-    # Preserve variety when there is a different landmark within the hard-cut
-    # radius. Repeating the nearest landmark indefinitely would solve jumps by
-    # collapsing the edit to one angle, which is not the intended pacing fix.
-    alternatives = [
-        shot for shot in candidates
-        if str(shot.get("type") or "") != previous_type and distance(shot) <= 90.0
-    ]
-    if alternatives:
-        candidates = alternatives
+    def score(shot: dict[str, Any]) -> tuple[float, float, float, str]:
+        shot_type = str(shot.get("type") or "")
+        weight = max(0.001, float(shot.get("weight") or 1.0))
+        # Deficit from the configured weighted rotation is primary. A shot
+        # below its target share beats a nearby shot that is already overused.
+        weighted_deficit = usage.get(shot_type, 0) / weight
+        if shot_type == previous_type:
+            weighted_deficit += 100.0
+        elif shot_type in recent_types[-3:]:
+            # Recency breaks ties without overpowering the configured weight:
+            # a 40-point landmark must still catch up after being underused.
+            weighted_deficit += 0.01 * (4 - recent_types[-3:].index(shot_type))
+        # Yaw is only a soft tiebreaker. It can make equal-priority choices
+        # gentler, but can never starve a configured landmark.
+        return (weighted_deficit, distance(shot), usage.get(shot_type, 0), shot_type)
 
-    return dict(sorted(
-        candidates,
-        key=lambda shot: (
-            distance(shot) > 90.0,
-            distance(shot),
-            usage.get(str(shot.get("type")), 0) / max(0.001, float(shot.get("weight") or 1.0)),
-            usage.get(str(shot.get("type")), 0),
-            str(shot.get("type")),
-        ),
-    )[0])
+    return dict(min(candidates, key=score))
 
 
 def _extend_360_hold_index(
@@ -1118,7 +1133,7 @@ def _ken_burns_motion(index: int) -> dict[str, Any]:
         if pick <= cursor:
             pan_x, pan_y = x, y
             break
-    zoom_delta = rng.uniform(0.16, 0.22)
+    zoom_delta = rng.uniform(0.05, 0.11)
     zoom_in = rng.random() < 0.58
     return {
         "type": "ken_burns",
