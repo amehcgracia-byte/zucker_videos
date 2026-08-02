@@ -508,6 +508,9 @@ def _render_360_plan(
             inject_spherical_metadata(str(muxed), str(output_path))
         except SphericalMetadataError as exc:
             raise FFmpegError(f"360 export failed spherical metadata verification: {exc}") from exc
+        if not output_path.exists() or output_path.stat().st_size <= 0:
+            raise FFmpegError(f"360 export completed without a durable output file: {output_path}")
+        LOGGER.info("360 export output written: %s (%d bytes)", output_path, output_path.stat().st_size)
         passthrough_note = (
             "360 export is a direct passthrough: the original clip is trimmed via stream copy "
             "(no re-encode of the body) and only the synced master audio plus intro/outro logos "

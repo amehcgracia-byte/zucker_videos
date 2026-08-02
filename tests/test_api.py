@@ -26,7 +26,7 @@ from server.api import (
     _spherical_preview_frame,
 )
 from server.inbox import load_global_config
-from server.wizard import WizardJob, _store_audio_trim
+from server.wizard import WizardJob, _select_360_inputs, _store_audio_trim
 
 
 def valid_video_probe(duration: str = "3.0", width: int = 1280, height: int = 720) -> dict:
@@ -179,6 +179,29 @@ def test_wizard_start_soft_rules_require_video_and_master(tmp_path):
     )
     assert response.status_code == 400
     assert response.get_json()["error"]["code"] == "missing_master"
+
+
+def test_360_input_selection_keeps_audio_candidates(tmp_path, monkeypatch):
+    """360 narrowing must filter only camera videos, never the master audio."""
+    spherical = tmp_path / "camera.mp4"
+    other_video = tmp_path / "sony.mp4"
+    master = tmp_path / "master.mp3"
+    spherical.write_bytes(b"360")
+    other_video.write_bytes(b"sony")
+    master.write_bytes(b"audio")
+
+    def fake_classify(path):
+        if path.suffix == ".mp3":
+            return {"kind": "master"}
+        if path.name == "camera.mp4":
+            return {"kind": "videos", "projection": "equirect"}
+        return {"kind": "videos", "projection": "flat"}
+
+    monkeypatch.setattr("server.wizard.classify_file", fake_classify)
+    selected_master, selected_videos = _select_360_inputs("", [str(spherical), str(other_video), str(master)])
+
+    assert selected_master == str(master)
+    assert selected_videos == [str(spherical)]
 
 
 def test_wizard_start_after_relaunch_reuses_prepared_project(tmp_path, monkeypatch):

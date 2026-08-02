@@ -281,8 +281,8 @@ class WizardRunner:
         try:
             project = _create_wizard_project(name)
             _attach_project(job, project)
-            selected_video_paths = _360_only_video_paths(video_paths) if platform == "360" else video_paths
-            register_selected_inputs(project, master_path=master_path, songs_path=songs_path, video_paths=selected_video_paths, append_videos=False)
+            selected_master_path, selected_video_paths = _select_360_inputs(master_path, video_paths) if platform == "360" else (master_path, video_paths)
+            register_selected_inputs(project, master_path=selected_master_path, songs_path=songs_path, video_paths=selected_video_paths, append_videos=False)
             _write_stage_log(project, "wizard", f"Master audio selected: {Path(master_path).name}")
             project.data["settings"]["wizard"] = {
                 "platform": platform,
@@ -432,6 +432,7 @@ class WizardRunner:
             export_path = Path(export["path"])
             if export_path.suffix.lower() != ".mp4" or not export_path.exists():
                 raise RuntimeError(f"Export did not produce an MP4: {export_path}")
+            _write_stage_log(project, "wizard", f"EXPORT OUTPUT {export_path.resolve()} ({export_path.stat().st_size} bytes)")
             job.status = "done"
             job.progress = 100
             job.message = t("done")
@@ -644,6 +645,30 @@ def _360_only_video_paths(video_paths: list[str]) -> list[str]:
         raise ValueError("360 mode requires an equirectangular MP4 or an INSV clip")
     spherical.sort(key=lambda value: value[0])
     return [spherical[0][1]]
+
+
+def _select_360_inputs(master_path: str, input_paths: list[str]) -> tuple[str, list[str]]:
+    """Keep audio candidates separate while narrowing only video inputs.
+
+    The UI normally sends the master separately from ``videos``.  Keeping this
+    boundary explicit also protects callers that pass a mixed Inbox selection:
+    MP3/WAV candidates must survive the 360 video-only filter and remain
+    available for the final audio mux.
+    """
+    audio_candidates: list[str] = []
+    video_candidates: list[str] = []
+    for path in input_paths:
+        try:
+            item = classify_file(Path(path))
+        except Exception:  # noqa: BLE001 - an invalid extra candidate is ignored
+            item = {}
+        kind = str(item.get("kind") or "")
+        if kind == "master":
+            audio_candidates.append(path)
+        elif kind == "videos":
+            video_candidates.append(path)
+    selected_master = master_path or (audio_candidates[0] if audio_candidates else "")
+    return selected_master, _360_only_video_paths(video_candidates)
 
 
 def wizard_song_options(songs_path: str | None) -> list[dict[str, Any]]:
