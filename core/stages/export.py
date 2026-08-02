@@ -3408,6 +3408,7 @@ def _has_real_alpha(path: Path) -> bool:
 def _font_path() -> Path | None:
     for candidate in (
         Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "assets" / "fonts" / "ReelSans.ttf",
+        Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "assets" / "fonts" / "Verdana Bold.ttf",
         Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
         Path("/System/Library/Fonts/SFNS.ttf"),
         Path("/Library/Fonts/Arial.ttf"),

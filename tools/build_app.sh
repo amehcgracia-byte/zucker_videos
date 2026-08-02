@@ -46,7 +46,7 @@ PY
   --add-data "$ROOT/web:web" \
   --add-data "$ROOT/assets/models:assets/models" \
   --add-data "$ROOT/core/vendor:core/vendor" \
-  --add-data "/System/Library/Fonts/Supplemental/Verdana Bold.ttf:assets/fonts/ReelSans.ttf" \
+  --add-data "/System/Library/Fonts/Supplemental/Verdana Bold.ttf:assets/fonts" \
   --add-data "$BUILD_INFO:." \
   --hidden-import librosa \
   --hidden-import cv2 \
