@@ -41,6 +41,9 @@ from core.stages.export import (
     SPHERE_V360_LABEL,
     _render_plan,
     _render_segment,
+    _render_logo_clip,
+    _render_matched_logo_clip,
+    _missing_project_sources,
     _reel_overlay_items,
     _segment_filtergraph,
     _segment_worker_count,
@@ -1188,6 +1191,41 @@ def test_segment_worker_count_is_bounded_and_scales_with_cpu(tmp_path, monkeypat
     }))
     assert _segment_worker_count(project, 20) == 8
     assert _segment_worker_count(project, 3) == 3
+
+
+def test_logo_clips_are_cached_by_kind_and_encoding_parameters(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    logo = tmp_path / "logo.png"
+    logo.write_bytes(b"logo")
+    calls = []
+
+    def fake_ffmpeg(command, duration, label, progress):
+        calls.append(label)
+        Path(command[-1]).write_bytes(b"encoded-logo")
+
+    monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", fake_ffmpeg)
+    monkeypatch.setattr("core.stages.export._intro_logo_path", lambda: logo)
+    monkeypatch.setattr("core.stages.export._logo_path", lambda: logo)
+    intro = tmp_path / "intro.mp4"
+    outro = tmp_path / "outro.mp4"
+    _render_logo_clip(intro, "youtube", "intro", 10.2, 4_000_000, None)
+    _render_logo_clip(outro, "youtube", "intro", 10.2, 4_000_000, None)
+    assert len(calls) == 1
+    assert intro.read_bytes() == outro.read_bytes()
+    assert _logo_clip_cache_path_for_test("intro") != _logo_clip_cache_path_for_test("outro")
+
+
+def _logo_clip_cache_path_for_test(kind: str):
+    from core.stages.export import _logo_clip_cache_path
+    return _logo_clip_cache_path(kind, 10.2, 4_000_000, None, {"width": 1920}, "test")
+
+
+def test_missing_project_sources_lists_relinkable_paths(tmp_path):
+    project = create_project("missing", str(tmp_path / "missing.zuckervid"))
+    missing = tmp_path / "gone clip.mp4"
+    project.data["inputs"]["videos"] = [{"path": str(missing)}]
+    result = _missing_project_sources(project, {"segments": [{"source_path": str(missing)}]})
+    assert result == [str(missing)]
 
 
 @pytest.mark.slow

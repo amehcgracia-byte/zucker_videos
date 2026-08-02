@@ -50,6 +50,8 @@ from core.stages.edit import (
 )
 
 LOGGER = logging.getLogger(__name__)
+_LOGO_CACHE_LOCK = threading.RLock()
+LOGO_CACHE_RECIPE_VERSION = 1
 MAX_EXPORT_BYTES = int(1.9 * 1024 * 1024 * 1024)
 AUDIO_BITRATE = 192_000
 MIN_ACCEPTABLE_VIDEO_BITRATE = 2_500_000
@@ -109,6 +111,15 @@ class ExportStage(Stage):
         segments = _frame_normalized_segments(plan.get("segments") or [])
         if not segments:
             raise ValueError(t("missing_segments"))
+        missing_sources = _missing_project_sources(project, plan)
+        if missing_sources:
+            listed = "\n".join(f"• {path}" for path in missing_sources[:12])
+            extra = f"\n…and {len(missing_sources) - 12} more." if len(missing_sources) > 12 else ""
+            raise FFmpegError(
+                "This project references source files that are no longer available:\n"
+                f"{listed}{extra}\n\n"
+                "Re-link the files in the Inbox or choose Rebuild project to run analysis again."
+            )
         master = project.data["inputs"].get("master")
         if not master:
             raise ValueError(t("missing_master_for_export"))
@@ -188,6 +199,31 @@ class ExportStage(Stage):
         )
         progress_callback(100, t("export_ready"))
         return self.outputs(project)
+
+
+def _missing_project_sources(project: Project, plan: dict[str, Any]) -> list[str]:
+    """Return unique source paths referenced by the project that disappeared."""
+    candidates: list[str] = []
+    master = project.data.get("inputs", {}).get("master") or {}
+    if master.get("path"):
+        candidates.append(str(master["path"]))
+    for record in project.data.get("inputs", {}).get("videos", []):
+        path = record.get("path") or record.get("source_path")
+        if path:
+            candidates.append(str(path))
+    for segment in plan.get("segments") or []:
+        path = segment.get("source_path") or segment.get("clip_path")
+        if path:
+            candidates.append(str(path))
+    missing: list[str] = []
+    seen: set[str] = set()
+    for raw in candidates:
+        path = str(Path(raw).expanduser())
+        if path in seen or Path(path).exists():
+            continue
+        seen.add(path)
+        missing.append(path)
+    return missing
 
 
 def _export_run_id() -> str:
@@ -967,6 +1003,28 @@ def _render_matched_logo_clip(
     ffmpeg = _ffmpeg_path()
     logo = _intro_logo_path() or _logo_path()
     width, height, fps = profile["width"], profile["height"], profile["fps"]
+    cache_path = _logo_clip_cache_path(
+        kind,
+        duration,
+        video_bitrate,
+        logo,
+        {
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "codec": profile.get("codec_name"),
+            "profile": profile.get("profile"),
+            "level": profile.get("level"),
+            "pix_fmt": profile.get("pix_fmt"),
+        },
+        mode="matched",
+    )
+    with _LOGO_CACHE_LOCK:
+        if _reuse_cached_logo(cache_path, output_path):
+            return
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        render_path = cache_path.with_name(f".{cache_path.stem}.{os.getpid()}.{threading.get_ident()}.tmp.mp4")
+        render_path.unlink(missing_ok=True)
     command = [
         ffmpeg,
         "-y",
@@ -1004,11 +1062,56 @@ def _render_matched_logo_clip(
     hw_codec, sw_codec = _matching_encoders(profile["codec_name"])
     matched_options = ["-g", "1", "-bf", "0"] if profile["codec_name"] in {"hevc", "h265"} else []
     try:
-        _run_ffmpeg_progress(command + _video_encode_args(hw_codec, video_bitrate) + matched_options + [str(output_path)], duration, f"{kind.title()} logo", progress_callback)
+        _run_ffmpeg_progress(command + _video_encode_args(hw_codec, video_bitrate) + matched_options + [str(render_path)], duration, f"{kind.title()} logo", progress_callback)
     except FFmpegError:
-        if output_path.exists():
-            output_path.unlink()
-        _run_ffmpeg_progress(command + _video_encode_args(sw_codec, video_bitrate) + matched_options + [str(output_path)], duration, f"{kind.title()} logo", progress_callback)
+        render_path.unlink(missing_ok=True)
+        _run_ffmpeg_progress(command + _video_encode_args(sw_codec, video_bitrate) + matched_options + [str(render_path)], duration, f"{kind.title()} logo", progress_callback)
+    try:
+        os.replace(render_path, cache_path)
+        shutil.copy2(cache_path, output_path)
+    finally:
+        render_path.unlink(missing_ok=True)
+
+
+def _logo_clip_cache_path(
+    kind: str,
+    duration: float,
+    video_bitrate: int,
+    logo: Path | None,
+    parameters: dict[str, Any],
+    mode: str,
+) -> Path:
+    """Return a global cache path for one exact logo animation encoding."""
+    asset = {"path": None, "size": None, "mtime": None}
+    if logo:
+        try:
+            stat = logo.stat()
+            asset = {"path": str(logo.resolve()), "size": stat.st_size, "mtime": stat.st_mtime_ns}
+        except OSError:
+            asset = {"path": str(logo), "missing": True}
+    key = stable_fingerprint({
+        "recipe": LOGO_CACHE_RECIPE_VERSION,
+        "kind": kind,
+        "duration": round(float(duration), 6),
+        "bitrate": int(video_bitrate),
+        "mode": mode,
+        "asset": asset,
+        "parameters": parameters,
+    })[:32]
+    return global_cache_root() / "logo_clips" / f"{key}.mp4"
+
+
+def _reuse_cached_logo(cache_path: Path, output_path: Path) -> bool:
+    """Copy a complete cached logo to the export temp directory."""
+    try:
+        if cache_path.is_file() and cache_path.stat().st_size > 0:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(cache_path, output_path)
+            LOGGER.info("Reusing cached logo clip %s", cache_path.name)
+            return True
+    except OSError:
+        cache_path.unlink(missing_ok=True)
+    return False
 
 
 def _logo_filtergraph_matched(kind: str, duration: float, has_logo: bool, height: int) -> str:
@@ -1163,6 +1266,20 @@ def _render_logo_clip(
     ffmpeg = _ffmpeg_path()
     logo = _intro_logo_path() or _logo_path()
     width, height = _target_size(platform)
+    cache_path = _logo_clip_cache_path(
+        kind,
+        duration,
+        video_bitrate,
+        logo,
+        {"width": width, "height": height, "fps": TARGET_EXPORT_FPS, "codec": "libx264", "profile": "high", "pix_fmt": "yuv420p"},
+        mode=f"platform:{platform}",
+    )
+    with _LOGO_CACHE_LOCK:
+        if _reuse_cached_logo(cache_path, output_path):
+            return
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        render_path = cache_path.with_name(f".{cache_path.stem}.{os.getpid()}.{threading.get_ident()}.tmp.mp4")
+        render_path.unlink(missing_ok=True)
     bg = "0x000000"
     command = [
         ffmpeg,
@@ -1203,8 +1320,13 @@ def _render_logo_clip(
         ]
     )
     command.extend(_video_encode_args("libx264", video_bitrate))
-    command.append(str(output_path))
-    _run_ffmpeg_progress(command, duration, f"{kind.title()} logo", progress_callback)
+    command.append(str(render_path))
+    try:
+        _run_ffmpeg_progress(command, duration, f"{kind.title()} logo", progress_callback)
+        os.replace(render_path, cache_path)
+        shutil.copy2(cache_path, output_path)
+    finally:
+        render_path.unlink(missing_ok=True)
 
 
 def _logo_filtergraph(platform: str, kind: str, duration: float, has_logo: bool) -> str:
@@ -1364,6 +1486,14 @@ def _render_segment(
             "+faststart",
         ]
     )
+    if reel_overlay_items:
+        # FFmpeg 8.1.2 has an intermittent libavfilter crash when the
+        # frame-evaluated scale/pad overlay graph is scheduled across filter
+        # worker threads. Serialising this small graph is safer than making a
+        # whole export single-threaded; the encoder remains threaded.
+        command_base[command_base.index("-filter_complex"):command_base.index("-filter_complex")] = [
+            "-filter_threads", "1", "-filter_complex_threads", "1",
+        ]
     hardware = _video_encode_args("h264_videotoolbox", video_bitrate)
     software = _video_encode_args("libx264", video_bitrate)
     try:
@@ -2579,7 +2709,7 @@ def _segment_filtergraph(
             # transparent canvas moves as one layer and settles at x=0.
             overlay_x = f"if(lt(t\\,{enter_end:.3f})\\,-overlay_w+overlay_w*(t-{start:.3f})/0.25\\,0)"
         elif fade == "scale":
-            source_transform = f"scale=w='ceil(iw*if(lt(t,{enter_end:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':h='ceil(ih*if(lt(t,{enter_end:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':eval=frame,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0,"
+            source_transform = f"scale=w='trunc(iw*if(lt(t,{enter_end:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':h='trunc(ih*if(lt(t,{enter_end:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':eval=frame,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0,"
         overlay_graph.append(
             f"[{input_index}:v]format=rgba,{source_transform}{fade_in}{fade_out}setpts=PTS-STARTPTS[reel_src_{index}];"
             f"[{current_label}][reel_src_{index}]overlay=x='{overlay_x}':y=0:enable='between(t,{start:.3f},{float(item.get('end_sec') or duration):.3f})':format=auto[{output_label}]"
@@ -2643,7 +2773,7 @@ def _render_reel_overlays(
         if animation == "slide":
             overlay_x = f"if(lt(t\\,{start + 0.25:.3f})\\,-overlay_w+overlay_w*(t-{start:.3f})/0.25\\,0)"
         elif animation == "scale":
-            source_transform = f"scale=w='ceil(iw*if(lt(t,{start + 0.25:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':h='ceil(ih*if(lt(t,{start + 0.25:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':eval=frame,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0,"
+            source_transform = f"scale=w='trunc(iw*if(lt(t,{start + 0.25:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':h='trunc(ih*if(lt(t,{start + 0.25:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':eval=frame,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0,"
         graph_parts.append(
             f"[{input_index}:v]format=rgba,{source_transform}{fade_in}{fade_out}setpts=PTS-STARTPTS[reel_src_{index}];"
             f"[{current}][reel_src_{index}]overlay=x='{overlay_x}':y=0:enable='between(t,{start:.3f},{end:.3f})':format=auto[{label}]"
@@ -2653,7 +2783,7 @@ def _render_reel_overlays(
     command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:1", "-i", str(video_path)]
     for item in items:
         command.extend(["-loop", "1", "-i", str(item["path"])])
-    command.extend(["-filter_complex", graph, "-map", "[v]", "-an", "-t", f"{duration:.3f}", "-pix_fmt", "yuv420p", "-r", f"{TARGET_EXPORT_FPS:.3f}", "-fps_mode", "cfr"])
+    command.extend(["-filter_threads", "1", "-filter_complex_threads", "1", "-filter_complex", graph, "-map", "[v]", "-an", "-t", f"{duration:.3f}", "-pix_fmt", "yuv420p", "-r", f"{TARGET_EXPORT_FPS:.3f}", "-fps_mode", "cfr"])
     command.extend(_video_encode_args("libx264", video_bitrate))
     command.append(str(output_path))
     _run_ffmpeg_progress(command, duration, "Rendering Reel overlays", progress_callback)
