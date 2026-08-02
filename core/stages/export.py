@@ -2403,9 +2403,19 @@ def _segment_filtergraph(
         fade = str(item.get("animation") or "fade").lower()
         fade_in = "fade=t=in:st=0:d=0.25:alpha=1," if fade in {"fade", "slide", "scale"} else ""
         fade_out = f"fade=t=out:st={max(0.0, float(item.get('end_sec') or duration) - 0.25):.3f}:d=0.25:alpha=1," if fade in {"fade", "slide", "scale"} else ""
+        start = float(item.get("start_sec") or 0.0)
+        enter_end = start + 0.25
+        source_transform = ""
+        overlay_x = "0"
+        if fade == "slide":
+            # Full-frame transparent overlays can still slide cleanly: the
+            # transparent canvas moves as one layer and settles at x=0.
+            overlay_x = f"if(lt(t\\,{enter_end:.3f})\\,-overlay_w+overlay_w*(t-{start:.3f})/0.25\\,0)"
+        elif fade == "scale":
+            source_transform = f"scale=iw*if(lt(t\\,{enter_end:.3f})\\,0.75+0.25*(t-{start:.3f})/0.25\\,1):ih*if(lt(t\\,{enter_end:.3f})\\,0.75+0.25*(t-{start:.3f})/0.25\\,1),"
         overlay_graph.append(
-            f"[{input_index}:v]format=rgba,{fade_in}{fade_out}setpts=PTS-STARTPTS[reel_src_{index}];"
-            f"[{current_label}][reel_src_{index}]overlay=0:0:enable='between(t,{float(item.get('start_sec') or 0.0):.3f},{float(item.get('end_sec') or duration):.3f})':format=auto[{output_label}]"
+            f"[{input_index}:v]format=rgba,{source_transform}{fade_in}{fade_out}setpts=PTS-STARTPTS[reel_src_{index}];"
+            f"[{current_label}][reel_src_{index}]overlay=x='{overlay_x}':y=0:enable='between(t,{start:.3f},{float(item.get('end_sec') or duration):.3f})':format=auto[{output_label}]"
         )
         current_label = output_label
     if overlay_graph:
