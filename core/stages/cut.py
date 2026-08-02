@@ -47,6 +47,29 @@ class CutStage(Stage):
         wizard = project.data["settings"].get("wizard", {})
         platform = str(wizard.get("platform") or "youtube")
         selection = _selectable_synced_clips(project, sync_map, allow_unsynced=platform in {"360", "reel"})
+        if not selection["clips"] and platform not in {"360", "reel"}:
+            # A weak correlation is a warning, not a reason to strand the
+            # user. Keep the best offsets so the user can inspect/export the
+            # result, while making the possible mismatch explicit.
+            fallback = _selectable_synced_clips(project, sync_map, allow_unsynced=True)
+            fallback_clips = [
+                clip for clip in fallback["clips"]
+                if not clip.get("error") and not clip.get("no_audio")
+            ]
+            if fallback_clips:
+                good_ids = {
+                    (str(clip.get("clip_id") or ""), str(clip.get("path") or clip.get("source_path") or ""), _float_or_zero(clip.get("offset_sec")))
+                    for clip in fallback_clips
+                }
+                fallback["clips"] = [
+                    clip for clip in fallback["clips"]
+                    if (str(clip.get("clip_id") or ""), str(clip.get("path") or clip.get("source_path") or ""), _float_or_zero(clip.get("offset_sec"))) in good_ids
+                ]
+                selection = fallback
+                selection["warnings"].append(
+                    "No clips met the sync confidence threshold. Proceeding anyway with the best-scoring offsets; "
+                    "sync may be imprecise. Check that the selected master matches this footage and that the camera audio is strong enough."
+                )
         if not selection["clips"]:
             diagnostics = selection["diagnostics"]
             LOGGER.error("Cut rejected all clips: %s", diagnostics)
@@ -242,6 +265,22 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any], *, allo
             "path": clip.get("path"),
             "source_path": clip.get("source_path"),
         }
+        master_duration = _float_or_zero(sync_map.get("master_duration_sec"))
+        clip_start = _float_or_zero(clip.get("offset_sec"))
+        clip_end = clip_start + _float_or_zero(clip.get("duration_sec"))
+        overlap_start = max(0.0, clip_start)
+        overlap_end = min(master_duration, clip_end)
+        overlap_sec = max(0.0, overlap_end - overlap_start)
+        diagnostic.update(
+            {
+                "recorded_start_sec": clip_start,
+                "recorded_end_sec": clip_end,
+                "master_start_sec": 0.0,
+                "master_end_sec": master_duration,
+                "master_overlap_sec": overlap_sec,
+                "master_overlap": bool(overlap_sec > 0.0),
+            }
+        )
         diagnostics.append(diagnostic)
         reason = _exclusion_reason(diagnostic, allow_unsynced=allow_unsynced)
         if reason:
@@ -251,7 +290,13 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any], *, allo
         if diagnostic.get("projection"):
             selected_clip["projection"] = diagnostic["projection"]
         selected.append(selected_clip)
-    return {"clips": selected, "warnings": [], "diagnostics": diagnostics, "excluded": excluded}
+    warnings = []
+    for diagnostic in diagnostics:
+        if diagnostic.get("unstable_sync") and not diagnostic.get("low_confidence"):
+            warnings.append(
+                f"{diagnostic['filename']} had inconsistent sync checks, but its confidence met the threshold; it was kept with a sync warning."
+            )
+    return {"clips": selected, "warnings": warnings, "diagnostics": diagnostics, "excluded": excluded}
 
 
 def _exclusion_reason(diagnostic: dict[str, Any], *, allow_unsynced: bool = False, allow_unsynced_360: bool | None = None) -> str | None:
@@ -263,7 +308,10 @@ def _exclusion_reason(diagnostic: dict[str, Any], *, allow_unsynced: bool = Fals
         return str(diagnostic["error"])
     if diagnostic.get("no_audio") and not allow_unsynced:
         return t("no_sync_audio")
-    if diagnostic.get("unstable_sync") and not allow_unsynced:
+    # Stability is a secondary warning. A clip with a confidence score at or
+    # above the configured threshold remains usable; previously this hidden
+    # criterion discarded clips such as confidence=6.085 at threshold=6.0.
+    if diagnostic.get("unstable_sync") and not allow_unsynced and diagnostic["confidence"] < diagnostic["threshold"]:
         verification = diagnostic.get("verification") or {}
         delta = verification.get("delta_sec")
         if isinstance(delta, (int, float)):
@@ -275,7 +323,15 @@ def _exclusion_reason(diagnostic: dict[str, Any], *, allow_unsynced: bool = Fals
 
 
 def _diagnostic_error_message(diagnostics: list[dict[str, Any]]) -> str:
-    lines = [t("no_usable_camera_video"), t("clip_diagnostics")]
+    if any(item.get("valid_video") for item in diagnostics):
+        lines = [
+            "The camera videos were readable, but none could be aligned reliably with the selected master audio.",
+            "This usually means the master is the wrong song, the song is outside the recorded time range, or the camera audio is too weak for correlation.",
+            "Choose the matching master or strengthen the camera audio; you can also proceed anyway with the best-scoring offsets, with imperfect sync expected.",
+            t("clip_diagnostics"),
+        ]
+    else:
+        lines = [t("no_usable_camera_video"), t("clip_diagnostics")]
     if not diagnostics:
         lines.append("- no clips in sync_map")
         return "\n".join(lines)
@@ -292,8 +348,16 @@ def _diagnostic_error_message(diagnostics: list[dict[str, Any]]) -> str:
             reason_bits.append(t("low_confidence"))
         if item.get("unstable_sync"):
             reason_bits.append(t("unstable_sync"))
+        overlap = "overlaps master" if item.get("master_overlap") else "does not overlap master"
+        range_text = (
+            f"recorded {item.get('recorded_start_sec', 0.0):.1f}–{item.get('recorded_end_sec', 0.0):.1f}s; {overlap}"
+        )
         reason = f" ({'; '.join(reason_bits)})" if reason_bits else ""
-        lines.append(f"- {item['filename']}: valid video={valid}, confidence={confidence}, threshold={threshold}{reason}")
+        lines.append(f"- {item['filename']}: valid video={valid}, confidence={confidence}, threshold={threshold}, {range_text}{reason}")
+    if all(item.get("low_confidence") for item in diagnostics if item.get("valid_video")):
+        if any(item.get("master_overlap") is False for item in diagnostics if item.get("valid_video")):
+            lines.append("The recorded ranges do not overlap the selected master session. The master may be the wrong song or outside the footage time range.")
+        lines.append("If the master is correct, the camera audio may be too weak for reliable correlation. You can proceed anyway using the best-scoring offsets, but sync may be imprecise.")
     return "\n".join(lines)
 
 

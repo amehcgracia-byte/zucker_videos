@@ -1081,7 +1081,7 @@ def test_cut_fails_cleanly_when_no_valid_confident_clip(tmp_path):
     assert "clip.mp4: valid video=no, confidence=9.000, threshold=6.000" in message
 
 
-def test_cut_excludes_low_confidence_clip_without_manual_override(tmp_path):
+def test_cut_proceeds_with_best_offset_when_all_sync_scores_are_low(tmp_path):
     project = create_project("CachedCut", str(tmp_path / "CachedCut.zuckervid"))
     source = tmp_path / "clip.mov"
     normalized = tmp_path / "global-cache" / "normalized" / "clip.mp4"
@@ -1125,9 +1125,41 @@ def test_cut_excludes_low_confidence_clip_without_manual_override(tmp_path):
         },
     )
 
-    with pytest.raises(ValueError) as exc_info:
-        CutStage().run(project, lambda percent, message: None)
-    assert "clip.mov: valid video=yes, confidence=2.500, threshold=6.000 (low confidence)" in str(exc_info.value)
+    CutStage().run(project, lambda percent, message: None)
+    coverage = json.loads((project.artifacts_dir / "coverage.json").read_text(encoding="utf-8"))
+    assert coverage["segments"]
+    assert any("Proceeding anyway" in warning for warning in coverage["warnings"])
+    assert coverage["clip_diagnostics"][0]["master_overlap"] is True
+
+
+def test_cut_keeps_above_threshold_clip_even_when_stability_check_disagrees(tmp_path):
+    project = create_project("StableEnough", str(tmp_path / "StableEnough.zuckervid"))
+    source = tmp_path / "clip.mov"
+    normalized = tmp_path / "normalized.mp4"
+    master = tmp_path / "master.wav"
+    source.write_bytes(b"source")
+    normalized.write_bytes(b"normalized")
+    master.write_bytes(b"master")
+    record = file_record(str(source))
+    record["probe"] = {"valid_video": True, "video_codec": "h264", "duration": 10.0, "width": 1280, "height": 720}
+    record["normalized"] = {"path": str(normalized)}
+    project.data["inputs"]["master"] = file_record(str(master))
+    project.data["inputs"]["videos"] = [record]
+    project.data["settings"]["wizard"] = {"platform": "youtube", "song_choice": None}
+    write_artifact_json(
+        project.artifacts_dir / "sync_map.json",
+        {"schema_version": 1, "confidence_threshold": 6.0, "master_duration_sec": 10.0, "clips": {
+            "clip": {"path": str(normalized), "source_path": str(source), "filename": "clip.mov", "offset_sec": 0.0,
+                     "duration_sec": 10.0, "confidence": 6.085, "low_confidence": False,
+                     "unstable_sync": True, "verification": {"delta_sec": 0.4}}
+        }},
+    )
+
+    CutStage().run(project, lambda percent, message: None)
+    coverage = json.loads((project.artifacts_dir / "coverage.json").read_text(encoding="utf-8"))
+    assert coverage["segments"]
+    assert coverage["excluded_clips"] == []
+    assert any("met the threshold" in warning for warning in coverage["warnings"])
 
 
 def test_cut_accepts_low_confidence_single_360_clip(tmp_path):

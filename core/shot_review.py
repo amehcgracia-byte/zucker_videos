@@ -23,6 +23,28 @@ def _source_for(segment: dict[str, Any]) -> str:
     return str(segment.get("proxy_path") or segment.get("clip_path") or segment.get("source_path") or "")
 
 
+def _candidate_key(candidate: dict[str, Any]) -> str:
+    """Return the stable identity used by a slot's replacement history.
+
+    A source can contribute more than one usable moment, so the path alone is
+    not enough to identify a candidate.  Keep the format human-readable for
+    backwards compatibility with the existing review_attempts data.
+    """
+    path = candidate.get("path") or candidate.get("clip_path") or candidate.get("source_path") or ""
+    try:
+        start = float(candidate.get("clip_start_sec", candidate.get("offset_sec", 0)) or 0.0)
+    except (TypeError, ValueError):
+        start = 0.0
+    return f"{path}|{start:.6f}"
+
+
+def _candidate_keys(candidate: dict[str, Any]) -> set[str]:
+    """Return current and legacy spellings of a candidate identity."""
+    path = candidate.get("path") or candidate.get("clip_path") or candidate.get("source_path") or ""
+    raw_start = candidate.get("clip_start_sec", candidate.get("offset_sec", 0)) or 0
+    return {_candidate_key(candidate), f"{path}|{raw_start}"}
+
+
 def review_items(project: Project) -> list[dict[str, Any]]:
     """Return cached midpoint thumbnails for the current edit plan."""
     plan = _plan(project)
@@ -75,6 +97,9 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         pool = list(segments)
     wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
     attempts = wizard.setdefault("review_attempts", {})
+    # Unlike the old single-attempt behaviour, this is a permanent per-slot
+    # record of every candidate that has been displayed to the reviewer.
+    exclusions = wizard.setdefault("review_exclusions", {})
     unavailable = set(int(value) for value in wizard.setdefault("review_unavailable", []))
     replaced: list[int] = []
     for raw_index in rejected:
@@ -82,13 +107,16 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         if index < 0 or index >= len(segments):
             continue
         segment = segments[index]
-        tried = set(attempts.setdefault(str(index), []))
-        tried.add(f"{segment.get('clip_path')}|{segment.get('clip_start_sec')}")
+        slot = str(index)
+        tried = set(exclusions.setdefault(slot, []))
+        # Migrate projects created before review_exclusions existed.
+        tried.update(attempts.setdefault(slot, []))
+        tried.update(_candidate_keys(segment))
         candidates = []
         for candidate in pool:
             path = candidate.get("path") or candidate.get("clip_path") or candidate.get("source_path")
-            key = f"{path}|{candidate.get('clip_start_sec', 0)}"
-            if path and key not in tried and path != segment.get("clip_path"):
+            key = _candidate_key(candidate)
+            if path and not (_candidate_keys(candidate) & tried):
                 candidates.append((float(candidate.get("shot_quality_score") or candidate.get("motion_score") or 0.0), candidate, key))
         if not candidates:
             unavailable.add(index)
@@ -103,13 +131,17 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
             new_segment["projection"] = candidate["projection"]
         if candidate.get("spherical_shot"):
             new_segment["spherical_shot"] = candidate["spherical_shot"]
-        attempts[str(index)].append(key)
+        tried.add(key)
+        exclusions[slot] = sorted(tried)
+        # Keep the legacy field populated for readers of older project data.
+        attempts[slot] = sorted(tried)
         segments[index] = new_segment
         unavailable.discard(index)
         replaced.append(index)
     plan["segments"] = segments
     artifact_path(project, "edit_plan.json").write_text(json.dumps(plan, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     project.data["settings"]["wizard"]["review_attempts"] = attempts
+    project.data["settings"]["wizard"]["review_exclusions"] = exclusions
     project.data["settings"]["wizard"]["review_unavailable"] = sorted(unavailable)
     project.save()
     return {"replaced": replaced, "unavailable": sorted(unavailable), "items": review_items(project)}
