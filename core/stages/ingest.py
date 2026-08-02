@@ -44,6 +44,7 @@ class IngestStage(Stage):
             raise ValueError("At least one video must be registered before ingest")
 
         total = len(videos)
+        passthrough_360 = str(project.data.get("settings", {}).get("wizard", {}).get("platform") or "") == "360"
         valid_records: list[dict[str, Any]] = []
         for index, record in enumerate(videos, start=1):
             path = record["path"]
@@ -72,10 +73,23 @@ class IngestStage(Stage):
             valid_records.append(record)
         if sum(int(record.get("size") or 0) for record in valid_records) > 500 * 1024 * 1024 or len(valid_records) > 3:
             progress_callback(25, t("long_videos_note"))
-        ensure_normalized_space(project, valid_records)
-        prepare_videos(project, valid_records, progress_callback)
-        prepare_director_proxies(valid_records, progress_callback)
-        analyze_operator_presence(valid_records, progress_callback)
+        if passthrough_360:
+            # A navigable 360 export must retain the original equirectangular
+            # body. MP4 needs no preparation; only raw INSV is normalized to an
+            # equirectangular MP4. Do not build proxies, score cameras, or run
+            # operator avoidance in this mode.
+            raw_records = [record for record in valid_records if record.get("raw_360")]
+            for record in valid_records:
+                if record not in raw_records:
+                    record["normalized"] = {"path": record["path"], "kind": "original"}
+            if raw_records:
+                ensure_normalized_space(project, raw_records)
+                prepare_videos(project, raw_records, progress_callback)
+        else:
+            ensure_normalized_space(project, valid_records)
+            prepare_videos(project, valid_records, progress_callback)
+            prepare_director_proxies(valid_records, progress_callback)
+            analyze_operator_presence(valid_records, progress_callback)
         progress_callback(100, "Ingest complete")
         return {}
 

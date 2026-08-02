@@ -60,7 +60,7 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # against the filter's instance name ("v360@sphere"), NOT the bare "@id" suffix.
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
-EXPORT_SEGMENT_RECIPE_VERSION = 20
+EXPORT_SEGMENT_RECIPE_VERSION = 21
 # v17 adds byte-level and full-shot attestation to segment sidecars.  A file
 # with a copied/reused sidecar is no longer accepted if its bytes or authored
 # motion fields differ from the current render.
@@ -145,8 +145,9 @@ class ExportStage(Stage):
         path = artifact_path(project, "export_manifest.json")
         if bitrate_info["warning"]:
             warnings.append(bitrate_info["warning"])
-        clip_fates = _clip_fates(project, plan, segments, content_duration)
-        _warn_unused_cameras(clip_fates, plan, warnings)
+        clip_fates = [] if platform == "360" else _clip_fates(project, plan, segments, content_duration)
+        if platform != "360":
+            _warn_unused_cameras(clip_fates, plan, warnings)
         write_artifact_json(
             path,
             {
@@ -161,7 +162,7 @@ class ExportStage(Stage):
                 "target_video_bitrate": bitrate_info["video_bitrate"],
                 "spherical_shot_usage": plan.get("spherical_shot_usage") or _spherical_shot_usage(segments),
                 "spherical_recording_usage": plan.get("spherical_recording_usage") or _spherical_recording_usage(segments),
-                "operator_avoidance_segments": count_avoidance_adjustments(segments),
+                "operator_avoidance_segments": 0 if platform == "360" else count_avoidance_adjustments(segments),
                 "performance": project.data.pop("_export_performance", None),
                 "exports": [
                     {
@@ -173,10 +174,10 @@ class ExportStage(Stage):
                         "duration_sec": duration,
                         "warnings": warnings,
                         "cut_count": int(plan.get("cut_count") or max(0, len(segments) - 1)),
-                        "camera_usage": plan.get("camera_usage") or _camera_usage(segments),
+                        "camera_usage": {} if platform == "360" else (plan.get("camera_usage") or _camera_usage(segments)),
                         "spherical_shot_usage": plan.get("spherical_shot_usage") or _spherical_shot_usage(segments),
                         "spherical_recording_usage": plan.get("spherical_recording_usage") or _spherical_recording_usage(segments),
-                        "operator_avoidance_segments": count_avoidance_adjustments(segments),
+                        "operator_avoidance_segments": 0 if platform == "360" else count_avoidance_adjustments(segments),
                         "excluded_clips": plan.get("excluded_clips") or [],
                         "clip_fates": clip_fates,
                     }

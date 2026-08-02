@@ -21,6 +21,7 @@ from core.stages.ingest import IngestStage
 from core.stages.sync import SyncStage, load_song_boundaries, set_manual_override
 from core.throughput import estimated_export_seconds, record_export_throughput
 from server.inbox import app_home, load_global_config, register_selected_inputs, save_global_config
+from server.inbox import classify_file
 
 LOGGER = logging.getLogger(__name__)
 
@@ -280,7 +281,8 @@ class WizardRunner:
         try:
             project = _create_wizard_project(name)
             _attach_project(job, project)
-            register_selected_inputs(project, master_path=master_path, songs_path=songs_path, video_paths=video_paths, append_videos=False)
+            selected_video_paths = _360_only_video_paths(video_paths) if platform == "360" else video_paths
+            register_selected_inputs(project, master_path=master_path, songs_path=songs_path, video_paths=selected_video_paths, append_videos=False)
             _write_stage_log(project, "wizard", f"Master audio selected: {Path(master_path).name}")
             project.data["settings"]["wizard"] = {
                 "platform": platform,
@@ -297,8 +299,10 @@ class WizardRunner:
             _store_spherical_sweep(project, spherical_sweep, sweep_speed_deg_per_sec)
             project.save()
 
-            self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
-            self._run_stage(job, project, SyncStage(), 22, 48, t("syncing_audio"))
+            self._run_stage(job, project, IngestStage(), 0, 15 if platform == "360" else 22, t("listening"))
+            sync_start = 15 if platform == "360" else 22
+            sync_end = 30 if platform == "360" else 48
+            self._run_stage(job, project, SyncStage(), sync_start, sync_end, t("syncing_audio"))
             self._finish(
                 job=job,
                 project=project,
@@ -333,12 +337,12 @@ class WizardRunner:
             _attach_project(job, project)
             register_selected_inputs(project, master_path=master_path, songs_path=songs_path, video_paths=video_paths, append_videos=False)
             _write_stage_log(project, "wizard", f"Master audio selected: {Path(master_path).name}")
-            self._run_stage(job, project, IngestStage(), 0, 45, t("listening"))
-            self._run_stage(job, project, SyncStage(), 45, 95, t("syncing_audio"))
+            self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
+            self._run_stage(job, project, SyncStage(), 22, 48, t("syncing_audio"))
             with self._lock:
                 self._prepared_project = project
             job.status = "waiting_choice"
-            job.progress = 95
+            job.progress = 48
             job.message = t("ready_to_edit")
             job.detail = t("choose_edit_type")
         except WizardCancelled:
@@ -354,12 +358,12 @@ class WizardRunner:
     def _prepare_existing_project(self, *, job: WizardJob, project: Project) -> None:
         try:
             _attach_project(job, project)
-            self._run_stage(job, project, IngestStage(), 0, 45, t("listening"))
-            self._run_stage(job, project, SyncStage(), 45, 95, t("syncing_audio"))
+            self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
+            self._run_stage(job, project, SyncStage(), 22, 48, t("syncing_audio"))
             with self._lock:
                 self._prepared_project = project
             job.status = "waiting_choice"
-            job.progress = 95
+            job.progress = 48
             job.message = t("ready_to_edit")
             job.detail = t("choose_edit_type")
         except WizardCancelled:
@@ -410,13 +414,15 @@ class WizardRunner:
             _store_spherical_sweep(project, spherical_sweep, sweep_speed_deg_per_sec)
             project.save()
             job.started_at = time.time()
-            self._run_stage(job, project, CutStage(), 48, 58, t("cutting_song"))
+            cut_start, cut_end, edit_start, edit_end = ((30, 35, 35, 40) if platform == "360" else (48, 58, 58, 70))
+            export_start = edit_end
+            self._run_stage(job, project, CutStage(), cut_start, cut_end, t("cutting_song"))
             # The cut stage is what establishes the song window, so this is the
             # earliest point a grounded estimate can be made -- and it is still
             # before any rendering, which is the part that actually takes time.
             job.estimated_total_seconds = _predicted_total_seconds(project, platform)
-            self._run_stage(job, project, EditStage(), 58, 70, t("building_edit"))
-            outputs = self._run_stage(job, project, ExportStage(), 70, 100, t("exporting_video"))
+            self._run_stage(job, project, EditStage(), edit_start, edit_end, t("building_edit"))
+            outputs = self._run_stage(job, project, ExportStage(), export_start, 100, t("exporting_video"))
             manifest_path = Path(outputs["export_manifest"])
             import json
 
@@ -619,6 +625,25 @@ def _create_wizard_project(name: str) -> Project:
         if not folder.exists():
             return create_project(name, str(folder))
     raise RuntimeError("I couldn't create the project")
+
+
+def _360_only_video_paths(video_paths: list[str]) -> list[str]:
+    """Return exactly one equirectangular/raw-360 input for passthrough mode."""
+    spherical: list[tuple[int, str]] = []
+    for path in video_paths:
+        try:
+            item = classify_file(Path(path))
+        except Exception:
+            item = {}
+        projection = str(item.get("projection") or (item.get("probe") or {}).get("projection") or "").lower()
+        if projection in {"equirect", "raw_insv"} or bool(item.get("raw_360")):
+            # Prefer an already-exported equirect MP4 over raw INSV, because
+            # it avoids the one permitted stitching step.
+            spherical.append((0 if projection == "equirect" else 1, path))
+    if not spherical:
+        raise ValueError("360 mode requires an equirectangular MP4 or an INSV clip")
+    spherical.sort(key=lambda value: value[0])
+    return [spherical[0][1]]
 
 
 def wizard_song_options(songs_path: str | None) -> list[dict[str, Any]]:

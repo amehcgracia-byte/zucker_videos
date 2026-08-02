@@ -94,6 +94,36 @@ function logFrontendError(message, stack = "") {
   }).catch(() => {});
 }
 
+function auditBackdropRuntime() {
+  const backdrop = document.querySelector("#backdropFlow");
+  const logo = document.querySelector("#backdropLogo");
+  if (!backdrop) return null;
+  const chain = [];
+  let node = backdrop;
+  while (node) {
+    const style = getComputedStyle(node);
+    chain.push({
+      id: node.id || null,
+      tag: node.tagName,
+      position: style.position,
+      overflowY: style.overflowY,
+      scrollTop: node.scrollTop,
+      scrollHeight: node.scrollHeight,
+      clientHeight: node.clientHeight,
+    });
+    node = node.parentElement;
+  }
+  const audit = {
+    backdrop: { position: getComputedStyle(backdrop).position, offsetParent: backdrop.offsetParent?.id || backdrop.offsetParent?.tagName || null },
+    logo: { position: logo ? getComputedStyle(logo).position : null },
+    scrollChain: chain,
+    document: { scrollTop: document.documentElement.scrollTop, scrollHeight: document.documentElement.scrollHeight, clientHeight: document.documentElement.clientHeight },
+  };
+  window.__zuckerBackdropAudit = () => auditBackdropRuntime();
+  logFrontendError(`backdrop-runtime-audit: ${JSON.stringify(audit)}`);
+  return audit;
+}
+
 window.onerror = (message, source, line, column, error) => {
   logFrontendError(`window.onerror: ${message} (${source}:${line}:${column})`, error?.stack || "");
 };
@@ -686,25 +716,28 @@ async function prepareStep2() {
   progressStartedAt = Date.now();
   progressSamples = [];
   if (!inputs.master || !inputs.videos.length) return;
-  api("/wizard/prepare", {
-    method: "POST",
-    body: JSON.stringify({
-      name: document.querySelector("#videoName").value || todayName(),
-      master: inputs.master,
-      songs: inputs.songs,
-      videos: inputs.videos,
-    }),
-  }).catch((error) => showToast(error.message, true));
   setStep(2);
-  ensureStatusPolling();
   setupTrimControls(inputs.master);
-  renderSphericalSetup();
+  applyEditTypeMode();
   if (inputs.songs) {
     const result = await api("/wizard/songs", { method: "POST", body: JSON.stringify({ songs: inputs.songs }) });
     renderSongOptions(result.songs || []);
   } else {
     renderSongOptions([]);
   }
+}
+
+function applyEditTypeMode() {
+  const passthrough360 = selectedPlatform === "360";
+  const cameraMix = document.querySelector("#cameraMix");
+  const sphericalSetup = document.querySelector("#sphericalSetup");
+  const songPicker = document.querySelector("#songPicker");
+  if (cameraMix) cameraMix.hidden = passthrough360;
+  if (sphericalSetup) {
+    sphericalSetup.hidden = passthrough360;
+    if (passthrough360) sphericalSetup.open = false;
+  }
+  if (songPicker && passthrough360) songPicker.hidden = true;
 }
 
 function renderSphericalSetup() {
@@ -1857,7 +1890,19 @@ async function startWizard(options = {}) {
   const waitForPrepare = options.waitForPrepare !== false;
   const inputs = selectedInputs();
   setStep(3);
-  if (waitForPrepare) await waitForPreparedProject();
+  if (waitForPrepare && selectedPlatform !== "360") {
+    await api("/wizard/prepare", {
+      method: "POST",
+      body: JSON.stringify({
+        name: document.querySelector("#videoName").value || todayName(),
+        master: inputs.master,
+        songs: inputs.songs,
+        videos: inputs.videos,
+      }),
+    });
+    ensureStatusPolling();
+    await waitForPreparedProject();
+  }
   await api("/wizard/start", {
     method: "POST",
     body: JSON.stringify({
@@ -2412,6 +2457,7 @@ document.addEventListener("click", (event) => {
     selectedPlatform = target.dataset.platform;
     document.querySelectorAll(".platform-card").forEach((card) => card.classList.toggle("selected", card === target));
     document.querySelector("#startWizard").disabled = false;
+    applyEditTypeMode();
     if (currentSongs.length > 1) renderSongOptions(currentSongs);
   }
   if (target.classList.contains("song-option")) {
@@ -2543,6 +2589,7 @@ document.querySelector("#videoName").value = todayName();
 
 async function boot() {
   injectIcons();
+  auditBackdropRuntime();
   wireLandmarkDragToLook();
   await loadAppConfig();
   const status = await api("/wizard/status");
