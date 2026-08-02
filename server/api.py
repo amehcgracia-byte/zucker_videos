@@ -32,6 +32,7 @@ from core.camera_moves import delete_camera_move, list_camera_moves, save_camera
 from core.media_validation import record_media_path
 from core.normalization import cache_status, cleanup_unreferenced_cache, global_cache_root, migrate_project_normalization_cache
 from core.stages.sync import clear_manual_override, clip_id_for_record, generate_preview, generate_thumbnail, load_sync_map, set_manual_override
+from core.shot_review import replace_slots, review_items
 from server.inbox import (
     app_home,
     classify_paths,
@@ -300,6 +301,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         reel_aspect = _reel_aspect_from_body(body)
         reel_text_overlays = _reel_text_overlays_from_body(body)
         reel_image_overlays = _reel_image_overlays_from_body(body)
+        _save_last_reel_overlays(reel_text_overlays, reel_image_overlays)
         if platform not in {"youtube", "instagram", "tiktok", "reel", "360"}:
             return error_response("bad_request", "platform must be youtube, reel, instagram, tiktok, or 360", 400)
         if not master:
@@ -339,6 +341,49 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("wizard_busy", str(exc), 409)
         except OSError as exc:
             return error_response("input_file_error", str(exc), 400)
+
+    @app.get("/api/v1/wizard/review")
+    def api_wizard_review() -> Response:
+        project = state.project or _active_wizard_project(state)
+        if not project:
+            return error_response("not_ready", "The edit plan is not ready yet", 409)
+        return jsonify({"items": review_items(project), "platform": project.data.get("settings", {}).get("wizard", {}).get("platform")})
+
+    @app.post("/api/v1/wizard/review/replace")
+    def api_wizard_review_replace() -> Response:
+        project = state.project or _active_wizard_project(state)
+        body = _json_body()
+        rejected = body.get("rejected") or []
+        if not project or not isinstance(rejected, list) or not all(isinstance(value, int) for value in rejected):
+            return error_response("bad_request", "rejected must be a list of shot indexes", 400)
+        return jsonify(replace_slots(project, rejected))
+
+    @app.post("/api/v1/wizard/review/render")
+    def api_wizard_review_render() -> Response:
+        try:
+            state.project = state.project or _active_wizard_project(state)
+            job = state.wizard.render_review(state.project)
+            return jsonify(dict(job.__dict__)), 202
+        except (RuntimeError, ValueError) as exc:
+            return error_response("review_render_failed", str(exc), 409)
+
+    @app.get("/api/v1/wizard/review/thumbnail/<signature>/<path:filename>")
+    def api_wizard_review_thumbnail(signature: str, filename: str) -> Response:
+        project = state.project or _active_wizard_project(state)
+        if not project:
+            return error_response("not_ready", "No project is active", 404)
+        return send_from_directory(project.cache_dir / "shot_review" / signature, Path(filename).name)
+
+    @app.get("/api/v1/wizard/overlays")
+    def api_wizard_overlays() -> Response:
+        wizard = (state.project.data.get("settings", {}).get("wizard", {}) if state.project else {})
+        if wizard.get("reel_text_overlays") or wizard.get("reel_image_overlays"):
+            return jsonify({"texts": wizard.get("reel_text_overlays") or [], "images": wizard.get("reel_image_overlays") or [], "source": "project"})
+        path = app_home() / "reel_overlays.json"
+        try:
+            return jsonify({**json.loads(path.read_text(encoding="utf-8")), "source": "last"})
+        except (OSError, ValueError, TypeError):
+            return jsonify({"texts": [], "images": [], "source": "none"})
 
     @app.get("/api/v1/wizard/master-preview")
     def api_wizard_master_preview() -> Response:
@@ -898,6 +943,17 @@ def _project_has_sync_candidates(project: Project) -> bool:
     return False
 
 
+def _active_wizard_project(state: AppState) -> Project | None:
+    status = state.wizard.status()
+    project_path = status.get("project_path")
+    if not project_path:
+        return None
+    try:
+        return load_project(project_path)
+    except (OSError, ProjectError):
+        return None
+
+
 def _export_result(project: Project) -> dict[str, Any] | None:
     outputs = project.data.get("stages", {}).get("export", {}).get("outputs") or {}
     manifest_path = outputs.get("export_manifest")
@@ -975,6 +1031,15 @@ def _audio_trim_from_body(body: dict[str, Any]) -> dict[str, float] | None:
 def _reel_duration_from_body(body: dict[str, Any]) -> float:
     value = _coerce_float(body.get("reel_duration_sec"))
     return max(20.0, min(60.0, value if value is not None else 30.0))
+
+
+def _save_last_reel_overlays(texts: list[dict[str, Any]], images: list[dict[str, Any]]) -> None:
+    path = app_home() / "reel_overlays.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"texts": texts, "images": images}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    except OSError:
+        LOGGER.warning("Could not persist last Reel overlays", exc_info=True)
 
 
 def _reel_aspect_from_body(body: dict[str, Any]) -> str:

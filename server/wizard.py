@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 import time
 import threading
@@ -243,6 +244,54 @@ class WizardRunner:
                 return {"status": "idle", "progress": 0, "message": "Idle"}
             return dict(self._job.__dict__)
 
+    def render_review(self, project: Project | None) -> WizardJob:
+        """Resume a completed edit plan after the user approves its shots."""
+        with self._lock:
+            if not project or not self._job or self._job.status != "waiting_review":
+                raise RuntimeError("There is no shot review waiting to render")
+            if self._thread and self._thread.is_alive():
+                raise RuntimeError("A video is already being processed")
+            job = self._job
+            self._cancel_event.clear()
+            thread = threading.Thread(target=self._render_review_job, args=(job, project), daemon=True, name="zucker-review-render")
+            self._thread = thread
+            thread.start()
+            return job
+
+    def _render_review_job(self, job: WizardJob, project: Project) -> None:
+        started_at = time.monotonic()
+        try:
+            job.status = "running"
+            job.progress = max(70, int(job.progress or 70))
+            job.message = t("exporting_video")
+            self._run_stage(job, project, ExportStage(), job.progress, 100, t("exporting_video"))
+            manifest_path = Path(project.data["stages"]["export"]["outputs"]["export_manifest"])
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            export = manifest["exports"][0]
+            export_path = Path(export["path"])
+            if export_path.suffix.lower() != ".mp4" or not export_path.exists():
+                raise RuntimeError(f"Export did not produce an MP4: {export_path}")
+            _write_stage_log(project, "wizard", f"EXPORT OUTPUT {export_path.resolve()} ({export_path.stat().st_size} bytes)")
+            job.status = "done"
+            job.progress = 100
+            job.message = t("done")
+            job.result = {
+                "project_path": str(project.folder), "filename": export_path.name, "path": str(export_path),
+                "media_url": "/api/v1/wizard/result", "platform": project.data.get("settings", {}).get("wizard", {}).get("platform"),
+                "logs_path": str(project.cache_dir / "logs"), "cut_count": export.get("cut_count"),
+                "camera_usage": export.get("camera_usage"), "spherical_shot_usage": export.get("spherical_shot_usage") or {},
+                "warnings": export.get("warnings") or [], "excluded_clips": export.get("excluded_clips") or [],
+            }
+            _remember_export_throughput(project, job.result.get("platform") or "reel", export, time.monotonic() - started_at)
+        except WizardCancelled:
+            self._mark_cancelled(job)
+        except Exception as exc:
+            LOGGER.exception("Review render failed")
+            job.status = "failed"
+            job.error = _friendly_error(exc)
+            job.technical_details = traceback.format_exc()
+            job.message = t("cannot_finish")
+
     def reset(self) -> None:
         """Forget the process-local wizard state without deleting project files."""
         with self._lock:
@@ -454,6 +503,13 @@ class WizardRunner:
             # before any rendering, which is the part that actually takes time.
             job.estimated_total_seconds = _predicted_total_seconds(project, platform)
             self._run_stage(job, project, EditStage(), edit_start, edit_end, t("building_edit"))
+            if platform in {"youtube", "reel"}:
+                job.status = "waiting_review"
+                job.progress = edit_end
+                job.message = "Review shots"
+                job.detail = "I'm artificial, but not that intelligent — help me check whether these shots are any good."
+                _write_stage_log(project, "wizard", "SHOT REVIEW READY before export")
+                return
             outputs = self._run_stage(job, project, ExportStage(), export_start, 100, t("exporting_video"))
             manifest_path = Path(outputs["export_manifest"])
             import json

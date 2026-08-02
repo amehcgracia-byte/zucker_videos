@@ -117,7 +117,7 @@
             <label>Duration <output id="reelDurationValue">30s</output><input id="reelDuration" type="range" min="20" max="60" step="1" value="30" /></label>
             <label>Aspect ratio<select id="reelAspect"><option value="9:16">9:16 vertical</option><option value="16:9">16:9 horizontal</option></select></label>
           </div>
-          <div class="setup-heading"><h2>Overlays</h2><span>Drag text in the preview. The dashed box is Instagram's safe zone.</span><button id="addReelText" type="button" class="icon-button small">Add text</button><label class="file-button">Add flyer<input id="addReelImage" type="file" accept="image/png,image/webp,image/jpeg" hidden /></label></div>
+          <div class="setup-heading"><h2>Overlays</h2><span>Drag text in the preview. The dashed box is Instagram's safe zone.</span><button id="reuseReelOverlays" type="button" class="icon-button small">Reuse last overlays</button><button id="addReelText" type="button" class="icon-button small">Add text</button><label class="file-button">Add flyer<input id="addReelImage" type="file" accept="image/png,image/webp,image/jpeg" hidden /></label></div>
           <div id="reelTextLines"></div>
           <div id="reelImageLines"></div>
           <label class="reel-playhead-label">Playhead <output id="reelPlayheadValue">0.0s</output><input id="reelPlayhead" type="range" min="0" max="30" step="0.1" value="0" /></label>
@@ -212,6 +212,12 @@
             <pre id="progressReport">Loading details...</pre>
           </details>
           <button id="cancelWizard" class="icon-button danger" data-icon="close">Cancel</button>
+        </div>
+        <div id="reviewBox" class="review-box" hidden>
+          <div class="review-intro">I'm artificial, but not that intelligent — help me check whether these shots are any good.</div>
+          <div id="reviewGrid" class="review-grid"></div>
+          <div id="reviewLargeWrap" class="review-large-wrap" hidden><img id="reviewLarge" alt="Selected shot" /></div>
+          <div class="review-actions"><button id="replaceRejected" class="icon-button">Replace rejected</button><button id="renderReviewed" class="primary icon-button">Render approved shots</button></div>
         </div>
       </section>
 

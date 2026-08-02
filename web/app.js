@@ -28,6 +28,7 @@ let reelImageOverlays = [];
 let reelPlayhead = 0;
 let reelDrag = null;
 const reelPreviewImages = new Map();
+let shotReviewItems = [];
 let sphericalMode = "automatic";
 const MAX_RECORDED_YAW_RATE_DEG_PER_SEC = 40;
 let savedAudioTrim = {};
@@ -624,10 +625,14 @@ async function openProject(path) {
   if (status.status === "running") {
     setStep(3);
     ensureStatusPolling();
+  } else if (status.status === "waiting_review") {
+    setStep(3);
+    renderWizardStatus(status);
   } else if (status.status === "done" || status.status === "failed") {
     setStep(4);
   } else if (status.status === "waiting_choice") {
     setStep(2);
+    loadSavedReelOverlays().catch(() => {});
   } else {
     setStep(1);
   }
@@ -740,12 +745,43 @@ async function prepareStep2() {
   setStep(2);
   setupTrimControls(inputs.master);
   applyEditTypeMode();
+  await loadSavedReelOverlays();
   if (inputs.songs) {
     const result = await api("/wizard/songs", { method: "POST", body: JSON.stringify({ songs: inputs.songs }) });
     renderSongOptions(result.songs || []);
   } else {
     renderSongOptions([]);
   }
+}
+
+async function loadSavedReelOverlays() {
+  if (reelTextOverlays.length || reelImageOverlays.length) return;
+  try {
+    const saved = await api("/wizard/overlays");
+    if (saved.source === "project" || saved.source === "last") {
+      reelTextOverlays = saved.texts || [];
+      reelImageOverlays = saved.images || [];
+      renderReelOptions();
+    }
+  } catch (_error) { /* overlays are optional */ }
+}
+
+function renderShotReview(items) {
+  shotReviewItems = (items || []).map((item) => ({ keep: true, ...item }));
+  const root = document.querySelector("#reviewGrid");
+  if (!root) return;
+  root.innerHTML = shotReviewItems.map((item) => `<article class="review-card ${item.keep ? "keep" : "reject"}" data-review-index="${item.index}">
+    <button class="review-thumb-button" data-review-thumb="${item.index}"><img class="review-thumb" src="${item.thumbnail || ""}" alt="Shot ${item.index + 1}" /></button>
+    <label class="review-keep"><input type="checkbox" data-review-keep="${item.index}" ${item.keep ? "checked" : ""}/> Keep</label>
+    <strong>#${item.index + 1} · ${escapeHtml(item.source)}</strong>
+    <span>${Number(item.duration_sec).toFixed(1)}s${item.landmark ? ` · ${escapeHtml(item.landmark)}` : ""}</span>
+    ${item.no_alternative ? '<em>No alternative coverage available</em>' : ""}
+  </article>`).join("");
+}
+
+async function openShotReview() {
+  const result = await api("/wizard/review");
+  renderShotReview(result.items || []);
 }
 
 function applyEditTypeMode() {
@@ -2194,6 +2230,22 @@ function renderWizardStatus(status) {
   latestStatus = status;
   const reportedProgress = Math.max(0, Math.min(100, Number(status.progress || 0)));
   const progress = Math.max(progressFloor, reportedProgress);
+  const progressBox = document.querySelector("#progressBox");
+  const reviewBox = document.querySelector("#reviewBox");
+  if (status.status === "waiting_review") {
+    if (progressBox) progressBox.hidden = true;
+    if (reviewBox) reviewBox.hidden = false;
+    document.querySelector("#progressTitle").textContent = "Review your shots";
+    openShotReview().catch((error) => showToast(error.message, true));
+    clearInterval(pollTimer);
+    pollTimer = null;
+    setStep(3);
+    return;
+  }
+  if (status.status === "running" || status.status === "failed" || status.status === "done") {
+    if (progressBox) progressBox.hidden = false;
+    if (reviewBox) reviewBox.hidden = true;
+  }
   progressFloor = progress;
   updateTiming(status, progress);
   renderStatusStrip(status, progress);
@@ -2543,6 +2595,21 @@ document.addEventListener("click", (event) => {
   const rawTarget = event.target;
   const target = rawTarget instanceof HTMLElement ? rawTarget.closest("button, [data-remove-kind], [data-open-project], [data-delete-project], [data-rescue]") || rawTarget : rawTarget;
   if (!(target instanceof HTMLElement)) return;
+  const reviewThumb = rawTarget instanceof HTMLElement ? rawTarget.closest("[data-review-thumb]") : null;
+  if (reviewThumb) {
+    const item = shotReviewItems.find((entry) => Number(entry.index) === Number(reviewThumb.dataset.reviewThumb));
+    if (item?.thumbnail) { document.querySelector("#reviewLarge").src = item.thumbnail; document.querySelector("#reviewLargeWrap").hidden = false; }
+  }
+  if (target.id === "replaceRejected") {
+    const rejected = shotReviewItems.filter((item) => !item.keep).map((item) => Number(item.index));
+    api("/wizard/review/replace", { method: "POST", body: JSON.stringify({ rejected }) }).then((result) => renderShotReview(result.items || [])).catch((error) => showToast(error.message, true));
+  }
+  if (target.id === "renderReviewed") {
+    api("/wizard/review/render", { method: "POST" }).then(() => { document.querySelector("#reviewBox").hidden = true; document.querySelector("#progressBox").hidden = false; setStep(3); ensureStatusPolling(); return pollStatus(); }).catch((error) => showToast(error.message, true));
+  }
+  if (target.id === "reuseReelOverlays") {
+    api("/wizard/overlays").then((saved) => { reelTextOverlays = saved.texts || []; reelImageOverlays = saved.images || []; renderReelOptions(); }).catch((error) => showToast(error.message, true));
+  }
   if (target.id === "addReelText") {
     reelTextOverlays.push({ text: "", color: "#ffffff", size: 54, position: "middle-center", x: 0.5, y: 0.5, opacity: 1, font: "bundled", font_weight: "bold", outline_color: "#000000", outline_width: 2, shadow_color: "#000000", shadow_offset_x: 3, shadow_offset_y: 3, shadow_blur: 4, background_color: "#000000", background_opacity: 0, background_radius: 8, animation: "fade", start_sec: 0, duration_sec: 3 });
     renderReelOptions();
@@ -2686,6 +2753,10 @@ document.addEventListener("change", (event) => {
       reelImageOverlays.push({ path: result.path, preview_url: result.url || result.path, x: 0.5, y: 0.5, width: 0.35, opacity: 1, animation: "fade", start_sec: 0, duration_sec: 3 });
       renderReelOptions();
     }).catch((error) => showToast(error.message, true));
+  }
+  if (input.dataset.reviewKeep != null) {
+    const item = shotReviewItems.find((entry) => Number(entry.index) === Number(input.dataset.reviewKeep));
+    if (item) { item.keep = input.checked; document.querySelector(`[data-review-index="${item.index}"]`)?.classList.toggle("reject", !item.keep); }
   }
 });
 

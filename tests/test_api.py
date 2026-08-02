@@ -407,6 +407,9 @@ def test_wizard_orchestration_exports_tiny_media(tmp_path, monkeypatch):
     status = {}
     while time.time() < deadline:
         status = client.get("/api/v1/wizard/status").get_json()
+        if status["status"] == "waiting_review":
+            render = client.post("/api/v1/wizard/review/render", json={})
+            assert render.status_code == 202
         if status["status"] in {"done", "failed"}:
             break
         time.sleep(0.1)
@@ -483,6 +486,9 @@ def test_wizard_orchestration_exports_tiny_media(tmp_path, monkeypatch):
     second_status = {}
     while time.time() < deadline:
         second_status = client.get("/api/v1/wizard/status").get_json()
+        if second_status["status"] == "waiting_review":
+            render = client.post("/api/v1/wizard/review/render", json={})
+            assert render.status_code == 202
         if second_status["status"] in {"done", "failed"}:
             break
         time.sleep(0.1)
