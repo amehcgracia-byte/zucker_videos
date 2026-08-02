@@ -47,30 +47,6 @@ body {
   transition: background-color 160ms ease, color 160ms ease;
 }
 
-/* Same emblem used for the DMG installer background, applied as a visible-
-   but-subtle backdrop that scrolls with the page (not pinned to the
-   viewport). Sits behind all content via z-index, so text/control contrast
-   is unaffected. */
-body::before {
-  content: "";
-  position: absolute;
-  top: 6vh;
-  left: 0;
-  right: 0;
-  height: min(640px, 60vmin);
-  z-index: 0;
-  background-image: url("/logo_watermark.png");
-  background-repeat: no-repeat;
-  background-position: center top;
-  background-size: min(640px, 60vmin);
-  opacity: 0.12;
-  pointer-events: none;
-}
-
-:root[data-theme="dark"] body::before {
-  opacity: 0.16;
-}
-
 .topbar {
   display: flex;
   align-items: end;
