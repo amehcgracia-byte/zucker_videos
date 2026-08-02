@@ -258,7 +258,14 @@ def _render_plan(
     if platform in {"reel", "reel_horizontal"}:
         overlay_config["reel_texts"] = list(project.data.get("settings", {}).get("wizard", {}).get("reel_text_overlays") or [])
         overlay_config["reel_images"] = list(project.data.get("settings", {}).get("wizard", {}).get("reel_image_overlays") or [])
-        overlay_config["reel_origin_sec"] = float(segments[0].get("master_start_sec") or 0.0)
+        # Reel overlay times are already expressed on the final 0-based Reel
+        # timeline. They are composited once after segment assembly.
+        overlay_config["reel_origin_sec"] = 0.0
+    segment_overlay_config = overlay_config
+    if platform in {"reel", "reel_horizontal"}:
+        segment_overlay_config = dict(overlay_config)
+        segment_overlay_config["reel_texts"] = []
+        segment_overlay_config["reel_images"] = []
     verify_motion = bool(project.data.get("settings", {}).get("export", {}).get("verify_motion", True))
     try:
         include_bookends = platform not in {"reel", "reel_horizontal"}
@@ -281,7 +288,7 @@ def _render_plan(
                     executor.submit(
                         _render_segment_job,
                         project, index, segment, len(render_segments), temp_dir, master_path,
-                        platform, video_bitrate, overlay_config,
+                        platform, video_bitrate, segment_overlay_config,
             color_profiles.get(str(segment.get("clip_path")), {}), verify_motion,
                         progress_callback, progress_lock,
                     )
@@ -355,9 +362,21 @@ def _render_plan(
             lambda percent, detail: progress_callback(89 + int(percent * 1 / 100), detail),
         )
         real_duration = _media_duration(str(cfr_video))
+        video_for_mux = cfr_video
+        if platform in {"reel", "reel_horizontal"} and (overlay_config.get("reel_texts") or overlay_config.get("reel_images")):
+            video_for_mux = temp_dir / "reel-overlays.mp4"
+            _render_reel_overlays(
+                cfr_video,
+                video_for_mux,
+                overlay_config,
+                real_duration,
+                video_bitrate,
+                lambda percent, detail: progress_callback(89 + int(percent * 1 / 100), detail),
+            )
+            real_duration = _media_duration(str(video_for_mux))
         audio_start, audio_delay = _audio_mux_start_and_delay(segments) if include_bookends else (float(segments[0].get("master_start_sec") or 0.0), 0.0)
         _mux_continuous_master_audio(
-            cfr_video,
+            video_for_mux,
             master_path,
             output_path,
             audio_start,
@@ -2439,6 +2458,57 @@ def _segment_filtergraph(
             f"[{current_label}][wm]overlay=W-w-{margin}:H-h-{margin}:format=auto[v]"
         )
     return _logo_overlay_filtergraph(graph, platform, duration, intro_logo, outro_logo, margin=margin, wm_height=wm_height)
+
+
+def _render_reel_overlays(
+    video_path: Path,
+    output_path: Path,
+    overlay_config: dict[str, Any],
+    duration: float,
+    video_bitrate: int,
+    progress_callback: ProgressCallback | None = None,
+) -> None:
+    """Composite Reel overlays once on the assembled, final-timeline video."""
+    ffmpeg = _ffmpeg_path()
+    items = _reel_overlay_items(
+        {"master_start_sec": 0.0, "duration_sec": duration},
+        {**overlay_config, "reel_origin_sec": 0.0},
+        str(overlay_config.get("platform") or "reel"),
+        output_path.parent,
+    )
+    if not items:
+        shutil.copy2(video_path, output_path)
+        return
+    graph = "[0:v]format=yuv420p[reel_base]"
+    current = "reel_base"
+    graph_parts: list[str] = []
+    for index, item in enumerate(items):
+        input_index = index + 1
+        label = f"reel_final_{index}"
+        animation = str(item.get("animation") or "fade").lower()
+        start = float(item.get("start_sec") or 0.0)
+        end = float(item.get("end_sec") or duration)
+        fade_in = "fade=t=in:st=0:d=0.25:alpha=1," if animation in {"fade", "slide", "scale"} else ""
+        fade_out = f"fade=t=out:st={max(0.0, end - 0.25):.3f}:d=0.25:alpha=1," if animation in {"fade", "slide", "scale"} else ""
+        source_transform = ""
+        overlay_x = "0"
+        if animation == "slide":
+            overlay_x = f"if(lt(t\\,{start + 0.25:.3f})\\,-overlay_w+overlay_w*(t-{start:.3f})/0.25\\,0)"
+        elif animation == "scale":
+            source_transform = f"scale=w='ceil(iw*if(lt(t,{start + 0.25:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':h='ceil(ih*if(lt(t,{start + 0.25:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':eval=frame,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0,"
+        graph_parts.append(
+            f"[{input_index}:v]format=rgba,{source_transform}{fade_in}{fade_out}setpts=PTS-STARTPTS[reel_src_{index}];"
+            f"[{current}][reel_src_{index}]overlay=x='{overlay_x}':y=0:enable='between(t,{start:.3f},{end:.3f})':format=auto[{label}]"
+        )
+        current = label
+    graph += ";" + ";".join(graph_parts) + f";[{current}]format=yuv420p[v]"
+    command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:1", "-i", str(video_path)]
+    for item in items:
+        command.extend(["-loop", "1", "-i", str(item["path"])])
+    command.extend(["-filter_complex", graph, "-map", "[v]", "-an", "-t", f"{duration:.3f}", "-pix_fmt", "yuv420p", "-r", f"{TARGET_EXPORT_FPS:.3f}", "-fps_mode", "cfr"])
+    command.extend(_video_encode_args("libx264", video_bitrate))
+    command.append(str(output_path))
+    _run_ffmpeg_progress(command, duration, "Rendering Reel overlays", progress_callback)
 
 
 def _logo_overlay_filtergraph(graph: str, platform: str, duration: float, intro_logo: bool, outro_logo: bool, margin: int, wm_height: int) -> str:
