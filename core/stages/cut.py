@@ -44,13 +44,13 @@ class CutStage(Stage):
         """Write a simple coverage plan consumed by export."""
         progress_callback(20, t("reading_sync"))
         sync_map = load_sync_map(project) or {}
-        selection = _selectable_synced_clips(project, sync_map)
+        wizard = project.data["settings"].get("wizard", {})
+        platform = str(wizard.get("platform") or "youtube")
+        selection = _selectable_synced_clips(project, sync_map, allow_unsynced_360=platform == "360")
         if not selection["clips"]:
             diagnostics = selection["diagnostics"]
             LOGGER.error("Cut rejected all clips: %s", diagnostics)
             raise ValueError(_diagnostic_error_message(diagnostics))
-        wizard = project.data["settings"].get("wizard", {})
-        platform = str(wizard.get("platform") or "youtube")
         songs = load_song_boundaries(project)
         song_choice = wizard.get("song_choice")
         window = _selected_window(songs, song_choice, sync_map, wizard)
@@ -78,6 +78,10 @@ class CutStage(Stage):
             if segment["duration_sec"] < window["duration_sec"] - 0.5:
                 warnings_360.append(
                     f"360 clip only covers {segment['duration_sec']:.1f}s of the {window['duration_sec']:.1f}s song range; export was trimmed to what the camera actually recorded."
+                )
+            if float(clip.get("confidence") or 0.0) < sync_confidence_threshold(project) or clip.get("low_confidence") or clip.get("unstable_sync"):
+                warnings_360.append(
+                    "360 sync confidence low — audio alignment may be approximate. Adjust the 360 audio offset if needed."
                 )
             window = {**window, "start_sec": segment["master_start_sec"], "duration_sec": segment["duration_sec"]}
         else:
@@ -138,7 +142,12 @@ def _trimmed_window(window: dict[str, Any], trim: dict[str, Any]) -> dict[str, A
     end = _optional_float(trim.get("end_sec"), base_end)
     start = max(base_start, min(start, base_end - 1.0))
     end = max(start + 1.0, min(end, base_end))
-    return {**window, "start_sec": start, "duration_sec": end - start, "trim_start_sec": start, "trim_end_sec": end}
+    result = {**window, "start_sec": start, "duration_sec": end - start, "trim_start_sec": start, "trim_end_sec": end}
+    try:
+        result["audio_offset_sec"] = float(trim.get("audio_offset_sec") or 0.0)
+    except (TypeError, ValueError):
+        result["audio_offset_sec"] = 0.0
+    return result
 
 
 def _optional_float(value: Any, fallback: float) -> float:
@@ -192,7 +201,7 @@ def _pick_energetic_window(master_path: str, window: dict[str, Any], target_dura
     return {**window, "start_sec": best_start, "duration_sec": target_duration, "trim_start_sec": best_start, "trim_end_sec": best_start + target_duration}
 
 
-def _selectable_synced_clips(project: Project, sync_map: dict[str, Any]) -> dict[str, Any]:
+def _selectable_synced_clips(project: Project, sync_map: dict[str, Any], *, allow_unsynced_360: bool = False) -> dict[str, Any]:
     records_by_path: dict[str, dict[str, Any]] = {}
     for record in project.data.get("inputs", {}).get("videos", []):
         if record.get("path"):
@@ -230,7 +239,7 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any]) -> dict
             "source_path": clip.get("source_path"),
         }
         diagnostics.append(diagnostic)
-        reason = _exclusion_reason(diagnostic)
+        reason = _exclusion_reason(diagnostic, allow_unsynced_360=allow_unsynced_360 and diagnostic.get("projection") in {"equirect", "raw_insv"})
         if reason:
             excluded.append({"filename": diagnostic["filename"], "reason": reason, "diagnostic": diagnostic})
             continue
@@ -241,20 +250,20 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any]) -> dict
     return {"clips": selected, "warnings": [], "diagnostics": diagnostics, "excluded": excluded}
 
 
-def _exclusion_reason(diagnostic: dict[str, Any]) -> str | None:
+def _exclusion_reason(diagnostic: dict[str, Any], *, allow_unsynced_360: bool = False) -> str | None:
     if not diagnostic["valid_video"]:
         return t("not_usable_camera_video")
-    if diagnostic.get("error"):
+    if diagnostic.get("error") and not allow_unsynced_360:
         return str(diagnostic["error"])
-    if diagnostic.get("no_audio"):
+    if diagnostic.get("no_audio") and not allow_unsynced_360:
         return t("no_sync_audio")
-    if diagnostic.get("unstable_sync"):
+    if diagnostic.get("unstable_sync") and not allow_unsynced_360:
         verification = diagnostic.get("verification") or {}
         delta = verification.get("delta_sec")
         if isinstance(delta, (int, float)):
             return t("unstable_sync_detail", ms=delta * 1000)
         return t("unstable_sync")
-    if diagnostic.get("low_confidence") and not diagnostic.get("manual_override"):
+    if diagnostic.get("low_confidence") and not allow_unsynced_360 and not diagnostic.get("manual_override"):
         return t("low_confidence_excluded_detail", confidence=float(diagnostic.get("confidence") or 0.0), threshold=float(diagnostic.get("threshold") or 0.0))
     return None
 
@@ -334,6 +343,7 @@ def _segment_for_platform(clip: dict[str, Any], window: dict[str, Any], platform
         "master_start_sec": master_start,
         "duration_sec": max(1.0, duration),
         "clip_offset_sec": clip_offset,
+        "audio_offset_sec": float(window.get("audio_offset_sec") or 0.0),
     }
 
 
@@ -359,6 +369,7 @@ def _segment_for_360(clip: dict[str, Any], window: dict[str, Any]) -> dict[str, 
         "master_start_sec": start,
         "duration_sec": duration,
         "clip_offset_sec": clip_offset,
+        "audio_offset_sec": float(window.get("audio_offset_sec") or 0.0),
         "confidence": float(clip.get("confidence") or 0.0),
         "filename": clip.get("filename") or Path(str(clip.get("path"))).name,
         "projection": clip.get("projection"),

@@ -1101,6 +1101,34 @@ def test_cut_excludes_low_confidence_clip_without_manual_override(tmp_path):
     assert "clip.mov: valid video=yes, confidence=2.500, threshold=6.000 (low confidence)" in str(exc_info.value)
 
 
+def test_cut_accepts_low_confidence_single_360_clip(tmp_path):
+    project = create_project("Low360", str(tmp_path / "Low360.zuckervid"))
+    source = tmp_path / "wide.mp4"
+    master = tmp_path / "master.wav"
+    source.write_bytes(b"source")
+    master.write_bytes(b"master")
+    record = file_record(str(source))
+    record["probe"] = {"valid_video": True, "video_codec": "h264", "duration": 10.0, "width": 3840, "height": 1920, "projection": "equirect"}
+    record["projection"] = "equirect"
+    record["normalized"] = {"path": str(source)}
+    project.data["inputs"]["master"] = file_record(str(master))
+    project.data["inputs"]["videos"] = [record]
+    project.data["settings"]["wizard"] = {"platform": "360", "song_choice": None, "audio_trim": {"start_sec": 0.0, "end_sec": 8.0}}
+    write_artifact_json(
+        project.artifacts_dir / "sync_map.json",
+        {"schema_version": 1, "confidence_threshold": 6.0, "master_duration_sec": 10.0, "clips": {
+            "wide": {"path": str(source), "source_path": str(source), "filename": "wide.mp4", "offset_sec": 0.0,
+                     "duration_sec": 10.0, "confidence": 4.54, "low_confidence": True, "unstable_sync": True}
+        }},
+    )
+
+    CutStage().run(project, lambda percent, message: None)
+    coverage = json.loads((project.artifacts_dir / "coverage.json").read_text(encoding="utf-8"))
+    assert coverage["segments"]
+    assert coverage["excluded_clips"] == []
+    assert any("sync confidence low" in warning for warning in coverage["warnings"])
+
+
 def test_cut_and_export_use_manual_override_global_cached_clip(tmp_path, monkeypatch):
     project = create_project("CachedCut", str(tmp_path / "CachedCut.zuckervid"))
     source = tmp_path / "clip.mov"

@@ -119,6 +119,20 @@ function auditBackdropRuntime() {
     scrollChain: chain,
     document: { scrollTop: document.documentElement.scrollTop, scrollHeight: document.documentElement.scrollHeight, clientHeight: document.documentElement.clientHeight },
   };
+  const scrollingElement = document.scrollingElement || document.documentElement;
+  const scrollBefore = scrollingElement.scrollTop;
+  const topBefore = logo?.getBoundingClientRect().top ?? null;
+  const maxScroll = Math.max(0, scrollingElement.scrollHeight - scrollingElement.clientHeight);
+  scrollingElement.scrollTop = maxScroll;
+  const topAfter = logo?.getBoundingClientRect().top ?? null;
+  const allBackdropNodes = [...document.querySelectorAll('[id*="backdrop"], [class*="backdrop"]')].map((element) => {
+    const style = getComputedStyle(element);
+    return { id: element.id || null, className: element.className || null, position: style.position, backgroundImage: style.backgroundImage, backgroundAttachment: style.backgroundAttachment, opacity: style.opacity };
+  });
+  audit.scrollTest = { scrollingElement: scrollingElement.tagName, scrollBefore, scrollAfter: scrollingElement.scrollTop, scrollDelta: scrollingElement.scrollTop - scrollBefore, logoTopBefore: topBefore, logoTopAfter: topAfter, logoTopDelta: topAfter == null || topBefore == null ? null : topAfter - topBefore, maxScroll };
+  audit.backdropNodes = allBackdropNodes;
+  audit.ancestorChecks = chain.map((item) => ({ id: item.id, tag: item.tag, position: item.position, overflowY: item.overflowY }));
+  scrollingElement.scrollTop = scrollBefore;
   window.__zuckerBackdropAudit = () => auditBackdropRuntime();
   logFrontendError(`backdrop-runtime-audit: ${JSON.stringify(audit)}`);
   return audit;
@@ -738,6 +752,13 @@ function applyEditTypeMode() {
     if (passthrough360) sphericalSetup.open = false;
   }
   if (songPicker && passthrough360) songPicker.hidden = true;
+  const offsetField = document.querySelector("#360AudioOffsetField");
+  if (offsetField) offsetField.hidden = !passthrough360;
+  if (passthrough360) {
+    const saved = savedAudioTrim[selectedMasterPath || ""] || {};
+    const input = document.querySelector("#360AudioOffset");
+    if (input) input.value = String(Number(saved.audio_offset_sec || 0));
+  }
 }
 
 function renderSphericalSetup() {
@@ -1911,6 +1932,7 @@ async function startWizard(options = {}) {
       song_index: selectedSong,
       trim_start_sec: timeToSeconds(document.querySelector("#trimStart").value),
       trim_end_sec: timeToSeconds(document.querySelector("#trimEnd").value),
+      audio_offset_sec: selectedPlatform === "360" ? Number(document.querySelector("#360AudioOffset")?.value || 0) : 0,
       spherical_landmarks: sphericalLandmarksFromForm(),
       camera_role_weights: cameraRoleWeightsFromForm(),
       fixed_rear_motion: fixedRearMotionFromForm(),

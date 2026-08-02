@@ -1109,7 +1109,8 @@ def _intro_master_start(segments: list[dict[str, Any]]) -> float:
 
 def _audio_mux_start_and_delay(segments: list[dict[str, Any]]) -> tuple[float, float]:
     first = float(segments[0].get("master_start_sec") or 0.0) if segments else 0.0
-    desired_start = first - INTRO_DURATION
+    manual_offset = float(segments[0].get("audio_offset_sec") or 0.0) if segments else 0.0
+    desired_start = first - INTRO_DURATION + manual_offset
     return max(0.0, desired_start), max(0.0, -desired_start)
 
 
