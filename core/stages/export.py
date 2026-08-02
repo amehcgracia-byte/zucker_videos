@@ -2412,7 +2412,7 @@ def _segment_filtergraph(
             # transparent canvas moves as one layer and settles at x=0.
             overlay_x = f"if(lt(t\\,{enter_end:.3f})\\,-overlay_w+overlay_w*(t-{start:.3f})/0.25\\,0)"
         elif fade == "scale":
-            source_transform = f"scale=iw*if(lt(t\\,{enter_end:.3f})\\,0.75+0.25*(t-{start:.3f})/0.25\\,1):ih*if(lt(t\\,{enter_end:.3f})\\,0.75+0.25*(t-{start:.3f})/0.25\\,1),"
+            source_transform = f"scale=w='ceil(iw*if(lt(t,{enter_end:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':h='ceil(ih*if(lt(t,{enter_end:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':eval=frame,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0,"
         overlay_graph.append(
             f"[{input_index}:v]format=rgba,{source_transform}{fade_in}{fade_out}setpts=PTS-STARTPTS[reel_src_{index}];"
             f"[{current_label}][reel_src_{index}]overlay=x='{overlay_x}':y=0:enable='between(t,{start:.3f},{float(item.get('end_sec') or duration):.3f})':format=auto[{output_label}]"

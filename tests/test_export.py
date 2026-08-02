@@ -42,6 +42,7 @@ from core.stages.export import (
     _render_plan,
     _render_segment,
     _reel_overlay_items,
+    _segment_filtergraph,
     _segment_cache_stamp_matches,
     _segment_cache_stamp_path,
     _write_segment_cache_stamp,
@@ -1744,6 +1745,24 @@ def test_reel_overlay_global_timing_and_position_are_converted_per_segment(tmp_p
     bbox = alpha.getbbox()
     assert bbox is not None
     assert bbox[0] < 0.25 * 1080 and bbox[1] < 0.3 * 1920
+
+
+def test_reel_scale_overlay_expression_runs_with_ffmpeg(tmp_path: Path) -> None:
+    """Dynamic overlay scaling must be evaluated per frame, not at init."""
+    from PIL import Image
+
+    overlay = tmp_path / "overlay.png"
+    Image.new("RGBA", (1080, 1920), (255, 0, 0, 180)).save(overlay)
+    graph = _segment_filtergraph(
+        "reel", 0.5, {}, {}, has_watermark=False, text_enabled=False,
+        frame_count=15, reel_overlay_items=[{
+            "path": overlay, "start_sec": 0.0, "end_sec": 0.5, "animation": "scale",
+        }],
+    )
+    source = ["-f", "lavfi", "-i", "color=c=blue:s=320x240:r=30:d=0.5"]
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", *source, "-loop", "1", "-i", str(overlay), "-filter_complex", graph, "-map", "[v]", "-t", "0.5", "-f", "null", "-"]
+    result = subprocess.run(command, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def _frame_luma(path: Path, timestamp: float) -> float:
