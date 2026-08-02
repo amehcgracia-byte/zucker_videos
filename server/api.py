@@ -928,7 +928,6 @@ def _media_path(project: Project, kind: str, index: int) -> str:
 def _audio_trim_from_body(body: dict[str, Any]) -> dict[str, float] | None:
     start = body.get("trim_start_sec")
     end = body.get("trim_end_sec")
-    audio_offset = body.get("audio_offset_sec")
     start_value = _coerce_float(start)
     end_value = _coerce_float(end)
     trim: dict[str, float] = {}
@@ -936,9 +935,6 @@ def _audio_trim_from_body(body: dict[str, Any]) -> dict[str, float] | None:
         trim["start_sec"] = max(0.0, start_value)
     if end_value is not None:
         trim["end_sec"] = max(0.0, end_value)
-    audio_offset_value = _coerce_float(audio_offset)
-    if audio_offset_value is not None:
-        trim["audio_offset_sec"] = max(-60.0, min(60.0, audio_offset_value))
     if trim and trim.get("end_sec", 1.0) <= trim.get("start_sec", 0.0):
         return None
     return trim or None

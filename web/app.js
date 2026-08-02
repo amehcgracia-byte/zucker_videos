@@ -754,13 +754,6 @@ function applyEditTypeMode() {
     if (passthrough360) sphericalSetup.open = false;
   }
   if (songPicker && passthrough360) songPicker.hidden = true;
-  const offsetField = document.querySelector("#360AudioOffsetField");
-  if (offsetField) offsetField.hidden = !passthrough360;
-  if (passthrough360) {
-    const saved = savedAudioTrim[selectedMasterPath || ""] || {};
-    const input = document.querySelector("#360AudioOffset");
-    if (input) input.value = String(Number(saved.audio_offset_sec || 0));
-  }
 }
 
 function renderSphericalSetup() {
@@ -1934,7 +1927,6 @@ async function startWizard(options = {}) {
       song_index: selectedSong,
       trim_start_sec: timeToSeconds(document.querySelector("#trimStart").value),
       trim_end_sec: timeToSeconds(document.querySelector("#trimEnd").value),
-      audio_offset_sec: selectedPlatform === "360" ? Number(document.querySelector("#360AudioOffset")?.value || 0) : 0,
       spherical_landmarks: sphericalLandmarksFromForm(),
       camera_role_weights: cameraRoleWeightsFromForm(),
       fixed_rear_motion: fixedRearMotionFromForm(),

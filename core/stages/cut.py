@@ -81,7 +81,7 @@ class CutStage(Stage):
                 )
             if float(clip.get("confidence") or 0.0) < sync_confidence_threshold(project) or clip.get("low_confidence") or clip.get("unstable_sync"):
                 warnings_360.append(
-                    "360 sync confidence low — audio alignment may be approximate. Adjust the 360 audio offset if needed."
+                    "360 sync confidence low — audio alignment may be approximate."
                 )
             window = {**window, "start_sec": segment["master_start_sec"], "duration_sec": segment["duration_sec"]}
         else:
@@ -142,12 +142,7 @@ def _trimmed_window(window: dict[str, Any], trim: dict[str, Any]) -> dict[str, A
     end = _optional_float(trim.get("end_sec"), base_end)
     start = max(base_start, min(start, base_end - 1.0))
     end = max(start + 1.0, min(end, base_end))
-    result = {**window, "start_sec": start, "duration_sec": end - start, "trim_start_sec": start, "trim_end_sec": end}
-    try:
-        result["audio_offset_sec"] = float(trim.get("audio_offset_sec") or 0.0)
-    except (TypeError, ValueError):
-        result["audio_offset_sec"] = 0.0
-    return result
+    return {**window, "start_sec": start, "duration_sec": end - start, "trim_start_sec": start, "trim_end_sec": end}
 
 
 def _optional_float(value: Any, fallback: float) -> float:
@@ -343,7 +338,6 @@ def _segment_for_platform(clip: dict[str, Any], window: dict[str, Any], platform
         "master_start_sec": master_start,
         "duration_sec": max(1.0, duration),
         "clip_offset_sec": clip_offset,
-        "audio_offset_sec": float(window.get("audio_offset_sec") or 0.0),
     }
 
 
@@ -369,7 +363,6 @@ def _segment_for_360(clip: dict[str, Any], window: dict[str, Any]) -> dict[str, 
         "master_start_sec": start,
         "duration_sec": duration,
         "clip_offset_sec": clip_offset,
-        "audio_offset_sec": float(window.get("audio_offset_sec") or 0.0),
         "confidence": float(clip.get("confidence") or 0.0),
         "filename": clip.get("filename") or Path(str(clip.get("path"))).name,
         "projection": clip.get("projection"),
