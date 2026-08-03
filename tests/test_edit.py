@@ -199,8 +199,8 @@ def test_video_coverage_tightens_audio_window_without_extending_trim():
     assert window["requested_start_sec"] == 0.0
     assert window["requested_end_sec"] == 30.0
     assert warnings == [
-        "Audio trimmed to start at 0:04 where video coverage begins.",
-        "Audio trimmed to end at 0:24 where video coverage ends; the remaining audio tail has no footage.",
+        "Audio trimmed to start at 00:04 where video coverage begins.",
+        "Audio trimmed to end at 00:24 where video coverage ends; the remaining audio tail has no footage.",
     ]
 
 

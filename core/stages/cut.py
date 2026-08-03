@@ -221,7 +221,7 @@ def _tighten_window_to_video_coverage(window: dict[str, Any], clips: list[dict[s
 
 def _fmt_time(seconds: float) -> str:
     total = max(0, int(round(seconds)))
-    return f"{total // 60}:{total % 60:02d}"
+    return f"{total // 60:02d}:{total % 60:02d}"
 
 
 def _optional_float(value: Any, fallback: float) -> float:
