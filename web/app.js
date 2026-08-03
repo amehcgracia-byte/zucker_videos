@@ -10,6 +10,7 @@ let analysisSetAsideVideos = [];
 let inboxAnalysis = null;
 let inboxAnalysisTimer = null;
 let sourceFolders = [];
+let masterAudioExtensions = [".mp3"];
 let sessionFilterDisabled = false;
 let currentSongs = [];
 let latestResult = null;
@@ -199,7 +200,9 @@ async function apiForm(path, formData) {
 async function loadAppConfig() {
   appConfig = await api("/app/config");
   sourceFolders = appConfig.source_folders || [];
+  masterAudioExtensions = appConfig.master_audio_extensions || [".mp3"];
   renderSourceFolders();
+  renderMasterAudioFilter();
   lastSphericalSetup = normalizeSphericalSetup(appConfig.spherical_landmarks || {});
   cameraRoleWeights = normalizeCameraRoleWeights(appConfig.camera_role_weights || cameraRoleWeights);
   applyCameraRoleWeights(cameraRoleWeights);
@@ -320,10 +323,15 @@ function mergeDetected(result, source = "") {
     sourceFolders = result.source_folders;
     renderSourceFolders();
   }
+  if (result.master_audio_extensions) {
+    masterAudioExtensions = result.master_audio_extensions;
+    renderMasterAudioFilter();
+  }
   for (const key of ["master", "songs", "videos", "ignored"]) {
     const existing = new Set(detected[key].map((item) => item.path));
     for (const item of result[key] || []) {
       if (existing.has(item.path)) continue;
+      if (key === "master" && !masterAudioExtensions.includes(`.${filename(item.path).split(".").pop().toLowerCase()}`)) continue;
       detected[key].push({ ...item, source });
     }
   }
@@ -456,6 +464,7 @@ function renderChips() {
           ${iconFor(item)} ${escapeHtml(item.filename || filename(item.path))}
           ${isSphericalVideo(item) ? "<small>360°</small>" : ""}
           ${item.source === "inbox" ? "<small>from Inbox</small>" : ""}
+          ${item.sync_confidence != null ? `<small>sync ${Number(item.sync_confidence).toFixed(1)} · offset ${formatDuration(item.sync_offset_sec || 0)}</small>` : ""}
           ${isRaw360(item) ? `<small>${escapeHtml(item.info || "360 stitched automatically")}</small>` : ""}
           ${item.kind === "ignored" ? `<small>${escapeHtml(item.note || S.ignored)}</small>` : ""}
           <button class="chip-remove" data-remove-kind="${escapeHtml(item.kind)}" data-remove-path="${escapeHtml(item.path)}" aria-label="Remove ${escapeHtml(
@@ -626,11 +635,16 @@ function renderSourceFolders() {
     return `
     <div class="source-folder-row ${folder.available === false ? "unavailable" : ""}">
       <span title="${escapeHtml(folder.path)}">${escapeHtml(folder.name || folder.path)}</span>
-      <small>${escapeHtml(folder.available === false ? (folder.message || "Drive not mounted") : folder.path)}</small>
+      <small>${escapeHtml(folder.message || folder.path || "Drive not mounted")}</small>
       <button type="button" data-rescan-folder="${escapeHtml(folder.path)}">Rescan</button>
       <button type="button" data-remove-folder="${escapeHtml(folder.path)}" aria-label="Remove source folder">×</button>
     </div>`;
   }).join("");
+}
+
+function renderMasterAudioFilter() {
+  const select = document.querySelector("#masterAudioFilter");
+  if (select) select.value = masterAudioExtensions.length === 1 && masterAudioExtensions[0] === ".mp3" ? "mp3" : "all";
 }
 
 async function saveSourceFolders(folders) {
@@ -673,7 +687,11 @@ function renderInboxAnalysisStatus() {
   if (status === "running") {
     node.textContent = `${inboxAnalysis.detail || "Scanning Inbox"} · ${Number(inboxAnalysis.progress || 0)}%`;
   } else if (status === "done") {
-    node.textContent = inboxAnalysis.detail || "Inbox pre-analysis ready";
+    const master = (inboxAnalysis.masters || []).find((item) => item.path === selectedMasterPath) || (inboxAnalysis.masters || [])[0];
+    const matches = (master?.matches || []).filter((match) => !match.low_confidence && !match.no_audio && match.master_overlap);
+    node.textContent = master
+      ? `${inboxAnalysis.detail || "Inbox pre-analysis ready"} · ${matches.length ? `${matches.length} matching videos` : "No matching videos found for this mix"}`
+      : (inboxAnalysis.detail || "No mixes found — masters are expected as .mp3");
   } else if (status === "failed") {
     node.textContent = `Inbox pre-analysis unavailable: ${inboxAnalysis.detail || "manual selection remains available"}`;
   } else {
@@ -685,17 +703,18 @@ function applyInboxAnalysisFilter() {
   if (!inboxAnalysis || inboxAnalysis.status !== "done") return;
   const master = (inboxAnalysis.masters || []).find((item) => item.path === selectedMasterPath) || (inboxAnalysis.masters || [])[0];
   if (!master) return;
-  const accepted = new Set(
-    (master.matches || [])
-      .filter((match) => !match.low_confidence && !match.no_audio && match.master_overlap)
-      .map((match) => match.path)
-  );
+  const acceptedMatches = (master.matches || []).filter((match) => !match.low_confidence && !match.no_audio && match.master_overlap);
+  const matchByPath = new Map(acceptedMatches.map((match) => [match.path, match]));
+  const accepted = new Set(matchByPath.keys());
   if (!accepted.size) return;
   const keep = [];
   for (const video of detected.videos) {
     // Files added manually remain visible even when Inbox pre-analysis has no
     // match for them; the user can always override the automatic filter.
-    if (video.source !== "inbox" || accepted.has(video.path)) keep.push(video);
+    if (video.source !== "inbox" || accepted.has(video.path)) {
+      const match = matchByPath.get(video.path);
+      keep.push(match ? { ...video, sync_confidence: match.confidence, sync_offset_sec: match.offset_sec, sync_master_path: master.path } : video);
+    }
     else analysisSetAsideVideos.push(video);
   }
   detected.videos = keep;
@@ -2760,6 +2779,18 @@ document.addEventListener("click", (event) => {
     if (!folder.startsWith("/")) { showToast("Source folder must be an absolute path", true); return; }
     saveSourceFolders([...sourceFolders.map((item) => typeof item === "string" ? item : item.path), folder])
       .then(() => { input.value = ""; showToast("Source folder added"); })
+      .catch((error) => showToast(error.message, true));
+  }
+  if (target.id === "masterAudioFilter") {
+    const extensions = target.value === "mp3" ? [".mp3"] : [".wav", ".mp3", ".flac", ".aiff", ".aif"];
+    api("/settings/master-audio-filter", { method: "POST", body: JSON.stringify({ extensions }) })
+      .then((result) => {
+        masterAudioExtensions = result.master_audio_extensions || extensions;
+        clearDetected();
+        return loadInbox();
+      })
+      .then(() => api("/inbox/analysis/start", { method: "POST" }))
+      .then((status) => { inboxAnalysis = status; renderInboxAnalysisStatus(); scheduleInboxAnalysisRefresh(); })
       .catch((error) => showToast(error.message, true));
   }
   if (target.dataset.rescanFolder) {

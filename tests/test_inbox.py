@@ -36,7 +36,7 @@ def test_inbox_analysis_persists_and_reuses_file_pairs(tmp_path, monkeypatch):
     inbox_root = tmp_path / "Inbox"
     inbox_root.mkdir()
     video = inbox_root / "clip.mp4"
-    master = inbox_root / "song.wav"
+    master = inbox_root / "song.mp3"
     video.write_bytes(b"video")
     master.write_bytes(b"audio")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
@@ -67,7 +67,8 @@ def test_source_folders_scan_recursively_and_report_unmounted_drive(tmp_path, mo
     (external_root / "raw" / "sound").mkdir(parents=True)
     inbox_root.mkdir()
     (external_root / "raw" / "clip.mp4").write_bytes(b"video")
-    (external_root / "raw" / "sound" / "song.wav").write_bytes(b"audio")
+    (external_root / "raw" / "sound" / "song.mp3").write_bytes(b"audio")
+    (external_root / "raw" / "sound" / "guitar.wav").write_bytes(b"stem")
     missing = tmp_path / "Volumes" / "RAWVideos"
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     config = {"inbox_path": str(inbox_root), "source_folders": [str(external_root), str(missing)]}
@@ -79,7 +80,8 @@ def test_source_folders_scan_recursively_and_report_unmounted_drive(tmp_path, mo
     })
     result = scan_inbox()
     assert [item["filename"] for item in result["videos"]] == ["clip.mp4"]
-    assert [item["filename"] for item in result["master"]] == ["song.wav"]
+    assert [item["filename"] for item in result["master"]] == ["song.mp3"]
+    assert [item["filename"] for item in result["ignored"]] == ["guitar.wav"]
     assert result["groups"][0]["path"] == str(external_root.resolve())
     assert result["groups"][1]["available"] is False
     assert "drive not mounted" in result["missing_sources"][0]
@@ -102,7 +104,7 @@ def test_configured_source_media_is_registered_in_place_even_if_copy_is_enabled(
     source = tmp_path / "external" / "session"
     source.mkdir(parents=True)
     video = source / "clip.mp4"
-    master = source / "song.wav"
+    master = source / "song.mp3"
     video.write_bytes(b"video")
     master.write_bytes(b"audio")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
@@ -123,7 +125,7 @@ def test_configured_source_media_is_registered_in_place_even_if_copy_is_enabled(
 
 
 def test_inbox_classification_extensions_and_invalid_songs(tmp_path, monkeypatch):
-    master = tmp_path / "master.wav"
+    master = tmp_path / "master.mp3"
     video = tmp_path / "clip.mov"
     valid_songs = tmp_path / "songs.json"
     invalid_json = tmp_path / "notes.json"
@@ -141,7 +143,7 @@ def test_inbox_classification_extensions_and_invalid_songs(tmp_path, monkeypatch
 
     result = classify_paths([str(master), str(video), str(valid_songs), str(invalid_json), str(ignored), str(sidecar)])
 
-    assert [item["filename"] for item in result["master"]] == ["master.wav"]
+    assert [item["filename"] for item in result["master"]] == ["master.mp3"]
     assert [item["filename"] for item in result["videos"]] == ["clip.mov"]
     assert [item["filename"] for item in result["songs"]] == ["songs.json"]
     ignored_notes = {item["filename"]: item["note"] for item in result["ignored"]}
@@ -327,7 +329,7 @@ def test_register_from_inbox_api_refs_and_missing_badge(tmp_path, monkeypatch):
     monkeypatch.setattr("server.inbox.ffprobe", lambda path: valid_video_probe())
     inbox = tmp_path / "ZuckerVideos" / "Inbox"
     inbox.mkdir(parents=True)
-    master = inbox / "master.wav"
+    master = inbox / "master.mp3"
     songs = inbox / "songs.json"
     video = inbox / "clip.mov"
     master.write_bytes(b"master")
@@ -343,7 +345,7 @@ def test_register_from_inbox_api_refs_and_missing_badge(tmp_path, monkeypatch):
     assert scan.status_code == 200
     result = scan.get_json()
     assert result["inbox_path"] == str(inbox.resolve())
-    assert result["master"][0]["filename"] == "master.wav"
+    assert result["master"][0]["filename"] == "master.mp3"
 
     response = client.post(
         "/api/v1/inbox/register",

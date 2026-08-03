@@ -38,6 +38,7 @@ from server.inbox import (
     classify_paths,
     configured_source_folders,
     load_global_config,
+    normalize_master_audio_extensions,
     normalize_source_folders,
     reconcile_registered_inputs,
     register_selected_inputs,
@@ -213,6 +214,20 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         config["source_folders"] = normalized
         save_global_config(config)
         return jsonify({"source_folders": configured_source_folders()})
+
+    @app.post("/api/v1/settings/master-audio-filter")
+    def api_master_audio_filter() -> Response:
+        body = _json_body()
+        extensions = body.get("extensions")
+        if not isinstance(extensions, list) or not all(isinstance(value, str) for value in extensions):
+            return error_response("bad_request", "extensions must be a list", 400)
+        normalized = normalize_master_audio_extensions(extensions)
+        if not normalized:
+            return error_response("bad_request", "Choose at least one audio master format", 400)
+        config = load_global_config()
+        config["master_audio_extensions"] = normalized
+        save_global_config(config)
+        return jsonify({"master_audio_extensions": normalized})
 
     @app.post("/api/v1/inbox/register")
     def api_inbox_register() -> Response:
@@ -703,6 +718,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         config.setdefault("spherical_sweep", True)
         config.setdefault("sweep_speed_deg_per_sec", 20.0)
         config.setdefault("audio_trim_by_master", {})
+        config.setdefault("master_audio_extensions", [".mp3"])
         return jsonify(config)
 
     @app.get("/api/v1/cache/status")

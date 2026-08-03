@@ -18,6 +18,7 @@ from core.stages.sync import load_or_compute_master_envelope, sync_clip, sync_co
 from core.stages.base import stable_fingerprint
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".aiff", ".aif"}
+DEFAULT_MASTER_AUDIO_EXTENSIONS = [".mp3"]
 LOGGER = logging.getLogger(__name__)
 _ANALYSIS_LOCK = threading.RLock()
 _ANALYSIS_THREAD: threading.Thread | None = None
@@ -114,6 +115,25 @@ def configured_source_folders() -> list[dict[str, Any]]:
     return folders
 
 
+def configured_master_audio_extensions() -> list[str]:
+    """Return extensions treated as finished mixes, defaulting to MP3."""
+    config = load_global_config()
+    values = config.get("master_audio_extensions")
+    if not isinstance(values, list):
+        return list(DEFAULT_MASTER_AUDIO_EXTENSIONS)
+    return normalize_master_audio_extensions(values)
+
+
+def normalize_master_audio_extensions(values: list[Any]) -> list[str]:
+    allowed = [str(value).lower() if str(value).startswith(".") else f".{str(value).lower()}" for value in values]
+    return [value for value in allowed if value in AUDIO_EXTENSIONS]
+
+
+def master_filter_message(folder_name: str | None = None) -> str:
+    prefix = f"No mixes found in {folder_name} — " if folder_name else "No mixes found — "
+    return prefix + "masters are expected as .mp3"
+
+
 def classify_source_folders(folders: list[Path]) -> dict[str, Any]:
     """Classify all configured roots recursively and group results by root."""
     result: dict[str, Any] = {
@@ -121,6 +141,8 @@ def classify_source_folders(folders: list[Path]) -> dict[str, Any]:
         "source_folders": [], "groups": [], "master": [], "songs": [], "videos": [], "ignored": [],
         "missing_sources": [],
     }
+    allowed_master_extensions = set(configured_master_audio_extensions())
+    result["master_audio_extensions"] = sorted(allowed_master_extensions)
     seen: set[Path] = set()
     for folder in folders:
         resolved = folder.expanduser().resolve()
@@ -144,6 +166,8 @@ def classify_source_folders(folders: list[Path]) -> dict[str, Any]:
                 continue
             try:
                 item = classify_file(child)
+                if item.get("kind") == "master" and child.suffix.lower() not in allowed_master_extensions:
+                    item = {**item, "kind": "ignored", "note": "Audio stem excluded: only configured mix formats are masters", "checked": False}
             except OSError:
                 continue
             item["source_folder"] = str(resolved)
@@ -151,6 +175,8 @@ def classify_source_folders(folders: list[Path]) -> dict[str, Any]:
             result.setdefault(item["kind"], []).append(item)
             log_classification_verdict(child, item)
         result["groups"].append(group)
+        if available and not group["master"]:
+            group["message"] = master_filter_message(group["name"])
     _prefer_studio_exports(result)
     for group in result["groups"]:
         _prefer_studio_exports(group)
@@ -170,9 +196,15 @@ def inbox_analysis_snapshot() -> dict[str, Any]:
     if path.exists():
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-            snapshot["masters"] = payload.get("masters") or []
+            allowed = set(configured_master_audio_extensions())
+            snapshot["masters"] = [item for item in (payload.get("masters") or []) if Path(str(item.get("path") or "")).suffix.lower() in allowed]
             snapshot["files"] = payload.get("files") or []
             snapshot["completed_at"] = payload.get("completed_at")
+            snapshot["master_audio_extensions"] = sorted(allowed)
+            if payload.get("completed_at") and snapshot.get("status") == "idle":
+                snapshot["status"] = "done"
+                snapshot["progress"] = 100
+                snapshot["detail"] = f"Inbox ready: {len(snapshot['files'])} analyzed files, {len(snapshot['masters'])} audio masters"
         except (OSError, json.JSONDecodeError):
             pass
     return snapshot
@@ -275,10 +307,18 @@ def _run_inbox_analysis(root: str | None) -> None:
             cached = entries.get(key)
             if cached and cached.get("path") == str(media_path):
                 entry = cached
+                if media_path.suffix.lower() in AUDIO_EXTENSIONS:
+                    if media_path.suffix.lower() in configured_master_audio_extensions():
+                        entry = {**entry, "kind": "master", "note": "audio file", "checked": True}
+                    else:
+                        entry = {**entry, "kind": "ignored", "note": "Audio stem excluded: only configured mix formats are masters", "checked": False}
+                    entries[key] = entry
             else:
                 try:
                     item = classify_file(media_path)
                     entry = {**item, "analysis_key": key, "source_folder": _source_folder_for_path(media_path, configured)}
+                    if entry.get("kind") == "master" and media_path.suffix.lower() not in configured_master_audio_extensions():
+                        entry = {**entry, "kind": "ignored", "note": "Audio stem excluded: only configured mix formats are masters", "checked": False}
                     if item.get("kind") == "videos":
                         record = file_record(str(media_path))
                         record.update(video_classification_metadata(media_path))
@@ -298,7 +338,8 @@ def _run_inbox_analysis(root: str | None) -> None:
             with _ANALYSIS_LOCK:
                 _ANALYSIS_STATUS.update({"progress": int(index / total * 35), "detail": f"Preparing {media_path.name}"})
         videos = [entry for entry in current if entry.get("kind") == "videos" and Path(str(entry.get("path") or "")).exists()]
-        masters = [entry for entry in current if entry.get("kind") == "master" and Path(str(entry.get("path") or "")).exists()]
+        allowed_extensions = set(configured_master_audio_extensions())
+        masters = [entry for entry in current if entry.get("kind") == "master" and Path(str(entry.get("path") or "")).suffix.lower() in allowed_extensions and Path(str(entry.get("path") or "")).exists()]
         master_results: list[dict[str, Any]] = []
         pair_total = max(1, len(videos) * len(masters))
         pair_index = 0
@@ -339,7 +380,7 @@ def _run_inbox_analysis(root: str | None) -> None:
         # Keep offline entries in the manifest even though they cannot
         # participate in this run's matching.  Their path/size/mtime keyed
         # analysis is reusable when the external volume is reconnected.
-        payload = {"schema": 1, "completed_at": time.time(), "entries": entries, "files": list(entries.values()), "masters": master_results}
+        payload = {"schema": 1, "completed_at": time.time(), "entries": entries, "files": list(entries.values()), "masters": master_results, "master_audio_extensions": sorted(allowed_extensions)}
         _write_inbox_analysis(payload)
         with _ANALYSIS_LOCK:
             _ANALYSIS_STATUS.update({"status": "done", "progress": 100, "detail": f"Inbox ready: {len(videos)} videos, {len(masters)} audio masters"})
