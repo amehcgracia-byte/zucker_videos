@@ -77,6 +77,7 @@ class CutStage(Stage):
         songs = load_song_boundaries(project)
         song_choice = wizard.get("song_choice")
         window = _selected_window(songs, song_choice, sync_map, wizard)
+        window, coverage_warnings = _tighten_window_to_video_coverage(window, selection["clips"])
         if platform == "reel":
             reel_duration = max(REEL_MIN_DURATION_SEC, min(REEL_MAX_DURATION_SEC, float(wizard.get("reel_duration_sec") or REEL_DEFAULT_DURATION_SEC)))
             # The Reel music bed is the exact master Start/End selection. The
@@ -114,7 +115,7 @@ class CutStage(Stage):
         else:
             clip = _first_covering_clip(selection["clips"], window) or _longest_clip(selection["clips"])
             segment = _segment_for_platform(clip, window, platform)
-        warnings = selection["warnings"] + warnings_360
+        warnings = selection["warnings"] + coverage_warnings + warnings_360
         if warnings:
             segment["warnings"] = warnings
 
@@ -170,6 +171,57 @@ def _trimmed_window(window: dict[str, Any], trim: dict[str, Any]) -> dict[str, A
     start = max(base_start, min(start, base_end - 1.0))
     end = max(start + 1.0, min(end, base_end))
     return {**window, "start_sec": start, "duration_sec": end - start, "trim_start_sec": start, "trim_end_sec": end}
+
+
+def _tighten_window_to_video_coverage(window: dict[str, Any], clips: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str]]:
+    """Keep the requested audio trim inside the union of usable video coverage.
+
+    The requested trim remains the outer bound: this function only moves the
+    effective start forward or end backward when no registered synced video
+    exists there.  Internal gaps remain visible to the edit planner.
+    """
+    requested_start = float(window.get("start_sec") or 0.0)
+    requested_end = requested_start + max(0.0, float(window.get("duration_sec") or 0.0))
+    ranges = []
+    for clip in clips:
+        start = float(clip.get("offset_sec") or 0.0)
+        end = start + max(0.0, float(clip.get("duration_sec") or 0.0))
+        if end > requested_start and start < requested_end:
+            ranges.append((start, end))
+    if not ranges:
+        return window, []
+    coverage_start = max(requested_start, min(start for start, _end in ranges))
+    coverage_end = min(requested_end, max(end for _start, end in ranges))
+    if coverage_end <= coverage_start + 0.001:
+        return window, []
+    warnings: list[str] = []
+    if coverage_start > requested_start + 0.001:
+        warnings.append(
+            f"Audio trimmed to start at {_fmt_time(coverage_start)} where video coverage begins."
+        )
+    if coverage_end < requested_end - 0.001:
+        warnings.append(
+            f"Audio trimmed to end at {_fmt_time(coverage_end)} where video coverage ends; the remaining audio tail has no footage."
+        )
+    if not warnings:
+        return window, []
+    effective = {
+        **window,
+        "requested_start_sec": requested_start,
+        "requested_end_sec": requested_end,
+        "video_coverage_start_sec": coverage_start,
+        "video_coverage_end_sec": coverage_end,
+        "start_sec": coverage_start,
+        "duration_sec": coverage_end - coverage_start,
+        "trim_start_sec": coverage_start,
+        "trim_end_sec": coverage_end,
+    }
+    return effective, warnings
+
+
+def _fmt_time(seconds: float) -> str:
+    total = max(0, int(round(seconds)))
+    return f"{total // 60}:{total % 60:02d}"
 
 
 def _optional_float(value: Any, fallback: float) -> float:

@@ -451,6 +451,14 @@ def _youtube_multicam_plan(
     usage: dict[str, int] = {}
     for segment in segments:
         usage[Path(str(segment.get("clip_path"))).name] = usage.get(Path(str(segment.get("clip_path"))).name, 0) + 1
+    finalized_stats = _finalize_selection_stats(selection_stats, role_weights)
+    for role, weight in role_weights.items():
+        role_sources = [item for item in finalized_stats if item.get("role") == role]
+        if weight > 0 and role_sources and not any(item.get("chosen_segments") for item in role_sources):
+            warnings.append(
+                f"Camera role {role} was requested at {weight * 100:.0f}% but contributed no segments: "
+                + "; ".join(str(item.get("selection_reason") or "unusable") for item in role_sources)
+            )
     return {
         "stage": "edit",
         "platform": coverage.get("platform") or "youtube",
@@ -459,7 +467,7 @@ def _youtube_multicam_plan(
         "warnings": warnings,
         "excluded_clips": coverage.get("excluded_clips") or [],
         "clip_diagnostics": coverage.get("clip_diagnostics") or [],
-        "selection_diagnostics": _finalize_selection_stats(selection_stats),
+        "selection_diagnostics": finalized_stats,
         "gaps": gaps,
         "cut_count": max(0, len(segments) - 1),
         "camera_usage": usage,
@@ -979,7 +987,6 @@ def _quality_filtered_sources(
     selection_stats: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     filtered = []
-    rejected_handheld: list[tuple[float, dict[str, Any]]] = []
     for source in sources:
         if _source_role(source) != "handheld":
             filtered.append(source)
@@ -987,18 +994,17 @@ def _quality_filtered_sources(
         quality = director_quality_for_segment(source, start, end)
         stats = selection_stats.setdefault(_source_id(source), _selection_stats_for_source(source, start, end))
         stats.setdefault("director_quality", (source.get("director_quality") or {}).get("summary") or {})
-        if quality.get("eligible", True):
-            stats["director_score_sum"] = float(stats.get("director_score_sum") or 0.0) + float(quality.get("score") or 0.0)
-            stats["director_score_windows"] = int(stats.get("director_score_windows") or 0) + 1
-            filtered.append({**source, "director_segment_score": quality.get("score")})
-        else:
+        stats["director_score_sum"] = float(stats.get("director_score_sum") or 0.0) + float(quality.get("score") or 0.0)
+        stats["director_score_windows"] = int(stats.get("director_score_windows") or 0) + 1
+        if not quality.get("eligible", True):
             stats["director_rejected_segments"] = int(stats.get("director_rejected_segments") or 0) + 1
             reasons = stats.setdefault("director_reject_reasons", {})
             for reason in quality.get("reasons") or ["low director score"]:
                 reasons[str(reason)] = reasons.get(str(reason), 0) + 1
-            rejected_handheld.append((float(quality.get("score") or 0.0), {**source, "director_segment_score": quality.get("score")}))
-    if not filtered and rejected_handheld:
-        return [sorted(rejected_handheld, key=lambda item: item[0], reverse=True)[0][1]]
+        # Quality is a soft preference, not a camera-wide veto. A dominant
+        # camera must still participate when it has usable synced coverage;
+        # its score and rejected-window reasons remain in diagnostics.
+        filtered.append({**source, "director_segment_score": quality.get("score")})
     return filtered
 
 
@@ -1018,13 +1024,19 @@ def _choose_source(
     if not candidates:
         candidates = usable_sources
     selection_stats = selection_stats or {}
+    role_source_ids = {_source_id(source): _source_role(source) for source in usable_sources}
 
-    def score(source: dict[str, Any]) -> tuple[float, int, float, float, str]:
+    def score(source: dict[str, Any]) -> tuple[float, float, int, float, float, str]:
         role = _source_role(source)
         target_share = max(0.001, float(role_weights.get(role, role_weights.get("handheld", 0.3))))
         chosen_seconds = float((selection_stats.get(_source_id(source)) or {}).get("chosen_seconds") or 0.0)
+        role_chosen_seconds = sum(
+            float((selection_stats.get(source_id) or {}).get("chosen_seconds") or 0.0)
+            for source_id, source_role in role_source_ids.items() if source_role == role
+        )
+        covered_seconds = max(1.0, float((selection_stats.get(_source_id(source)) or {}).get("covered_seconds") or 0.0))
         director_bonus = float(source.get("director_segment_score") or 1.0) if role == "handheld" else 1.0
-        return (chosen_seconds / target_share, usage_counts.get(_source_id(source), 0), -director_bonus, -float(source.get("confidence") or 0.0), _source_id(source))
+        return (role_chosen_seconds / target_share, chosen_seconds / covered_seconds, usage_counts.get(_source_id(source), 0), -director_bonus, -float(source.get("confidence") or 0.0), _source_id(source))
 
     return sorted(candidates, key=score)[0]
 
@@ -1054,6 +1066,7 @@ def _choose_source_avoiding_identical_framing(
     # Build a ranked list of all candidates.
     usage_counts_copy = dict(usage_counts)
     role_weights_copy = dict(role_weights)
+    role_source_ids = {_source_id(source): _source_role(source) for source in sources}
     ranked: list[dict[str, Any]] = []
     # Produce a sorted list by calling _choose_source iteratively isn't clean; instead
     # replicate the sort key inline.
@@ -1061,16 +1074,39 @@ def _choose_source_avoiding_identical_framing(
         role = _source_role(src)
         target_share = max(0.001, float(role_weights_copy.get(role, role_weights_copy.get("handheld", 0.3))))
         chosen_seconds = float((selection_stats.get(_source_id(src)) or {}).get("chosen_seconds") or 0.0)
+        role_chosen_seconds = sum(
+            float((selection_stats.get(source_id) or {}).get("chosen_seconds") or 0.0)
+            for source_id, source_role in role_source_ids.items() if source_role == role
+        )
+        covered_seconds = max(1.0, float((selection_stats.get(_source_id(src)) or {}).get("covered_seconds") or 0.0))
         director_bonus = float(src.get("director_segment_score") or 1.0) if role == "handheld" else 1.0
         # Penalise repeating the previous source (same as _choose_source does via candidate filter)
         same_as_prev = 1 if _source_id(src) == previous_source else 0
-        return (same_as_prev, chosen_seconds / target_share, usage_counts_copy.get(_source_id(src), 0), -director_bonus, -float(src.get("confidence") or 0.0), _source_id(src))
+        # Weight deficit outranks the consecutive-source preference. The old
+        # ordering forced a one-for-one alternation and could starve a role
+        # configured at 80% whenever another camera was also available.
+        return (role_chosen_seconds / target_share, same_as_prev, chosen_seconds / covered_seconds, usage_counts_copy.get(_source_id(src), 0), -director_bonus, -float(src.get("confidence") or 0.0), _source_id(src))
 
     usable = [src for src in sources if float(role_weights_copy.get(_source_role(src), role_weights_copy.get("handheld", 0.3))) > 0.0] or list(sources)
     ranked = sorted(usable, key=score)
 
     if not ranked:
         return _choose_source(sources, previous_source, usage_counts, selection_stats, role_weights)
+
+    def role_deficit(src: dict[str, Any]) -> float:
+        role = _source_role(src)
+        target = max(0.001, float(role_weights_copy.get(role, role_weights_copy.get("handheld", 0.3))))
+        chosen = sum(
+            float((selection_stats.get(source_id) or {}).get("chosen_seconds") or 0.0)
+            for source_id, source_role in role_source_ids.items() if source_role == role
+        )
+        return chosen / target
+
+    # A materially under-target role is allowed to repeat a camera. This is
+    # the escape hatch that makes an 80% Sony request remain 80% instead of
+    # being reduced to alternating-camera parity by framing avoidance.
+    if len(ranked) > 1 and role_deficit(ranked[0]) + 0.2 < role_deficit(ranked[1]):
+        return ranked[0]
 
     for candidate in ranked:
         framing = _predict_framing(candidate, segment_start, segment_end, segment_index, spherical_landmarks, use_recorded_360, recorded_moves)
@@ -1295,10 +1331,12 @@ def _selection_stats_for_source(source: dict[str, Any], window_start: float, win
     }
 
 
-def _finalize_selection_stats(stats: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def _finalize_selection_stats(stats: dict[str, dict[str, Any]], role_weights: dict[str, float] | None = None) -> list[dict[str, Any]]:
     finalized = []
     for item in stats.values():
         entry = dict(item)
+        entry["role"] = _source_role(entry)
+        entry["configured_weight"] = float((role_weights or DEFAULT_CAMERA_ROLE_WEIGHTS).get(entry["role"], 0.0))
         entry["covered_seconds"] = round(float(entry.get("covered_seconds") or 0.0), 3)
         entry["eligible_seconds"] = round(float(entry.get("eligible_seconds") or 0.0), 3)
         entry["chosen_seconds"] = round(float(entry.get("chosen_seconds") or 0.0), 3)

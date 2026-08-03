@@ -6,7 +6,7 @@ import subprocess
 import pytest
 
 from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _available_spherical_shots, _ken_burns_motion, _spherical_motion_profile, _youtube_multicam_plan, _reel_promo_plan, _framing_nearly_identical
-from core.stages.cut import _pick_energetic_window, _segment_for_360, _select_360_clip
+from core.stages.cut import _pick_energetic_window, _segment_for_360, _select_360_clip, _tighten_window_to_video_coverage
 
 
 def test_estimate_bar_starts_groups_beats_in_fours():
@@ -187,6 +187,21 @@ def test_youtube_plan_role_weights_bias_eligible_camera_share():
 
     usage = plan["camera_usage"]
     assert usage["360.mp4"] >= usage["sony.mp4"] >= usage["iphone.mov"]
+
+
+def test_video_coverage_tightens_audio_window_without_extending_trim():
+    window, warnings = _tighten_window_to_video_coverage(
+        {"title": "Song", "start_sec": 0.0, "duration_sec": 30.0, "trim_start_sec": 0.0, "trim_end_sec": 30.0},
+        [{"offset_sec": 4.0, "duration_sec": 20.0}],
+    )
+    assert window["start_sec"] == 4.0
+    assert window["duration_sec"] == 20.0
+    assert window["requested_start_sec"] == 0.0
+    assert window["requested_end_sec"] == 30.0
+    assert warnings == [
+        "Audio trimmed to start at 0:04 where video coverage begins.",
+        "Audio trimmed to end at 0:24 where video coverage ends; the remaining audio tail has no footage.",
+    ]
 
 
 def test_youtube_plan_role_weight_zero_excludes_role():
