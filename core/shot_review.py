@@ -10,6 +10,7 @@ from typing import Any
 
 from core.project import Project
 from core.ffmpeg import locate_executable
+from core.spherical_view import view_parameters
 from core.stages.base import artifact_path
 from core.stages.cut import load_coverage
 
@@ -20,7 +21,40 @@ def _plan(project: Project) -> dict[str, Any]:
 
 
 def _source_for(segment: dict[str, Any]) -> str:
+    # A spherical review frame must come from the equirectangular source so it
+    # can be reframed with this segment's landmark.  The ordinary proxy is a
+    # single default view and therefore makes every landmark thumbnail look
+    # identical.
+    if segment.get("spherical_shot") and segment.get("source_path"):
+        return str(segment["source_path"])
     return str(segment.get("proxy_path") or segment.get("clip_path") or segment.get("source_path") or "")
+
+
+def _thumbnail_filter(segment: dict[str, Any]) -> str:
+    shot = segment.get("spherical_shot") or {}
+    if not shot:
+        return "scale=360:-2:force_original_aspect_ratio=decrease"
+    projection = str(segment.get("projection") or "equirect")
+    if projection not in {"equirect", "raw_insv"}:
+        return "scale=360:-2:force_original_aspect_ratio=decrease"
+    view = view_parameters(
+        float(shot.get("yaw") or 0.0),
+        float(shot.get("pitch") or 0.0),
+        float(shot.get("fov") or 95.0),
+        16.0 / 9.0,
+        str(shot.get("type") or ""),
+    )
+    if projection == "raw_insv":
+        insv_fov = float(segment.get("insv_fov") or 190.0)
+        prefix = f"v360=input=dfisheye:output=e:ih_fov={insv_fov:.3f}:iv_fov={insv_fov:.3f}:interp=lanczos,"
+    else:
+        prefix = ""
+    return (
+        f"{prefix}v360=input=equirect:output={view['projection']}:"
+        f"yaw={float(view['yaw']):.3f}:pitch={float(view['pitch']):.3f}:"
+        f"h_fov={float(view['h_fov']):.3f}:v_fov={float(view['v_fov']):.3f}:"
+        "w=360:h=202:interp=lanczos,format=yuvj420p"
+    )
 
 
 def _candidate_key(candidate: dict[str, Any]) -> str:
@@ -61,12 +95,14 @@ def review_items(project: Project) -> list[dict[str, Any]]:
         clip_start = float(segment.get("clip_start_sec") or 0.0)
         timestamp = clip_start + duration / 2.0
         source_stat = Path(source).stat() if Path(source).exists() else None
-        key = hashlib.sha256(f"{source}|{source_stat.st_mtime_ns if source_stat else 0}|{timestamp:.4f}".encode()).hexdigest()[:20]
+        shot = segment.get("spherical_shot") or {}
+        pose = json.dumps({key: shot.get(key) for key in ("type", "yaw", "pitch", "fov")}, sort_keys=True)
+        key = hashlib.sha256(f"{source}|{source_stat.st_mtime_ns if source_stat else 0}|{timestamp:.4f}|{pose}".encode()).hexdigest()[:20]
         output = root / f"shot-{index:04d}-{key}.jpg"
         if not output.exists() and source:
             command = [
                 ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", f"{timestamp:.3f}",
-                "-i", source, "-frames:v", "1", "-vf", "scale=360:-2:force_original_aspect_ratio=decrease",
+                "-i", source, "-frames:v", "1", "-vf", _thumbnail_filter(segment),
                 "-q:v", "5", "-y", str(output),
             ]
             try:

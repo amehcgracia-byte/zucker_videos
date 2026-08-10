@@ -17,7 +17,7 @@ def test_estimate_bar_starts_groups_beats_in_fours():
     assert bars[:5] == [0.0, 2.0, 4.0, 6.0, 8.0]
 
 
-def test_generated_landmark_plan_clamps_normal_fov_but_preserves_planet_range():
+def test_generated_landmark_plan_preserves_configured_zoom_and_planet_range():
     shots = _available_spherical_shots(
         migrate_spherical_landmarks(
             {
@@ -31,8 +31,8 @@ def test_generated_landmark_plan_clamps_normal_fov_but_preserves_planet_range():
     )
     by_type = {shot["type"]: shot for shot in shots}
     assert by_type["singer"]["fov"] == 74.0
-    assert by_type["audience"]["fov"] == 100.0
-    assert by_type["full_stage"]["fov"] == 100.0
+    assert by_type["audience"]["fov"] == 111.4
+    assert by_type["full_stage"]["fov"] == 120.0
     assert by_type["planet"]["fov"] == 280.0
     assert by_type["singer"]["sweep_enabled"] is True
     assert by_type["audience"]["sweep_enabled"] is True

@@ -51,7 +51,7 @@ SPHERICAL_DEFAULT_FOV = 95.0
 SPHERICAL_WIDE_FOV = 120.0
 SPHERICAL_AUDIENCE_STAGE_FOV = 125.0
 SPHERICAL_NORMAL_FOV_MIN = 70.0
-SPHERICAL_NORMAL_FOV_MAX = 100.0
+SPHERICAL_NORMAL_FOV_MAX = 300.0
 SPHERICAL_SHOT_ORDER = ("full_stage", "singer", "drummer", "left", "right", "audience", "audience_stage_wide", "planet")
 SPHERICAL_LANDMARKS = {
     "singer": ("singer_yaw", "Cantante", SPHERICAL_DEFAULT_FOV),
@@ -1092,21 +1092,6 @@ def _choose_source_avoiding_identical_framing(
 
     if not ranked:
         return _choose_source(sources, previous_source, usage_counts, selection_stats, role_weights)
-
-    def role_deficit(src: dict[str, Any]) -> float:
-        role = _source_role(src)
-        target = max(0.001, float(role_weights_copy.get(role, role_weights_copy.get("handheld", 0.3))))
-        chosen = sum(
-            float((selection_stats.get(source_id) or {}).get("chosen_seconds") or 0.0)
-            for source_id, source_role in role_source_ids.items() if source_role == role
-        )
-        return chosen / target
-
-    # A materially under-target role is allowed to repeat a camera. This is
-    # the escape hatch that makes an 80% Sony request remain 80% instead of
-    # being reduced to alternating-camera parity by framing avoidance.
-    if len(ranked) > 1 and role_deficit(ranked[0]) + 0.2 < role_deficit(ranked[1]):
-        return ranked[0]
 
     for candidate in ranked:
         framing = _predict_framing(candidate, segment_start, segment_end, segment_index, spherical_landmarks, use_recorded_360, recorded_moves)

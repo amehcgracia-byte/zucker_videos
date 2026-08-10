@@ -783,16 +783,16 @@ def test_wide_shots_render_stereographic_and_narrow_ones_stay_rectilinear():
 def test_shot_wider_than_the_old_rectilinear_cap_is_no_longer_clamped_to_190():
     # Regression guard for the authored range: the UI now offers up to 300 deg,
     # so the export must actually render it rather than silently clamping.
-    assert _effective_flat_fov({"type": "audience", "fov": 260}) == 100.0
-    assert _effective_flat_fov({"type": "audience", "fov": 400}) == 100.0
+    assert _effective_flat_fov({"type": "audience", "fov": 260}) == 260.0
+    assert _effective_flat_fov({"type": "audience", "fov": 400}) == 300.0
     assert _effective_flat_fov({"type": "planet", "fov": 300}) == 300.0
 
 
 def test_normal_landmark_fov_stays_natural_and_reaches_v360_unchanged_when_in_range():
     assert _effective_flat_fov({"type": "drummer", "fov": 73.3}) == 73.3
     assert _effective_flat_fov({"type": "singer", "fov": 95.0}) == 95.0
-    assert _effective_flat_fov({"type": "audience", "fov": 111.4}) == 100.0
-    assert "output=flat" in _export_source_filter({"projection": "equirect"}, {"type": "audience", "fov": 260})
+    assert _effective_flat_fov({"type": "audience", "fov": 111.4}) == 111.4
+    assert "output=sg" in _export_source_filter({"projection": "equirect"}, {"type": "audience", "fov": 260})
 
 
 def test_automatic_hold_yaw_travel_is_capped_to_a_few_degrees():

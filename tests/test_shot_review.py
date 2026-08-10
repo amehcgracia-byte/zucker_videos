@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 from core.project import create_project, load_project
-from core.shot_review import replace_slots, review_items
+from core.shot_review import _thumbnail_filter, replace_slots, review_items
 from core.stages.base import artifact_path
 
 
@@ -58,3 +58,17 @@ def test_replacements_never_repeat_a_candidate_for_the_same_slot(tmp_path: Path)
 
     assert len(set(shown_starts)) == 6
     assert project.data["settings"]["wizard"]["review_exclusions"]["0"]
+
+
+def test_spherical_thumbnail_uses_the_segment_landmark_pose() -> None:
+    singer = _thumbnail_filter({
+        "source_path": "/tmp/equirect.mp4", "projection": "equirect",
+        "spherical_shot": {"type": "singer", "yaw": 25, "pitch": -10, "fov": 82},
+    })
+    drummer = _thumbnail_filter({
+        "source_path": "/tmp/equirect.mp4", "projection": "equirect",
+        "spherical_shot": {"type": "drummer", "yaw": 210, "pitch": 8, "fov": 125},
+    })
+    assert singer != drummer
+    assert "yaw=25.000" in singer and "h_fov=82.000" in singer
+    assert "yaw=-150.000" in drummer and "h_fov=125.000" in drummer

@@ -2587,8 +2587,6 @@ def _use_stereographic(shot: dict[str, Any] | None) -> bool:
     shot_type = str((shot or {}).get("type") or "")
     if shot_type == "planet":
         return True
-    if shot_type not in {"recorded_move", ""}:
-        return False
     return _shot_peak_fov(shot) > STEREOGRAPHIC_FOV_THRESHOLD
 
 

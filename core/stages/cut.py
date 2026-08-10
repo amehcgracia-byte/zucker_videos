@@ -47,27 +47,21 @@ class CutStage(Stage):
         wizard = project.data["settings"].get("wizard", {})
         platform = str(wizard.get("platform") or "youtube")
         selection = _selectable_synced_clips(project, sync_map, allow_unsynced=platform in {"360", "reel"})
-        if not selection["clips"] and platform not in {"360", "reel"}:
-            # A weak correlation is a warning, not a reason to strand the
-            # user. Keep the best offsets so the user can inspect/export the
-            # result, while making the possible mismatch explicit.
+        if platform not in {"360", "reel"}:
+            # Keep readable clips with best-scoring offsets available to the
+            # multicam chooser even when their correlation is below the hard
+            # threshold.  Otherwise one weak camera silently disappears from
+            # a mixed edit and its configured weight can never be honoured.
             fallback = _selectable_synced_clips(project, sync_map, allow_unsynced=True)
             fallback_clips = [
                 clip for clip in fallback["clips"]
                 if not clip.get("error") and not clip.get("no_audio")
             ]
-            if fallback_clips:
-                good_ids = {
-                    (str(clip.get("clip_id") or ""), str(clip.get("path") or clip.get("source_path") or ""), _float_or_zero(clip.get("offset_sec")))
-                    for clip in fallback_clips
-                }
-                fallback["clips"] = [
-                    clip for clip in fallback["clips"]
-                    if (str(clip.get("clip_id") or ""), str(clip.get("path") or clip.get("source_path") or ""), _float_or_zero(clip.get("offset_sec"))) in good_ids
-                ]
+            if fallback_clips and len(fallback_clips) > len(selection["clips"]):
+                fallback["clips"] = fallback_clips
                 selection = fallback
                 selection["warnings"].append(
-                    "No clips met the sync confidence threshold. Proceeding anyway with the best-scoring offsets; "
+                    "Some clips did not meet the sync confidence threshold. Proceeding anyway with their best-scoring offsets; "
                     "sync may be imprecise. Check that the selected master matches this footage and that the camera audio is strong enough."
                 )
         if not selection["clips"]:
