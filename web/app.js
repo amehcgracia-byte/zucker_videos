@@ -915,10 +915,10 @@ function renderShotReview(items) {
   const root = document.querySelector("#reviewGrid");
   if (!root) return;
   root.innerHTML = shotReviewItems.map((item) => `<article class="review-card ${item.keep ? "keep" : "reject"}" data-review-index="${item.index}">
-    <button class="review-thumb-button" data-review-thumb="${item.index}"><img class="review-thumb" src="${item.thumbnail || ""}" alt="Shot ${item.index + 1}" /></button>
+    <button class="review-thumb-button" data-review-thumb="${item.index}"><img class="review-thumb" src="${item.thumbnail || ""}" alt="${escapeHtml(item.landmark || item.source || `Shot ${item.index + 1}`)}" /></button>
     <label class="review-keep"><input type="checkbox" data-review-keep="${item.index}" ${item.keep ? "checked" : ""}/> Keep</label>
     <strong>#${item.index + 1} · ${escapeHtml(item.source)}</strong>
-    <span>${Number(item.duration_sec).toFixed(1)}s${item.landmark ? ` · ${escapeHtml(item.landmark)}` : ""}</span>
+    <span>${Number(item.duration_sec).toFixed(1)}s${item.landmark ? ` · ${escapeHtml(item.landmark)} frame` : ""}</span>
     ${item.no_alternative ? '<em>No alternative coverage available</em>' : ""}
   </article>`).join("");
 }
@@ -2742,8 +2742,9 @@ document.addEventListener("click", (event) => {
   const reviewThumb = rawTarget instanceof HTMLElement ? rawTarget.closest("[data-review-thumb]") : null;
   if (reviewThumb) {
     const item = shotReviewItems.find((entry) => Number(entry.index) === Number(reviewThumb.dataset.reviewThumb));
-    if (item?.thumbnail) { document.querySelector("#reviewLarge").src = item.thumbnail; document.querySelector("#reviewLargeWrap").hidden = false; }
+    if (item?.thumbnail) { document.querySelector("#reviewLarge").src = item.thumbnail; document.querySelector("#reviewLargeModal").hidden = false; }
   }
+  if (target.id === "closeReviewLarge" || target.id === "reviewLargeModal") document.querySelector("#reviewLargeModal").hidden = true;
   if (target.id === "replaceRejected") {
     const rejected = shotReviewItems.filter((item) => !item.keep).map((item) => Number(item.index));
     api("/wizard/review/replace", { method: "POST", body: JSON.stringify({ rejected }) }).then((result) => renderShotReview(result.items || [])).catch((error) => showToast(error.message, true));
@@ -2897,6 +2898,13 @@ document.addEventListener("click", (event) => {
   }
   if (target.closest?.("#confirmRescue")) {
     confirmRescue().catch((error) => showToast(error.message, true));
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    const modal = document.querySelector("#reviewLargeModal");
+    if (modal && !modal.hidden) modal.hidden = true;
   }
 });
 

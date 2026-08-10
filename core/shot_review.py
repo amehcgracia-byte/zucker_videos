@@ -79,6 +79,26 @@ def _candidate_keys(candidate: dict[str, Any]) -> set[str]:
     return {_candidate_key(candidate), f"{path}|{raw_start}"}
 
 
+def _candidate_covers_slot(candidate: dict[str, Any], segment: dict[str, Any], platform: str) -> bool:
+    """Return whether a replacement is valid for this exact master-time slot."""
+    if platform != "youtube":
+        return True
+    try:
+        confidence = float(candidate.get("confidence") or 0.0)
+        threshold = float(candidate.get("threshold") or 6.0)
+    except (TypeError, ValueError):
+        return False
+    if confidence < threshold or (candidate.get("low_confidence") and not candidate.get("manual_override")):
+        return False
+    if candidate.get("unstable_sync") and not candidate.get("manual_override"):
+        return False
+    master_start = float(segment.get("master_start_sec") or 0.0)
+    duration = max(0.1, float(segment.get("duration_sec") or 0.1))
+    coverage_start = float(candidate.get("offset_sec") or 0.0)
+    coverage_end = coverage_start + max(0.0, float(candidate.get("duration_sec") or 0.0))
+    return coverage_start <= master_start + 0.001 and coverage_end >= master_start + duration - 0.001
+
+
 def review_items(project: Project) -> list[dict[str, Any]]:
     """Return cached midpoint thumbnails for the current edit plan."""
     plan = _plan(project)
@@ -132,6 +152,7 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
     if not pool:
         pool = list(segments)
     wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
+    platform = str(coverage.get("platform") or wizard.get("platform") or plan.get("platform") or "generic")
     attempts = wizard.setdefault("review_attempts", {})
     # Unlike the old single-attempt behaviour, this is a permanent per-slot
     # record of every candidate that has been displayed to the reviewer.
@@ -152,7 +173,7 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         for candidate in pool:
             path = candidate.get("path") or candidate.get("clip_path") or candidate.get("source_path")
             key = _candidate_key(candidate)
-            if path and not (_candidate_keys(candidate) & tried):
+            if path and not (_candidate_keys(candidate) & tried) and _candidate_covers_slot(candidate, segment, platform):
                 candidates.append((float(candidate.get("shot_quality_score") or candidate.get("motion_score") or 0.0), candidate, key))
         if not candidates:
             unavailable.add(index)
@@ -162,7 +183,15 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         new_segment["clip_path"] = candidate.get("path") or candidate.get("clip_path") or candidate.get("source_path")
         new_segment["source_path"] = candidate.get("source_path") or new_segment["clip_path"]
         new_segment["filename"] = candidate.get("filename") or Path(str(new_segment["clip_path"])).name
-        new_segment["clip_start_sec"] = float(candidate.get("clip_start_sec") or 0.0)
+        if platform == "youtube":
+            # The candidate's offset is its position on the master timeline;
+            # convert the reviewed slot back into that camera's own timeline.
+            new_segment["clip_start_sec"] = max(
+                0.0,
+                float(segment.get("master_start_sec") or 0.0) - float(candidate.get("offset_sec") or 0.0),
+            )
+        else:
+            new_segment["clip_start_sec"] = float(candidate.get("clip_start_sec") or 0.0)
         if candidate.get("projection"):
             new_segment["projection"] = candidate["projection"]
         if candidate.get("spherical_shot"):

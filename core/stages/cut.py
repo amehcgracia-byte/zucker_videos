@@ -47,11 +47,10 @@ class CutStage(Stage):
         wizard = project.data["settings"].get("wizard", {})
         platform = str(wizard.get("platform") or "youtube")
         selection = _selectable_synced_clips(project, sync_map, allow_unsynced=platform in {"360", "reel"})
-        if platform not in {"360", "reel"}:
-            # Keep readable clips with best-scoring offsets available to the
-            # multicam chooser even when their correlation is below the hard
-            # threshold.  Otherwise one weak camera silently disappears from
-            # a mixed edit and its configured weight can never be honoured.
+        if platform == "youtube" and bool(wizard.get("proceed_anyway")):
+            # This is an explicit escape hatch for the earlier sync failure
+            # flow. It must never be implicit: normal YouTube coverage is
+            # strictly verified and cannot be populated with weak offsets.
             fallback = _selectable_synced_clips(project, sync_map, allow_unsynced=True)
             fallback_clips = [
                 clip for clip in fallback["clips"]
@@ -61,7 +60,7 @@ class CutStage(Stage):
                 fallback["clips"] = fallback_clips
                 selection = fallback
                 selection["warnings"].append(
-                    "Some clips did not meet the sync confidence threshold. Proceeding anyway with their best-scoring offsets; "
+                    "Proceeding anyway with some below-threshold offsets; sync may be imprecise. "
                     "sync may be imprecise. Check that the selected master matches this footage and that the camera audio is strong enough."
                 )
         if not selection["clips"]:

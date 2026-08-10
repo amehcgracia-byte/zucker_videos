@@ -1102,7 +1102,7 @@ def test_cut_proceeds_with_best_offset_when_all_sync_scores_are_low(tmp_path):
     record["normalized"] = {"path": str(normalized), "cache_key": "cache-key", "source_size": record["size"], "source_mtime": record["mtime"]}
     project.data["inputs"]["master"] = file_record(str(master))
     project.data["inputs"]["videos"] = [record]
-    project.data["settings"]["wizard"] = {"platform": "youtube", "song_choice": None}
+    project.data["settings"]["wizard"] = {"platform": "youtube", "song_choice": None, "proceed_anyway": True}
     project.data["settings"]["sync"]["confidence_threshold"] = 6.0
     write_artifact_json(
         project.artifacts_dir / "sync_map.json",

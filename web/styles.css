@@ -1389,6 +1389,8 @@ pre {
 .review-keep { display: flex; gap: 6px; align-items: center; font-size: .9rem; }
 .review-card span, .review-card em { font-size: .82rem; color: var(--muted, #63727a); }
 .review-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
-.review-large-wrap { margin: 16px auto 0; max-width: 720px; }
-.review-large-wrap img { display: block; width: 100%; max-height: 55vh; object-fit: contain; border-radius: 10px; background: #111; }
+.review-large-modal { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 5vh 5vw; background: rgb(0 0 0 / 78%); }
+.review-large-modal[hidden] { display: none; }
+.review-large-modal img { display: block; width: min(90vw, 1100px); max-height: 86vh; object-fit: contain; border-radius: 10px; background: #111; box-shadow: 0 18px 70px rgb(0 0 0 / 45%); }
+.review-large-close { position: absolute; top: 18px; right: 24px; width: 42px; height: 42px; border: 1px solid rgb(255 255 255 / 45%); border-radius: 50%; color: #fff; background: rgb(0 0 0 / 45%); font-size: 28px; line-height: 1; cursor: pointer; }
 @media (max-width: 800px) { .reel-text-line { grid-template-columns: 1fr 44px 1fr; } .reel-option-grid { grid-template-columns: 1fr; } }

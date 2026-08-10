@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 from core.project import create_project, load_project
-from core.shot_review import _thumbnail_filter, replace_slots, review_items
+from core.shot_review import _candidate_covers_slot, _thumbnail_filter, replace_slots, review_items
 from core.stages.base import artifact_path
 
 
@@ -72,3 +72,13 @@ def test_spherical_thumbnail_uses_the_segment_landmark_pose() -> None:
     assert singer != drummer
     assert "yaw=25.000" in singer and "h_fov=82.000" in singer
     assert "yaw=-150.000" in drummer and "h_fov=125.000" in drummer
+
+
+def test_youtube_replacement_requires_verified_coverage_for_the_slot() -> None:
+    segment = {"master_start_sec": 20.0, "duration_sec": 4.0}
+    valid = {"offset_sec": 10.0, "duration_sec": 20.0, "confidence": 9.0}
+    wrong_time = {"offset_sec": 30.0, "duration_sec": 20.0, "confidence": 9.0}
+    weak = {"offset_sec": 10.0, "duration_sec": 20.0, "confidence": 4.0, "low_confidence": True}
+    assert _candidate_covers_slot(valid, segment, "youtube")
+    assert not _candidate_covers_slot(wrong_time, segment, "youtube")
+    assert not _candidate_covers_slot(weak, segment, "youtube")
