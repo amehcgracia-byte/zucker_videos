@@ -218,7 +218,10 @@ class ExportStage(Stage):
             )
         else:
             render_platform = "reel_horizontal" if platform == "reel" and str(plan.get("reel_aspect") or project.data.get("settings", {}).get("wizard", {}).get("reel_aspect") or "9:16") == "16:9" else platform
-            _render_plan(project, segments, master["path"], output_path, render_platform, bitrate_info["video_bitrate"], warnings, progress_callback)
+            _render_plan(
+                project, segments, master["path"], output_path, render_platform,
+                bitrate_info["video_bitrate"], warnings, progress_callback, required_space,
+            )
         progress_callback(95, t("saving_result"))
         path = artifact_path(project, "export_manifest.json")
         if bitrate_info["warning"]:
@@ -362,9 +365,17 @@ def _render_plan(
     video_bitrate: int,
     warnings: list[str],
     progress_callback: ProgressCallback,
+    required_space: int | None = None,
 ) -> None:
-    ffmpeg = _ffmpeg_path()
+    required_space = required_space or _required_export_space_bytes(
+        _plan_duration(segments) + INTRO_DURATION + OUTRO_DURATION,
+        video_bitrate,
+        len(segments),
+    )
     temp_dir = output_path.parent / f".{output_path.stem}-segments"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _check_export_disk_space(output_path, required_space)
+    ffmpeg = _ffmpeg_path()
     if temp_dir.exists():
         shutil.rmtree(temp_dir)
     temp_dir.mkdir(parents=True)

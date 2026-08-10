@@ -97,6 +97,25 @@ def test_export_space_preflight_reports_required_size(tmp_path, monkeypatch):
         _check_export_disk_space(tmp_path / "exports" / "out.mp4", required)
 
 
+def test_render_plan_wraps_worker_failure_without_required_space_nameerror(tmp_path, monkeypatch):
+    project = create_project("Space check", str(tmp_path / "Space check.zuckervid"))
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    master = tmp_path / "master.wav"
+    master.write_bytes(b"master")
+    monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
+    monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda *args: {})
+    monkeypatch.setattr("core.stages.export._render_logo_clip", lambda output, *args, **kwargs: output.write_bytes(b"logo"))
+    monkeypatch.setattr("core.stages.export._render_segment_job", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("filter init failed")))
+    with pytest.raises(SegmentRenderError, match="segment 1") as exc_info:
+        _render_plan(
+            project,
+            [{"source_path": str(source), "clip_path": str(source), "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 1}],
+            str(master), tmp_path / "out.mp4", "youtube", 4_000_000, [], lambda *_args: None,
+        )
+    assert "required_space" not in str(exc_info.value)
+
+
 def test_each_export_run_gets_a_distinct_result_path(tmp_path):
     project = create_project("Run", str(tmp_path / "project"))
     first = _output_path(project, "youtube", _export_run_id())
