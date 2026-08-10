@@ -79,6 +79,9 @@ INTRO_DURATION = 10.2
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
 FRAME_INTERVAL_TOLERANCE = 0.50
+FRAME_COUNT_METADATA_TIMEOUT_SEC = 10
+FRAME_COUNT_DECODE_TIMEOUT_SEC = 120
+FRAME_COUNT_DECODE_RETRY_TIMEOUT_SEC = 300
 MIN_EXPORT_FREE_SPACE_BYTES = 512 * 1024 * 1024
 
 
@@ -3104,38 +3107,69 @@ def _verify_moving_segment(path: Path, duration: float, label: str, command_line
 
 def _verify_segment_frame_duration(path: Path, frame_count: int, label: str) -> None:
     expected = frame_count / TARGET_EXPORT_FPS
-    frames = _video_frame_count(path)
+    frames = _video_frame_count(path, expected_frames=frame_count)
     actual = frames / TARGET_EXPORT_FPS
     if frames != frame_count:
         raise FFmpegError(f"Segment duration is not frame-exact for {label}: expected {expected:.6f}s ({frame_count} frames), got {actual:.6f}s ({frames} frames)")
 
 
-def _video_frame_count(path: Path) -> int:
-    result = subprocess.run(
+def _video_frame_count(path: Path, expected_frames: int | None = None) -> int:
+    """Return a frame count without making normal 360 verification decode twice.
+
+    Encoders commonly write ``nb_frames`` into the container. Reading that
+    metadata is cheap; only a missing or suspicious value falls back to the
+    expensive full decode. The fallback has a realistic timeout for 360
+    segments and one longer retry for a machine under parallel CPU load.
+    """
+    started = time.perf_counter()
+    metadata_result = subprocess.run(
         [
-            _ffprobe_path(),
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-count_frames",
-            "-show_entries",
-            "stream=nb_read_frames",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            str(path),
+            _ffprobe_path(), "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=nb_frames,duration,avg_frame_rate",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(path),
         ],
         check=False,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=FRAME_COUNT_METADATA_TIMEOUT_SEC,
     )
-    if result.returncode != 0:
-        raise FFmpegError((result.stderr or "").strip() or f"Could not count segment frames: {path}")
-    try:
-        return int((result.stdout or "0").strip().splitlines()[0])
-    except (IndexError, ValueError) as exc:
-        raise FFmpegError(f"Could not parse segment frame count for {path}: {result.stdout!r}") from exc
+    metadata_count: int | None = None
+    if metadata_result.returncode == 0:
+        for raw in (metadata_result.stdout or "").splitlines():
+            raw = raw.strip()
+            if raw.isdigit() and int(raw) > 0:
+                metadata_count = int(raw)
+                break
+    if metadata_count is not None and (expected_frames is None or metadata_count == expected_frames):
+        LOGGER.info("frame count verification path=%s method=metadata frames=%s seconds=%.3f", path, metadata_count, time.perf_counter() - started)
+        return metadata_count
+
+    command = [
+        _ffprobe_path(), "-v", "error", "-select_streams", "v:0", "-count_frames",
+        "-show_entries", "stream=nb_read_frames", "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+    ]
+    last_timeout: subprocess.TimeoutExpired | None = None
+    for timeout in (FRAME_COUNT_DECODE_TIMEOUT_SEC, FRAME_COUNT_DECODE_RETRY_TIMEOUT_SEC):
+        try:
+            result = subprocess.run(
+                command, check=False, capture_output=True, text=True, timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            last_timeout = exc
+            LOGGER.warning("frame count verification timed out path=%s timeout=%ss; retrying=%s", path, timeout, timeout != FRAME_COUNT_DECODE_RETRY_TIMEOUT_SEC)
+            continue
+        if result.returncode != 0:
+            raise FFmpegError((result.stderr or "").strip() or f"Could not count segment frames: {path}")
+        try:
+            frames = int((result.stdout or "0").strip().splitlines()[0])
+        except (IndexError, ValueError) as exc:
+            raise FFmpegError(f"Could not parse segment frame count for {path}: {result.stdout!r}") from exc
+        LOGGER.info("frame count verification path=%s method=full_decode frames=%s seconds=%.3f", path, frames, time.perf_counter() - started)
+        return frames
+    raise FFmpegError(
+        f"Frame-count verification timed out twice for {path} "
+        f"(tried {FRAME_COUNT_DECODE_TIMEOUT_SEC}s and {FRAME_COUNT_DECODE_RETRY_TIMEOUT_SEC}s)"
+    ) from last_timeout
 
 
 def _verify_moving_window(path: Path, start: float, duration: float, label: str, context: str) -> None:

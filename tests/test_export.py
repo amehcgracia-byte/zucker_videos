@@ -57,6 +57,7 @@ from core.stages.export import (
     _frame_normalized_segments,
     _frame_md5,
     _verify_final_audio,
+    _video_frame_count,
     _verify_moving_segment,
     _verify_video_cadence,
     _clip_fates,
@@ -114,6 +115,36 @@ def test_render_plan_wraps_worker_failure_without_required_space_nameerror(tmp_p
             str(master), tmp_path / "out.mp4", "youtube", 4_000_000, [], lambda *_args: None,
         )
     assert "required_space" not in str(exc_info.value)
+
+
+def test_video_frame_count_uses_container_metadata_first(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr("core.stages.export._ffprobe_path", lambda: "ffprobe")
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="270\n9.000000\n30/1\n", stderr="")
+
+    monkeypatch.setattr("core.stages.export.subprocess.run", fake_run)
+    assert _video_frame_count(tmp_path / "segment.mp4", expected_frames=270) == 270
+    assert len(calls) == 1
+    assert "-count_frames" not in calls[0][0]
+
+
+def test_video_frame_count_retries_a_slow_full_decode(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr("core.stages.export._ffprobe_path", lambda: "ffprobe")
+
+    def fake_run(command, **kwargs):
+        calls.append(kwargs["timeout"])
+        if "-count_frames" not in command:
+            return subprocess.CompletedProcess(command, 0, stdout="N/A\n", stderr="")
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr("core.stages.export.subprocess.run", fake_run)
+    with pytest.raises(Exception, match="timed out twice"):
+        _video_frame_count(tmp_path / "360-segment.mp4", expected_frames=270)
+    assert calls == [10, 120, 300]
 
 
 def test_each_export_run_gets_a_distinct_result_path(tmp_path):
