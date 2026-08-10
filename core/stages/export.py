@@ -79,6 +79,64 @@ INTRO_DURATION = 10.2
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
 FRAME_INTERVAL_TOLERANCE = 0.50
+MIN_EXPORT_FREE_SPACE_BYTES = 512 * 1024 * 1024
+
+
+class SegmentRenderError(FFmpegError):
+    """A render failure with enough context to be actionable in the UI."""
+
+    def __init__(self, index: int, source_path: str, cause: BaseException, required_bytes: int = 0) -> None:
+        self.segment_index = int(index)
+        self.source_path = str(source_path)
+        self.exit_code = getattr(cause, "exit_code", None)
+        self.stderr_tail = list(getattr(cause, "stderr_tail", []) or [])
+        self.required_bytes = int(required_bytes or 0)
+        super().__init__(_segment_failure_message(self.segment_index, self.source_path, cause, self.required_bytes))
+
+
+def _format_gib(value: int | float) -> str:
+    return f"{max(0.1, float(value) / (1024 ** 3)):.1f} GB"
+
+
+def _segment_failure_message(index: int, source_path: str, cause: BaseException, required_bytes: int = 0) -> str:
+    source = Path(source_path).expanduser()
+    stderr = "\n".join(getattr(cause, "stderr_tail", []) or [])
+    lowered = f"{cause}\n{stderr}".lower()
+    if "no space left" in lowered or "disk full" in lowered or "enospc" in lowered:
+        estimate = _format_gib(required_bytes) if required_bytes else "the estimated export space"
+        return f"Not enough free space to continue (needs ~{estimate}). Export stopped at segment {index}."
+    if not source.exists():
+        return f"The drive containing {source} is no longer available. Export stopped at segment {index}."
+    if "ffmpeg is missing" in lowered or isinstance(cause, FileNotFoundError):
+        return f"ffmpeg is missing. Export stopped at segment {index}."
+    exit_code = getattr(cause, "exit_code", None)
+    code = f" (exit code {exit_code})" if exit_code is not None else ""
+    detail = "\n".join(getattr(cause, "stderr_tail", []) or [])[-2000:]
+    if not detail:
+        detail = str(cause) or "ffmpeg returned an error"
+    return f"Export failed at segment {index} ({source}){code}. ffmpeg reported:\n{detail}"
+
+
+def _required_export_space_bytes(duration: float, video_bitrate: int, segment_count: int) -> int:
+    # Account for the final file, per-segment global cache, per-export copies,
+    # concat intermediates, and a modest working margin. This is deliberately
+    # conservative because a segment can temporarily exist in three places.
+    encoded = max(0.0, float(duration)) * (max(300_000, int(video_bitrate)) + AUDIO_BITRATE) / 8.0
+    return max(MIN_EXPORT_FREE_SPACE_BYTES, int(encoded * 2.5 + 256 * 1024 * 1024))
+
+
+def _check_export_disk_space(output_path: Path, required_bytes: int) -> None:
+    locations = {output_path.parent, global_cache_root()}
+    free_values = []
+    for location in locations:
+        location.mkdir(parents=True, exist_ok=True)
+        free_values.append(shutil.disk_usage(location).free)
+    free = min(free_values) if free_values else 0
+    if free < required_bytes:
+        raise FFmpegError(
+            f"Not enough free space to continue (needs ~{_format_gib(required_bytes)}; "
+            f"only {_format_gib(free)} is available)."
+        )
 
 
 class ExportStage(Stage):
@@ -115,6 +173,11 @@ class ExportStage(Stage):
         if missing_sources:
             listed = "\n".join(f"• {path}" for path in missing_sources[:12])
             extra = f"\n…and {len(missing_sources) - 12} more." if len(missing_sources) > 12 else ""
+            if any(Path(path).parts[:2] == ("/", "Volumes") or str(path).startswith("/Volumes/") for path in missing_sources):
+                raise FFmpegError(
+                    "The drive containing the following source file(s) is no longer available:\n"
+                    f"{listed}{extra}\n\nReconnect the drive and retry; completed segment caches will be reused."
+                )
             raise FFmpegError(
                 "This project references source files that are no longer available:\n"
                 f"{listed}{extra}\n\n"
@@ -130,6 +193,8 @@ class ExportStage(Stage):
         content_duration = _plan_duration(segments)
         duration = content_duration if platform == "reel" else content_duration + INTRO_DURATION + OUTRO_DURATION
         bitrate_info = _bitrate_for_duration(duration)
+        required_space = _required_export_space_bytes(duration, bitrate_info["video_bitrate"], len(segments))
+        _check_export_disk_space(output_path, required_space)
         warnings = list(plan.get("warnings") or [])
         if bitrate_info["warning"]:
             progress_callback(6, bitrate_info["warning"])
@@ -342,19 +407,27 @@ def _render_plan(
         render_started = time.perf_counter()
         render_stats: list[dict[str, Any]] = []
         progress_lock = threading.Lock()
-        futures = []
+        futures: dict[Any, tuple[int, dict[str, Any]]] = {}
         with ThreadPoolExecutor(max_workers=segment_workers) as executor:
             for index, segment in enumerate(render_segments, start=1):
-                futures.append(
-                    executor.submit(
+                future = executor.submit(
                         _render_segment_job,
                         project, index, segment, len(render_segments), temp_dir, master_path,
                         platform, video_bitrate, segment_overlay_config,
             color_profiles.get(str(segment.get("clip_path")), {}), verify_motion,
                         progress_callback, progress_lock,
                     )
-                )
-            results = [future.result() for future in as_completed(futures)]
+                futures[future] = (index, segment)
+            results = []
+            for future in as_completed(futures):
+                try:
+                    results.append(future.result())
+                except BaseException as exc:
+                    index, failed_segment = futures[future]
+                    source_path = _segment_source_info(project, failed_segment).get("source_path") or failed_segment.get("source_path") or failed_segment.get("clip_path") or "unknown source"
+                    if isinstance(exc, SegmentRenderError):
+                        raise
+                    raise SegmentRenderError(index, str(source_path), exc, required_space) from exc
         results.sort(key=lambda item: int(item["index"]))
         expected_indices = list(range(1, len(render_segments) + 1))
         actual_indices = [int(item["index"]) for item in results]
@@ -1967,7 +2040,13 @@ def _segment_video_command_base(ffmpeg: str, clip_path: str, segment: dict[str, 
 
 
 def _run_ffmpeg_progress(command: list[str], duration: float, label: str, progress: ProgressCallback | None) -> None:
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except FileNotFoundError as exc:
+        error = FFmpegError("ffmpeg is missing")
+        error.exit_code = None
+        error.stderr_tail = []
+        raise error from exc
     assert process.stdout is not None
     current = -1
     try:
@@ -1988,7 +2067,10 @@ def _run_ffmpeg_progress(command: list[str], duration: float, label: str, progre
         raise
     _, stderr = process.communicate()
     if process.returncode != 0:
-        raise FFmpegError((stderr or "").strip() or "ffmpeg export failed")
+        error = FFmpegError((stderr or "").strip() or "ffmpeg export failed")
+        error.exit_code = process.returncode
+        error.stderr_tail = (stderr or "").strip().splitlines()[-12:]
+        raise error
     if progress:
         progress(100, f"{label} — 100%")
 

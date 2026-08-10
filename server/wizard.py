@@ -959,6 +959,11 @@ def _combined_log_tail(log_dir: Path, limit: int) -> list[str]:
 
 def _friendly_error(exc: Exception) -> str:
     text = str(exc)
+    # Export stage errors already contain the segment, source, exit code, and
+    # ffmpeg stderr tail. Never replace those diagnostics with the old generic
+    # "ffmpeg is missing" message.
+    if getattr(exc, "segment_index", None) is not None or text.startswith("Not enough free space") or text.startswith("The drive containing"):
+        return text
     if "ffmpeg" in text.lower() or "ffprobe" in text.lower():
         return t("ffmpeg_problem")
     if "songs.json" in text:

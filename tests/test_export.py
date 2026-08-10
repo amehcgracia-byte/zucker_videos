@@ -65,7 +65,36 @@ from core.stages.export import (
     color_sample_commands,
     color_correction_for_profile,
     measure_clip_color,
+    SegmentRenderError,
+    _check_export_disk_space,
+    _required_export_space_bytes,
+    _segment_failure_message,
 )
+
+
+def test_segment_failure_diagnostics_distinguish_missing_drive_and_codec(tmp_path):
+    missing = tmp_path / "RAWVideos" / "clip.MP4"
+    drive_error = RuntimeError("could not read input")
+    assert "drive containing" in _segment_failure_message(63, str(missing), drive_error).lower()
+
+    source = tmp_path / "clip.MP4"
+    source.write_bytes(b"source")
+    codec_error = RuntimeError("Invalid argument")
+    codec_error.exit_code = 1
+    codec_error.stderr_tail = ["[v360] Invalid option", "Error initializing filter"]
+    message = _segment_failure_message(63, str(source), codec_error)
+    assert "segment 63" in message
+    assert "exit code 1" in message
+    assert "Error initializing filter" in message
+
+
+def test_export_space_preflight_reports_required_size(tmp_path, monkeypatch):
+    required = _required_export_space_bytes(600.0, 12_000_000, 101)
+    monkeypatch.setattr("core.stages.export.shutil.disk_usage", lambda _path: shutil.disk_usage(tmp_path))
+    monkeypatch.setattr("core.stages.export.global_cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr("core.stages.export.shutil.disk_usage", lambda _path: type("Usage", (), {"free": required - 1})())
+    with pytest.raises(Exception, match="Not enough free space.*needs ~"):
+        _check_export_disk_space(tmp_path / "exports" / "out.mp4", required)
 
 
 def test_each_export_run_gets_a_distinct_result_path(tmp_path):
