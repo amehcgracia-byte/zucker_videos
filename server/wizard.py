@@ -40,6 +40,7 @@ class WizardJob:
     progress: int = 0
     message: str = t("working")
     detail: str | None = None
+    stage: str = "prepare"
     error: str | None = None
     technical_details: str | None = None
     result: dict[str, Any] | None = None
@@ -132,6 +133,7 @@ class WizardRunner:
                 progress=95,
                 message=t("ready_to_edit"),
                 detail=t("choose_edit_type"),
+                stage="sync",
             )
             _attach_project(job, project)
             self._job = job
@@ -262,6 +264,7 @@ class WizardRunner:
         started_at = time.monotonic()
         try:
             job.status = "running"
+            job.stage = "export"
             job.progress = max(70, int(job.progress or 70))
             job.message = t("exporting_video")
             self._run_stage(job, project, ExportStage(), job.progress, 100, t("exporting_video"))
@@ -505,6 +508,7 @@ class WizardRunner:
             self._run_stage(job, project, EditStage(), edit_start, edit_end, t("building_edit"))
             if platform in {"youtube", "reel"}:
                 job.status = "waiting_review"
+                job.stage = "review"
                 job.progress = edit_end
                 job.message = "Review shots"
                 job.detail = "I'm artificial, but not that intelligent — help me check whether these shots are any good."
@@ -666,6 +670,7 @@ class WizardRunner:
 
     def _run_stage(self, job: WizardJob, project: Project, stage: Any, start: int, end: int, message: str) -> dict[str, str]:
         job.message = message
+        job.stage = stage.name
         _write_stage_log(project, stage.name, f"START {stage.name}: {message}")
         stage_state = project.data["stages"][stage.name]
         stage_state.update({"status": "running", "error": None})

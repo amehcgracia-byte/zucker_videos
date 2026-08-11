@@ -1,6 +1,9 @@
 const detected = { master: [], songs: [], videos: [], ignored: [] };
 const S = window.UI_STRINGS || {};
 let selectedPlatform = null;
+let lastPipelineStage = null;
+let transitionTimer = null;
+let transitionVersion = 0;
 let selectedSong = null;
 let selectedMasterPath = null;
 // Inbox clips set aside because they belong to a different session than the
@@ -232,6 +235,78 @@ function setStep(number) {
   document.querySelectorAll("[data-step-nav]").forEach((button) => button.classList.toggle("active", Number(button.dataset.stepNav) === currentStep));
 }
 
+function choosePlatformInUi(platform) {
+  if (!platform || !["youtube", "reel", "360"].includes(platform)) return;
+  selectedPlatform = platform;
+  try { sessionStorage.setItem("zucker.selectedPlatform", platform); } catch (_error) { /* private mode */ }
+  document.querySelectorAll(".platform-card").forEach((card) => card.classList.toggle("selected", card.dataset.platform === platform));
+  document.querySelector("#startWizard").disabled = false;
+  applyEditTypeMode();
+}
+
+function restoreSelectedPlatform() {
+  try { choosePlatformInUi(sessionStorage.getItem("zucker.selectedPlatform")); } catch (_error) { /* private mode */ }
+}
+
+function hideStageTransition() {
+  transitionVersion += 1;
+  if (transitionTimer) clearTimeout(transitionTimer);
+  transitionTimer = null;
+  document.querySelector("#stageTransition")?.setAttribute("hidden", "");
+  document.querySelector("#progressBox")?.removeAttribute("hidden");
+}
+
+function showStageTransition(title, detail, mode, onDone = null) {
+  const box = document.querySelector("#stageTransition");
+  if (!box) return;
+  const version = ++transitionVersion;
+  if (transitionTimer) clearTimeout(transitionTimer);
+  document.querySelector("#stageTransitionMode").textContent = mode;
+  document.querySelector("#stageTransitionTitle").textContent = title;
+  document.querySelector("#stageTransitionDetail").textContent = detail;
+  document.querySelector("#progressBox")?.setAttribute("hidden", "");
+  document.querySelector("#reviewBox")?.setAttribute("hidden", "");
+  box.removeAttribute("hidden");
+  transitionTimer = setTimeout(() => {
+    if (transitionVersion !== version) return;
+    box.setAttribute("hidden", "");
+    document.querySelector("#progressBox")?.removeAttribute("hidden");
+    if (onDone) onDone();
+  }, 1800);
+}
+
+// Keep the transition copy mode-specific. These functions intentionally do
+// not share any chooser, coverage, or render decision between pipelines.
+function showYouTubeSyncToCut() {
+  showStageTransition("Sync complete — Cut is starting", "Your YouTube mode is locked. Building the synchronized coverage now.", "YouTube");
+}
+
+function showReelSyncToCut() {
+  showStageTransition("Sync complete — Cut is starting", "Your Reel mode is locked. Building the Reel coverage now.", "Reel");
+}
+
+function show360SyncToCut() {
+  showStageTransition("Sync complete — Cut is starting", "Your 360 mode is locked. Preparing the single-camera coverage now.", "360");
+}
+
+function showYouTubeReviewReady() {
+  showStageTransition("Review shots are ready", "Your synchronized YouTube edit is prepared. Opening Review shots now.", "YouTube", () => {
+    document.querySelector("#progressBox")?.setAttribute("hidden", "");
+    document.querySelector("#reviewBox")?.removeAttribute("hidden");
+  });
+}
+
+function showReelReviewReady() {
+  showStageTransition("Review shots are ready", "Your Reel edit is prepared. Opening Review shots now.", "Reel", () => {
+    document.querySelector("#progressBox")?.setAttribute("hidden", "");
+    document.querySelector("#reviewBox")?.removeAttribute("hidden");
+  });
+}
+
+function show360EditToExport() {
+  showStageTransition("Edit complete — Export is starting", "Your 360 passthrough edit is ready. Exporting the single equirectangular video now.", "360");
+}
+
 function injectIcons() {
   document.querySelectorAll("[data-icon]").forEach((node) => {
     const svg = icons[node.dataset.icon];
@@ -365,6 +440,8 @@ function recordToDetectedItem(record, kind, source = "project") {
 
 async function resumeInputsFromProject() {
   const project = await api("/project");
+  const savedPlatform = project.settings?.wizard?.platform;
+  if (savedPlatform) choosePlatformInUi(savedPlatform);
   const inputs = project.inputs || {};
   clearDetected();
   const master = recordToDetectedItem(inputs.master, "master");
@@ -803,6 +880,8 @@ async function newProject() {
   progressStartedAt = null;
   progressSamples = [];
   selectedPlatform = null;
+  lastPipelineStage = null;
+  try { sessionStorage.removeItem("zucker.selectedPlatform"); } catch (_error) { /* private mode */ }
   selectedSong = null;
   currentSongs = [];
   clearDetected();
@@ -2188,6 +2267,8 @@ async function waitForPreparedProject() {
 async function startWizard(options = {}) {
   const waitForPrepare = options.waitForPrepare !== false;
   const inputs = selectedInputs();
+  lastPipelineStage = null;
+  hideStageTransition();
   setStep(3);
   if (waitForPrepare && selectedPlatform !== "360") {
     await api("/wizard/prepare", {
@@ -2387,11 +2468,45 @@ function renderWizardStatus(status) {
   const progress = Math.max(progressFloor, reportedProgress);
   const progressBox = document.querySelector("#progressBox");
   const reviewBox = document.querySelector("#reviewBox");
+  const platform = selectedPlatform || status.result?.platform || "";
+  const stage = status.stage || "";
+  if (status.status === "waiting_choice") {
+    if (selectedPlatform) {
+      // The mode was already chosen before Prepare/Sync. Keep the user in the
+      // progress view while the prepared project is handed directly to Cut.
+      setStep(3);
+      if (lastPipelineStage !== "sync-ready") {
+        if (selectedPlatform === "youtube") showYouTubeSyncToCut();
+        else if (selectedPlatform === "reel") showReelSyncToCut();
+        else if (selectedPlatform === "360") show360SyncToCut();
+        lastPipelineStage = "sync-ready";
+      }
+    } else {
+      setStep(2);
+    }
+    return;
+  }
+  if (status.status === "running") {
+    setStep(3);
+    if (stage === "cut" && lastPipelineStage !== "cut") {
+      if (platform === "youtube") showYouTubeSyncToCut();
+      else if (platform === "reel") showReelSyncToCut();
+      else if (platform === "360") show360SyncToCut();
+    } else if (stage === "export" && platform === "360" && lastPipelineStage === "edit") {
+      show360EditToExport();
+    }
+    lastPipelineStage = stage || lastPipelineStage;
+  }
   if (status.status === "waiting_review") {
     if (progressBox) progressBox.hidden = true;
-    if (reviewBox) reviewBox.hidden = false;
-    document.querySelector("#progressTitle").textContent = "Review your shots";
-    openShotReview().catch((error) => showToast(error.message, true));
+    if (reviewBox) reviewBox.hidden = true;
+    document.querySelector("#progressTitle").textContent = "Review shots";
+    if (lastPipelineStage !== "review") {
+      if (platform === "youtube") showYouTubeReviewReady();
+      else if (platform === "reel") showReelReviewReady();
+      openShotReview().catch((error) => showToast(error.message, true));
+      lastPipelineStage = "review";
+    }
     clearInterval(pollTimer);
     pollTimer = null;
     setStep(3);
@@ -2839,10 +2954,7 @@ document.addEventListener("click", (event) => {
     );
   }
   if (target.classList.contains("platform-card")) {
-    selectedPlatform = target.dataset.platform;
-    document.querySelectorAll(".platform-card").forEach((card) => card.classList.toggle("selected", card === target));
-    document.querySelector("#startWizard").disabled = false;
-    applyEditTypeMode();
+    choosePlatformInUi(target.dataset.platform);
     if (currentSongs.length > 1) renderSongOptions(currentSongs);
   }
   if (target.classList.contains("song-option")) {
@@ -3060,6 +3172,7 @@ async function boot() {
   auditBackdropRuntime();
   wireLandmarkDragToLook();
   await loadAppConfig();
+  restoreSelectedPlatform();
   const status = await api("/wizard/status");
   if (["running", "waiting_choice", "done", "failed"].includes(status.status)) {
     await resumeInputsFromProject().catch(() => {});
