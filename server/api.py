@@ -576,6 +576,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if reconciled or migrated:
                 LOGGER.info("Reconciled registered inputs for %s", state.project.folder)
             _remember_project(state.project)
+            if _project_inputs_available(state.project):
+                state.wizard.prepare_existing(state.project)
+                return jsonify(state.wizard.status())
             status = _project_wizard_status(state.project)
             if status.get("status") == "waiting_choice":
                 state.wizard.adopt_prepared_project(state.project)
@@ -877,6 +880,20 @@ def _remember_project(project: Project) -> None:
     config = load_global_config()
     config["last_project_path"] = str(project.folder)
     save_global_config(config)
+
+
+def _project_inputs_available(project: Project) -> bool:
+    """Return whether saved inputs can be prepared immediately on reopen."""
+    inputs = project.data.get("inputs") or {}
+    master = inputs.get("master") or {}
+    if not master.get("path") or not Path(str(master["path"])).expanduser().exists():
+        return False
+    videos = inputs.get("videos") or []
+    return bool(videos) and all(
+        Path(str(record.get("path") or "")).expanduser().exists()
+        and record.get("status") != "not_a_video"
+        for record in videos
+    )
 
 
 def _project_wizard_status(project: Project) -> dict[str, Any]:

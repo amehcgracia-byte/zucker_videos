@@ -581,8 +581,16 @@ def reconcile_registered_inputs(project: Project) -> bool:
     for record in project.data.get("inputs", {}).get("videos", []):
         path = Path(record.get("path") or "").expanduser()
         if not path.exists():
-            changed = True
+            # Keep the record so reopening a project with an unplugged
+            # external drive is non-destructive.
+            if not record.get("missing"):
+                record["missing"] = True
+                changed = True
+            kept_videos.append(record)
             continue
+        if record.get("missing"):
+            record.pop("missing", None)
+            changed = True
         item = classify_file(path)
         if item["kind"] == "videos":
             for key, value in video_classification_metadata(path).items():

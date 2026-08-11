@@ -326,6 +326,36 @@ def test_project_list_open_and_delete_keep_exports(tmp_path, monkeypatch):
     assert Path(kept[0]).read_bytes() == b"mp4"
 
 
+def test_reopening_saved_project_reprepares_registered_inputs(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("server.api.reconcile_registered_inputs", lambda project: False)
+    folder = tmp_path / "ZuckerVideos" / "Projects" / "Prepared.zuckervid"
+    project = create_project("Prepared", str(folder))
+    master = tmp_path / "master.mp3"
+    video = tmp_path / "camera.mp4"
+    master.write_bytes(b"master")
+    video.write_bytes(b"video")
+    project.data["inputs"]["master"] = file_record(str(master))
+    project.data["inputs"]["videos"] = [file_record(str(video))]
+    project.data["stages"]["export"]["status"] = "done"
+    project.save()
+
+    calls = []
+
+    def fake_prepare(self, opened_project):
+        calls.append(opened_project.folder)
+        self._job = WizardJob(id="current", status="running", project_path=str(opened_project.folder))
+        return self._job
+
+    monkeypatch.setattr("server.api.WizardRunner.prepare_existing", fake_prepare)
+    client = create_app().test_client()
+    response = client.post("/api/v1/wizard/projects/open", json={"path": str(folder)})
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "running"
+    assert calls == [folder.resolve()]
+
+
 def test_new_project_action_clears_resume_without_deleting_project(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     folder = tmp_path / "ZuckerVideos" / "Projects" / "Resume.zuckervid"
@@ -1020,7 +1050,8 @@ def test_missing_video_is_dropped_on_project_refresh(tmp_path, monkeypatch):
     client = app.test_client()
     payload = client.get("/api/v1/project").get_json()
 
-    assert [Path(record["path"]).name for record in payload["inputs"]["videos"]] == ["a.mp4"]
+    assert [Path(record["path"]).name for record in payload["inputs"]["videos"]] == ["a.mp4", "b.mp4"]
+    assert payload["inputs"]["videos"][1]["missing"] is True
     assert payload["stages"]["ingest"]["status"] == "stale"
 
 
@@ -1236,7 +1267,7 @@ def test_cut_and_export_use_manual_override_global_cached_clip(tmp_path, monkeyp
 
     monkeypatch.setattr(
         "core.stages.export._render_plan",
-        lambda project, segments, master_path, output_path, platform, video_bitrate, warnings, progress_callback: output_path.write_bytes(b"export"),
+        lambda project, segments, master_path, output_path, platform, video_bitrate, warnings, progress_callback, *args: output_path.write_bytes(b"export"),
     )
 
     CutStage().run(project, lambda percent, message: None)
