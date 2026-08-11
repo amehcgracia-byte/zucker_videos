@@ -814,9 +814,14 @@ def _attach_project(job: WizardJob, project: Project) -> None:
 
 
 def _store_spherical_landmarks(project: Project, landmarks: dict[str, float] | None) -> None:
-    if landmarks is None:
+    explicit = bool(landmarks)
+    if not explicit:
+        landmarks = load_global_config().get("spherical_landmarks") or {}
+    if not landmarks:
         return
     project.data.setdefault("settings", {})["spherical_landmarks"] = dict(landmarks)
+    if not explicit:
+        return
     config = load_global_config()
     config["spherical_landmarks"] = dict(landmarks)
     save_global_config(config)

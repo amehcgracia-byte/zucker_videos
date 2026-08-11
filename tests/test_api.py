@@ -26,7 +26,7 @@ from server.api import (
     _spherical_preview_frame,
 )
 from server.inbox import load_global_config
-from server.wizard import WizardJob, _select_360_inputs, _store_audio_trim
+from server.wizard import WizardJob, _select_360_inputs, _store_audio_trim, _store_spherical_landmarks
 
 
 def valid_video_probe(duration: str = "3.0", width: int = 1280, height: int = 720) -> dict:
@@ -37,6 +37,21 @@ def valid_video_probe(duration: str = "3.0", width: int = 1280, height: int = 72
             {"codec_type": "audio", "codec_name": "aac"},
         ],
     }
+
+
+def test_new_project_uses_global_spherical_landmarks_when_form_is_blank(tmp_path, monkeypatch):
+    import server.wizard as wizard
+
+    defaults = {"singer": {"yaw": 267.8, "pitch": -31.5, "fov": 92.2, "weight": 5.0}}
+    config = {"spherical_landmarks": defaults}
+    monkeypatch.setattr(wizard, "load_global_config", lambda: dict(config))
+    monkeypatch.setattr(wizard, "save_global_config", lambda value: config.update(value))
+    project = create_project("Landmark defaults", str(tmp_path / "Landmark.zuckervid"))
+
+    _store_spherical_landmarks(project, {})
+
+    assert project.data["settings"]["spherical_landmarks"] == defaults
+    assert config["spherical_landmarks"] == defaults
 
 
 def test_api_create_project_run_stub_stage_and_poll(tmp_path, monkeypatch):

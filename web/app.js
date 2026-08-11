@@ -346,6 +346,12 @@ function clearDetected() {
   inboxAnalysis = null;
 }
 
+function resetSphericalSetupToGlobal() {
+  lastSphericalSetup = normalizeSphericalSetup(appConfig?.spherical_landmarks || {});
+  document.querySelectorAll("#sphericalSetup [data-field]").forEach((input) => (input.value = ""));
+  applySphericalSetup(lastSphericalSetup);
+}
+
 function recordToDetectedItem(record, kind, source = "project") {
   if (!record?.path) return null;
   return {
@@ -379,8 +385,12 @@ async function resumeInputsFromProject() {
     savedAudioTrim[inputs.master.path] = project.settings.wizard.audio_trim;
     trimDefaultsAppliedFor = "";
   }
-  if (project.settings?.spherical_landmarks) {
-    lastSphericalSetup = normalizeSphericalSetup(project.settings.spherical_landmarks);
+  const savedLandmarks = normalizeSphericalSetup(project.settings?.spherical_landmarks || {});
+  if (Object.keys(savedLandmarks).length) {
+    const globalLandmarks = normalizeSphericalSetup(appConfig?.spherical_landmarks || {});
+    lastSphericalSetup = { ...globalLandmarks, ...savedLandmarks };
+  } else {
+    resetSphericalSetupToGlobal();
   }
   if (project.settings?.edit?.camera_role_weights) {
     cameraRoleWeights = normalizeCameraRoleWeights(project.settings.edit.camera_role_weights);
@@ -796,6 +806,7 @@ async function newProject() {
   selectedSong = null;
   currentSongs = [];
   clearDetected();
+  resetSphericalSetupToGlobal();
   document.querySelector("#videoName").value = todayName();
   document.querySelector("#errorBox").hidden = true;
   document.querySelector("#resultBox").hidden = true;
