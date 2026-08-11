@@ -78,9 +78,16 @@ class EditStage(Stage):
 
     def inputs_fingerprint(self, project: Project) -> str:
         """Fingerprint cut output and edit settings."""
+        coverage_payload: dict[str, Any] | None = None
+        try:
+            coverage_payload = load_coverage(project)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
         return stable_fingerprint(
             {
-                "cut": project.data["stages"]["cut"].get("fingerprint"),
+                # Follow coverage.json itself so Edit cannot reuse a plan
+                # built from a previous sync/cut pass.
+                "cut": coverage_payload,
                 "settings": project.data["settings"].get(self.name, {}),
                 "spherical_landmarks": project.data["settings"].get("spherical_landmarks", {}),
                 "camera_moves": _camera_moves_fingerprint(project),

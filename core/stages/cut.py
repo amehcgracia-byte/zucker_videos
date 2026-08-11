@@ -30,7 +30,10 @@ class CutStage(Stage):
         """Fingerprint sync output and cut settings."""
         return stable_fingerprint(
             {
-                "sync": project.data["stages"]["sync"].get("fingerprint"),
+                # The sync stage can be rerun directly (reopen, manual
+                # override, or a second sync pass) without changing its input
+                # fingerprint.  Cut must follow the artifact actually read.
+                "sync": load_sync_map(project, missing_ok=True),
                 "songs": project.data["inputs"].get("songs"),
                 "settings": project.data["settings"].get(self.name, {}),
             }

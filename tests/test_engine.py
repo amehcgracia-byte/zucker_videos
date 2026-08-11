@@ -7,6 +7,9 @@ import pytest
 from core.engine import PipelineEngine
 from core.project import Project, create_project
 from core.stages.base import ProgressCallback, Stage, stable_fingerprint
+from core.stages.cut import CutStage
+from core.stages.edit import EditStage
+from core.stages.base import artifact_path, write_artifact_json
 
 
 class RecordingStage(Stage):
@@ -93,3 +96,20 @@ def test_engine_failure_marks_downstream_blocked(tmp_path):
 
     assert project.data["stages"]["a"]["status"] == "failed"
     assert project.data["stages"]["b"]["status"] == "blocked"
+
+
+def test_cut_and_edit_fingerprints_follow_artifact_contents(tmp_path):
+    project = make_project(tmp_path)
+    sync_path = artifact_path(project, "sync_map.json")
+    write_artifact_json(sync_path, {"clips": {"sony": {"offset_sec": 10.0}}})
+    cut = CutStage()
+    first_cut = cut.inputs_fingerprint(project)
+    write_artifact_json(sync_path, {"clips": {"sony": {"offset_sec": 20.0}}})
+    assert cut.inputs_fingerprint(project) != first_cut
+
+    coverage_path = artifact_path(project, "coverage.json")
+    write_artifact_json(coverage_path, {"sources": [{"filename": "sony.MP4"}]})
+    edit = EditStage()
+    first_edit = edit.inputs_fingerprint(project)
+    write_artifact_json(coverage_path, {"sources": [{"filename": "iphone.MOV"}]})
+    assert edit.inputs_fingerprint(project) != first_edit
