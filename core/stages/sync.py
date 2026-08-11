@@ -69,6 +69,7 @@ class SyncStage(Stage):
             try:
                 result = sync_clip(project, record, master_env, threshold)
                 result = preserve_manual_override(old_map, clip_id, record, result)
+                result = apply_project_manual_override(project, old_map, clip_id, record, result)
                 result["clip_id"] = clip_id
             except Exception as exc:
                 result = error_clip_entry(record, str(exc))
@@ -86,6 +87,10 @@ class SyncStage(Stage):
                 "confidence_threshold": threshold,
                 "master_duration_sec": master_duration,
                 "songs": load_song_boundaries(project),
+                # Keep overrides in the project artifact.  They are deliberately
+                # keyed by the current master and source signature, rather than
+                # being a global camera setting.
+                "manual_overrides": (old_map or {}).get("manual_overrides", {}),
                 "clips": clips,
             },
         )
@@ -409,13 +414,54 @@ def preserve_manual_override(
     if old_clip.get("source_signature") != file_signature(record["path"]):
         return detected
     preserved = dict(detected)
-    preserved["detected_offset_sec"] = detected.get("offset_sec", 0.0)
+    preserved["detected_offset_sec"] = old_clip.get("detected_offset_sec", detected.get("offset_sec", 0.0))
     preserved["offset_sec"] = float(old_clip.get("offset_sec", 0.0))
     preserved["manual_override"] = True
     preserved["low_confidence"] = False
     preserved["unstable_sync"] = False
     preserved["manual_override_rescues_sync"] = True
     return preserved
+
+
+def _master_override_key(project: Project) -> str:
+    """Return the project-local key for the currently selected master."""
+    master = project.data["inputs"].get("master") or {}
+    path = str(master.get("path") or "")
+    signature = safe_file_signature(path)
+    return stable_fingerprint(signature or {"path": str(Path(path).resolve())})[:24]
+
+
+def _apply_override_result(detected: dict[str, Any], offset_sec: float) -> dict[str, Any]:
+    """Apply a user-confirmed offset without changing correlation or thresholds."""
+    preserved = dict(detected)
+    preserved["detected_offset_sec"] = detected.get("detected_offset_sec", detected.get("offset_sec", 0.0))
+    preserved["offset_sec"] = float(offset_sec)
+    preserved["manual_override"] = True
+    preserved["low_confidence"] = False
+    preserved["unstable_sync"] = False
+    preserved["manual_override_rescues_sync"] = True
+    return preserved
+
+
+def apply_project_manual_override(
+    project: Project,
+    old_map: dict[str, Any] | None,
+    clip_id: str,
+    record: dict[str, Any],
+    detected: dict[str, Any],
+) -> dict[str, Any]:
+    """Restore an override only for this project, master, and unchanged source."""
+    registry = (old_map or {}).get("manual_overrides", {})
+    master_entry = registry.get(_master_override_key(project), {})
+    override = (master_entry.get("clips", {}) if isinstance(master_entry, dict) else {}).get(clip_id)
+    if not isinstance(override, dict):
+        return detected
+    if override.get("source_signature") != safe_file_signature(record["path"]):
+        return detected
+    try:
+        return _apply_override_result(detected, float(override["offset_sec"]))
+    except (KeyError, TypeError, ValueError):
+        return detected
 
 
 def error_clip_entry(record: dict[str, Any], message: str) -> dict[str, Any]:
@@ -511,6 +557,17 @@ def set_manual_override(project: Project, clip_id: str, offset_sec: float) -> di
         clip["detected_offset_sec"] = clip.get("offset_sec", 0.0)
     clip["offset_sec"] = float(offset_sec)
     clip["manual_override"] = True
+    master_key = _master_override_key(project)
+    overrides = sync_map.setdefault("manual_overrides", {})
+    master_entry = overrides.setdefault(
+        master_key,
+        {"master_signature": safe_file_signature((project.data["inputs"].get("master") or {}).get("path", "")), "clips": {}},
+    )
+    master_entry.setdefault("clips", {})[clip_id] = {
+        "source_path": clip.get("source_path") or clip.get("path"),
+        "source_signature": safe_file_signature(clip.get("source_path") or clip.get("path")),
+        "offset_sec": float(offset_sec),
+    }
     save_sync_map(project, sync_map)
     mark_downstream_stale(project)
     project.save()
@@ -528,6 +585,12 @@ def clear_manual_override(project: Project, clip_id: str) -> dict[str, Any]:
         clip["offset_sec"] = float(clip["detected_offset_sec"])
         del clip["detected_offset_sec"]
     clip["manual_override"] = False
+    overrides = sync_map.get("manual_overrides", {})
+    master_entry = overrides.get(_master_override_key(project), {})
+    if isinstance(master_entry, dict):
+        master_entry.get("clips", {}).pop(clip_id, None)
+        if not master_entry.get("clips"):
+            overrides.pop(_master_override_key(project), None)
     save_sync_map(project, sync_map)
     mark_downstream_stale(project)
     project.save()

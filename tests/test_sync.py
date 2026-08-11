@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import wave
@@ -16,10 +17,71 @@ from core.stages.sync import (
     SyncStage,
     confidence_from_correlation,
     extract_clip_audio,
+    apply_project_manual_override,
+    file_signature,
     recover_offset,
     sync_clip,
+    set_manual_override,
     verify_sync_stability,
 )
+
+
+def test_manual_override_is_project_master_and_source_specific(tmp_path):
+    project = create_project("Manual", str(tmp_path / "Manual.zuckervid"))
+    master = tmp_path / "song.mp3"
+    other_master = tmp_path / "other.mp3"
+    video = tmp_path / "iphone.mov"
+    master.write_bytes(b"master")
+    other_master.write_bytes(b"other")
+    video.write_bytes(b"video")
+    project.data["inputs"]["master"] = {"path": str(master)}
+    clip_id = "iphone-clip"
+    sync_path = project.artifacts_dir / "sync_map.json"
+    sync_path.parent.mkdir(parents=True, exist_ok=True)
+    sync_path.write_text(
+        json.dumps(
+            {
+                "clips": {
+                    clip_id: {
+                        "path": str(video),
+                        "source_path": str(video),
+                        "source_signature": file_signature(str(video)),
+                        "offset_sec": 199.018,
+                        "confidence": 5.152,
+                        "low_confidence": True,
+                        "unstable_sync": True,
+                        "manual_override": False,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    set_manual_override(project, clip_id, 386.775)
+    payload = json.loads(sync_path.read_text(encoding="utf-8"))
+    assert payload["manual_overrides"]
+
+    restored = apply_project_manual_override(
+        project,
+        payload,
+        clip_id,
+        {"path": str(video)},
+        {"offset_sec": 199.018, "confidence": 5.152, "low_confidence": True, "unstable_sync": True},
+    )
+    assert restored["offset_sec"] == pytest.approx(386.775)
+    assert restored["manual_override"] is True
+    assert restored["low_confidence"] is False
+    assert restored["unstable_sync"] is False
+
+    project.data["inputs"]["master"] = {"path": str(other_master)}
+    assert apply_project_manual_override(
+        project,
+        payload,
+        clip_id,
+        {"path": str(video)},
+        {"offset_sec": 199.018, "low_confidence": True, "unstable_sync": True},
+    )["low_confidence"] is True
 
 
 def test_confidence_formula_separates_planted_peak_from_noise():

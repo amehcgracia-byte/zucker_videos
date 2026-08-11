@@ -130,10 +130,14 @@ def review_items(project: Project) -> list[dict[str, Any]]:
             except (OSError, subprocess.CalledProcessError):
                 output = Path("")
         shot = segment.get("spherical_shot") or {}
+        # Render from the proxy where appropriate, but identify the card by
+        # the registered source filename.  Otherwise Review shots displays a
+        # cache hash (and hides which camera supplied the shot).
+        display_source = str(segment.get("filename") or Path(source).name or "Unknown source")
         items.append({
             "index": index,
             "thumbnail": f"/api/v1/wizard/review/thumbnail/{signature}/{output.name}" if output.name else None,
-            "source": Path(source).name if source else "Unknown source",
+            "source": display_source,
             "duration_sec": round(duration, 3),
             "master_start_sec": float(segment.get("master_start_sec") or 0.0),
             "landmark": shot.get("label") if shot else None,
