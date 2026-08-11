@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import subprocess
@@ -15,8 +16,8 @@ from scipy.signal import butter, correlate, sosfiltfilt
 from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.media_validation import record_is_usable_camera_video, record_media_path
 from core.messages import t
-from core.normalization import global_clip_audio_path, global_clip_envelope_path, global_thumbnail_path, source_cache_key
-from core.project import Project
+from core.normalization import global_cache_root, global_clip_audio_path, global_clip_envelope_path, global_thumbnail_path, source_cache_key
+from core.project import Project, atomic_write_json
 from core.stages.base import ProgressCallback, Stage, artifact_path, file_signature, stable_fingerprint, write_artifact_json
 
 SYNC_SAMPLE_RATE = 22050
@@ -53,6 +54,7 @@ class SyncStage(Stage):
             raise ValueError("Master audio must be registered before sync")
 
         old_map = load_sync_map(project, missing_ok=True)
+        migrate_legacy_manual_overrides(project, old_map)
         master_env = load_or_compute_master_envelope(project)
         master_duration = media_duration(master_record["path"])
         clips: dict[str, Any] = {}
@@ -431,6 +433,91 @@ def _master_override_key(project: Project) -> str:
     return stable_fingerprint(signature or {"path": str(Path(path).resolve())})[:24]
 
 
+SYNC_OVERRIDE_CACHE_VERSION = 1
+SYNC_OVERRIDE_SAMPLE_BYTES = 1024 * 1024
+
+
+def _content_identity(path: str | None) -> dict[str, Any] | None:
+    """Return a copy-stable identity without hashing an entire multi-GB video."""
+    if not path:
+        return None
+    source = Path(path).expanduser().resolve()
+    try:
+        size = source.stat().st_size
+        digest = hashlib.sha256()
+        with source.open("rb") as fh:
+            digest.update(fh.read(SYNC_OVERRIDE_SAMPLE_BYTES))
+            if size > SYNC_OVERRIDE_SAMPLE_BYTES * 2:
+                fh.seek(max(0, size - SYNC_OVERRIDE_SAMPLE_BYTES))
+                digest.update(fh.read(SYNC_OVERRIDE_SAMPLE_BYTES))
+        return {"size": size, "sample_sha256": digest.hexdigest()}
+    except OSError:
+        return None
+
+
+def _source_override_key(master_path: str | None, source_path: str | None) -> str | None:
+    master_identity = _content_identity(master_path)
+    source_identity = _content_identity(source_path)
+    if not master_identity or not source_identity:
+        return None
+    return stable_fingerprint({"master": master_identity, "source": source_identity})[:32]
+
+
+def _sync_override_cache_path() -> Path:
+    return global_cache_root() / "sync_overrides.json"
+
+
+def _load_global_overrides() -> dict[str, Any]:
+    try:
+        with _sync_override_cache_path().open("r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+        return payload if isinstance(payload, dict) else {"overrides": {}}
+    except (OSError, json.JSONDecodeError):
+        return {"schema_version": SYNC_OVERRIDE_CACHE_VERSION, "overrides": {}}
+
+
+def _save_global_overrides(payload: dict[str, Any]) -> None:
+    payload["schema_version"] = SYNC_OVERRIDE_CACHE_VERSION
+    atomic_write_json(_sync_override_cache_path(), payload)
+
+
+def _master_path(project: Project) -> str | None:
+    return str((project.data["inputs"].get("master") or {}).get("path") or "") or None
+
+
+def _global_override_for(project: Project, source_path: str | None) -> dict[str, Any] | None:
+    key = _source_override_key(_master_path(project), source_path)
+    if not key:
+        return None
+    return _load_global_overrides().get("overrides", {}).get(key)
+
+
+def _store_global_override(project: Project, source_path: str, offset_sec: float) -> None:
+    key = _source_override_key(_master_path(project), source_path)
+    if not key:
+        return
+    payload = _load_global_overrides()
+    payload.setdefault("overrides", {})[key] = {
+        "master_path": _master_path(project),
+        "master_identity": _content_identity(_master_path(project)),
+        "source_path": source_path,
+        "source_filename": Path(source_path).name,
+        "source_identity": _content_identity(source_path),
+        "offset_sec": float(offset_sec),
+    }
+    _save_global_overrides(payload)
+
+
+def migrate_legacy_manual_overrides(project: Project, sync_map: dict[str, Any] | None) -> None:
+    """Promote pre-global project overrides so old projects keep working."""
+    for clip in (sync_map or {}).get("clips", {}).values():
+        if not clip.get("manual_override"):
+            continue
+        source_path = clip.get("source_path") or clip.get("path")
+        if source_path and clip.get("offset_sec") is not None:
+            _store_global_override(project, str(source_path), float(clip["offset_sec"]))
+
+
 def _apply_override_result(detected: dict[str, Any], offset_sec: float) -> dict[str, Any]:
     """Apply a user-confirmed offset without changing correlation or thresholds."""
     preserved = dict(detected)
@@ -450,7 +537,14 @@ def apply_project_manual_override(
     record: dict[str, Any],
     detected: dict[str, Any],
 ) -> dict[str, Any]:
-    """Restore an override only for this project, master, and unchanged source."""
+    """Restore an override by master/source identity, across project folders."""
+    global_override = _global_override_for(project, record.get("source_path") or record.get("path"))
+    if isinstance(global_override, dict):
+        try:
+            return _apply_override_result(detected, float(global_override["offset_sec"]))
+        except (KeyError, TypeError, ValueError):
+            pass
+    # Compatibility with the previous project-local registry.
     registry = (old_map or {}).get("manual_overrides", {})
     master_entry = registry.get(_master_override_key(project), {})
     override = (master_entry.get("clips", {}) if isinstance(master_entry, dict) else {}).get(clip_id)
@@ -557,6 +651,7 @@ def set_manual_override(project: Project, clip_id: str, offset_sec: float) -> di
         clip["detected_offset_sec"] = clip.get("offset_sec", 0.0)
     clip["offset_sec"] = float(offset_sec)
     clip["manual_override"] = True
+    _store_global_override(project, str(clip.get("source_path") or clip.get("path") or ""), float(offset_sec))
     master_key = _master_override_key(project)
     overrides = sync_map.setdefault("manual_overrides", {})
     master_entry = overrides.setdefault(
@@ -585,6 +680,12 @@ def clear_manual_override(project: Project, clip_id: str) -> dict[str, Any]:
         clip["offset_sec"] = float(clip["detected_offset_sec"])
         del clip["detected_offset_sec"]
     clip["manual_override"] = False
+    source_path = str(clip.get("source_path") or clip.get("path") or "")
+    key = _source_override_key(_master_path(project), source_path)
+    if key:
+        global_overrides = _load_global_overrides()
+        if global_overrides.get("overrides", {}).pop(key, None) is not None:
+            _save_global_overrides(global_overrides)
     overrides = sync_map.get("manual_overrides", {})
     master_entry = overrides.get(_master_override_key(project), {})
     if isinstance(master_entry, dict):

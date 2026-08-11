@@ -26,7 +26,8 @@ from core.stages.sync import (
 )
 
 
-def test_manual_override_is_project_master_and_source_specific(tmp_path):
+def test_manual_override_is_source_identity_and_master_specific(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     project = create_project("Manual", str(tmp_path / "Manual.zuckervid"))
     master = tmp_path / "song.mp3"
     other_master = tmp_path / "other.mp3"
@@ -73,6 +74,19 @@ def test_manual_override_is_project_master_and_source_specific(tmp_path):
     assert restored["manual_override"] is True
     assert restored["low_confidence"] is False
     assert restored["unstable_sync"] is False
+
+    # A newly created project with the same master and copied/renamed source
+    # gets the same override from the global identity cache.
+    second = create_project("Manual Again", str(tmp_path / "Manual Again.zuckervid"))
+    second.data["inputs"]["master"] = {"path": str(master)}
+    restored_in_new_project = apply_project_manual_override(
+        second,
+        {"clips": {}},
+        clip_id,
+        {"path": str(video)},
+        {"offset_sec": 199.018, "low_confidence": True, "unstable_sync": True},
+    )
+    assert restored_in_new_project["offset_sec"] == pytest.approx(386.775)
 
     project.data["inputs"]["master"] = {"path": str(other_master)}
     assert apply_project_manual_override(
