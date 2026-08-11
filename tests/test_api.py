@@ -54,6 +54,38 @@ def test_new_project_uses_global_spherical_landmarks_when_form_is_blank(tmp_path
     assert config["spherical_landmarks"] == defaults
 
 
+def test_api_spherical_landmark_save_merges_partial_and_empty_payloads(tmp_path, monkeypatch):
+    import server.api as api_module
+
+    defaults = {
+        "singer": {"yaw": 288.0, "pitch": -27.4, "fov": 94.9, "weight": 5.0},
+        "audience": {"yaw": 92.0, "pitch": -12.5, "fov": 191.9, "weight": 5.0},
+    }
+    config = {"spherical_landmarks": defaults}
+    monkeypatch.setattr(api_module, "load_global_config", lambda: config)
+    monkeypatch.setattr(api_module, "save_global_config", lambda value: config.update(value))
+
+    client = create_app().test_client()
+    folder = tmp_path / "Landmarks.zuckervid"
+    assert client.post("/api/v1/project", json={"name": "Landmarks", "folder": str(folder)}).status_code == 201
+
+    response = client.post("/api/v1/settings/spherical-landmarks", json={"spherical_landmarks": {"singer": {"yaw": 123.4}}})
+    assert response.status_code == 200
+    saved = response.get_json()["spherical_landmarks"]
+    assert set(saved) == set(defaults)
+    assert saved["singer"]["yaw"] == 123.4
+    assert saved["singer"]["pitch"] == defaults["singer"]["pitch"]
+    assert saved["singer"]["fov"] == defaults["singer"]["fov"]
+    assert saved["singer"]["weight"] == defaults["singer"]["weight"]
+    assert saved["audience"] == defaults["audience"]
+    assert set(config["spherical_landmarks"]) == set(defaults)
+
+    response = client.post("/api/v1/settings/spherical-landmarks", json={"spherical_landmarks": {}})
+    assert response.status_code == 200
+    assert response.get_json()["spherical_landmarks"] == saved
+    assert config["spherical_landmarks"] == saved
+
+
 def test_api_create_project_run_stub_stage_and_poll(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "core.stages.ingest.ffprobe",

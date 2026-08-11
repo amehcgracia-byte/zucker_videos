@@ -815,16 +815,30 @@ def _attach_project(job: WizardJob, project: Project) -> None:
 
 def _store_spherical_landmarks(project: Project, landmarks: dict[str, float] | None) -> None:
     explicit = bool(landmarks)
-    if not explicit:
-        landmarks = load_global_config().get("spherical_landmarks") or {}
-    if not landmarks:
-        return
-    project.data.setdefault("settings", {})["spherical_landmarks"] = dict(landmarks)
-    if not explicit:
-        return
     config = load_global_config()
-    config["spherical_landmarks"] = dict(landmarks)
+    existing = config.get("spherical_landmarks") or {}
+    if not explicit:
+        landmarks = existing
+    merged = merge_spherical_landmarks(existing, landmarks or {})
+    if not merged:
+        return
+    project.data.setdefault("settings", {})["spherical_landmarks"] = merged
+    if not explicit:
+        return
+    config["spherical_landmarks"] = merged
     save_global_config(config)
+
+
+def merge_spherical_landmarks(existing: dict[str, Any] | None, incoming: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Merge landmark edits without allowing a partial form to erase defaults."""
+    merged: dict[str, dict[str, Any]] = {}
+    for key, value in (existing or {}).items():
+        if isinstance(value, dict):
+            merged[str(key)] = dict(value)
+    for key, value in (incoming or {}).items():
+        if isinstance(value, dict):
+            merged.setdefault(str(key), {}).update(value)
+    return merged
 
 
 def _store_audio_trim(master_path: str, audio_trim: dict[str, float] | None) -> None:

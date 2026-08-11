@@ -51,7 +51,7 @@ from server.inbox import (
 )
 from server.media import send_file_with_range
 from server.projects import delete_project_folder, find_project_by_inputs, input_signature, list_projects, project_input_signature
-from server.wizard import WizardRunner, wizard_report, wizard_song_options
+from server.wizard import WizardRunner, merge_spherical_landmarks, wizard_report, wizard_song_options
 
 LOGGER = logging.getLogger(__name__)
 # This limit only matters for a plain browser tab (--dev mode), which has no
@@ -699,11 +699,24 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_spherical_landmarks() -> Response:
         project = _require_project(state)
         body = _json_body()
-        landmarks = _sanitize_spherical_landmarks(body.get("spherical_landmarks", body))
-        project.data.setdefault("settings", {})["spherical_landmarks"] = landmarks
+        raw_landmarks = body.get("spherical_landmarks", body)
+        incoming = _sanitize_spherical_landmarks(raw_landmarks)
+        # The sanitizer supplies UI defaults for a complete form. For this
+        # endpoint, however, callers may send a partial edit; retain only the
+        # fields actually present so omitted values are not reset.
+        if isinstance(raw_landmarks, dict):
+            for key in list(incoming):
+                raw_value = raw_landmarks.get(key)
+                if isinstance(raw_value, dict):
+                    incoming[key] = {field: incoming[key][field] for field in ("yaw", "pitch", "fov", "weight") if field in raw_value}
+        config = load_global_config()
+        global_landmarks = config.get("spherical_landmarks") or {}
+        project_landmarks = project.data.setdefault("settings", {}).get("spherical_landmarks") or {}
+        landmarks = merge_spherical_landmarks(global_landmarks, project_landmarks)
+        landmarks = merge_spherical_landmarks(landmarks, incoming)
+        project.data["settings"]["spherical_landmarks"] = landmarks
         project.mark_all_stale_from("edit")
         project.save()
-        config = load_global_config()
         config["spherical_landmarks"] = landmarks
         save_global_config(config)
         return jsonify({"spherical_landmarks": landmarks})
