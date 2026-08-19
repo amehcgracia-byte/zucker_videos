@@ -51,7 +51,7 @@ from core.stages.edit import (
 
 LOGGER = logging.getLogger(__name__)
 _LOGO_CACHE_LOCK = threading.RLock()
-LOGO_CACHE_RECIPE_VERSION = 1
+LOGO_CACHE_RECIPE_VERSION = 2
 MAX_EXPORT_BYTES = int(1.9 * 1024 * 1024 * 1024)
 AUDIO_BITRATE = 192_000
 MIN_ACCEPTABLE_VIDEO_BITRATE = 2_500_000
@@ -75,7 +75,7 @@ SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
 SPHERICAL_NORMAL_FOV_MIN = NORMAL_FOV_MIN
 SPHERICAL_NORMAL_FOV_MAX = NORMAL_FOV_MAX
 SPHERICAL_MAX_HOLD_YAW_DEG = 10.0
-INTRO_DURATION = 10.2
+INTRO_DURATION = 10.0
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
 FRAME_INTERVAL_TOLERANCE = 0.50
@@ -1088,7 +1088,8 @@ def _render_matched_logo_clip(
     the stream-copied body via a plain concat (no re-encode of the body).
     """
     ffmpeg = _ffmpeg_path()
-    logo = _intro_logo_path() or _logo_path()
+    logo = _bookend_asset_path(kind)
+    is_intro_card = _is_intro_card(logo, kind)
     width, height, fps = profile["width"], profile["height"], profile["fps"]
     cache_path = _logo_clip_cache_path(
         kind,
@@ -1128,7 +1129,7 @@ def _render_matched_logo_clip(
     ]
     if logo:
         command.extend(["-loop", "1", "-t", f"{duration:.3f}", "-i", str(logo)])
-    filter_complex = _logo_filtergraph_matched(kind, duration, bool(logo), height)
+    filter_complex = _logo_filtergraph_matched(kind, duration, bool(logo), height, is_intro_card)
     command.extend(
         [
             "-filter_complex",
@@ -1201,10 +1202,20 @@ def _reuse_cached_logo(cache_path: Path, output_path: Path) -> bool:
     return False
 
 
-def _logo_filtergraph_matched(kind: str, duration: float, has_logo: bool, height: int) -> str:
+def _logo_filtergraph_matched(kind: str, duration: float, has_logo: bool, height: int, is_intro_card: bool = False) -> str:
     video = f"[0:v]format=yuv420p,{_constant_cadence_filter()}[bg]"
     if not has_logo:
         return f"{video};[bg]copy[v]"
+    if is_intro_card:
+        # The 16:9 card is contained in the 360 2:1 canvas so none of its
+        # text is cropped or stretched. The surrounding pixels stay black.
+        card_width = int(round(height * 16 / 9))
+        return (
+            f"{video};"
+            f"[1:v]format=rgba,scale={card_width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={card_width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black[card];"
+            f"[bg][card]overlay=(W-w)/2:(H-h)/2:format=auto[v]"
+        )
     logo_height = int(height * 0.72)
     fade_in = 3.45
     fade_out = 3.00
@@ -1351,7 +1362,8 @@ def _render_logo_clip(
 ) -> None:
     """Render a standalone video-only intro/outro logo clip in the concat house format."""
     ffmpeg = _ffmpeg_path()
-    logo = _intro_logo_path() or _logo_path()
+    logo = _bookend_asset_path(kind)
+    is_intro_card = _is_intro_card(logo, kind)
     width, height = _target_size(platform)
     cache_path = _logo_clip_cache_path(
         kind,
@@ -1386,7 +1398,7 @@ def _render_logo_clip(
     if logo:
         command.extend(["-loop", "1", "-t", f"{duration:.3f}", "-i", str(logo)])
         input_count += 1
-    filter_complex = _logo_filtergraph(platform, kind, duration, bool(logo))
+    filter_complex = _logo_filtergraph(platform, kind, duration, bool(logo), is_intro_card)
     command.extend(
         [
             "-filter_complex",
@@ -3884,6 +3896,45 @@ def _logo_path() -> Path | None:
         if candidate.exists():
             return candidate
     return _watermark_path()
+
+
+def _personal_logo_path() -> Path | None:
+    personal = _global_config().get("personal_logo_path")
+    if not personal:
+        return None
+    candidate = Path(str(personal)).expanduser()
+    return candidate if candidate.exists() else None
+
+
+def _intro_card_path() -> Path | None:
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
+    candidates = [
+        bundle_root / "assets" / "intro_card_watermark.png",
+        Path(__file__).resolve().parents[2] / "assets" / "intro_card_watermark.png",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _bookend_asset_path(kind: str) -> Path | None:
+    """Select the standalone intro/outro asset.
+
+    A personal logo always wins. The designed card replaces only the default
+    intro; the existing outro logo remains unchanged.
+    """
+    personal = _personal_logo_path()
+    if personal:
+        return personal
+    if kind == "intro":
+        return _intro_card_path() or _intro_logo_path() or _logo_path()
+    return _intro_logo_path() or _logo_path()
+
+
+def _is_intro_card(path: Path | None, kind: str) -> bool:
+    card = _intro_card_path()
+    return bool(path and card and kind == "intro" and path.resolve() == card.resolve())
 
 
 def _intro_logo_path() -> Path | None:

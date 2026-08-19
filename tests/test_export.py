@@ -43,6 +43,9 @@ from core.stages.export import (
     _render_segment,
     _render_logo_clip,
     _render_matched_logo_clip,
+    _bookend_asset_path,
+    _intro_card_path,
+    _logo_filtergraph,
     _missing_project_sources,
     _reel_overlay_items,
     _segment_filtergraph,
@@ -1292,6 +1295,38 @@ def test_logo_clips_are_cached_by_kind_and_encoding_parameters(tmp_path, monkeyp
     assert len(calls) == 1
     assert intro.read_bytes() == outro.read_bytes()
     assert _logo_clip_cache_path_for_test("intro") != _logo_clip_cache_path_for_test("outro")
+
+
+def test_intro_card_is_default_intro_and_personal_logo_has_priority(tmp_path, monkeypatch):
+    card = tmp_path / "intro_card_watermark.png"
+    card.write_bytes(b"card")
+    personal = tmp_path / "custom-logo.png"
+    personal.write_bytes(b"custom")
+    monkeypatch.setattr("core.stages.export._intro_card_path", lambda: card)
+    monkeypatch.setattr("core.stages.export._intro_logo_path", lambda: tmp_path / "legacy.png")
+    monkeypatch.setattr("core.stages.export._global_config", lambda: {})
+
+    assert _bookend_asset_path("intro") == card
+    assert _bookend_asset_path("outro") == tmp_path / "legacy.png"
+
+    monkeypatch.setattr("core.stages.export._global_config", lambda: {"personal_logo_path": str(personal)})
+    assert _bookend_asset_path("intro") == personal
+    assert _bookend_asset_path("outro") == personal
+
+
+def test_intro_card_filter_contains_full_frame_without_fade():
+    graph = _logo_filtergraph("youtube", "intro", 10.0, True, True)
+    assert "scale=1920:1080" in graph
+    assert "pad=1920:1080" in graph
+    assert "fade=" not in graph
+
+
+def test_intro_card_path_prefers_pyinstaller_bundle_assets(tmp_path, monkeypatch):
+    bundled = tmp_path / "assets" / "intro_card_watermark.png"
+    bundled.parent.mkdir()
+    bundled.write_bytes(b"bundled-card")
+    monkeypatch.setattr("core.stages.export.sys._MEIPASS", str(tmp_path), raising=False)
+    assert _intro_card_path() == bundled
 
 
 def _logo_clip_cache_path_for_test(kind: str):

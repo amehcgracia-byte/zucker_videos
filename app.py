@@ -10,6 +10,7 @@ import os
 import subprocess
 import socket
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -126,7 +127,7 @@ def main() -> None:
 
 
 def _run_selftest() -> int:
-    """Initialize the packaged Flask app and verify its UI entry point."""
+    """Initialize the packaged app, UI entry point, and intro-card renderer."""
     try:
         app = create_app(project_path=None, dev=False)
         with app.test_client() as client:
@@ -134,7 +135,21 @@ def _run_selftest() -> int:
         if response.status_code != 200:
             print(json.dumps({"ok": False, "status": response.status_code}, sort_keys=True))
             return 1
-        print(json.dumps({"ok": True, "status": response.status_code}, sort_keys=True))
+        from core.stages.export import _intro_card_path, _media_duration, _render_logo_clip
+
+        card = _intro_card_path()
+        if card is None:
+            raise RuntimeError("intro_card_watermark.png is not present in the packaged assets")
+        with tempfile.TemporaryDirectory(prefix="zucker-selftest-") as temp_dir:
+            rendered = Path(temp_dir) / "intro.mp4"
+            _render_logo_clip(rendered, "youtube", "intro", 0.5, 1_000_000, None)
+            rendered_duration = _media_duration(str(rendered))
+        print(json.dumps({
+            "ok": True,
+            "status": response.status_code,
+            "intro_card": str(card),
+            "intro_rendered": rendered_duration > 0.0,
+        }, sort_keys=True))
         return 0
     except Exception as exc:
         logging.getLogger(__name__).exception("Packaged self-test failed")
