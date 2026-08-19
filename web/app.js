@@ -290,17 +290,30 @@ function show360SyncToCut() {
 }
 
 function showYouTubeReviewReady() {
-  showStageTransition("Review shots are ready", "Your synchronized YouTube edit is prepared. Opening Review shots now.", "YouTube", () => {
+  showStageTransition("Review shots are ready", "Your synchronized YouTube edit is prepared. Opening Review shots now — choose your takes.", "YouTube", () => {
+    setStep(4);
     document.querySelector("#progressBox")?.setAttribute("hidden", "");
-    document.querySelector("#reviewBox")?.removeAttribute("hidden");
+    const reviewBox = document.querySelector("#reviewBox");
+    reviewBox?.removeAttribute("hidden");
+    document.querySelector("#reviewReadyNotice")?.removeAttribute("hidden");
+    reviewBox?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 }
 
 function showReelReviewReady() {
-  showStageTransition("Review shots are ready", "Your Reel edit is prepared. Opening Review shots now.", "Reel", () => {
+  showStageTransition("Review shots are ready", "Your Reel edit is prepared. Opening Review shots now — choose your takes.", "Reel", () => {
+    setStep(4);
     document.querySelector("#progressBox")?.setAttribute("hidden", "");
-    document.querySelector("#reviewBox")?.removeAttribute("hidden");
+    const reviewBox = document.querySelector("#reviewBox");
+    reviewBox?.removeAttribute("hidden");
+    document.querySelector("#reviewReadyNotice")?.removeAttribute("hidden");
+    reviewBox?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
+}
+
+function showReviewReadyForPlatform(platform) {
+  if (platform === "youtube") showYouTubeReviewReady();
+  else if (platform === "reel") showReelReviewReady();
 }
 
 function show360EditToExport() {
@@ -1016,6 +1029,18 @@ function renderShotReview(items) {
 async function openShotReview() {
   const result = await api("/wizard/review");
   renderShotReview(result.items || []);
+  // The server has rendered the JPEGs by this point, but the browser can
+  // still be decoding them when the review transition is shown. Wait for the
+  // actual <img> elements before revealing Frames.
+  const images = Array.from(document.querySelectorAll("#reviewGrid img.review-thumb"));
+  await Promise.all(images.map((image) => {
+    if (image.complete) return Promise.resolve();
+    return new Promise((resolve) => {
+      image.addEventListener("load", resolve, { once: true });
+      image.addEventListener("error", resolve, { once: true });
+    });
+  }));
+  return result;
 }
 
 function applyEditTypeMode() {
@@ -2502,10 +2527,20 @@ function renderWizardStatus(status) {
     if (reviewBox) reviewBox.hidden = true;
     document.querySelector("#progressTitle").textContent = "Review shots";
     if (lastPipelineStage !== "review") {
-      if (platform === "youtube") showYouTubeReviewReady();
-      else if (platform === "reel") showReelReviewReady();
-      openShotReview().catch((error) => showToast(error.message, true));
-      lastPipelineStage = "review";
+      // Keep the transition and the Frames page hidden until both the API
+      // payload and the browser image decoders have completed. This avoids
+      // announcing Frames while the user is still staring at empty cards.
+      lastPipelineStage = "review-loading";
+      openShotReview()
+        .then(() => {
+          showToast("Review shots are ready — choose your takes now");
+          showReviewReadyForPlatform(platform);
+          lastPipelineStage = "review";
+        })
+        .catch((error) => {
+          lastPipelineStage = "review";
+          showToast(error.message, true);
+        });
     }
     clearInterval(pollTimer);
     pollTimer = null;

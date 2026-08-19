@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from core.build_info import build_info
+from core.coverage_guard import assert_all_dropbox_videos_used
 from core.messages import t
 from core.project import Project, create_project
 from core.stages.cut import CutStage
@@ -267,6 +268,7 @@ class WizardRunner:
             job.stage = "export"
             job.progress = max(70, int(job.progress or 70))
             job.message = t("exporting_video")
+            assert_all_dropbox_videos_used(project)
             self._run_stage(job, project, ExportStage(), job.progress, 100, t("exporting_video"))
             manifest_path = Path(project.data["stages"]["export"]["outputs"]["export_manifest"])
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -506,6 +508,10 @@ class WizardRunner:
             # before any rendering, which is the part that actually takes time.
             job.estimated_total_seconds = _predicted_total_seconds(project, platform)
             self._run_stage(job, project, EditStage(), edit_start, edit_end, t("building_edit"))
+            # This is deliberately after EditStage and before ExportStage: the
+            # user must see a concrete reason instead of receiving a silent
+            # single-camera export.
+            assert_all_dropbox_videos_used(project)
             if platform in {"youtube", "reel"}:
                 job.status = "waiting_review"
                 job.stage = "review"
@@ -626,6 +632,7 @@ class WizardRunner:
             _write_stage_log(project, "wizard", f"RESCUE clip_id={clip_id} offset_sec={offset_sec:.3f}")
             self._run_stage(job, project, CutStage(), 0, 16, t("cutting_song"))
             self._run_stage(job, project, EditStage(), 16, 34, t("building_edit"))
+            assert_all_dropbox_videos_used(project)
             outputs = self._run_stage(job, project, ExportStage(), 34, 100, t("exporting_video"))
             manifest_path = Path(outputs["export_manifest"])
             import json
