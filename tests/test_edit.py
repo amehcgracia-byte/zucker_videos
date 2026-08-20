@@ -5,8 +5,9 @@ import subprocess
 
 import pytest
 
-from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _available_spherical_shots, _ken_burns_motion, _spherical_motion_profile, _youtube_multicam_plan, _reel_promo_plan, _framing_nearly_identical
+from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, MOTION_CATALOG, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _available_spherical_shots, _ken_burns_motion, _motion_active_axes, _spherical_motion_profile, _youtube_multicam_plan, _reel_promo_plan, _framing_nearly_identical, _valid_motion_recipe, _sony_non_music_filler, _choose_source_avoiding_identical_framing
 from core.stages.cut import _pick_energetic_window, _segment_for_360, _select_360_clip, _tighten_window_to_video_coverage
+from core.stages.edit import _covering_sources, _segment_from_source
 
 
 def test_estimate_bar_starts_groups_beats_in_fours():
@@ -106,6 +107,25 @@ def test_youtube_plan_excludes_missing_sources_and_cuts_on_bars():
     assert all("eligible_segments" in item for item in plan["selection_diagnostics"])
 
 
+def test_youtube_plan_switches_camera_when_another_source_covers_the_cut():
+    """A covered alternative must win over the immediately previous camera."""
+    coverage = {
+        "platform": "youtube",
+        "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 24.0},
+        "sources": [
+            {"path": "/tmp/sony.mp4", "filename": "sony.mp4", "offset_sec": 0.0, "duration_sec": 24.0, "confidence": 10.0},
+            {"path": "/tmp/iphone.mov", "filename": "iphone.mov", "offset_sec": 0.0, "duration_sec": 24.0, "confidence": 9.0},
+        ],
+    }
+    beats = {"bars_sec": [0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0], "sections_sec": []}
+
+    plan = _youtube_multicam_plan(coverage, beats)
+
+    names = [segment["filename"] for segment in plan["segments"]]
+    assert names
+    assert all(previous != current for previous, current in zip(names, names[1:]))
+
+
 def test_reel_uses_real_multicam_plan_not_the_placeholder():
     # Reel must reuse the exact same real bar-aligned multicam logic as
     # YouTube, not the old "single best clip, middle excerpt" placeholder --
@@ -189,6 +209,44 @@ def test_youtube_plan_role_weights_bias_eligible_camera_share():
     assert usage["360.mp4"] >= usage["sony.mp4"] >= usage["iphone.mov"]
 
 
+def test_final_segment_softly_prefers_battery_camera_when_covered():
+    sony = {"path": "/tmp/sony.mp4", "filename": "C0064.MP4", "offset_sec": 0.0, "duration_sec": 12.0, "confidence": 10.0}
+    iphone = {"path": "/tmp/iphone.mov", "filename": "IMG_0022.MOV", "offset_sec": 0.0, "duration_sec": 12.0, "confidence": 9.0}
+    chosen = _choose_source_avoiding_identical_framing(
+        [sony, iphone], None, None, {}, {}, {"360": 0.0, "handheld": 1.0, "fixed_rear": 1.0},
+        8.0, 12.0, 0, {}, False, [], prefer_battery_camera=True,
+    )
+    assert chosen["filename"] == "IMG_0022.MOV"
+
+
+def test_youtube_plan_hard_limits_same_camera_to_two_cuts_when_alternative_exists():
+    coverage = {
+        "platform": "youtube",
+        "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 36.0},
+        "sources": [
+            {"path": "/tmp/sony/C0064.MP4", "filename": "C0064.MP4", "offset_sec": 0.0, "duration_sec": 36.0, "confidence": 100.0},
+            {"path": "/tmp/sony/C0065.MP4", "filename": "C0065.MP4", "offset_sec": 0.0, "duration_sec": 36.0, "confidence": 100.0},
+            {"path": "/tmp/iphone/IMG_0022.MOV", "filename": "IMG_0022.MOV", "offset_sec": 0.0, "duration_sec": 36.0, "confidence": 1.0},
+        ],
+    }
+    beats = {"bars_sec": list(range(0, 37, 2)), "sections_sec": []}
+
+    plan = _youtube_multicam_plan(coverage, beats)
+
+    runs = []
+    for segment in plan["segments"]:
+        camera = segment["camera_id"]
+        if runs and runs[-1][0] == camera:
+            runs[-1][1] += 1
+        else:
+            runs.append([camera, 1])
+    assert max(length for _camera, length in runs) <= 2
+    assert all(
+        length <= 2 or not plan["segments"][index]["camera_alternative_available"]
+        for index, (_camera, length) in enumerate(runs)
+    )
+
+
 def test_video_coverage_tightens_audio_window_without_extending_trim():
     window, warnings = _tighten_window_to_video_coverage(
         {"title": "Song", "start_sec": 0.0, "duration_sec": 30.0, "trim_start_sec": 0.0, "trim_end_sec": 30.0},
@@ -202,6 +260,19 @@ def test_video_coverage_tightens_audio_window_without_extending_trim():
         "Audio trimmed to start at 00:04 where video coverage begins.",
         "Audio trimmed to end at 00:24 where video coverage ends; the remaining audio tail has no footage.",
     ]
+
+
+def test_youtube_range_override_only_covers_confirmed_source_window():
+    source = {
+        "path": "/tmp/iphone.mov", "offset_sec": 386.775, "duration_sec": 276.7,
+        "offset_ranges": [{"clip_start_sec": 184.5, "clip_end_sec": 276.7, "offset_sec": 386.775}],
+    }
+    assert _covering_sources([source], 570.0, 575.0, platform="youtube") == []
+    assert _covering_sources([source], 575.0, 580.0, platform="youtube") == [source]
+    segment = _segment_from_source(source, 575.0, 580.0, "Song", platform="youtube")
+    assert segment["clip_offset_sec"] == 386.775
+    assert segment["clip_start_sec"] == pytest.approx(188.225, abs=0.04)
+    assert _covering_sources([source], 575.0, 580.0, platform="reel") == [source]
 
 
 def test_youtube_plan_role_weight_zero_excludes_role():
@@ -416,16 +487,15 @@ def test_youtube_plan_automatic_mode_ignores_recorded_360_curve():
     assert plan["spherical_recording_usage"]["recorded_segments"] == 0
 
 
-def test_fixed_camera_motion_varies_target_direction_and_zoom_direction():
-    motions = [_ken_burns_motion(index) for index in range(20)]
-    targets = {(motion["pan_x"], motion["pan_y"]) for motion in motions}
-    zoom_in = [motion for motion in motions if motion["zoom_end"] > motion["zoom_start"]]
-    zoom_out = [motion for motion in motions if motion["zoom_end"] < motion["zoom_start"]]
-
-    assert len(targets) >= 3
-    assert zoom_in
-    assert zoom_out
-    assert max(abs(motion["zoom_end"] - motion["zoom_start"]) for motion in motions) >= 0.09
+def test_fixed_camera_motion_uses_one_movement_axis_at_a_time():
+    motions = [_ken_burns_motion(index) for index in range(500)]
+    assert {motion["movement"] for motion in motions} == set(MOTION_CATALOG)
+    for motion in motions:
+        assert _valid_motion_recipe(motion)
+        assert len(_motion_active_axes(motion)) in {0, 1, 2}
+        if motion["movement"] != "full_static":
+            assert motion["zoom_start"] >= 2.35
+            assert motion["zoom_end"] >= 2.35
 
 
 def test_youtube_plan_segment_lengths_stay_within_bounds():
@@ -736,3 +806,41 @@ def test_pick_energetic_window_falls_back_to_middle_when_shorter_than_target():
 
     assert picked["start_sec"] == 10.0
     assert picked["duration_sec"] == 5.0
+
+
+def test_sony_gap_fill_never_repeats_a_frame_within_180_seconds():
+    sources = [
+        {
+            "path": "/tmp/ZZS_sony_C0064.MP4",
+            "filename": "ZZS_sony_C0064.MP4",
+            "offset_sec": 0.0,
+            "non_music_windows": [
+                {"start_sec": 10.0, "end_sec": 20.0, "score": 0.8},
+                {"start_sec": 30.0, "end_sec": 40.0, "score": 0.8},
+            ],
+        },
+        {
+            "path": "/tmp/ZZS_sony_C0065.MP4",
+            "filename": "ZZS_sony_C0065.MP4",
+            "offset_sec": 0.0,
+            "non_music_windows": [
+                {"start_sec": 50.0, "end_sec": 60.0, "score": 0.8},
+                {"start_sec": 70.0, "end_sec": 80.0, "score": 0.8},
+            ],
+        },
+    ]
+    history = []
+    selected = []
+    for index, master_start in enumerate((0.0, 5.0, 10.0, 200.0)):
+        replacement = _sony_non_music_filler(
+            sources,
+            {"master_start_sec": master_start, "duration_sec": 4.0, "title": "Full video"},
+            index,
+            history,
+        )
+        assert replacement is not None
+        selected.append((master_start, replacement["non_music_frame_key"]))
+    for left_index, (left_time, left_key) in enumerate(selected):
+        for right_time, right_key in selected[left_index + 1:]:
+            if left_key == right_key:
+                assert right_time - left_time >= 180.0

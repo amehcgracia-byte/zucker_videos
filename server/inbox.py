@@ -14,7 +14,7 @@ from core.ffmpeg import configure_tools, ffprobe
 from core.media_validation import VIDEO_EXTENSIONS, is_raw_360_path, raw_360_model_fov, static_rejection_reason, validate_camera_video_metadata
 from core.normalization import normalize_video_record
 from core.project import STAGE_NAMES, Project, file_record
-from core.stages.sync import load_or_compute_master_envelope, sync_clip, sync_confidence_threshold
+from core.stages.sync import coarse_master_match, content_identity, load_or_compute_clip_envelope, load_or_compute_master_envelope, normalized_onset_envelope, sync_clip, sync_confidence_threshold
 from core.stages.base import stable_fingerprint
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".aiff", ".aif"}
@@ -23,6 +23,8 @@ LOGGER = logging.getLogger(__name__)
 _ANALYSIS_LOCK = threading.RLock()
 _ANALYSIS_THREAD: threading.Thread | None = None
 _ANALYSIS_STATUS: dict[str, Any] = {"status": "idle", "progress": 0, "detail": ""}
+COARSE_MATCH_VERSION = 5
+COARSE_MATCH_THRESHOLD = 6.0
 
 
 def app_home() -> Path:
@@ -201,6 +203,18 @@ def inbox_analysis_snapshot() -> dict[str, Any]:
             snapshot["files"] = payload.get("files") or []
             snapshot["completed_at"] = payload.get("completed_at")
             snapshot["master_audio_extensions"] = sorted(allowed)
+            snapshot["coarse_match_version"] = payload.get("coarse_match_version")
+            if payload.get("coarse_match_version") != COARSE_MATCH_VERSION:
+                # Do not expose an older, weaker matcher as if it were a
+                # completed analysis. The next explicit Inbox load/start will
+                # rebuild it with the current threshold and cache format.
+                snapshot["status"] = "idle"
+                snapshot["progress"] = 0
+                snapshot["detail"] = "Inbox analysis needs refresh"
+                snapshot["masters"] = []
+                snapshot["files"] = []
+                snapshot.pop("completed_at", None)
+                return snapshot
             if payload.get("completed_at") and snapshot.get("status") == "idle":
                 snapshot["status"] = "done"
                 snapshot["progress"] = 100
@@ -322,9 +336,12 @@ def _run_inbox_analysis(root: str | None) -> None:
                     if item.get("kind") == "videos":
                         record = file_record(str(media_path))
                         record.update(video_classification_metadata(media_path))
-                        normalized = normalize_video_record(analysis_project, record, lambda *_: None)
                         entry["probe"] = record.get("probe") or item.get("probe") or {}
-                        entry["normalized"] = normalized
+                        # Inbox matching must stay cheap and must not create a
+                        # video proxy before we know that its audio belongs to
+                        # a selected master.  Full normalization remains part
+                        # of the later wizard ingest path.
+                        entry["normalized"] = {}
                     elif item.get("kind") == "master":
                         entry["duration"] = item.get("duration")
                 except OSError:
@@ -352,25 +369,80 @@ def _run_inbox_analysis(root: str | None) -> None:
             cached_matches = (cached_master or {}).get("matches") or []
             cached_video_keys = {match.get("video_analysis_key") for match in cached_matches}
             current_video_keys = {video.get("analysis_key") for video in videos}
-            if cached_master and cached_video_keys == current_video_keys:
+            if (
+                cached_master
+                and old.get("coarse_match_version") == COARSE_MATCH_VERSION
+                and cached_video_keys == current_video_keys
+                and all("coarse_confidence" in match for match in cached_matches)
+            ):
                 master_results.append(cached_master)
                 pair_index += len(videos)
                 continue
-            master_env = load_or_compute_master_envelope(analysis_project)
+            # This analysis compares several masters in one pass.  The normal
+            # project cache is intentionally single-master, so using it here
+            # would reuse the first song's envelope for every subsequent song.
+            # Cache each source master separately at the Inbox layer instead.
+            master_cache = analysis_project.cache_dir / "inbox-master-envelopes" / f"{master_key}.onset-v4.npy"
+            master_cache.parent.mkdir(parents=True, exist_ok=True)
+            if len(masters) == 1:
+                # Preserve the project-level cache path for single-master
+                # callers and existing integrations.
+                master_env = load_or_compute_master_envelope(analysis_project)
+            elif master_cache.exists() and master_cache.stat().st_mtime >= Path(master["path"]).stat().st_mtime:
+                master_env = __import__("numpy").load(master_cache)
+            else:
+                # Search the entire master at the same onset-envelope rate as
+                # the clip.  A short clip may begin hundreds of seconds into
+                # the master (e.g. Berlin C0064/C0065), so a 180-second
+                # 4-kHz master preview is not a valid comparison window.
+                master_env = normalized_onset_envelope(master["path"])
+                __import__("numpy").save(master_cache, master_env)
             matches: list[dict[str, Any]] = []
             for video in videos:
                 pair_index += 1
                 video_record = file_record(video["path"])
                 video_record.update({"probe": video.get("probe") or {}, "normalized": video.get("normalized") or {}})
-                result = sync_clip(analysis_project, video_record, master_env, sync_confidence_threshold(analysis_project))
+                try:
+                    clip_env, _clip_audio_path = load_or_compute_clip_envelope(analysis_project, video_record)
+                    # Both envelopes are now full-resolution onset envelopes;
+                    # coarse_master_match performs the decimation once, after
+                    # the rates are known to be compatible.
+                    coarse = coarse_master_match(master_env, clip_env) if clip_env is not None else {"offset_sec": 0.0, "confidence": 0.0, "reasonable_peak": False}
+                except Exception:
+                    # Keep Inbox analysis resilient for files that were
+                    # classified optimistically or are still being copied;
+                    # the normal sync path remains the source of truth.
+                    coarse = {"offset_sec": 0.0, "confidence": 0.0, "reasonable_peak": True, "unavailable": True}
+                if not coarse["reasonable_peak"] or coarse.get("confidence", 0.0) < COARSE_MATCH_THRESHOLD:
+                    result = {
+                        "offset_sec": coarse["offset_sec"], "confidence": coarse["confidence"],
+                        "low_confidence": True, "unstable_sync": False, "no_audio": False,
+                        "master_mismatch": True,
+                    }
+                else:
+                    # The Inbox is only a master/video relationship gate.  Do
+                    # not run full sync here: that belongs to the selected
+                    # wizard inputs and can be expensive/ambiguous.
+                    result = {
+                        "offset_sec": coarse["offset_sec"],
+                        "confidence": coarse["confidence"],
+                        "low_confidence": False,
+                        "unstable_sync": False,
+                        "no_audio": False,
+                        "duration_sec": float(video.get("probe", {}).get("duration") or 0.0),
+                    }
                 start = float(result.get("offset_sec") or 0.0)
-                duration = float(result.get("duration_sec") or 0.0)
+                probe = video.get("probe") or {}
+                probe_duration = probe.get("duration") or (probe.get("format") or {}).get("duration") or 0.0
+                duration = float(result.get("duration_sec") or probe_duration or 0.0)
                 master_duration = float(master.get("duration") or 0.0)
                 overlap = max(0.0, min(master_duration, start + duration) - max(0.0, start))
                 matches.append({
                     "path": video["path"], "confidence": result.get("confidence"), "offset_sec": start,
                     "duration_sec": duration, "low_confidence": bool(result.get("low_confidence")),
                     "unstable_sync": bool(result.get("unstable_sync")), "no_audio": bool(result.get("no_audio")),
+                    "master_mismatch": bool(result.get("master_mismatch")) or bool(coarse.get("confidence", 0.0) < COARSE_MATCH_THRESHOLD and not coarse.get("unavailable")), "coarse_confidence": coarse.get("confidence"), "coarse_reasonable_peak": coarse.get("reasonable_peak"),
+                    "coarse_match_threshold": COARSE_MATCH_THRESHOLD,
                     "master_overlap_sec": overlap, "master_overlap": overlap > 0.0,
                     "video_analysis_key": video.get("analysis_key"),
                 })
@@ -380,7 +452,7 @@ def _run_inbox_analysis(root: str | None) -> None:
         # Keep offline entries in the manifest even though they cannot
         # participate in this run's matching.  Their path/size/mtime keyed
         # analysis is reusable when the external volume is reconnected.
-        payload = {"schema": 1, "completed_at": time.time(), "entries": entries, "files": list(entries.values()), "masters": master_results, "master_audio_extensions": sorted(allowed_extensions)}
+        payload = {"schema": 1, "coarse_match_version": COARSE_MATCH_VERSION, "completed_at": time.time(), "entries": entries, "files": list(entries.values()), "masters": master_results, "master_audio_extensions": sorted(allowed_extensions)}
         _write_inbox_analysis(payload)
         with _ANALYSIS_LOCK:
             _ANALYSIS_STATUS.update({"status": "done", "progress": 100, "detail": f"Inbox ready: {len(videos)} videos, {len(masters)} audio masters"})
@@ -566,7 +638,9 @@ def register_selected_inputs(
         record.update(video_classification_metadata(registered_video))
         videos.append(record)
     if video_paths is not None:
-        project.data["inputs"]["videos"] = _dedupe_records(videos)
+        deduped, duplicate_warnings = _dedupe_video_records(videos)
+        project.data["inputs"]["videos"] = deduped
+        project.data["inputs"]["warnings"] = duplicate_warnings
         earliest_stale_stage = _earliest_stage(earliest_stale_stage, "ingest")
     if earliest_stale_stage:
         project.mark_all_stale_from(earliest_stale_stage)
@@ -609,6 +683,11 @@ def reconcile_registered_inputs(project: Project) -> bool:
             record.pop("normalized", None)
             changed = True
         kept_videos.append(record)
+    deduped_videos, duplicate_warnings = _dedupe_video_records(kept_videos)
+    if deduped_videos != kept_videos or duplicate_warnings != (project.data.get("inputs", {}).get("warnings") or []):
+        kept_videos = deduped_videos
+        project.data["inputs"]["warnings"] = duplicate_warnings
+        changed = True
     if changed:
         project.data["inputs"]["videos"] = kept_videos
         project.mark_all_stale_from("ingest")
@@ -764,6 +843,32 @@ def _dedupe_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             seen.add(path)
             deduped.append(record)
     return deduped
+
+
+def _dedupe_video_records(records: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    """Deduplicate Drop box videos by content, not just by filename/path."""
+    seen_paths: set[str] = set()
+    seen_content: dict[tuple[Any, Any], dict[str, Any]] = {}
+    deduped: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for record in records:
+        path = str(record.get("path") or "")
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        identity = content_identity(path)
+        key = (identity or {}).get("size"), (identity or {}).get("sample_sha256")
+        if identity and key in seen_content:
+            original = seen_content[key]
+            warnings.append(
+                f"Duplicate video ignored: {Path(path).name} has the same content as "
+                f"{Path(str(original.get('path') or 'video')).name}; it will not be treated as a second camera."
+            )
+            continue
+        if identity:
+            seen_content[key] = record
+        deduped.append(record)
+    return deduped, warnings
 
 
 def _earliest_stage(current: str | None, candidate: str) -> str:

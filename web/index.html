@@ -18,7 +18,8 @@
         <button class="step-nav active" data-step-nav="1">Inputs</button>
         <button class="step-nav" data-step-nav="2">Edit type</button>
         <button class="step-nav" data-step-nav="3">Progress</button>
-        <button class="step-nav" data-step-nav="4">Result</button>
+        <button class="step-nav" data-step-nav="4">Frames</button>
+        <button class="step-nav" data-step-nav="5">Result</button>
       </div>
       <div class="nav-actions">
         <button id="themeToggle" class="icon-button small" type="button">Dark mode</button>
@@ -31,7 +32,7 @@
         <div class="step-header">
           <div class="brand-line">
             <img src="/logo_editor_green.png?v=editor-ui-4" alt="" />
-            <span>Step 1 of 4</span>
+          <span>Step 1 of 5</span>
           </div>
           <h1>Zucker Editor</h1>
         </div>
@@ -72,6 +73,12 @@
               <option value="">Scan Inbox to load audio masters…</option>
             </select>
           </label>
+          <label>
+            Add your personal logo
+            <input id="personalLogoInput" type="file" accept="image/png,image/jpeg,image/webp" />
+            <small id="personalLogoStatus">The app logo is used by default</small>
+          </label>
+          <button id="addMasterVideos" class="icon-button small" type="button" disabled>Add videos for this master</button>
           <button id="scanInbox" class="icon-button small" type="button">Scan Inbox</button>
         </div>
         <div id="dropZone" class="drop-zone">
@@ -91,12 +98,13 @@
           </ol>
         </div>
         <p id="softRule" class="soft-rule">Missing master audio</p>
+        <div id="masterMismatchNotice" class="callout warning" hidden role="alert"></div>
         <button id="confirmFiles" class="primary icon-button" data-icon="arrow" disabled>Confirm and continue</button>
       </section>
 
       <section class="step" id="step2">
         <div class="step-header">
-          <span>Step 2 of 4</span>
+          <span>Step 2 of 5</span>
           <h1>Choose edit type</h1>
         </div>
         <div class="platforms">
@@ -214,7 +222,7 @@
 
       <section class="step" id="step3">
         <div class="step-header">
-          <span>Step 3 of 4</span>
+          <span>Step 3 of 5</span>
           <h1 id="progressTitle">Creating your video</h1>
         </div>
         <div id="stageTransition" class="stage-transition" hidden aria-live="polite">
@@ -246,7 +254,18 @@
           </details>
           <button id="cancelWizard" class="icon-button danger" data-icon="close">Cancel</button>
         </div>
+      </section>
+
+      <section class="step" id="step4">
+        <div class="step-header">
+          <span>Step 4 of 5</span>
+          <h1>Frames</h1>
+        </div>
         <div id="reviewBox" class="review-box" hidden>
+          <div id="reviewReadyNotice" class="review-ready-notice" role="status" aria-live="assertive" hidden>
+            <strong>Review shots are ready — choose your takes now</strong>
+            <span>The edit finished while you were away. Your synchronized shots are waiting for review.</span>
+          </div>
           <div class="review-intro">I'm artificial, but not that intelligent — help me check whether these shots are any good.</div>
           <div id="reviewGrid" class="review-grid"></div>
           <div id="reviewLargeModal" class="review-large-modal" hidden role="dialog" aria-modal="true" aria-label="Enlarged shot"><button id="closeReviewLarge" class="review-large-close" type="button" aria-label="Close">×</button><img id="reviewLarge" alt="Selected shot" /></div>
@@ -254,14 +273,17 @@
         </div>
       </section>
 
-      <section class="step" id="step4">
+      <section class="step" id="step5">
         <div class="step-header">
-          <span>Step 4 of 4</span>
+          <span>Step 5 of 5</span>
           <h1 id="resultTitle">Result</h1>
         </div>
         <div id="errorBox" class="error-box" hidden>
           <p id="errorText"></p>
+          <p id="proceedAnywayWarning" class="setup-warning" hidden>Automatic sync rejected every clip. You can continue with the best available offsets, but the sync may be imprecise.</p>
           <div class="result-actions">
+            <button id="proceedAnyway" class="primary icon-button" hidden>Proceed anyway</button>
+            <button id="continueWithoutVideo" class="icon-button" hidden>Continue without this video</button>
             <button id="openLogsError" class="icon-button desktop-only" data-icon="doc">Open logs</button>
             <button id="retryWizard" class="icon-button" data-icon="retry">Retry</button>
           </div>
@@ -293,6 +315,10 @@
             <label>
               Sync offset (seconds)
               <input id="rescueOffset" type="number" step="0.001" />
+            </label>
+            <label>
+              Confirmed clip ranges (optional JSON; leave other parts pending)
+              <textarea id="rescueOffsetRanges" rows="3" spellcheck="false" placeholder='[{"clip_start_sec":184.5,"clip_end_sec":276.7,"offset_sec":386.775}]'></textarea>
             </label>
             <div class="result-actions">
               <button id="confirmRescue" class="icon-button" data-icon="retry">Use this camera and rerender</button>

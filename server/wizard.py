@@ -13,14 +13,15 @@ from pathlib import Path
 from typing import Any
 
 from core.build_info import build_info
-from core.coverage_guard import assert_all_dropbox_videos_used
+from core.coverage_guard import CoverageInvariantError, assert_all_dropbox_videos_used
 from core.messages import t
 from core.project import Project, create_project
 from core.stages.cut import CutStage
 from core.stages.edit import EditStage
 from core.stages.export import ExportStage
 from core.stages.ingest import IngestStage
-from core.stages.sync import SyncStage, load_song_boundaries, set_manual_override
+from core.stages.sync import SyncStage, load_song_boundaries, set_manual_override, set_manual_override_ranges
+from core.shot_review import review_items
 from core.throughput import estimated_export_seconds, record_export_throughput
 from server.inbox import app_home, load_global_config, register_selected_inputs, save_global_config
 from server.inbox import classify_file
@@ -53,6 +54,9 @@ class WizardJob:
     # still estimating rather than show an optimistic guess.
     estimated_total_seconds: float | None = None
     started_at: float | None = None
+    proceed_anyway_available: bool = False
+    continue_without_video_available: bool = False
+    input_warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -105,9 +109,25 @@ class WizardRunner:
 
     def prepare_existing(self, project: Project) -> WizardJob:
         """Run ingest + sync for an existing matching project."""
+        previous_thread: threading.Thread | None = None
         with self._lock:
             if self._job and self._job.status == "running":
-                raise RuntimeError("A video is already being processed")
+                # Opening another saved project is a project switch, not a
+                # request to queue a second export. Stop the previous
+                # prepare/resume job cooperatively before attaching the new
+                # project; otherwise the desktop UI gets a misleading 500.
+                if same_project_path(self._job.project_path, str(project.folder)):
+                    return self._job
+                self._cancel_event.set()
+                previous_thread = self._thread
+        if previous_thread and previous_thread.is_alive():
+            previous_thread.join(timeout=10.0)
+        with self._lock:
+            if self._job and self._job.status == "running":
+                self._job.status = "cancelled"
+                self._job.message = t("cancelled")
+                self._job.error = None
+                self._job.technical_details = None
             job = WizardJob(id="current", message=t("listening"))
             _attach_project(job, project)
             self._job = job
@@ -261,6 +281,115 @@ class WizardRunner:
             thread.start()
             return job
 
+    def proceed_anyway(self, project: Project | None) -> WizardJob:
+        """Retry Cut/Edit with the explicit low-confidence sync escape hatch."""
+        with self._lock:
+            if not project or not self._job or not self._job.proceed_anyway_available:
+                raise RuntimeError("Proceed anyway is not available for this job")
+            if self._thread and self._thread.is_alive():
+                raise RuntimeError("A video is already being processed")
+            job = self._job
+            project.data.setdefault("settings", {}).setdefault("wizard", {})["proceed_anyway"] = True
+            project.save()
+            job.proceed_anyway_available = False
+            job.status = "running"
+            job.stage = "cut"
+            job.progress = 0
+            job.message = t("cutting_song")
+            job.detail = "Proceeding anyway with the best available offsets. Sync may be imprecise."
+            job.error = None
+            job.technical_details = None
+            self._cancel_event.clear()
+            thread = threading.Thread(
+                target=self._proceed_anyway_job,
+                args=(job, project),
+                daemon=True,
+                name="zucker-wizard-proceed-anyway",
+            )
+            self._thread = thread
+            thread.start()
+            return job
+
+    def continue_without_video(self, project: Project | None) -> WizardJob:
+        """Explicitly accept sync-only Drop box omissions and resume the job."""
+        with self._lock:
+            if not project or not self._job or not self._job.continue_without_video_available:
+                raise RuntimeError("Continue without this video is not available for this job")
+            if self._thread and self._thread.is_alive():
+                raise RuntimeError("A video is already being processed")
+            job = self._job
+            project.data.setdefault("settings", {}).setdefault("wizard", {})["continue_without_video"] = True
+            project.save()
+            job.proceed_anyway_available = False
+            job.continue_without_video_available = False
+            job.status = "running"
+            job.error = None
+            job.technical_details = None
+            job.message = t("building_edit")
+            job.detail = "Continuing without the video that could not be synchronized."
+            self._cancel_event.clear()
+            thread = threading.Thread(
+                target=self._continue_without_video_job,
+                args=(job, project),
+                daemon=True,
+                name="zucker-wizard-continue-without-video",
+            )
+            self._thread = thread
+            thread.start()
+            return job
+
+    def _continue_without_video_job(self, job: WizardJob, project: Project) -> None:
+        try:
+            _assert_coverage(project)
+            platform = str(project.data.get("settings", {}).get("wizard", {}).get("platform") or "youtube")
+            if platform in {"youtube", "reel"}:
+                review = review_items(project)
+                if any(not item.get("thumbnail") for item in review):
+                    raise RuntimeError("Shot review frames were not fully generated")
+                job.status = "waiting_review"
+                job.stage = "review"
+                job.progress = max(70, job.progress)
+                job.message = "Review shots"
+                job.detail = "Continuing without the unsynchronized video."
+                return
+            outputs = self._run_stage(job, project, ExportStage(), max(70, job.progress), 100, t("exporting_video"))
+            _finish_export_job(job, project, outputs)
+        except WizardCancelled:
+            self._mark_cancelled(job)
+        except Exception as exc:
+            LOGGER.exception("Continue-without-video rerun failed")
+            job.status = "failed"
+            job.error = _friendly_error(exc)
+            job.technical_details = traceback.format_exc()
+            job.message = t("cannot_finish")
+
+    def _proceed_anyway_job(self, job: WizardJob, project: Project) -> None:
+        try:
+            self._run_stage(job, project, CutStage(), 0, 35, t("cutting_song"))
+            self._run_stage(job, project, EditStage(), 35, 70, t("building_edit"))
+            _assert_coverage(project)
+            platform = str(project.data.get("settings", {}).get("wizard", {}).get("platform") or "youtube")
+            if platform in {"youtube", "reel"}:
+                review = review_items(project)
+                if any(not item.get("thumbnail") for item in review):
+                    raise RuntimeError("Shot review frames were not fully generated")
+                job.status = "waiting_review"
+                job.stage = "review"
+                job.progress = 70
+                job.message = "Review shots"
+                job.detail = "Proceeding anyway: check the shots before rendering; sync may be imprecise."
+                _write_stage_log(project, "wizard", "PROCEED ANYWAY: SHOT REVIEW READY before export")
+                return
+            raise RuntimeError("Proceed anyway is only available for YouTube edits")
+        except WizardCancelled:
+            self._mark_cancelled(job)
+        except Exception as exc:
+            LOGGER.exception("Proceed-anyway rerun failed")
+            job.status = "failed"
+            job.error = _friendly_error(exc)
+            job.technical_details = traceback.format_exc()
+            job.message = t("cannot_finish")
+
     def _render_review_job(self, job: WizardJob, project: Project) -> None:
         started_at = time.monotonic()
         try:
@@ -268,7 +397,7 @@ class WizardRunner:
             job.stage = "export"
             job.progress = max(70, int(job.progress or 70))
             job.message = t("exporting_video")
-            assert_all_dropbox_videos_used(project)
+            _assert_coverage(project)
             self._run_stage(job, project, ExportStage(), job.progress, 100, t("exporting_video"))
             manifest_path = Path(project.data["stages"]["export"]["outputs"]["export_manifest"])
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -325,6 +454,28 @@ class WizardRunner:
             thread.start()
             return job
 
+    def rescue_ranges(
+        self, project: Project, *, clip_id: str, offset_ranges: list[dict[str, Any]]
+    ) -> WizardJob:
+        """Apply confirmed clip-time offsets and rerender the current project."""
+        with self._lock:
+            if self._job and self._job.status == "running":
+                raise RuntimeError("A video is already being processed")
+            job = WizardJob(id="current", message=t("building_edit"))
+            _attach_project(job, project)
+            self._job = job
+            self._prepared_project = None
+            self._cancel_event.clear()
+            thread = threading.Thread(
+                target=self._rescue_and_rerender_ranges,
+                kwargs={"job": job, "project": project, "clip_id": clip_id, "offset_ranges": offset_ranges},
+                daemon=True,
+                name="zucker-wizard-range-rescue",
+            )
+            self._thread = thread
+            thread.start()
+            return job
+
     def _run(
         self,
         *,
@@ -353,6 +504,7 @@ class WizardRunner:
             _attach_project(job, project)
             selected_master_path, selected_video_paths = _select_360_inputs(master_path, video_paths) if platform == "360" else (master_path, video_paths)
             register_selected_inputs(project, master_path=selected_master_path, songs_path=songs_path, video_paths=selected_video_paths, append_videos=False)
+            job.input_warnings = list(project.data.get("inputs", {}).get("warnings") or [])
             _write_stage_log(project, "wizard", f"Master audio selected: {Path(master_path).name}")
             project.data["settings"]["wizard"] = {
                 "platform": platform,
@@ -363,6 +515,7 @@ class WizardRunner:
                 "reel_aspect": reel_aspect,
                 "reel_text_overlays": reel_text_overlays or [],
                 "reel_image_overlays": reel_image_overlays or [],
+                "personal_logo_path": (load_global_config().get("personal_logo_path") or ""),
             }
             _store_audio_trim(master_path, audio_trim)
             _store_spherical_landmarks(project, spherical_landmarks)
@@ -414,6 +567,7 @@ class WizardRunner:
             project = _create_wizard_project(name)
             _attach_project(job, project)
             register_selected_inputs(project, master_path=master_path, songs_path=songs_path, video_paths=video_paths, append_videos=False)
+            job.input_warnings = list(project.data.get("inputs", {}).get("warnings") or [])
             _write_stage_log(project, "wizard", f"Master audio selected: {Path(master_path).name}")
             self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
             self._run_stage(job, project, SyncStage(), 22, 48, t("syncing_audio"))
@@ -490,6 +644,7 @@ class WizardRunner:
                 "reel_aspect": reel_aspect,
                 "reel_text_overlays": reel_text_overlays or [],
                 "reel_image_overlays": reel_image_overlays or [],
+                "personal_logo_path": (load_global_config().get("personal_logo_path") or ""),
             }
             _store_audio_trim(master_path, audio_trim)
             _store_spherical_landmarks(project, spherical_landmarks)
@@ -511,8 +666,13 @@ class WizardRunner:
             # This is deliberately after EditStage and before ExportStage: the
             # user must see a concrete reason instead of receiving a silent
             # single-camera export.
-            assert_all_dropbox_videos_used(project)
+            _assert_coverage(project)
             if platform in {"youtube", "reel"}:
+                # Review-ready is a user-visible promise. Materialize every
+                # thumbnail first, including the authored crop/motion frame.
+                review = review_items(project)
+                if any(not item.get("thumbnail") for item in review):
+                    raise RuntimeError("Shot review frames were not fully generated")
                 job.status = "waiting_review"
                 job.stage = "review"
                 job.progress = edit_end
@@ -564,6 +724,15 @@ class WizardRunner:
             job.error = _friendly_error(exc)
             job.technical_details = traceback.format_exc()
             job.message = t("cannot_finish")
+            if isinstance(exc, CoverageInvariantError) and exc.sync_only:
+                job.proceed_anyway_available = True
+                job.continue_without_video_available = True
+            else:
+                job.proceed_anyway_available = (
+                    platform == "youtube"
+                    and job.stage == "cut"
+                    and "proceed anyway" in job.error.lower()
+                )
 
     def _finish_after_prepare(
         self,
@@ -632,7 +801,7 @@ class WizardRunner:
             _write_stage_log(project, "wizard", f"RESCUE clip_id={clip_id} offset_sec={offset_sec:.3f}")
             self._run_stage(job, project, CutStage(), 0, 16, t("cutting_song"))
             self._run_stage(job, project, EditStage(), 16, 34, t("building_edit"))
-            assert_all_dropbox_videos_used(project)
+            _assert_coverage(project)
             outputs = self._run_stage(job, project, ExportStage(), 34, 100, t("exporting_video"))
             manifest_path = Path(outputs["export_manifest"])
             import json
@@ -670,6 +839,40 @@ class WizardRunner:
         except Exception as exc:
             LOGGER.exception("Wizard rescue rerender failed")
             _write_stage_log(project, "wizard", f"RESCUE FAILED {traceback.format_exc()}")
+            job.status = "failed"
+            job.error = _friendly_error(exc)
+            job.technical_details = traceback.format_exc()
+            job.message = t("cannot_finish")
+
+    def _rescue_and_rerender_ranges(
+        self,
+        *,
+        job: WizardJob,
+        project: Project,
+        clip_id: str,
+        offset_ranges: list[dict[str, Any]],
+    ) -> None:
+        started_at = time.monotonic()
+        try:
+            set_manual_override_ranges(project, clip_id, offset_ranges)
+            _write_stage_log(project, "wizard", f"RESCUE_RANGES clip_id={clip_id} ranges={offset_ranges!r}")
+            self._run_stage(job, project, CutStage(), 0, 16, t("cutting_song"))
+            self._run_stage(job, project, EditStage(), 16, 34, t("building_edit"))
+            _assert_coverage(project)
+            outputs = self._run_stage(job, project, ExportStage(), 34, 100, t("exporting_video"))
+            manifest_path = Path(outputs["export_manifest"])
+            with manifest_path.open("r", encoding="utf-8") as fh:
+                manifest = json.load(fh)
+            export = manifest["exports"][0]
+            export_path = Path(export["path"])
+            if export_path.suffix.lower() != ".mp4" or not export_path.exists():
+                raise RuntimeError(f"Export did not produce an MP4: {export_path}")
+            job.status = "done"
+            job.progress = 100
+            job.message = t("export_ready")
+            job.result = {"export": str(export_path), "elapsed_sec": round(time.monotonic() - started_at, 3)}
+        except Exception as exc:
+            LOGGER.exception("Range rescue failed")
             job.status = "failed"
             job.error = _friendly_error(exc)
             job.technical_details = traceback.format_exc()
@@ -823,6 +1026,43 @@ def _attach_project(job: WizardJob, project: Project) -> None:
     config = load_global_config()
     config["last_project_path"] = str(project.folder)
     save_global_config(config)
+
+
+def _assert_coverage(project: Project) -> None:
+    wizard = project.data.get("settings", {}).get("wizard", {})
+    allow_sync_missing = bool(wizard.get("proceed_anyway") or wizard.get("continue_without_video"))
+    assert_all_dropbox_videos_used(project, allow_sync_missing=allow_sync_missing)
+
+
+def _finish_export_job(job: WizardJob, project: Project, outputs: dict[str, str]) -> None:
+    manifest_path = Path(outputs["export_manifest"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    export = manifest["exports"][0]
+    export_path = Path(export["path"])
+    if export_path.suffix.lower() != ".mp4" or not export_path.exists():
+        raise RuntimeError(f"Export did not produce an MP4: {export_path}")
+    job.status = "done"
+    job.progress = 100
+    job.message = t("done")
+    job.result = {
+        "project_path": str(project.folder),
+        "filename": export_path.name,
+        "path": str(export_path),
+        "media_url": "/api/v1/wizard/result",
+        "platform": export.get("platform") or project.data.get("settings", {}).get("wizard", {}).get("platform"),
+        "logs_path": str(project.cache_dir / "logs"),
+        "cut_count": export.get("cut_count"),
+        "camera_usage": export.get("camera_usage"),
+        "warnings": export.get("warnings") or manifest.get("warnings") or [],
+        "excluded_clips": export.get("excluded_clips") or [],
+    }
+
+
+def same_project_path(left: str | None, right: str | None) -> bool:
+    """Compare project paths consistently across macOS path spellings."""
+    if not left or not right:
+        return False
+    return str(Path(left).expanduser().resolve()) == str(Path(right).expanduser().resolve())
 
 
 def _store_spherical_landmarks(project: Project, landmarks: dict[str, float] | None) -> None:

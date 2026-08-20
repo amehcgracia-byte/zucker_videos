@@ -14,6 +14,11 @@ from core.stages.sync import load_sync_map
 class CoverageInvariantError(RuntimeError):
     """Raised when a registered Drop box video would be silently omitted."""
 
+    def __init__(self, message: str, *, missing: list[dict[str, Any]] | None = None, sync_only: bool = False) -> None:
+        super().__init__(message)
+        self.missing = missing or []
+        self.sync_only = sync_only
+
 
 def _normal(path: Any) -> str:
     if not path:
@@ -76,11 +81,16 @@ def _reason_for(project: Project, record: dict[str, Any], plan: dict[str, Any]) 
     return "it was registered but is absent from sync_map.json/edit_plan.json"
 
 
-def assert_all_dropbox_videos_used(project: Project) -> None:
-    """Fail before ExportStage if any registered video has zero edit segments."""
+def _sync_related_reason(reason: str) -> bool:
+    text = reason.lower()
+    return any(token in text for token in ("sync", "confidence", "offset", "sync_map", "correlation"))
+
+
+def _coverage_gaps(project: Project) -> tuple[list[dict[str, Any]], bool]:
+    """Return missing videos and whether every omission is sync-related."""
     videos = project.data.get("inputs", {}).get("videos") or []
     if not videos:
-        return
+        return [], False
     plan = _load_edit_plan(project)
     used = set()
     for segment in plan.get("segments") or []:
@@ -90,9 +100,28 @@ def assert_all_dropbox_videos_used(project: Project) -> None:
                 used.add(value)
     missing = [record for record in videos if not any(_matches(record.get("path"), path) for path in used)]
     if not missing:
-        return
+        return [], False
     lines = ["Export blocked: every video in the Drop box must appear in at least one edit segment."]
+    gaps: list[dict[str, Any]] = []
     for record in missing:
         filename = Path(str(record.get("path") or record.get("label") or "video")).name
-        lines.append(f"- {filename}: {_reason_for(project, record, plan)}")
-    raise CoverageInvariantError("\n".join(lines))
+        reason = _reason_for(project, record, plan)
+        lines.append(f"- {filename}: {reason}")
+        gaps.append({"record": record, "filename": filename, "reason": reason})
+    return gaps, all(_sync_related_reason(gap["reason"]) for gap in gaps)
+
+
+def coverage_gaps(project: Project) -> list[dict[str, Any]]:
+    """Return missing Drop box videos and their concrete reasons."""
+    return _coverage_gaps(project)[0]
+
+
+def assert_all_dropbox_videos_used(project: Project, *, allow_sync_missing: bool = False) -> None:
+    """Fail unless every video is used, except explicit sync-only consent."""
+    gaps, sync_only = _coverage_gaps(project)
+    if not gaps or (allow_sync_missing and sync_only):
+        return
+    lines = ["Export blocked: every video in the Drop box must appear in at least one edit segment."]
+    for gap in gaps:
+        lines.append(f"- {gap['filename']}: {gap['reason']}")
+    raise CoverageInvariantError("\n".join(lines), missing=gaps, sync_only=sync_only)

@@ -46,3 +46,18 @@ def test_all_registered_videos_must_have_a_segment(tmp_path):
 
 def test_all_registered_videos_used_passes(tmp_path):
     assert_all_dropbox_videos_used(_project(tmp_path, used_second=True))
+
+
+def test_sync_only_gap_can_be_explicitly_allowed(tmp_path):
+    project = _project(tmp_path, used_second=False)
+    assert_all_dropbox_videos_used(project, allow_sync_missing=True)
+
+
+def test_non_sync_gap_cannot_be_allowed(tmp_path):
+    project = _project(tmp_path, used_second=False)
+    plan = json.loads((project.artifacts_dir / "edit_plan.json").read_text(encoding="utf-8"))
+    plan["clip_diagnostics"] = [{"source_path": str((tmp_path / "iphone.mp4").resolve())}]
+    plan["excluded_clips"] = []
+    (project.artifacts_dir / "edit_plan.json").write_text(json.dumps(plan), encoding="utf-8")
+    with pytest.raises(CoverageInvariantError):
+        assert_all_dropbox_videos_used(project, allow_sync_missing=True)

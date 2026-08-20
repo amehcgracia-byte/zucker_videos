@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import threading
+import shutil
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
@@ -31,8 +32,8 @@ from core.spherical_view import (
 from core.camera_moves import delete_camera_move, list_camera_moves, save_camera_move
 from core.media_validation import record_media_path
 from core.normalization import cache_status, cleanup_unreferenced_cache, global_cache_root, migrate_project_normalization_cache
-from core.stages.sync import clear_manual_override, clip_id_for_record, generate_preview, generate_thumbnail, load_sync_map, set_manual_override
-from core.shot_review import replace_slots, review_items
+from core.stages.sync import clear_manual_override, cleanup_closed_sync_diagnostics, clip_id_for_record, generate_preview, generate_thumbnail, invalidate_stale_sync_artifact, load_sync_map, set_manual_anchor, set_manual_override, set_manual_override_ranges
+from core.shot_review import mark_review_render_failed, replace_slots, review_items
 from server.inbox import (
     app_home,
     classify_paths,
@@ -54,6 +55,11 @@ from server.projects import delete_project_folder, find_project_by_inputs, input
 from server.wizard import WizardRunner, merge_spherical_landmarks, wizard_report, wizard_song_options
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _invalidate_stale_sync_on_open(project: Project) -> None:
+    if invalidate_stale_sync_artifact(project):
+        LOGGER.warning("Invalidated stale sync_map.json for %s; sync will be recomputed", project.folder)
 # This limit only matters for a plain browser tab (--dev mode), which has no
 # choice but to upload file bytes over HTTP. The packaged desktop app
 # references files in place by path (see handleDrop's file.path branch in
@@ -85,6 +91,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     state = AppState(engine=PipelineEngine(), dev=dev, wizard=WizardRunner())
     if project_path:
         state.project = load_project(project_path)
+        _invalidate_stale_sync_on_open(state.project)
         reconciled = reconcile_registered_inputs(state.project)
         migrated = migrate_project_normalization_cache(state.project)
         if reconciled or migrated:
@@ -146,6 +153,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("bad_request", "folder is required", 400)
         try:
             state.project = load_project(folder)
+            _invalidate_stale_sync_on_open(state.project)
             reconciled = reconcile_registered_inputs(state.project)
             migrated = migrate_project_normalization_cache(state.project)
             if reconciled or migrated:
@@ -228,6 +236,33 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         config["master_audio_extensions"] = normalized
         save_global_config(config)
         return jsonify({"master_audio_extensions": normalized})
+
+    @app.post("/api/v1/settings/personal-logo")
+    def api_personal_logo() -> Response:
+        config = load_global_config()
+        branding_dir = app_home() / "Branding"
+        branding_dir.mkdir(parents=True, exist_ok=True)
+        source_path = ""
+        uploaded = request.files.get("file")
+        if uploaded and uploaded.filename:
+            suffix = Path(uploaded.filename).suffix.lower()
+            if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+                return error_response("bad_request", "Logo must be PNG, JPEG, or WebP", 400)
+            destination = branding_dir / f"personal_logo{suffix}"
+            uploaded.save(destination)
+            source_path = str(destination)
+        else:
+            body = _json_body()
+            raw_path = str(body.get("path") or "").strip()
+            candidate = Path(raw_path).expanduser().resolve()
+            if not raw_path or not candidate.is_file() or candidate.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+                return error_response("bad_request", "Choose a valid PNG, JPEG, or WebP logo", 400)
+            destination = branding_dir / f"personal_logo{candidate.suffix.lower()}"
+            shutil.copy2(candidate, destination)
+            source_path = str(destination)
+        config["personal_logo_path"] = source_path
+        save_global_config(config)
+        return jsonify({"personal_logo_path": source_path})
 
     @app.post("/api/v1/inbox/register")
     def api_inbox_register() -> Response:
@@ -392,7 +427,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         project = state.project or _active_wizard_project(state)
         if not project:
             return error_response("not_ready", "The edit plan is not ready yet", 409)
-        return jsonify({"items": review_items(project), "platform": project.data.get("settings", {}).get("wizard", {}).get("platform")})
+        try:
+            render_missing = request.args.get("render", "1") != "0"
+            return jsonify({"items": review_items(project, render_missing=render_missing), "platform": project.data.get("settings", {}).get("wizard", {}).get("platform")})
+        except Exception as exc:
+            LOGGER.exception("Review items failed for %s", project.folder)
+            return error_response("review_render_failed", str(exc) or "Review thumbnail render failed", 500)
 
     @app.post("/api/v1/wizard/review/replace")
     def api_wizard_review_replace() -> Response:
@@ -401,7 +441,26 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         rejected = body.get("rejected") or []
         if not project or not isinstance(rejected, list) or not all(isinstance(value, int) for value in rejected):
             return error_response("bad_request", "rejected must be a list of shot indexes", 400)
-        return jsonify(replace_slots(project, rejected))
+        try:
+            result = replace_slots(project, rejected)
+            replaced = {int(value) for value in result.get("replaced", [])}
+            if replaced:
+                def render_replaced_thumbnails() -> None:
+                    try:
+                        review_items(project, render_indices=replaced)
+                    except Exception as exc:
+                        LOGGER.exception("Review thumbnail render failed for %s", project.folder)
+                        mark_review_render_failed(project, replaced, str(exc))
+
+                threading.Thread(
+                    target=render_replaced_thumbnails,
+                    name="review-thumbnail-render",
+                    daemon=True,
+                ).start()
+            return jsonify(result)
+        except Exception:
+            LOGGER.exception("Review replacement failed for %s", project.folder)
+            return error_response("review_replace_failed", "Could not replace the rejected shots", 500)
 
     @app.post("/api/v1/wizard/review/render")
     def api_wizard_review_render() -> Response:
@@ -554,6 +613,18 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.get("/api/v1/wizard/status")
     def api_wizard_status() -> Response:
+        requested_project_id = str(request.args.get("project_id") or "").strip()
+        if requested_project_id:
+            try:
+                requested_project = load_project(requested_project_id)
+            except ProjectError:
+                return error_response("project_not_found", "The requested project is not available", 404)
+            active_path = state.project.folder.resolve() if state.project else None
+            if active_path != requested_project.folder.resolve():
+                # A late poll from another project must never read the
+                # process-global wizard job. Return the requested project's
+                # persisted state instead; the browser also validates the id.
+                return jsonify(_project_wizard_status(requested_project))
         status = state.wizard.status()
         if status.get("status") == "idle" and state.project:
             return jsonify(_project_wizard_status(state.project))
@@ -571,11 +642,23 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("bad_request", "path is required", 400)
         try:
             state.project = load_project(folder)
+            _invalidate_stale_sync_on_open(state.project)
             reconciled = reconcile_registered_inputs(state.project)
             migrated = migrate_project_normalization_cache(state.project)
             if reconciled or migrated:
                 LOGGER.info("Reconciled registered inputs for %s", state.project.folder)
             _remember_project(state.project)
+            persisted_stages = state.project.data.get("stages") or {}
+            persisted_platform = str((state.project.data.get("settings", {}).get("wizard") or {}).get("platform") or "youtube")
+            if (
+                persisted_stages.get("edit", {}).get("status") == "done"
+                and persisted_stages.get("export", {}).get("status") != "done"
+                and persisted_platform in {"youtube", "reel"}
+            ):
+                # Review-ready projects must reopen at Review. Starting
+                # prepare_existing here would reset the UI to Sync and could
+                # also race the persisted edit-complete state.
+                return jsonify(_project_wizard_status(state.project))
             if _project_inputs_available(state.project):
                 state.wizard.prepare_existing(state.project)
                 return jsonify(state.wizard.status())
@@ -635,10 +718,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         project = _require_project(state)
         body = _json_body()
         clip_id = str(body.get("clip_id") or "").strip()
-        if not clip_id or "offset_sec" not in body:
-            return error_response("bad_request", "clip_id and offset_sec are required", 400)
+        if not clip_id or ("offset_sec" not in body and not isinstance(body.get("offset_ranges"), list)):
+            return error_response("bad_request", "clip_id and offset_sec or offset_ranges are required", 400)
         try:
-            job = state.wizard.rescue(project, clip_id=clip_id, offset_sec=float(body["offset_sec"]))
+            if isinstance(body.get("offset_ranges"), list):
+                job = state.wizard.rescue_ranges(project, clip_id=clip_id, offset_ranges=body["offset_ranges"])
+            else:
+                job = state.wizard.rescue(project, clip_id=clip_id, offset_sec=float(body["offset_sec"]))
             return jsonify(dict(job.__dict__)), 202
         except RuntimeError as exc:
             return error_response("wizard_busy", str(exc), 409)
@@ -646,6 +732,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("not_found", str(exc), 404)
         except (TypeError, ValueError) as exc:
             return error_response("bad_request", str(exc), 400)
+
+    @app.post("/api/v1/wizard/proceed-anyway")
+    def api_wizard_proceed_anyway() -> Response:
+        project = state.project or _active_wizard_project(state)
+        mode = str((_json_body() or {}).get("mode") or "proceed_anyway").strip().lower()
+        try:
+            if mode == "continue_without_video":
+                job = state.wizard.continue_without_video(project)
+            elif mode == "proceed_anyway":
+                job = state.wizard.proceed_anyway(project)
+            else:
+                return error_response("bad_request", "mode must be proceed_anyway or continue_without_video", 400)
+            state.project = project
+            return jsonify(dict(job.__dict__)), 202
+        except RuntimeError as exc:
+            return error_response("wizard_busy", str(exc), 409)
 
     @app.post("/api/v1/wizard/frontend-log")
     def api_wizard_frontend_log() -> Response:
@@ -662,6 +764,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if stack:
                 fh.write(f"{stack}\n")
         return jsonify({"ok": True})
+
+    @app.post("/api/v1/sync-diagnostics/cleanup")
+    def api_sync_diagnostics_cleanup() -> Response:
+        return jsonify({"ok": True, "removed_projects": cleanup_closed_sync_diagnostics()})
 
     @app.get("/api/v1/wizard/result")
     def api_wizard_result() -> Response:
@@ -735,6 +841,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         config.setdefault("sweep_speed_deg_per_sec", 20.0)
         config.setdefault("audio_trim_by_master", {})
         config.setdefault("master_audio_extensions", [".mp3"])
+        config.setdefault("personal_logo_path", "")
         return jsonify(config)
 
     @app.get("/api/v1/cache/status")
@@ -789,6 +896,37 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         try:
             clip = set_manual_override(project, clip_id, float(body["offset_sec"]))
             return jsonify({"ok": True, "clip": clip})
+        except (KeyError, FileNotFoundError) as exc:
+            return error_response("not_found", str(exc), 404)
+        except (TypeError, ValueError) as exc:
+            return error_response("bad_request", str(exc), 400)
+
+    @app.post("/api/v1/stages/sync/override-ranges")
+    def api_sync_override_ranges() -> Response:
+        project = _require_project(state)
+        body = _json_body()
+        clip_id = str(body.get("clip_id") or "").strip()
+        ranges = body.get("offset_ranges")
+        if not clip_id or not isinstance(ranges, list):
+            return error_response("bad_request", "clip_id and offset_ranges are required", 400)
+        try:
+            clip = set_manual_override_ranges(project, clip_id, ranges)
+            return jsonify({"ok": True, "clip": clip})
+        except (KeyError, FileNotFoundError) as exc:
+            return error_response("not_found", str(exc), 404)
+        except (TypeError, ValueError) as exc:
+            return error_response("bad_request", str(exc), 400)
+
+    @app.post("/api/v1/stages/sync/anchor")
+    def api_sync_anchor() -> Response:
+        project = _require_project(state)
+        body = _json_body()
+        clip_id = str(body.get("clip_id") or "").strip()
+        if not clip_id or "master_sec" not in body or "clip_sec" not in body:
+            return error_response("bad_request", "clip_id, master_sec, and clip_sec are required", 400)
+        try:
+            clip = set_manual_anchor(project, clip_id, body["master_sec"], body["clip_sec"])
+            return jsonify({"ok": True, "offset_sec": clip["offset_sec"], "clip": clip})
         except (KeyError, FileNotFoundError) as exc:
             return error_response("not_found", str(exc), 404)
         except (TypeError, ValueError) as exc:
@@ -949,6 +1087,23 @@ def _project_wizard_status(project: Project) -> dict[str, Any]:
             "project_path": str(project.folder),
             "logs_path": logs_path,
         }
+    # A review-ready project must survive an app refresh/reopen. The in-memory
+    # wizard job reports this state while Edit finishes, but once the process
+    # is restarted only the persisted stage statuses remain. Do not downgrade
+    # edit-complete projects to the old sync chooser.
+    if stages.get("edit", {}).get("status") == "done" and stages.get("export", {}).get("status") != "done":
+        platform = str((project.data.get("settings", {}).get("wizard") or {}).get("platform") or "youtube")
+        if platform in {"youtube", "reel"}:
+            return {
+                "id": "project",
+                "status": "waiting_review",
+                "progress": _stage_progress("edit"),
+                "message": "Review shots",
+                "detail": "I'm artificial, but not that intelligent — help me check whether these shots are any good.",
+                "stage": "review",
+                "project_path": str(project.folder),
+                "logs_path": logs_path,
+            }
     if stages.get("sync", {}).get("status") == "done" and stages.get("export", {}).get("status") != "done":
         return {
             "id": "project",

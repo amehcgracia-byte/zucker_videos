@@ -18,6 +18,7 @@ LOGGER = logging.getLogger(__name__)
 REEL_DEFAULT_DURATION_SEC = 30.0
 REEL_MIN_DURATION_SEC = 20.0
 REEL_MAX_DURATION_SEC = 60.0
+COVERAGE_ALGORITHM_VERSION = 2
 
 
 class CutStage(Stage):
@@ -36,6 +37,7 @@ class CutStage(Stage):
                 "sync": load_sync_map(project, missing_ok=True),
                 "songs": project.data["inputs"].get("songs"),
                 "settings": project.data["settings"].get(self.name, {}),
+                "algorithm_version": COVERAGE_ALGORITHM_VERSION,
             }
         )
 
@@ -54,7 +56,7 @@ class CutStage(Stage):
             # This is an explicit escape hatch for the earlier sync failure
             # flow. It must never be implicit: normal YouTube coverage is
             # strictly verified and cannot be populated with weak offsets.
-            fallback = _selectable_synced_clips(project, sync_map, allow_unsynced=True)
+            fallback = _selectable_synced_clips(project, sync_map, allow_unsynced=True, allow_unstable=True)
             fallback_clips = [
                 clip for clip in fallback["clips"]
                 if not clip.get("error") and not clip.get("no_audio")
@@ -73,7 +75,7 @@ class CutStage(Stage):
         songs = load_song_boundaries(project)
         song_choice = wizard.get("song_choice")
         window = _selected_window(songs, song_choice, sync_map, wizard)
-        window, coverage_warnings = _tighten_window_to_video_coverage(window, selection["clips"])
+        window, coverage_warnings = _tighten_window_to_video_coverage(window, selection["clips"], platform=platform)
         if platform == "reel":
             reel_duration = max(REEL_MIN_DURATION_SEC, min(REEL_MAX_DURATION_SEC, float(wizard.get("reel_duration_sec") or REEL_DEFAULT_DURATION_SEC)))
             # The Reel music bed is the exact master Start/End selection. The
@@ -109,7 +111,7 @@ class CutStage(Stage):
                 )
             window = {**window, "start_sec": segment["master_start_sec"], "duration_sec": segment["duration_sec"]}
         else:
-            clip = _first_covering_clip(selection["clips"], window) or _longest_clip(selection["clips"])
+            clip = _first_covering_clip(selection["clips"], window, platform=platform) or _longest_clip(selection["clips"])
             segment = _segment_for_platform(clip, window, platform)
         warnings = selection["warnings"] + coverage_warnings + warnings_360
         if warnings:
@@ -120,6 +122,7 @@ class CutStage(Stage):
         write_artifact_json(
             path,
             {
+                "coverage_algorithm_version": COVERAGE_ALGORITHM_VERSION,
                 "stage": self.name,
                 "platform": platform,
                 "song_choice": song_choice,
@@ -169,7 +172,32 @@ def _trimmed_window(window: dict[str, Any], trim: dict[str, Any]) -> dict[str, A
     return {**window, "start_sec": start, "duration_sec": end - start, "trim_start_sec": start, "trim_end_sec": end}
 
 
-def _tighten_window_to_video_coverage(window: dict[str, Any], clips: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str]]:
+def _clip_master_ranges(clip: dict[str, Any], platform: str = "youtube") -> list[tuple[float, float, float]]:
+    """Return usable master-time ranges and their source offsets.
+
+    Range overrides are a YouTube-only manual rescue mechanism.  Keeping the
+    platform gate here prevents Reel and 360 from inheriting the new behavior.
+    """
+    if platform == "youtube" and isinstance(clip.get("offset_ranges"), list):
+        ranges = []
+        for item in clip.get("offset_ranges") or []:
+            try:
+                clip_start = float(item["clip_start_sec"])
+                clip_end = float(item["clip_end_sec"])
+                offset = float(item["offset_sec"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if clip_end > clip_start:
+                ranges.append((offset + clip_start, offset + clip_end, offset))
+        if ranges:
+            return ranges
+    offset = float(clip.get("offset_sec") or 0.0)
+    return [(offset, offset + max(0.0, float(clip.get("duration_sec") or 0.0)), offset)]
+
+
+def _tighten_window_to_video_coverage(
+    window: dict[str, Any], clips: list[dict[str, Any]], *, platform: str = "youtube"
+) -> tuple[dict[str, Any], list[str]]:
     """Keep the requested audio trim inside the union of usable video coverage.
 
     The requested trim remains the outer bound: this function only moves the
@@ -180,10 +208,9 @@ def _tighten_window_to_video_coverage(window: dict[str, Any], clips: list[dict[s
     requested_end = requested_start + max(0.0, float(window.get("duration_sec") or 0.0))
     ranges = []
     for clip in clips:
-        start = float(clip.get("offset_sec") or 0.0)
-        end = start + max(0.0, float(clip.get("duration_sec") or 0.0))
-        if end > requested_start and start < requested_end:
-            ranges.append((start, end))
+        for start, end, _offset in _clip_master_ranges(clip, platform):
+            if end > requested_start and start < requested_end:
+                ranges.append((start, end))
     if not ranges:
         return window, []
     coverage_start = max(requested_start, min(start for start, _end in ranges))
@@ -271,7 +298,7 @@ def _pick_energetic_window(master_path: str, window: dict[str, Any], target_dura
     return {**window, "start_sec": best_start, "duration_sec": target_duration, "trim_start_sec": best_start, "trim_end_sec": best_start + target_duration}
 
 
-def _selectable_synced_clips(project: Project, sync_map: dict[str, Any], *, allow_unsynced: bool = False, allow_unsynced_360: bool | None = None) -> dict[str, Any]:
+def _selectable_synced_clips(project: Project, sync_map: dict[str, Any], *, allow_unsynced: bool = False, allow_unsynced_360: bool | None = None, allow_unstable: bool = False) -> dict[str, Any]:
     # Reel is intentionally not a sync edit: confidence, offsets and missing
     # camera audio must not remove otherwise usable promo footage. Keep the
     # old keyword as a compatibility shim for callers/tests.
@@ -306,6 +333,7 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any], *, allo
             "low_confidence": bool(clip.get("low_confidence") or confidence < threshold),
             "unstable_sync": bool(clip.get("unstable_sync")) and not bool(clip.get("manual_override")),
             "manual_override": bool(clip.get("manual_override")),
+            "offset_ranges": clip.get("offset_ranges") or [],
             "verification": clip.get("verification"),
             "error": clip.get("error"),
             "no_audio": bool(clip.get("no_audio")),
@@ -330,7 +358,7 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any], *, allo
             }
         )
         diagnostics.append(diagnostic)
-        reason = _exclusion_reason(diagnostic, allow_unsynced=allow_unsynced)
+        reason = _exclusion_reason(diagnostic, allow_unsynced=allow_unsynced, allow_unstable=allow_unstable)
         if reason:
             excluded.append({"filename": diagnostic["filename"], "reason": reason, "diagnostic": diagnostic})
             continue
@@ -340,14 +368,14 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any], *, allo
         selected.append(selected_clip)
     warnings = []
     for diagnostic in diagnostics:
-        if diagnostic.get("unstable_sync") and not diagnostic.get("low_confidence"):
+        if diagnostic.get("unstable_sync") and diagnostic.get("manual_override"):
             warnings.append(
-                f"{diagnostic['filename']} had inconsistent sync checks, but its confidence met the threshold; it was kept with a sync warning."
+                f"{diagnostic['filename']} has inconsistent sync checks but is enabled by a manual override."
             )
     return {"clips": selected, "warnings": warnings, "diagnostics": diagnostics, "excluded": excluded}
 
 
-def _exclusion_reason(diagnostic: dict[str, Any], *, allow_unsynced: bool = False, allow_unsynced_360: bool | None = None) -> str | None:
+def _exclusion_reason(diagnostic: dict[str, Any], *, allow_unsynced: bool = False, allow_unsynced_360: bool | None = None, allow_unstable: bool = False) -> str | None:
     if allow_unsynced_360 is not None:
         allow_unsynced = allow_unsynced or allow_unsynced_360
     if not diagnostic["valid_video"]:
@@ -356,10 +384,10 @@ def _exclusion_reason(diagnostic: dict[str, Any], *, allow_unsynced: bool = Fals
         return str(diagnostic["error"])
     if diagnostic.get("no_audio") and not allow_unsynced:
         return t("no_sync_audio")
-    # Stability is a secondary warning. A clip with a confidence score at or
-    # above the configured threshold remains usable; previously this hidden
-    # criterion discarded clips such as confidence=6.085 at threshold=6.0.
-    if diagnostic.get("unstable_sync") and not allow_unsynced and diagnostic["confidence"] < diagnostic["threshold"]:
+    # Independent first/last-third disagreement is a hard sync failure. A
+    # high global correlation peak can still be coincidental, so it must not
+    # rescue an unstable clip. Explicit manual overrides remain supported.
+    if diagnostic.get("unstable_sync") and not diagnostic.get("manual_override") and not allow_unstable:
         verification = diagnostic.get("verification") or {}
         delta = verification.get("delta_sec")
         if isinstance(delta, (int, float)):
@@ -409,13 +437,11 @@ def _diagnostic_error_message(diagnostics: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _first_covering_clip(clips: list[dict[str, Any]], window: dict[str, Any]) -> dict[str, Any] | None:
+def _first_covering_clip(clips: list[dict[str, Any]], window: dict[str, Any], *, platform: str = "youtube") -> dict[str, Any] | None:
     start = float(window["start_sec"])
     end = start + float(window["duration_sec"])
     for clip in clips:
-        clip_start = float(clip.get("offset_sec") or 0)
-        clip_end = clip_start + float(clip.get("duration_sec") or 0)
-        if clip_start <= start and clip_end >= min(end, start + 1):
+        if any(clip_start <= start and clip_end >= min(end, start + 1) for clip_start, clip_end, _offset in _clip_master_ranges(clip, platform)):
             return clip
     return None
 
@@ -439,10 +465,18 @@ def _float_or_zero(value: Any) -> float:
 
 
 def _segment_for_platform(clip: dict[str, Any], window: dict[str, Any], platform: str) -> dict[str, Any]:
-    clip_offset = float(clip.get("offset_sec") or 0)
-    clip_duration = float(clip.get("duration_sec") or 1)
     window_start = float(window["start_sec"])
     window_duration = float(window["duration_sec"])
+    clip_offset = float(clip.get("offset_sec") or 0)
+    if platform == "youtube" and clip.get("offset_ranges"):
+        matching = [
+            (start, end, offset)
+            for start, end, offset in _clip_master_ranges(clip, platform)
+            if start <= window_start and end >= min(window_start + window_duration, window_start + 1.0)
+        ]
+        if matching:
+            clip_offset = matching[0][2]
+    clip_duration = float(clip.get("duration_sec") or 1)
     duration = min(window_duration, clip_duration)
     if platform == "instagram":
         duration = min(45.0, duration)

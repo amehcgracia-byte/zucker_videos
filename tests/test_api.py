@@ -1210,7 +1210,7 @@ def test_cut_proceeds_with_best_offset_when_all_sync_scores_are_low(tmp_path):
     assert coverage["clip_diagnostics"][0]["master_overlap"] is True
 
 
-def test_cut_keeps_above_threshold_clip_even_when_stability_check_disagrees(tmp_path):
+def test_cut_excludes_above_threshold_clip_when_stability_check_disagrees(tmp_path):
     project = create_project("StableEnough", str(tmp_path / "StableEnough.zuckervid"))
     source = tmp_path / "clip.mov"
     normalized = tmp_path / "normalized.mp4"
@@ -1233,14 +1233,11 @@ def test_cut_keeps_above_threshold_clip_even_when_stability_check_disagrees(tmp_
         }},
     )
 
-    CutStage().run(project, lambda percent, message: None)
-    coverage = json.loads((project.artifacts_dir / "coverage.json").read_text(encoding="utf-8"))
-    assert coverage["segments"]
-    assert coverage["excluded_clips"] == []
-    assert any("met the threshold" in warning for warning in coverage["warnings"])
+    with pytest.raises(ValueError, match="unstable sync"):
+        CutStage().run(project, lambda percent, message: None)
 
 
-def test_cut_accepts_low_confidence_single_360_clip(tmp_path):
+def test_cut_excludes_unstable_single_360_clip_without_override(tmp_path):
     project = create_project("Low360", str(tmp_path / "Low360.zuckervid"))
     source = tmp_path / "wide.mp4"
     master = tmp_path / "master.wav"
@@ -1261,11 +1258,8 @@ def test_cut_accepts_low_confidence_single_360_clip(tmp_path):
         }},
     )
 
-    CutStage().run(project, lambda percent, message: None)
-    coverage = json.loads((project.artifacts_dir / "coverage.json").read_text(encoding="utf-8"))
-    assert coverage["segments"]
-    assert coverage["excluded_clips"] == []
-    assert any("sync confidence low" in warning for warning in coverage["warnings"])
+    with pytest.raises(ValueError, match="unstable sync"):
+        CutStage().run(project, lambda percent, message: None)
 
 
 def test_cut_and_export_use_manual_override_global_cached_clip(tmp_path, monkeypatch):

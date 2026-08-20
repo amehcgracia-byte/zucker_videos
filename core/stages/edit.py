@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 from pathlib import Path
 from typing import Any
@@ -10,10 +11,14 @@ from typing import Any
 from core.camera_moves import load_camera_moves, recorded_move_covering, recorded_shot_for_segment
 from core.messages import t
 from core.operator_avoidance import OPERATOR_AVOIDANCE_VERSION, avoidance_for_segment, load_cached_operator_presence
+from core.non_music import NON_MUSIC_VERSION, analyze_non_music_sources
 from core.project import Project
 from core.shot_quality import DIRECTOR_SCORE_THRESHOLD, SHOT_QUALITY_VERSION, analyze_handheld_director_quality, director_quality_for_segment
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
-from core.stages.cut import load_coverage
+from core.stages.cut import _clip_master_ranges, load_coverage
+
+
+LOGGER = logging.getLogger(__name__)
 
 MIN_SEGMENT_SEC = 2.0
 MAX_SEGMENT_SEC = 6.0
@@ -23,6 +28,35 @@ DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
 SPHERICAL_MOTION_PLAN_VERSION = 9
 REEL_PLAN_VERSION = 1
+MOTION_CATALOG = (
+    "full_static", "full_zoom_in", "zoom_in_center", "zoom_out_center", "zoom_in", "zoom_out",
+    "pan_right_center", "pan_left_center", "pan_down_center", "pan_up_center",
+)
+# Selection is weighted per cut, rather than merely exposing every option in
+# the catalogue.  In particular, moves toward the subject are preferred, and
+# the two explicit centred recipes have enough weight to be visible in real
+# plans instead of only in unit-test sequences.
+MOTION_WEIGHTS = {
+    # Kept in the catalogue for backwards-compatible recipe diagnostics;
+    # production fixed-camera calls pass allow_static=False.
+    "full_static": 1.5,
+    "full_zoom_in": 2.0,
+    "zoom_in_center": 4.0,
+    "zoom_in": 4.0,
+    "zoom_out_center": 1.5,
+    "zoom_out": 1.5,
+    "pan_right_center": 1.0,
+    "pan_left_center": 1.0,
+    "pan_down_center": 1.0,
+    "pan_up_center": 1.0,
+}
+# The previous 1.32x fast setting was too abrupt.  Normal is now the fastest
+# authored speed, and a new very-slow option keeps close-ups composed.
+MOTION_SPEEDS = (("very_slow", 0.50), ("slow", 0.72), ("fast", 1.0))
+# Bump this whenever the YouTube camera-choice invariant changes so an older
+# cached edit plan cannot keep producing the previous camera runs.
+YOUTUBE_CAMERA_SELECTION_VERSION = 6
+MAX_CONSECUTIVE_CAMERA_SEGMENTS = 2
 # Retained as a versioned emergency switch for diagnostics; normal builds use
 # the shared gentle hold/sweep motion below.
 FORCE_STATIC_360_ISOLATION = False
@@ -63,6 +97,7 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
+EDIT_PLAN_ALGORITHM_VERSION = 7
 
 
 class EditStage(Stage):
@@ -96,6 +131,9 @@ class EditStage(Stage):
                 "operator_avoidance_version": OPERATOR_AVOIDANCE_VERSION,
                 "spherical_motion_plan_version": SPHERICAL_MOTION_PLAN_VERSION,
                 "reel_plan_version": REEL_PLAN_VERSION,
+                "youtube_camera_selection_version": YOUTUBE_CAMERA_SELECTION_VERSION,
+                "non_music_version": NON_MUSIC_VERSION,
+                "algorithm_version": EDIT_PLAN_ALGORITHM_VERSION,
             }
         )
 
@@ -131,6 +169,7 @@ class EditStage(Stage):
             progress_callback(55, t("choosing_cameras"))
             plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}), recorded_moves=recorded_moves)
         write_artifact_json(artifact_path(project, "beats.json"), beats)
+        plan["edit_plan_algorithm_version"] = EDIT_PLAN_ALGORITHM_VERSION
         write_artifact_json(artifact_path(project, "edit_plan.json"), plan)
         progress_callback(100, t("edit_plan_ready"))
         return self.outputs(project)
@@ -216,6 +255,7 @@ def _with_director_quality(project: Project, coverage: dict[str, Any], progress_
         return coverage
     progress_callback(50, "Scoring Sony director camera")
     scored = analyze_handheld_director_quality(project, sources)
+    scored = analyze_non_music_sources(project, scored)
     return {**coverage, "sources": scored}
 
 
@@ -299,10 +339,11 @@ def _reel_promo_plan(
             }
             segment["spherical_shot"] = _spherical_motion_profile(shot, index, enabled=False, hold_motion="none")
         elif role == "fixed_rear" and bool(wizard.get("fixed_rear_motion", True)):
-            if fixed_index % 2 == 0:
-                segment["motion"] = _ken_burns_motion(fixed_index)
+            target_x, target_y = _visible_iphone_target(source, clip_start, seg_duration, {})
+            segment["motion"] = _ken_burns_motion(fixed_index, target_x, target_y, allow_static=False)
             fixed_index += 1
         segments.append(segment)
+    _validate_motion_segments(segments)
     return {
         "stage": "edit",
         "platform": "reel",
@@ -328,9 +369,19 @@ def _youtube_multicam_plan(
     settings: dict[str, Any] | None = None,
     recorded_moves: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    platform = str(coverage.get("platform") or "youtube")
     window = coverage.get("window") or {}
     start = float(window.get("start_sec") or 0.0)
     end = start + max(1.0, float(window.get("duration_sec") or 1.0))
+    # The effective cut window is authoritative.  Keep a second explicit cap
+    # here so a stale/overlong beat list can never select material after the
+    # real song/trim end.
+    trim_end = window.get("trim_end_sec")
+    if trim_end is not None:
+        try:
+            end = min(end, float(trim_end))
+        except (TypeError, ValueError):
+            pass
     bar_times = [float(value) for value in (beats.get("bars_sec") or []) if start <= float(value) <= end]
     if not bar_times or bar_times[0] > start:
         bar_times.insert(0, start)
@@ -342,8 +393,11 @@ def _youtube_multicam_plan(
     if not sources and coverage.get("segments"):
         sources = coverage["segments"]
     segments: list[dict[str, Any]] = []
+    non_music_fill_history: list[dict[str, Any]] = []
     gaps: list[dict[str, float]] = []
     previous_source: str | None = None
+    previous_camera: str | None = None
+    consecutive_camera_segments = 0
     previous_framing: dict[str, Any] | None = None  # C: track framing for consecutive-duplicate detection
     previous_spherical_yaw: float | None = None
     previous_spherical_type: str | None = None
@@ -385,7 +439,7 @@ def _youtube_multicam_plan(
         segment_end = min(end, float(bar_times[next_index]))
         if segment_end <= segment_start:
             break
-        available = _quality_filtered_sources(_covering_sources(sources, segment_start, segment_end), segment_start, segment_end, selection_stats)
+        available = _quality_filtered_sources(_covering_sources(sources, segment_start, segment_end, platform=platform), segment_start, segment_end, selection_stats)
         if not available:
             gaps.append({"start_sec": round(segment_start, 3), "end_sec": round(segment_end, 3)})
             bar_index = next_index
@@ -394,11 +448,21 @@ def _youtube_multicam_plan(
             stats = selection_stats.setdefault(_source_id(source), _selection_stats_for_source(source, start, end))
             stats["eligible_segments"] += 1
             stats["eligible_seconds"] += segment_end - segment_start
+        available_camera_ids = {_camera_id(source) for source in available}
+        forced_alternatives: set[str] = set()
+        if (
+            previous_camera is not None
+            and consecutive_camera_segments >= MAX_CONSECUTIVE_CAMERA_SEGMENTS
+            and len(available_camera_ids) > 1
+        ):
+            forced_alternatives = {camera_id for camera_id in available_camera_ids if camera_id != previous_camera}
         # C: try ranked candidates until we find one whose framing differs from previous,
         # preventing consecutive identical shots from the same source.
         source = _choose_source_avoiding_identical_framing(
             available, previous_source, previous_framing, usage_counts, selection_stats, role_weights,
             segment_start, segment_end, segment_index, spherical_landmarks, use_recorded_360, recorded_moves or [],
+            forced_alternatives=forced_alternatives,
+            prefer_battery_camera=segment_end >= end - 0.001,
         )
         is_automatic_360 = _source_role(source) == "360" and not (
             use_recorded_360 and recorded_move_covering(recorded_moves or [], segment_start, segment_end)
@@ -409,11 +473,34 @@ def _youtube_multicam_plan(
             # The source may not cover the longer phrase-aligned window. Keep
             # the original boundary in that case rather than inventing a gap.
         previous_source = _source_id(source)
+        selected_camera = _camera_id(source)
+        if selected_camera == previous_camera:
+            consecutive_camera_segments += 1
+        else:
+            previous_camera = selected_camera
+            consecutive_camera_segments = 1
         usage_counts[previous_source] = usage_counts.get(previous_source, 0) + 1
         chosen_stats = selection_stats.setdefault(previous_source, _selection_stats_for_source(source, start, end))
         chosen_stats["chosen_segments"] += 1
         chosen_stats["chosen_seconds"] += segment_end - segment_start
-        segment = _segment_from_source(source, segment_start, segment_end, window.get("title") or t("full_video"))
+        segment = _segment_from_source(source, segment_start, segment_end, window.get("title") or t("full_video"), platform=platform)
+        segment["camera_id"] = selected_camera
+        segment["available_camera_ids"] = sorted(available_camera_ids)
+        segment["camera_alternative_available"] = bool(
+            any(camera_id != selected_camera for camera_id in available_camera_ids)
+        )
+        _apply_non_music_insert(segment, source, segment_index)
+        if (
+            _source_role(source) == "fixed_rear"
+            and available_camera_ids <= {_camera_id(source)}
+            and not any(_source_role(item) == "handheld" for item in available)
+        ):
+            filler = _sony_non_music_filler(sources, segment, segment_index, non_music_fill_history)
+            if filler is not None:
+                filler["available_camera_ids"] = list(segment.get("available_camera_ids") or [])
+                filler["camera_alternative_available"] = False
+                filler["iphone_gap_original_camera"] = selected_camera
+                segment = filler
         if _source_role(source) == "360":
             recorded = recorded_move_covering(recorded_moves or [], segment_start, segment_end) if use_recorded_360 else None
             if recorded:
@@ -435,11 +522,11 @@ def _youtube_multicam_plan(
                 # motionless equirect passthrough.
                 segment["spherical_shot"] = _spherical_motion_profile(shot or {}, segment_index, enabled=spherical_motion, hold_motion=hold_motion)
         elif fixed_rear_motion and _source_role(source) == "fixed_rear":
-            # Count only fixed-camera cuts, not global timeline indices: this
-            # keeps the intended roughly-half cadence even when other cameras
-            # are inserted between iPhone shots.
-            if fixed_rear_motion_index % 2 == 0:
-                segment["motion"] = _ken_burns_motion(fixed_rear_motion_index)
+            # Every fixed-camera cut receives a crop motion. The source role,
+            # not the filename, is authoritative: files such as ZZ24.7 .mov
+            # are fixed cameras even when they are not named "iPhone".
+            target_x, target_y = _visible_iphone_target(source, float(segment.get("clip_start_sec") or 0.0), segment_end - segment_start, operator_samples_cache)
+            segment["motion"] = _ken_burns_motion(fixed_rear_motion_index, target_x, target_y, allow_static=False)
             fixed_rear_motion_index += 1
         _apply_operator_avoidance(segment, source, operator_samples_cache)
         previous_framing = _framing_descriptor(source, segment)
@@ -452,6 +539,7 @@ def _youtube_multicam_plan(
         bar_index = next_index
         segment_index += 1
 
+    _validate_motion_segments(segments)
     warnings = list(coverage.get("warnings") or [])
     if gaps:
         warnings.extend([t("no_video_between", start=_fmt_time(gap["start_sec"]), end=_fmt_time(gap["end_sec"])) for gap in gaps])
@@ -475,6 +563,16 @@ def _youtube_multicam_plan(
         "excluded_clips": coverage.get("excluded_clips") or [],
         "clip_diagnostics": coverage.get("clip_diagnostics") or [],
         "selection_diagnostics": finalized_stats,
+        "non_music_bank": {
+            str(source.get("filename") or source.get("path") or "source"): source.get("non_music_windows") or []
+            for source in sources
+            if source.get("non_music_windows")
+        },
+        "non_music_audio_rejections": {
+            str(source.get("filename") or source.get("path") or "source"): int(source.get("non_music_audio_rejected") or 0)
+            for source in sources
+            if int(source.get("non_music_audio_rejected") or 0) > 0
+        },
         "gaps": gaps,
         "cut_count": max(0, len(segments) - 1),
         "camera_usage": usage,
@@ -741,6 +839,12 @@ def _next_weighted_spherical_shot(
         if float(shot.get("weight") or 0.0) > 0.0 and (include_planet or shot.get("type") != "planet")
     ]
     if not candidates:
+        LOGGER.info(
+            "Sony gap filler unavailable master_start=%.3f duration=%.3f history=%s",
+            master_start,
+            duration,
+            len(history),
+        )
         return None
     recent_types = recent_types or []
 
@@ -977,12 +1081,12 @@ def _short_form_segments_from_best_coverage(coverage: dict[str, Any]) -> list[di
     ]
 
 
-def _covering_sources(sources: list[dict[str, Any]], start: float, end: float) -> list[dict[str, Any]]:
+def _covering_sources(
+    sources: list[dict[str, Any]], start: float, end: float, *, platform: str = "youtube"
+) -> list[dict[str, Any]]:
     available = []
     for source in sources:
-        offset = float(source.get("offset_sec") or 0.0)
-        duration = float(source.get("duration_sec") or 0.0)
-        if offset <= start and offset + duration >= end:
+        if any(offset_start <= start and offset_end >= end for offset_start, offset_end, _offset in _clip_master_ranges(source, platform)):
             available.append(source)
     return available
 
@@ -997,6 +1101,17 @@ def _quality_filtered_sources(
     for source in sources:
         if _source_role(source) != "handheld":
             filtered.append(source)
+            continue
+        source_start = start - float(source.get("offset_sec") or 0.0)
+        source_end = source_start + max(0.0, end - start)
+        if any(
+            window.get("dominant_person")
+            and float(window.get("start_sec") or 0.0) < source_end
+            and float(window.get("end_sec") or 0.0) > source_start
+            for window in (source.get("non_music_windows") or [])
+        ):
+            stats = selection_stats.setdefault(_source_id(source), _selection_stats_for_source(source, start, end))
+            stats["audio_visual_rejected"] = int(stats.get("audio_visual_rejected") or 0) + 1
             continue
         quality = director_quality_for_segment(source, start, end)
         stats = selection_stats.setdefault(_source_id(source), _selection_stats_for_source(source, start, end))
@@ -1061,6 +1176,8 @@ def _choose_source_avoiding_identical_framing(
     spherical_landmarks: dict[str, dict[str, float]],
     use_recorded_360: bool,
     recorded_moves: list[dict[str, Any]],
+    forced_alternatives: set[str] | None = None,
+    prefer_battery_camera: bool = False,
 ) -> dict[str, Any]:
     """Pick the best source while avoiding consecutive near-identical framing (Issue C).
 
@@ -1070,7 +1187,11 @@ def _choose_source_avoiding_identical_framing(
     produce near-identical framing to the previous segment, the next-best candidate that
     does not is preferred.  If no alternative exists the best candidate is kept.
     """
-    # Build a ranked list of all candidates.
+    # Build a ranked list of all candidates. The YouTube rule is strict:
+    # whenever another covered camera exists, the immediately previous camera
+    # is not eligible. Repeating it is allowed only when it is the sole
+    # covered source for this interval. This applies equally to 360 sources;
+    # passthrough and Reel use separate paths and are untouched.
     usage_counts_copy = dict(usage_counts)
     role_weights_copy = dict(role_weights)
     role_source_ids = {_source_id(source): _source_role(source) for source in sources}
@@ -1087,15 +1208,16 @@ def _choose_source_avoiding_identical_framing(
         )
         covered_seconds = max(1.0, float((selection_stats.get(_source_id(src)) or {}).get("covered_seconds") or 0.0))
         director_bonus = float(src.get("director_segment_score") or 1.0) if role == "handheld" else 1.0
-        # Penalise repeating the previous source (same as _choose_source does via candidate filter)
-        same_as_prev = 1 if _source_id(src) == previous_source else 0
-        # Weight deficit outranks the consecutive-source preference. The old
-        # ordering forced a one-for-one alternation and could starve a role
-        # configured at 80% whenever another camera was also available.
-        return (role_chosen_seconds / target_share, same_as_prev, chosen_seconds / covered_seconds, usage_counts_copy.get(_source_id(src), 0), -director_bonus, -float(src.get("confidence") or 0.0), _source_id(src))
+        battery_bonus = 1 if prefer_battery_camera and _is_battery_camera(src) else 0
+        return (role_chosen_seconds / target_share, -battery_bonus, chosen_seconds / covered_seconds, usage_counts_copy.get(_source_id(src), 0), -director_bonus, -float(src.get("confidence") or 0.0), _source_id(src))
 
     usable = [src for src in sources if float(role_weights_copy.get(_source_role(src), role_weights_copy.get("handheld", 0.3))) > 0.0] or list(sources)
-    ranked = sorted(usable, key=score)
+    if forced_alternatives:
+        hard_alternatives = [src for src in usable if _camera_id(src) in forced_alternatives]
+    else:
+        hard_alternatives = usable
+    alternatives = [src for src in hard_alternatives if _source_id(src) != previous_source]
+    ranked = sorted(alternatives or hard_alternatives or usable, key=score)
 
     if not ranked:
         return _choose_source(sources, previous_source, usage_counts, selection_stats, role_weights)
@@ -1179,8 +1301,18 @@ def _framing_nearly_identical(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return role_a == role_b
 
 
-def _segment_from_source(source: dict[str, Any], start: float, end: float, title: str) -> dict[str, Any]:
+def _segment_from_source(
+    source: dict[str, Any], start: float, end: float, title: str, *, platform: str = "youtube"
+) -> dict[str, Any]:
     offset = float(source.get("offset_sec") or 0.0)
+    if platform == "youtube" and source.get("offset_ranges"):
+        matches = [
+            item[2]
+            for item in _clip_master_ranges(source, platform)
+            if item[0] <= start and item[1] >= min(end, start + 1.0 / EDIT_FPS)
+        ]
+        if matches:
+            offset = matches[0]
     start = _round_to_frame(start)
     end = max(start + 1.0 / EDIT_FPS, _round_to_frame(end))
     return {
@@ -1217,6 +1349,199 @@ def _source_role(source: dict[str, Any]) -> str:
     if "iphone" in filename or filename.endswith(".mov"):
         return "fixed_rear"
     return "handheld"
+
+
+def _is_iphone_source(source: dict[str, Any]) -> bool:
+    """Return whether a source is the wide iPhone camera used for crop shots."""
+    value = str(source.get("filename") or source.get("path") or source.get("source_path") or "").lower()
+    return "iphone" in value or "img_" in value
+
+
+def _is_battery_camera(source: dict[str, Any]) -> bool:
+    """Identify the portable/battery camera used for preferred ending shots."""
+    return _source_role(source) == "fixed_rear" and _is_iphone_source(source)
+
+
+def _visible_iphone_target(
+    source: dict[str, Any],
+    clip_start_sec: float,
+    duration_sec: float,
+    samples_cache: dict[str, list[dict[str, Any]]],
+) -> tuple[float, float]:
+    """Choose a visible non-operator subject anchor for an iPhone crop.
+
+    The ingest detector's secondary subject is preferred over its dominant
+    figure (the latter is often a back-facing operator).  Among candidates it
+    slightly prefers the right side, while still accepting singer/drummer/
+    bassist positions elsewhere in the frame.
+    """
+    path = str(source.get("path") or source.get("source_path") or "")
+    if path not in samples_cache:
+        samples_cache[path] = load_cached_operator_presence(path) if path else []
+    def safe(x: float, y: float) -> tuple[float, float]:
+        # Keep enough breathing room that the subject cannot be clipped when
+        # the close-up reaches its endpoint.
+        return max(0.18, min(0.82, float(x))), max(0.18, min(0.82, float(y)))
+
+    window = [
+        sample for sample in samples_cache[path]
+        if clip_start_sec - 0.5 <= float(sample.get("t") or 0.0) <= clip_start_sec + duration_sec + 0.5
+    ]
+    candidates = [
+        sample for sample in window
+        if sample.get("subject_cx") is not None and sample.get("subject_cy") is not None
+    ]
+    operator_samples = [
+        sample for sample in window
+        if float(sample.get("area_fraction") or 0.0) >= 0.08
+    ]
+    operator = max(operator_samples, key=lambda item: float(item.get("area_fraction") or 0.0), default=None)
+    if candidates:
+        if operator is not None:
+            # Do not accept a secondary box that is still close to the
+            # operator; this is the duplicate-detection failure seen in
+            # Berlin's lower-left back-facing operator.
+            candidates = [
+                item for item in candidates
+                if abs(float(item.get("subject_cx") or 0.5) - float(operator.get("cx") or 0.5)) >= 0.18
+                or abs(float(item.get("subject_cy") or 0.5) - float(operator.get("cy") or 0.5)) >= 0.18
+            ]
+    if candidates:
+        selected = max(
+            candidates,
+            key=lambda item: float(item.get("subject_area_fraction") or 0.0) + (0.08 if float(item.get("subject_cx") or 0.5) >= 0.5 else 0.0),
+        )
+        return safe(float(selected.get("subject_cx") or 0.5), float(selected.get("subject_cy") or 0.5))
+    for x_key, y_key in (("subject_center_x", "subject_center_y"), ("face_center_x", "face_center_y")):
+        if source.get(x_key) is not None and source.get(y_key) is not None:
+            return safe(float(source[x_key]), float(source[y_key]))
+    if operator is not None:
+        # When no independent subject is visible, aim away from the detected
+        # operator rather than falling back to the centre (which was the
+        # recurrent Berlin failure). Keep the crop vertically composed.
+        operator_x = float(operator.get("cx") or 0.5)
+        operator_y = float(operator.get("cy") or 0.5)
+        # Use a modest opposite-side bias, not an extreme corner: the Berlin
+        # operator occupies the lower-left while the stage centre remains the
+        # useful subject area. A corner target removed the operator but also
+        # threw away the musicians.
+        return safe(0.58 if operator_x < 0.5 else 0.42, 0.40 if operator_y >= 0.55 else 0.60)
+    return safe(0.5, 0.5)
+
+
+def _apply_non_music_insert(
+    segment: dict[str, Any],
+    source: dict[str, Any],
+    segment_index: int,
+    *,
+    force: bool = False,
+    preferred_window: dict[str, Any] | None = None,
+) -> None:
+    """Use a vetted Sony cutaway at occasional internal cut boundaries."""
+    if _source_role(source) != "handheld":
+        return
+    windows = source.get("non_music_windows") or []
+    if not windows or (not force and segment_index % 8 != 0):
+        return
+    duration = float(segment.get("duration_sec") or 0.0)
+    eligible = [window for window in windows if float(window.get("end_sec") or 0.0) - float(window.get("start_sec") or 0.0) >= duration]
+    # A cutaway containing a single visible musician is unsafe while the
+    # master is musically active unless we have evidence that the pictured
+    # instrument is actually being played.  The current visual detector does
+    # not claim instrument-use certainty, so it rejects such candidates
+    # conservatively; audience/ambient/hoguera candidates remain eligible.
+    master_path = source.get("non_music_master_path")
+    audio_active = False
+    # A single dominant musician is never a validated cutaway. This closes
+    # the alternate path where a singer close-up was selected by the normal
+    # Sony source rotation instead of the periodic bank insertion.
+    eligible = [window for window in eligible if not window.get("dominant_person") or window.get("instrument_in_use") is True]
+    if master_path:
+        from core.non_music import master_audio_is_active
+        audio_active = master_audio_is_active(str(master_path), float(segment.get("master_start_sec") or 0.0), duration)
+        if audio_active:
+            safe_eligible = [window for window in eligible if not window.get("dominant_person") or window.get("instrument_in_use") is True]
+            source["non_music_audio_rejected"] = int(source.get("non_music_audio_rejected") or 0) + (len(eligible) - len(safe_eligible))
+            eligible = safe_eligible
+    if not eligible:
+        return
+    if preferred_window is not None:
+        preferred_start = float(preferred_window.get("start_sec") or 0.0)
+        window = next((item for item in eligible if abs(float(item.get("start_sec") or 0.0) - preferred_start) < 0.001), None)
+        if window is None:
+            return
+    else:
+        window = eligible[(segment_index // 8) % len(eligible)]
+    segment["clip_start_sec"] = round(float(window["start_sec"]) + 0.25, 6)
+    segment["non_music_insert"] = True
+    segment["non_music_reason"] = window.get("reason") or "non-musical visual candidate"
+    segment["non_music_score"] = float(window.get("score") or 0.0)
+    segment["non_music_audio_checked"] = bool(master_path)
+    segment["non_music_audio_active"] = audio_active
+    segment["non_music_visual_audio_safe"] = not bool(audio_active and window.get("dominant_person") and window.get("instrument_in_use") is not True)
+
+
+def _sony_non_music_filler(
+    sources: list[dict[str, Any]],
+    segment: dict[str, Any],
+    segment_index: int,
+    history: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Use a varied Sony ambient candidate with a real 180-second cooldown."""
+    history = history if history is not None else []
+    duration = float(segment.get("duration_sec") or 0.0)
+    master_start = float(segment.get("master_start_sec") or 0.0)
+    candidates: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+    for source in sources:
+        if _source_role(source) != "handheld":
+            continue
+        for window in source.get("non_music_windows") or []:
+            if float(window.get("end_sec") or 0.0) - float(window.get("start_sec") or 0.0) < duration:
+                continue
+            frame_key = f"{_source_id(source)}|{float(window.get('start_sec') or 0.0):.3f}"
+            if any(
+                item.get("frame_key") == frame_key
+                and (
+                    abs(master_start - float(item.get("master_start_sec") or 0.0)) < 180.0
+                    or item is history[-1]
+                )
+                for item in history
+            ):
+                continue
+            candidates.append((frame_key, source, window))
+    if not candidates:
+        return None
+    # Stable pseudo-random ordering gives variety while keeping an export
+    # reproducible.  The history filter above enforces both the no-consecutive
+    # repeat rule and the three-minute real-time cooldown.
+    ordered = sorted(
+        candidates,
+        key=lambda item: stable_fingerprint({"segment": segment_index, "frame": item[0]}),
+    )
+    frame_key, source, window = ordered[0]
+    replacement = _segment_from_source(
+        source,
+        float(segment.get("master_start_sec") or 0.0),
+        float(segment.get("master_start_sec") or 0.0) + float(segment.get("duration_sec") or 0.0),
+        str(segment.get("title") or t("full_video")),
+        platform="youtube",
+    )
+    _apply_non_music_insert(replacement, source, segment_index, force=True, preferred_window=window)
+    if not replacement.get("non_music_insert"):
+        return None
+    history.append({"frame_key": frame_key, "master_start_sec": master_start})
+    LOGGER.info(
+        "Sony gap filler selected master_start=%.3f frame=%s source_start=%.3f history=%s",
+        master_start,
+        frame_key,
+        float(window.get("start_sec") or 0.0),
+        len(history),
+    )
+    replacement["sony_gap_fill"] = True
+    replacement["sony_gap_fill_from"] = "iphone_only_coverage"
+    replacement["non_music_frame_key"] = frame_key
+    replacement["non_music_source_start_sec"] = float(window.get("start_sec") or 0.0)
+    return replacement
 
 
 def _apply_operator_avoidance(segment: dict[str, Any], source: dict[str, Any], samples_cache: dict[str, list[dict[str, Any]]]) -> None:
@@ -1256,36 +1581,127 @@ def _apply_operator_avoidance(segment: dict[str, Any], source: dict[str, Any], s
         for sample in shot.get("curve") or []:
             sample["yaw"] = (float(sample.get("yaw") or 0.0) + shift) % 360.0
     elif adjustment["type"] == "zoom_crop":
-        segment["motion"] = {"type": "zoom_crop", "zoom": adjustment["zoom"], "cx": adjustment["cx"], "cy": adjustment["cy"]}
+        # Do not replace an animated iPhone recipe with a static crop: that
+        # was the regression that made recent previews lose their zoom-out.
+        # The dominant detection is the likely back-facing operator; when an
+        # alternate subject exists, keep that fact for downstream diagnostics
+        # and retain the animated target recipe.
+        segment["operator_avoidance"] = adjustment
+        if not (segment.get("motion") or {}).get("type") == "ken_burns":
+            segment["motion"] = {"type": "zoom_crop", "zoom": adjustment["zoom"], "cx": adjustment["cx"], "cy": adjustment["cy"]}
 
 
-def _ken_burns_motion(index: int) -> dict[str, Any]:
+def _pan_for_target(zoom: float, target: float) -> float:
+    if zoom <= 1.001:
+        return 0.5
+    return max(0.0, min(1.0, (zoom * target - 0.5) / (zoom - 1.0)))
+
+
+def _minimum_zoom_for_target(target: float) -> float:
+    edge = min(max(0.01, float(target)), 1.0 - max(0.01, float(target)))
+    return max(1.0, 0.5 / edge)
+
+
+def _ken_burns_motion(index: int, target_x: float = 0.5, target_y: float = 0.5, *, allow_static: bool = True) -> dict[str, Any]:
     rng = random.Random(stable_fingerprint({"fixed_camera_motion": index}))
-    targets = [
-        (0.5, 0.5, 5),
-        (0.44, 0.5, 1),
-        (0.56, 0.5, 1),
-        (0.5, 0.42, 1),
-        (0.5, 0.58, 1),
-    ]
-    total = sum(weight for _x, _y, weight in targets)
-    pick = rng.uniform(0.0, total)
-    pan_x, pan_y = 0.5, 0.5
-    cursor = 0.0
-    for x, y, weight in targets:
-        cursor += weight
-        if pick <= cursor:
-            pan_x, pan_y = x, y
-            break
-    zoom_delta = rng.uniform(0.05, 0.11)
-    zoom_in = rng.random() < 0.58
+    # Close-up range for the wide iPhone stage.  The catalog is explicit: a
+    # segment gets one movement recipe, never an accidental combination.
+    kind = rng.choices(MOTION_CATALOG, weights=[MOTION_WEIGHTS[kind] for kind in MOTION_CATALOG], k=1)[0]
+    if kind == "full_static" and not allow_static:
+        # Defensive guard for old/randomized recipes: static fixed-camera
+        # framing is no longer an allowed output.
+        kind = "full_zoom_in"
+    speed_name, speed_factor = MOTION_SPEEDS[index % len(MOTION_SPEEDS)]
+    target_x = max(0.05, min(0.95, float(target_x)))
+    target_y = max(0.05, min(0.95, float(target_y)))
+    close_zoom = rng.uniform(3.0, 3.4)
+    tight_zoom = rng.uniform(2.35, 2.7)
+    if kind == "full_static":
+        zoom_start = zoom_end = 1.0
+        pan_x_start = pan_x_end = 0.5
+        pan_y_start = pan_y_end = 0.5
+    elif kind in {"zoom_in", "zoom_in_center", "full_zoom_in"}:
+        min_zoom = max(_minimum_zoom_for_target(target_x), _minimum_zoom_for_target(target_y))
+        tight_zoom = max(tight_zoom, min_zoom)
+        zoom_start, zoom_end = tight_zoom, close_zoom
+        pan_x_start, pan_x_end = _pan_for_target(zoom_start, target_x), _pan_for_target(zoom_end, target_x)
+        pan_y_start, pan_y_end = _pan_for_target(zoom_start, target_y), _pan_for_target(zoom_end, target_y)
+    elif kind in {"zoom_out", "zoom_out_center"}:
+        min_zoom = max(_minimum_zoom_for_target(target_x), _minimum_zoom_for_target(target_y))
+        tight_zoom = max(tight_zoom, min_zoom)
+        zoom_start, zoom_end = close_zoom, tight_zoom
+        pan_x_start, pan_x_end = _pan_for_target(zoom_start, target_x), _pan_for_target(zoom_end, target_x)
+        pan_y_start, pan_y_end = _pan_for_target(zoom_start, target_y), _pan_for_target(zoom_end, target_y)
+    elif kind.startswith("pan_"):
+        zoom_start = zoom_end = close_zoom
+        if kind in {"pan_down_center", "pan_up_center"}:
+            pan_x_start = pan_x_end = 0.5
+            pan_y_start, pan_y_end = ((0.22, 0.78) if kind == "pan_down_center" else (0.78, 0.22))
+        else:
+            pan_x_start, pan_x_end = (0.22, 0.78) if "right" in kind else (0.78, 0.22)
+            pan_y_start = pan_y_end = 0.5
+    else:
+        zoom_start = zoom_end = close_zoom
+        pan_x_start = pan_y_start = 0.5
+        pan_x_end = 0.82 if "right" in kind else 0.18
+        pan_y_end = 0.78 if "bottom" in kind else 0.22
     return {
         "type": "ken_burns",
-        "zoom_start": round(1.0 if zoom_in else 1.0 + zoom_delta, 3),
-        "zoom_end": round(1.0 + zoom_delta if zoom_in else 1.0, 3),
-        "pan_x": round(pan_x, 3),
-        "pan_y": round(pan_y, 3),
+        "movement": kind,
+        "speed": speed_name,
+        "speed_factor": speed_factor,
+        "lock_target": kind in {"zoom_in", "zoom_out", "zoom_in_center", "zoom_out_center", "full_zoom_in"},
+        "target_x": round(target_x, 4),
+        "target_y": round(target_y, 4),
+        "zoom_start": round(zoom_start, 3),
+        "zoom_end": round(zoom_end, 3),
+        "pan_x_start": round(pan_x_start, 3),
+        "pan_x_end": round(pan_x_end, 3),
+        "pan_y_start": round(pan_y_start, 3),
+        "pan_y_end": round(pan_y_end, 3),
+        "pan_x": round(pan_x_start, 3),
+        "pan_y": round(pan_y_start, 3),
     }
+
+
+def _motion_active_axes(motion: dict[str, Any]) -> list[str]:
+    """Return the moving axes in a ken-burns recipe, for audit/tests."""
+    axes: list[str] = []
+    if float(motion.get("zoom_start", 1.0)) != float(motion.get("zoom_end", 1.0)):
+        axes.append("zoom")
+    # These pan values are derived crop coordinates that keep the selected
+    # subject locked while zooming; they are not a second authored movement.
+    if motion.get("lock_target") and "zoom" in axes:
+        return axes
+    if float(motion.get("pan_x_start", motion.get("pan_x", 0.5))) != float(motion.get("pan_x_end", motion.get("pan_x", 0.5))):
+        axes.append("pan_x")
+    if float(motion.get("pan_y_start", motion.get("pan_y", 0.5))) != float(motion.get("pan_y_end", motion.get("pan_y", 0.5))):
+        axes.append("pan_y")
+    return axes
+
+
+def _valid_motion_recipe(motion: dict[str, Any]) -> bool:
+    kind = str(motion.get("movement") or "")
+    if kind not in MOTION_CATALOG:
+        return False
+    axes = _motion_active_axes(motion)
+    if kind == "full_static":
+        return axes == []
+    if kind in {"zoom_in", "zoom_out", "zoom_in_center", "zoom_out_center", "full_zoom_in"}:
+        return axes == ["zoom"]
+    if kind in {"pan_right_center", "pan_left_center"}:
+        return axes == ["pan_x"]
+    if kind in {"pan_down_center", "pan_up_center"}:
+        return axes == ["pan_y"]
+    return axes == ["pan_x", "pan_y"]
+
+
+def _validate_motion_segments(segments: list[dict[str, Any]]) -> None:
+    """Fail edit-plan creation rather than export a mixed-motion segment."""
+    for index, segment in enumerate(segments):
+        motion = segment.get("motion") or {}
+        if motion.get("type") == "ken_burns" and not _valid_motion_recipe(motion):
+            raise ValueError(f"Invalid combined camera motion in segment {index}")
 
 
 def _round_to_frame(seconds: float, fps: float = EDIT_FPS) -> float:
@@ -1294,6 +1710,31 @@ def _round_to_frame(seconds: float, fps: float = EDIT_FPS) -> float:
 
 def _source_id(source: dict[str, Any]) -> str:
     return str(source.get("source_path") or source.get("path") or source.get("filename"))
+
+
+def _camera_id(source: dict[str, Any]) -> str:
+    """Return a stable physical-camera identity for a synced source.
+
+    A camera can produce several files (for example Sony C0064 and C0065), so
+    source_path is deliberately not sufficient for the YouTube run limit.
+    Ingest metadata wins; otherwise use the meaningful source directory and
+    finally the filename stem for synthetic/test paths.
+    """
+    for key in ("camera_id", "camera_name", "camera", "camera_label"):
+        value = source.get(key)
+        if value:
+            return str(value).strip().lower()
+    path_value = source.get("source_path") or source.get("original_path") or source.get("path") or source.get("filename")
+    path = Path(str(path_value))
+    generic = {"", "tmp", "cache", "proxies", "uploads", "wizarduploads", "video", "videos", "raw"}
+    parent = path.parent.name.strip().lower()
+    if parent not in generic:
+        return parent
+    stem = path.stem.lower()
+    for marker in ("insta360", "360", "iphone", "sony", "gopro"):
+        if marker in stem:
+            return marker
+    return stem or _source_id(source).lower()
 
 
 def _selection_stats_template(sources: list[dict[str, Any]], window_start: float, window_end: float) -> dict[str, dict[str, Any]]:

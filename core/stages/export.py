@@ -46,6 +46,7 @@ from core.stages.edit import (
     SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC,
     SPHERICAL_PRIMARY_DRIFT_FRACTION,
     SPHERICAL_SWEEP_SPEED_DEG_PER_SEC,
+    _valid_motion_recipe,
     load_edit_plan,
 )
 
@@ -76,6 +77,7 @@ SPHERICAL_NORMAL_FOV_MIN = NORMAL_FOV_MIN
 SPHERICAL_NORMAL_FOV_MAX = NORMAL_FOV_MAX
 SPHERICAL_MAX_HOLD_YAW_DEG = 10.0
 INTRO_DURATION = 10.0
+COLOR_PROFILE_VERSION = 3
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
 FRAME_INTERVAL_TOLERANCE = 0.50
@@ -219,6 +221,10 @@ class ExportStage(Stage):
                 progress_callback,
                 song_end_sec=float(song_end_sec) if song_end_sec is not None else None,
             )
+            # The container duration is authoritative for 360 exports.  In
+            # particular, a concat stream-copy can complete successfully
+            # while carrying an incorrect duration/timestamp timeline.
+            duration = _media_duration(str(output_path))
         else:
             render_platform = "reel_horizontal" if platform == "reel" and str(plan.get("reel_aspect") or project.data.get("settings", {}).get("wizard", {}).get("reel_aspect") or "9:16") == "16:9" else platform
             _render_plan(
@@ -259,6 +265,19 @@ class ExportStage(Stage):
                         "warnings": warnings,
                         "cut_count": int(plan.get("cut_count") or max(0, len(segments) - 1)),
                         "camera_usage": {} if platform == "360" else (plan.get("camera_usage") or _camera_usage(segments)),
+                        "camera_sequence": [] if platform == "360" else [
+                            str(segment.get("camera_id") or Path(str(segment.get("clip_path"))).name)
+                            for segment in segments
+                        ],
+                        "camera_alternatives": [] if platform == "360" else [
+                            {
+                                "camera_id": str(segment.get("camera_id") or Path(str(segment.get("clip_path"))).name),
+                                "available_camera_ids": list(segment.get("available_camera_ids") or []),
+                                "alternative_available": bool(segment.get("camera_alternative_available")),
+                            }
+                            for segment in segments
+                        ],
+                        "camera_runs": [] if platform == "360" else _camera_runs(segments),
                         "spherical_shot_usage": plan.get("spherical_shot_usage") or _spherical_shot_usage(segments),
                         "spherical_recording_usage": plan.get("spherical_recording_usage") or _spherical_recording_usage(segments),
                         "operator_avoidance_segments": 0 if platform == "360" else count_avoidance_adjustments(segments),
@@ -664,10 +683,6 @@ def _render_360_plan(
             lambda percent, detail: progress_callback(76 + int(percent * 8 / 100), detail),
         )
         phase_times["concat_sec"] = round(time.perf_counter() - phase_started, 3)
-        # No cadence-normalization fallback here: that path assumes the fixed
-        # TARGET_EXPORT_FPS and would re-encode (and resample) the body to
-        # force it, which is exactly the re-encode this mode exists to avoid.
-        # The source's own native fps is preserved as-is.
         real_duration = _media_duration(str(joined))
         muxed = temp_dir / "muxed.mp4"
         phase_started = time.perf_counter()
@@ -821,13 +836,30 @@ def _concat_360_segments(
             progress_callback,
         )
         _verify_video_decodes(joined)
+        actual_duration = _media_duration(str(joined))
+        duration_tolerance = max(2.0, 4.0 / max(1.0, float(profile.get("fps") or 30.0)))
+        if abs(actual_duration - total_duration) > duration_tolerance:
+            raise FFmpegError(
+                f"HEVC stream-copy concat duration mismatch: expected {total_duration:.3f}s, "
+                f"got {actual_duration:.3f}s"
+            )
+        # Cadence irregularity is not, by itself, a stream-copy failure.  A
+        # native CFR/VFR camera stream can legitimately have timestamp
+        # boundaries at a concat join; rejecting it here forced a full HEVC
+        # re-encode and changed the timeline.  Decode failure is the actual
+        # last-resort signal: only that falls through to the safe re-encode.
         LOGGER.info("HEVC 360 concat accepted stream-copy path=%s", joined)
         return False
     except (FFmpegError, OSError) as exc:
         LOGGER.info("HEVC 360 stream-copy concat rejected; re-encoding join: %s", exc)
         joined.unlink(missing_ok=True)
 
-    filter_complex = "[0:v:0][1:v:0][2:v:0]concat=n=3:v=1:a=0[v]"
+    fps = max(1.0, float(profile.get("fps") or 30.0))
+    filter_complex = (
+        f"[0:v:0][1:v:0][2:v:0]concat=n=3:v=1:a=0[joined];"
+        f"[joined]fps=fps={fps:.6f}:round=near:start_time=0,"
+        f"setpts=N/({fps:.6f}*TB)[v]"
+    )
     base_command = [
         ffmpeg,
         "-y",
@@ -849,6 +881,14 @@ def _concat_360_segments(
         "[v]",
         "-pix_fmt",
         profile["pix_fmt"],
+        "-r",
+        f"{fps:.6f}",
+        "-fps_mode",
+        "cfr",
+        "-video_track_timescale",
+        str(max(1000, int(round(fps * 1000)))),
+        "-t",
+        f"{total_duration:.3f}",
     ]
     tail = ["-strict", "unofficial", *_spherical_metadata_args(), str(joined)]
     try:
@@ -872,15 +912,34 @@ def _concat_360_segments(
 
 def _verify_video_decodes(path: Path) -> None:
     """Decode a video to null to catch broken HEVC reference chains."""
-    result = subprocess.run(
-        [_ffmpeg_path(), "-v", "error", "-i", str(path), "-map", "0:v:0", "-f", "null", "-"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=120,
+    # A fixed 120s budget is fine for short clips but incorrectly rejects a
+    # valid long 360 join on slower HEVC decoders. Scale the guard to the
+    # amount of data that must actually be decoded, while keeping a hard cap
+    # so a genuinely stuck decoder still fails loudly.
+    try:
+        timeout = max(120, min(900, int(path.stat().st_size / (25 * 1024 * 1024)) + 60))
+    except OSError:
+        timeout = 120
+    try:
+        result = subprocess.run(
+            [_ffmpeg_path(), "-v", "error", "-i", str(path), "-map", "0:v:0", "-f", "null", "-"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise FFmpegError(f"Video decode verification timed out after {timeout}s for {path}") from exc
+    diagnostics = (result.stderr or "").strip()
+    lowered = diagnostics.lower()
+    decoder_failure_markers = (
+        "could not find ref",
+        "error constructing the frame rps",
+        "invalid undecodable nalu",
+        "error while decoding",
     )
-    if result.returncode != 0:
-        raise FFmpegError((result.stderr or "").strip() or f"Video decode verification failed for {path}")
+    if result.returncode != 0 or any(marker in lowered for marker in decoder_failure_markers):
+        raise FFmpegError(diagnostics or f"Video decode verification failed for {path}")
 
 
 def _probe_video_profile(path: str) -> dict[str, Any]:
@@ -1428,10 +1487,18 @@ def _render_logo_clip(
         render_path.unlink(missing_ok=True)
 
 
-def _logo_filtergraph(platform: str, kind: str, duration: float, has_logo: bool) -> str:
+def _logo_filtergraph(platform: str, kind: str, duration: float, has_logo: bool, is_intro_card: bool = False) -> str:
     video = f"[0:v]format=yuv420p,{_constant_cadence_filter()}[bg]"
     if not has_logo:
         return f"{video};[bg]copy[v]"
+    if is_intro_card:
+        width, height = _target_size(platform)
+        return (
+            f"{video};"
+            f"[1:v]format=rgba,scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black[card];"
+            f"[bg][card]overlay=(W-w)/2:(H-h)/2:format=auto[v]"
+        )
     logo_height = int(_target_size(platform)[1] * 0.72)
     fade_in = 3.45
     fade_out = 3.00
@@ -2263,26 +2330,48 @@ def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> s
 
 
 def _ken_burns_filter(motion: dict[str, Any], platform: str, duration: float) -> str | None:
+    # Renderer-side gate: malformed/cached recipes with more than one motion
+    # family are rejected instead of silently composing zoom and pan.
+    if not _valid_motion_recipe(motion):
+        return None
     width, height = _target_size(platform)
     try:
         zoom_start = float(motion.get("zoom_start", 1.0))
         zoom_end = float(motion.get("zoom_end", 1.06))
-        pan_x = float(motion.get("pan_x", 0.5))
-        pan_y = float(motion.get("pan_y", 0.5))
+        pan_x_start = float(motion.get("pan_x_start", motion.get("pan_x", 0.5)))
+        pan_x_end = float(motion.get("pan_x_end", motion.get("pan_x", 0.5)))
+        pan_y = 0.5
     except (TypeError, ValueError):
         return None
-    zoom_start = max(1.0, min(1.14, zoom_start))
-    zoom_end = max(1.0, min(1.14, zoom_end))
-    pan_x = max(0.0, min(1.0, pan_x))
-    pan_y = max(0.0, min(1.0, pan_y))
+    zoom_start = max(1.0, min(4.0, zoom_start))
+    zoom_end = max(1.0, min(4.0, zoom_end))
+    pan_x_start = max(0.0, min(1.0, pan_x_start))
+    pan_x_end = max(0.0, min(1.0, pan_x_end))
+    pan_y_start = max(0.0, min(1.0, float(motion.get("pan_y_start", pan_y))))
+    pan_y_end = max(0.0, min(1.0, float(motion.get("pan_y_end", pan_y))))
     frame_count = max(1, int(round(max(0.1, float(duration)) * TARGET_EXPORT_FPS)))
-    progress = f"min(1,n/{max(1, frame_count - 1)})"
+    try:
+        speed_factor = max(0.25, min(2.0, float(motion.get("speed_factor", 1.0))))
+    except (TypeError, ValueError):
+        speed_factor = 1.0
+    # Saturation is intentional: once the endpoint is reached, hold there.
+    # It prevents an out-of-bounds crop from wrapping/reversing into a second
+    # apparent movement.
+    progress = f"min(1,n/{max(1, frame_count - 1)}*{speed_factor:.6f})"
     zoom_expr = f"({zoom_start:.6f}+({zoom_end:.6f}-{zoom_start:.6f})*{progress})"
+    if motion.get("lock_target"):
+        target_x = max(0.05, min(0.95, float(motion.get("target_x", 0.5))))
+        target_y = max(0.05, min(0.95, float(motion.get("target_y", 0.5))))
+        pan_x_expr = f"min(1,max(0,(({zoom_expr})*{target_x:.6f}-0.5)/(({zoom_expr})-1)))"
+        pan_y_expr = f"min(1,max(0,(({zoom_expr})*{target_y:.6f}-0.5)/(({zoom_expr})-1)))"
+    else:
+        pan_x_expr = f"({pan_x_start:.6f}+({pan_x_end:.6f}-{pan_x_start:.6f})*{progress})"
+        pan_y_expr = f"({pan_y_start:.6f}+({pan_y_end:.6f}-{pan_y_start:.6f})*{progress})"
     scaled_width = f"ceil({width}*{zoom_expr}/2)*2"
     scaled_height = f"ceil({height}*{zoom_expr}/2)*2"
     return (
         f"scale=w='{scaled_width}':h='{scaled_height}':eval=frame,"
-        f"crop={width}:{height}:x='(iw-{width})*{pan_x:.4f}':y='(ih-{height})*{pan_y:.4f}'"
+        f"crop={width}:{height}:x='(iw-{width})*{pan_x_expr}':y='(ih-{height})*{pan_y_expr}'"
     )
 
 
@@ -2295,8 +2384,8 @@ def _zoom_crop_filter(motion: dict[str, Any], platform: str) -> str | None:
     width, height = _target_size(platform)
     try:
         zoom = float(motion.get("zoom", 1.35))
-        pan_x = float(motion.get("cx", 0.5))
-        pan_y = float(motion.get("cy", 0.5))
+        pan_x = 0.5
+        pan_y = 0.5
     except (TypeError, ValueError):
         return None
     zoom = max(1.0, min(1.6, zoom))
@@ -3519,8 +3608,14 @@ def _frame_pts_times(path: Path, start: float, duration: float) -> list[float]:
     return pts
 
 
-def _verify_video_cadence(path: Path, label: str, start: float = 0.0, duration: float | None = None) -> None:
-    expected_delta = 1.0 / TARGET_EXPORT_FPS
+def _verify_video_cadence(
+    path: Path,
+    label: str,
+    start: float = 0.0,
+    duration: float | None = None,
+    fps: float = TARGET_EXPORT_FPS,
+) -> None:
+    expected_delta = 1.0 / max(1.0, float(fps))
     window = duration if duration is not None else max(0.0, _media_duration(str(path)) - start)
     if window <= expected_delta * 3:
         return
@@ -3555,7 +3650,15 @@ def _verify_video_cadence(path: Path, label: str, start: float = 0.0, duration: 
 def _color_filter(color_profile: dict[str, Any]) -> str:
     brightness = max(-0.08, min(0.08, float(color_profile.get("brightness_adjust") or 0.0)))
     saturation = max(0.90, min(1.10, float(color_profile.get("saturation_adjust") or 1.0)))
-    return f"eq=brightness={brightness:.4f}:saturation={saturation:.4f}"
+    red = max(-0.05, min(0.05, float(color_profile.get("red_balance") or 0.0)))
+    blue = max(-0.05, min(0.05, float(color_profile.get("blue_balance") or 0.0)))
+    # Keep chroma changes deliberately small; the profile is a bridge between
+    # cameras, not a replacement for the recorded look.
+    return (
+        f"eq=brightness={brightness:.4f}:saturation={saturation:.4f},"
+        f"colorbalance=rs={red:.4f}:gs={-red * 0.35:.4f}:bs={-blue:.4f}:"
+        f"rm={red:.4f}:gm={-red * 0.35:.4f}:bm={-blue:.4f}"
+    )
 
 
 def _warn_unused_cameras(clip_fates: list[dict[str, Any]], plan: dict[str, Any], warnings: list[str]) -> None:
@@ -3875,6 +3978,11 @@ def _global_config() -> dict[str, Any]:
 
 
 def _watermark_path() -> Path | None:
+    personal = _global_config().get("personal_logo_path")
+    if personal:
+        candidate = Path(str(personal)).expanduser()
+        if candidate.exists():
+            return candidate
     candidates = [
         Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "logo_watermark.png",
         Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "watermark.png",
@@ -4001,47 +4109,112 @@ def _concat_file_line(path: Path) -> str:
     return "file '{}'\n".format(path.as_posix().replace("'", "'\\''"))
 
 
+COLOR_REFERENCE_PRIORITY = ("sony", "360", "iphone")
+
+
+def _color_camera_kind(record: dict[str, Any]) -> str:
+    """Classify a source for the approved, deterministic reference order."""
+    text = " ".join(str(record.get(key) or "") for key in (
+        "camera_id", "camera_name", "camera", "camera_label", "filename", "path", "source_path"
+    )).lower()
+    projection = str(record.get("projection") or (record.get("probe") or {}).get("projection") or "").lower()
+    if "sony" in text:
+        return "sony"
+    if projection in {"equirect", "raw_insv"} or "360" in text or "insv" in text:
+        return "360"
+    if "iphone" in text or "img_" in text or any(token.endswith(".mov") for token in text.split()):
+        return "iphone"
+    return "other"
+
+
+def _color_reference_record(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+    present = {kind: record for record in records if (kind := _color_camera_kind(record)) != "other"}
+    for kind in COLOR_REFERENCE_PRIORITY:
+        if kind in present:
+            return present[kind]
+    return records[0] if records else None
+
+
+def _color_profile_artifact(project: Project) -> Path:
+    return project.cache_dir / "color_profiles.json"
+
+
+def _color_source_key(project: Project, record: dict[str, Any], path: str) -> str:
+    fingerprint = str(record.get("cache_key") or (record.get("normalized") or {}).get("cache_key") or source_cache_key(record))
+    return stable_fingerprint({
+        "project": str(project.folder.resolve()),
+        "camera": str(record.get("camera_id") or record.get("camera_name") or Path(path).stem).lower(),
+        "fingerprint": fingerprint,
+    })[:32]
+
+
 def _color_profiles_for_segments(project: Project, segments: list[dict[str, Any]], warnings: list[str] | None = None) -> dict[str, dict[str, Any]]:
-    raw: dict[str, dict[str, float]] = {}
+    """Measure each camera once and correct toward the fixed camera priority reference."""
     warnings = warnings if warnings is not None else []
+    records = list(project.data.get("inputs", {}).get("videos", []))
+    by_clip: dict[str, tuple[dict[str, Any], str]] = {}
     for segment in segments:
-        clip_path = str(segment.get("clip_path"))
-        if clip_path and clip_path not in raw:
-            profile, warning = cached_or_measure_clip_color(project, clip_path)
-            if warning:
-                warnings.append(warning)
-            raw[clip_path] = profile
-    valid = [profile for profile in raw.values() if profile]
-    if not valid:
-        return {path: {} for path in raw}
-    target_luma = sum(profile["luma"] for profile in valid) / len(valid)
-    target_sat = sum(profile["saturation"] for profile in valid) / len(valid)
-    corrected: dict[str, dict[str, Any]] = {}
-    for path, profile in raw.items():
-        if not profile:
-            corrected[path] = {}
+        clip_path = str(segment.get("clip_path") or "")
+        if not clip_path or clip_path in by_clip:
             continue
-        corrected[path] = color_correction_for_profile(profile, target_luma, target_sat)
+        info = _segment_source_info(project, segment)
+        record = next((item for item in records if str((item.get("normalized") or {}).get("path") or item.get("path") or "") in {clip_path, str(info.get("source_path") or "")}), None)
+        by_clip[clip_path] = (record or info, str(info.get("source_path") or clip_path))
+    measured: dict[str, dict[str, Any]] = {}
+    for clip_path, (record, source_path) in by_clip.items():
+        profile, warning = cached_or_measure_clip_color(project, source_path, record=record)
+        if warning:
+            warnings.append(warning)
+        profile = dict(profile)
+        profile["camera_kind"] = _color_camera_kind(record)
+        profile["camera_id"] = str(record.get("camera_id") or record.get("camera_name") or Path(source_path).stem).lower()
+        measured[clip_path] = profile
+    valid = [profile for profile in measured.values() if profile.get("luma") is not None]
+    if not valid:
+        return {path: {} for path in measured}
+    ref_record = _color_reference_record([record for record, _ in by_clip.values()])
+    ref_kind = _color_camera_kind(ref_record or {})
+    ref_profile = next((profile for profile in valid if profile.get("camera_kind") == ref_kind), valid[0])
+    if float(ref_profile.get("white_clip_ratio") or 0) > 0.05 or float(ref_profile.get("black_clip_ratio") or 0) > 0.05 or not 35 <= float(ref_profile.get("luma") or 0) <= 220:
+        warnings.append(
+            f"La cámara de referencia de color ({ref_profile.get('camera_id')}) presenta exposición potencialmente defectuosa; se usa por prioridad fija ({ref_kind}), sin sustituirla automáticamente."
+        )
+    corrected: dict[str, dict[str, Any]] = {}
+    for path, profile in measured.items():
+        corrected[path] = color_correction_for_profile(profile, ref_profile)
+    artifact = {
+        "version": COLOR_PROFILE_VERSION,
+        "reference_priority": list(COLOR_REFERENCE_PRIORITY),
+        "reference_camera": ref_profile.get("camera_id"),
+        "profiles": {path: profile for path, profile in measured.items()},
+        "corrections": corrected,
+    }
+    try:
+        _color_profile_artifact(project).parent.mkdir(parents=True, exist_ok=True)
+        _color_profile_artifact(project).write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError as exc:
+        warnings.append(f"No se pudo guardar el perfil de color del proyecto: {exc}")
     return corrected
 
 
-def cached_or_measure_clip_color(project: Project, path: str) -> tuple[dict[str, float], str | None]:
+def cached_or_measure_clip_color(project: Project, path: str, record: dict[str, Any] | None = None) -> tuple[dict[str, float], str | None]:
     """Return cached color profile or measure bounded samples."""
-    key = _color_cache_key(project, path)
+    record = record or next((item for item in project.data.get("inputs", {}).get("videos", []) if path in {item.get("path"), (item.get("normalized") or {}).get("path")}), {})
+    key = _color_source_key(project, record, path)
     cache_path = global_cache_root() / "color" / f"{key}.json"
     if cache_path.exists():
         try:
             with cache_path.open("r", encoding="utf-8") as fh:
                 cached = json.load(fh)
-            if isinstance(cached, dict) and "luma" in cached and "saturation" in cached:
-                return {"luma": float(cached["luma"]), "saturation": float(cached["saturation"])}, None
+            if isinstance(cached, dict) and cached.get("color_profile_version") == COLOR_PROFILE_VERSION and "luma" in cached and "saturation" in cached:
+                return {key: float(value) for key, value in cached.items() if isinstance(value, (int, float))}, None
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             pass
     profile, warning = measure_clip_color(path)
     if profile:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         with cache_path.open("w", encoding="utf-8") as fh:
-            json.dump(profile, fh, indent=2, sort_keys=True)
+            json.dump({"color_profile_version": COLOR_PROFILE_VERSION, **profile}, fh, indent=2, sort_keys=True)
             fh.write("\n")
     return profile, warning
 
@@ -4055,13 +4228,12 @@ def _color_cache_key(project: Project, path: str) -> str:
 
 
 def measure_clip_color(path: str) -> tuple[dict[str, float], str | None]:
-    """Measure sampled luma/saturation using short ffmpeg signalstats windows."""
+    """Measure luma, contrast and chroma over five fixed samples."""
     try:
         duration = _media_duration(path)
     except Exception as exc:
         return {}, t("color_skipped", filename=Path(path).name, reason=str(exc))
-    y_values: list[float] = []
-    sat_values: list[float] = []
+    fields: dict[str, list[float]] = {key: [] for key in ("YAVG", "YMIN", "YMAX", "SATAVG", "UAVG", "VAVG")}
     for command in color_sample_commands(path, duration):
         try:
             result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=30)
@@ -4070,11 +4242,18 @@ def measure_clip_color(path: str) -> tuple[dict[str, float], str | None]:
         if result.returncode != 0:
             return {}, t("color_skipped", filename=Path(path).name, reason=(result.stderr or "sample failed").strip()[:180])
         text = f"{result.stdout}\n{result.stderr}"
-        y_values.extend(float(value) for value in re.findall(r"lavfi.signalstats.YAVG=([0-9.]+)", text))
-        sat_values.extend(float(value) for value in re.findall(r"lavfi.signalstats.SATAVG=([0-9.]+)", text))
-    if not y_values or not sat_values:
+        for key in fields:
+            fields[key].extend(float(value) for value in re.findall(rf"lavfi\.signalstats\.{key}=([0-9.]+)", text))
+    if not fields["YAVG"] or not fields["SATAVG"]:
         return {}, t("color_skipped", filename=Path(path).name, reason="no signalstats samples")
-    return {"luma": sum(y_values) / len(y_values), "saturation": sum(sat_values) / len(sat_values)}, None
+    mean = lambda key, fallback=0.0: sum(fields[key]) / len(fields[key]) if fields[key] else fallback
+    return {
+        "luma": mean("YAVG"), "saturation": mean("SATAVG"),
+        "luma_min": mean("YMIN"), "luma_max": mean("YMAX"),
+        "u_mean": mean("UAVG", 128.0), "v_mean": mean("VAVG", 128.0),
+        "black_clip_ratio": sum(1 for value in fields["YMIN"] if value <= 2) / max(1, len(fields["YMIN"])),
+        "white_clip_ratio": sum(1 for value in fields["YMAX"] if value >= 253) / max(1, len(fields["YMAX"])),
+    }, None
 
 
 def color_sample_commands(path: str, duration: float) -> list[list[str]]:
@@ -4130,13 +4309,31 @@ def _media_duration(path: str) -> float:
     return max(0.1, float((result.stdout or "0").strip() or 0.0))
 
 
-def color_correction_for_profile(profile: dict[str, float], target_luma: float, target_sat: float) -> dict[str, float]:
-    """Return subtle eq corrections toward a shared target."""
-    luma = max(1.0, float(profile.get("luma") or target_luma or 128.0))
-    sat = max(1.0, float(profile.get("saturation") or target_sat or 64.0))
-    brightness = max(-0.08, min(0.08, (target_luma - luma) / 255.0 * 0.35))
-    saturation = max(0.90, min(1.10, 1.0 + (target_sat - sat) / 255.0 * 0.60))
-    return {"brightness_adjust": brightness, "saturation_adjust": saturation}
+def color_correction_for_profile(
+    profile: dict[str, float],
+    reference: dict[str, float] | float | None = None,
+    target_sat: float | None = None,
+    *,
+    target_luma: float | None = None,
+) -> dict[str, float]:
+    """Return conservative, fixed per-camera correction toward the reference."""
+    if isinstance(reference, dict):
+        target_luma = float(reference.get("luma") or 128.0)
+        target_sat = float(reference.get("saturation") or 64.0)
+        target_u = float(reference.get("u_mean") or 128.0)
+        target_v = float(reference.get("v_mean") or 128.0)
+    else:
+        target_luma = float(target_luma if target_luma is not None else (reference or 128.0))
+        target_sat = float(target_sat or 64.0)
+        target_u = target_v = 128.0
+    luma = max(1.0, float(profile.get("luma") or target_luma))
+    sat = max(1.0, float(profile.get("saturation") or target_sat))
+    return {
+        "brightness_adjust": max(-0.08, min(0.08, (target_luma - luma) / 255.0 * 0.35)),
+        "saturation_adjust": max(0.90, min(1.10, 1.0 + (target_sat - sat) / 255.0 * 0.60)),
+        "red_balance": max(-0.05, min(0.05, (target_v - float(profile.get("v_mean") or 128.0)) / 255.0 * 0.20)),
+        "blue_balance": max(-0.05, min(0.05, (target_u - float(profile.get("u_mean") or 128.0)) / 255.0 * 0.20)),
+    }
 
 
 def _video_encode_args(codec: str, video_bitrate: int) -> list[str]:
@@ -4235,6 +4432,33 @@ def _camera_usage(segments: list[dict[str, Any]]) -> dict[str, int]:
         name = Path(str(segment.get("clip_path"))).name
         usage[name] = usage.get(name, 0) + 1
     return usage
+
+
+def _camera_runs(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Summarize consecutive physical-camera runs for export auditing."""
+    runs: list[dict[str, Any]] = []
+    for segment in segments:
+        camera_id = str(segment.get("camera_id") or Path(str(segment.get("clip_path"))).name)
+        start = float(segment.get("master_start_sec") or 0.0)
+        end = start + float(segment.get("duration_sec") or 0.0)
+        alternative = bool(segment.get("camera_alternative_available"))
+        available = list(segment.get("available_camera_ids") or [])
+        if runs and runs[-1]["camera_id"] == camera_id:
+            runs[-1]["segment_count"] += 1
+            runs[-1]["end_sec"] = round(end, 6)
+            runs[-1]["duration_sec"] = round(runs[-1]["end_sec"] - runs[-1]["start_sec"], 6)
+            runs[-1]["alternative_available"] = runs[-1]["alternative_available"] or alternative
+        else:
+            runs.append({
+                "camera_id": camera_id,
+                "segment_count": 1,
+                "start_sec": round(start, 6),
+                "end_sec": round(end, 6),
+                "duration_sec": round(end - start, 6),
+                "alternative_available": alternative,
+                "available_camera_ids": available,
+            })
+    return runs
 
 
 def _ffmpeg_path() -> str:

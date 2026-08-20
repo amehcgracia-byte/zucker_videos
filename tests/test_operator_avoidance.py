@@ -11,6 +11,7 @@ from core.operator_avoidance import (
     _avoidance_360,
     _avoidance_iphone,
     _cache_key_for_path,
+    _secondary_subject,
     avoidance_for_segment,
     count_avoidance_adjustments,
     load_cached_operator_presence,
@@ -24,6 +25,14 @@ def test_role_for_record_classifies_360_iphone_and_sony():
     assert role_for_record(None, "raw.insv") == "360"
     assert role_for_record(None, "IMG_0018.MOV") == "fixed_rear"
     assert role_for_record(None, "C0059.MP4") == "handheld"
+
+
+def test_secondary_subject_rejects_duplicate_boxes_for_back_facing_operator():
+    dominant = {"area_fraction": 0.20, "cx": 0.46, "cy": 0.64}
+    duplicate = {"area_fraction": 0.09, "cx": 0.54, "cy": 0.70}
+    real_subject = {"area_fraction": 0.08, "cx": 0.78, "cy": 0.42}
+    assert _secondary_subject([dominant, duplicate, real_subject], dominant) == real_subject
+    assert _secondary_subject([dominant, duplicate], dominant) is None
 
 
 def test_avoidance_for_segment_skips_handheld_even_with_strong_detection():

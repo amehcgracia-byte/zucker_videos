@@ -973,12 +973,17 @@ def test_no_dropped_framing_warning_for_healthy_360_or_ordinary_flat_segments():
 
 
 def test_motion_filter_builds_bounded_ken_burns_zoom():
-    graph = _motion_filter({"motion": {"type": "ken_burns", "zoom_start": 1.0, "zoom_end": 1.08, "pan_x": 0.5, "pan_y": 0.5}}, "youtube", 4.0)
+    graph = _motion_filter({"motion": {"type": "ken_burns", "movement": "zoom_out", "zoom_start": 3.0, "zoom_end": 2.5, "pan_x_start": 0.5, "pan_x_end": 0.5, "pan_y_start": 0.5, "pan_y_end": 0.5}}, "youtube", 4.0)
 
     assert graph is not None
     assert "zoompan=" not in graph
     assert "eval=frame" in graph
     assert "crop=1920:1080" in graph
+
+
+def test_motion_filter_rejects_combined_zoom_and_pan_recipe():
+    graph = _motion_filter({"motion": {"type": "ken_burns", "movement": "zoom_out", "zoom_start": 3.0, "zoom_end": 2.5, "pan_x_start": 0.2, "pan_x_end": 0.8, "pan_y_start": 0.5, "pan_y_end": 0.5}}, "youtube", 4.0)
+    assert graph is None
 
 
 def test_fixed_rear_export_cadence_passes_with_zoom_on_and_off(tmp_path):
@@ -1554,7 +1559,12 @@ def test_360_export_of_hevc_source_decodes_cleanly_not_black(tmp_path, monkeypat
     export_entry = manifest["exports"][0]
     output = Path(export_entry["path"])
     assert output.exists()
-    assert any("re-encoded once when joining" in warning for warning in export_entry["warnings"])
+    # A clean stream-copy join is now retained.  Re-encoding remains a
+    # last-resort fallback when the assembled HEVC fails decode/duration
+    # validation, so this fixture may legitimately take either path.
+    performance = manifest.get("performance") or {}
+    if performance.get("concat_reencoded"):
+        assert any("re-encoded once when joining" in warning for warning in export_entry["warnings"])
 
     tag = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_tag_string", "-of", "default=nw=1:nk=1", str(output)],

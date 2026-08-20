@@ -469,3 +469,15 @@ def test_songs_suggestion_scans_master_folder_and_inbox(tmp_path, monkeypatch):
     assert response.status_code == 200
     filenames = sorted(item["filename"] for item in response.get_json()["songs"])
     assert filenames == ["alt-songs.json", "songs.json"]
+
+
+def test_duplicate_video_content_is_registered_once_with_warning(tmp_path):
+    first = tmp_path / "ZZ24.7 01.mov"
+    duplicate = tmp_path / "ZZ24.7 01-2.mov"
+    first.write_bytes(b"same-video-content")
+    duplicate.write_bytes(first.read_bytes())
+
+    records, warnings = inbox._dedupe_video_records([{"path": str(first)}, {"path": str(duplicate)}])
+
+    assert [record["path"] for record in records] == [str(first)]
+    assert "ZZ24.7 01-2.mov" in warnings[0]

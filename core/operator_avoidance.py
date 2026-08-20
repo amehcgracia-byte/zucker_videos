@@ -21,8 +21,8 @@ from core.stages.base import stable_fingerprint
 
 LOGGER = logging.getLogger(__name__)
 
-CACHE_VERSION = 2
-OPERATOR_AVOIDANCE_VERSION = 2
+CACHE_VERSION = 3
+OPERATOR_AVOIDANCE_VERSION = 3
 
 # Sample the clip at ~2fps: dense enough to catch the operator stepping into
 # frame, cheap enough not to meaningfully slow ingest.
@@ -233,7 +233,11 @@ def _secondary_subject(ranked_blobs: list[dict[str, float]], dominant: dict[str,
     for blob in ranked_blobs[1:]:
         if blob["area_fraction"] < SUBJECT_AREA_THRESHOLD:
             break
-        if abs(blob["cx"] - dominant["cx"]) < 0.08 and abs(blob["cy"] - dominant["cy"]) < 0.08:
+        # MobileNet frequently emits two overlapping boxes for the same
+        # foreground person (especially a dark back-facing operator).  The
+        # old 8% centre gate let those duplicate boxes through as a fake
+        # "subject", causing the iPhone crop to lock back onto the operator.
+        if abs(blob["cx"] - dominant["cx"]) < 0.18 and abs(blob["cy"] - dominant["cy"]) < 0.18:
             continue
         return blob
     return None

@@ -14,11 +14,18 @@ let inboxAnalysis = null;
 let inboxAnalysisTimer = null;
 let sourceFolders = [];
 let masterAudioExtensions = [".mp3"];
+const COARSE_MATCH_THRESHOLD = 6.0;
 let sessionFilterDisabled = false;
 let currentSongs = [];
 let latestResult = null;
 let latestStatus = null;
 let pollTimer = null;
+// The wizard API is process-global, so status responses must be tied to the
+// project active when the request started. This also invalidates old fetches
+// that resolve after Open/New project changes state.
+let activeProjectId = null;
+let statusPollGeneration = 0;
+let prepareHandoffInProgress = false;
 let appConfig = { dev: true, desktop: false };
 let progressStartedAt = null;
 let progressSamples = [];
@@ -37,6 +44,7 @@ let reelPlayhead = 0;
 let reelDrag = null;
 const reelPreviewImages = new Map();
 let shotReviewItems = [];
+let inputWarningsShown = new Set();
 let sphericalMode = "automatic";
 const MAX_RECORDED_YAW_RATE_DEG_PER_SEC = 40;
 let savedAudioTrim = {};
@@ -216,6 +224,8 @@ async function loadAppConfig() {
   applySphericalMode(sphericalMode);
   applySphericalSweep(appConfig.spherical_sweep !== false, appConfig.sweep_speed_deg_per_sec || 60);
   savedAudioTrim = appConfig.audio_trim_by_master || {};
+  const logoStatus = document.querySelector("#personalLogoStatus");
+  if (logoStatus && appConfig.personal_logo_path) logoStatus.textContent = `Using ${filename(appConfig.personal_logo_path)}`;
   window.NativeBridge?.configure(appConfig);
 }
 
@@ -230,9 +240,31 @@ function showToast(message, isError = false) {
 }
 
 function setStep(number) {
-  currentStep = Math.max(1, Math.min(4, Number(number) || 1));
+  currentStep = Math.max(1, Math.min(5, Number(number) || 1));
   document.querySelectorAll(".step").forEach((step, index) => step.classList.toggle("active", index === currentStep - 1));
   document.querySelectorAll("[data-step-nav]").forEach((button) => button.classList.toggle("active", Number(button.dataset.stepNav) === currentStep));
+}
+
+function projectIdFromStatus(status) {
+  return status?.project_id || status?.project_path || status?.result?.project_path || null;
+}
+
+function sameProjectId(left, right) {
+  if (!left || !right) return left === right;
+  return String(left).replace(/\\/g, "/") === String(right).replace(/\\/g, "/");
+}
+
+function stopStatusPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
+  statusPollGeneration += 1;
+}
+
+function resetProgressTiming() {
+  progressStartedAt = null;
+  progressSamples = [];
+  progressFloor = 0;
+  etaSmoothedSeconds = null;
 }
 
 function choosePlatformInUi(platform) {
@@ -256,9 +288,23 @@ function hideStageTransition() {
   document.querySelector("#progressBox")?.removeAttribute("hidden");
 }
 
+function stopAllPreviewAudio() {
+  // Phase changes are terminal for previews.  Pause every media element so a
+  // hidden master/director preview cannot keep playing underneath the next
+  // stage (or become impossible to reach again after the automatic advance).
+  document.querySelectorAll("audio, video").forEach((media) => {
+    try { media.pause(); } catch (_error) { /* stale media element */ }
+  });
+  const directorPlay = document.querySelector("#directorPlay");
+  if (directorPlay) directorPlay.textContent = "Play";
+  const resultPlay = document.querySelector("#result360Play");
+  if (resultPlay) resultPlay.textContent = "Play";
+}
+
 function showStageTransition(title, detail, mode, onDone = null) {
   const box = document.querySelector("#stageTransition");
   if (!box) return;
+  stopAllPreviewAudio();
   const version = ++transitionVersion;
   if (transitionTimer) clearTimeout(transitionTimer);
   document.querySelector("#stageTransitionMode").textContent = mode;
@@ -456,6 +502,12 @@ async function resumeInputsFromProject() {
   const savedPlatform = project.settings?.wizard?.platform;
   if (savedPlatform) choosePlatformInUi(savedPlatform);
   const inputs = project.inputs || {};
+  for (const warning of inputs.warnings || []) {
+    if (!inputWarningsShown.has(warning)) {
+      inputWarningsShown.add(warning);
+      showToast(warning, true);
+    }
+  }
   clearDetected();
   const master = recordToDetectedItem(inputs.master, "master");
   const songs = recordToDetectedItem(inputs.songs, "songs");
@@ -539,10 +591,6 @@ function filename(path) {
 
 function renderChips() {
   const root = document.querySelector("#chips");
-  if (analysisSetAsideVideos.length) {
-    detected.videos = [...detected.videos, ...analysisSetAsideVideos];
-    analysisSetAsideVideos = [];
-  }
   applyInboxAnalysisFilter();
   applySessionFilter();
   const items = [...detected.videos, ...detected.master, ...detected.songs, ...detected.ignored].sort((a, b) =>
@@ -720,6 +768,25 @@ async function loadInbox() {
   }
 }
 
+async function savePersonalLogo(file) {
+  if (!file) return;
+  const path = file.path || "";
+  let result;
+  if (path) {
+    result = await api("/settings/personal-logo", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    });
+  } else {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    result = await apiForm("/settings/personal-logo", form);
+  }
+  const status = document.querySelector("#personalLogoStatus");
+  if (status) status.textContent = result.personal_logo_path ? `Using ${filename(result.personal_logo_path)}` : "The app logo is used by default";
+  showToast(result.personal_logo_path ? "Personal logo saved" : "Using the app logo");
+}
+
 function sourceFolderName(path) {
   const item = sourceFolders
     .map((folder) => typeof folder === "string" ? { path: folder, name: filename(folder) } : folder)
@@ -783,12 +850,32 @@ function renderInboxAnalysisStatus() {
         }).join("")
       : '<option value="">Scan Inbox to load audio masters…</option>';
   }
+  const addButton = document.querySelector("#addMasterVideos");
+  const selectedMaster = (inboxAnalysis?.masters || []).find((item) => item.path === selectedMasterPath) || (inboxAnalysis?.masters || [])[0];
+  const matches = selectedMaster?.matches || [];
+  const usableMatches = matches.filter((match) => !match.master_mismatch && !match.no_audio && match.master_overlap && Number(match.coarse_confidence || 0) >= COARSE_MATCH_THRESHOLD);
+  if (addButton) {
+    addButton.disabled = !selectedMaster || inboxAnalysis?.status !== "done" || !usableMatches.length;
+    addButton.textContent = selectedMaster ? `Add videos for ${selectedMaster.filename || filename(selectedMaster.path)}` : "Add videos for this master";
+  }
+  const mismatch = matches.filter((match) => match.master_mismatch);
+  const notice = document.querySelector("#masterMismatchNotice");
+  if (notice && inboxAnalysis?.status === "done" && selectedMaster && mismatch.length) {
+    notice.hidden = false;
+    notice.innerHTML = `<strong>Master mismatch detected</strong><p>${mismatch.length} video${mismatch.length === 1 ? "" : "s"} do not appear to match <em>${escapeHtml(selectedMaster.filename || filename(selectedMaster.path))}</em>. Check the selected master before waiting for Sync.</p>`;
+  } else if (notice) {
+    notice.hidden = true;
+    notice.textContent = "";
+  }
   const status = inboxAnalysis?.status || "idle";
   if (status === "running") {
     node.textContent = `${inboxAnalysis.detail || "Scanning Inbox"} · ${Number(inboxAnalysis.progress || 0)}%`;
   } else if (status === "done") {
     const master = (inboxAnalysis.masters || []).find((item) => item.path === selectedMasterPath) || (inboxAnalysis.masters || [])[0];
-    const matches = (master?.matches || []).filter((match) => !match.low_confidence && !match.no_audio && match.master_overlap);
+    const matches = (master?.matches || []).filter((match) =>
+      !match.master_mismatch && !match.no_audio && match.master_overlap &&
+      match.coarse_reasonable_peak !== false && Number(match.coarse_confidence || 0) >= COARSE_MATCH_THRESHOLD
+    );
     node.textContent = master
       ? `${inboxAnalysis.detail || "Inbox pre-analysis ready"} · ${matches.length ? `${matches.length} matching videos` : "No matching videos found for this mix"}`
       : (inboxAnalysis.detail || "No mixes found — masters are expected as .mp3");
@@ -799,25 +886,54 @@ function renderInboxAnalysisStatus() {
   }
 }
 
-function applyInboxAnalysisFilter() {
-  if (!inboxAnalysis || inboxAnalysis.status !== "done") return;
-  const master = (inboxAnalysis.masters || []).find((item) => item.path === selectedMasterPath) || (inboxAnalysis.masters || [])[0];
+function addVideosForSelectedMaster() {
+  const master = (inboxAnalysis?.masters || []).find((item) => item.path === selectedMasterPath) || (inboxAnalysis?.masters || [])[0];
   if (!master) return;
-  const acceptedMatches = (master.matches || []).filter((match) => !match.low_confidence && !match.no_audio && match.master_overlap);
+  const matches = new Map((master.matches || []).filter((match) =>
+    !match.master_mismatch && !match.no_audio && match.master_overlap &&
+    match.coarse_reasonable_peak !== false && Number(match.coarse_confidence || 0) >= COARSE_MATCH_THRESHOLD
+  ).map((match) => [match.path, match]));
+  const existing = new Set(detected.videos.map((item) => item.path));
+  const sourceEntries = (inboxAnalysis.files || []).filter((item) => item.kind === "videos" && matches.has(item.path));
+  const additions = sourceEntries.filter((item) => !existing.has(item.path)).map((video) => ({ ...video, source: "inbox", sync_master_path: master.path, sync_confidence: matches.get(video.path).confidence, sync_offset_sec: matches.get(video.path).offset_sec }));
+  detected.videos = [...detected.videos, ...additions];
+  analysisSetAsideVideos = analysisSetAsideVideos.filter((item) => !matches.has(item.path));
+  setAsideVideos = setAsideVideos.filter((item) => !matches.has(item.path));
+  renderChips();
+  showToast(additions.length ? `Added ${additions.length} video${additions.length === 1 ? "" : "s"} for this master` : "Matching videos are already added");
+}
+
+function applyInboxAnalysisFilter() {
+  // Inbox videos are provisional until the selected master's coarse audio
+  // analysis has decided whether they belong to that song. Never leave the
+  // whole Inbox visible merely because analysis is still running or because
+  // the selected master has no matches.
+  const inboxVideos = [...detected.videos.filter((video) => video.source === "inbox"), ...analysisSetAsideVideos];
+  analysisSetAsideVideos = [];
+  if (!inboxVideos.length) return;
+  if (!inboxAnalysis || inboxAnalysis.status !== "done") {
+    analysisSetAsideVideos = inboxVideos;
+    detected.videos = detected.videos.filter((video) => video.source !== "inbox");
+    return;
+  }
+  const master = (inboxAnalysis.masters || []).find((item) => item.path === selectedMasterPath) || (inboxAnalysis.masters || [])[0];
+  if (!master) {
+    analysisSetAsideVideos = inboxVideos;
+    detected.videos = detected.videos.filter((video) => video.source !== "inbox");
+    return;
+  }
+  const acceptedMatches = (master.matches || []).filter((match) =>
+    !match.master_mismatch && !match.no_audio && match.master_overlap &&
+    match.coarse_reasonable_peak !== false && Number(match.coarse_confidence || 0) >= COARSE_MATCH_THRESHOLD
+  );
   const matchByPath = new Map(acceptedMatches.map((match) => [match.path, match]));
-  const accepted = new Set(matchByPath.keys());
-  if (!accepted.size) return;
-  const keep = [];
-  for (const video of detected.videos) {
-    // Files added manually remain visible even when Inbox pre-analysis has no
-    // match for them; the user can always override the automatic filter.
-    if (video.source !== "inbox" || accepted.has(video.path)) {
-      const match = matchByPath.get(video.path);
-      keep.push(match ? { ...video, sync_confidence: match.confidence, sync_offset_sec: match.offset_sec, sync_master_path: master.path } : video);
-    }
+  const keepInbox = [];
+  for (const video of inboxVideos) {
+    const match = matchByPath.get(video.path);
+    if (match) keepInbox.push({ ...video, sync_confidence: match.confidence, sync_offset_sec: match.offset_sec, sync_master_path: master.path });
     else analysisSetAsideVideos.push(video);
   }
-  detected.videos = keep;
+  detected.videos = [...detected.videos.filter((video) => video.source !== "inbox"), ...keepInbox];
 }
 
 async function loadProjects() {
@@ -863,17 +979,21 @@ function formatBytes(bytes) {
 }
 
 async function openProject(path) {
+  stopStatusPolling();
+  const requestGeneration = statusPollGeneration;
+  activeProjectId = null;
   const status = await api("/wizard/projects/open", { method: "POST", body: JSON.stringify({ path }) });
+  if (requestGeneration !== statusPollGeneration) return;
+  activeProjectId = projectIdFromStatus(status) || path;
   await resumeInputsFromProject().catch(() => {});
   renderWizardStatus(status);
   if (status.status === "running") {
     setStep(3);
     ensureStatusPolling();
   } else if (status.status === "waiting_review") {
-    setStep(3);
     renderWizardStatus(status);
   } else if (status.status === "done" || status.status === "failed") {
-    setStep(4);
+    setStep(5);
   } else if (status.status === "waiting_choice") {
     setStep(2);
     loadSavedReelOverlays().catch(() => {});
@@ -884,14 +1004,12 @@ async function openProject(path) {
 
 async function newProject() {
   if (latestStatus?.status === "running" && !confirm("A job is still running for the current project. Start a new project view anyway?")) return;
+  stopStatusPolling();
+  activeProjectId = null;
   await api("/wizard/projects/new", { method: "POST", body: JSON.stringify({}) });
-  clearInterval(pollTimer);
-  pollTimer = null;
   latestStatus = null;
   latestResult = null;
-  progressFloor = 0;
-  progressStartedAt = null;
-  progressSamples = [];
+  resetProgressTiming();
   selectedPlatform = null;
   lastPipelineStage = null;
   try { sessionStorage.removeItem("zucker.selectedPlatform"); } catch (_error) { /* private mode */ }
@@ -905,7 +1023,6 @@ async function newProject() {
   document.querySelector("#progressTitle").textContent = "Creating your video";
   document.querySelector("#startWizard").disabled = true;
   document.querySelectorAll(".platform-card").forEach((card) => card.classList.remove("selected"));
-  await loadInbox().catch(() => {});
   await loadProjects().catch(() => {});
   setStep(1);
 }
@@ -1014,16 +1131,58 @@ async function loadSavedReelOverlays() {
 }
 
 function renderShotReview(items) {
-  shotReviewItems = (items || []).map((item) => ({ keep: true, ...item }));
+  const previous = new Map(shotReviewItems.map((item) => [Number(item.index), item]));
+  shotReviewItems = (items || []).map((item) => {
+    const old = previous.get(Number(item.index));
+    const merged = { ...old, keep: true, ...item };
+    // Replace returns immediately, while its new JPEG is still rendering.
+    // Keep the old frame visible until the new URL is actually available.
+    if (!item.thumbnail && old?.thumbnail && item.thumbnail_status !== "failed") {
+      merged.thumbnail = old.thumbnail;
+      merged.thumbnail_status = "generating";
+    }
+    return merged;
+  });
   const root = document.querySelector("#reviewGrid");
   if (!root) return;
-  root.innerHTML = shotReviewItems.map((item) => `<article class="review-card ${item.keep ? "keep" : "reject"}" data-review-index="${item.index}">
-    <button class="review-thumb-button" data-review-thumb="${item.index}"><img class="review-thumb" src="${item.thumbnail || ""}" alt="${escapeHtml(item.landmark || item.source || `Shot ${item.index + 1}`)}" /></button>
+  root.innerHTML = shotReviewItems.map((item) => {
+    const alt = escapeHtml(item.landmark || item.source || `Shot ${item.index + 1}`);
+    const thumb = item.thumbnail
+      ? `<img class="review-thumb" src="${escapeHtml(item.thumbnail)}" alt="${alt}" />`
+      : `<span class="review-thumb-placeholder ${item.thumbnail_status === "failed" ? "failed" : "pending"}">${item.thumbnail_status === "failed" ? "Render failed" : "Generating…"}</span>`;
+    const error = item.thumbnail_status === "failed" && item.thumbnail_error
+      ? `<em class="review-thumb-error">${escapeHtml(item.thumbnail_error)}</em>` : "";
+    return `<article class="review-card ${item.keep ? "keep" : "reject"}" data-review-index="${item.index}">
+    <button class="review-thumb-button" data-review-thumb="${item.index}">${thumb}</button>
     <label class="review-keep"><input type="checkbox" data-review-keep="${item.index}" ${item.keep ? "checked" : ""}/> Keep</label>
     <strong>#${item.index + 1} · ${escapeHtml(item.source)}</strong>
     <span>${Number(item.duration_sec).toFixed(1)}s${item.landmark ? ` · ${escapeHtml(item.landmark)} frame` : ""}</span>
+    ${error}
     ${item.no_alternative ? '<em>No alternative coverage available</em>' : ""}
-  </article>`).join("");
+  </article>`;
+  }).join("");
+}
+
+function refreshShotReviewAfterReplace(attempt = 0) {
+  // Rendering time depends heavily on the source (especially 360 footage).
+  // Poll until the worker reports ready or failed; there is no arbitrary
+  // 10-second cutoff that can turn an in-flight render into a grey card.
+  const delay = Math.min(3000, 500 + attempt * 250);
+  setTimeout(() => {
+    api("/wizard/review?render=0")
+      .then((result) => {
+        const items = result.items || [];
+        renderShotReview(items);
+        const pending = items.some((item) => ["missing", "rendering", "generating"].includes(item.thumbnail_status) && !item.thumbnail_error);
+        if (pending) refreshShotReviewAfterReplace(attempt + 1);
+      })
+      .catch((error) => {
+        // A transient HTTP failure is still a pending render. Keep the old
+        // thumbnail in place and retry with the same adaptive backoff.
+        logFrontendError(`review thumbnail poll failed: ${error.message}`, error.stack || "");
+        refreshShotReviewAfterReplace(attempt + 1);
+      });
+  }, delay);
 }
 
 async function openShotReview() {
@@ -2280,7 +2439,14 @@ function renderSongOptions(songs) {
 
 async function waitForPreparedProject() {
   for (let attempt = 0; attempt < 240; attempt += 1) {
-    const status = await api("/wizard/status");
+    const projectQuery = activeProjectId ? `?project_id=${encodeURIComponent(activeProjectId)}` : "";
+    const status = await api(`/wizard/status${projectQuery}`);
+    const responseProjectId = projectIdFromStatus(status);
+    if (activeProjectId && responseProjectId && !sameProjectId(activeProjectId, responseProjectId)) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      continue;
+    }
+    if (!activeProjectId && responseProjectId) activeProjectId = responseProjectId;
     if (status.status === "waiting_choice") return;
     if (status.status === "done") return;
     if (status.status === "failed") throw new Error(status.error || S.prepareFailed);
@@ -2290,13 +2456,14 @@ async function waitForPreparedProject() {
 }
 
 async function startWizard(options = {}) {
-  const waitForPrepare = options.waitForPrepare !== false;
+  const waitForPrepare = options.waitForPrepare === true;
   const inputs = selectedInputs();
   lastPipelineStage = null;
   hideStageTransition();
   setStep(3);
   if (waitForPrepare && selectedPlatform !== "360") {
-    await api("/wizard/prepare", {
+    prepareHandoffInProgress = true;
+    const prepared = await api("/wizard/prepare", {
       method: "POST",
       body: JSON.stringify({
         name: document.querySelector("#videoName").value || todayName(),
@@ -2305,10 +2472,12 @@ async function startWizard(options = {}) {
         videos: inputs.videos,
       }),
     });
+    activeProjectId = projectIdFromStatus(prepared) || activeProjectId;
     ensureStatusPolling();
     await waitForPreparedProject();
+    prepareHandoffInProgress = false;
   }
-  await api("/wizard/start", {
+  const started = await api("/wizard/start", {
     method: "POST",
     body: JSON.stringify({
       name: document.querySelector("#videoName").value || todayName(),
@@ -2332,8 +2501,9 @@ async function startWizard(options = {}) {
       videos: inputs.videos,
     }),
   });
+  activeProjectId = projectIdFromStatus(started) || activeProjectId;
   ensureStatusPolling();
-  await pollStatus();
+  await pollStatus(statusPollGeneration);
 }
 
 async function cancelWizard() {
@@ -2377,8 +2547,9 @@ function secondsToTime(seconds) {
 
 function ensureStatusPolling() {
   if (!pollTimer) {
+    const generation = statusPollGeneration;
     pollTimer = setInterval(() => {
-      pollStatus().catch((error) => {
+      pollStatus(generation).catch((error) => {
         logFrontendError(`pollStatus failed: ${error.message}`, error.stack || "");
         showToast(`${S.statusUpdateFailed}: ${error.message}`, true);
       });
@@ -2386,8 +2557,13 @@ function ensureStatusPolling() {
   }
 }
 
-async function pollStatus() {
-  const status = await api("/wizard/status");
+async function pollStatus(generation = statusPollGeneration) {
+  const projectQuery = activeProjectId ? `?project_id=${encodeURIComponent(activeProjectId)}` : "";
+  const status = await api(`/wizard/status${projectQuery}`);
+  if (generation !== statusPollGeneration) return;
+  const responseProjectId = projectIdFromStatus(status);
+  if (activeProjectId && responseProjectId && !sameProjectId(activeProjectId, responseProjectId)) return;
+  if (!activeProjectId && responseProjectId) activeProjectId = responseProjectId;
   renderWizardStatus(status);
   const details = document.querySelector("#progressDetails");
   if (details?.open && Date.now() - lastProgressReportAt > 2500) {
@@ -2489,6 +2665,12 @@ function playfulProgressMessage(rawMessage) {
 
 function renderWizardStatus(status) {
   latestStatus = status;
+  for (const warning of status.input_warnings || []) {
+    if (!inputWarningsShown.has(warning)) {
+      inputWarningsShown.add(warning);
+      showToast(warning, true);
+    }
+  }
   const reportedProgress = Math.max(0, Math.min(100, Number(status.progress || 0)));
   const progress = Math.max(progressFloor, reportedProgress);
   const progressBox = document.querySelector("#progressBox");
@@ -2496,7 +2678,11 @@ function renderWizardStatus(status) {
   const platform = selectedPlatform || status.result?.platform || "";
   const stage = status.stage || "";
   if (status.status === "waiting_choice") {
-    if (selectedPlatform) {
+    // The strip is a live-progress affordance. A terminal sync response must
+    // clear it even though this branch intentionally avoids repainting the
+    // progress card while the edit-type screen is being restored.
+    renderStatusStrip(status, progress);
+    if (prepareHandoffInProgress) {
       // The mode was already chosen before Prepare/Sync. Keep the user in the
       // progress view while the prepared project is handed directly to Cut.
       setStep(3);
@@ -2507,12 +2693,22 @@ function renderWizardStatus(status) {
         lastPipelineStage = "sync-ready";
       }
     } else {
+      if (progressBox) progressBox.hidden = true;
+      stopStatusPolling();
+      resetProgressTiming();
+      document.querySelector("#progressBar").style.width = "0%";
+      document.querySelector("#progressPercent").textContent = "0%";
+      document.querySelector("#progressMessage").textContent = status.message || "Ready to edit";
+      document.querySelector("#progressDetail").textContent = status.detail || "Choose an edit type";
+      document.querySelector("#elapsedTime").textContent = `${S.elapsed}: 0 s`;
+      document.querySelector("#etaTime").textContent = `${S.eta}: estimating…`;
       setStep(2);
     }
     return;
   }
   if (status.status === "running") {
     setStep(3);
+    if (stage && stage !== lastPipelineStage) stopAllPreviewAudio();
     if (stage === "cut" && lastPipelineStage !== "cut") {
       if (platform === "youtube") showYouTubeSyncToCut();
       else if (platform === "reel") showReelSyncToCut();
@@ -2542,9 +2738,7 @@ function renderWizardStatus(status) {
           showToast(error.message, true);
         });
     }
-    clearInterval(pollTimer);
-    pollTimer = null;
-    setStep(3);
+    stopStatusPolling();
     return;
   }
   if (status.status === "running" || status.status === "failed" || status.status === "done") {
@@ -2565,18 +2759,30 @@ function renderWizardStatus(status) {
     document.querySelector("#progressTitle").textContent = "Creating your video";
   }
   if (status.status === "failed") {
-    clearInterval(pollTimer);
-    pollTimer = null;
+    stopStatusPolling();
     document.querySelector("#errorText").textContent = status.error || S.failedTitle;
+    const proceedButton = document.querySelector("#proceedAnyway");
+    const continueButton = document.querySelector("#continueWithoutVideo");
+    const proceedWarning = document.querySelector("#proceedAnywayWarning");
+    const canProceedAnyway = status.proceed_anyway_available === true;
+    const canContinueWithoutVideo = status.continue_without_video_available === true;
+    if (proceedButton) {
+      proceedButton.hidden = !canProceedAnyway;
+      proceedButton.disabled = false;
+    }
+    if (continueButton) {
+      continueButton.hidden = !canContinueWithoutVideo;
+      continueButton.disabled = false;
+    }
+    if (proceedWarning) proceedWarning.hidden = !canProceedAnyway;
     document.querySelector("#resultTitle").textContent = S.failedTitle;
     document.querySelector("#errorBox").hidden = false;
     document.querySelector("#resultBox").hidden = true;
     refreshProgressReport().catch((error) => logFrontendError(`progress report failed: ${error.message}`, error.stack || ""));
-    setStep(4);
+    setStep(5);
   }
   if (status.status === "done") {
-    clearInterval(pollTimer);
-    pollTimer = null;
+    stopStatusPolling();
     latestResult = status.result;
     document.querySelector("#progressTitle").textContent = S.doneTitle;
     document.querySelector("#resultTitle").textContent = S.doneTitle;
@@ -2610,20 +2816,15 @@ function renderWizardStatus(status) {
     }
     document.querySelector("#errorBox").hidden = true;
     document.querySelector("#resultBox").hidden = false;
-    setStep(4);
+    setStep(5);
   }
   if (status.status === "cancelled") {
-    clearInterval(pollTimer);
-    pollTimer = null;
+    stopStatusPolling();
     document.querySelector("#errorText").textContent = "Export cancelled.";
     document.querySelector("#resultTitle").textContent = "Cancelled";
     document.querySelector("#errorBox").hidden = false;
     document.querySelector("#resultBox").hidden = true;
-    setStep(4);
-  }
-  if (status.status === "waiting_choice") {
-    clearInterval(pollTimer);
-    pollTimer = null;
+    setStep(5);
   }
 }
 
@@ -2824,6 +3025,7 @@ async function openRescue(clipId, offset) {
   document.querySelector("#rescueTitle").textContent = `${S.rescueCamera || "Rescue camera"}: ${fate.filename || clipId}`;
   document.querySelector("#rescueMeta").textContent = `${fate.reason || ""}${fate.confidence == null ? "" : ` · confidence ${Number(fate.confidence).toFixed(1)}`}`;
   document.querySelector("#rescueOffset").value = Number(offset || fate.offset_sec || 0).toFixed(3);
+  document.querySelector("#rescueOffsetRanges").value = "";
   const preview = await api(`/stages/sync/preview/${encodeURIComponent(clipId)}`);
   document.querySelector("#rescuePreview").src = `${preview.media_url}?t=${Date.now()}`;
   panel.hidden = false;
@@ -2832,8 +3034,19 @@ async function openRescue(clipId, offset) {
 
 async function confirmRescue() {
   if (!rescueClipId) return;
+  const rangesText = document.querySelector("#rescueOffsetRanges").value.trim();
+  let ranges = null;
+  if (rangesText) {
+    try {
+      ranges = JSON.parse(rangesText);
+      if (!Array.isArray(ranges)) throw new Error("Ranges must be a JSON array");
+    } catch (error) {
+      showToast(`${S.invalidOffset || "Invalid offset"}: ${error.message}`, true);
+      return;
+    }
+  }
   const offset = Number(document.querySelector("#rescueOffset").value);
-  if (!Number.isFinite(offset)) {
+  if (!ranges && !Number.isFinite(offset)) {
     showToast(S.invalidOffset || "Enter a valid offset", true);
     return;
   }
@@ -2845,9 +3058,10 @@ async function confirmRescue() {
     sphericalPanel.dataset.initialized = "";
   }
   setStep(3);
-  await api("/wizard/rescue", { method: "POST", body: JSON.stringify({ clip_id: rescueClipId, offset_sec: offset }) });
+  const body = ranges ? { clip_id: rescueClipId, offset_ranges: ranges } : { clip_id: rescueClipId, offset_sec: offset };
+  await api("/wizard/rescue", { method: "POST", body: JSON.stringify(body) });
   ensureStatusPolling();
-  await pollStatus();
+  await pollStatus(statusPollGeneration);
 }
 
 async function revealNative(path, label) {
@@ -2871,7 +3085,14 @@ async function refreshProgressReport() {
   lastProgressReportAt = Date.now();
   const response = await fetch("/api/v1/wizard/report");
   const text = await response.text();
-  document.querySelector("#progressReport").textContent = text || "No details yet.";
+  const report = document.querySelector("#progressReport");
+  if (!report) return;
+  const wasNearBottom = report.scrollHeight - report.scrollTop - report.clientHeight <= 24;
+  report.textContent = text || "No details yet.";
+  const details = document.querySelector("#progressDetails");
+  // Keep the live tail visible, but never yank the user away from an older
+  // line they deliberately scrolled up to inspect.
+  if (details?.open && wasNearBottom) report.scrollTop = report.scrollHeight;
 }
 
 function escapeHtml(value) {
@@ -2908,11 +3129,24 @@ document.addEventListener("click", (event) => {
   if (target.id === "closeReviewLarge" || target.id === "reviewLargeModal") document.querySelector("#reviewLargeModal").hidden = true;
   if (target.id === "replaceRejected") {
     const rejected = shotReviewItems.filter((item) => !item.keep).map((item) => Number(item.index));
-    api("/wizard/review/replace", { method: "POST", body: JSON.stringify({ rejected }) }).then((result) => renderShotReview(result.items || [])).catch((error) => showToast(error.message, true));
+    if (!rejected.length) { showToast("Select at least one shot to replace", true); return; }
+    target.disabled = true;
+    api("/wizard/review/replace", { method: "POST", body: JSON.stringify({ rejected }) })
+      .then((result) => {
+        renderShotReview(result.items || []);
+        const unavailable = result.replacement_diagnostics?.filter((item) => item.status === "unavailable") || [];
+        if (unavailable.length) {
+          const indexes = unavailable.map((item) => `#${Number(item.index) + 1}`).join(", ");
+          showToast(`No alternative coverage for ${indexes}. The shot was kept and marked unavailable.`);
+        }
+        if ((result.replaced || []).length) refreshShotReviewAfterReplace();
+      })
+      .catch((error) => showToast(error.message, true))
+      .finally(() => { target.disabled = false; });
   }
   if (target.id === "renderReviewed") {
     if (shotReviewItems.some((item) => !item.keep)) { showToast("Replace or re-approve rejected shots before rendering", true); return; }
-    api("/wizard/review/render", { method: "POST" }).then(() => { document.querySelector("#reviewBox").hidden = true; document.querySelector("#progressBox").hidden = false; setStep(3); ensureStatusPolling(); return pollStatus(); }).catch((error) => showToast(error.message, true));
+    api("/wizard/review/render", { method: "POST" }).then((started) => { activeProjectId = projectIdFromStatus(started) || activeProjectId; document.querySelector("#reviewBox").hidden = true; document.querySelector("#progressBox").hidden = false; setStep(3); ensureStatusPolling(); return pollStatus(statusPollGeneration); }).catch((error) => showToast(error.message, true));
   }
   if (target.id === "reuseReelOverlays") {
     api("/wizard/overlays").then((saved) => { reelTextOverlays = saved.texts || []; reelImageOverlays = saved.images || []; renderReelOptions(); }).catch((error) => showToast(error.message, true));
@@ -2931,10 +3165,12 @@ document.addEventListener("click", (event) => {
   }
   if (target.id === "showAllClips") restoreSetAsideVideos();
   if (target.id === "scanInbox") {
-    api("/inbox/analysis/start", { method: "POST" })
+    loadInbox()
+      .then(() => api("/inbox/analysis/start", { method: "POST" }))
       .then((status) => { inboxAnalysis = status; renderInboxAnalysisStatus(); scheduleInboxAnalysisRefresh(); })
       .catch((error) => showToast(error.message, true));
   }
+  if (target.id === "addMasterVideos") addVideosForSelectedMaster();
   if (target.id === "addSourceFolder") {
     const input = document.querySelector("#sourceFolderPath");
     const folder = input?.value.trim() || "";
@@ -2972,7 +3208,16 @@ document.addEventListener("click", (event) => {
   if (target.id === "refreshProjects") loadProjects().catch((error) => showToast(error.message, true));
   const stepNav = target.closest?.("[data-step-nav]");
   if (stepNav instanceof HTMLElement) {
-    setStep(Number(stepNav.dataset.stepNav));
+    const requestedStep = Number(stepNav.dataset.stepNav);
+    setStep(requestedStep);
+    // Re-entering Review after wizard navigation must restore the persisted
+    // cards.  Keeping the old in-memory array made Replace operate on stale
+    // frames after a back/forward navigation.
+    if (requestedStep === 4 && latestStatus?.status === "waiting_review") {
+      document.querySelector("#progressBox")?.setAttribute("hidden", "");
+      document.querySelector("#reviewBox")?.removeAttribute("hidden");
+      openShotReview().catch((error) => showToast(error.message, true));
+    }
   }
   const removeButton = target.closest?.("[data-remove-kind]");
   if (removeButton instanceof HTMLElement) {
@@ -3024,6 +3269,40 @@ document.addEventListener("click", (event) => {
       .then(() => startWizard({ waitForPrepare: false }))
       .catch((error) => showToast(error.message, true));
   }
+  if (target.id === "proceedAnyway") {
+    target.disabled = true;
+    document.querySelector("#errorBox").hidden = true;
+    document.querySelector("#resultBox").hidden = true;
+    document.querySelector("#progressTitle").textContent = "Creating your video";
+    setStep(3);
+    api("/wizard/proceed-anyway", { method: "POST", body: JSON.stringify({ mode: "proceed_anyway" }) })
+      .then((started) => {
+        activeProjectId = projectIdFromStatus(started) || activeProjectId;
+        ensureStatusPolling();
+        return pollStatus(statusPollGeneration);
+      })
+      .catch((error) => {
+        target.disabled = false;
+        showToast(error.message, true);
+      });
+  }
+  if (target.id === "continueWithoutVideo") {
+    target.disabled = true;
+    document.querySelector("#errorBox").hidden = true;
+    document.querySelector("#resultBox").hidden = true;
+    document.querySelector("#progressTitle").textContent = "Creating your video";
+    setStep(3);
+    api("/wizard/proceed-anyway", { method: "POST", body: JSON.stringify({ mode: "continue_without_video" }) })
+      .then((started) => {
+        activeProjectId = projectIdFromStatus(started) || activeProjectId;
+        ensureStatusPolling();
+        return pollStatus(statusPollGeneration);
+      })
+      .catch((error) => {
+        target.disabled = false;
+        showToast(error.message, true);
+      });
+  }
   if (target.id === "again") {
     document.querySelector("#errorBox").hidden = true;
     document.querySelector("#resultBox").hidden = true;
@@ -3056,6 +3335,13 @@ document.addEventListener("click", (event) => {
   }
   if (target.closest?.("#confirmRescue")) {
     confirmRescue().catch((error) => showToast(error.message, true));
+  }
+});
+
+document.addEventListener("change", (event) => {
+  const target = event.target;
+  if (target instanceof HTMLInputElement && target.id === "personalLogoInput") {
+    savePersonalLogo(target.files?.[0]).catch((error) => showToast(error.message, true));
   }
 });
 
@@ -3135,7 +3421,10 @@ document.addEventListener("pointerup", () => { if (reelDrag) { reelDrag = null; 
 document.addEventListener("toggle", (event) => {
   const target = event.target;
   if (target instanceof HTMLDetailsElement && target.id === "progressDetails" && target.open) {
-    refreshProgressReport().catch((error) => showToast(error.message, true));
+    refreshProgressReport().then(() => {
+      const report = document.querySelector("#progressReport");
+      if (report) report.scrollTop = report.scrollHeight;
+    }).catch((error) => showToast(error.message, true));
   }
 }, true);
 
@@ -3149,6 +3438,7 @@ document.addEventListener("change", (event) => {
     analysisSetAsideVideos = [];
     setAsideVideos = [];
     sessionFilterDisabled = false;
+    renderInboxAnalysisStatus();
     renderChips();
   }
   if (target instanceof HTMLSelectElement && target.id === "masterSelect") {
@@ -3160,6 +3450,7 @@ document.addEventListener("change", (event) => {
     // inheriting the previous song's filtering.
     detected.videos = [...detected.videos, ...setAsideVideos];
     setAsideVideos = [];
+    renderInboxAnalysisStatus();
     renderChips();
   }
   if (target instanceof HTMLInputElement && target.name === "sphericalMode") {
@@ -3209,10 +3500,9 @@ async function boot() {
   await loadAppConfig();
   restoreSelectedPlatform();
   const status = await api("/wizard/status");
+  activeProjectId = projectIdFromStatus(status);
   if (["running", "waiting_choice", "done", "failed"].includes(status.status)) {
     await resumeInputsFromProject().catch(() => {});
-  } else {
-    await loadInbox();
   }
   await loadProjects().catch(() => {});
   renderWizardStatus(status);
@@ -3222,7 +3512,7 @@ async function boot() {
   } else if (status.status === "waiting_choice") {
     setStep(2);
   } else if (status.status === "done" || status.status === "failed") {
-    setStep(4);
+    setStep(5);
   }
 }
 
