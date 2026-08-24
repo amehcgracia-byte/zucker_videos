@@ -1357,7 +1357,7 @@ class BackstageExportStage(Stage):
                     f"[{video_current}][{video_labels[index]}]xfade=transition=fade:duration={fade:.3f}:"
                     f"offset={max(0.0, current_duration - fade):.3f}[{video_out}]"
                 )
-                audio_fade = min(max(fade, float(segments[index].get("j_cut_sec") or 0.45), float(segments[index - 1].get("l_cut_sec") or 0.45)), current_duration / 3.0, duration / 3.0)
+                audio_fade = min(max(BACKSTAGE_AUDIO_CROSSFADE, fade), current_duration / 3.0, duration / 3.0)
                 filters.append(f"[{audio_current}][{audio_labels[index]}]acrossfade=d={max(0.05, audio_fade):.3f}:c1=tri:c2=tri[{audio_out}]")
                 video_current = video_out
                 audio_current = audio_out
