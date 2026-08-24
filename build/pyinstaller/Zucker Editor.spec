@@ -2,7 +2,7 @@
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_submodules
 
-datas = [('/Users/macbookair/zucker_videos/web', 'web'), ('/Users/macbookair/zucker_videos/assets/intro_card_watermark.png', 'assets'), ('/Users/macbookair/zucker_videos/assets/models', 'assets/models'), ('/Users/macbookair/zucker_videos/core/vendor', 'core/vendor'), ('/System/Library/Fonts/Supplemental/Verdana Bold.ttf', 'assets/fonts'), ('/System/Library/Fonts/Supplemental/Arial.ttf', 'assets/fonts'), ('/Users/macbookair/zucker_videos/build/build_info.json', '.')]
+datas = [('/Users/macbookair/zucker_videos/web', 'web'), ('/Users/macbookair/zucker_videos/assets/intro_card_watermark.png', 'assets'), ('/Users/macbookair/zucker_videos/assets/models', 'assets/models'), ('/Users/macbookair/zucker_videos/assets/parchment_full.png', 'assets'), ('/Users/macbookair/zucker_videos/core/vendor', 'core/vendor'), ('/System/Library/Fonts/Supplemental/Verdana Bold.ttf', 'assets/fonts'), ('/System/Library/Fonts/Supplemental/Arial.ttf', 'assets/fonts'), ('/System/Library/Fonts/Supplemental/BigCaslon.ttf', 'assets/fonts'), ('/Users/macbookair/zucker_videos/build/build_info.json', '.')]
 hiddenimports = ['librosa', 'cv2', 'scipy.signal', 'soundfile', 'audioread', 'numba', 'llvmlite', 'server.api', 'faster_whisper', 'onnxruntime', 'tokenizers', 'ctranslate2']
 datas += collect_data_files('faster_whisper')
 datas += collect_data_files('whisper')
