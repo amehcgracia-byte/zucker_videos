@@ -9,7 +9,9 @@ from typing import Any
 
 from core.media_validation import record_is_usable_camera_video
 from core.messages import t
+from core.ffmpeg import ffprobe
 from core.project import Project
+from core.operator_avoidance import role_for_record
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.sync import load_song_boundaries, load_sync_map, sync_confidence_threshold
 
@@ -25,19 +27,23 @@ class CutStage(Stage):
     """Plan usable synced clip coverage for the requested wizard window."""
 
     name = "cut"
-    dependencies = ["sync"]
+    # Sync is a YouTube/360 concern. The engine adds it conditionally for
+    # those modes; Reel is deliberately an ingest-only source selection path.
+    dependencies: list[str] = []
 
     def inputs_fingerprint(self, project: Project) -> str:
         """Fingerprint sync output and cut settings."""
+        platform = str(project.data.get("settings", {}).get("wizard", {}).get("platform") or "youtube")
         return stable_fingerprint(
             {
                 # The sync stage can be rerun directly (reopen, manual
                 # override, or a second sync pass) without changing its input
                 # fingerprint.  Cut must follow the artifact actually read.
-                "sync": load_sync_map(project, missing_ok=True),
+                "sync": None if platform == "reel" else load_sync_map(project, missing_ok=True),
                 "songs": project.data["inputs"].get("songs"),
                 "settings": project.data["settings"].get(self.name, {}),
                 "algorithm_version": COVERAGE_ALGORITHM_VERSION,
+                "platform": platform,
             }
         )
 
@@ -47,11 +53,16 @@ class CutStage(Stage):
 
     def run(self, project: Project, progress_callback: ProgressCallback) -> dict[str, Any]:
         """Write a simple coverage plan consumed by export."""
-        progress_callback(20, t("reading_sync"))
-        sync_map = load_sync_map(project) or {}
         wizard = project.data["settings"].get("wizard", {})
         platform = str(wizard.get("platform") or "youtube")
-        selection = _selectable_synced_clips(project, sync_map, allow_unsynced=platform in {"360", "reel"})
+        if platform == "reel":
+            progress_callback(20, "Reading unsynchronised Reel sources")
+            sync_map = {}
+            selection = _selectable_reel_clips(project)
+        else:
+            progress_callback(20, t("reading_sync"))
+            sync_map = load_sync_map(project) or {}
+            selection = _selectable_synced_clips(project, sync_map, allow_unsynced=platform == "360")
         if platform == "youtube" and bool(wizard.get("proceed_anyway")):
             # This is an explicit escape hatch for the earlier sync failure
             # flow. It must never be implicit: normal YouTube coverage is
@@ -74,8 +85,22 @@ class CutStage(Stage):
             raise ValueError(_diagnostic_error_message(diagnostics))
         songs = load_song_boundaries(project)
         song_choice = wizard.get("song_choice")
-        window = _selected_window(songs, song_choice, sync_map, wizard)
-        window, coverage_warnings = _tighten_window_to_video_coverage(window, selection["clips"], platform=platform)
+        # Reel has no sync coverage constraint.  When it has no sync map,
+        # derive the available music window from the master itself so an old
+        # 60-second fallback cannot clamp an audio trim such as 143–203s to
+        # the final one second of that fallback.
+        if platform == "reel" and not sync_map:
+            reel_sync_metadata = {}
+            master_path = str((project.data.get("inputs", {}).get("master") or {}).get("path") or "")
+            try:
+                reel_sync_metadata["master_duration_sec"] = float((ffprobe(master_path).get("format") or {}).get("duration") or 0.0)
+            except (OSError, TypeError, ValueError, RuntimeError):
+                reel_sync_metadata = {}
+            window = _selected_window(songs, song_choice, reel_sync_metadata, wizard)
+            coverage_warnings = []
+        else:
+            window = _selected_window(songs, song_choice, sync_map, wizard)
+            window, coverage_warnings = _tighten_window_to_video_coverage(window, selection["clips"], platform=platform)
         if platform == "reel":
             reel_duration = max(REEL_MIN_DURATION_SEC, min(REEL_MAX_DURATION_SEC, float(wizard.get("reel_duration_sec") or REEL_DEFAULT_DURATION_SEC)))
             # The Reel music bed is the exact master Start/End selection. The
@@ -373,6 +398,37 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any], *, allo
                 f"{diagnostic['filename']} has inconsistent sync checks but is enabled by a manual override."
             )
     return {"clips": selected, "warnings": warnings, "diagnostics": diagnostics, "excluded": excluded}
+
+
+def _selectable_reel_clips(project: Project) -> dict[str, Any]:
+    """Build Reel sources directly from ingest; sync is intentionally absent."""
+    selected: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
+    for record in project.data.get("inputs", {}).get("videos", []):
+        path = str((record.get("normalized") or {}).get("path") or record.get("path") or "")
+        if not path or not record_is_usable_camera_video(record):
+            excluded.append({"filename": record.get("filename") or Path(path).name, "reason": t("not_usable_camera_video")})
+            continue
+        probe = record.get("probe") or {}
+        original_filename = record.get("filename") or Path(str(record.get("path") or path)).name
+        projection = record.get("projection") or probe.get("projection")
+        clip = {
+            "clip_id": record.get("cache_key") or record.get("path"),
+            "path": path,
+            "source_path": str(record.get("path") or path),
+            "filename": original_filename,
+            "duration_sec": float(probe.get("duration") or record.get("duration") or 0.0),
+            "projection": projection,
+            "camera_role": role_for_record(str(projection or ""), str(original_filename)),
+            "probe": probe,
+            "offset_sec": 0.0,
+        }
+        if record.get("reel_framing"):
+            clip["reel_framing"] = record["reel_framing"]
+        selected.append(clip)
+        diagnostics.append({"filename": clip["filename"], "valid_video": True, "sync": "not_run", "path": path})
+    return {"clips": selected, "warnings": [], "diagnostics": diagnostics, "excluded": excluded}
 
 
 def _exclusion_reason(diagnostic: dict[str, Any], *, allow_unsynced: bool = False, allow_unsynced_360: bool | None = None, allow_unstable: bool = False) -> str | None:

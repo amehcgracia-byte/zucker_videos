@@ -78,6 +78,20 @@ def test_engine_marks_downstream_stale_when_upstream_reruns(tmp_path):
     assert project.data["stages"]["b"]["status"] == "stale"
 
 
+def test_reel_pipeline_plan_has_no_sync_dependency(tmp_path):
+    project = make_project(tmp_path)
+    project.data["settings"]["wizard"] = {"platform": "reel"}
+    engine = PipelineEngine()
+    assert engine._plan("cut", project) == ["cut"]
+
+
+def test_non_reel_cut_pipeline_keeps_sync_dependency(tmp_path):
+    project = make_project(tmp_path)
+    project.data["settings"]["wizard"] = {"platform": "youtube"}
+    engine = PipelineEngine()
+    assert engine._plan("cut", project) == ["ingest", "sync", "cut"]
+
+
 def test_engine_failure_marks_downstream_blocked(tmp_path):
     calls: list[str] = []
     engine = PipelineEngine()

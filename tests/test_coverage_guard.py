@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from core.coverage_guard import CoverageInvariantError, assert_all_dropbox_videos_used
+from core.coverage_guard import CoverageInvariantError, assert_all_dropbox_videos_used, reel_capacity_warning
 from core.project import create_project
 
 
@@ -61,3 +61,23 @@ def test_non_sync_gap_cannot_be_allowed(tmp_path):
     (project.artifacts_dir / "edit_plan.json").write_text(json.dumps(plan), encoding="utf-8")
     with pytest.raises(CoverageInvariantError):
         assert_all_dropbox_videos_used(project, allow_sync_missing=True)
+
+
+def test_reel_allows_only_physically_impossible_source_shortfall(tmp_path):
+    project = _project(tmp_path, used_second=False)
+    plan = json.loads((project.artifacts_dir / "edit_plan.json").read_text(encoding="utf-8"))
+    plan["platform"] = "reel"
+    plan["segments"] = plan["segments"][:1]
+    (project.artifacts_dir / "edit_plan.json").write_text(json.dumps(plan), encoding="utf-8")
+    assert reel_capacity_warning(project)
+    assert_all_dropbox_videos_used(project)
+
+
+def test_reel_still_blocks_omission_when_there_are_enough_slots(tmp_path):
+    project = _project(tmp_path, used_second=False)
+    plan = json.loads((project.artifacts_dir / "edit_plan.json").read_text(encoding="utf-8"))
+    plan["platform"] = "reel"
+    plan["segments"] = plan["segments"] * 2
+    (project.artifacts_dir / "edit_plan.json").write_text(json.dumps(plan), encoding="utf-8")
+    with pytest.raises(CoverageInvariantError):
+        assert_all_dropbox_videos_used(project)

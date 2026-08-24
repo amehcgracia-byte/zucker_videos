@@ -116,10 +116,30 @@ def coverage_gaps(project: Project) -> list[dict[str, Any]]:
     return _coverage_gaps(project)[0]
 
 
+def reel_capacity_warning(project: Project, gaps: list[dict[str, Any]] | None = None) -> str | None:
+    """Return a warning when a Reel has fewer cut slots than input videos.
+
+    A Reel with fewer slots than sources cannot satisfy literal one-segment
+    coverage.  This is the only Reel exception: genuine omissions when there
+    are enough slots remain a hard export error.
+    """
+    plan = _load_edit_plan(project)
+    videos = project.data.get("inputs", {}).get("videos") or []
+    segments = plan.get("segments") or []
+    missing = gaps if gaps is not None else _coverage_gaps(project)[0]
+    if str(plan.get("platform") or "").lower() != "reel" or not missing or len(segments) >= len(videos):
+        return None
+    return (
+        f"Reel coverage warning: {len(videos)} Drop box videos are available but "
+        f"the {len(segments)} available cuts cannot show every source. "
+        "The export will continue because full coverage is physically impossible."
+    )
+
+
 def assert_all_dropbox_videos_used(project: Project, *, allow_sync_missing: bool = False) -> None:
     """Fail unless every video is used, except explicit sync-only consent."""
     gaps, sync_only = _coverage_gaps(project)
-    if not gaps or (allow_sync_missing and sync_only):
+    if not gaps or (allow_sync_missing and sync_only) or reel_capacity_warning(project, gaps):
         return
     lines = ["Export blocked: every video in the Drop box must appear in at least one edit segment."]
     for gap in gaps:

@@ -59,7 +59,18 @@ def default_settings() -> dict[str, Any]:
             "sweep_speed_deg_per_sec": 20.0,
         },
         "spherical_landmarks": {},
-        "export": {"format": "mp4", "resolution": "source", "transiciones_suaves": False, "segment_workers": 2, "force_rerender_segments": False},
+        "export": {
+            "format": "mp4", "resolution": "source", "transiciones_suaves": False,
+            "segment_workers": 2, "force_rerender_segments": False,
+            # Mode-local defaults.  These are deliberately nested by mode so
+            # changing Reel timing cannot invalidate or alter YouTube/360.
+            "transitions": {
+                "youtube": {"duration": 0.12, "sections_only": True},
+                "reel": {"duration": 0.08, "every": 3},
+                "360": {"duration": 0.0},
+                "backstage": {"duration": 0.18},
+            },
+        },
     }
 
 

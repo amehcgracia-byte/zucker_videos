@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from core.project import Project, utc_now
+from core.project_lock import ProjectPipelineLock
 from core.stages.base import Stage
+from core.stages.backstage import BackstageAnalysisStage, BackstageEditStage, BackstageExportStage
 from core.stages.cut import CutStage
 from core.stages.edit import EditStage
 from core.stages.export import ExportStage
@@ -39,6 +41,8 @@ class PipelineEngine:
         self._lock = threading.RLock()
         self._current: dict[str, Any] | None = None
         self._future: Future[None] | None = None
+        self._project_folder: Path | None = None
+        self._project_lock: ProjectPipelineLock | None = None
 
     def shutdown(self) -> None:
         """Stop the background executor."""
@@ -66,18 +70,42 @@ class PipelineEngine:
             raise StageBlockedError(f"{stage_name} is not ready: {reasons}")
         with self._lock:
             if self._current is not None:
+                if self._project_folder == project.folder.resolve() and self._future is not None:
+                    return self._future
                 raise RuntimeError("A stage is already running")
+            project_lock = ProjectPipelineLock(project.folder)
+            if not project_lock.acquire():
+                raise RuntimeError("This project already has a pipeline running; reattaching is required")
             self._current = {"stage": stage_name, "percent": 0, "message": "Queued"}
+            self._project_folder = project.folder.resolve()
+            self._project_lock = project_lock
             self._future = self._executor.submit(self._run_and_clear, project, stage_name)
             return self._future
 
     def run_sync(self, project: Project, stage_name: str) -> None:
         """Run a stage synchronously; primarily used by tests."""
         self._require_stage(stage_name)
+        existing_future: Future[None] | None = None
         with self._lock:
             if self._current is not None:
-                raise RuntimeError("A stage is already running")
-            self._current = {"stage": stage_name, "percent": 0, "message": "Queued"}
+                if self._project_folder == project.folder.resolve():
+                    existing_future = self._future
+                else:
+                    raise RuntimeError("A stage is already running")
+            if existing_future is not None:
+                pass
+            else:
+                project_lock = ProjectPipelineLock(project.folder)
+                if not project_lock.acquire():
+                    raise RuntimeError("This project already has a pipeline running; reattach instead of starting another")
+                self._current = {"stage": stage_name, "percent": 0, "message": "Queued"}
+                self._project_folder = project.folder.resolve()
+                self._project_lock = project_lock
+        # Never wait for the worker while holding the engine lock: progress
+        # callbacks need that lock to publish completion.
+        if existing_future is not None:
+            existing_future.result()
+            return
         self._run_and_clear(project, stage_name)
 
     def _run_and_clear(self, project: Project, stage_name: str) -> None:
@@ -87,13 +115,17 @@ class PipelineEngine:
             with self._lock:
                 self._current = None
                 self._future = None
+                self._project_folder = None
+                if self._project_lock:
+                    self._project_lock.release()
+                    self._project_lock = None
 
     def _run_with_dependencies(self, project: Project, stage_name: str) -> None:
         project.refresh_input_records()
-        planned = self._plan(stage_name)
+        planned = self._plan(stage_name, project)
         reran: list[str] = []
         for name in planned:
-            stage = self.stages[name]
+            stage = self._stage_for_project(name, project)
             dependency_failure = self._first_failed_dependency(stage, project)
             if dependency_failure:
                 self._mark_blocked(project, name, dependency_failure)
@@ -115,6 +147,17 @@ class PipelineEngine:
             reran.append(name)
             self._mark_downstream_stale(project, name)
             project.save()
+
+    def _stage_for_project(self, stage_name: str, project: Project) -> Stage:
+        """Select the isolated Backstage implementation when requested."""
+        platform = str(project.data.get("settings", {}).get("wizard", {}).get("platform") or "youtube").lower()
+        if platform == "backstage":
+            return {
+                "cut": BackstageAnalysisStage(),
+                "edit": BackstageEditStage(),
+                "export": BackstageExportStage(),
+            }.get(stage_name, self.stages[stage_name])
+        return self.stages[stage_name]
 
     def _run_one(self, project: Project, stage: Stage, fingerprint: str) -> None:
         log = _stage_logger(project, stage.name)
@@ -166,7 +209,7 @@ class PipelineEngine:
         with self._lock:
             self._current = {"stage": stage_name, "percent": percent, "message": message}
 
-    def _plan(self, stage_name: str) -> list[str]:
+    def _plan(self, stage_name: str, project: Project) -> list[str]:
         seen: set[str] = set()
         ordered: list[str] = []
 
@@ -175,7 +218,12 @@ class PipelineEngine:
                 return
             self._require_stage(name)
             seen.add(name)
-            for dependency in self.stages[name].dependencies:
+            dependencies = list(self._stage_for_project(name, project).dependencies)
+            # Reel is intentionally unsynchronised. Cut has no static Sync
+            # dependency so this rule cannot leak into the Reel route.
+            if name == "cut" and str(project.data.get("settings", {}).get("wizard", {}).get("platform") or "youtube") not in {"reel", "backstage"}:
+                dependencies = ["sync"]
+            for dependency in dependencies:
                 visit(dependency)
             ordered.append(name)
 

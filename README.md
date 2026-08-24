@@ -427,14 +427,18 @@ tools/build_app.sh
 Outputs:
 
 ```text
-dist/Zucker Editor.app
 dist/Zucker Editor.dmg
 ```
 
-The build script ad-hoc signs the local app with:
+The app bundle is staged temporarily under `build/release/`, ad-hoc signed,
+self-tested, copied into the DMG, and removed from the hand-off directory. The
+`dist/` folder is deliberately left with only the installer so it cannot be
+mistaken for an installable app folder.
+
+During the build the app is ad-hoc signed with:
 
 ```bash
-codesign --force --deep -s - "dist/Zucker Editor.app"
+codesign --force --deep -s - "build/release/Zucker Editor.app"
 ```
 
 Distribution signing and notarization are out of scope.

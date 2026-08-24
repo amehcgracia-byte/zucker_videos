@@ -123,6 +123,11 @@
             <strong>360</strong>
             <span>Full 360 clip</span>
           </button>
+          <button class="platform-card" data-platform="backstage">
+            <span class="platform-glyph" data-glyph="backstage"></span>
+            <strong>Backstage</strong>
+            <span>Documentary diary with original camera audio</span>
+          </button>
         </div>
         <div id="songPicker" class="song-picker" hidden>
           <h2>Which song?</h2>
@@ -153,12 +158,27 @@
             <label>Duration <output id="reelDurationValue">30s</output><input id="reelDuration" type="range" min="20" max="60" step="1" value="30" /></label>
             <label>Aspect ratio<select id="reelAspect"><option value="9:16">9:16 vertical</option><option value="16:9">16:9 horizontal</option></select></label>
           </div>
-          <div class="setup-heading"><h2>Overlays</h2><span>Drag text in the preview. The dashed box is Instagram's safe zone.</span><button id="reuseReelOverlays" type="button" class="icon-button small">Reuse last overlays</button><button id="addReelText" type="button" class="icon-button small">Add text</button><label class="file-button">Add flyer<input id="addReelImage" type="file" accept="image/png,image/webp,image/jpeg" hidden /></label></div>
+          <div class="setup-heading"><h2>Overlays</h2><span>Drag text in the preview. The dashed box is Instagram's safe zone.</span><button id="reuseReelOverlays" type="button" class="icon-button small">Reuse last overlays</button><button id="addReelText" type="button" class="icon-button small">Add text</button><label class="file-button">Import flyer<input id="addReelImage" type="file" accept="image/png,image/webp,image/jpeg" hidden /></label></div>
+          <div id="reelFlyerLibrary" class="reel-flyer-library" aria-label="Saved flyers"></div>
           <div id="reelTextLines"></div>
           <div id="reelImageLines"></div>
           <label class="reel-playhead-label">Playhead <output id="reelPlayheadValue">0.0s</output><input id="reelPlayhead" type="range" min="0" max="30" step="0.1" value="0" /></label>
           <div id="reelTimeline" class="reel-timeline" aria-label="Reel overlay timeline"></div>
           <canvas id="reelPreview" width="360" height="640" aria-label="Live Reel text preview"></canvas>
+        </details>
+        <details id="backstageOptions" class="reel-options" hidden>
+          <summary>Backstage options</summary>
+          <div class="reel-option-grid">
+            <label>Montage duration <output id="backstageDurationValue">180s</output><input id="backstageDuration" type="range" min="30" max="240" step="5" value="180" /></label>
+          </div>
+          <p class="field-help">Choose the target length, up to 4 minutes. The story-bite selection adapts to it.</p>
+          <label class="field-label">Mensajes de pergamino (uno por campo; se repartirán por el montaje)</label>
+          <div class="backstage-messages">
+            <input id="backstageMessage1" type="text" maxlength="180" placeholder="Mensaje 1" />
+            <input id="backstageMessage2" type="text" maxlength="180" placeholder="Mensaje 2" />
+            <input id="backstageMessage3" type="text" maxlength="180" placeholder="Mensaje 3" />
+            <input id="backstageMessage4" type="text" maxlength="180" placeholder="Mensaje 4" />
+          </div>
         </details>
         <div id="cameraMix" class="camera-mix">
           <div class="setup-heading">
@@ -180,43 +200,6 @@
             </details>
           </div>
         </div>
-        <details id="sphericalSetup" class="spherical-setup" hidden>
-          <summary class="spherical-summary"><span>Configure 360 shots</span><small>Landmarks, Director mode, sweeps, and zoom</small></summary>
-          <div class="setup-heading">
-            <h2>360° Shot Setup</h2>
-            <button id="reuseSphericalSetup" class="icon-button small" data-icon="retry" type="button">Reuse last setup</button>
-          </div>
-          <p class="setup-hint">Choose whether Zucker Editor should use saved shot angles automatically or follow a live camera move you record.</p>
-          <div class="spherical-mode" id="sphericalMode">
-            <label><input type="radio" name="sphericalMode" value="automatic" checked /> <strong>Automatic</strong><span>Use my saved shot angles</span></label>
-            <label><input type="radio" name="sphericalMode" value="directed" /> <strong>Directed</strong><span>I'll move the camera myself</span></label>
-          </div>
-          <p class="setup-hint">Automatic is the safe default. Directed takes are visibly marked and their yaw is unwrapped and capped at 40°/s; switch back to Automatic here any time.</p>
-          <div id="directorEntry" class="director-entry">
-            <div>
-              <strong>Direct the 360 camera live</strong>
-              <span id="directorEntryStatus">Play the synced song, drag the 360 view, and record a camera move take.</span>
-            </div>
-            <button id="openDirector" class="primary icon-button" data-icon="sphere" type="button">Open 360 Director</button>
-          </div>
-          <label class="inline-toggle motion-toggle"><input id="sphericalMotion" type="checkbox" checked /> 360 hold motion: subtle <small>Unchecked = none; checked adds at most 0.75°/s of gentle presence.</small></label>
-          <div class="sweep-controls">
-            <label class="inline-toggle"><input id="sphericalSweep" type="checkbox" checked /> Sweep between 360 shots <small>Short-way sweeps at a constant angular speed.</small></label>
-            <label>Sweep speed <output id="sweepSpeedValue">60°/s</output><input id="sweepSpeed" type="range" min="30" max="120" step="1" value="60" /></label>
-          </div>
-          <div id="sphericalWarnings" class="setup-warning" hidden></div>
-          <p class="setup-hint">Drag any shot preview to aim it, scroll to zoom — the same way you move the 360 view. The exact numbers below update as you drag.</p>
-          <div class="spherical-fields">
-            <fieldset data-spherical-landmark="full_stage"><legend>Full stage</legend><img class="shot-preview" data-preview alt="" /><label>Direction <span class="range-copy">Left / Center / Right</span><input data-friendly="direction" type="range" min="-180" max="180" step="1" /></label><label>Height <span class="range-copy">Looking down / Eye level / Looking up</span><input data-friendly="height" type="range" min="-45" max="20" step="0.1" /></label><label>Zoom <span class="range-copy">Close-up / Wide shot</span><input data-friendly="zoom" type="range" min="65" max="300" step="0.1" /></label><label>How often<select data-friendly="frequency"><option value="0">Never</option><option value="1">Rarely</option><option value="5">Sometimes</option><option value="15">Often</option><option value="40">A lot</option></select></label><small class="raw-summary"></small><details class="advanced-shot"><summary>Advanced</summary><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>Exact zoom<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="singer"><legend>Singer</legend><img class="shot-preview" data-preview alt="" /><label>Direction <span class="range-copy">Left / Center / Right</span><input data-friendly="direction" type="range" min="-180" max="180" step="1" /></label><label>Height <span class="range-copy">Looking down / Eye level / Looking up</span><input data-friendly="height" type="range" min="-45" max="20" step="0.1" /></label><label>Zoom <span class="range-copy">Close-up / Wide shot</span><input data-friendly="zoom" type="range" min="65" max="300" step="0.1" /></label><label>How often<select data-friendly="frequency"><option value="0">Never</option><option value="1">Rarely</option><option value="5">Sometimes</option><option value="15">Often</option><option value="40">A lot</option></select></label><small class="raw-summary"></small><details class="advanced-shot"><summary>Advanced</summary><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>Exact zoom<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="drummer"><legend>Drummer</legend><img class="shot-preview" data-preview alt="" /><label>Direction <span class="range-copy">Left / Center / Right</span><input data-friendly="direction" type="range" min="-180" max="180" step="1" /></label><label>Height <span class="range-copy">Looking down / Eye level / Looking up</span><input data-friendly="height" type="range" min="-45" max="20" step="0.1" /></label><label>Zoom <span class="range-copy">Close-up / Wide shot</span><input data-friendly="zoom" type="range" min="65" max="300" step="0.1" /></label><label>How often<select data-friendly="frequency"><option value="0">Never</option><option value="1">Rarely</option><option value="5">Sometimes</option><option value="15">Often</option><option value="40">A lot</option></select></label><small class="raw-summary"></small><details class="advanced-shot"><summary>Advanced</summary><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>Exact zoom<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="left"><legend>Left side</legend><img class="shot-preview" data-preview alt="" /><label>Direction <span class="range-copy">Left / Center / Right</span><input data-friendly="direction" type="range" min="-180" max="180" step="1" /></label><label>Height <span class="range-copy">Looking down / Eye level / Looking up</span><input data-friendly="height" type="range" min="-45" max="20" step="0.1" /></label><label>Zoom <span class="range-copy">Close-up / Wide shot</span><input data-friendly="zoom" type="range" min="65" max="300" step="0.1" /></label><label>How often<select data-friendly="frequency"><option value="0">Never</option><option value="1">Rarely</option><option value="5">Sometimes</option><option value="15">Often</option><option value="40">A lot</option></select></label><small class="raw-summary"></small><details class="advanced-shot"><summary>Advanced</summary><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>Exact zoom<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="right"><legend>Right side</legend><img class="shot-preview" data-preview alt="" /><label>Direction <span class="range-copy">Left / Center / Right</span><input data-friendly="direction" type="range" min="-180" max="180" step="1" /></label><label>Height <span class="range-copy">Looking down / Eye level / Looking up</span><input data-friendly="height" type="range" min="-45" max="20" step="0.1" /></label><label>Zoom <span class="range-copy">Close-up / Wide shot</span><input data-friendly="zoom" type="range" min="65" max="300" step="0.1" /></label><label>How often<select data-friendly="frequency"><option value="0">Never</option><option value="1">Rarely</option><option value="5">Sometimes</option><option value="15">Often</option><option value="40">A lot</option></select></label><small class="raw-summary"></small><details class="advanced-shot"><summary>Advanced</summary><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>Exact zoom<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="audience"><legend>Audience</legend><img class="shot-preview" data-preview alt="" /><label>Direction <span class="range-copy">Left / Center / Right</span><input data-friendly="direction" type="range" min="-180" max="180" step="1" /></label><label>Height <span class="range-copy">Looking down / Eye level / Looking up</span><input data-friendly="height" type="range" min="-45" max="20" step="0.1" /></label><label>Zoom <span class="range-copy">Close-up / Wide shot</span><input data-friendly="zoom" type="range" min="65" max="300" step="0.1" /></label><label>How often<select data-friendly="frequency"><option value="0">Never</option><option value="1">Rarely</option><option value="5">Sometimes</option><option value="15">Often</option><option value="40">A lot</option></select></label><small class="raw-summary"></small><details class="advanced-shot"><summary>Advanced</summary><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>Exact zoom<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="audience_stage_wide"><legend>Audience + stage</legend><img class="shot-preview" data-preview alt="" /><label>Direction <span class="range-copy">Left / Center / Right</span><input data-friendly="direction" type="range" min="-180" max="180" step="1" /></label><label>Height <span class="range-copy">Looking down / Eye level / Looking up</span><input data-friendly="height" type="range" min="-45" max="20" step="0.1" /></label><label>Zoom <span class="range-copy">Close-up / Wide shot</span><input data-friendly="zoom" type="range" min="65" max="300" step="0.1" /></label><label>How often<select data-friendly="frequency"><option value="0">Never</option><option value="1">Rarely</option><option value="5">Sometimes</option><option value="15">Often</option><option value="40">A lot</option></select></label><small class="raw-summary"></small><details class="advanced-shot"><summary>Advanced</summary><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>Exact zoom<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="planet"><legend>Planet</legend><img class="shot-preview" data-preview alt="" /><label>Direction <span class="range-copy">Left / Center / Right</span><input data-friendly="direction" type="range" min="-180" max="180" step="1" /></label><label>Height <span class="range-copy">Looking down / Eye level / Looking up</span><input data-friendly="height" type="range" min="-45" max="20" step="0.1" /></label><label>Zoom <span class="range-copy">Close-up / Wide shot</span><input data-friendly="zoom" type="range" min="65" max="300" step="0.1" /></label><label>How often<select data-friendly="frequency"><option value="0">Never</option><option value="1">Rarely</option><option value="5">Sometimes</option><option value="15">Often</option><option value="40">A lot</option></select></label><small class="raw-summary"></small><details class="advanced-shot"><summary>Advanced</summary><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>Exact zoom<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></details></fieldset>
-          </div>
-        </details>
         <button id="startWizard" class="primary icon-button" data-icon="wand" disabled>Make it</button>
       </section>
 
@@ -271,6 +254,18 @@
           <div id="reviewLargeModal" class="review-large-modal" hidden role="dialog" aria-modal="true" aria-label="Enlarged shot"><button id="closeReviewLarge" class="review-large-close" type="button" aria-label="Close">×</button><img id="reviewLarge" alt="Selected shot" /></div>
           <div class="review-actions"><button id="replaceRejected" class="icon-button">Replace rejected</button><button id="renderReviewed" class="primary icon-button">Render approved shots</button></div>
         </div>
+        <div id="paperEditBox" class="review-box paper-edit-box" hidden>
+          <div class="review-ready-notice" role="status"><strong>Backstage paper edit ready</strong><span>Review the written sequence before any video render starts.</span></div>
+          <div id="storyboardBox" class="storyboard-box" hidden>
+            <h3 id="storyboardTitle">Storyboard narrativo</h3>
+            <p id="storyboardLogline" class="storyboard-logline"></p>
+            <div id="storyboardPlan" class="storyboard-plan"></div>
+            <details class="storyboard-music"><summary>Plan de música</summary><div id="storyboardMusic"></div></details>
+          </div>
+          <div id="paperEditSummary" class="review-intro"></div>
+          <div id="paperEditList" class="paper-edit-list"></div>
+          <div class="review-actions"><button id="approvePaperEdit" class="primary icon-button">Approve paper edit and render</button></div>
+        </div>
       </section>
 
       <section class="step" id="step5">
@@ -280,27 +275,26 @@
         </div>
         <div id="errorBox" class="error-box" hidden>
           <p id="errorText"></p>
-          <p id="proceedAnywayWarning" class="setup-warning" hidden>Automatic sync rejected every clip. You can continue with the best available offsets, but the sync may be imprecise.</p>
           <div class="result-actions">
-            <button id="proceedAnyway" class="primary icon-button" hidden>Proceed anyway</button>
-            <button id="continueWithoutVideo" class="icon-button" hidden>Continue without this video</button>
             <button id="openLogsError" class="icon-button desktop-only" data-icon="doc">Open logs</button>
-            <button id="retryWizard" class="icon-button" data-icon="retry">Retry</button>
+            <button id="startAgain" class="primary icon-button" data-icon="retry">Start Again</button>
           </div>
         </div>
         <div id="resultBox" class="result-box" hidden>
-          <video id="resultVideo" controls></video>
-          <div id="result360Player" class="director-stage" hidden>
-            <canvas id="result360Canvas"></canvas>
-            <video id="result360Video" playsinline preload="metadata" hidden></video>
-            <div id="result360Hud" class="director-hud">Drag to look around</div>
-          </div>
-          <div id="result360Controls" class="director-controls" hidden>
-            <button id="result360Play" class="icon-button" data-icon="play" type="button">Play</button>
-            <label class="director-scrub">
-              <span id="result360Time">00:00</span>
-              <input id="result360Scrub" type="range" min="0" max="1" step="0.01" value="0" />
-            </label>
+          <div id="unifiedResultPlayer" class="result-player">
+            <video id="resultVideo" controls></video>
+            <div id="result360Player" class="director-stage" hidden>
+              <canvas id="result360Canvas"></canvas>
+              <video id="result360Video" playsinline preload="metadata" hidden></video>
+              <div id="result360Hud" class="director-hud">Drag to look around</div>
+            </div>
+            <div id="result360Controls" class="director-controls" hidden>
+              <button id="result360Play" class="icon-button" data-icon="play" type="button">Play</button>
+              <label class="director-scrub">
+                <span id="result360Time">00:00</span>
+                <input id="result360Scrub" type="range" min="0" max="1" step="0.01" value="0" />
+              </label>
+            </div>
           </div>
           <p id="resultPlaybackWarning" class="result-summary" hidden></p>
           <strong id="resultFilename"></strong>
@@ -328,61 +322,16 @@
             <button id="openLogsSuccess" class="icon-button desktop-only" data-icon="doc">Open logs</button>
             <button id="retryWizardSuccess" class="icon-button" data-icon="retry">Retry</button>
             <button id="copyProgressReportResult" class="icon-button" data-icon="clipboard">Copy report</button>
-            <button id="fullscreenResult" class="icon-button" data-icon="play">Fullscreen</button>
             <button id="showFinder" class="icon-button desktop-only" data-icon="folder">Show in Finder</button>
             <button id="again" class="icon-button" data-icon="play">Make another</button>
           </div>
         </div>
       </section>
     </main>
-    <section id="directorScreen" class="director-screen" hidden>
-      <div class="director-shell">
-        <header class="director-header">
-          <div>
-            <strong>360 Director</strong>
-            <span id="directorStatus">Load the 360 proxy to direct a take.</span>
-          </div>
-          <button id="closeDirector" class="icon-button small" data-icon="arrow" type="button">Back</button>
-        </header>
-        <div class="director-stage">
-          <canvas id="directorCanvas"></canvas>
-          <video id="directorVideo" playsinline muted preload="metadata" hidden></video>
-          <audio id="directorAudio" preload="metadata" hidden></audio>
-          <div id="directorHud" class="director-hud">Yaw 0° · Pitch 0° · Shot width 100°</div>
-        </div>
-        <div id="directorProgress" class="director-progress" hidden>
-          <div class="progress-track"><div id="directorProgressBar"></div></div>
-          <span id="directorProgressText">Preparing preview...</span>
-        </div>
-        <div class="director-controls">
-          <button id="directorPlay" class="icon-button" data-icon="play" type="button">Play</button>
-          <label class="director-scrub">
-            <span id="directorTime">00:00</span>
-            <input id="directorScrub" type="range" min="0" max="1" step="0.01" value="0" />
-          </label>
-          <label>
-            Shot width
-            <input id="directorFov" type="range" min="65" max="300" step="0.1" value="100" />
-          </label>
-          <input id="directorTakeName" placeholder="Take name" />
-          <label>
-            Smoothing
-            <select id="directorSmoothing">
-              <option value="light">Light</option>
-              <option value="medium" selected>Medium</option>
-              <option value="strong">Strong</option>
-            </select>
-          </label>
-          <button id="directorRecord" class="icon-button" data-icon="sphere" type="button">Record camera moves</button>
-          <button id="directorPreviewTake" class="icon-button" data-icon="play" type="button" hidden>Preview smoothed</button>
-          <button id="directorSaveTake" class="icon-button" data-icon="clipboard" type="button" hidden>Save take</button>
-        </div>
-        <div id="directorTakes" class="director-takes"></div>
-      </div>
-    </section>
     <div id="toast" class="toast" hidden></div>
+    <div id="flyerPreviewModal" class="flyer-preview-modal" hidden role="dialog" aria-modal="true" aria-label="Flyer preview"><button id="closeFlyerPreview" class="flyer-preview-close" type="button" aria-label="Close">×</button><img id="flyerPreviewImage" alt="Flyer preview" /></div>
     <script src="/strings.js?v=editor-ui-4"></script>
     <script src="/native_bridge.js?v=editor-ui-4"></script>
-    <script src="/app.js?v=editor-ui-5"></script>
+    <script src="/app.js?v=editor-ui-6"></script>
   </body>
 </html>

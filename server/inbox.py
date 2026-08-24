@@ -49,6 +49,13 @@ def load_global_config() -> dict[str, Any]:
         save_global_config(config)
     config.setdefault("band_name", "")
     config.setdefault("handle", "")
+    config.setdefault("backstage_audio", {
+        "base_volume": 0.45,
+        "duck_ratio": 8.0,
+        "target_lufs": -16.0,
+        "states": ["music_only", "music_plus_clip_audio", "clip_audio_only"],
+        "transition_fade_sec": 1.0,
+    })
     inbox = Path(config.get("inbox_path") or app_home() / "Inbox").expanduser()
     inbox.mkdir(parents=True, exist_ok=True)
     config["inbox_path"] = str(inbox.resolve())

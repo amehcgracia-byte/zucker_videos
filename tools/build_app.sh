@@ -6,11 +6,13 @@ PYTHON="${PYTHON:-"$ROOT/.venv/bin/python"}"
 APP_NAME="Zucker Editor"
 DIST="$ROOT/dist"
 BUILD="$ROOT/build/pyinstaller"
+PYI_DIST="$ROOT/build/pyinstaller-dist"
+RELEASE="$ROOT/build/release"
 DMG_ROOT="$ROOT/build/dmg"
 DMG_RW="$ROOT/build/Zucker Editor.tmp.dmg"
 BUILD_INFO="$ROOT/build/build_info.json"
 DMG_PATH="$DIST/Zucker Editor.dmg"
-APP_BUNDLE="$DIST/$APP_NAME.app"
+APP_BUNDLE="$RELEASE/$APP_NAME.app"
 
 if [[ ! -x "$PYTHON" ]]; then
   echo "Python not found at $PYTHON. Create the venv and install requirements first." >&2
@@ -26,7 +28,8 @@ PY
 
 cd "$ROOT"
 "$PYTHON" tools/make_icon.py
-rm -rf "$APP_BUNDLE" "$DIST/$APP_NAME" "$BUILD" "$DMG_ROOT" "$DMG_PATH" "$DMG_RW"
+rm -rf "$APP_BUNDLE" "$PYI_DIST" "$DIST/$APP_NAME" "$BUILD" "$DMG_ROOT" "$DMG_PATH" "$DMG_RW"
+mkdir -p "$DIST" "$RELEASE"
 mkdir -p "$ROOT/build"
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 "$PYTHON" - <<PY
@@ -40,16 +43,22 @@ PY
   --windowed \
   --name "$APP_NAME" \
   --icon "$ROOT/assets/icon.icns" \
-  --distpath "$DIST" \
+  --distpath "$PYI_DIST" \
   --workpath "$BUILD" \
   --specpath "$BUILD" \
   --add-data "$ROOT/web:web" \
   --add-data "$ROOT/assets/intro_card_watermark.png:assets" \
   --add-data "$ROOT/assets/models:assets/models" \
+  --add-data "$ROOT/assets/parchment_full.png:assets" \
   --add-data "$ROOT/core/vendor:core/vendor" \
   --add-data "/System/Library/Fonts/Supplemental/Verdana Bold.ttf:assets/fonts" \
   --add-data "/System/Library/Fonts/Supplemental/Arial.ttf:assets/fonts" \
+  --add-data "/System/Library/Fonts/Supplemental/BigCaslon.ttf:assets/fonts" \
   --add-data "$BUILD_INFO:." \
+  --collect-data faster_whisper \
+  --collect-data whisper \
+  --collect-data onnxruntime \
+  --collect-data tokenizers \
   --hidden-import librosa \
   --hidden-import cv2 \
   --hidden-import scipy.signal \
@@ -58,6 +67,10 @@ PY
   --hidden-import numba \
   --hidden-import llvmlite \
   --hidden-import server.api \
+  --hidden-import faster_whisper \
+  --hidden-import onnxruntime \
+  --hidden-import tokenizers \
+  --hidden-import ctranslate2 \
   --collect-submodules server \
   --collect-submodules core \
   --exclude-module pytest \
@@ -68,16 +81,21 @@ PY
   --exclude-module numba.tests \
   "$ROOT/app.py"
 
-rm -rf "$DIST/$APP_NAME"
+rm -rf "$APP_BUNDLE"
+cp -R "$PYI_DIST/$APP_NAME.app" "$APP_BUNDLE"
+rm -rf "$PYI_DIST" "$DIST/$APP_NAME"
 find "$APP_BUNDLE" -type d -name tests -prune -exec rm -rf {} +
-find "$APP_BUNDLE" \( -iname '*pytest*' -o -iname '*_tests*' -o -iname '*tests*' \) -print -exec rm -rf {} +
+# Do not match arbitrary names containing "tests": NumPy legitimately ships
+# binaries such as numpy/core/_multiarray_tests.cpython-311-darwin.so.
+find "$APP_BUNDLE" \( -iname '*pytest*' -o -iname 'test_*.py' \) -print -exec rm -rf {} +
 
 codesign --force --deep -s - "$APP_BUNDLE"
 
 # A successful PyInstaller invocation is not enough: import the app and
 # initialize Flask from the actual frozen executable before making a DMG.
 SELFTEST_LOG="$ROOT/build/packaged-selftest.log"
-if ! "$APP_BUNDLE/Contents/MacOS/$APP_NAME" --selftest >"$SELFTEST_LOG" 2>&1; then
+SELFTEST_AUDIO="${ZUCKER_SELFTEST_AUDIO:-$HOME/ZuckerVideos/WizardUploads/C0130.MP4}"
+if ! ZUCKER_WHISPER_BACKEND=faster-whisper ZUCKER_SELFTEST_AUDIO="$SELFTEST_AUDIO" "$APP_BUNDLE/Contents/MacOS/$APP_NAME" --selftest >"$SELFTEST_LOG" 2>&1; then
   cat "$SELFTEST_LOG" >&2
   exit 1
 fi
@@ -148,5 +166,12 @@ fi
 hdiutil convert "$DMG_RW" -format UDZO -ov -o "$DMG_PATH"
 rm -f "$DMG_RW"
 
-echo "Built $APP_BUNDLE"
+# dist/ is the hand-off folder. Keep only the installer there so the
+# PyInstaller app bundle and its terminal launcher cannot be mistaken for the
+# thing Chema should install.
+rm -rf "$APP_BUNDLE" "$DIST/$APP_NAME" "$PYI_DIST"
+find "$DIST" -mindepth 1 -maxdepth 1 ! -name "$(basename "$DMG_PATH")" -exec rm -rf {} +
+
 echo "Built $DMG_PATH"
+echo "Installer hand-off directory contains:"
+find "$DIST" -maxdepth 1 -type f -print

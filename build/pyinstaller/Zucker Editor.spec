@@ -1,7 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_submodules
 
-hiddenimports = ['librosa', 'cv2', 'scipy.signal', 'soundfile', 'audioread', 'numba', 'llvmlite', 'server.api']
+datas = [('/Users/macbookair/zucker_videos/web', 'web'), ('/Users/macbookair/zucker_videos/assets/intro_card_watermark.png', 'assets'), ('/Users/macbookair/zucker_videos/assets/models', 'assets/models'), ('/Users/macbookair/zucker_videos/core/vendor', 'core/vendor'), ('/System/Library/Fonts/Supplemental/Verdana Bold.ttf', 'assets/fonts'), ('/System/Library/Fonts/Supplemental/Arial.ttf', 'assets/fonts'), ('/Users/macbookair/zucker_videos/build/build_info.json', '.')]
+hiddenimports = ['librosa', 'cv2', 'scipy.signal', 'soundfile', 'audioread', 'numba', 'llvmlite', 'server.api', 'faster_whisper', 'onnxruntime', 'tokenizers', 'ctranslate2']
+datas += collect_data_files('faster_whisper')
+datas += collect_data_files('whisper')
+datas += collect_data_files('onnxruntime')
+datas += collect_data_files('tokenizers')
 hiddenimports += collect_submodules('server')
 hiddenimports += collect_submodules('core')
 
@@ -10,7 +16,7 @@ a = Analysis(
     ['/Users/macbookair/zucker_videos/app.py'],
     pathex=[],
     binaries=[],
-    datas=[('/Users/macbookair/zucker_videos/web', 'web'), ('/Users/macbookair/zucker_videos/assets/intro_card_watermark.png', 'assets'), ('/Users/macbookair/zucker_videos/assets/models', 'assets/models'), ('/Users/macbookair/zucker_videos/core/vendor', 'core/vendor'), ('/System/Library/Fonts/Supplemental/Verdana Bold.ttf', 'assets/fonts'), ('/System/Library/Fonts/Supplemental/Arial.ttf', 'assets/fonts'), ('/Users/macbookair/zucker_videos/build/build_info.json', '.')],
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

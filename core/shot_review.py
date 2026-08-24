@@ -14,6 +14,7 @@ from core.ffmpeg import locate_executable
 from core.spherical_view import view_parameters
 from core.stages.base import artifact_path
 from core.stages.cut import load_coverage
+from core.stages.edit import IPHONE_CROP_TOP_LIMIT, _camera_id
 
 
 LOGGER = logging.getLogger(__name__)
@@ -43,10 +44,10 @@ def _thumbnail_filter(segment: dict[str, Any], color_profile: dict[str, Any] | N
     if color_profile:
         # Keep review frames visually consistent with the final render.  The
         # profile is computed once by export and passed through unchanged.
-        brightness = max(-0.08, min(0.08, float(color_profile.get("brightness_adjust") or 0.0)))
-        saturation = max(0.90, min(1.10, float(color_profile.get("saturation_adjust") or 1.0)))
-        red = max(-0.05, min(0.05, float(color_profile.get("red_balance") or 0.0)))
-        blue = max(-0.05, min(0.05, float(color_profile.get("blue_balance") or 0.0)))
+        brightness = max(-0.12, min(0.12, float(color_profile.get("brightness_adjust") or 0.0)))
+        saturation = max(0.86, min(1.16, float(color_profile.get("saturation_adjust") or 1.0)))
+        red = max(-0.12, min(0.12, float(color_profile.get("red_balance") or 0.0)))
+        blue = max(-0.12, min(0.12, float(color_profile.get("blue_balance") or 0.0)))
         correction = (
             f"eq=brightness={brightness:.4f}:saturation={saturation:.4f},"
             f"colorbalance=rs={red:.4f}:gs={-red * 0.35:.4f}:bs={-blue:.4f}:"
@@ -71,7 +72,7 @@ def _thumbnail_filter(segment: dict[str, Any], color_profile: dict[str, Any] | N
                 ) * progress
                 return (
                     f"{correction}scale=w='ceil(360*{zoom:.6f}/2)*2':h='ceil(202*{zoom:.6f}/2)*2':eval=frame,"
-                    f"crop=360:202:x='(iw-360)*{pan_x:.6f}':y='(ih-202)*{pan_y:.6f}',format=yuvj420p"
+                    f"crop=360:202:x='(iw-360)*{pan_x:.6f}':y='(ih-202)*max({IPHONE_CROP_TOP_LIMIT:.6f}+0.5/{zoom:.6f},{pan_y:.6f})',format=yuvj420p"
                 )
             except (TypeError, ValueError):
                 pass
@@ -155,6 +156,58 @@ def _candidate_covers_slot(candidate: dict[str, Any], segment: dict[str, Any], p
     coverage_start = float(candidate.get("offset_sec") or 0.0)
     coverage_end = coverage_start + max(0.0, float(candidate.get("duration_sec") or 0.0))
     return coverage_start <= master_start + 0.001 and coverage_end >= master_start + duration - 0.001
+
+
+def _review_candidate_pool(
+    coverage: dict[str, Any],
+    segments: list[dict[str, Any]],
+    segment: dict[str, Any],
+    platform: str,
+) -> tuple[list[dict[str, Any]], str]:
+    """Build real per-slot alternatives from source moments, not camera totals.
+
+    ``coverage.sources`` describes one record per camera and is sufficient for
+    coverage validation, but it is not a shot-review pool. The edit plan
+    already contains usable moments from every camera; retain those moments,
+    enrich them with sync metadata, and filter them against the rejected slot.
+    """
+    sources = list(coverage.get("sources") or [])
+    if not sources:
+        sources = list(coverage.get("segments") or [])
+    by_path: dict[str, list[dict[str, Any]]] = {}
+    for source in sources:
+        path = str(source.get("path") or source.get("clip_path") or source.get("source_path") or "")
+        if path:
+            by_path.setdefault(path, []).append(source)
+    pool: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    master_start = float(segment.get("master_start_sec") or 0.0)
+    for path, source_records in by_path.items():
+        for source in source_records:
+            candidate = dict(source)
+            if platform == "youtube":
+                candidate["clip_start_sec"] = max(0.0, master_start - float(source.get("offset_sec") or 0.0))
+            key = _candidate_key(candidate)
+            if key not in seen:
+                pool.append(candidate)
+                seen.add(key)
+    for planned in segments:
+        path = str(planned.get("clip_path") or planned.get("proxy_path") or planned.get("source_path") or "")
+        source = (by_path.get(path) or [None])[0]
+        if source is None:
+            continue
+        candidate = dict(source)
+        # Preserve the actual reviewed moment and its framing recipe.
+        for key in ("clip_start_sec", "motion", "spherical_shot", "projection", "shot_quality_score", "motion_score"):
+            if planned.get(key) is not None:
+                candidate[key] = planned[key]
+        if not _candidate_covers_slot(candidate, segment, platform):
+            continue
+        key = _candidate_key(candidate)
+        if key not in seen:
+            pool.append(candidate)
+            seen.add(key)
+    return pool, "coverage.sources+edit_plan.moments"
 
 
 def _render_status_path(root: Path) -> Path:
@@ -310,10 +363,6 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
     plan = _plan(project)
     segments = plan.get("segments") or []
     coverage = load_coverage(project)
-    pool = list(coverage.get("sources") or [])
-    pool_origin = "coverage.sources" if pool else "edit_plan.segments"
-    if not pool:
-        pool = list(segments)
     wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
     platform = str(coverage.get("platform") or wizard.get("platform") or plan.get("platform") or "generic")
     attempts = wizard.setdefault("review_attempts", {})
@@ -333,6 +382,7 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         # Migrate projects created before review_exclusions existed.
         tried.update(attempts.setdefault(slot, []))
         tried.update(_candidate_keys(segment))
+        pool, pool_origin = _review_candidate_pool(coverage, segments, segment, platform)
         candidates, counts = _replacement_candidates(pool, segment, tried, platform)
         if not candidates:
             unavailable.add(index)
@@ -368,6 +418,13 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         new_segment["clip_path"] = candidate.get("path") or candidate.get("clip_path") or candidate.get("source_path")
         new_segment["source_path"] = candidate.get("source_path") or new_segment["clip_path"]
         new_segment["filename"] = candidate.get("filename") or Path(str(new_segment["clip_path"])).name
+        new_segment["camera_id"] = _camera_id({
+            "source_path": new_segment["source_path"],
+            "filename": new_segment["filename"],
+            "projection": new_segment.get("projection") or candidate.get("projection"),
+        })
+        if candidate.get("motion"):
+            new_segment["motion"] = candidate["motion"]
         if platform == "youtube":
             # The candidate's offset is its position on the master timeline;
             # convert the reviewed slot back into that camera's own timeline.

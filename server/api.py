@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import math
-import os
-import subprocess
 import sys
 import threading
 import shutil
+import subprocess
+import time
 from dataclasses import dataclass, field
-from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -19,21 +19,15 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
-from core.director_proxy import director_proxy_status, ensure_director_proxy, is_360_record
 from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.messages import t
 from core.project import Project, ProjectError, create_project, load_project
-from core.spherical_view import (
-    MAX_SPHERICAL_FOV,
-    STEREOGRAPHIC_FOV_THRESHOLD,
-    paired_flat_fov,
-    view_parameters,
-)
-from core.camera_moves import delete_camera_move, list_camera_moves, save_camera_move
+from core.spherical_view import MAX_SPHERICAL_FOV
 from core.media_validation import record_media_path
 from core.normalization import cache_status, cleanup_unreferenced_cache, global_cache_root, migrate_project_normalization_cache
-from core.stages.sync import clear_manual_override, cleanup_closed_sync_diagnostics, clip_id_for_record, generate_preview, generate_thumbnail, invalidate_stale_sync_artifact, load_sync_map, set_manual_anchor, set_manual_override, set_manual_override_ranges
+from core.stages.sync import clear_manual_override, cleanup_closed_sync_diagnostics, generate_preview, generate_thumbnail, invalidate_stale_sync_artifact, set_manual_anchor, set_manual_override, set_manual_override_ranges
 from core.shot_review import mark_review_render_failed, replace_slots, review_items
+from core.backstage_feedback import record_feedback
 from server.inbox import (
     app_home,
     classify_paths,
@@ -52,7 +46,7 @@ from server.inbox import (
 )
 from server.media import send_file_with_range
 from server.projects import delete_project_folder, find_project_by_inputs, input_signature, list_projects, project_input_signature
-from server.wizard import WizardRunner, merge_spherical_landmarks, wizard_report, wizard_song_options
+from server.wizard import WizardRunner, merge_spherical_landmarks, serialize_wizard_job, wizard_report, wizard_song_options
 
 LOGGER = logging.getLogger(__name__)
 
@@ -79,7 +73,6 @@ class AppState:
     project: Project | None = None
     dev: bool = False
     wizard: WizardRunner | None = None
-    director_jobs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
@@ -161,7 +154,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             _remember_project(state.project)
             return jsonify(state.project.snapshot())
         except ProjectError as exc:
-            return error_response("project_error", str(exc), 404)
+            return error_response(
+                "project_unrecoverable",
+                "Este proyecto no se puede recuperar. Los vídeos del Drop Here siguen disponibles; crea un proyecto nuevo.",
+                409,
+            )
 
     @app.post("/api/v1/inputs/videos")
     def api_register_videos() -> Response:
@@ -343,9 +340,30 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("bad_request", "Reel overlays must be PNG, WEBP, or JPEG images", 400)
         destination_dir = app_home() / "ReelOverlays"
         destination_dir.mkdir(parents=True, exist_ok=True)
+        payload = storage.read()
+        digest = hashlib.sha256(payload).hexdigest()
+        for existing in sorted(destination_dir.iterdir()) if destination_dir.exists() else []:
+            if existing.is_file() and existing.suffix.lower() in {".png", ".webp", ".jpg", ".jpeg"}:
+                try:
+                    if hashlib.sha256(existing.read_bytes()).hexdigest() == digest:
+                        return jsonify({"path": str(existing.resolve()), "url": f"/api/v1/wizard/reel-overlay/{existing.name}", "reused": True})
+                except OSError:
+                    continue
         destination = unique_destination(destination_dir / Path(storage.filename).name)
-        storage.save(destination)
+        destination.write_bytes(payload)
         return jsonify({"path": str(destination.resolve()), "url": f"/api/v1/wizard/reel-overlay/{destination.name}"})
+
+    @app.get("/api/v1/wizard/flyers")
+    def api_wizard_flyers() -> Response:
+        root = app_home() / "ReelOverlays"
+        root.mkdir(parents=True, exist_ok=True)
+        allowed = {".png", ".webp", ".jpg", ".jpeg"}
+        items = []
+        for path in sorted(root.iterdir(), key=lambda item: item.name.lower()):
+            if not path.is_file() or path.suffix.lower() not in allowed:
+                continue
+            items.append({"name": path.name, "path": str(path.resolve()), "url": f"/api/v1/wizard/reel-overlay/{path.name}"})
+        return jsonify({"items": items})
 
     @app.get("/api/v1/wizard/reel-overlay/<path:filename>")
     def api_wizard_reel_overlay_file(filename: str) -> Response:
@@ -369,6 +387,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         master = str(body.get("master") or "").strip()
         songs = str(body.get("songs") or "").strip() or None
         videos = body.get("videos") or []
+        platform = str(body.get("platform") or "youtube")
         audio_trim = _audio_trim_from_body(body)
         spherical_landmarks = _spherical_landmarks_from_body(body)
         camera_role_weights = _camera_role_weights_from_body(body)
@@ -377,46 +396,57 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         spherical_mode = _spherical_mode_from_body(body)
         spherical_sweep = _spherical_sweep_from_body(body)
         sweep_speed_deg_per_sec = _sweep_speed_from_body(body)
-        reel_duration_sec = _reel_duration_from_body(body)
+        reel_duration_sec = _backstage_duration_from_body(body) if platform == "backstage" else _reel_duration_from_body(body)
         reel_aspect = _reel_aspect_from_body(body)
         reel_text_overlays = _reel_text_overlays_from_body(body)
         reel_image_overlays = _reel_image_overlays_from_body(body)
+        backstage_messages = body.get("backstage_messages") or []
+        if not isinstance(backstage_messages, list) or not all(isinstance(value, str) for value in backstage_messages):
+            return error_response("bad_request", "backstage_messages must be a list of strings", 400)
+        backstage_messages = [value.strip() for value in backstage_messages if value.strip()][:4]
         _save_last_reel_overlays(reel_text_overlays, reel_image_overlays)
-        if platform not in {"youtube", "instagram", "tiktok", "reel", "360"}:
-            return error_response("bad_request", "platform must be youtube, reel, instagram, tiktok, or 360", 400)
-        if not master:
+        if platform not in {"youtube", "instagram", "tiktok", "reel", "360", "backstage"}:
+            return error_response("bad_request", "platform must be youtube, reel, instagram, tiktok, 360, or backstage", 400)
+        if not master and platform != "backstage":
             return error_response("missing_master", t("missing_master"), 400)
         if not isinstance(videos, list) or not all(isinstance(path, str) for path in videos) or not videos:
             return error_response("missing_video", t("missing_video"), 400)
         try:
+            options = {
+                "name": name or "Jam",
+                "platform": platform,
+                "song_choice": body.get("song_index", body.get("song_choice")),
+                "audio_trim": audio_trim,
+                "spherical_landmarks": spherical_landmarks,
+                "camera_role_weights": camera_role_weights,
+                "fixed_rear_motion": fixed_rear_motion,
+                "spherical_motion": spherical_motion,
+                "spherical_mode": spherical_mode,
+                "spherical_sweep": spherical_sweep,
+                "sweep_speed_deg_per_sec": sweep_speed_deg_per_sec,
+                "reel_duration_sec": reel_duration_sec,
+                "reel_aspect": reel_aspect,
+                "reel_text_overlays": reel_text_overlays,
+                "reel_image_overlays": reel_image_overlays,
+                "backstage_messages": backstage_messages,
+                "master_path": master,
+                "songs_path": songs,
+                "video_paths": videos,
+            }
+            if state.project is not None and state.wizard._prepared_project is None:
+                state.project.data.setdefault("settings", {}).setdefault("wizard", {})["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
+                state.project.save()
+                job = state.wizard.start_existing(state.project, **options)
+                return jsonify(serialize_wizard_job(job)), 202
             matching_project = state.project if _can_reuse_prepared_project(state.project, master, songs, videos) else find_project_by_inputs(master, songs, videos)
             if matching_project and _project_can_skip_prepare(matching_project):
                 state.project = matching_project
                 state.wizard.adopt_prepared_project(state.project)
             elif matching_project:
                 state.project = matching_project
-                state.wizard.prepare_existing(matching_project)
-            job = state.wizard.start(
-                name=name or "Jam",
-                platform=platform,
-                song_choice=body.get("song_index", body.get("song_choice")),
-                audio_trim=audio_trim,
-                spherical_landmarks=spherical_landmarks,
-                camera_role_weights=camera_role_weights,
-                fixed_rear_motion=fixed_rear_motion,
-                spherical_motion=spherical_motion,
-                spherical_mode=spherical_mode,
-                spherical_sweep=spherical_sweep,
-                sweep_speed_deg_per_sec=sweep_speed_deg_per_sec,
-                reel_duration_sec=reel_duration_sec,
-                reel_aspect=reel_aspect,
-                reel_text_overlays=reel_text_overlays,
-                reel_image_overlays=reel_image_overlays,
-                master_path=master,
-                songs_path=songs,
-                video_paths=videos,
-            )
-            return jsonify(dict(job.__dict__)), 202
+                state.wizard.prepare_existing(matching_project, platform=platform)
+            job = state.wizard.start(**options)
+            return jsonify(serialize_wizard_job(job)), 202
         except RuntimeError as exc:
             return error_response("wizard_busy", str(exc), 409)
         except OSError as exc:
@@ -433,6 +463,119 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except Exception as exc:
             LOGGER.exception("Review items failed for %s", project.folder)
             return error_response("review_render_failed", str(exc) or "Review thumbnail render failed", 500)
+
+    @app.get("/api/v1/wizard/paper-edit")
+    def api_wizard_paper_edit() -> Response:
+        project = state.project or _active_wizard_project(state)
+        if not project:
+            return error_response("not_ready", "The Backstage paper edit is not ready yet", 409)
+        path = project.artifacts_dir / "backstage_paper_edit.json"
+        try:
+            return jsonify(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError) as exc:
+            return error_response("paper_edit_unavailable", str(exc), 409)
+
+    @app.get("/api/v1/wizard/paper-edit/thumbnail/<cut_id>")
+    def api_wizard_paper_edit_thumbnail(cut_id: str) -> Response:
+        project = state.project or _active_wizard_project(state)
+        if not project or not cut_id.startswith("backstage-"):
+            return error_response("not_found", "paper-edit thumbnail not found", 404)
+        try:
+            paper = json.loads((project.artifacts_dir / "backstage_paper_edit.json").read_text(encoding="utf-8"))
+            cut = next(row for row in paper.get("cuts") or [] if str(row.get("id")) == cut_id)
+            output = project.cache_dir / "paper_edit" / f"{cut_id}.jpg"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            if not output.exists():
+                ffmpeg = tool_status().get("ffmpeg_path")
+                if not ffmpeg:
+                    return error_response("not_ready", "ffmpeg is unavailable", 503)
+                source = str(cut.get("source_path") or "")
+                command = [str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error", "-ss", str(cut.get("in_sec") or 0), "-i", source, "-frames:v", "1", "-vf", "scale=320:-2", str(output)]
+                result = subprocess.run(command, capture_output=True, text=True, check=False)
+                if result.returncode != 0:
+                    return error_response("thumbnail_failed", result.stderr.strip() or "thumbnail render failed", 500)
+            return send_from_directory(output.parent, output.name)
+        except (OSError, StopIteration, ValueError, json.JSONDecodeError) as exc:
+            return error_response("paper_edit_thumbnail_failed", str(exc), 404)
+
+    @app.post("/api/v1/wizard/paper-edit/approve")
+    def api_wizard_paper_edit_approve() -> Response:
+        state.project = state.project or _active_wizard_project(state)
+        body = _json_body()
+        rejected = body.get("rejected") or []
+        if not isinstance(rejected, list) or not all(isinstance(value, (str, int)) for value in rejected):
+            return error_response("bad_request", "rejected must be a list of paper-edit ids", 400)
+        try:
+            status = state.wizard.status()
+            if status.get("status") != "waiting_paper_edit":
+                state.wizard.adopt_paper_edit(state.project)
+            job = state.wizard.approve_paper_edit(state.project, [str(value) for value in rejected])
+            return jsonify(serialize_wizard_job(job)), 202
+        except (RuntimeError, ValueError) as exc:
+            return error_response("paper_edit_approve_failed", str(exc), 409)
+
+    @app.post("/api/v1/wizard/paper-edit/text")
+    def api_wizard_paper_edit_text() -> Response:
+        project = state.project or _active_wizard_project(state)
+        body = _json_body()
+        cut_id = str(body.get("id") or "").strip()
+        text = str(body.get("text") or "").strip()
+        if not project or not cut_id or len(text) > 1000:
+            return error_response("bad_request", "id and a subtitle text up to 1000 characters are required", 400)
+        try:
+            paper_path = project.artifacts_dir / "backstage_paper_edit.json"
+            edit_path = project.artifacts_dir / "backstage_edit.json"
+            paper = json.loads(paper_path.read_text(encoding="utf-8"))
+            edit = json.loads(edit_path.read_text(encoding="utf-8"))
+            index = next((index for index, cut in enumerate(paper.get("cuts") or []) if str(cut.get("id")) == cut_id), None)
+            if index is None or index >= len(edit.get("segments") or []):
+                return error_response("not_found", "paper-edit cut not found", 404)
+            paper["cuts"][index]["subtitle_text"] = text
+            edit["segments"][index]["subtitle_text"] = text
+            paper_path.write_text(json.dumps(paper, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            edit_path.write_text(json.dumps(edit, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            project.mark_all_stale_from("export")
+            project.save()
+            return jsonify(paper)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return error_response("paper_edit_text_failed", str(exc), 409)
+
+    @app.post("/api/v1/wizard/paper-edit/mark")
+    def api_wizard_paper_edit_mark() -> Response:
+        project = state.project or _active_wizard_project(state)
+        body = _json_body()
+        cut_id = str(body.get("id") or "").strip()
+        mark = str(body.get("mark") or "").strip().lower()
+        if not project or not cut_id or mark not in {"keep", "drop", "closing"}:
+            return error_response("bad_request", "id and mark (keep, drop, closing) are required", 400)
+        try:
+            paper_path = project.artifacts_dir / "backstage_paper_edit.json"
+            edit_path = project.artifacts_dir / "backstage_edit.json"
+            paper = json.loads(paper_path.read_text(encoding="utf-8"))
+            edit = json.loads(edit_path.read_text(encoding="utf-8"))
+            index = next((i for i, cut in enumerate(paper.get("cuts") or []) if str(cut.get("id")) == cut_id), None)
+            if index is None:
+                return error_response("not_found", "paper-edit cut not found", 404)
+            cut = paper["cuts"][index]
+            record_feedback(str(cut.get("source_path") or ""), float(cut.get("in_sec") or 0), float(cut.get("out_sec") or 0), mark, cut.get("text_original", ""), cut.get("english_text", ""), cut.get("selection_reason", ""))
+            cut["mark"] = mark
+            cut["status"] = "dropped" if mark == "drop" else "pending"
+            segments = list(edit.get("segments") or [])
+            if index < len(segments):
+                segments[index]["paper_mark"] = mark
+            edit["segments"] = segments
+            edit["cut_count"] = max(0, len(segments) - 1)
+            edit["selected_duration_sec"] = round(sum(float(item.get("duration_sec") or 0) for item in segments), 3)
+            for order, row in enumerate(paper.get("cuts") or [], 1):
+                row["order"] = order
+            write = lambda path, payload: path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            write(paper_path, paper)
+            write(edit_path, edit)
+            project.mark_all_stale_from("export")
+            project.save()
+            return jsonify(paper)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return error_response("paper_edit_mark_failed", str(exc), 409)
 
     @app.post("/api/v1/wizard/review/replace")
     def api_wizard_review_replace() -> Response:
@@ -467,7 +610,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         try:
             state.project = state.project or _active_wizard_project(state)
             job = state.wizard.render_review(state.project)
-            return jsonify(dict(job.__dict__)), 202
+            return jsonify(serialize_wizard_job(job)), 202
         except (RuntimeError, ValueError) as exc:
             return error_response("review_render_failed", str(exc), 409)
 
@@ -504,91 +647,15 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         master_path = project.data["inputs"]["master"]["path"]
         return send_file_with_range(master_path)
 
-    @app.get("/api/v1/wizard/spherical-preview")
-    def api_wizard_spherical_preview() -> Response:
-        source = str(request.args.get("source") or "").strip()
-        yaw = _optional_degrees(request.args.get("yaw"))
-        pitch = _optional_float_setting(request.args.get("pitch"), 0.0)
-        fov = _optional_float_setting(request.args.get("fov"), 95.0)
-        shot_type = str(request.args.get("shot_type") or "")
-        quality = str(request.args.get("quality") or "final").strip().lower()
-        if not source or yaw is None:
-            return error_response("bad_request", "source and yaw are required", 400)
-        timestamp = _optional_float_setting(request.args.get("timestamp"), None)
-        try:
-            return send_file_with_range(str(_spherical_preview_frame(state.project, source, yaw, pitch, fov, quality=quality, shot_type=shot_type, timestamp_sec=timestamp)))
-        except (OSError, FFmpegError, ValueError) as exc:
-            return error_response("ffmpeg_error", str(exc), 500)
-
-    @app.get("/api/v1/wizard/director-media")
-    def api_wizard_director_media() -> Response:
-        project = _require_project(state)
-        try:
-            record = _director_360_record(project)
-            status = director_proxy_status(record)
-            if status.get("ready"):
-                return jsonify(_director_media_payload(project, record, status))
-            job = _start_director_proxy_job(state, project, record)
-            return jsonify(
-                {
-                    "proxy_ready": False,
-                    "job_id": job["id"],
-                    "message": "Preparing a lightweight 360 preview — this happens once per clip.",
-                    "progress": job.get("progress", 0),
-                    "detail": job.get("detail", ""),
-                }
-            )
-        except (OSError, FFmpegError, KeyError, ValueError) as exc:
-            return error_response("director_media_error", str(exc), 500)
-
-    @app.get("/api/v1/wizard/director-media/status")
-    def api_wizard_director_media_status() -> Response:
-        project = _require_project(state)
-        job_id = str(request.args.get("job_id") or "")
-        job = state.director_jobs.get(job_id)
-        if not job:
-            return error_response("not_found", "Director preview job was not found", 404)
-        if job.get("status") == "done":
-            try:
-                record = _director_360_record(project)
-                return jsonify(_director_media_payload(project, record, job.get("result") or director_proxy_status(record)))
-            except (OSError, FFmpegError, ValueError) as exc:
-                return error_response("director_media_error", str(exc), 500)
-        return jsonify(dict(job))
-
-    @app.get("/api/v1/wizard/camera-moves")
-    def api_wizard_camera_moves() -> Response:
-        project = _require_project(state)
-        return jsonify({"takes": list_camera_moves(project)})
-
-    @app.post("/api/v1/wizard/camera-moves")
-    def api_wizard_save_camera_move() -> tuple[Response, int] | Response:
-        project = _require_project(state)
-        body = _json_body()
-        samples = body.get("samples") or body.get("raw") or []
-        if not isinstance(samples, list):
-            return error_response("bad_request", "samples must be a list", 400)
-        try:
-            take = save_camera_move(project, str(body.get("name") or ""), samples, str(body.get("source_path") or ""), str(body.get("smoothing") or "medium"))
-            return jsonify({"take": take, "takes": list_camera_moves(project)}), 201
-        except ValueError as exc:
-            return error_response("bad_request", str(exc), 400)
-
-    @app.delete("/api/v1/wizard/camera-moves/<path:name>")
-    def api_wizard_delete_camera_move(name: str) -> Response:
-        project = _require_project(state)
-        if not delete_camera_move(project, name):
-            return error_response("not_found", "Camera move take not found", 404)
-        return jsonify({"ok": True, "takes": list_camera_moves(project)})
-
     @app.post("/api/v1/wizard/prepare")
     def api_wizard_prepare() -> Response:
         body = _json_body()
         name = str(body.get("name") or "").strip()
+        platform = str(body.get("platform") or "youtube").strip().lower()
         master = str(body.get("master") or "").strip()
         songs = str(body.get("songs") or "").strip() or None
         videos = body.get("videos") or []
-        if not master:
+        if not master and platform != "backstage":
             return error_response("missing_master", t("missing_master"), 400)
         if not isinstance(videos, list) or not all(isinstance(path, str) for path in videos) or not videos:
             return error_response("missing_video", t("missing_video"), 400)
@@ -598,14 +665,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 state.project = matching_project
                 job = state.wizard.adopt_prepared_project(state.project)
                 LOGGER.info("Reused prepared wizard project %s instead of creating a new project", state.project.folder)
-                return jsonify(dict(job.__dict__)), 202
+                return jsonify(serialize_wizard_job(job)), 202
             if matching_project:
                 state.project = matching_project
-                job = state.wizard.prepare_existing(matching_project)
+                job = state.wizard.prepare_existing(matching_project, platform=platform)
                 LOGGER.info("Reused existing wizard project %s instead of creating a new project", matching_project.folder)
-                return jsonify(dict(job.__dict__)), 202
-            job = state.wizard.prepare(name=name or "Jam", master_path=master, songs_path=songs, video_paths=videos)
-            return jsonify(dict(job.__dict__)), 202
+                return jsonify(serialize_wizard_job(job)), 202
+            job = state.wizard.prepare(name=name or "Jam", master_path=master, songs_path=songs, video_paths=videos, platform=platform)
+            return jsonify(serialize_wizard_job(job)), 202
         except RuntimeError as exc:
             return error_response("wizard_busy", str(exc), 409)
         except OSError as exc:
@@ -648,26 +715,15 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if reconciled or migrated:
                 LOGGER.info("Reconciled registered inputs for %s", state.project.folder)
             _remember_project(state.project)
-            persisted_stages = state.project.data.get("stages") or {}
-            persisted_platform = str((state.project.data.get("settings", {}).get("wizard") or {}).get("platform") or "youtube")
-            if (
-                persisted_stages.get("edit", {}).get("status") == "done"
-                and persisted_stages.get("export", {}).get("status") != "done"
-                and persisted_platform in {"youtube", "reel"}
-            ):
-                # Review-ready projects must reopen at Review. Starting
-                # prepare_existing here would reset the UI to Sync and could
-                # also race the persisted edit-complete state.
-                return jsonify(_project_wizard_status(state.project))
-            if _project_inputs_available(state.project):
-                state.wizard.prepare_existing(state.project)
-                return jsonify(state.wizard.status())
-            status = _project_wizard_status(state.project)
-            if status.get("status") == "waiting_choice":
-                state.wizard.adopt_prepared_project(state.project)
-            return jsonify(status)
+            # Opening is data loading only. Make it always starts a fresh
+            # pipeline over the restored Drop Here inputs.
+            return jsonify(_project_wizard_status(state.project))
         except ProjectError as exc:
-            return error_response("project_error", str(exc), 404)
+            return error_response(
+                "project_unrecoverable",
+                "Este proyecto no se puede recuperar. Los vídeos del Drop Here siguen disponibles; crea un proyecto nuevo.",
+                409,
+            )
 
     @app.post("/api/v1/wizard/projects/delete")
     def api_wizard_project_delete() -> Response:
@@ -725,29 +781,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 job = state.wizard.rescue_ranges(project, clip_id=clip_id, offset_ranges=body["offset_ranges"])
             else:
                 job = state.wizard.rescue(project, clip_id=clip_id, offset_sec=float(body["offset_sec"]))
-            return jsonify(dict(job.__dict__)), 202
+            return jsonify(serialize_wizard_job(job)), 202
         except RuntimeError as exc:
             return error_response("wizard_busy", str(exc), 409)
         except (KeyError, FileNotFoundError) as exc:
             return error_response("not_found", str(exc), 404)
         except (TypeError, ValueError) as exc:
             return error_response("bad_request", str(exc), 400)
-
-    @app.post("/api/v1/wizard/proceed-anyway")
-    def api_wizard_proceed_anyway() -> Response:
-        project = state.project or _active_wizard_project(state)
-        mode = str((_json_body() or {}).get("mode") or "proceed_anyway").strip().lower()
-        try:
-            if mode == "continue_without_video":
-                job = state.wizard.continue_without_video(project)
-            elif mode == "proceed_anyway":
-                job = state.wizard.proceed_anyway(project)
-            else:
-                return error_response("bad_request", "mode must be proceed_anyway or continue_without_video", 400)
-            state.project = project
-            return jsonify(dict(job.__dict__)), 202
-        except RuntimeError as exc:
-            return error_response("wizard_busy", str(exc), 409)
 
     @app.post("/api/v1/wizard/frontend-log")
     def api_wizard_frontend_log() -> Response:
@@ -834,10 +874,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         config["desktop"] = not state.dev
         config.setdefault("camera_role_weights", {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0})
         config.setdefault("fixed_rear_motion", True)
-        config.setdefault("spherical_motion", True)
+        config.setdefault("spherical_motion", False)
         config.setdefault("spherical_hold_motion", "none")
         config.setdefault("spherical_mode", "automatic")
-        config.setdefault("spherical_sweep", True)
+        config.setdefault("spherical_sweep", False)
         config.setdefault("sweep_speed_deg_per_sec", 20.0)
         config.setdefault("audio_trim_by_master", {})
         config.setdefault("master_audio_extensions", [".mp3"])
@@ -986,16 +1026,6 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("not_found", "Cached media path is outside project cache", 404)
         return send_file_with_range(str(cache_path))
 
-    @app.get("/api/v1/media/director-proxy/<path:filename>")
-    def api_director_proxy_media(filename: str) -> Response:
-        root_dir = (global_cache_root() / "director_proxies").resolve()
-        cache_path = (root_dir / filename).resolve()
-        try:
-            cache_path.relative_to(root_dir)
-        except ValueError:
-            return error_response("not_found", "Director preview path is outside cache", 404)
-        return send_file_with_range(str(cache_path))
-
     @app.errorhandler(404)
     def not_found(_: Exception) -> tuple[Response, int]:
         return error_response("not_found", "Not found", 404)
@@ -1033,20 +1063,6 @@ def _remember_project(project: Project) -> None:
     save_global_config(config)
 
 
-def _project_inputs_available(project: Project) -> bool:
-    """Return whether saved inputs can be prepared immediately on reopen."""
-    inputs = project.data.get("inputs") or {}
-    master = inputs.get("master") or {}
-    if not master.get("path") or not Path(str(master["path"])).expanduser().exists():
-        return False
-    videos = inputs.get("videos") or []
-    return bool(videos) and all(
-        Path(str(record.get("path") or "")).expanduser().exists()
-        and record.get("status") != "not_a_video"
-        for record in videos
-    )
-
-
 def _project_wizard_status(project: Project) -> dict[str, Any]:
     stages = project.data.get("stages") or {}
     logs_path = str(project.cache_dir / "logs")
@@ -1068,14 +1084,15 @@ def _project_wizard_status(project: Project) -> dict[str, Any]:
         name, _ = running
         return {
             "id": "project",
-            "status": "running",
+            "status": "failed",
             "progress": _stage_progress(name),
-            "message": _friendly_stage_message(name),
-            "detail": "Recovering project state...",
+            "message": "This project cannot be recovered",
+            "detail": "The saved process was interrupted. The videos are loaded below; press Start Again to run a new montage.",
+            "error": "This project cannot be recovered from its saved process state.",
             "project_path": str(project.folder),
             "logs_path": logs_path,
         }
-    export_result = _export_result(project)
+    export_result = _export_result(project) if stages.get("export", {}).get("status") == "done" else None
     if export_result:
         return {
             "id": "project",
@@ -1093,6 +1110,18 @@ def _project_wizard_status(project: Project) -> dict[str, Any]:
     # edit-complete projects to the old sync chooser.
     if stages.get("edit", {}).get("status") == "done" and stages.get("export", {}).get("status") != "done":
         platform = str((project.data.get("settings", {}).get("wizard") or {}).get("platform") or "youtube")
+        if platform == "backstage" and (project.artifacts_dir / "backstage_paper_edit.json").exists():
+            return {
+                "id": "project",
+                "status": "waiting_paper_edit",
+                "progress": _stage_progress("edit"),
+                "message": "Paper edit ready",
+                "detail": "Review the written Backstage sequence before rendering.",
+                "stage": "paper_edit",
+                "paper_edit_available": True,
+                "project_path": str(project.folder),
+                "logs_path": logs_path,
+            }
         if platform in {"youtube", "reel"}:
             return {
                 "id": "project",
@@ -1104,7 +1133,9 @@ def _project_wizard_status(project: Project) -> dict[str, Any]:
                 "project_path": str(project.folder),
                 "logs_path": logs_path,
             }
-    if stages.get("sync", {}).get("status") == "done" and stages.get("export", {}).get("status") != "done":
+    platform = str((project.data.get("settings", {}).get("wizard") or {}).get("platform") or "youtube")
+    prepared_without_sync = platform in {"reel", "backstage"} and stages.get("ingest", {}).get("status") == "done"
+    if (stages.get("sync", {}).get("status") == "done" or prepared_without_sync) and stages.get("export", {}).get("status") != "done":
         return {
             "id": "project",
             "status": "waiting_choice",
@@ -1264,6 +1295,11 @@ def _reel_duration_from_body(body: dict[str, Any]) -> float:
     return max(20.0, min(60.0, value if value is not None else 30.0))
 
 
+def _backstage_duration_from_body(body: dict[str, Any]) -> float:
+    value = _coerce_float(body.get("backstage_duration_sec"))
+    return max(30.0, min(240.0, value if value is not None else 180.0))
+
+
 def _save_last_reel_overlays(texts: list[dict[str, Any]], images: list[dict[str, Any]]) -> None:
     path = app_home() / "reel_overlays.json"
     try:
@@ -1420,7 +1456,7 @@ def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, float]]:
         if yaw is None:
             continue
         pitch = _optional_float_setting(source.get("pitch"), 0.0)
-        fov = max(1.0, min(MAX_PREVIEW_FOV, _optional_float_setting(source.get("fov"), float(meta["fov"]))))
+        fov = max(1.0, min(MAX_SPHERICAL_FOV, _optional_float_setting(source.get("fov"), float(meta["fov"]))))
         weight = max(0.0, _optional_float_setting(source.get("weight"), 1.0))
         landmarks[key] = {"yaw": yaw, "pitch": pitch, "fov": fov, "weight": weight}
     return landmarks
@@ -1461,94 +1497,6 @@ def _coerce_float(value: Any) -> float | None:
 
 # Wide-FOV preview: above this the preview switches to stereographic to
 # match the export's wide/tiny-planet rendering (see export._use_stereographic).
-STEREOGRAPHIC_PREVIEW_FOV_THRESHOLD = STEREOGRAPHIC_FOV_THRESHOLD
-MAX_PREVIEW_FOV = MAX_SPHERICAL_FOV
-
-
-def _spherical_preview_frame(project: Project | None, source: str, yaw: float, pitch: float, fov: float, quality: str = "final", shot_type: str = "", timestamp_sec: float | None = None) -> Path:
-    source_path = _spherical_preview_source(project, source)
-    if not source_path.exists():
-        raise ValueError("360 source does not exist")
-    cache_root = (project.cache_dir if project else app_home() / "cache") / "spherical_previews"
-    cache_root.mkdir(parents=True, exist_ok=True)
-    stat = source_path.stat()
-    size = (320, 180) if quality == "drag" else (480, 270)
-    view = view_parameters(yaw, pitch, fov, size[0] / size[1], shot_type)
-    h_fov = float(view["h_fov"])
-    v_fov = float(view["v_fov"])
-    projection = str(view["projection"])
-    key = sha256(
-        json.dumps(
-            {
-                "path": str(source_path),
-                "size": stat.st_size,
-                "mtime": stat.st_mtime,
-                "yaw": round(yaw, 3),
-                "pitch": round(pitch, 3),
-                "h_fov": round(h_fov, 3),
-                "v_fov": round(v_fov, 3),
-                "projection": projection,
-                "shot_type": shot_type,
-                "preview_size": size,
-                "timestamp_sec": None if timestamp_sec is None else round(float(timestamp_sec), 3),
-            },
-            sort_keys=True,
-        ).encode()
-    ).hexdigest()[:24]
-    output = cache_root / f"{key}.jpg"
-    if output.exists():
-        return output
-    status = tool_status()
-    ffmpeg = status.get("ffmpeg_path")
-    if not ffmpeg:
-        raise FFmpegError("ffmpeg is missing. Install it with: brew install ffmpeg")
-    duration = _preview_source_duration(source_path)
-    timestamp = duration * 0.35 if timestamp_sec is None else float(timestamp_sec)
-    timestamp = max(0.0, min(timestamp, max(0.0, duration - 0.1)))
-    tmp = output.with_suffix(".tmp.jpg")
-    filtergraph = (
-        f"v360=input=equirect:output={projection}:yaw={float(view['yaw']):.3f}:pitch={float(view['pitch']):.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:"
-        f"w={size[0]}:h={size[1]}:interp=lanczos,format=yuvj420p"
-    )
-    command = [
-        str(ffmpeg),
-        "-y",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-ss",
-        f"{timestamp:.3f}",
-        "-i",
-        str(source_path),
-        "-frames:v",
-        "1",
-        "-vf",
-        filtergraph,
-        "-q:v",
-        "3",
-        str(tmp),
-    ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        if tmp.exists():
-            tmp.unlink()
-        raise FFmpegError(result.stderr.strip() or "Could not render 360 preview")
-    os.replace(tmp, output)
-    return output
-
-
-def _spherical_preview_source(project: Project | None, source: str) -> Path:
-    """Resolve the UI path to the source selected by the export stage.
-
-    Spherical export deliberately uses ``source_path`` (the original equirect
-    media), not the flat analysis proxy. Returning the proxy here would feed a
-    reprojected preview back through v360 and create a second coordinate
-    mismatch.
-    """
-    requested = Path(source).expanduser().resolve()
-    return requested
-
-
 def _preview_source_duration(path: Path) -> float:
     try:
         metadata = ffprobe(str(path))
@@ -1556,77 +1504,6 @@ def _preview_source_duration(path: Path) -> float:
         return max(0.1, float(value))
     except Exception:
         return 1.0
-
-
-def _signed_degrees(value: float) -> float:
-    value = float(value) % 360.0
-    return value - 360.0 if value > 180.0 else value
-
-
-def _paired_flat_fov(horizontal_fov: float, aspect_ratio: float) -> tuple[float, float]:
-    horizontal = max(1.0, min(179.0, float(horizontal_fov)))
-    aspect = max(0.1, float(aspect_ratio))
-    vertical = math.degrees(2.0 * math.atan(math.tan(math.radians(horizontal) / 2.0) / aspect))
-    return horizontal, max(1.0, min(179.0, vertical))
-
-
-def _director_media_payload(project: Project, record: dict[str, Any], proxy_status: dict[str, Any]) -> dict[str, Any]:
-    offset = _director_sync_offset(project, record)
-    trim_start, trim_end = _project_audio_trim(project)
-    proxy_path = Path(str(proxy_status.get("path") or director_proxy_status(record).get("path") or ""))
-    duration = max(0.1, trim_end - trim_start)
-    return {
-        "proxy_ready": True,
-        "video_url": f"/api/v1/media/director-proxy/{proxy_path.name}",
-        "master_url": "/api/v1/wizard/master-preview",
-        "offset_sec": offset,
-        "trim_start_sec": trim_start,
-        "trim_end_sec": trim_end,
-        "duration_sec": duration,
-        "proxy_duration_sec": float(proxy_status.get("duration_sec") or _preview_source_duration(proxy_path)),
-        "source_path": record.get("path"),
-        "proxy_path": str(proxy_path),
-        "proxy_size_bytes": int(proxy_status.get("size_bytes") or (proxy_path.stat().st_size if proxy_path.exists() else 0)),
-        "proxy_width": int(proxy_status.get("width") or 0),
-        "proxy_height": int(proxy_status.get("height") or 0),
-        "proxy_fps": float(proxy_status.get("fps") or 0.0),
-        "generated": bool(proxy_status.get("generated")),
-        "elapsed_sec": float(proxy_status.get("elapsed_sec") or 0.0),
-    }
-
-
-def _start_director_proxy_job(state: AppState, project: Project, record: dict[str, Any]) -> dict[str, Any]:
-    job_id = str(Path(str(record.get("path") or "360")).expanduser().resolve())
-    existing = state.director_jobs.get(job_id)
-    if existing and existing.get("status") in {"running", "done"}:
-        return existing
-    job = {
-        "id": job_id,
-        "status": "running",
-        "progress": 0,
-        "message": "Preparing a lightweight 360 preview — this happens once per clip.",
-        "detail": "Starting ffmpeg",
-    }
-    state.director_jobs[job_id] = job
-
-    def progress(percent: int, detail: str) -> None:
-        job["progress"] = max(int(job.get("progress") or 0), int(percent))
-        job["detail"] = detail
-
-    def worker() -> None:
-        try:
-            job["result"] = ensure_director_proxy(record, progress)
-            job["progress"] = 100
-            job["status"] = "done"
-            job["message"] = "360 preview ready"
-        except Exception as exc:
-            LOGGER.exception("Could not prepare 360 Director preview for %s", project.folder)
-            job["status"] = "failed"
-            job["error"] = str(exc)
-            job["message"] = "Could not prepare the 360 preview"
-
-    threading.Thread(target=worker, name="director-proxy", daemon=True).start()
-    return job
 
 
 def _project_audio_trim(project: Project) -> tuple[float, float]:
@@ -1655,33 +1532,6 @@ def _project_audio_trim(project: Project) -> tuple[float, float]:
     if end <= start:
         end = start + 1.0
     return round(start, 6), round(end, 6)
-
-
-def _director_360_record(project: Project) -> dict[str, Any]:
-    for record in project.data.get("inputs", {}).get("videos", []):
-        if is_360_record(record):
-            return record
-    raise ValueError("No 360 clip is registered")
-
-
-def _director_equirect_proxy(project: Project, record: dict[str, Any]) -> Path:
-    return Path(str(ensure_director_proxy(record).get("path")))
-
-
-def _director_sync_offset(project: Project, record: dict[str, Any]) -> float:
-    sync_map = load_sync_map(project, missing_ok=True) or {}
-    clips = sync_map.get("clips") or {}
-    clip_id = clip_id_for_record(record)
-    clip = clips.get(clip_id)
-    if not clip:
-        for item in clips.values():
-            if Path(str(item.get("source_path") or item.get("path") or "")).expanduser().resolve() == Path(str(record.get("path") or "")).expanduser().resolve():
-                clip = item
-                break
-    try:
-        return round(float((clip or {}).get("offset_sec") or 0.0), 6)
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def _enable_cors(app: Flask) -> None:

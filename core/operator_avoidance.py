@@ -21,12 +21,12 @@ from core.stages.base import stable_fingerprint
 
 LOGGER = logging.getLogger(__name__)
 
-CACHE_VERSION = 3
-OPERATOR_AVOIDANCE_VERSION = 3
+CACHE_VERSION = 4
+OPERATOR_AVOIDANCE_VERSION = 4
 
 # Sample the clip at ~2fps: dense enough to catch the operator stepping into
 # frame, cheap enough not to meaningfully slow ingest.
-DETECTION_FPS = 2.0
+DETECTION_FPS = 4.0
 
 # Minimum fraction of frame area a person-blob must occupy to be considered
 # a foreground camera-operator figure worth avoiding.
@@ -34,7 +34,7 @@ OPERATOR_AREA_THRESHOLD = 0.08
 
 # Minimum fraction of frame area a secondary person-blob must occupy to be
 # treated as a real subject of interest (the singer/band) rather than noise.
-SUBJECT_AREA_THRESHOLD = 0.02
+SUBJECT_AREA_THRESHOLD = 0.01
 
 # Maximum yaw shift we will apply to a 360 segment to avoid the operator.
 MAX_360_YAW_SHIFT_DEG = 20.0
@@ -205,7 +205,9 @@ def _detect_frame(net: Any, frame: Any) -> list[dict[str, float]]:
     for i in range(detections.shape[2]):
         confidence = float(detections[0, 0, i, 2])
         class_id = int(detections[0, 0, i, 1])
-        if class_id != PERSON_CLASS or confidence <= 0.4:
+        # Dark live-stage footage produces weak but useful person boxes.
+        # Area/overlap filtering below still rejects detector noise.
+        if class_id != PERSON_CLASS or confidence <= 0.30:
             continue
         x1 = float(detections[0, 0, i, 3]) * width
         y1 = float(detections[0, 0, i, 4]) * height

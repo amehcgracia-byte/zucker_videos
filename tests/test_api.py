@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import time
 import json
+import os
+import socket
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from core.camera_moves import save_camera_move
 from core.project import create_project, file_record, load_project
 from core.stages.base import write_artifact_json
 from core.stages.cut import CutStage
@@ -16,17 +17,15 @@ from core.stages.export import ExportStage
 from core.stages.ingest import IngestStage
 from core.stages.sync import SyncStage
 from server.api import (
-    MAX_PREVIEW_FOV,
-    STEREOGRAPHIC_PREVIEW_FOV_THRESHOLD,
     create_app,
     _can_reuse_prepared_project,
     _project_wizard_status,
     _sanitize_camera_role_weights,
     _sanitize_spherical_landmarks,
-    _spherical_preview_frame,
 )
 from server.inbox import load_global_config
 from server.wizard import WizardJob, _select_360_inputs, _store_audio_trim, _store_spherical_landmarks
+from core.project_lock import ProjectPipelineLock
 
 
 def valid_video_probe(duration: str = "3.0", width: int = 1280, height: int = 720) -> dict:
@@ -251,7 +250,7 @@ def test_360_input_selection_keeps_audio_candidates(tmp_path, monkeypatch):
     assert selected_videos == [str(spherical)]
 
 
-def test_wizard_start_after_relaunch_reuses_prepared_project(tmp_path, monkeypatch):
+def test_wizard_start_after_relaunch_starts_existing_project_from_scratch(tmp_path, monkeypatch):
     folder = tmp_path / "Prepared.zuckervid"
     project = create_project("Prepared", str(folder))
     master = tmp_path / "master.wav"
@@ -282,15 +281,13 @@ def test_wizard_start_after_relaunch_reuses_prepared_project(tmp_path, monkeypat
     app = create_app(project_path=str(folder))
     state = app.config["ZUCKER_STATE"]
 
-    def fake_start(**kwargs):
-        assert state.wizard._prepared_project is state.project
+    def fake_start_existing(project_arg, **kwargs):
+        assert project_arg is state.project
         return WizardJob(id="current", status="running", project_path=str(state.project.folder))
 
-    state.wizard.start = fake_start
+    state.wizard.start_existing = fake_start_existing
     client = app.test_client()
 
-    status = client.get("/api/v1/wizard/status").get_json()
-    assert status["status"] == "waiting_choice"
     response = client.post(
         "/api/v1/wizard/start",
         json={
@@ -373,7 +370,7 @@ def test_project_list_open_and_delete_keep_exports(tmp_path, monkeypatch):
     assert Path(kept[0]).read_bytes() == b"mp4"
 
 
-def test_reopening_saved_project_reprepares_registered_inputs(tmp_path, monkeypatch):
+def test_reopening_saved_project_only_loads_inputs(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr("server.api.reconcile_registered_inputs", lambda project: False)
     folder = tmp_path / "ZuckerVideos" / "Projects" / "Prepared.zuckervid"
@@ -387,20 +384,11 @@ def test_reopening_saved_project_reprepares_registered_inputs(tmp_path, monkeypa
     project.data["stages"]["export"]["status"] = "done"
     project.save()
 
-    calls = []
-
-    def fake_prepare(self, opened_project):
-        calls.append(opened_project.folder)
-        self._job = WizardJob(id="current", status="running", project_path=str(opened_project.folder))
-        return self._job
-
-    monkeypatch.setattr("server.api.WizardRunner.prepare_existing", fake_prepare)
     client = create_app().test_client()
     response = client.post("/api/v1/wizard/projects/open", json={"path": str(folder)})
 
     assert response.status_code == 200
-    assert response.get_json()["status"] == "running"
-    assert calls == [folder.resolve()]
+    assert response.get_json()["status"] in {"done", "waiting_choice", "idle"}
 
 
 def test_new_project_action_clears_resume_without_deleting_project(tmp_path, monkeypatch):
@@ -417,6 +405,40 @@ def test_new_project_action_clears_resume_without_deleting_project(tmp_path, mon
     assert folder.exists()
     assert client.get("/api/v1/wizard/status").get_json()["status"] == "idle"
     assert "last_project_path" not in (tmp_path / "ZuckerVideos" / "config.json").read_text(encoding="utf-8")
+
+
+def test_backstage_reopened_progress_response_is_fully_json_serializable(tmp_path, monkeypatch):
+    """Polling a reopened Backstage project must never expose process internals."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    folder = tmp_path / "ZuckerVideos" / "Projects" / "Tipsy.zuckervid"
+    project = create_project("Tipsy", str(folder))
+    project.data["settings"]["wizard"] = {"platform": "backstage"}
+    project.save()
+    app = create_app(project_path=str(folder), dev=False)
+    state = app.config["ZUCKER_STATE"]
+    job = WizardJob(id="current", project_path=str(folder), status="running")
+    job.result = {
+        "project_path": str(folder),
+        "filename": "Tipsy.mp4",
+        "path": str(folder / "exports" / "Tipsy.mp4"),
+        "media_url": "/api/v1/wizard/result",
+        "platform": "backstage",
+        "logs_path": str(folder / "cache" / "logs"),
+        "cut_count": 3,
+        "camera_usage": {"camera-a": 2},
+        "spherical_shot_usage": {},
+    }
+    lock = ProjectPipelineLock(folder)
+    assert lock.acquire()
+    job.project_lock = lock
+    state.wizard._job = job
+    try:
+        response = app.test_client().get("/api/v1/wizard/status")
+        assert response.status_code == 200
+        json.dumps(response.get_json())
+        assert response.get_json()["project_lock"] is True
+    finally:
+        lock.release()
 
 
 @pytest.mark.slow
@@ -879,180 +901,6 @@ def test_spherical_landmarks_accept_comma_decimal_and_normalize_yaw():
     assert result["right"]["weight"] == 0.0
 
 
-def test_spherical_preview_frame_renders_cached_vertical_fov_jpeg(tmp_path, monkeypatch):
-    project = create_project("Preview", str(tmp_path / "Preview.zuckervid"))
-    source = tmp_path / "sphere.mp4"
-    source.write_bytes(b"video")
-    calls = []
-
-    monkeypatch.setattr("server.api.tool_status", lambda: {"ffmpeg_path": "ffmpeg"})
-    monkeypatch.setattr("server.api.ffprobe", lambda path: {"format": {"duration": "10"}})
-
-    def fake_run(command, capture_output, text, check):
-        calls.append(command)
-        Path(command[-1]).write_bytes(b"jpg")
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr("server.api.subprocess.run", fake_run)
-
-    first = _spherical_preview_frame(project, str(source), 336.8, -28.8, 80.0, quality="drag")
-    second = _spherical_preview_frame(project, str(source), 336.8, -28.8, 80.0, quality="drag")
-
-    assert first == second
-    assert first.read_bytes() == b"jpg"
-    assert len(calls) == 1
-    command_text = " ".join(calls[0])
-    assert "v360=input=equirect:output=flat:yaw=-23.200:pitch=-28.800:h_fov=80.000:v_fov=50.534" in command_text
-
-
-def test_wide_shot_preview_is_stereographic_like_the_export(tmp_path, monkeypatch):
-    # The preview exists to show what will be rendered. A wide shot renders
-    # stereographically (a rectilinear view tears as it nears 180 deg), so a
-    # preview that stayed flat would show a framing the export never produces.
-    project = create_project("WidePreview", str(tmp_path / "WidePreview.zuckervid"))
-    source = tmp_path / "sphere.mp4"
-    source.write_bytes(b"video")
-    calls = []
-
-    monkeypatch.setattr("server.api.tool_status", lambda: {"ffmpeg_path": "ffmpeg"})
-    monkeypatch.setattr("server.api.ffprobe", lambda path: {"format": {"duration": "10"}})
-
-    def fake_run(command, capture_output, text, check):
-        calls.append(command)
-        Path(command[-1]).write_bytes(b"jpg")
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr("server.api.subprocess.run", fake_run)
-
-    _spherical_preview_frame(project, str(source), 0.0, -20.0, 240.0, quality="final")
-
-    assert "v360=input=equirect:output=sg:" in " ".join(calls[0])
-    assert "h_fov=240.000" in " ".join(calls[0])
-
-
-def test_preview_and_export_agree_on_when_a_shot_goes_stereographic():
-    # server.api deliberately keeps its own copies of this geometry rather than
-    # importing the export stage into the web server (as it already does for
-    # _paired_flat_fov). Pin the copies together so they cannot drift into
-    # previewing one projection and rendering the other.
-    from core.stages import export
-
-    assert STEREOGRAPHIC_PREVIEW_FOV_THRESHOLD == export.STEREOGRAPHIC_FOV_THRESHOLD
-    assert MAX_PREVIEW_FOV == export.MAX_SPHERICAL_FOV
-
-
-def test_camera_move_routes_save_list_and_delete_take(tmp_path):
-    project = create_project("MoveRoutes", str(tmp_path / "MoveRoutes.zuckervid"))
-    app = create_app()
-    app.config["ZUCKER_STATE"].project = project
-    client = app.test_client()
-    samples = [{"t": index / 15, "yaw": index, "pitch": 0, "fov": 100} for index in range(20)]
-
-    response = client.post("/api/v1/wizard/camera-moves", json={"name": "Main", "samples": samples})
-    assert response.status_code == 201
-    assert response.get_json()["take"]["sample_count"] == 20
-    assert client.get("/api/v1/wizard/camera-moves").get_json()["takes"][0]["name"] == "Main"
-    assert client.delete("/api/v1/wizard/camera-moves/Main").status_code == 200
-    assert client.get("/api/v1/wizard/camera-moves").get_json()["takes"] == []
-
-
-def test_director_media_route_returns_proxy_master_and_sync_offset(tmp_path, monkeypatch):
-    project = create_project("Director", str(tmp_path / "Director.zuckervid"))
-    source = tmp_path / "wide360.mp4"
-    proxy = project.cache_dir / "director_proxies" / "proxy.mp4"
-    source.write_bytes(b"source")
-    proxy.parent.mkdir(parents=True)
-    proxy.write_bytes(b"proxy")
-    project.data["inputs"]["master"] = {"path": str(tmp_path / "master.wav")}
-    Path(project.data["inputs"]["master"]["path"]).write_bytes(b"master")
-    project.data["inputs"]["videos"] = [{"path": str(source), "projection": "equirect", "probe": {"projection": "equirect"}}]
-    project.save()
-    monkeypatch.setattr(
-        "server.api.director_proxy_status",
-        lambda record: {"ready": True, "path": str(proxy), "duration_sec": 9.0, "size_bytes": 5, "width": 1280, "height": 640, "fps": 15},
-    )
-    monkeypatch.setattr("server.api._director_sync_offset", lambda project, record: 12.34)
-    monkeypatch.setattr("server.api._preview_source_duration", lambda path: 9.0)
-    app = create_app()
-    app.config["ZUCKER_STATE"].project = project
-
-    response = app.test_client().get("/api/v1/wizard/director-media")
-
-    assert response.status_code == 200
-    data = response.get_json()
-    assert data["proxy_ready"] is True
-    assert data["video_url"] == "/api/v1/media/director-proxy/proxy.mp4"
-    assert data["master_url"] == "/api/v1/wizard/master-preview"
-    assert data["offset_sec"] == 12.34
-    assert data["duration_sec"] == 9.0
-
-
-def test_director_media_missing_proxy_returns_progress_job(tmp_path, monkeypatch):
-    project = create_project("Director", str(tmp_path / "Director.zuckervid"))
-    source = tmp_path / "wide360.mp4"
-    proxy = tmp_path / "global-proxy.mp4"
-    source.write_bytes(b"source")
-    project.data["inputs"]["master"] = {"path": str(tmp_path / "master.wav")}
-    Path(project.data["inputs"]["master"]["path"]).write_bytes(b"master")
-    project.data["inputs"]["videos"] = [{"path": str(source), "projection": "equirect", "probe": {"projection": "equirect"}}]
-    project.save()
-    monkeypatch.setattr("server.api.director_proxy_status", lambda record: {"ready": False, "path": str(proxy)})
-    monkeypatch.setattr("server.api._director_sync_offset", lambda project, record: 1.25)
-    monkeypatch.setattr("server.api._preview_source_duration", lambda path: 12.0)
-
-    def fake_ensure(record, progress=None):
-        if progress:
-            progress(55, "Preparing lightweight 360 preview — 55%")
-        return {"ready": True, "path": str(proxy), "duration_sec": 12.0, "size_bytes": 123, "width": 1280, "height": 640, "fps": 15}
-
-    monkeypatch.setattr("server.api.ensure_director_proxy", fake_ensure)
-    app = create_app()
-    app.config["ZUCKER_STATE"].project = project
-    client = app.test_client()
-
-    response = client.get("/api/v1/wizard/director-media")
-
-    assert response.status_code == 200
-    initial = response.get_json()
-    assert initial["proxy_ready"] is False
-    assert initial["job_id"]
-    for _ in range(20):
-        status = client.get(f"/api/v1/wizard/director-media/status?job_id={initial['job_id']}").get_json()
-        if status.get("proxy_ready"):
-            break
-        time.sleep(0.05)
-    assert status["proxy_ready"] is True
-    assert status["video_url"] == "/api/v1/media/director-proxy/global-proxy.mp4"
-    assert status["proxy_width"] == 1280
-    assert status["proxy_fps"] == 15
-
-
-def test_project_status_running_wins_over_existing_export_manifest(tmp_path):
-    project = create_project("Status", str(tmp_path / "Status.zuckervid"))
-    export_path = tmp_path / "done.mp4"
-    export_path.write_bytes(b"video")
-    manifest = project.artifacts_dir / "export_manifest.json"
-    write_artifact_json(manifest, {"exports": [{"path": str(export_path), "platform": "youtube"}]})
-    project.data["stages"]["export"] = {"status": "running", "outputs": {"export_manifest": str(manifest)}}
-
-    status = _project_wizard_status(project)
-
-    assert status["status"] == "running"
-
-
-def test_camera_move_smoothing_strength_is_persisted_and_stronger(tmp_path):
-    project = create_project("Moves", str(tmp_path / "Moves.zuckervid"))
-    samples = [{"t": index / 15, "yaw": 0 if index % 2 == 0 else 20, "pitch": 0, "fov": 100} for index in range(20)]
-
-    take = save_camera_move(project, "Strong", samples, smoothing="strong")
-
-    data = json.loads(Path(take["path"]).read_text(encoding="utf-8"))
-    assert data["smoothing"] == "strong"
-    raw_delta = max(sample["yaw"] for sample in data["raw"]) - min(sample["yaw"] for sample in data["raw"])
-    smooth_delta = max(sample["yaw"] for sample in data["smoothed"]) - min(sample["yaw"] for sample in data["smoothed"])
-    assert smooth_delta < raw_delta
-
-
 def test_adding_video_only_marks_ingest_and_dedupes_existing_clip(tmp_path, monkeypatch):
     monkeypatch.setattr("server.inbox.ffprobe", lambda path: valid_video_probe("2.5"))
     app = create_app()
@@ -1357,28 +1205,17 @@ def test_camera_role_weight_sanitizer_allows_zero_exclusion():
     assert weights == {"360": 0.0, "handheld": 1.0, "fixed_rear": 0.0}
 
 
-def test_edit_type_ui_separates_camera_mix_from_360_landmarks():
+def test_360_shot_setup_is_not_a_per_export_ui_step():
     html = Path("web/index.html").read_text(encoding="utf-8")
-    camera_mix = html.split('id="cameraMix"', 1)[1].split('id="sphericalSetup"', 1)[0]
-    spherical_setup = html.split('id="sphericalSetup"', 1)[1].split('id="startWizard"', 1)[0]
-
-    assert 'data-camera-role="handheld"' in camera_mix
-    assert 'data-camera-role="fixed_rear"' in camera_mix
-    assert 'data-field="yaw"' not in camera_mix
-    assert 'data-field="pitch"' not in camera_mix
-    assert 'data-spherical-landmark="right"' in spherical_setup
-    assert 'data-field="yaw"' in spherical_setup
-    assert 'data-field="fov"' in spherical_setup
+    assert 'id="sphericalSetup"' not in html
+    assert 'id="openDirector"' not in html
 
 
-def test_director_entry_point_and_mode_choice_render_in_360_setup():
+def test_result_player_is_shared_by_flat_and_360_exports():
     html = Path("web/index.html").read_text(encoding="utf-8")
-    spherical_setup = html.split('id="sphericalSetup"', 1)[1].split('id="startWizard"', 1)[0]
-
-    assert "Direct the 360 camera live" in spherical_setup
-    assert 'id="openDirector"' in spherical_setup
-    assert 'name="sphericalMode" value="automatic"' in spherical_setup
-    assert 'name="sphericalMode" value="directed"' in spherical_setup
+    assert 'id="unifiedResultPlayer"' in html
+    assert 'id="resultVideo"' in html
+    assert 'id="result360Player"' in html
 
 
 def test_audio_trim_persists_by_master_in_global_config(tmp_path, monkeypatch):

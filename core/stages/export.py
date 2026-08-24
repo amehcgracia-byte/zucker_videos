@@ -24,7 +24,7 @@ from core.operator_avoidance import count_avoidance_adjustments
 from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.messages import t
 from core.media_validation import record_is_usable_camera_video, record_media_path
-from core.normalization import EVEN_SDR_FILTER, NORMALIZATION_VERSION, SDR_TONEMAP_FILTER, global_cache_root, global_segment_path, source_cache_key
+from core.normalization import EVEN_SDR_FILTER, NORMALIZATION_VERSION, SDR_TONEMAP_FILTER, ensure_global_cache_dirs, global_cache_root, global_segment_path, source_cache_key
 from core.project import Project
 from core.spherical_metadata import SphericalMetadataError, inject_spherical_metadata
 from core.spherical_view import (
@@ -46,6 +46,7 @@ from core.stages.edit import (
     SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC,
     SPHERICAL_PRIMARY_DRIFT_FRACTION,
     SPHERICAL_SWEEP_SPEED_DEG_PER_SEC,
+    IPHONE_CROP_TOP_LIMIT,
     _valid_motion_recipe,
     load_edit_plan,
 )
@@ -77,9 +78,103 @@ SPHERICAL_NORMAL_FOV_MIN = NORMAL_FOV_MIN
 SPHERICAL_NORMAL_FOV_MAX = NORMAL_FOV_MAX
 SPHERICAL_MAX_HOLD_YAW_DEG = 10.0
 INTRO_DURATION = 10.0
-COLOR_PROFILE_VERSION = 3
+COLOR_PROFILE_VERSION = 4
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
+TRANSITION_PROFILES = {
+    "youtube": {"duration": 0.12, "sections_only": True},
+    "reel": {"duration": 0.08, "sections_only": False, "every": 3},
+    "reel_horizontal": {"duration": 0.08, "sections_only": False, "every": 3},
+    # No crossfade between equirectangular cuts: the 360 path is a direct
+    # projection-safe passthrough. Its logo clips already fade from/to black.
+    "360": {"duration": 0.0, "sections_only": True},
+}
+
+
+def _transition_profile(project: Project, platform: str) -> dict[str, Any]:
+    """Return only this mode's transition settings."""
+    profile = dict(TRANSITION_PROFILES.get(platform, {"duration": 0.0}))
+    configured = (((project.data.get("settings") or {}).get("export") or {}).get("transitions") or {}).get(platform)
+    if isinstance(configured, dict):
+        profile.update(configured)
+    profile["duration"] = max(0.0, float(profile.get("duration") or 0.0))
+    return profile
+
+
+def _transition_boundaries(segments: list[dict[str, Any]], profile: dict[str, Any]) -> list[int]:
+    """Indices after which a flat-video crossfade is allowed."""
+    if len(segments) < 2 or float(profile.get("duration") or 0.0) <= 0:
+        return []
+    boundaries: list[int] = []
+    for index in range(len(segments) - 1):
+        if profile.get("sections_only"):
+            left = segments[index].get("section") or segments[index].get("section_id")
+            right = segments[index + 1].get("section") or segments[index + 1].get("section_id")
+            if left and right and left != right:
+                boundaries.append(index)
+        else:
+            every = max(1, int(profile.get("every") or 1))
+            if (index + 1) % every == 0:
+                boundaries.append(index)
+    return boundaries
+
+
+def _render_flat_video_transitions(
+    paths: list[Path], durations: list[float], boundaries: list[int], output_path: Path,
+    video_bitrate: int, progress_callback: ProgressCallback, fade_duration: float,
+) -> Path:
+    """Encode selected flat-video xfade joins, leaving the other cuts hard."""
+    if not boundaries:
+        return paths[0] if len(paths) == 1 else _concat_flat_paths(paths, durations, output_path, video_bitrate, progress_callback)
+    ffmpeg = _ffmpeg_path()
+    inputs: list[str] = []
+    filters: list[str] = []
+    labels: list[str] = []
+    for index, path in enumerate(paths):
+        inputs += ["-i", str(path)]
+        label = f"v{index}"
+        labels.append(label)
+        filters.append(f"[{index}:v]settb=AVTB,setpts=PTS-STARTPTS,fps=30,format=yuv420p[{label}]")
+    chunks: list[tuple[str, float]] = []
+    start = 0
+    for boundary in [*boundaries, len(paths) - 1]:
+        end = boundary + 1
+        chunk_labels = labels[start:end]
+        chunk_duration = sum(float(value) for value in durations[start:end])
+        if len(chunk_labels) == 1:
+            chunk_label = chunk_labels[0]
+        else:
+            chunk_label = f"chunk{len(chunks)}"
+            filters.append("".join(f"[{label}]" for label in chunk_labels) + f"concat=n={len(chunk_labels)}:v=1:a=0[{chunk_label}]")
+        chunks.append((chunk_label, chunk_duration))
+        start = end
+    current, current_duration = chunks[0]
+    fade_duration = max(0.001, float(fade_duration))
+    for index, (next_label, next_duration) in enumerate(chunks[1:], start=1):
+        out = f"xf{index}"
+        offset = max(0.0, current_duration - fade_duration)
+        filters.append(f"[{current}][{next_label}]xfade=transition=fade:duration={fade_duration:.3f}:offset={offset:.3f}[{out}]")
+        current = out
+        current_duration += next_duration - fade_duration
+    filters.append(f"[{current}]format=yuv420p[vout]")
+    command = [str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error", "-nostdin", *inputs,
+               "-filter_complex", ";".join(filters), "-map", "[vout]", "-an", "-c:v", "libx264",
+               "-preset", "veryfast", "-b:v", str(video_bitrate), "-r", "30", "-pix_fmt", "yuv420p",
+               "-movflags", "+faststart", str(output_path)]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise FFmpegError(result.stderr.strip() or "Video transition render failed")
+    return output_path
+
+
+def _concat_flat_paths(paths: list[Path], durations: list[float], output_path: Path, video_bitrate: int, progress_callback: ProgressCallback) -> Path:
+    """Small fallback for a caller that has no selected transitions."""
+    concat = output_path.with_suffix(".txt")
+    concat.write_text("".join(_concat_file_line(path) for path in paths), encoding="utf-8")
+    result = subprocess.run([str(_ffmpeg_path()), "-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", str(output_path)], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise FFmpegError(result.stderr.strip() or "Video segment join failed")
+    return output_path
 FRAME_INTERVAL_TOLERANCE = 0.50
 FRAME_COUNT_METADATA_TIMEOUT_SEC = 10
 FRAME_COUNT_DECODE_TIMEOUT_SEC = 120
@@ -131,16 +226,20 @@ def _required_export_space_bytes(duration: float, video_bitrate: int, segment_co
 
 
 def _check_export_disk_space(output_path: Path, required_bytes: int) -> None:
+    ensure_global_cache_dirs()
     locations = {output_path.parent, global_cache_root()}
     free_values = []
+    details = []
     for location in locations:
         location.mkdir(parents=True, exist_ok=True)
-        free_values.append(shutil.disk_usage(location).free)
+        usage = shutil.disk_usage(location)
+        free_values.append(usage.free)
+        details.append(f"{location.resolve()}: {_format_gib(usage.free)} free")
     free = min(free_values) if free_values else 0
     if free < required_bytes:
         raise FFmpegError(
             f"Not enough free space to continue (needs ~{_format_gib(required_bytes)}; "
-            f"only {_format_gib(free)} is available)."
+            f"the limiting volume has {_format_gib(free)} available). Checked: {'; '.join(details)}"
         )
 
 
@@ -403,7 +502,10 @@ def _render_plan(
     temp_dir.mkdir(parents=True)
     segment_paths: list[Path] = []
     total_duration = _plan_duration(segments)
-    color_profiles = _color_profiles_for_segments(project, segments, warnings)
+    # Reel does not use the multicam colour-normalisation pass. Do not even
+    # measure its sources: aside from being wasted work, that made Reel
+    # exports pay the YouTube/360 colour-analysis cost before discarding it.
+    color_profiles = {} if platform in {"reel", "reel_horizontal"} else _color_profiles_for_segments(project, segments, warnings)
     if platform in {"reel", "reel_horizontal"}:
         # Reel overlays are composited as RGBA images below. Do not apply the
         # multicam colour-normalisation profile to them: it was the source of
@@ -467,6 +569,8 @@ def _render_plan(
         if actual_indices != expected_indices:
             raise FFmpegError(f"Rendered segment order is not contiguous: {actual_indices}")
         cache_owners: dict[str, dict[str, Any]] = {}
+        body_paths: list[Path] = []
+        body_durations: list[float] = []
         for result in results:
             path_key = str(result.get("cache_path") or result["path"])
             identity = result.get("spherical_identity")
@@ -477,9 +581,22 @@ def _render_plan(
                     f"{previous_identity} vs {identity}"
                 )
             cache_owners[path_key] = identity
-            segment_paths.append(result["path"])
+            body_paths.append(result["path"])
+            body_durations.append(float(render_segments[int(result["index"]) - 1].get("duration_sec") or 0.0))
             warnings.extend(result["warnings"])
             render_stats.append({key: result[key] for key in ("index", "cached", "rendered_from", "ffmpeg_sec", "verify_sec", "total_sec")})
+        transition_profile = _transition_profile(project, platform)
+        boundaries = _transition_boundaries(render_segments, transition_profile)
+        if boundaries:
+            transitioned_body = temp_dir / "body-transitions.mp4"
+            _render_flat_video_transitions(
+                body_paths, body_durations, boundaries, transitioned_body, video_bitrate,
+                lambda percent, detail: progress_callback(82 + int(percent * 2 / 100), detail),
+                float(transition_profile["duration"]),
+            )
+            segment_paths.append(transitioned_body)
+        else:
+            segment_paths.extend(body_paths)
         if include_bookends:
             phase_started = time.perf_counter()
             outro_path = temp_dir / "outro.mp4"
@@ -1273,7 +1390,9 @@ def _logo_filtergraph_matched(kind: str, duration: float, has_logo: bool, height
             f"{video};"
             f"[1:v]format=rgba,scale={card_width}:{height}:force_original_aspect_ratio=decrease,"
             f"pad={card_width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black[card];"
-            f"[bg][card]overlay=(W-w)/2:(H-h)/2:format=auto[v]"
+            f"[bg][card]overlay=(W-w)/2:(H-h)/2:format=auto,"
+            f"fade=t=in:st=0:d={CONTENT_FADE_DURATION:.3f},"
+            f"fade=t=out:st={max(0.0, duration-CONTENT_FADE_DURATION):.3f}:d={CONTENT_FADE_DURATION:.3f}[v]"
         )
     logo_height = int(height * 0.72)
     fade_in = 3.45
@@ -1497,7 +1616,9 @@ def _logo_filtergraph(platform: str, kind: str, duration: float, has_logo: bool,
             f"{video};"
             f"[1:v]format=rgba,scale={width}:{height}:force_original_aspect_ratio=decrease,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black[card];"
-            f"[bg][card]overlay=(W-w)/2:(H-h)/2:format=auto[v]"
+            f"[bg][card]overlay=(W-w)/2:(H-h)/2:format=auto,"
+            f"fade=t=in:st=0:d={CONTENT_FADE_DURATION:.3f},"
+            f"fade=t=out:st={max(0.0, duration-CONTENT_FADE_DURATION):.3f}:d={CONTENT_FADE_DURATION:.3f}[v]"
         )
     logo_height = int(_target_size(platform)[1] * 0.72)
     fade_in = 3.45
@@ -2363,10 +2484,13 @@ def _ken_burns_filter(motion: dict[str, Any], platform: str, duration: float) ->
         target_x = max(0.05, min(0.95, float(motion.get("target_x", 0.5))))
         target_y = max(0.05, min(0.95, float(motion.get("target_y", 0.5))))
         pan_x_expr = f"min(1,max(0,(({zoom_expr})*{target_x:.6f}-0.5)/(({zoom_expr})-1)))"
-        pan_y_expr = f"min(1,max(0,(({zoom_expr})*{target_y:.6f}-0.5)/(({zoom_expr})-1)))"
+        if motion.get("vertical_motion") in {"down", "up"}:
+            pan_y_expr = f"max(({IPHONE_CROP_TOP_LIMIT:.6f}+0.5/({zoom_expr})),({pan_y_start:.6f}+({pan_y_end:.6f}-{pan_y_start:.6f})*{progress}))"
+        else:
+            pan_y_expr = f"max(({IPHONE_CROP_TOP_LIMIT:.6f}+0.5/({zoom_expr})),min(1,max(0,(({zoom_expr})*{target_y:.6f}-0.5)/(({zoom_expr})-1))))"
     else:
         pan_x_expr = f"({pan_x_start:.6f}+({pan_x_end:.6f}-{pan_x_start:.6f})*{progress})"
-        pan_y_expr = f"({pan_y_start:.6f}+({pan_y_end:.6f}-{pan_y_start:.6f})*{progress})"
+        pan_y_expr = f"max(({IPHONE_CROP_TOP_LIMIT:.6f}+0.5/({zoom_expr})),({pan_y_start:.6f}+({pan_y_end:.6f}-{pan_y_start:.6f})*{progress}))"
     scaled_width = f"ceil({width}*{zoom_expr}/2)*2"
     scaled_height = f"ceil({height}*{zoom_expr}/2)*2"
     return (
@@ -3648,10 +3772,10 @@ def _verify_video_cadence(
 
 
 def _color_filter(color_profile: dict[str, Any]) -> str:
-    brightness = max(-0.08, min(0.08, float(color_profile.get("brightness_adjust") or 0.0)))
-    saturation = max(0.90, min(1.10, float(color_profile.get("saturation_adjust") or 1.0)))
-    red = max(-0.05, min(0.05, float(color_profile.get("red_balance") or 0.0)))
-    blue = max(-0.05, min(0.05, float(color_profile.get("blue_balance") or 0.0)))
+    brightness = max(-0.12, min(0.12, float(color_profile.get("brightness_adjust") or 0.0)))
+    saturation = max(0.86, min(1.16, float(color_profile.get("saturation_adjust") or 1.0)))
+    red = max(-0.12, min(0.12, float(color_profile.get("red_balance") or 0.0)))
+    blue = max(-0.12, min(0.12, float(color_profile.get("blue_balance") or 0.0)))
     # Keep chroma changes deliberately small; the profile is a bridge between
     # cameras, not a replacement for the recorded look.
     return (
@@ -4317,6 +4441,7 @@ def color_correction_for_profile(
     target_luma: float | None = None,
 ) -> dict[str, float]:
     """Return conservative, fixed per-camera correction toward the reference."""
+    legacy_target = not isinstance(reference, dict)
     if isinstance(reference, dict):
         target_luma = float(reference.get("luma") or 128.0)
         target_sat = float(reference.get("saturation") or 64.0)
@@ -4328,11 +4453,23 @@ def color_correction_for_profile(
         target_u = target_v = 128.0
     luma = max(1.0, float(profile.get("luma") or target_luma))
     sat = max(1.0, float(profile.get("saturation") or target_sat))
+    if legacy_target:
+        return {
+            "brightness_adjust": max(-0.08, min(0.08, (target_luma - luma) / 255.0 * 0.35)),
+            "saturation_adjust": max(0.90, min(1.10, 1.0 + (target_sat - sat) / 255.0 * 0.60)),
+            "red_balance": 0.0,
+            "blue_balance": 0.0,
+        }
     return {
-        "brightness_adjust": max(-0.08, min(0.08, (target_luma - luma) / 255.0 * 0.35)),
-        "saturation_adjust": max(0.90, min(1.10, 1.0 + (target_sat - sat) / 255.0 * 0.60)),
-        "red_balance": max(-0.05, min(0.05, (target_v - float(profile.get("v_mean") or 128.0)) / 255.0 * 0.20)),
-        "blue_balance": max(-0.05, min(0.05, (target_u - float(profile.get("u_mean") or 128.0)) / 255.0 * 0.20)),
+        # Strong enough to be visible across cameras, but still bounded so the
+        # source look and dynamic range remain intact.
+        "brightness_adjust": max(-0.12, min(0.12, (target_luma - luma) / 255.0 * 0.90)),
+        "saturation_adjust": max(0.86, min(1.16, 1.0 + (target_sat - sat) / 255.0 * 1.20)),
+        # U/V are the measured chroma axes.  The wider bound and multiplier
+        # are intentional: white-balance mismatch was previously imperceptible
+        # even when the exposure correction was technically non-zero.
+        "red_balance": max(-0.12, min(0.12, (target_v - float(profile.get("v_mean") or 128.0)) / 128.0 * 0.45)),
+        "blue_balance": max(-0.12, min(0.12, (target_u - float(profile.get("u_mean") or 128.0)) / 128.0 * 0.45)),
     }
 
 

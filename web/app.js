@@ -20,6 +20,7 @@ let currentSongs = [];
 let latestResult = null;
 let latestStatus = null;
 let pollTimer = null;
+let currentVariationSeed = String(Date.now());
 // The wizard API is process-global, so status responses must be tied to the
 // project active when the request started. This also invalidates old fetches
 // that resolve after Open/New project changes state.
@@ -35,7 +36,6 @@ let rescueClipId = null;
 let currentStep = 1;
 let lastProgressReportAt = 0;
 let trimDefaultsAppliedFor = "";
-let lastSphericalSetup = {};
 let cameraRoleWeights = { "360": 50, handheld: 30, fixed_rear: 20 };
 let fixedRearMotion = true;
 let reelTextOverlays = [];
@@ -44,41 +44,11 @@ let reelPlayhead = 0;
 let reelDrag = null;
 const reelPreviewImages = new Map();
 let shotReviewItems = [];
+let paperEditCuts = [];
 let inputWarningsShown = new Set();
-let sphericalMode = "automatic";
-const MAX_RECORDED_YAW_RATE_DEG_PER_SEC = 40;
 let savedAudioTrim = {};
-let previewTimers = new Map();
-let previewVersions = new Map();
-let previewControllers = new Map();
-let director = {
-  ready: false,
-  loading: false,
-  media: null,
-  three: null,
-  renderer: null,
-  scene: null,
-  camera: null,
-  sphere: null,
-  texture: null,
-  gl: null,
-  yaw: 0,
-  pitch: 0,
-  fov: 100,
-  dragging: false,
-  dragX: 0,
-  dragY: 0,
-  recording: false,
-  recordTimer: null,
-  samples: [],
-  smoothedSamples: [],
-  previewingTake: false,
-  animation: null,
-};
-
-// Result screen's read-only 360 viewer -- same sphere-mapping approach as
-// the Director (drag to look around), but no recording/take machinery: the
-// exported file already has its audio embedded and needs no separate sync.
+// Read-only 360 result viewer. The exported file already has its audio embedded
+// and needs no separate sync or Director state.
 let result360 = {
   ready: false,
   three: null,
@@ -214,15 +184,10 @@ async function loadAppConfig() {
   masterAudioExtensions = appConfig.master_audio_extensions || [".mp3"];
   renderSourceFolders();
   renderMasterAudioFilter();
-  lastSphericalSetup = normalizeSphericalSetup(appConfig.spherical_landmarks || {});
   cameraRoleWeights = normalizeCameraRoleWeights(appConfig.camera_role_weights || cameraRoleWeights);
   applyCameraRoleWeights(cameraRoleWeights);
   fixedRearMotion = appConfig.fixed_rear_motion !== false;
   applyFixedRearMotion(fixedRearMotion);
-  applySphericalMotion(appConfig.spherical_motion === true);
-  sphericalMode = appConfig.spherical_mode === "directed" ? "directed" : "automatic";
-  applySphericalMode(sphericalMode);
-  applySphericalSweep(appConfig.spherical_sweep !== false, appConfig.sweep_speed_deg_per_sec || 60);
   savedAudioTrim = appConfig.audio_trim_by_master || {};
   const logoStatus = document.querySelector("#personalLogoStatus");
   if (logoStatus && appConfig.personal_logo_path) logoStatus.textContent = `Using ${filename(appConfig.personal_logo_path)}`;
@@ -268,7 +233,7 @@ function resetProgressTiming() {
 }
 
 function choosePlatformInUi(platform) {
-  if (!platform || !["youtube", "reel", "360"].includes(platform)) return;
+  if (!platform || !["youtube", "reel", "360", "backstage"].includes(platform)) return;
   selectedPlatform = platform;
   try { sessionStorage.setItem("zucker.selectedPlatform", platform); } catch (_error) { /* private mode */ }
   document.querySelectorAll(".platform-card").forEach((card) => card.classList.toggle("selected", card.dataset.platform === platform));
@@ -295,8 +260,6 @@ function stopAllPreviewAudio() {
   document.querySelectorAll("audio, video").forEach((media) => {
     try { media.pause(); } catch (_error) { /* stale media element */ }
   });
-  const directorPlay = document.querySelector("#directorPlay");
-  if (directorPlay) directorPlay.textContent = "Play";
   const resultPlay = document.querySelector("#result360Play");
   if (resultPlay) resultPlay.textContent = "Play";
 }
@@ -481,9 +444,7 @@ function clearDetected() {
 }
 
 function resetSphericalSetupToGlobal() {
-  lastSphericalSetup = normalizeSphericalSetup(appConfig?.spherical_landmarks || {});
-  document.querySelectorAll("#sphericalSetup [data-field]").forEach((input) => (input.value = ""));
-  applySphericalSetup(lastSphericalSetup);
+  // 360 landmarks are persisted configuration, not editable per-export UI.
 }
 
 function recordToDetectedItem(record, kind, source = "project") {
@@ -499,6 +460,7 @@ function recordToDetectedItem(record, kind, source = "project") {
 
 async function resumeInputsFromProject() {
   const project = await api("/project");
+  currentVariationSeed = String(project.settings?.wizard?.variation_seed || currentVariationSeed);
   const savedPlatform = project.settings?.wizard?.platform;
   if (savedPlatform) choosePlatformInUi(savedPlatform);
   const inputs = project.inputs || {};
@@ -527,13 +489,7 @@ async function resumeInputsFromProject() {
     savedAudioTrim[inputs.master.path] = project.settings.wizard.audio_trim;
     trimDefaultsAppliedFor = "";
   }
-  const savedLandmarks = normalizeSphericalSetup(project.settings?.spherical_landmarks || {});
-  if (Object.keys(savedLandmarks).length) {
-    const globalLandmarks = normalizeSphericalSetup(appConfig?.spherical_landmarks || {});
-    lastSphericalSetup = { ...globalLandmarks, ...savedLandmarks };
-  } else {
-    resetSphericalSetupToGlobal();
-  }
+  resetSphericalSetupToGlobal();
   if (project.settings?.edit?.camera_role_weights) {
     cameraRoleWeights = normalizeCameraRoleWeights(project.settings.edit.camera_role_weights);
     applyCameraRoleWeights(cameraRoleWeights);
@@ -541,15 +497,6 @@ async function resumeInputsFromProject() {
   if (project.settings?.edit && "fixed_rear_motion" in project.settings.edit) {
     fixedRearMotion = project.settings.edit.fixed_rear_motion !== false;
     applyFixedRearMotion(fixedRearMotion);
-  }
-  if (project.settings?.edit && "spherical_motion" in project.settings.edit) {
-    applySphericalMotion(project.settings.edit.spherical_motion === true);
-  }
-  if (project.settings?.edit?.spherical_mode) {
-    applySphericalMode(project.settings.edit.spherical_mode);
-  }
-  if (project.settings?.edit) {
-    applySphericalSweep(project.settings.edit.spherical_sweep !== false, project.settings.edit.sweep_speed_deg_per_sec || 60);
   }
   if (inputs.songs?.path) {
     const result = await api("/wizard/songs", { method: "POST", body: JSON.stringify({ songs: inputs.songs.path }) });
@@ -656,9 +603,10 @@ function renderChips() {
   renderRaw360Callout();
   const note = document.querySelector("#softRule");
   const button = document.querySelector("#confirmFiles");
-  button.disabled = !(hasVideo && hasMaster);
+  // Backstage is video-led and deliberately has no required master track.
+  button.disabled = !hasVideo;
   if (!hasVideo) note.textContent = S.missingVideo;
-  else if (!hasMaster) note.textContent = S.missingMaster;
+  else if (!hasMaster) note.textContent = "Choose Backstage to edit with the original camera audio (no master required)";
   else if (!hasSongs) note.textContent = S.noSongsContinuous;
   else note.textContent = S.ready;
 }
@@ -992,6 +940,11 @@ async function openProject(path) {
     ensureStatusPolling();
   } else if (status.status === "waiting_review") {
     renderWizardStatus(status);
+  } else if (status.status === "waiting_paper_edit") {
+    setStep(4);
+    document.querySelector("#progressBox")?.setAttribute("hidden", "");
+    document.querySelector("#paperEditBox")?.removeAttribute("hidden");
+    openPaperEdit().catch((error) => showToast(error.message, true));
   } else if (status.status === "done" || status.status === "failed") {
     setStep(5);
   } else if (status.status === "waiting_choice") {
@@ -1105,9 +1058,9 @@ async function prepareStep2() {
   progressFloor = 0;
   progressStartedAt = Date.now();
   progressSamples = [];
-  if (!inputs.master || !inputs.videos.length) return;
+  if ((!inputs.master && selectedPlatform !== "backstage") || !inputs.videos.length) return;
   setStep(2);
-  setupTrimControls(inputs.master);
+  if (inputs.master) setupTrimControls(inputs.master);
   applyEditTypeMode();
   await loadSavedReelOverlays();
   if (inputs.songs) {
@@ -1119,7 +1072,7 @@ async function prepareStep2() {
 }
 
 async function loadSavedReelOverlays() {
-  if (reelTextOverlays.length || reelImageOverlays.length) return;
+  if (reelTextOverlays.length || reelImageOverlays.length) { loadFlyerLibrary().catch(() => {}); return; }
   try {
     const saved = await api("/wizard/overlays");
     if (saved.source === "project" || saved.source === "last") {
@@ -1128,6 +1081,19 @@ async function loadSavedReelOverlays() {
       renderReelOptions();
     }
   } catch (_error) { /* overlays are optional */ }
+  loadFlyerLibrary().catch(() => {});
+}
+
+async function loadFlyerLibrary() {
+  const root = document.querySelector("#reelFlyerLibrary");
+  if (!root) return;
+  const result = await api("/wizard/flyers");
+  root.innerHTML = (result.items || []).map((item) => `<article class="flyer-library-item"><button type="button" class="flyer-library-thumb" data-flyer-preview="${escapeHtml(item.url)}" aria-label="Preview ${escapeHtml(item.name)}"><img src="${escapeHtml(item.url)}" alt="${escapeHtml(item.name)}" loading="lazy" /></button><span class="flyer-library-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</span><button type="button" class="flyer-library-use" data-add-flyer="${escapeHtml(item.path)}" data-flyer-url="${escapeHtml(item.url)}">Use</button></article>`).join("");
+}
+
+function addFlyerReference(path, url) {
+  reelImageOverlays.push({ path, preview_url: url, x: 0.5, y: 0.5, width: 0.35, opacity: 1, animation: "fade", start_sec: 0, duration_sec: 3 });
+  renderReelOptions();
 }
 
 function renderShotReview(items) {
@@ -1202,23 +1168,69 @@ async function openShotReview() {
   return result;
 }
 
+function renderPaperEdit(paper) {
+  renderStoryboard(paper.storyboard);
+  paperEditCuts = paper.cuts || [];
+  const list = document.querySelector("#paperEditList");
+  const summary = document.querySelector("#paperEditSummary");
+  if (summary) summary.textContent = `${paperEditCuts.length} cortes · texto editable y criterio keep/drop/closing por corte.`;
+  if (!list) return;
+  list.innerHTML = paperEditCuts.map((cut) => `
+    <div class="paper-edit-row">
+      ${cut.thumbnail ? `<img class="paper-edit-thumb" src="${escapeHtml(cut.thumbnail)}" alt="Miniatura de ${escapeHtml(cut.source)}" />` : `<span class="paper-edit-thumb review-thumb-placeholder">—</span>`}
+      <span class="paper-edit-order">${cut.order}</span>
+      <span class="paper-edit-main"><strong>${escapeHtml(cut.source)} · ${escapeHtml(cut.section)}</strong><span>${Number(cut.in_sec).toFixed(1)}–${Number(cut.out_sec).toFixed(1)} s · ${Number(cut.duration_sec).toFixed(1)} s · ${escapeHtml(cut.language || "—")}</span><span class="paper-edit-original">${cut.text_original ? escapeHtml(cut.text_original) : "no dialogue"}</span>${cut.english_text ? `<span class="paper-edit-english">${escapeHtml(cut.english_text)}</span>` : ""}<em>score ${Number(cut.narrative_score ?? cut.interest_score ?? 0).toFixed(2)} · ${escapeHtml(cut.selection_reason || "")}</em>${cut.narrative_scores && Object.keys(cut.narrative_scores).length ? `<small>LLM: ${escapeHtml(JSON.stringify(cut.narrative_scores))}</small>` : ""}<input class="paper-edit-subtitle" data-paper-subtitle="${escapeHtml(cut.id)}" value="${escapeHtml(cut.subtitle_text || cut.english_text || "")}" aria-label="English subtitle for ${escapeHtml(cut.source)}" /></span><select data-paper-mark="${escapeHtml(cut.id)}" aria-label="Mark ${escapeHtml(cut.source)}"><option value="keep" ${cut.mark === "keep" ? "selected" : ""}>keep</option><option value="drop" ${cut.mark === "drop" ? "selected" : ""}>drop</option><option value="closing" ${cut.mark === "closing" ? "selected" : ""}>closing</option></select>
+    </div>`).join("");
+}
+
+function renderStoryboard(payload) {
+  const box = document.querySelector("#storyboardBox");
+  const plan = document.querySelector("#storyboardPlan");
+  const music = document.querySelector("#storyboardMusic");
+  if (!box || !plan || !music) return;
+  const storyboard = payload?.storyboard || {};
+  if (!payload || !["ready", "ready_cached"].includes(payload.status) || !storyboard.title) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const title = document.querySelector("#storyboardTitle");
+  const logline = document.querySelector("#storyboardLogline");
+  if (title) title.textContent = storyboard.title;
+  if (logline) logline.textContent = storyboard.logline || "";
+  const labels = { opening: "Apertura", development: "Desarrollo", closing: "Cierre" };
+  plan.innerHTML = ["opening", "development", "closing"].map((phase) => {
+    const rows = (storyboard[phase] || []).map((scene) => `<div class="storyboard-scene"><strong>${escapeHtml(scene.sequence_id || "")} · ${escapeHtml(scene.role || "")}</strong><span>${escapeHtml(scene.reason || "")}</span><em>${Number(scene.suggested_duration_sec || 0).toFixed(1)} s sugeridos</em></div>`).join("");
+    return rows ? `<section class="storyboard-phase"><h4>${labels[phase]}</h4>${rows}</section>` : "";
+  }).join("");
+  music.innerHTML = (storyboard.music_plan || []).map((item) => `<p><strong>${escapeHtml(item.phase || "")}</strong>: ${escapeHtml(item.policy || "")} <em>${escapeHtml(item.transition || "")}</em></p>`).join("");
+}
+
+async function openPaperEdit() {
+  const paper = await api("/wizard/paper-edit");
+  renderPaperEdit(paper);
+  return paper;
+}
+
 function applyEditTypeMode() {
   const passthrough360 = selectedPlatform === "360";
   const cameraMix = document.querySelector("#cameraMix");
-  const sphericalSetup = document.querySelector("#sphericalSetup");
   const songPicker = document.querySelector("#songPicker");
   const reelOptions = document.querySelector("#reelOptions");
+  const backstageOptions = document.querySelector("#backstageOptions");
+  const trimBox = document.querySelector(".trim-box");
   if (cameraMix) cameraMix.hidden = passthrough360;
-  if (sphericalSetup) {
-    sphericalSetup.hidden = passthrough360;
-    if (passthrough360) sphericalSetup.open = false;
-  }
   if (songPicker && passthrough360) songPicker.hidden = true;
   if (reelOptions) {
     reelOptions.hidden = selectedPlatform !== "reel";
     if (selectedPlatform !== "reel") reelOptions.open = false;
     if (selectedPlatform === "reel") renderReelOptions();
   }
+  if (backstageOptions) {
+    backstageOptions.hidden = selectedPlatform !== "backstage";
+    backstageOptions.open = selectedPlatform === "backstage";
+  }
+  if (trimBox) trimBox.hidden = selectedPlatform === "backstage";
 }
 
 function renderReelOptions() {
@@ -1245,7 +1257,7 @@ function renderReelOptions() {
     <button type="button" data-remove-reel-text="${index}">Remove</button>
   </div>`).join("");
   const imageRoot = document.querySelector("#reelImageLines");
-  if (imageRoot) imageRoot.innerHTML = reelImageOverlays.map((item, index) => `<div class="reel-text-line" data-reel-image-index="${index}"><span>Flyer ${index + 1}</span><label>Width <input data-reel-image-field="width" type="number" min="0.05" max="1" step="0.01" value="${item.width ?? .35}" /></label><label>Opacity <input data-reel-image-field="opacity" type="number" min="0.05" max="1" step="0.05" value="${item.opacity ?? 1}" /></label><label>Start <input data-reel-image-field="start_sec" type="number" min="0" max="60" step="0.1" value="${item.start_sec ?? 0}" /></label><label>Duration <input data-reel-image-field="duration_sec" type="number" min="0.1" max="60" step="0.1" value="${item.duration_sec ?? 3}" /></label><button type="button" data-remove-reel-image="${index}">Remove</button></div>`).join("");
+  if (imageRoot) imageRoot.innerHTML = reelImageOverlays.map((item, index) => `<div class="reel-text-line" data-reel-image-index="${index}"><span>Flyer ${index + 1}</span><label>Width <input data-reel-image-field="width" type="number" min="0.05" max="1" step="0.01" value="${item.width ?? .35}" /></label><label>Opacity <input data-reel-image-field="opacity" type="number" min="0.05" max="1" step="0.05" value="${item.opacity ?? 1}" /></label><label>Start <input data-reel-image-field="start_sec" type="number" min="0" max="60" step="0.1" value="${item.start_sec ?? 0}" /></label><label>Duration <input data-reel-image-field="duration_sec" type="number" min="0.1" max="60" step="0.1" value="${item.duration_sec ?? 3}" /></label><button type="button" data-duplicate-reel-image="${index}">Duplicate</button><button type="button" data-remove-reel-image="${index}">Remove</button></div>`).join("");
   renderReelTimeline();
   drawReelPreview();
 }
@@ -1301,89 +1313,8 @@ function reelOptionsFromForm() {
   return { duration: Number(document.querySelector("#reelDuration")?.value || 30), aspect: document.querySelector("#reelAspect")?.value || "9:16", texts: reelTextOverlays, images: reelImageOverlays };
 }
 
-function renderSphericalSetup() {
-  const panel = document.querySelector("#sphericalSetup");
-  if (!panel) return;
-  panel.hidden = !hasSphericalInput();
-  if (!panel.dataset.initialized) {
-    panel.open = false;
-    panel.dataset.initialized = "1";
-  }
-  if (!panel.hidden) {
-    applySphericalSetup(lastSphericalSetup);
-    refreshDirectorEntryStatus().catch(() => {});
-  }
-}
-
-function sphericalModeFromForm() {
-  return document.querySelector('input[name="sphericalMode"]:checked')?.value === "directed" ? "directed" : "automatic";
-}
-
-function applySphericalMode(mode) {
-  sphericalMode = mode === "directed" ? "directed" : "automatic";
-  const input = document.querySelector(`input[name="sphericalMode"][value="${sphericalMode}"]`);
-  if (input) input.checked = true;
-  document.querySelector("#directorEntry")?.classList.toggle("directed", sphericalMode === "directed");
-  refreshDirectorEntryStatus().catch(() => {});
-}
-
-async function refreshDirectorEntryStatus() {
-  const status = document.querySelector("#directorEntryStatus");
-  if (!status || !hasSphericalInput()) return;
-  try {
-    const result = await api("/wizard/camera-moves");
-    const takes = result.takes || [];
-    const count = takes.length;
-    const brief = takes
-      .slice(0, 2)
-      .map((take) => `${take.name || "Take"} ${secondsToTime(take.start_master_sec || 0)}-${secondsToTime(take.end_master_sec || 0)}`)
-      .join("; ");
-    status.textContent =
-      sphericalModeFromForm() === "directed"
-        ? count
-          ? `Directed mode active. ${count} take${count === 1 ? "" : "s"} available: ${brief}${count > 2 ? "..." : ""}`
-          : "No recorded take yet. Open Director to record one before exporting."
-        : count
-          ? `Automatic mode active. ${count} recorded take${count === 1 ? "" : "s"} saved (${brief}) but not used.`
-          : "Play the synced song, drag the 360 view, and record a camera move take.";
-  } catch (_error) {
-    status.textContent = "Open Director to record live 360 camera moves.";
-  }
-}
-
-function applySphericalSetup(values = {}) {
-  const normalized = normalizeSphericalSetup(values);
-  document.querySelectorAll("fieldset[data-spherical-landmark]").forEach((group) => {
-    const key = group.dataset.sphericalLandmark;
-    const data = normalized[key] || {};
-    group.querySelectorAll("[data-field]").forEach((input) => {
-      const value = data[input.dataset.field];
-      if (value != null && input.value === "") input.value = formatCanonicalNumber(value);
-    });
-    syncFriendlyFromAdvanced(group);
-    queueSphericalPreview(group, "final");
-  });
-  updateSphericalWarnings();
-}
-
-function sphericalLandmarksFromForm() {
-  const values = {};
-  document.querySelectorAll("fieldset[data-spherical-landmark]").forEach((group) => {
-    const yawInput = group.querySelector('[data-field="yaw"]');
-    const yawText = String(yawInput?.value || "").trim();
-    if (!yawText) return;
-    const yaw = normalizeYaw(yawText);
-    if (yaw == null) return;
-    const data = { yaw };
-    for (const field of ["pitch", "fov", "weight"]) {
-      const text = String(group.querySelector(`[data-field="${field}"]`)?.value || "").trim();
-      if (!text) continue;
-      const value = parseLocaleNumber(text);
-      if (value != null) data[field] = value;
-    }
-    values[group.dataset.sphericalLandmark] = data;
-  });
-  return values;
+function backstageMessagesFromForm() {
+  return [1, 2, 3, 4].map((index) => String(document.querySelector(`#backstageMessage${index}`)?.value || "").trim()).filter(Boolean);
 }
 
 function cameraRoleWeightsFromForm() {
@@ -1422,464 +1353,6 @@ function fixedRearMotionFromForm() {
 function applyFixedRearMotion(enabled) {
   const input = document.querySelector("#fixedRearMotion");
   if (input) input.checked = enabled !== false;
-}
-
-function sphericalMotionFromForm() {
-  // Checked means subtle hold motion; unchecked means a perfectly locked hold.
-  return document.querySelector("#sphericalMotion")?.checked === true;
-}
-
-function applySphericalMotion(enabled) {
-  const input = document.querySelector("#sphericalMotion");
-  if (input) input.checked = enabled === true;
-}
-
-function sphericalSweepFromForm() {
-  return document.querySelector("#sphericalSweep")?.checked !== false;
-}
-
-function sweepSpeedFromForm() {
-  return Math.max(30, Math.min(120, Number(document.querySelector("#sweepSpeed")?.value) || 60));
-}
-
-function applySphericalSweep(enabled, speed) {
-  const toggle = document.querySelector("#sphericalSweep");
-  const input = document.querySelector("#sweepSpeed");
-  const output = document.querySelector("#sweepSpeedValue");
-  if (toggle) toggle.checked = enabled !== false;
-  if (input) input.value = String(Math.max(30, Math.min(120, Number(speed) || 60)));
-  if (output) output.value = `${sweepSpeedFromForm()}°/s`;
-}
-
-function normalizeSphericalSetup(raw = {}) {
-  const legacy = {
-    full_stage: "full_stage_yaw",
-    singer: "singer_yaw",
-    drummer: "drummer_yaw",
-    left: "left_yaw",
-    right: "right_yaw",
-    audience: "audience_yaw",
-    audience_stage_wide: "audience_stage_wide_yaw",
-    planet: "planet_yaw",
-  };
-  const defaults = {
-    full_stage: 120,
-    audience_stage_wide: 125,
-    planet: 150,
-  };
-  const result = {};
-  for (const [key, legacyKey] of Object.entries(legacy)) {
-    const source = raw[key] && typeof raw[key] === "object" ? raw[key] : raw[legacyKey] != null ? { yaw: raw[legacyKey] } : null;
-    if (!source || source.yaw == null) continue;
-    const yaw = normalizeYaw(source.yaw);
-    if (yaw == null) continue;
-    const pitch = parseLocaleNumber(source.pitch);
-    const fov = parseLocaleNumber(source.fov);
-    const weight = parseLocaleNumber(source.weight);
-    result[key] = {
-      yaw,
-      pitch: pitch != null ? pitch : 0,
-      fov: fov != null ? fov : defaults[key] || 95,
-      weight: weight != null ? weight : 1,
-    };
-  }
-  return result;
-}
-
-function updateSphericalWarnings() {
-  const warning = document.querySelector("#sphericalWarnings");
-  if (!warning) return;
-  const values = sphericalLandmarksFromForm();
-  const enabled = Object.entries(values)
-    .filter(([, data]) => (data.weight == null ? 1 : data.weight) > 0 && data.yaw != null)
-    .map(([key, data]) => ({ key, yaw: data.yaw }));
-  const messages = [];
-  for (let i = 0; i < enabled.length; i += 1) {
-    for (let j = i + 1; j < enabled.length; j += 1) {
-      const delta = Math.abs(((enabled[j].yaw - enabled[i].yaw + 540) % 360) - 180);
-      if (delta <= 10) {
-        messages.push(`${LANDMARK_LABELS[enabled[i].key] || enabled[i].key} and ${LANDMARK_LABELS[enabled[j].key] || enabled[j].key} point at nearly the same angle.`);
-      }
-    }
-  }
-  warning.textContent = messages.join(" ");
-  warning.hidden = messages.length === 0;
-}
-
-function syncFriendlyFromAdvanced(group) {
-  const yaw = normalizeYaw(group.querySelector('[data-field="yaw"]')?.value);
-  const pitch = parseLocaleNumber(group.querySelector('[data-field="pitch"]')?.value);
-  const fov = parseLocaleNumber(group.querySelector('[data-field="fov"]')?.value);
-  const weight = parseLocaleNumber(group.querySelector('[data-field="weight"]')?.value);
-  const direction = group.querySelector('[data-friendly="direction"]');
-  const height = group.querySelector('[data-friendly="height"]');
-  const zoom = group.querySelector('[data-friendly="zoom"]');
-  const frequency = group.querySelector('[data-friendly="frequency"]');
-  const center = group.dataset.sphericalLandmark === "full_stage" ? 0 : stageCenterYaw();
-  if (direction && yaw != null) direction.value = String(Math.round(signedYawDelta(yaw, center)));
-  if (height && pitch != null) height.value = String(clamp(pitch, -45, 20));
-  if (zoom && fov != null) zoom.value = String(clamp(fov, 65, MAX_SHOT_FOV));
-  if (frequency) frequency.value = weightToFrequency(weight);
-  updateRawSummary(group);
-}
-
-// Drag-to-look positioning for each 360 landmark, mirroring the Director/Result
-// viewers: drag the shot image to aim, wheel to zoom. The numeric fields stay
-// the source of truth and update live (kept visible, secondary), so the same
-// interaction model works everywhere. Reuses the exact drag sensitivity of the
-// live viewers (YAW_DEG_PER_PX / PITCH_DEG_PER_PX / dragSensitivityScale).
-function wireLandmarkDragToLook() {
-  const panel = document.querySelector("#sphericalSetup");
-  if (!panel || panel.dataset.dragWired) return;
-  panel.dataset.dragWired = "1";
-  let active = null;
-
-  const landmarkFov = (group) => parseLocaleNumber(group.querySelector('[data-field="fov"]')?.value) || 100;
-
-  panel.addEventListener("pointerdown", (event) => {
-    const image = event.target.closest?.(".shot-preview");
-    const group = image?.closest("fieldset[data-spherical-landmark]");
-    if (!image || !group) return;
-    active = { group, image, x: event.clientX, y: event.clientY };
-    image.classList.add("dragging");
-    image.setPointerCapture?.(event.pointerId);
-    event.preventDefault();
-  });
-
-  panel.addEventListener("pointermove", (event) => {
-    if (!active) return;
-    const dx = event.clientX - active.x;
-    const dy = event.clientY - active.y;
-    active.x = event.clientX;
-    active.y = event.clientY;
-    const group = active.group;
-    const sensitivity = dragSensitivityScale(landmarkFov(group));
-    const yawInput = group.querySelector('[data-field="yaw"]');
-    const pitchInput = group.querySelector('[data-field="pitch"]');
-    const yaw = normalizeYaw((parseLocaleNumber(yawInput?.value) || 0) - dx * YAW_DEG_PER_PX * sensitivity) ?? 0;
-    const pitch = clamp((parseLocaleNumber(pitchInput?.value) || 0) + dy * PITCH_DEG_PER_PX * sensitivity, -85, 85);
-    if (yawInput) yawInput.value = formatCanonicalNumber(yaw);
-    if (pitchInput) pitchInput.value = formatCanonicalNumber(pitch);
-    syncFriendlyFromAdvanced(group);
-    queueSphericalPreview(group, "drag");
-  });
-
-  const stop = (event) => {
-    if (!active) return;
-    active.image.classList.remove("dragging");
-    active.image.releasePointerCapture?.(event.pointerId);
-    updateSphericalWarnings();
-    queueSphericalPreview(active.group, "final"); // sharpen once the drag ends
-    active = null;
-  };
-  panel.addEventListener("pointerup", stop);
-  panel.addEventListener("pointercancel", stop);
-
-  panel.addEventListener(
-    "wheel",
-    (event) => {
-      const image = event.target.closest?.(".shot-preview");
-      const group = image?.closest("fieldset[data-spherical-landmark]");
-      if (!image || !group) return;
-      event.preventDefault();
-      const fovInput = group.querySelector('[data-field="fov"]');
-      const delta = event.deltaY > 0 ? 4 : -4;
-      const fov = clamp((parseLocaleNumber(fovInput?.value) || 100) + delta, MIN_SHOT_FOV, MAX_SHOT_FOV);
-      if (fovInput) fovInput.value = formatCanonicalNumber(fov);
-      syncFriendlyFromAdvanced(group);
-      queueSphericalPreview(group, "drag");
-    },
-    { passive: false }
-  );
-}
-
-function syncAdvancedFromFriendly(group, previewQuality = "drag") {
-  const direction = parseLocaleNumber(group.querySelector('[data-friendly="direction"]')?.value);
-  const height = parseLocaleNumber(group.querySelector('[data-friendly="height"]')?.value);
-  const zoom = parseLocaleNumber(group.querySelector('[data-friendly="zoom"]')?.value);
-  const frequency = parseLocaleNumber(group.querySelector('[data-friendly="frequency"]')?.value);
-  const yawInput = group.querySelector('[data-field="yaw"]');
-  const pitchInput = group.querySelector('[data-field="pitch"]');
-  const fovInput = group.querySelector('[data-field="fov"]');
-  const weightInput = group.querySelector('[data-field="weight"]');
-  const center = group.dataset.sphericalLandmark === "full_stage" ? 0 : stageCenterYaw();
-  if (yawInput && direction != null) yawInput.value = formatCanonicalNumber(normalizeYaw(center + direction));
-  if (pitchInput && height != null) pitchInput.value = formatCanonicalNumber(height);
-  if (fovInput && zoom != null) fovInput.value = formatCanonicalNumber(zoom);
-  if (weightInput && frequency != null) weightInput.value = formatCanonicalNumber(frequency);
-  updateRawSummary(group);
-  updateSphericalWarnings();
-  queueSphericalPreview(group, previewQuality);
-}
-
-function updateRawSummary(group) {
-  const summary = group.querySelector(".raw-summary");
-  if (!summary) return;
-  const yaw = formatCanonicalNumber(group.querySelector('[data-field="yaw"]')?.value);
-  const pitch = formatCanonicalNumber(group.querySelector('[data-field="pitch"]')?.value);
-  const fov = formatCanonicalNumber(group.querySelector('[data-field="fov"]')?.value);
-  const weight = parseLocaleNumber(group.querySelector('[data-field="weight"]')?.value);
-  const frequency = weightToFrequency(weight);
-  const label = { 0: "Never", 1: "Rarely", 5: "Sometimes", 15: "Often", 40: "A lot" }[frequency] || "Sometimes";
-  summary.textContent = yaw ? `Exact: ${yaw}° direction, ${pitch || "0"}° height, zoom ${fov || "95"} · ${label}` : "";
-}
-
-function queueSphericalPreview(group, quality = "final") {
-  const image = group.querySelector("[data-preview]");
-  const source = selectedSphericalSourcePath();
-  const yaw = normalizeYaw(group.querySelector('[data-field="yaw"]')?.value);
-  const pitch = parseLocaleNumber(group.querySelector('[data-field="pitch"]')?.value);
-  const fov = parseLocaleNumber(group.querySelector('[data-field="fov"]')?.value);
-  if (!image || !source || yaw == null) return;
-  const key = group.dataset.sphericalLandmark;
-  clearTimeout(previewTimers.get(key));
-  previewControllers.get(key)?.abort();
-  const version = (previewVersions.get(key) || 0) + 1;
-  previewVersions.set(key, version);
-  previewTimers.set(
-    key,
-    setTimeout(() => {
-      if (previewVersions.get(key) !== version) return;
-      const params = new URLSearchParams({
-        source,
-        yaw: formatCanonicalNumber(yaw),
-        pitch: formatCanonicalNumber(pitch ?? 0),
-        fov: formatCanonicalNumber(fov ?? 95),
-        shot_type: key,
-        quality,
-      });
-      const nextSrc = `/api/v1/wizard/spherical-preview?${params.toString()}`;
-      if (image.dataset.pendingSrc === nextSrc || image.src.endsWith(nextSrc)) return;
-      image.dataset.pendingSrc = nextSrc;
-      const controller = new AbortController();
-      previewControllers.set(key, controller);
-      fetch(nextSrc, { signal: controller.signal })
-        .then((response) => {
-          if (!response.ok) throw new Error("Preview failed");
-          return response.blob();
-        })
-        .then((blob) => {
-          if (previewVersions.get(key) === version) {
-            if (image.dataset.objectUrl) URL.revokeObjectURL(image.dataset.objectUrl);
-            const objectUrl = URL.createObjectURL(blob);
-            image.dataset.objectUrl = objectUrl;
-            image.src = objectUrl;
-            image.dataset.pendingSrc = "";
-          }
-        })
-        .catch((error) => {
-          if (error.name !== "AbortError" && previewVersions.get(key) === version) image.dataset.pendingSrc = "";
-        })
-        .finally(() => {
-          if (previewControllers.get(key) === controller) previewControllers.delete(key);
-        });
-    }, quality === "drag" ? 90 : 220)
-  );
-}
-
-function directorStatus(message, isError = false) {
-  const node = document.querySelector("#directorStatus");
-  if (!node) return;
-  node.textContent = message;
-  node.style.color = isError ? "var(--bad)" : "";
-}
-
-function setDirectorProgress(percent, detail = "", visible = true) {
-  const root = document.querySelector("#directorProgress");
-  const bar = document.querySelector("#directorProgressBar");
-  const text = document.querySelector("#directorProgressText");
-  if (!root || !bar || !text) return;
-  root.hidden = !visible;
-  const value = clamp(Number(percent) || 0, 0, 100);
-  bar.style.width = `${value}%`;
-  text.textContent = detail || `${Math.round(value)}%`;
-}
-
-async function openDirector() {
-  if (!hasSphericalInput()) {
-    showToast("Add a 360 clip before opening Director", true);
-    return;
-  }
-  document.querySelector("#directorScreen").hidden = false;
-  directorStatus("Loading 360 Director...");
-  try {
-    await setupDirector();
-    await loadDirectorTakes();
-  } catch (error) {
-    director.loading = false;
-    setDirectorProgress(0, "", false);
-    directorStatus(error.message, true);
-    showToast(error.message, true);
-  }
-}
-
-function closeDirector() {
-  stopDirectorRecording(false);
-  pauseDirector();
-  document.querySelector("#directorScreen").hidden = true;
-}
-
-async function setupDirector() {
-  if (director.loading) return;
-  director.loading = true;
-  const canvas = document.querySelector("#directorCanvas");
-  const video = document.querySelector("#directorVideo");
-  const audio = document.querySelector("#directorAudio");
-  const gl = canvas.getContext("webgl2");
-  if (!gl) throw new Error("WebGL2 is not available in this webview");
-  director.gl = gl;
-  const [THREE, media] = await Promise.all([import("/vendor/three.module.min.js"), loadDirectorMedia()]);
-  director.media = media;
-  director.three = THREE;
-  video.src = `${media.video_url}?t=${Date.now()}`;
-  audio.src = `${media.master_url}?t=${Date.now()}`;
-  video.muted = true;
-  video.playsInline = true;
-  await Promise.all([waitForMedia(video), waitForMedia(audio).catch(() => {})]);
-  initDirectorScene(THREE, canvas, video);
-  wireDirectorEvents();
-  resizeDirector();
-  updateDirectorCamera();
-  director.ready = true;
-  director.loading = false;
-  seekDirector(0);
-  setDirectorProgress(100, "", false);
-  directorStatus("WebGL active. Drag the view while the song plays, then record a take.");
-}
-
-async function loadDirectorMedia() {
-  let media = await api("/wizard/director-media");
-  if (media.proxy_ready) return media;
-  setDirectorProgress(media.progress || 0, media.detail || media.message || "Preparing preview...", true);
-  directorStatus(media.message || "Preparing a lightweight 360 preview — this happens once per clip.");
-  const started = Date.now();
-  while (!media.proxy_ready) {
-    if (Date.now() - started > 30 * 60 * 1000) throw new Error("Preparing the 360 preview timed out. Open logs for details.");
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    media = await api(`/wizard/director-media/status?job_id=${encodeURIComponent(media.job_id)}`);
-    if (media.status === "failed") throw new Error(media.error || "Could not prepare the 360 preview");
-    setDirectorProgress(media.progress || 0, media.detail || media.message || "Preparing preview...", true);
-  }
-  return media;
-}
-
-function waitForMedia(media) {
-  if (Number.isFinite(media.duration) && media.duration > 0) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const done = () => {
-      cleanup();
-      resolve();
-    };
-    const fail = () => {
-      cleanup();
-      const details = media.error?.message || media.networkState || "unknown media error";
-      logFrontendError(`Director media failed to load: ${details}`);
-      reject(new Error("Could not load Director media. Open logs for details."));
-    };
-    const cleanup = () => {
-      media.removeEventListener("loadedmetadata", done);
-      media.removeEventListener("error", fail);
-    };
-    media.addEventListener("loadedmetadata", done, { once: true });
-    media.addEventListener("error", fail, { once: true });
-  });
-}
-
-function initDirectorScene(THREE, canvas, video) {
-  if (director.renderer) {
-    director.texture?.dispose?.();
-    director.renderer.dispose?.();
-  }
-  director.renderer = new THREE.WebGLRenderer({ canvas, context: director.gl, antialias: true });
-  director.scene = new THREE.Scene();
-  director.camera = new THREE.PerspectiveCamera(50, 16 / 9, 0.1, 1100);
-  const geometry = new THREE.SphereGeometry(500, 96, 64);
-  geometry.scale(-1, 1, 1);
-  director.texture = new THREE.VideoTexture(video);
-  director.texture.colorSpace = THREE.SRGBColorSpace;
-  director.sphere = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ map: director.texture }));
-  director.scene.add(director.sphere);
-  if (director.animation) cancelAnimationFrame(director.animation);
-  const render = () => {
-    director.animation = requestAnimationFrame(render);
-    syncDirectorAudio();
-    updateDirectorScrub();
-    applyDirectorPreviewCurve();
-    director.renderer.render(director.scene, director.camera);
-  };
-  render();
-}
-
-function wireDirectorEvents() {
-  const canvas = document.querySelector("#directorCanvas");
-  if (canvas.dataset.wired) return;
-  canvas.dataset.wired = "1";
-  canvas.addEventListener("pointerdown", (event) => {
-    director.dragging = true;
-    director.dragX = event.clientX;
-    director.dragY = event.clientY;
-    canvas.classList.add("dragging");
-    canvas.setPointerCapture?.(event.pointerId);
-  });
-  canvas.addEventListener("pointermove", (event) => {
-    if (!director.dragging) return;
-    const dx = event.clientX - director.dragX;
-    const dy = event.clientY - director.dragY;
-    director.dragX = event.clientX;
-    director.dragY = event.clientY;
-    const sensitivity = dragSensitivityScale(director.fov);
-    director.yaw = normalizeYaw(director.yaw - dx * YAW_DEG_PER_PX * sensitivity) ?? 0;
-    director.pitch = clamp(director.pitch + dy * PITCH_DEG_PER_PX * sensitivity, -85, 85);
-    updateDirectorCamera();
-  });
-  const stopDrag = (event) => {
-    director.dragging = false;
-    canvas.classList.remove("dragging");
-    if (event?.pointerId != null) canvas.releasePointerCapture?.(event.pointerId);
-  };
-  canvas.addEventListener("pointerup", stopDrag);
-  canvas.addEventListener("pointercancel", stopDrag);
-  window.addEventListener("resize", resizeDirector);
-  document.querySelector("#directorFov").addEventListener("input", (event) => {
-    director.fov = Number(event.target.value) || 100;
-    updateDirectorCamera();
-  });
-  document.querySelector("#directorScrub").addEventListener("input", (event) => {
-    seekDirector(Number(event.target.value) || 0);
-  });
-  // D2: mouse wheel controls FOV (zoom) directly on the sphere canvas.
-  // Scrolling up (negative deltaY) zooms in (smaller FOV); down zooms out.
-  canvas.addEventListener("wheel", (event) => {
-    event.preventDefault();
-    const delta = event.deltaY > 0 ? 3 : -3;
-    director.fov = clamp((director.fov || 100) + delta, MIN_SHOT_FOV, MAX_SHOT_FOV);
-    const fovSlider = document.querySelector("#directorFov");
-    if (fovSlider) fovSlider.value = String(director.fov);
-    updateDirectorCamera();
-  }, { passive: false });
-}
-
-function resizeDirector() {
-  if (!director.renderer || !director.camera) return;
-  const canvas = document.querySelector("#directorCanvas");
-  const width = Math.max(320, canvas.clientWidth || 960);
-  const height = Math.max(180, canvas.clientHeight || Math.round(width * 9 / 16));
-  director.renderer.setSize(width, height, false);
-  director.camera.aspect = width / height;
-  updateDirectorCamera();
-}
-
-function updateDirectorCamera() {
-  if (!director.camera || !director.three) return;
-  const THREE = director.three;
-  const aspect = Math.max(0.1, director.camera.aspect || 16 / 9);
-  director.camera.fov = verticalFovFromHorizontal(director.fov, aspect);
-  director.camera.updateProjectionMatrix();
-  const yaw = THREE.MathUtils.degToRad(signedYawDelta(director.yaw, 0));
-  const pitch = THREE.MathUtils.degToRad(clamp(director.pitch, -85, 85));
-  const target = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
-  director.camera.lookAt(target);
-  document.querySelector("#directorHud").textContent = `Yaw ${formatCanonicalNumber(director.yaw)}° · Pitch ${formatCanonicalNumber(director.pitch)}° · Shot width ${formatCanonicalNumber(director.fov)}°`;
 }
 
 function verticalFovFromHorizontal(horizontalFov, aspect) {
@@ -2066,335 +1539,6 @@ function updateResult360Scrub() {
   if (video.ended) document.querySelector("#result360Play").textContent = "Play";
 }
 
-async function toggleDirectorPlay() {
-  const video = document.querySelector("#directorVideo");
-  if (video.paused) await playDirector();
-  else pauseDirector();
-}
-
-async function playDirector() {
-  const video = document.querySelector("#directorVideo");
-  const audio = document.querySelector("#directorAudio");
-  syncDirectorAudio(true);
-  await Promise.all([video.play(), audio.play().catch(() => {})]);
-  document.querySelector("#directorPlay").textContent = "Pause";
-  injectIcons();
-}
-
-function pauseDirector() {
-  document.querySelector("#directorVideo")?.pause();
-  document.querySelector("#directorAudio")?.pause();
-  const button = document.querySelector("#directorPlay");
-  if (button) {
-    button.textContent = "Play";
-    button.dataset.icon = "play";
-    button.innerHTML = "Play";
-    injectIcons();
-  }
-}
-
-function seekDirector(time) {
-  const video = document.querySelector("#directorVideo");
-  const audio = document.querySelector("#directorAudio");
-  const duration = Number(director.media?.duration_sec || 0);
-  const next = clamp(time, 0, duration || 0);
-  const masterTime = localDirectorTimeToMaster(next);
-  video.currentTime = videoTimeForMaster(masterTime);
-  audio.currentTime = masterTime;
-  updateDirectorScrub();
-}
-
-// Audio is the timing master: it's a plain linear MP3 track that plays back
-// reliably on its own, whereas the video drives a WebGL VideoTexture and is
-// far more prone to visible stalls when seeked. So we let audio.currentTime
-// run natively and correct the VIDEO element to follow it — with a generous
-// tolerance and a throttled correction interval, so normal decode jitter
-// never triggers a seek, let alone a seek-every-frame loop (that was the
-// original stutter bug, just on the other element).
-let _videoSyncLastAt = 0;
-const VIDEO_SYNC_INTERVAL_MS = 1000; // soft-correct at most once a second during playback
-const VIDEO_SOFT_DRIFT_THRESHOLD = 0.2; // seconds; ignore drift below this entirely
-const VIDEO_HARD_DRIFT_THRESHOLD = 0.6; // seconds; resync immediately regardless of interval
-
-function syncDirectorAudio(force = false) {
-  const video = document.querySelector("#directorVideo");
-  const audio = document.querySelector("#directorAudio");
-  if (!video || !audio || !director.media || Number.isNaN(audio.currentTime)) return;
-  const masterTime = Number(audio.currentTime || 0);
-  const end = Number(director.media?.trim_end_sec || masterTime);
-  if (masterTime >= end && !audio.paused) {
-    pauseDirector();
-    return;
-  }
-  const targetVideoTime = videoTimeForMaster(masterTime);
-  const now = performance.now();
-  const drift = Math.abs((video.currentTime || 0) - targetVideoTime);
-  if (force || drift > VIDEO_HARD_DRIFT_THRESHOLD || (drift > VIDEO_SOFT_DRIFT_THRESHOLD && now - _videoSyncLastAt > VIDEO_SYNC_INTERVAL_MS)) {
-    video.currentTime = Math.max(0, Math.min(Number(video.duration || targetVideoTime), targetVideoTime));
-    _videoSyncLastAt = now;
-  }
-  if (video.paused !== audio.paused) {
-    if (audio.paused) video.pause();
-    else video.play().catch(() => {});
-  }
-}
-
-function masterTimeForDirectorVideo(videoTime) {
-  return Math.max(0, Number(director.media?.offset_sec || 0) + Number(videoTime || 0));
-}
-
-// Audio is the timing master (see syncDirectorAudio) — prefer its
-// currentTime directly wherever "what master-timeline position are we at
-// right now" is needed (scrub display, recording samples, take preview),
-// since the video element is only ever a generously-tolerant follower and
-// can legitimately lag/lead by a few hundred ms.
-function masterTimeNow() {
-  const audio = document.querySelector("#directorAudio");
-  if (audio && director.media && !Number.isNaN(audio.currentTime)) {
-    return Math.max(0, Number(audio.currentTime || 0));
-  }
-  const video = document.querySelector("#directorVideo");
-  return masterTimeForDirectorVideo(video?.currentTime || 0);
-}
-
-function localDirectorTimeToMaster(localTime) {
-  return Number(director.media?.trim_start_sec || 0) + Number(localTime || 0);
-}
-
-function videoTimeForMaster(masterTime) {
-  const video = document.querySelector("#directorVideo");
-  const duration = Number(video?.duration || director.media?.proxy_duration_sec || 0);
-  return clamp(Number(masterTime || 0) - Number(director.media?.offset_sec || 0), 0, duration || 0);
-}
-
-function updateDirectorScrub() {
-  const video = document.querySelector("#directorVideo");
-  const scrub = document.querySelector("#directorScrub");
-  if (!video || !scrub) return;
-  const duration = Number(director.media?.duration_sec || video.duration || 0);
-  const local = clamp(masterTimeNow() - Number(director.media?.trim_start_sec || 0), 0, duration || 0);
-  scrub.max = String(Math.max(0.01, duration));
-  if (document.activeElement !== scrub) scrub.value = String(local);
-  document.querySelector("#directorTime").textContent = `${secondsToTime(local)} / ${secondsToTime(duration)}`;
-}
-
-async function toggleDirectorRecording() {
-  if (director.recording) {
-    await stopDirectorRecording(true);
-    return;
-  }
-  director.samples = [];
-  director.smoothedSamples = [];
-  director.previewingTake = false;
-  document.querySelector("#directorPreviewTake").hidden = true;
-  document.querySelector("#directorSaveTake").hidden = true;
-  director.recording = true;
-  document.querySelector("#directorRecord").textContent = "Stop recording";
-  directorStatus("Recording camera moves...");
-  sampleDirectorCamera();
-  director.recordTimer = setInterval(sampleDirectorCamera, 1000 / 15);
-}
-
-function sampleDirectorCamera() {
-  const video = document.querySelector("#directorVideo");
-  if (!director.recording || !video || video.paused) return;
-  const t = masterTimeNow();
-  const trimEnd = Number(director.media?.trim_end_sec || Infinity);
-  if (t > trimEnd) return;
-  const last = director.samples[director.samples.length - 1];
-  if (last && t <= last.t) return;
-  director.samples.push({
-    t,
-    video_time: video.currentTime || 0,
-    yaw: director.yaw,
-    pitch: director.pitch,
-    fov: director.fov,
-  });
-}
-
-async function stopDirectorRecording(save) {
-  if (!director.recording) return;
-  clearInterval(director.recordTimer);
-  director.recordTimer = null;
-  director.recording = false;
-  const button = document.querySelector("#directorRecord");
-  if (button) button.textContent = "Record camera moves";
-  if (!save) return;
-  if (director.samples.length < 2) {
-    directorStatus("Recording was too short.", true);
-    return;
-  }
-  directorStatus("Smoothing camera moves...");
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  const strength = document.querySelector("#directorSmoothing")?.value || "medium";
-  director.smoothedSamples = smoothDirectorSamples(director.samples, strength);
-  director.previewingTake = false;
-  document.querySelector("#directorPreviewTake").hidden = false;
-  document.querySelector("#directorSaveTake").hidden = false;
-  directorStatus(`Smoothed ${director.samples.length} samples (${strength}). Preview it, then save the take.`);
-}
-
-function smoothingRadius(strength) {
-  return { light: 3, medium: 7, strong: 12 }[String(strength || "medium")] || 7;
-}
-
-function smoothDirectorSamples(samples, strength) {
-  const radius = smoothingRadius(strength);
-  if (!Array.isArray(samples) || samples.length <= 2) return limitDirectorYawRate(samples || []);
-  const yaws = unwrapYawSeries(samples.map((sample) => Number(sample.yaw || 0)));
-  const smoothed = samples.map((sample, index) => {
-    const start = Math.max(0, index - radius);
-    const end = Math.min(samples.length, index + radius + 1);
-    const weighted = (values) => {
-      let total = 0;
-      let sum = 0;
-      for (let i = start; i < end; i += 1) {
-        const weight = 1 - Math.abs(i - index) / (radius + 1);
-        total += weight;
-        sum += Number(values[i] || 0) * weight;
-      }
-      return total ? sum / total : Number(values[index] || 0);
-    };
-    return {
-      ...sample,
-      yaw: normalizeYaw(weighted(yaws)),
-      pitch: clamp(weighted(samples.map((item) => Number(item.pitch || 0))), -89, 89),
-      fov: clamp(weighted(samples.map((item) => Number(item.fov || 100))), 1, 179),
-    };
-  });
-  return limitDirectorYawRate(smoothed);
-}
-
-function limitDirectorYawRate(samples, maxRate = MAX_RECORDED_YAW_RATE_DEG_PER_SEC) {
-  if (!Array.isArray(samples) || samples.length <= 1) return [...(samples || [])];
-  const unwrapped = unwrapYawSeries(samples.map((sample) => Number(sample.yaw || 0)));
-  const output = [{ ...samples[0], yaw: normalizeYaw(unwrapped[0]) }];
-  let previousYaw = unwrapped[0];
-  for (let index = 1; index < samples.length; index += 1) {
-    const previous = samples[index - 1];
-    const current = samples[index];
-    const dt = Math.max(0, Number(current.t || 0) - Number(previous.t || 0));
-    let delta = unwrapped[index] - previousYaw;
-    const maxDelta = Math.max(0, Number(maxRate) || 0) * dt;
-    if (Math.abs(delta) > maxDelta) delta = Math.sign(delta) * maxDelta;
-    previousYaw += delta;
-    output.push({ ...current, yaw: normalizeYaw(previousYaw) });
-  }
-  return output;
-}
-
-function unwrapYawSeries(yaws) {
-  if (!yaws.length) return [];
-  const output = [Number(yaws[0] || 0)];
-  for (let index = 1; index < yaws.length; index += 1) {
-    let value = Number(yaws[index] || 0);
-    const previous = output[index - 1];
-    while (value - previous > 180) value -= 360;
-    while (value - previous < -180) value += 360;
-    output.push(value);
-  }
-  return output;
-}
-
-function previewDirectorTake() {
-  if (!director.smoothedSamples.length) return;
-  director.previewingTake = true;
-  seekDirector(Math.max(0, director.smoothedSamples[0].t - Number(director.media?.trim_start_sec || 0)));
-  playDirector().catch((error) => showToast(error.message, true));
-  directorStatus("Previewing smoothed camera move.");
-}
-
-function applyDirectorPreviewCurve() {
-  if (!director.previewingTake || !director.smoothedSamples.length || director.recording) return;
-  const masterTime = masterTimeNow();
-  const sample = interpolateDirectorSample(director.smoothedSamples, masterTime);
-  if (!sample) return;
-  director.yaw = sample.yaw;
-  director.pitch = sample.pitch;
-  director.fov = sample.fov;
-  document.querySelector("#directorFov").value = String(sample.fov);
-  updateDirectorCamera();
-}
-
-function interpolateDirectorSample(samples, t) {
-  if (!samples.length) return null;
-  if (t <= samples[0].t) return samples[0];
-  if (t >= samples[samples.length - 1].t) return samples[samples.length - 1];
-  for (let index = 0; index < samples.length - 1; index += 1) {
-    const left = samples[index];
-    const right = samples[index + 1];
-    if (left.t <= t && t <= right.t) {
-      const amount = (t - left.t) / Math.max(0.000001, right.t - left.t);
-      const yawStart = unwrapYawSeries([left.yaw, right.yaw]);
-      return {
-        t,
-        yaw: normalizeYaw(yawStart[0] + (yawStart[1] - yawStart[0]) * amount),
-        pitch: left.pitch + (right.pitch - left.pitch) * amount,
-        fov: left.fov + (right.fov - left.fov) * amount,
-      };
-    }
-  }
-  return samples[samples.length - 1];
-}
-
-async function saveDirectorTake() {
-  if (director.samples.length < 2) {
-    directorStatus("Record a take before saving.", true);
-    return;
-  }
-  const nameInput = document.querySelector("#directorTakeName");
-  const fallback = `Take ${new Date().toISOString().slice(0, 19).replace("T", " ").replaceAll(":", ".")}`;
-  const result = await api("/wizard/camera-moves", {
-    method: "POST",
-    body: JSON.stringify({
-      name: nameInput.value || fallback,
-      source_path: director.media?.source_path || "",
-      samples: director.samples,
-      smoothing: document.querySelector("#directorSmoothing")?.value || "medium",
-    }),
-  });
-  nameInput.value = "";
-  document.querySelector("#directorPreviewTake").hidden = true;
-  document.querySelector("#directorSaveTake").hidden = true;
-  director.previewingTake = false;
-  renderDirectorTakes(result.takes || []);
-  refreshDirectorEntryStatus().catch(() => {});
-  directorStatus(`Saved ${result.take?.name || "take"} with ${director.samples.length} samples.`);
-}
-
-async function loadDirectorTakes() {
-  const result = await api("/wizard/camera-moves");
-  renderDirectorTakes(result.takes || []);
-}
-
-function renderDirectorTakes(takes) {
-  const root = document.querySelector("#directorTakes");
-  if (!root) return;
-  if (!takes.length) {
-    root.innerHTML = "<small>No recorded takes yet.</small>";
-    return;
-  }
-  root.innerHTML = takes
-    .map((take) => {
-      const start = secondsToTime(take.start_master_sec || 0);
-      const end = secondsToTime(take.end_master_sec || 0);
-      return `<div class="director-take">
-        <div><strong>${escapeHtml(take.name)}</strong><small>${escapeHtml(start)}-${escapeHtml(end)} · ${Number(take.sample_count || 0)} samples</small></div>
-        <button class="icon-button small" data-icon="trash" data-delete-take="${escapeHtml(take.name)}" type="button">Delete</button>
-      </div>`;
-    })
-    .join("");
-  injectIcons();
-}
-
-async function deleteDirectorTake(name) {
-  const response = await fetch(`/api/v1/wizard/camera-moves/${encodeURIComponent(name)}`, { method: "DELETE" });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error?.message || "Could not delete take");
-  renderDirectorTakes(data.takes || []);
-  refreshDirectorEntryStatus().catch(() => {});
-}
-
 function setupTrimControls(masterPath) {
   const master = detected.master.find((item) => item.path === masterPath) || {};
   const duration = Number(master.duration || 0);
@@ -2461,12 +1605,13 @@ async function startWizard(options = {}) {
   lastPipelineStage = null;
   hideStageTransition();
   setStep(3);
-  if (waitForPrepare && selectedPlatform !== "360") {
+  if (waitForPrepare && selectedPlatform !== "360" && selectedPlatform !== "reel" && selectedPlatform !== "backstage") {
     prepareHandoffInProgress = true;
     const prepared = await api("/wizard/prepare", {
       method: "POST",
       body: JSON.stringify({
         name: document.querySelector("#videoName").value || todayName(),
+        platform: selectedPlatform,
         master: inputs.master,
         songs: inputs.songs,
         videos: inputs.videos,
@@ -2485,20 +1630,24 @@ async function startWizard(options = {}) {
       song_index: selectedSong,
       trim_start_sec: timeToSeconds(document.querySelector("#trimStart").value),
       trim_end_sec: timeToSeconds(document.querySelector("#trimEnd").value),
-      spherical_landmarks: sphericalLandmarksFromForm(),
+      // 360 shot angles remain project configuration, not a per-export UI step.
+      spherical_landmarks: appConfig?.spherical_landmarks || {},
       camera_role_weights: cameraRoleWeightsFromForm(),
       fixed_rear_motion: fixedRearMotionFromForm(),
-      spherical_motion: sphericalMotionFromForm(),
-      spherical_mode: sphericalModeFromForm(),
-      spherical_sweep: sphericalSweepFromForm(),
-      sweep_speed_deg_per_sec: sweepSpeedFromForm(),
+      spherical_motion: false,
+      spherical_mode: "automatic",
+      spherical_sweep: false,
+      sweep_speed_deg_per_sec: appConfig?.sweep_speed_deg_per_sec || 60,
       reel_duration_sec: reelOptionsFromForm().duration,
+      backstage_duration_sec: Number(document.querySelector("#backstageDuration")?.value || 180),
       reel_aspect: reelOptionsFromForm().aspect,
       reel_text_overlays: reelOptionsFromForm().texts,
       reel_image_overlays: reelOptionsFromForm().images,
+      backstage_messages: backstageMessagesFromForm(),
       master: inputs.master,
       songs: inputs.songs,
       videos: inputs.videos,
+      variation_seed: currentVariationSeed,
     }),
   });
   activeProjectId = projectIdFromStatus(started) || activeProjectId;
@@ -2741,9 +1890,23 @@ function renderWizardStatus(status) {
     stopStatusPolling();
     return;
   }
+  if (status.status === "waiting_paper_edit") {
+    if (progressBox) progressBox.hidden = true;
+    if (reviewBox) reviewBox.hidden = true;
+    const paperBox = document.querySelector("#paperEditBox");
+    if (paperBox) paperBox.hidden = false;
+    if (lastPipelineStage !== "paper_edit") {
+      lastPipelineStage = "paper_edit-loading";
+      openPaperEdit().then(() => { lastPipelineStage = "paper_edit"; }).catch((error) => showToast(error.message, true));
+    }
+    stopStatusPolling();
+    setStep(4);
+    return;
+  }
   if (status.status === "running" || status.status === "failed" || status.status === "done") {
     if (progressBox) progressBox.hidden = false;
     if (reviewBox) reviewBox.hidden = true;
+    document.querySelector("#paperEditBox")?.setAttribute("hidden", "");
   }
   progressFloor = progress;
   updateTiming(status, progress);
@@ -2761,20 +1924,6 @@ function renderWizardStatus(status) {
   if (status.status === "failed") {
     stopStatusPolling();
     document.querySelector("#errorText").textContent = status.error || S.failedTitle;
-    const proceedButton = document.querySelector("#proceedAnyway");
-    const continueButton = document.querySelector("#continueWithoutVideo");
-    const proceedWarning = document.querySelector("#proceedAnywayWarning");
-    const canProceedAnyway = status.proceed_anyway_available === true;
-    const canContinueWithoutVideo = status.continue_without_video_available === true;
-    if (proceedButton) {
-      proceedButton.hidden = !canProceedAnyway;
-      proceedButton.disabled = false;
-    }
-    if (continueButton) {
-      continueButton.hidden = !canContinueWithoutVideo;
-      continueButton.disabled = false;
-    }
-    if (proceedWarning) proceedWarning.hidden = !canProceedAnyway;
     document.querySelector("#resultTitle").textContent = S.failedTitle;
     document.querySelector("#errorBox").hidden = false;
     document.querySelector("#resultBox").hidden = true;
@@ -3052,11 +2201,6 @@ async function confirmRescue() {
   }
   document.querySelector("#rescuePanel").hidden = true;
   document.querySelector("#resultBox").hidden = true;
-  const sphericalPanel = document.querySelector("#sphericalSetup");
-  if (sphericalPanel) {
-    sphericalPanel.open = false;
-    sphericalPanel.dataset.initialized = "";
-  }
   setStep(3);
   const body = ranges ? { clip_id: rescueClipId, offset_ranges: ranges } : { clip_id: rescueClipId, offset_sec: offset };
   await api("/wizard/rescue", { method: "POST", body: JSON.stringify(body) });
@@ -3148,6 +2292,23 @@ document.addEventListener("click", (event) => {
     if (shotReviewItems.some((item) => !item.keep)) { showToast("Replace or re-approve rejected shots before rendering", true); return; }
     api("/wizard/review/render", { method: "POST" }).then((started) => { activeProjectId = projectIdFromStatus(started) || activeProjectId; document.querySelector("#reviewBox").hidden = true; document.querySelector("#progressBox").hidden = false; setStep(3); ensureStatusPolling(); return pollStatus(statusPollGeneration); }).catch((error) => showToast(error.message, true));
   }
+  if (target.id === "approvePaperEdit") {
+    const rejected = Array.from(document.querySelectorAll("[data-paper-reject]:checked"))
+      .map((input) => input.dataset.paperReject)
+      .filter(Boolean);
+    target.disabled = true;
+    api("/wizard/paper-edit/approve", { method: "POST", body: JSON.stringify({ rejected }) })
+      .then((started) => {
+        activeProjectId = projectIdFromStatus(started) || activeProjectId;
+        document.querySelector("#paperEditBox").hidden = true;
+        document.querySelector("#progressBox").hidden = false;
+        setStep(3);
+        ensureStatusPolling();
+        return pollStatus(statusPollGeneration);
+      })
+      .catch((error) => showToast(error.message, true))
+      .finally(() => { target.disabled = false; });
+  }
   if (target.id === "reuseReelOverlays") {
     api("/wizard/overlays").then((saved) => { reelTextOverlays = saved.texts || []; reelImageOverlays = saved.images || []; renderReelOptions(); }).catch((error) => showToast(error.message, true));
   }
@@ -3237,6 +2398,31 @@ document.addEventListener("click", (event) => {
     choosePlatformInUi(target.dataset.platform);
     if (currentSongs.length > 1) renderSongOptions(currentSongs);
   }
+  const flyerPreview = target.closest?.("[data-flyer-preview]");
+  if (flyerPreview instanceof HTMLElement) {
+    const modal = document.querySelector("#flyerPreviewModal");
+    const image = document.querySelector("#flyerPreviewImage");
+    if (modal && image) { image.src = flyerPreview.dataset.flyerPreview || ""; modal.hidden = false; }
+    return;
+  }
+  const flyer = target.closest?.("[data-add-flyer]");
+  if (flyer instanceof HTMLElement) {
+    addFlyerReference(flyer.dataset.addFlyer || "", flyer.dataset.flyerUrl || "");
+    return;
+  }
+  const duplicateFlyer = target.closest?.("[data-duplicate-reel-image]");
+  if (duplicateFlyer instanceof HTMLElement) {
+    const index = Number(duplicateFlyer.dataset.duplicateReelImage);
+    if (reelImageOverlays[index]) {
+      reelImageOverlays.splice(index + 1, 0, { ...reelImageOverlays[index] });
+      renderReelOptions();
+    }
+    return;
+  }
+  if (target.id === "closeFlyerPreview" || target.id === "flyerPreviewModal") {
+    document.querySelector("#flyerPreviewModal").hidden = true;
+    return;
+  }
   if (target.classList.contains("song-option")) {
     selectedSong = target.dataset.song === "all" ? "all" : Number(target.dataset.song);
     document.querySelectorAll(".song-option").forEach((button) => button.classList.toggle("selected", button === target));
@@ -3246,20 +2432,7 @@ document.addEventListener("click", (event) => {
     const preview = document.querySelector("#masterPreview");
     document.querySelector(target.id === "setTrimStart" ? "#trimStart" : "#trimEnd").value = secondsToTime(preview.currentTime || 0);
   }
-  if (target.id === "reuseSphericalSetup") {
-    document.querySelectorAll("#sphericalSetup [data-field]").forEach((input) => (input.value = ""));
-    applySphericalSetup(lastSphericalSetup);
-  }
-  if (target.id === "openDirector") openDirector().catch((error) => showToast(error.message, true));
-  if (target.id === "closeDirector") closeDirector();
-  if (target.id === "directorPlay") toggleDirectorPlay().catch((error) => showToast(error.message, true));
-  if (target.id === "directorRecord") toggleDirectorRecording().catch((error) => showToast(error.message, true));
-  if (target.id === "directorPreviewTake") previewDirectorTake();
-  if (target.id === "directorSaveTake") saveDirectorTake().catch((error) => showToast(error.message, true));
-  if (target.dataset.deleteTake) {
-    deleteDirectorTake(target.dataset.deleteTake).catch((error) => showToast(error.message, true));
-  }
-  if (target.id === "retryWizard" || target.id === "retryWizardSuccess") {
+  if (target.id === "startAgain" || target.id === "retryWizard" || target.id === "retryWizardSuccess") {
     document.querySelector("#errorBox").hidden = true;
     document.querySelector("#resultBox").hidden = true;
     document.querySelector("#progressTitle").textContent = "Creating your video";
@@ -3269,45 +2442,12 @@ document.addEventListener("click", (event) => {
       .then(() => startWizard({ waitForPrepare: false }))
       .catch((error) => showToast(error.message, true));
   }
-  if (target.id === "proceedAnyway") {
-    target.disabled = true;
-    document.querySelector("#errorBox").hidden = true;
-    document.querySelector("#resultBox").hidden = true;
-    document.querySelector("#progressTitle").textContent = "Creating your video";
-    setStep(3);
-    api("/wizard/proceed-anyway", { method: "POST", body: JSON.stringify({ mode: "proceed_anyway" }) })
-      .then((started) => {
-        activeProjectId = projectIdFromStatus(started) || activeProjectId;
-        ensureStatusPolling();
-        return pollStatus(statusPollGeneration);
-      })
-      .catch((error) => {
-        target.disabled = false;
-        showToast(error.message, true);
-      });
-  }
-  if (target.id === "continueWithoutVideo") {
-    target.disabled = true;
-    document.querySelector("#errorBox").hidden = true;
-    document.querySelector("#resultBox").hidden = true;
-    document.querySelector("#progressTitle").textContent = "Creating your video";
-    setStep(3);
-    api("/wizard/proceed-anyway", { method: "POST", body: JSON.stringify({ mode: "continue_without_video" }) })
-      .then((started) => {
-        activeProjectId = projectIdFromStatus(started) || activeProjectId;
-        ensureStatusPolling();
-        return pollStatus(statusPollGeneration);
-      })
-      .catch((error) => {
-        target.disabled = false;
-        showToast(error.message, true);
-      });
-  }
   if (target.id === "again") {
+    currentVariationSeed = `${Date.now()}-${Math.random()}`;
     document.querySelector("#errorBox").hidden = true;
     document.querySelector("#resultBox").hidden = true;
     document.querySelector("#progressTitle").textContent = "Creating your video";
-    setStep(1);
+    startWizard({ waitForPrepare: false }).catch((error) => showToast(error.message, true));
   }
   if (target.id === "openLogsSuccess" || target.id === "openLogsError") {
     openLogs().catch((error) => showToast(error.message, true));
@@ -3322,10 +2462,6 @@ document.addEventListener("click", (event) => {
       return;
     }
     revealNative(latestResult?.path, S.reveal).catch((error) => showToast(error.message, true));
-  }
-  if (target.id === "fullscreenResult") {
-    const element = latestResult?.platform === "360" ? document.querySelector("#result360Player") : document.querySelector("#resultVideo");
-    element?.requestFullscreen?.().catch((error) => showToast(error.message, true));
   }
   if (target.id === "result360Play") toggleResult360Play();
   if (target.id === "statusStrip") setStep(3);
@@ -3343,6 +2479,16 @@ document.addEventListener("change", (event) => {
   if (target instanceof HTMLInputElement && target.id === "personalLogoInput") {
     savePersonalLogo(target.files?.[0]).catch((error) => showToast(error.message, true));
   }
+  if (target instanceof HTMLInputElement && target.dataset.paperSubtitle) {
+    api("/wizard/paper-edit/text", { method: "POST", body: JSON.stringify({ id: target.dataset.paperSubtitle, text: target.value }) })
+      .then((paper) => { renderPaperEdit(paper); })
+      .catch((error) => showToast(error.message, true));
+  }
+  if (target instanceof HTMLSelectElement && target.dataset.paperMark) {
+    api("/wizard/paper-edit/mark", { method: "POST", body: JSON.stringify({ id: target.dataset.paperMark, mark: target.value }) })
+      .then((paper) => { renderPaperEdit(paper); })
+      .catch((error) => showToast(error.message, true));
+  }
 });
 
 document.addEventListener("keydown", (event) => {
@@ -3356,6 +2502,7 @@ document.addEventListener("input", (event) => {
   const input = event.target;
   if (!(input instanceof HTMLElement)) return;
   if (input.id === "reelDuration" || input.id === "reelAspect") { renderReelOptions(); return; }
+  if (input.id === "backstageDuration") { const value = document.querySelector("#backstageDurationValue"); if (value) value.textContent = `${input.value}s`; return; }
   if (input.id === "reelPlayhead") { reelPlayhead = Number(input.value); document.querySelector("#reelPlayheadValue").textContent = `${reelPlayhead.toFixed(1)}s`; drawReelPreview(); return; }
   const row = input.closest?.("[data-reel-text-index]");
   if (!row || !input.dataset.reelField) return;
@@ -3453,38 +2600,6 @@ document.addEventListener("change", (event) => {
     renderInboxAnalysisStatus();
     renderChips();
   }
-  if (target instanceof HTMLInputElement && target.name === "sphericalMode") {
-    applySphericalMode(target.value);
-  }
-  const sphericalGroup = target.closest?.("fieldset[data-spherical-landmark]");
-  if (sphericalGroup instanceof HTMLElement && target instanceof HTMLInputElement) {
-    if (target.dataset.friendly) syncAdvancedFromFriendly(sphericalGroup, "final");
-    else {
-      syncFriendlyFromAdvanced(sphericalGroup);
-      updateSphericalWarnings();
-      queueSphericalPreview(sphericalGroup, "final");
-    }
-  }
-  if (sphericalGroup instanceof HTMLElement && target instanceof HTMLSelectElement && target.dataset.friendly) {
-    syncAdvancedFromFriendly(sphericalGroup, "final");
-  }
-});
-
-document.addEventListener("input", (event) => {
-  const target = event.target;
-  if (target instanceof HTMLInputElement && target.id === "sweepSpeed") {
-    const output = document.querySelector("#sweepSpeedValue");
-    if (output) output.value = `${sweepSpeedFromForm()}°/s`;
-  }
-  const sphericalGroup = target.closest?.("fieldset[data-spherical-landmark]");
-  if (!(sphericalGroup instanceof HTMLElement)) return;
-  if (target instanceof HTMLInputElement && target.dataset.friendly) {
-    syncAdvancedFromFriendly(sphericalGroup, "drag");
-  } else if (target instanceof HTMLInputElement) {
-    syncFriendlyFromAdvanced(sphericalGroup);
-    updateSphericalWarnings();
-    queueSphericalPreview(sphericalGroup, "drag");
-  }
 });
 
 document.querySelector("#result360Scrub").addEventListener("input", (event) => {
@@ -3496,12 +2611,11 @@ document.querySelector("#videoName").value = todayName();
 async function boot() {
   injectIcons();
   auditBackdropRuntime();
-  wireLandmarkDragToLook();
   await loadAppConfig();
   restoreSelectedPlatform();
   const status = await api("/wizard/status");
   activeProjectId = projectIdFromStatus(status);
-  if (["running", "waiting_choice", "done", "failed"].includes(status.status)) {
+  if (["running", "waiting_choice", "waiting_paper_edit", "done", "failed"].includes(status.status)) {
     await resumeInputsFromProject().catch(() => {});
   }
   await loadProjects().catch(() => {});
@@ -3511,6 +2625,10 @@ async function boot() {
     ensureStatusPolling();
   } else if (status.status === "waiting_choice") {
     setStep(2);
+  } else if (status.status === "waiting_paper_edit") {
+    setStep(4);
+    document.querySelector("#paperEditBox")?.removeAttribute("hidden");
+    openPaperEdit().catch((error) => showToast(error.message, true));
   } else if (status.status === "done" || status.status === "failed") {
     setStep(5);
   }

@@ -1,0 +1,45 @@
+from __future__ import annotations
+
+from core.reel_framing import REEL_FRAMING_VERSION, subject_box_for_window
+from core.stages.edit import _reel_promo_plan, _reel_target_for_source
+
+
+def test_reel_subject_box_unions_detected_window_with_margin_input():
+    profile = {
+        "version": REEL_FRAMING_VERSION,
+        "samples": [
+            {"t": 1.0, "boxes": [{"x1": 0.20, "y1": 0.35, "x2": 0.42, "y2": 0.80, "confidence": 0.8}]},
+            {"t": 2.0, "boxes": [{"x1": 0.38, "y1": 0.32, "x2": 0.62, "y2": 0.78, "confidence": 0.8}]},
+        ],
+    }
+    box = subject_box_for_window(profile, 1.0, 1.0)
+    assert box == {"x1": 0.2, "y1": 0.32, "x2": 0.62, "y2": 0.8}
+
+
+def test_sony_reel_target_is_crop_offset_that_contains_subject():
+    source = {
+        "filename": "Sony_C001.MP4",
+        "probe": {"width": 1920, "height": 1080},
+        "reel_framing": {
+            "samples": [{"t": 0.0, "boxes": [{"x1": 0.42, "y1": 0.30, "x2": 0.68, "y2": 0.82, "confidence": 0.9}]}]
+        },
+    }
+    x, y = _reel_target_for_source(source, 0.0, 1.5)
+    assert 0.0 <= x <= 1.0
+    assert 0.0 <= y <= 1.0
+    assert (x, y) != (0.5, 0.5)
+
+
+def test_reel_plan_keeps_360_out_of_phase_one_framing():
+    coverage = {
+        "platform": "reel",
+        "window": {"start_sec": 0.0, "duration_sec": 3.0, "title": "test"},
+        "sources": [{
+            "path": "/tmp/camera.mp4", "source_path": "/tmp/camera.mp4", "filename": "camera.mp4",
+            "duration_sec": 3.0, "projection": "equirect", "reel_framing": {"samples": []},
+        }],
+    }
+    plan = _reel_promo_plan(coverage, {}, {"wizard": {"reel_duration_sec": 20, "reel_aspect": "9:16"}})
+    assert plan["segments"]
+    assert not any("reel_framing" in segment for segment in plan["segments"])
+    assert all(segment.get("spherical_shot") for segment in plan["segments"])

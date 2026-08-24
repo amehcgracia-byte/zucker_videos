@@ -127,7 +127,7 @@ def main() -> None:
 
 
 def _run_selftest() -> int:
-    """Initialize the packaged app, UI entry point, and intro-card renderer."""
+    """Initialize the packaged app and exercise bundle-sensitive invariants."""
     try:
         app = create_app(project_path=None, dev=False)
         with app.test_client() as client:
@@ -136,19 +136,95 @@ def _run_selftest() -> int:
             print(json.dumps({"ok": False, "status": response.status_code}, sort_keys=True))
             return 1
         from core.stages.export import _intro_card_path, _media_duration, _render_logo_clip
+        from core.backstage_transcription import transcribe_sources
+        from core.ffmpeg import ensure_tools_on_path
+        from core.engine import PipelineEngine
+        from core.normalization import CACHE_SUBDIRS, ensure_global_cache_dirs
+        from core.project import create_project
 
         card = _intro_card_path()
         if card is None:
             raise RuntimeError("intro_card_watermark.png is not present in the packaged assets")
+        cache_root = ensure_global_cache_dirs()
+        missing_cache_dirs = [name for name in CACHE_SUBDIRS if not (cache_root / name).is_dir()]
+        if missing_cache_dirs:
+            raise RuntimeError(f"cache tree was not recreated: {missing_cache_dirs}")
+        with tempfile.TemporaryDirectory(prefix="zucker-selftest-project-") as project_dir:
+            project = create_project("Packaged selftest", project_dir)
+            project.data["settings"]["wizard"] = {"platform": "reel"}
+            engine = PipelineEngine()
+            try:
+                if engine._plan("cut", project) != ["cut"]:
+                    raise RuntimeError("Reel pipeline unexpectedly includes sync")
+                project.data["settings"]["wizard"] = {"platform": "backstage"}
+                if engine._plan("export", project) != ["ingest", "cut", "edit", "export"]:
+                    raise RuntimeError("Backstage pipeline unexpectedly includes sync or coverage stages")
+            finally:
+                engine.shutdown()
+        flyers = app.test_client().get("/api/v1/wizard/flyers")
+        if flyers.status_code != 200 or not isinstance(flyers.get_json().get("items"), list):
+            raise RuntimeError("Packaged flyer library endpoint is unavailable")
         with tempfile.TemporaryDirectory(prefix="zucker-selftest-") as temp_dir:
             rendered = Path(temp_dir) / "intro.mp4"
             _render_logo_clip(rendered, "youtube", "intro", 0.5, 1_000_000, None)
             rendered_duration = _media_duration(str(rendered))
+            # Exercise the exact frozen dependency path that previously failed:
+            # ffmpeg -> short audio fragment -> faster-whisper -> Silero VAD.
+            # This is deliberately mandatory for the frozen executable. Unit
+            # tests call _run_selftest too, but must not load the native model
+            # unless they explicitly opt in.
+            selftest_transcription = False
+            if getattr(sys, "_MEIPASS", None) or os.environ.get("ZUCKER_SELFTEST_TRANSCRIPTION") == "1":
+                audio_source = os.environ.get("ZUCKER_SELFTEST_AUDIO")
+                if not audio_source:
+                    candidates = sorted((Path.home() / "ZuckerVideos" / "WizardUploads").glob("*.MP4"))
+                    audio_source = str(candidates[0]) if candidates else ""
+                if not audio_source or not Path(audio_source).is_file():
+                    raise RuntimeError("No real audio source available for packaged transcription self-test")
+                tools = ensure_tools_on_path()
+                if not tools.get("ffmpeg_path"):
+                    raise RuntimeError("ffmpeg is required for packaged transcription self-test")
+                fragment = Path(temp_dir) / "transcription-fragment.wav"
+                subprocess.run([
+                    str(tools["ffmpeg_path"]), "-y", "-hide_banner", "-loglevel", "error",
+                    "-ss", "0", "-t", "6", "-i", audio_source,
+                    "-vn", "-ac", "1", "-ar", "16000", str(fragment),
+                ], check=True)
+                transcription = transcribe_sources(
+                    [{"path": str(fragment), "filename": fragment.name}],
+                    Path(temp_dir) / "transcription.json",
+                    model_name="tiny",
+                )
+                if transcription.get("status") != "ready" or transcription.get("backend") != "faster-whisper":
+                    raise RuntimeError(f"Packaged transcription failed: {transcription}")
+                if not transcription.get("sources"):
+                    raise RuntimeError("Packaged transcription returned no source")
+                selftest_transcription = True
+        backstage_result = None
+        backstage_project = os.environ.get("ZUCKER_SELFTEST_BACKSTAGE_PROJECT")
+        if backstage_project:
+            from core.project import load_project
+
+            project = load_project(backstage_project)
+            project.data["settings"].setdefault("wizard", {})["platform"] = "backstage"
+            project.mark_all_stale_from("ingest")
+            engine = PipelineEngine()
+            try:
+                engine.run_sync(project, "export")
+            finally:
+                engine.shutdown()
+            manifest = json.loads((project.artifacts_dir / "export_manifest.json").read_text(encoding="utf-8"))
+            export_path = Path(manifest["exports"][0]["path"])
+            if not export_path.is_file() or export_path.stat().st_size <= 0:
+                raise RuntimeError(f"Packaged Backstage export missing: {export_path}")
+            backstage_result = str(export_path)
         print(json.dumps({
             "ok": True,
             "status": response.status_code,
             "intro_card": str(card),
             "intro_rendered": rendered_duration > 0.0,
+            "transcription": selftest_transcription,
+            "backstage_export": backstage_result,
         }, sort_keys=True))
         return 0
     except Exception as exc:

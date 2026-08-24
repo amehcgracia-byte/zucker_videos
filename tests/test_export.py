@@ -1319,11 +1319,12 @@ def test_intro_card_is_default_intro_and_personal_logo_has_priority(tmp_path, mo
     assert _bookend_asset_path("outro") == personal
 
 
-def test_intro_card_filter_contains_full_frame_without_fade():
+def test_intro_card_filter_contains_full_frame_with_fade():
     graph = _logo_filtergraph("youtube", "intro", 10.0, True, True)
     assert "scale=1920:1080" in graph
     assert "pad=1920:1080" in graph
-    assert "fade=" not in graph
+    assert "fade=t=in" in graph
+    assert "fade=t=out" in graph
 
 
 def test_intro_card_path_prefers_pyinstaller_bundle_assets(tmp_path, monkeypatch):

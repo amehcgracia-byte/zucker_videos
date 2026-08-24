@@ -5,9 +5,51 @@ import subprocess
 
 import pytest
 
-from core.stages.edit import MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, MOTION_CATALOG, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _available_spherical_shots, _ken_burns_motion, _motion_active_axes, _spherical_motion_profile, _youtube_multicam_plan, _reel_promo_plan, _framing_nearly_identical, _valid_motion_recipe, _sony_non_music_filler, _choose_source_avoiding_identical_framing
+from core.stages.edit import IPHONE_CROP_TOP_LIMIT, MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, MOTION_CATALOG, REEL_MAX_CUT_SEC, REEL_MIN_CUT_SEC, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _available_spherical_shots, _ken_burns_motion, _motion_active_axes, _spherical_motion_profile, _youtube_multicam_plan, _reel_promo_plan, _framing_nearly_identical, _valid_motion_recipe, _sony_non_music_filler, _choose_source_avoiding_identical_framing, validate_plan_camera_source_consistency, _visible_iphone_target
 from core.stages.cut import _pick_energetic_window, _segment_for_360, _select_360_clip, _tighten_window_to_video_coverage
 from core.stages.edit import _covering_sources, _segment_from_source
+
+
+def test_plan_rejects_camera_id_that_does_not_match_render_source():
+    plan = {"segments": [{
+        "camera_id": "iphone",
+        "source_path": "/tmp/VID_360.mp4",
+        "clip_path": "/tmp/360-proxy.mp4",
+        "filename": "VID_360.mp4",
+        "projection": "equirect",
+    }]}
+    with pytest.raises(ValueError, match="camera/source mismatch"):
+        validate_plan_camera_source_consistency(plan)
+
+
+def test_visible_iphone_target_inherits_previous_subject_but_never_ceiling():
+    source = {"path": "/tmp/fixed.mp4"}
+    cache = {str(source["path"]): [{
+        "t": 20.0, "area_fraction": 0.03, "cx": 0.5, "cy": 0.5,
+        "subject_area_fraction": 0.03, "subject_cx": 0.66, "subject_cy": 0.72,
+    }]}
+    x, y = _visible_iphone_target(source, 30.0, 2.0, cache)
+    assert x == 0.66
+    assert y == 0.65
+
+
+def test_fixed_camera_crop_top_edge_is_hard_limited_even_for_full_zoom():
+    for index in range(100):
+        motion = _ken_burns_motion(index, force_full_zoom=index % 2 == 0, force_close=index % 2 == 1, allow_static=False)
+        for zoom, pan_y in ((motion["zoom_start"], motion["pan_y_start"]), (motion["zoom_end"], motion["pan_y_end"])):
+            assert pan_y - 0.5 / zoom >= IPHONE_CROP_TOP_LIMIT - 0.002
+
+
+def test_fixed_camera_vertical_motion_never_rises_from_center():
+    for index in range(200):
+        motion = _ken_burns_motion(index, allow_static=False)
+        start = float(motion["pan_y_start"])
+        end = float(motion["pan_y_end"])
+        if motion.get("vertical_motion") == "up":
+            assert start >= 0.9
+            assert end <= start
+        elif motion.get("vertical_motion") == "down":
+            assert end >= start
 
 
 def test_estimate_bar_starts_groups_beats_in_fours():
@@ -169,6 +211,24 @@ def test_reel_plan_is_unsynchronised_and_carries_options():
     assert plan["reel_text_overlays"][0]["text"] == "LIVE"
     assert len({segment["clip_path"] for segment in plan["segments"]}) == 2
     assert all(segment["master_start_sec"] != segment["clip_start_sec"] for segment in plan["segments"])
+
+
+def test_reel_uses_every_source_round_robin_with_independent_short_cuts():
+    sources = [
+        {"path": f"/tmp/reel-{index}.mp4", "source_path": f"/tmp/reel-{index}.mp4", "duration_sec": 40.0}
+        for index in range(10)
+    ]
+    plan = _reel_promo_plan(
+        {"platform": "reel", "window": {"title": "Promo", "start_sec": 0.0, "duration_sec": 30.0}, "sources": sources},
+        {"bars_sec": []},
+        {"wizard": {"reel_duration_sec": 30.0}, "spherical_landmarks": {}},
+    )
+    durations = [float(segment["duration_sec"]) for segment in plan["segments"]]
+    assert len(plan["segments"]) == 15
+    assert min(durations) >= REEL_MIN_CUT_SEC
+    assert max(durations) <= REEL_MAX_CUT_SEC
+    assert {segment["source_path"] for segment in plan["segments"]} == {source["path"] for source in sources}
+    assert [segment["source_path"] for segment in plan["segments"][:10]] == [source["path"] for source in sources]
 
 
 def test_youtube_plan_does_not_starve_lower_confidence_camera():

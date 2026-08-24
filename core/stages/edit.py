@@ -11,6 +11,7 @@ from typing import Any
 from core.camera_moves import load_camera_moves, recorded_move_covering, recorded_shot_for_segment
 from core.messages import t
 from core.operator_avoidance import OPERATOR_AVOIDANCE_VERSION, avoidance_for_segment, load_cached_operator_presence
+from core.reel_framing import REEL_FRAMING_VERSION, subject_box_for_window
 from core.non_music import NON_MUSIC_VERSION, analyze_non_music_sources
 from core.project import Project
 from core.shot_quality import DIRECTOR_SCORE_THRESHOLD, SHOT_QUALITY_VERSION, analyze_handheld_director_quality, director_quality_for_segment
@@ -26,8 +27,13 @@ MAX_BARS_PER_SEGMENT = 2
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
-SPHERICAL_MOTION_PLAN_VERSION = 9
-REEL_PLAN_VERSION = 1
+SPHERICAL_MOTION_PLAN_VERSION = 10
+# Reel has its own pacing contract.  Keep this independent from the
+# YouTube/360 segment limits so a Reel change cannot invalidate or alter their
+# edit cadence accidentally.
+REEL_MIN_CUT_SEC = 1.5
+REEL_MAX_CUT_SEC = 2.0
+REEL_PLAN_VERSION = 3
 MOTION_CATALOG = (
     "full_static", "full_zoom_in", "zoom_in_center", "zoom_out_center", "zoom_in", "zoom_out",
     "pan_right_center", "pan_left_center", "pan_down_center", "pan_up_center",
@@ -53,13 +59,14 @@ MOTION_WEIGHTS = {
 # The previous 1.32x fast setting was too abrupt.  Normal is now the fastest
 # authored speed, and a new very-slow option keeps close-ups composed.
 MOTION_SPEEDS = (("very_slow", 0.50), ("slow", 0.72), ("fast", 1.0))
+IPHONE_CROP_TOP_LIMIT = 0.80
 # Bump this whenever the YouTube camera-choice invariant changes so an older
 # cached edit plan cannot keep producing the previous camera runs.
-YOUTUBE_CAMERA_SELECTION_VERSION = 6
+YOUTUBE_CAMERA_SELECTION_VERSION = 13
 MAX_CONSECUTIVE_CAMERA_SEGMENTS = 2
 # Retained as a versioned emergency switch for diagnostics; normal builds use
 # the shared gentle hold/sweep motion below.
-FORCE_STATIC_360_ISOLATION = False
+FORCE_STATIC_360_ISOLATION = True
 SPHERICAL_SWEEP_SPEED_DEG_PER_SEC = 20.0
 SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC = 15.0
 SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 20.0
@@ -97,7 +104,7 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 7
+EDIT_PLAN_ALGORITHM_VERSION = 15
 
 
 class EditStage(Stage):
@@ -118,6 +125,11 @@ class EditStage(Stage):
             coverage_payload = load_coverage(project)
         except (FileNotFoundError, json.JSONDecodeError):
             pass
+        platform = str(
+            (coverage_payload or {}).get("platform")
+            or project.data.get("settings", {}).get("wizard", {}).get("platform")
+            or "youtube"
+        ).lower()
         return stable_fingerprint(
             {
                 # Follow coverage.json itself so Edit cannot reuse a plan
@@ -129,9 +141,17 @@ class EditStage(Stage):
                 "shot_quality_version": SHOT_QUALITY_VERSION,
                 "director_score_threshold": DIRECTOR_SCORE_THRESHOLD,
                 "operator_avoidance_version": OPERATOR_AVOIDANCE_VERSION,
-                "spherical_motion_plan_version": SPHERICAL_MOTION_PLAN_VERSION,
-                "reel_plan_version": REEL_PLAN_VERSION,
-                "youtube_camera_selection_version": YOUTUBE_CAMERA_SELECTION_VERSION,
+                # Mode-specific recipes must not invalidate unrelated edit
+                # plans.  A Reel pacing change is not a YouTube camera-choice
+                # change, and a 360 spherical recipe change is not a Reel one.
+                "mode_algorithm_versions": {
+                    "reel": {
+                        "plan": REEL_PLAN_VERSION,
+                        "framing": REEL_FRAMING_VERSION,
+                    } if platform == "reel" else None,
+                    "youtube": YOUTUBE_CAMERA_SELECTION_VERSION if platform == "youtube" else None,
+                    "360": SPHERICAL_MOTION_PLAN_VERSION if platform == "360" else None,
+                },
                 "non_music_version": NON_MUSIC_VERSION,
                 "algorithm_version": EDIT_PLAN_ALGORITHM_VERSION,
             }
@@ -149,7 +169,9 @@ class EditStage(Stage):
         progress_callback(10, t("analyzing_rhythm"))
         coverage = load_coverage(project)
         platform = str(coverage.get("platform") or "youtube")
-        recorded_moves = load_camera_moves(project)
+        # 360 direction is fixed automatic configuration. Director takes are
+        # no longer part of the product and must never affect a new plan.
+        recorded_moves: list[dict[str, Any]] = []
         # Reel reuses the exact same real multicam logic as YouTube (bar-aligned
         # cuts, camera weights, operator avoidance, motion on static shots) --
         # only the window (narrowed to a short energetic highlight by cut.py)
@@ -170,6 +192,7 @@ class EditStage(Stage):
             plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}), recorded_moves=recorded_moves)
         write_artifact_json(artifact_path(project, "beats.json"), beats)
         plan["edit_plan_algorithm_version"] = EDIT_PLAN_ALGORITHM_VERSION
+        validate_plan_camera_source_consistency(plan)
         write_artifact_json(artifact_path(project, "edit_plan.json"), plan)
         progress_callback(100, t("edit_plan_ready"))
         return self.outputs(project)
@@ -178,7 +201,9 @@ class EditStage(Stage):
 def load_edit_plan(project: Project) -> dict[str, Any]:
     """Load edit_plan.json."""
     with artifact_path(project, "edit_plan.json").open("r", encoding="utf-8") as fh:
-        return json.load(fh)
+        plan = json.load(fh)
+    validate_plan_camera_source_consistency(plan)
+    return plan
 
 
 def _load_or_analyze_beats(project: Project, coverage: dict[str, Any], progress_callback: ProgressCallback) -> dict[str, Any]:
@@ -283,23 +308,17 @@ def _reel_promo_plan(
     if not sources:
         raise ValueError("Reel has no usable video sources")
 
-    # Prefer existing visual-analysis signals, but rotate through sources so a
-    # single high-confidence camera cannot monopolise the promo.
-    sources.sort(key=lambda item: (
-        -float(item.get("shot_quality_score") or item.get("director_segment_score") or item.get("motion_score") or 0.0),
-        str(item.get("path") or item.get("source_path") or ""),
-    ))
-    bars = sorted({float(value) for value in (beats.get("bars_sec") or beats.get("beats_sec") or []) if start < float(value) < end})
-    boundaries = [start]
-    cursor = start
-    while cursor < end - 0.05:
-        candidates = [value for value in bars if value > cursor + 0.7]
-        next_cut = next((value for value in candidates if value - cursor >= 1.0), min(end, cursor + 2.0))
-        next_cut = min(end, max(cursor + 0.8, next_cut))
-        boundaries.append(next_cut)
-        cursor = next_cut
-    if boundaries[-1] < end:
-        boundaries.append(end)
+    # Preserve ingest order.  Reel is deliberately unsynchronised and its
+    # visual rhythm comes from cycling through every available Drop box
+    # source, rather than allowing quality sorting to starve quieter cameras.
+    sources = [source for source in sources if source.get("path") or source.get("source_path")]
+    # Use a fixed number of evenly sized slots.  Beat boundaries are retained
+    # for the music analysis, but may not create a final 0.6 s fragment or a
+    # 4–6 s YouTube-like shot.  Choosing ceil(duration / 2) guarantees every
+    # slot is within the Reel contract for the normal 20–60 s range.
+    duration_slots = max(1, int((end - start + REEL_MAX_CUT_SEC - 1e-9) // REEL_MAX_CUT_SEC))
+    slot_duration = (end - start) / duration_slots
+    boundaries = [start + slot_duration * index for index in range(duration_slots + 1)]
 
     landmarks = migrate_spherical_landmarks(settings.get("spherical_landmarks") or {})
     spherical_shots = _available_spherical_shots(landmarks, sweep_enabled=False)
@@ -308,11 +327,11 @@ def _reel_promo_plan(
     fixed_index = 0
     for index, (master_start, master_end) in enumerate(zip(boundaries, boundaries[1:])):
         seg_duration = max(0.1, master_end - master_start)
-        ordered = sorted(sources, key=lambda item: (
-            _source_id(item) == previous_source,
-            index % max(1, len(sources)) != sources.index(item),
-        ))
-        source = ordered[0]
+        source = sources[index % len(sources)]
+        # With more than one source, the round-robin index guarantees that a
+        # source is not repeated until all other sources have had a turn.
+        if len(sources) > 1 and _source_id(source) == previous_source:
+            source = sources[(index + 1) % len(sources)]
         previous_source = _source_id(source)
         source_duration = max(seg_duration, float(source.get("duration_sec") or seg_duration))
         # Deterministic spread over each source, independent of master time.
@@ -327,10 +346,7 @@ def _reel_promo_plan(
             "clip_offset_sec": 0.0,
             "filename": source.get("filename") or Path(str(source.get("path") or "video")).name,
             "projection": source.get("projection"),
-            "reel_subject_center": {
-                "x": float(source.get("subject_center_x") or source.get("face_center_x") or 0.5),
-                "y": float(source.get("subject_center_y") or source.get("face_center_y") or 0.5),
-            },
+            "camera_id": _camera_id(source),
         }
         role = _source_role(source)
         if role == "360":
@@ -339,9 +355,22 @@ def _reel_promo_plan(
             }
             segment["spherical_shot"] = _spherical_motion_profile(shot, index, enabled=False, hold_motion="none")
         elif role == "fixed_rear" and bool(wizard.get("fixed_rear_motion", True)):
-            target_x, target_y = _visible_iphone_target(source, clip_start, seg_duration, {})
-            segment["motion"] = _ken_burns_motion(fixed_index, target_x, target_y, allow_static=False)
+            target_x, target_y = _reel_target_for_source(source, clip_start, seg_duration)
+            segment["motion"] = _ken_burns_motion(
+                fixed_index,
+                target_x,
+                target_y,
+                allow_static=False,
+                force_full_zoom=(fixed_index % 2 == 0),
+                force_close=(fixed_index % 2 == 1),
+            )
             fixed_index += 1
+        elif role == "handheld":
+            target_x, target_y = _reel_target_for_source(source, clip_start, seg_duration)
+            segment["reel_subject_center"] = {"x": target_x, "y": target_y}
+        if role == "fixed_rear" and not segment.get("motion"):
+            target_x, target_y = _reel_target_for_source(source, clip_start, seg_duration)
+            segment["reel_subject_center"] = {"x": target_x, "y": target_y}
         segments.append(segment)
     _validate_motion_segments(segments)
     return {
@@ -409,18 +438,18 @@ def _youtube_multicam_plan(
     project_settings = settings or {}
     edit_settings = project_settings.get("edit") if "edit" in project_settings else project_settings
     spherical_landmarks = migrate_spherical_landmarks(project_settings.get("spherical_landmarks") or {})
-    spherical_mode = str(edit_settings.get("spherical_mode") or "automatic").lower()
-    use_recorded_360 = spherical_mode == "directed"
+    spherical_mode = "automatic"
+    use_recorded_360 = False
     role_weights = _camera_role_weights(edit_settings)
     fixed_rear_motion = bool(edit_settings.get("fixed_rear_motion", True))
     # Static 360 holds are the safe shipped default. Motion remains an explicit
     # project opt-in until a filter path that does not reconfigure v360 per
     # frame is available.
-    spherical_motion = bool(edit_settings.get("spherical_motion", False))
+    spherical_motion = False
     hold_motion = str(edit_settings.get("spherical_hold_motion") or "none").lower()
     if hold_motion not in {"none", "subtle"}:
         hold_motion = "none"
-    spherical_sweep = bool(edit_settings.get("spherical_sweep", False))
+    spherical_sweep = False
     sweep_speed = max(SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC, min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, float(edit_settings.get("sweep_speed_deg_per_sec", SPHERICAL_SWEEP_SPEED_DEG_PER_SEC))))
     bar_index = 0
     segment_index = 0
@@ -526,7 +555,14 @@ def _youtube_multicam_plan(
             # not the filename, is authoritative: files such as ZZ24.7 .mov
             # are fixed cameras even when they are not named "iPhone".
             target_x, target_y = _visible_iphone_target(source, float(segment.get("clip_start_sec") or 0.0), segment_end - segment_start, operator_samples_cache)
-            segment["motion"] = _ken_burns_motion(fixed_rear_motion_index, target_x, target_y, allow_static=False)
+            segment["motion"] = _ken_burns_motion(
+                fixed_rear_motion_index,
+                target_x,
+                target_y,
+                allow_static=False,
+                force_full_zoom=(fixed_rear_motion_index % 2 == 0),
+                force_close=(fixed_rear_motion_index % 2 == 1),
+            )
             fixed_rear_motion_index += 1
         _apply_operator_avoidance(segment, source, operator_samples_cache)
         previous_framing = _framing_descriptor(source, segment)
@@ -1326,6 +1362,10 @@ def _segment_from_source(
         "confidence": float(source.get("confidence") or 0.0),
         "filename": source.get("filename") or Path(str(source["path"])).name,
         "projection": source.get("projection"),
+        # Store the identity next to the exact render path.  This prevents a
+        # later plan transformation from carrying a camera label over to a
+        # different source.
+        "camera_id": _camera_id(source),
     }
 
 
@@ -1342,6 +1382,9 @@ def _camera_role_weights(settings: dict[str, Any] | None) -> dict[str, float]:
 
 
 def _source_role(source: dict[str, Any]) -> str:
+    explicit_role = str(source.get("camera_role") or "").strip().lower()
+    if explicit_role in {"360", "fixed_rear", "handheld"}:
+        return explicit_role
     projection = str(source.get("projection") or "").lower()
     filename = str(source.get("filename") or source.get("path") or source.get("source_path") or "").lower()
     if projection in {"equirect", "raw_insv"} or filename.endswith(".insv") or "360" in filename:
@@ -1349,6 +1392,46 @@ def _source_role(source: dict[str, Any]) -> str:
     if "iphone" in filename or filename.endswith(".mov"):
         return "fixed_rear"
     return "handheld"
+
+
+def _reel_target_for_source(source: dict[str, Any], clip_start_sec: float, duration_sec: float) -> tuple[float, float]:
+    """Return a Reel-only safe target for the current source/window.
+
+    Fixed/iPhone recipes consume source-space subject coordinates because the
+    Ken Burns solver locks the subject while zooming. Sony receives crop-space
+    offsets for the 9:16 renderer, computed from the detected union box.
+    """
+    profile = source.get("reel_framing") or {}
+    box = subject_box_for_window(profile, clip_start_sec, duration_sec)
+    if not box:
+        # No reliable detection: a centered full-frame fallback is safer than
+        # inheriting a stale target from another source or segment.
+        return 0.5, 0.5
+    center_x = (float(box["x1"]) + float(box["x2"])) / 2.0
+    center_y = (float(box["y1"]) + float(box["y2"])) / 2.0
+    if _source_role(source) == "fixed_rear":
+        return max(0.15, min(0.85, center_x)), max(0.25, min(0.75, center_y))
+    # The Reel renderer is 9:16. Compute the normalized crop window in source
+    # coordinates, then select the smallest offset that contains the subject
+    # plus breathing room. This prevents a subject box at the edge being
+    # clipped merely because its centre looks acceptable.
+    probe = source.get("probe") or {}
+    try:
+        aspect = float(probe.get("width") or 16) / max(1.0, float(probe.get("height") or 9))
+    except (TypeError, ValueError):
+        aspect = 16.0 / 9.0
+    output_aspect = 9.0 / 16.0
+    crop_w = min(1.0, output_aspect / max(0.01, aspect))
+    crop_h = min(1.0, aspect / output_aspect)
+    margin_x = min(0.08, crop_w * 0.18)
+    margin_y = min(0.08, crop_h * 0.12)
+    left_min = max(0.0, float(box["x2"]) + margin_x - crop_w)
+    left_max = min(1.0 - crop_w, float(box["x1"]) - margin_x)
+    top_min = max(0.0, float(box["y2"]) + margin_y - crop_h)
+    top_max = min(1.0 - crop_h, float(box["y1"]) - margin_y)
+    left = (left_min + left_max) / 2.0 if left_min <= left_max else max(0.0, min(1.0 - crop_w, center_x - crop_w / 2.0))
+    top = (top_min + top_max) / 2.0 if top_min <= top_max else max(0.0, min(1.0 - crop_h, center_y - crop_h / 2.0))
+    return round(left / max(0.0001, 1.0 - crop_w), 4), round(top / max(0.0001, 1.0 - crop_h), 4)
 
 
 def _is_iphone_source(source: dict[str, Any]) -> bool:
@@ -1381,7 +1464,11 @@ def _visible_iphone_target(
     def safe(x: float, y: float) -> tuple[float, float]:
         # Keep enough breathing room that the subject cannot be clipped when
         # the close-up reaches its endpoint.
-        return max(0.18, min(0.82, float(x))), max(0.18, min(0.82, float(y)))
+        # Keep automatic fixed-camera framing out of the ceiling/floor bands.
+        # A real detected subject is still selected below, but its target is
+        # kept inside the useful central composition envelope so the crop
+        # cannot spend a shot on lamps or the poorly placed lower edge.
+        return max(0.25, min(0.75, float(x))), max(0.35, min(0.65, float(y)))
 
     window = [
         sample for sample in samples_cache[path]
@@ -1411,6 +1498,19 @@ def _visible_iphone_target(
             candidates,
             key=lambda item: float(item.get("subject_area_fraction") or 0.0) + (0.08 if float(item.get("subject_cx") or 0.5) >= 0.5 else 0.0),
         )
+        return safe(float(selected.get("subject_cx") or 0.5), float(selected.get("subject_cy") or 0.5))
+    # A short/ dark window can have no positive detector result even though
+    # neighbouring frames do. Reuse the most recent reliable subject anchor
+    # before the window rather than jumping to an inherited top-heavy target.
+    prior = [
+        sample for sample in samples_cache[path]
+        if float(sample.get("t") or 0.0) < clip_start_sec
+        and sample.get("subject_cx") is not None
+        and sample.get("subject_cy") is not None
+        and float(sample.get("subject_area_fraction") or 0.0) >= 0.01
+    ]
+    if prior:
+        selected = max(prior, key=lambda item: float(item.get("t") or 0.0))
         return safe(float(selected.get("subject_cx") or 0.5), float(selected.get("subject_cy") or 0.5))
     for x_key, y_key in (("subject_center_x", "subject_center_y"), ("face_center_x", "face_center_y")):
         if source.get(x_key) is not None and source.get(y_key) is not None:
@@ -1597,30 +1697,61 @@ def _pan_for_target(zoom: float, target: float) -> float:
     return max(0.0, min(1.0, (zoom * target - 0.5) / (zoom - 1.0)))
 
 
+def _minimum_pan_y_for_top_edge(zoom: float, top_limit: float = IPHONE_CROP_TOP_LIMIT) -> float:
+    """Minimum crop-space Y needed to keep the crop's top edge below a limit."""
+    zoom = max(1.0, float(zoom))
+    return max(0.0, min(1.0, float(top_limit) + 0.5 / zoom))
+
+
+def _clamp_pan_y_for_top_edge(pan_y: float, zoom: float, top_limit: float = IPHONE_CROP_TOP_LIMIT) -> float:
+    return max(_minimum_pan_y_for_top_edge(zoom, top_limit), min(1.0, float(pan_y)))
+
+
 def _minimum_zoom_for_target(target: float) -> float:
     edge = min(max(0.01, float(target)), 1.0 - max(0.01, float(target)))
     return max(1.0, 0.5 / edge)
 
 
-def _ken_burns_motion(index: int, target_x: float = 0.5, target_y: float = 0.5, *, allow_static: bool = True) -> dict[str, Any]:
+def _ken_burns_motion(
+    index: int,
+    target_x: float = 0.5,
+    target_y: float = 0.5,
+    *,
+    allow_static: bool = True,
+    force_full_zoom: bool = False,
+    force_close: bool = False,
+) -> dict[str, Any]:
     rng = random.Random(stable_fingerprint({"fixed_camera_motion": index}))
     # Close-up range for the wide iPhone stage.  The catalog is explicit: a
     # segment gets one movement recipe, never an accidental combination.
-    kind = rng.choices(MOTION_CATALOG, weights=[MOTION_WEIGHTS[kind] for kind in MOTION_CATALOG], k=1)[0]
+    kind = "full_zoom_in" if force_full_zoom else rng.choices(MOTION_CATALOG, weights=[MOTION_WEIGHTS[kind] for kind in MOTION_CATALOG], k=1)[0]
+    if force_close and kind in {"full_static", "full_zoom_in"}:
+        kind = "zoom_in_center"
     if kind == "full_static" and not allow_static:
         # Defensive guard for old/randomized recipes: static fixed-camera
         # framing is no longer an allowed output.
         kind = "full_zoom_in"
     speed_name, speed_factor = MOTION_SPEEDS[index % len(MOTION_SPEEDS)]
+    if force_full_zoom:
+        speed_name, speed_factor = "very_slow", MOTION_SPEEDS[0][1]
     target_x = max(0.05, min(0.95, float(target_x)))
     target_y = max(0.05, min(0.95, float(target_y)))
-    close_zoom = rng.uniform(3.0, 3.4)
-    tight_zoom = rng.uniform(2.35, 2.7)
+    close_zoom = rng.uniform(3.2, 3.6)
+    tight_zoom = rng.uniform(3.0, 3.2)
     if kind == "full_static":
-        zoom_start = zoom_end = 1.0
+        zoom_start = zoom_end = 3.0
         pan_x_start = pan_x_end = 0.5
-        pan_y_start = pan_y_end = 0.5
-    elif kind in {"zoom_in", "zoom_in_center", "full_zoom_in"}:
+        pan_y_start = pan_y_end = _minimum_pan_y_for_top_edge(zoom_start)
+    elif kind == "full_zoom_in" and force_full_zoom:
+        # “Full” means the widest permitted action frame. A literal 1.0x
+        # frame necessarily includes the ceiling, so start at a lower crop
+        # that respects the hard top-edge boundary.
+        target_x = target_y = 0.65
+        zoom_start, zoom_end = 3.0, 3.4
+        pan_x_start = pan_x_end = 0.5
+        pan_y_start = _minimum_pan_y_for_top_edge(zoom_start)
+        pan_y_end = _minimum_pan_y_for_top_edge(zoom_end)
+    elif kind in {"zoom_in", "zoom_in_center", "full_zoom_in"} and not force_full_zoom:
         min_zoom = max(_minimum_zoom_for_target(target_x), _minimum_zoom_for_target(target_y))
         tight_zoom = max(tight_zoom, min_zoom)
         zoom_start, zoom_end = tight_zoom, close_zoom
@@ -1645,6 +1776,33 @@ def _ken_burns_motion(index: int, target_x: float = 0.5, target_y: float = 0.5, 
         pan_x_start = pan_y_start = 0.5
         pan_x_end = 0.82 if "right" in kind else 0.18
         pan_y_end = 0.78 if "bottom" in kind else 0.22
+    pan_y_start = _clamp_pan_y_for_top_edge(pan_y_start, zoom_start)
+    pan_y_end = _clamp_pan_y_for_top_edge(pan_y_end, zoom_end)
+    # A hard top-edge cap can collapse the old 0.22/0.78 pan endpoints into
+    # the same legal value. Preserve the authored direction with a shorter
+    # legal travel instead of silently turning a pan into a static shot.
+    if kind == "pan_down_center" and pan_y_end <= pan_y_start:
+        pan_y_start = _minimum_pan_y_for_top_edge(zoom_start)
+        pan_y_end = min(1.0, pan_y_start + 0.12)
+    elif kind == "pan_up_center" and pan_y_start <= pan_y_end:
+        pan_y_start = min(1.0, _minimum_pan_y_for_top_edge(zoom_start) + 0.12)
+        pan_y_end = _minimum_pan_y_for_top_edge(zoom_end)
+    elif kind.startswith("pan_") and kind not in {"pan_down_center", "pan_up_center"}:
+        if "bottom" in kind and pan_y_end <= pan_y_start:
+            pan_y_start = _minimum_pan_y_for_top_edge(zoom_start)
+            pan_y_end = min(1.0, pan_y_start + 0.12)
+        elif "top" in kind and pan_y_start <= pan_y_end:
+            pan_y_start = min(1.0, _minimum_pan_y_for_top_edge(zoom_start) + 0.12)
+            pan_y_end = _minimum_pan_y_for_top_edge(zoom_end)
+    # Vertical direction is an authored invariant, not an accidental result
+    # of target-lock math. Production defaults travel down; the only upward
+    # recipes start at the bottom edge and travel back up.
+    vertical_motion = "up" if kind == "pan_up_center" or (kind.startswith("pan_") and "top" in kind) else "down"
+    if kind not in {"full_static"} and vertical_motion == "down" and pan_y_end < pan_y_start:
+        pan_y_end = min(1.0, pan_y_start + 0.12)
+    if vertical_motion == "up":
+        pan_y_start = max(pan_y_start, min(1.0, _minimum_pan_y_for_top_edge(zoom_start) + 0.12))
+        pan_y_end = min(pan_y_end, _minimum_pan_y_for_top_edge(zoom_end))
     return {
         "type": "ken_burns",
         "movement": kind,
@@ -1661,6 +1819,8 @@ def _ken_burns_motion(index: int, target_x: float = 0.5, target_y: float = 0.5, 
         "pan_y_end": round(pan_y_end, 3),
         "pan_x": round(pan_x_start, 3),
         "pan_y": round(pan_y_start, 3),
+        "top_edge_limit": IPHONE_CROP_TOP_LIMIT,
+        "vertical_motion": vertical_motion,
     }
 
 
@@ -1702,6 +1862,38 @@ def _validate_motion_segments(segments: list[dict[str, Any]]) -> None:
         motion = segment.get("motion") or {}
         if motion.get("type") == "ken_burns" and not _valid_motion_recipe(motion):
             raise ValueError(f"Invalid combined camera motion in segment {index}")
+
+
+def _camera_id_from_render_path(segment: dict[str, Any]) -> str:
+    """Derive the camera identity from the source that will actually render.
+
+    This deliberately ignores ``segment['camera_id']``.  The old plan writer
+    could preserve an iPhone label while replacing the path with the 360
+    proxy, making all downstream camera statistics false.
+    """
+    return _camera_id({
+        "source_path": segment.get("source_path") or segment.get("clip_path"),
+        "filename": segment.get("filename"),
+        "projection": segment.get("projection"),
+    })
+
+
+def validate_plan_camera_source_consistency(plan: dict[str, Any]) -> None:
+    """Fail fast when a plan label and its render source identify cameras differently."""
+    for index, segment in enumerate(plan.get("segments") or []):
+        camera_id = str(segment.get("camera_id") or "").strip().lower()
+        # Hand-authored/export fixture plans from older projects may omit the
+        # optional label entirely.  There is nothing to compare in that case;
+        # the invariant applies whenever a camera_id is present.
+        if not camera_id:
+            continue
+        render_camera = _camera_id_from_render_path(segment)
+        if camera_id != render_camera:
+            raise ValueError(
+                f"Edit plan camera/source mismatch at segment {index}: "
+                f"camera_id={camera_id!r}, render_source_camera={render_camera!r}, "
+                f"source_path={segment.get('source_path') or segment.get('clip_path')!r}"
+            )
 
 
 def _round_to_frame(seconds: float, fps: float = EDIT_FPS) -> float:

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core.ffmpeg import FFmpegError, tool_status
+from core.build_info import build_info
 from core.messages import t
 from core.project import Project
 from core.stages.base import stable_fingerprint
@@ -34,6 +35,18 @@ LOGGER = logging.getLogger(__name__)
 
 EQUIRECT_FILTER = "v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:v_fov=67.673:w=1280:h=720,fps=30,setpts=PTS-STARTPTS,format=yuv420p"
 CACHE_SUBDIRS = ("proxies", "normalized", "segments", "audio", "envelopes", "thumbnails")
+SEGMENT_CACHE_MAX_BYTES = 40 * 1024 * 1024 * 1024
+SEGMENT_CACHE_MAX_AGE_DAYS = 14
+
+
+def ensure_global_cache_dirs() -> Path:
+    """Recreate disposable cache directories after manual cleanup."""
+    root = global_cache_root()
+    root.mkdir(parents=True, exist_ok=True)
+    for name in CACHE_SUBDIRS:
+        (root / name).mkdir(parents=True, exist_ok=True)
+    cleanup_expired_segment_cache()
+    return root
 
 
 def ensure_normalized_space(project: Project, records: list[dict[str, Any]]) -> None:
@@ -41,8 +54,7 @@ def ensure_normalized_space(project: Project, records: list[dict[str, Any]]) -> 
     estimate = sum(int(record.get("size") or 0) for record in records) // 4
     if estimate <= 0:
         return
-    root = global_cache_root()
-    root.mkdir(parents=True, exist_ok=True)
+    root = ensure_global_cache_dirs()
     free = shutil.disk_usage(root).free
     if free < estimate * 2:
         raise RuntimeError(t("not_enough_space"))
@@ -252,6 +264,84 @@ def cache_status() -> dict[str, Any]:
     size = _directory_size(root)
     counts = {name: len(list((root / name).glob("*"))) if (root / name).exists() else 0 for name in CACHE_SUBDIRS}
     return {"path": str(root), "size_bytes": size, "counts": counts}
+
+
+def cleanup_expired_segment_cache(
+    projects_root: Path | None = None,
+    max_age_days: int = SEGMENT_CACHE_MAX_AGE_DAYS,
+    max_bytes: int = SEGMENT_CACHE_MAX_BYTES,
+) -> dict[str, Any]:
+    """Keep global render segments bounded and remove stale recipe versions.
+
+    Segment files are disposable and globally keyed. A sidecar from an older
+    build cannot pass the renderer's attestation check, so it is immediately
+    eligible unless a live project explicitly references that segment. Current
+    segments are retained for 14 days, then the oldest unreferenced files are
+    evicted until the cache is at or below 40 GB.
+    """
+    folder = global_cache_root() / "segments"
+    if not folder.exists():
+        return {"deleted_files": 0, "deleted_bytes": 0, "remaining_bytes": 0}
+    current_commit = str(build_info().get("git_commit") or "unknown")
+    referenced = _referenced_segment_names(projects_root)
+    now = time.time()
+    entries: list[tuple[Path, Path | None, int, float, bool, bool]] = []
+    total = 0
+    for segment in folder.glob("*.mp4"):
+        try:
+            size = segment.stat().st_size
+            mtime = segment.stat().st_mtime
+        except OSError:
+            continue
+        sidecar = segment.with_suffix(segment.suffix + ".json")
+        commit = ""
+        if sidecar.exists():
+            try:
+                import json
+                commit = str(json.loads(sidecar.read_text(encoding="utf-8")).get("git_commit") or "")
+            except (OSError, ValueError, json.JSONDecodeError):
+                commit = ""
+        protected = segment.name in referenced or sidecar.name in referenced
+        entries.append((segment, sidecar if sidecar.exists() else None, size, mtime, protected or commit == current_commit, commit != current_commit))
+        total += size + (sidecar.stat().st_size if sidecar.exists() else 0)
+    deleted_files = 0
+    deleted_bytes = 0
+    for segment, sidecar, size, mtime, protected, stale_recipe in sorted(entries, key=lambda item: item[3]):
+        expired = (now - mtime) > max_age_days * 86400
+        over_limit = total > max_bytes
+        if protected or not (stale_recipe or expired or over_limit):
+            continue
+        for path in (segment, sidecar):
+            if path is None:
+                continue
+            try:
+                bytes_removed = path.stat().st_size
+                path.unlink()
+            except OSError:
+                continue
+            deleted_files += 1
+            deleted_bytes += bytes_removed
+            total -= bytes_removed
+    return {"deleted_files": deleted_files, "deleted_bytes": deleted_bytes, "remaining_bytes": total}
+
+
+def _referenced_segment_names(projects_root: Path | None = None) -> set[str]:
+    """Find segment basenames explicitly retained by live project artifacts."""
+    import json
+    root = Path(projects_root or (Path.home() / "ZuckerVideos" / "Projects")).expanduser()
+    names: set[str] = set()
+    if not root.exists():
+        return names
+    for path in root.rglob("*.json"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for candidate in (root.parent / "Cache" / "segments").glob("*.mp4"):
+            if candidate.name in text or candidate.with_suffix(candidate.suffix + ".json").name in text:
+                names.add(candidate.name)
+                names.add(candidate.with_suffix(candidate.suffix + ".json").name)
+    return names
 
 
 def cleanup_unreferenced_cache(projects_root: Path | None = None) -> dict[str, Any]:
