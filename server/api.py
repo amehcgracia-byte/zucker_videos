@@ -28,6 +28,7 @@ from core.normalization import cache_status, cleanup_unreferenced_cache, global_
 from core.stages.sync import clear_manual_override, cleanup_closed_sync_diagnostics, generate_preview, generate_thumbnail, invalidate_stale_sync_artifact, set_manual_anchor, set_manual_override, set_manual_override_ranges
 from core.shot_review import mark_review_render_failed, replace_slots, review_items
 from core.backstage_feedback import record_feedback
+from core.stages.backstage import update_backstage_cue_text
 from server.inbox import (
     app_home,
     classify_paths,
@@ -528,10 +529,17 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             paper = json.loads(paper_path.read_text(encoding="utf-8"))
             edit = json.loads(edit_path.read_text(encoding="utf-8"))
             index = next((index for index, cut in enumerate(paper.get("cuts") or []) if str(cut.get("id")) == cut_id), None)
-            if index is None or index >= len(edit.get("segments") or []):
+            segment_index = next((index for index, segment in enumerate(edit.get("segments") or []) if str(segment.get("id") or f"backstage-{index:04d}") == cut_id), None)
+            if index is None or segment_index is None:
                 return error_response("not_found", "paper-edit cut not found", 404)
+            # This endpoint is a text edit, not an edit-plan rebuild. Keep
+            # every in/out/duration/timestamp byte untouched and address the
+            # cue by its stable id.
+            update_backstage_cue_text({"cues": paper["cuts"]}, cut_id, text)
             paper["cuts"][index]["subtitle_text"] = text
-            edit["segments"][index]["subtitle_text"] = text
+            paper["cuts"][index]["text"] = text
+            edit["segments"][segment_index]["text"] = text
+            edit["segments"][segment_index]["subtitle_text"] = text
             paper_path.write_text(json.dumps(paper, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             edit_path.write_text(json.dumps(edit, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             project.mark_all_stale_from("export")

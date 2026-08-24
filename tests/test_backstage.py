@@ -21,6 +21,8 @@ from core.stages.backstage import (
     _parchment_intervals,
     _snap_backstage_interval_to_words,
     _flatten_moments,
+    _backstage_single_pass_filtergraph,
+    update_backstage_cue_text,
 )
 from core.backstage_transcription import extract_story_bites
 
@@ -146,3 +148,22 @@ def test_backstage_subtitle_cues_are_clipped_to_selected_cut():
 def test_backstage_word_boundaries_never_cut_inside_a_word():
     words = [{"start_sec": 10.0, "end_sec": 10.7, "word": "hello"}, {"start_sec": 10.8, "end_sec": 11.4, "word": "there"}]
     assert _snap_backstage_interval_to_words(10.2, 11.1, [{"words": words}]) == (10.0, 11.4)
+
+
+def test_manual_cue_edit_mutates_text_only_and_preserves_timestamps():
+    payload = {"cues": [{"id": "cue-1", "text": "old", "start_sec": 1.25, "end_sec": 3.5, "duration_sec": 2.25}]}
+    before = json.loads(json.dumps(payload))
+    update_backstage_cue_text(payload, "cue-1", "new")
+    assert payload["cues"][0]["text"] == "new"
+    for key in ("start_sec", "end_sec", "duration_sec"):
+        assert payload["cues"][0][key] == before["cues"][0][key]
+
+
+def test_backstage_export_graph_repairs_each_clip_before_concat():
+    segments = [{"source_path": "/tmp/a.mp4", "clip_start_sec": 2, "duration_sec": 5, "background_music_policy": "background_music_only"}, {"source_path": "/tmp/b.mp4", "clip_start_sec": 4, "duration_sec": 7, "background_music_policy": "clip_audio_only"}]
+    _inputs, graph, _label, duration, _muted = _backstage_single_pass_filtergraph(segments)
+    assert duration == 12
+    assert graph.count("aresample=48000:async=1:first_pts=0") == 2
+    assert graph.count("apad") == 2
+    assert graph.count("atrim=duration=") == 2
+    assert "concat=n=2:v=1:a=1" in graph

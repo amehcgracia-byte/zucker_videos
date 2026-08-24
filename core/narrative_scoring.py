@@ -108,7 +108,7 @@ def score_story_bites(bites: list[dict[str, Any]], batch_size: int = 25, model: 
 
 
 def score_story_sequences(sequences: list[dict[str, Any]], batch_size: int = 25, model: str | None = None, provider: str | None = None) -> dict[str, Any]:
-    """Score complete conversations as units, translating original text in the same request."""
+    """Score one narrative sequence per model call, with adjacent context."""
     config = _provider_config(provider, model)
     if not sequences:
         return {"status": "empty", "provider": config["provider"], "model": config["model"], "batches": 0, "sequences": []}
@@ -122,13 +122,14 @@ def score_story_sequences(sequences: list[dict[str, Any]], batch_size: int = 25,
         peak = datetime.now(timezone.utc).hour in {1, 2, 3, 6, 7, 8, 9}
         miss_price, output_price = ((1.32, 3.96) if peak else (0.66, 1.98)) if config["provider"] == "deepseek" and config["model"] == "deepseek-v4-pro" else ((0.44, 1.32) if peak else (0.22, 0.66))
         hit_price = (0.044 if peak else 0.022) if config["provider"] == "deepseek" and config["model"] == "deepseek-v4-pro" else (0.014 if peak else 0.007)
-        for offset in range(0, len(sequences), max(20, min(30, batch_size))):
-            batch = sequences[offset:offset + max(20, min(30, batch_size))]
+        for offset, sequence in enumerate(sequences):
+            batch = [sequence]
             batch_count += 1
-            compact = [{"id": item["id"], "clip": item.get("filename"), "start": item.get("start_sec"), "end": item.get("end_sec"), "duration": item.get("duration_sec"), "boundary_complete_hint": item.get("complete"), "text_original": item.get("text_original")} for item in batch]
-            system = "Evaluate documentary conversations as complete units. Return JSON only. First priority is a comprehensible sequence whose first and last words form a usable conversational boundary. Do not mark a sequence incomplete merely because it has no punchline, is quiet, or contains an ordinary statement. Mark complete=false and set all numeric scores to 0 only when the text is clearly cut off mid-sentence, unintelligible, or severely garbled. Then score the whole conversation: a coherent account of an event or experience deserves story points even when it is calm, ordinary, or has no joke; also value genuine human exchange, humor, tension, and payoff. Do not require a punchline for story. Do not search for or reward any particular topic, object, keyword, or named subject. Translate the full original text into natural English without inventing details. Scores are 0 to 10."
-            examples = [{"criterion_label": "USER EXAMPLE — positive keep/closing" if row.get("mark") in {"keep", "closing"} else "USER EXAMPLE — negative drop", "mark": row.get("mark"), "text_original": row.get("text_original"), "english_text": row.get("english_text"), "reason": row.get("reason")} for row in few_shot_examples(12)]
-            user = json.dumps({"format": {"sequences": [{"id": "sequence-id", "english_text": "full English translation", "funny": 0, "story": 0, "hook": 0, "payoff": 0, "complete": True, "confidence": 0, "reason": "criterion-based reason"}]}, "user_feedback_examples": examples, "sequences": compact}, ensure_ascii=False)
+            previous = sequences[offset - 1] if offset else None
+            following = sequences[offset + 1] if offset + 1 < len(sequences) else None
+            compact = [{"id": sequence["id"], "clip": sequence.get("filename"), "start": sequence.get("start_sec"), "end": sequence.get("end_sec"), "duration": sequence.get("duration_sec"), "text_original": sequence.get("text_original"), "previous_sequence": previous.get("text_original") if previous else "", "next_sequence": following.get("text_original") if following else "", "signals": sequence.get("signals") or {}}]
+            system = "Evaluate exactly one documentary conversation sequence. Return JSON only. Suggest safe in/out points in seconds inside the supplied sequence, never outside it. Assign role opening, body, or closing. Use adjacent sequences only as context. Translate the original text without invention and explain the criterion-based reason. Scores are 0 to 10."
+            user = json.dumps({"format": {"sequences": [{"id": "sequence-id", "english_text": "full English translation", "funny": 0, "story": 0, "hook": 0, "payoff": 0, "complete": True, "confidence": 0, "reason": "criterion-based reason", "suggested_in": 0, "suggested_out": 1, "role": "body"}]}, "sequences": compact}, ensure_ascii=False)
             parsed = None
             for attempt in range(3):
                 response = client.chat.completions.create(model=config["model"], messages=[{"role": "system", "content": system}, {"role": "user", "content": user}], response_format={"type": "json_object"}, max_tokens=6000, temperature=0.1, **({"extra_body": {"thinking": {"type": "disabled"}}} if config["provider"] == "deepseek" else {}))
@@ -142,8 +143,10 @@ def score_story_sequences(sequences: list[dict[str, Any]], batch_size: int = 25,
                     if not isinstance(items, list) or {str(item.get("id")) for item in items} != expected:
                         raise ValueError("sequence ids mismatch")
                     for item in items:
-                        if not all(field in item for field in ("id", "english_text", "funny", "story", "hook", "payoff", "complete", "confidence", "reason")):
+                        if not all(field in item for field in ("id", "english_text", "funny", "story", "hook", "payoff", "complete", "confidence", "reason", "suggested_in", "suggested_out", "role")):
                             raise ValueError("missing sequence field")
+                        if item["role"] not in {"opening", "body", "closing"} or not 0 <= float(item["suggested_in"]) <= float(sequence.get("duration_sec") or 0) or not 0 <= float(item["suggested_out"]) <= float(sequence.get("duration_sec") or 0) or float(item["suggested_out"]) <= float(item["suggested_in"]):
+                            raise ValueError("invalid editorial cut points or role")
                         if item["complete"] is False:
                             for field in ("funny", "story", "hook", "payoff", "confidence"): item[field] = 0
                         elif any(not isinstance(item[field], (int, float)) or not 0 <= float(item[field]) <= 10 for field in ("funny", "story", "hook", "payoff", "confidence")):
@@ -157,7 +160,7 @@ def score_story_sequences(sequences: list[dict[str, Any]], batch_size: int = 25,
                 item = scored[str(score["id"])]
                 item["text_original"] = item.get("text_original") or ""
                 item["english_text"] = str(score.get("english_text") or "")
-                item["narrative_scores"] = {field: score.get(field) for field in ("funny", "story", "hook", "payoff", "complete", "confidence", "reason")}
+                item["narrative_scores"] = {field: score.get(field) for field in ("funny", "story", "hook", "payoff", "complete", "confidence", "reason", "suggested_in", "suggested_out", "role")}
         cost = (cache_hit * hit_price + cache_miss * miss_price + output_tokens * output_price) / 1_000_000 if config["provider"] == "deepseek" else (input_tokens * miss_price + output_tokens * output_price) / 1_000_000
         return {"status": "ready", "provider": config["provider"], "base_url": config["base_url"], "model": config["model"], "batches": batch_count, "retries": retries, "input_tokens": input_tokens, "output_tokens": output_tokens, "cache_hit_tokens": cache_hit, "cache_miss_tokens": cache_miss, "cost_usd": round(cost, 6), "sequences": list(scored.values())}
     except Exception as exc:
@@ -192,3 +195,48 @@ def generate_storyboard(sequences: list[dict[str, Any]], music_path: str = "", m
         return {"status": "ready", "provider": config["provider"], "model": config["model"], "input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": round(cost, 6), "storyboard": raw}
     except Exception as exc:
         return {"status": "error", "provider": config["provider"], "model": config["model"], "reason": str(exc)}
+
+
+def generate_parchment_messages(sequences: list[dict[str, Any]], music_path: str = "", model: str | None = None, provider: str | None = None) -> dict[str, Any]:
+    """Generate up to four short old-English editorial cards from selected speech."""
+    config = _provider_config(provider, model)
+    if not sequences or not config["key"]:
+        return {"status": "unavailable", "messages": [], "reason": "no selected sequences or API key"}
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=config["key"], base_url=config["base_url"])
+        source = [{"text_original": item.get("text_original") or item.get("text"), "english_text": item.get("english_text") or "", "role": (item.get("narrative_scores") or {}).get("role", "body")} for item in sequences]
+        system = "Write up to four witty old-English-style parchment messages for a backstage music documentary. Maximum 45 words each. Use only supplied events and tone; do not invent facts. Return JSON only as {messages:[string]}. Messages are interstitial captions, not spoken dialogue."
+        response = client.chat.completions.create(model=config["model"], messages=[{"role": "system", "content": system}, {"role": "user", "content": json.dumps({"music_path": music_path, "selected_sequences": source}, ensure_ascii=False)}], response_format={"type": "json_object"}, max_tokens=500, temperature=0.4, **({"extra_body": {"thinking": {"type": "disabled"}}} if config["provider"] == "deepseek" else {}))
+        raw = json.loads(response.choices[0].message.content or "{}")
+        messages = [str(value).strip() for value in raw.get("messages") or [] if str(value).strip() and len(str(value).split()) <= 45][:4]
+        return {"status": "ready", "provider": config["provider"], "model": config["model"], "messages": messages}
+    except Exception as exc:
+        return {"status": "error", "messages": [], "reason": str(exc)}
+
+
+def correct_transcription(transcription: dict[str, Any], glossary: str = "", model: str | None = None, provider: str | None = None) -> dict[str, Any]:
+    """Correct the complete final transcript in one context-preserving pass."""
+    config = _provider_config(provider, model)
+    if not transcription.get("sources") or not config["key"]:
+        return {"status": "unavailable", "sources": transcription.get("sources") or []}
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=config["key"], base_url=config["base_url"])
+        rows = [{"source": source.get("filename"), "segments": [{"start_sec": row.get("start_sec"), "end_sec": row.get("end_sec"), "text": row.get("text")} for row in source.get("segments") or []]} for source in transcription.get("sources") or []]
+        system = "Correct this complete transcript using the glossary and the full conversational context. Preserve every start_sec/end_sec exactly; change only text. Do not translate, summarize, merge, split, or reorder segments. Return JSON only as {sources:[{filename,segments:[{start_sec,end_sec,text}]}]}."
+        user = json.dumps({"glossary": glossary, "transcript": rows}, ensure_ascii=False)
+        response = client.chat.completions.create(model=config["model"], messages=[{"role": "system", "content": system}, {"role": "user", "content": user}], response_format={"type": "json_object"}, max_tokens=12000, temperature=0.0, **({"extra_body": {"thinking": {"type": "disabled"}}} if config["provider"] == "deepseek" else {}))
+        raw = json.loads(response.choices[0].message.content or "{}")
+        corrected = raw.get("sources") if isinstance(raw, dict) else None
+        if not isinstance(corrected, list) or len(corrected) != len(rows):
+            raise ValueError("DeepSeek transcript correction returned invalid source count")
+        for original, candidate in zip(rows, corrected):
+            if len(candidate.get("segments") or []) != len(original["segments"]):
+                raise ValueError("DeepSeek changed transcript timing topology")
+            for before, after in zip(original["segments"], candidate["segments"]):
+                if before["start_sec"] != after.get("start_sec") or before["end_sec"] != after.get("end_sec"):
+                    raise ValueError("DeepSeek changed transcript timestamps")
+        return {"status": "ready", "provider": config["provider"], "model": config["model"], "sources": corrected}
+    except Exception as exc:
+        return {"status": "error", "sources": transcription.get("sources") or [], "reason": str(exc)}

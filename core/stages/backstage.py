@@ -36,7 +36,7 @@ from core.stages.export import (
 )
 from core.backstage_transcription import transcribe_sources
 from core.audio_content import detect_music_window
-from core.narrative_scoring import generate_storyboard, score_story_sequences
+from core.narrative_scoring import correct_transcription, generate_parchment_messages, generate_storyboard, score_story_sequences
 from core.narrative_sequences import group_story_bites
 from core.backstage_feedback import content_fingerprint, load_feedback
 
@@ -62,6 +62,7 @@ BACKSTAGE_MUSIC_FADE_OUT = 1.0
 BACKSTAGE_MUSIC_TARGET_LUFS = -16.0
 BACKSTAGE_AUDIO_STATES = ("music_only", "music_plus_clip_audio", "clip_audio_only")
 BACKSTAGE_MUSIC_EDGE_GUARD = 4.0
+BACKSTAGE_DEFAULT_BURN_SUBTITLES = True
 
 
 def _video_records(project: Project) -> list[dict[str, Any]]:
@@ -206,10 +207,11 @@ class BackstageAnalysisStage(Stage):
             sources,
             artifact_path(project, "backstage_transcription.json"),
             lambda percent, detail: progress_callback(90 + int(percent * 0.1), detail),
-            model_name=str((project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_model") or "small"),
+            model_name=str((project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_model") or "large-v3"),
             task=str((project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_task") or "transcribe"),
             language_overrides=(project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_language_overrides") or {},
-            model_by_language=(project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_model_by_language") or {"de": "medium", "en": "medium"},
+            model_by_language=(project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_model_by_language") or {},
+            initial_prompt=str((project.data.get("settings", {}).get("wizard") or {}).get("backstage_glossary") or (project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_initial_prompt") or os.environ.get("BACKSTAGE_GLOSSARY", "")),
         )
         story_bites = transcription.get("story_bites") or []
         sequences = group_story_bites(story_bites)
@@ -328,6 +330,7 @@ class BackstageEditStage(Stage):
                 # source noise cannot compete with it.
                 policy = "background_music_only"
             segments.append({
+                "id": f"backstage-{index:04d}",
                 "source_path": moment["source_path"],
                 "clip_path": moment["source_path"],
                 "filename": moment["filename"],
@@ -348,6 +351,7 @@ class BackstageEditStage(Stage):
                 "story_sequences": moment.get("story_sequences") or [],
                 "transcription_segments": moment.get("transcription_segments") or [],
                 "subtitle_text": "",
+                "text": "",
             })
             feedback_key = f"{content_fingerprint(segments[-1]['source_path'])}:{float(clip_start):.3f}:{float(clip_start) + float(duration):.3f}"
             feedback = feedback_examples.get(feedback_key) or {}
@@ -407,7 +411,8 @@ class BackstageEditStage(Stage):
                 "score": round(sum(float(scores.get(key) or 0) for key in ("funny", "story", "hook", "payoff")) / 40.0, 3) if scores else None,
                 "content_fingerprint": source_fingerprint,
                 "range_key": f"{source_fingerprint}:{in_sec:.3f}:{out_sec:.3f}",
-                "subtitle_text": segment.get("subtitle_text") or "",
+                "subtitle_text": segment.get("text") or segment.get("subtitle_text") or "",
+                "text": segment.get("text") or segment.get("subtitle_text") or "",
                 "kind": segment["kind"],
                 "interest_score": segment["interest_score"],
                 "status": "pending",
@@ -572,7 +577,17 @@ def _select_documentary_moments(moments: list[dict[str, Any]], target: float, ru
         nonlocal used_total
         source = item["source_path"]
         is_sequence = bool(item.get("story_sequences"))
+        if is_sequence:
+            sequence_score = next((item.get("narrative_scores") or {} for item in item.get("story_sequences") or [] if item.get("narrative_scores")), {})
+            if sequence_score.get("role") == "closing":
+                section = "closing"
         duration = min(45.0 if is_sequence else 15.0, float(item["duration_sec"]))
+        if is_sequence and sequence_score.get("suggested_in") is not None and sequence_score.get("suggested_out") is not None:
+            suggested_in = max(0.0, float(sequence_score.get("suggested_in") or 0.0))
+            suggested_out = min(float(item["duration_sec"]), float(sequence_score.get("suggested_out") or 0.0))
+            if suggested_out > suggested_in:
+                item = {**item, "clip_start_sec": float(item.get("clip_start_sec") or 0.0) + suggested_in, "duration_sec": suggested_out - suggested_in}
+                duration = min(45.0, suggested_out - suggested_in)
         start, end = _snap_backstage_interval_to_words(
             float(item.get("clip_start_sec") or 0.0),
             float(item.get("clip_start_sec") or 0.0) + duration,
@@ -1061,7 +1076,7 @@ def _backstage_final_subtitle_entries(transcription: dict[str, Any], segments: l
     offsets = _backstage_segment_offsets(segments)
     corrections = []
     for segment, offset in zip(segments, offsets):
-        text = str(segment.get("subtitle_text") or "").strip()
+        text = str(segment.get("text") or segment.get("subtitle_text") or "").strip()
         if not text:
             continue
         start = max(0.0, offset)
@@ -1074,22 +1089,28 @@ def _backstage_final_subtitle_entries(transcription: dict[str, Any], segments: l
     return sorted(entries, key=lambda row: (row[0], row[1]))
 
 
-def _parchment_intervals(duration: float, messages: list[str]) -> list[tuple[float, float]]:
+def _parchment_intervals(duration: float, messages: list[str], forbidden_ranges: list[tuple[float, float]] | None = None) -> list[tuple[float, float]]:
     clean = [str(message).strip() for message in messages if str(message).strip()][:4]
     if not clean:
         return []
     durations = [min(6.0, max(4.0, 4.0 + 0.35 * (len(message.split()) / 10.0))) for message in clean]
-    return [
-        (max(0.0, duration * (index + 1) / (len(clean) + 1) - card_duration / 2.0),
-         min(duration, duration * (index + 1) / (len(clean) + 1) + card_duration / 2.0))
-        for index, card_duration in enumerate(durations)
-    ]
+    intervals = []
+    forbidden = sorted(forbidden_ranges or [])
+    for index, card_duration in enumerate(durations):
+        center = duration * (index + 1) / (len(clean) + 1)
+        start, end = max(0.0, center - card_duration / 2.0), min(duration, center + card_duration / 2.0)
+        for blocked_start, blocked_end in forbidden:
+            if start < blocked_end and end > blocked_start:
+                center = min(duration - card_duration / 2.0, max(card_duration / 2.0, blocked_end + card_duration / 2.0))
+                start, end = center - card_duration / 2.0, center + card_duration / 2.0
+        intervals.append((max(0.0, start), min(duration, end)))
+    return intervals
 
 
-def _render_parchment_cards(directory: Path, messages: list[str], width: int, height: int, duration: float) -> list[tuple[Path, float, float]]:
+def _render_parchment_cards(directory: Path, messages: list[str], width: int, height: int, duration: float, forbidden_ranges: list[tuple[float, float]] | None = None) -> list[tuple[Path, float, float]]:
     from PIL import Image, ImageDraw, ImageFont
     clean = [str(message).strip() for message in messages if str(message).strip()][:4]
-    intervals = _parchment_intervals(duration, clean)
+    intervals = _parchment_intervals(duration, clean, forbidden_ranges)
     if not intervals:
         return []
     directory.mkdir(parents=True, exist_ok=True)
@@ -1282,6 +1303,110 @@ def _filter_path(path: Path) -> str:
     return str(path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
 
+def measure_backstage_av_drift(path: str | Path) -> list[float]:
+    """Measure audio/video packet-edge drift at one, two and three thirds."""
+    probe = [str(_ffmpeg_path()).replace("ffmpeg", "ffprobe"), "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)]
+    duration = float(subprocess.check_output(probe, text=True).strip() or 0.0)
+    result: list[float] = []
+    for fraction in (1 / 3, 2 / 3, 1.0):
+        target = duration * fraction
+        streams = []
+        for selector in ("v:0", "a:0"):
+            cmd = [str(_ffmpeg_path()).replace("ffmpeg", "ffprobe"), "-v", "error", "-select_streams", selector, "-read_intervals", f"%+{target:.6f}", "-show_entries", "packet=pts_time,duration_time", "-of", "csv=p=0", str(path)]
+            pts = []
+            for line in subprocess.check_output(cmd, text=True).splitlines():
+                try:
+                    value = float(line.split(",", 1)[0])
+                    if value <= target + 0.05:
+                        pts.append(value)
+                except (ValueError, IndexError):
+                    continue
+            streams.append(max(pts) if pts else 0.0)
+        result.append(round(streams[1] - streams[0], 6))
+    return result
+
+
+def update_backstage_cue_text(payload: dict[str, Any], cue_id: str, text: str) -> dict[str, Any]:
+    """Mutate only a cue's text, addressed by id; timing is never rebuilt."""
+    cues = payload.get("cues") if isinstance(payload, dict) else None
+    if not isinstance(cues, list):
+        raise ValueError("payload has no cues")
+    cue = next((item for item in cues if isinstance(item, dict) and str(item.get("id")) == str(cue_id)), None)
+    if cue is None:
+        raise KeyError(cue_id)
+    cue["text"] = str(text)
+    return payload
+
+
+def _backstage_single_pass_filtergraph(
+    segments: list[dict[str, Any]],
+    *,
+    music_path: str = "",
+    music_seek: float = 0.0,
+    ass_path: Path | None = None,
+    logo_path: str = "",
+    parchment_cards: list[tuple[Path, float, float]] | None = None,
+    width: int = 1920,
+    height: int = 1080,
+    fps: int = 30,
+) -> tuple[list[str], str, str, float, list[tuple[float, float]]]:
+    """Return inputs and one graph for all Backstage video operations."""
+    inputs: list[str] = []
+    filters: list[str] = []
+    video_labels: list[str] = []
+    audio_labels: list[str] = []
+    muted_ranges: list[tuple[float, float]] = []
+    for index, segment in enumerate(segments):
+        duration = float(segment.get("duration_sec") or 0.0)
+        inputs.extend(["-ss", f"{float(segment.get('clip_start_sec') or 0.0):.3f}", "-t", f"{duration:.3f}", "-i", str(segment["source_path"])])
+        video_labels.append(f"v{index}")
+        audio_labels.append(f"a{index}")
+        filters.append(f"[{index}:v]fps={fps},format=yuv420p,setpts=PTS-STARTPTS[v{index}]")
+        filters.append(f"[{index}:a]aresample=48000:async=1:first_pts=0,apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a{index}]")
+        if segment.get("background_music_policy") == "background_music_only":
+            filters.append(f"[a{index}]volume=0[a{index}muted]")
+            audio_labels[-1] = f"a{index}muted"
+        if segment.get("background_music_policy") == "clip_music_only":
+            muted_ranges.append((sum(float(item.get("duration_sec") or 0.0) for item in segments[:index]), sum(float(item.get("duration_sec") or 0.0) for item in segments[:index + 1])))
+    concat_inputs = "".join(f"[{label}][{audio_labels[index]}]" for index, label in enumerate(video_labels))
+    filters.append(f"{concat_inputs}concat=n={len(segments)}:v=1:a=1[vcat][acat]")
+    content_duration = sum(float(item.get("duration_sec") or 0.0) for item in segments)
+    audio_label = "acat"
+    if music_path:
+        inputs.extend(["-stream_loop", "-1", "-ss", f"{music_seek:.3f}", "-i", music_path])
+        music_index = len(segments)
+        music_filter = _backstage_music_filter(content_duration, muted_ranges).replace("[0:a]", "[acat]").replace("[1:a]", f"[{music_index}:a]")
+        filters.append(music_filter)
+        audio_label = "a"
+    filters.append(f"[{audio_label}]afade=t=in:st=0:d=0.08,aresample=async=1:first_pts=0[aout]")
+    video_label = "vcat"
+    if logo_path:
+        inputs.extend(["-loop", "1", "-i", logo_path, "-loop", "1", "-i", logo_path])
+        logo_a = len(segments) + (1 if music_path else 0)
+        logo_b = logo_a + 1
+        outro_start = max(0.0, content_duration - BACKSTAGE_LOGO_DURATION)
+        filters.append(f"[{logo_a}:v]format=rgba,scale=-1:{int(height * .72)},fade=t=in:st=0:d=1:alpha=1,fade=t=out:st=7:d=3:alpha=1[li]")
+        filters.append(f"[{logo_b}:v]format=rgba,scale=-1:{int(height * .72)},fade=t=in:st={outro_start:.3f}:d=1:alpha=1[lo]")
+        filters.append(f"[vcat][li]overlay=(W-w)/2:(H-h)/2:enable='between(t,0,{BACKSTAGE_LOGO_DURATION:.3f})'[vlogo]")
+        filters.append(f"[vlogo][lo]overlay=(W-w)/2:(H-h)/2:enable='between(t,{outro_start:.3f},{content_duration:.3f})'[vlogged]")
+        video_label = "vlogged"
+    if parchment_cards:
+        current = video_label
+        for card_index, (card, start, end) in enumerate(parchment_cards, start=1):
+            inputs.extend(["-loop", "1", "-i", str(card)])
+            label = f"paper{card_index}"
+            card_input = len(segments) + (1 if music_path else 0) + (2 if logo_path else 0) + card_index - 1
+            filters.append(f"[{card_input}:v]format=rgba,fade=t=in:st=0:d=.8:alpha=1,fade=t=out:st={max(0.0, end-start-.6):.3f}:d=.6:alpha=1[{label}]")
+            filters.append(f"[{current}][{label}]overlay=0:0:enable='between(t,{start:.3f},{end:.3f})'[paperout{card_index}]")
+            current = f"paperout{card_index}"
+        video_label = current
+    if ass_path:
+        filters.append(f"[{video_label}]subtitles=filename='{_filter_path(ass_path)}'[vout]")
+    else:
+        filters.append(f"[{video_label}]format=yuv420p[vout]")
+    return inputs, ";".join(filters), video_label, content_duration, muted_ranges
+
+
 class BackstageExportStage(Stage):
     """Render source video and source audio together, with gentle audio joins."""
 
@@ -1318,6 +1443,78 @@ class BackstageExportStage(Stage):
                 pass
         run_id = str((project.data.get("settings", {}).get("wizard") or {}).get("backstage_run_id") or time.time_ns())
         output_path = output_dir / f"{project.data.get('name', 'Backstage')}-backstage-{time.strftime('%Y%m%d-%H%M%S')}-{run_id[-10:]}.mp4"
+        wizard = project.data.get("settings", {}).get("wizard") or {}
+        burn_value = wizard.get("BURN_SUBTITLES", wizard.get("burn_subtitles", os.environ.get("BURN_SUBTITLES", "true")))
+        burn_subtitles = str(burn_value).strip().lower() not in {"0", "false", "no", "off"}
+        # All timing for this pass is known before encoding. The graph is
+        # deliberately assembled once: clip CFR/audio repair, concat, music
+        # ducking, parchment, logo and optional libass subtitles share one
+        # encoder invocation.
+        with tempfile.TemporaryDirectory(prefix="zucker-backstage-", dir=str(project.cache_dir)) as tmp:
+            tmp_path = Path(tmp)
+            offsets = [sum(float(item.get("duration_sec") or 0.0) for item in segments[:index]) for index in range(len(segments))]
+            entries = _backstage_subtitle_entries(segments, offsets) if burn_subtitles else []
+            ass_path = None
+            ass_export_path = None
+            if entries:
+                ass_path = tmp_path / "backstage-en.ass"
+                _write_backstage_ass(ass_path, entries)
+                ass_export_path = project.cache_dir / "subtitles" / f"{output_path.stem}.ass"
+                ass_export_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ass_path, ass_export_path)
+            music_path = str(plan.get("music_path") or "")
+            if not music_path or not Path(music_path).exists():
+                music_path = ""
+            messages = [str(value).strip() for value in (wizard.get("backstage_messages") or []) if str(value).strip()][:4]
+            if not messages:
+                generated = generate_parchment_messages([item for segment in segments for item in segment.get("story_sequences") or []], music_path=music_path)
+                messages = [str(value).strip() for value in generated.get("messages") or [] if str(value).strip()][:4]
+            parchment_cards = _render_parchment_cards(tmp_path / "parchment", messages, int(_target_size("youtube")[0]), int(_target_size("youtube")[1]), sum(float(item.get("duration_sec") or 0.0) for item in segments), [(start, end) for start, end, _text in entries])
+            graph_inputs, filtergraph, _video_label, content_duration, music_muted_ranges = _backstage_single_pass_filtergraph(
+                segments,
+                music_path=music_path,
+                music_seek=_music_seek_offset(music_path, sum(float(item.get("duration_sec") or 0.0) for item in segments)) if music_path else 0.0,
+                ass_path=ass_path,
+                logo_path=str(_personal_logo_path() or _logo_path() or ""),
+                parchment_cards=parchment_cards,
+                width=int(_target_size("youtube")[0]),
+                height=int(_target_size("youtube")[1]),
+                fps=30,
+            )
+            command = [str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:1", *graph_inputs, "-filter_complex", filtergraph, "-map", "[vout]", "-map", "[aout]", "-vsync", "cfr", "-r", "30", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(output_path)]
+            progress_callback(2, "Rendering Backstage in one FFmpeg pass")
+            _run_backstage_ffmpeg(command, progress_callback=progress_callback, cut_boundaries=[sum(float(item.get("duration_sec") or 0.0) for item in segments[:index + 1]) for index in range(len(segments))])
+            # Transcription is intentionally retained even when subtitle
+            # burning is disabled: scoring and later paper-edit review depend
+            # on it. It runs on the delivered MP4 and uses the configured
+            # glossary as Whisper's initial prompt.
+            final_transcription = transcribe_sources(
+                [{"path": str(output_path), "filename": output_path.name}],
+                artifact_path(project, "backstage_final_transcription.json"),
+                progress_callback=lambda value, message: progress_callback(92 + int(value * .06), f"Final transcription: {message}"),
+                model_name=str(wizard.get("backstage_whisper_model") or "large-v3"),
+                task="transcribe",
+                initial_prompt=str(wizard.get("backstage_glossary") or wizard.get("backstage_whisper_initial_prompt") or os.environ.get("BACKSTAGE_GLOSSARY", "")),
+            )
+            if final_transcription.get("status") not in {"ready", "ready_cached", "unavailable"}:
+                raise RuntimeError(f"Final edited-audio transcription unavailable: {final_transcription.get('reason') or final_transcription.get('status')}")
+            corrected_transcription = correct_transcription(
+                final_transcription,
+                glossary=str(wizard.get("backstage_glossary") or wizard.get("backstage_whisper_initial_prompt") or os.environ.get("BACKSTAGE_GLOSSARY", "")),
+            )
+            write_artifact_json(artifact_path(project, "backstage_final_transcription_corrected.json"), corrected_transcription)
+        duration = float((ffprobe(str(output_path)).get("format") or {}).get("duration") or 0.0)
+        av_drift = measure_backstage_av_drift(output_path)
+        policies = {}
+        for segment in segments:
+            policy = str(segment.get("background_music_policy") or "background_music_allowed")
+            policies[policy] = policies.get(policy, 0) + 1
+        music_runs = _background_music_runs(content_duration, music_muted_ranges)
+        subtitle_cue_count = len(entries)
+        manifest = {"stage": "backstage_export", "platform": "backstage", "render_logic": "single-pass filter_complex: CFR/audio-normalized concat, sidechain-ducked music, parchment, intro/outro logo and optional ASS subtitles", "warnings": [], "single_ffmpeg_pass": True, "av_drift_sec_at_thirds": av_drift, "music": {"path": str(plan.get("music_path") or ""), "base_volume": BACKSTAGE_MUSIC_VOLUME, "duck_threshold": BACKSTAGE_MUSIC_DUCK_THRESHOLD, "duck_ratio": BACKSTAGE_MUSIC_DUCK_RATIO, "mixed": bool(music_path), "segment_policies": policies, "runs": [{"start_sec": round(start, 3), "end_sec": round(end, 3), "duration_sec": round(end - start, 3)} for start, end in music_runs]}, "subtitles": {"format": "ass", "path": str(ass_export_path) if ass_export_path else None, "burned_in": bool(burn_subtitles and subtitle_cue_count), "cue_count": subtitle_cue_count, "filter": "subtitles/libass" if burn_subtitles else None}, "exports": [{"platform": "backstage", "path": str(output_path), "filename": output_path.name, "duration_sec": duration, "cut_count": plan.get("cut_count", 0), "camera_usage": {}, "logo_duration_sec": BACKSTAGE_LOGO_DURATION, "logo_outro_duration_sec": BACKSTAGE_LOGO_DURATION}]}
+        write_artifact_json(artifact_path(project, "export_manifest.json"), manifest)
+        progress_callback(100, "Backstage export ready")
+        return self.outputs(project)
         with tempfile.TemporaryDirectory(prefix="zucker-backstage-", dir=str(project.cache_dir)) as tmp:
             joined = Path(tmp) / "joined.mp4"
             inputs: list[str] = []

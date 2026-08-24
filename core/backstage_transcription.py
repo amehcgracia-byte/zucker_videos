@@ -19,8 +19,8 @@ from core.stages.base import stable_fingerprint, write_artifact_json
 from core.normalization import global_cache_root
 from core.ffmpeg import ensure_tools_on_path
 
-WHISPER_TRANSCRIPTION_VERSION = 6
-DEFAULT_WHISPER_MODEL = "small"
+WHISPER_TRANSCRIPTION_VERSION = 7
+DEFAULT_WHISPER_MODEL = "large-v3"
 DEFAULT_WHISPER_TASK = "transcribe"
 LANGUAGE_CONFIDENCE_THRESHOLD = 0.75
 
@@ -141,6 +141,7 @@ def transcribe_sources(
     language_overrides: dict[str, str] | None = None,
     language_confidence_threshold: float = LANGUAGE_CONFIDENCE_THRESHOLD,
     model_by_language: dict[str, str] | None = None,
+    initial_prompt: str | None = None,
 ) -> dict[str, Any]:
     """Transcribe/translate all sources, using an app-wide fingerprint cache."""
     progress_callback = progress_callback or (lambda _p, _m: None)
@@ -165,6 +166,7 @@ def transcribe_sources(
     output_sources: list[dict[str, Any]] = []
     missing = []
     language_overrides = {str(key): str(value).strip().lower() for key, value in (language_overrides or {}).items() if value}
+    initial_prompt = str(initial_prompt or "").strip() or None
     model_by_language = {str(key).strip().lower(): str(value) for key, value in (model_by_language or {}).items() if value}
     for source in sources:
         path = str(source["path"])
@@ -210,17 +212,23 @@ def transcribe_sources(
         progress_callback(int(index / max(1, len(sources)) * 90), f"Transcribing {Path(path).name}")
         model = models[source_model]
         if backend == "faster-whisper":
-            segments_iter, info = model.transcribe(path, task=task, language=forced_language, beam_size=5, word_timestamps=True, vad_filter=True)
+            kwargs = {"task": task, "language": forced_language, "beam_size": 5, "word_timestamps": True, "vad_filter": True, "condition_on_previous_text": True}
+            if initial_prompt:
+                kwargs["initial_prompt"] = initial_prompt
+            # Whisper language is selected once per source. This prevents a
+            # low-confidence segment from changing language in the middle of
+            # a sentence; callers may still force a source language.
+            segments_iter, info = model.transcribe(path, **kwargs)
             transcription_segments = list(segments_iter)
             detected_language = getattr(info, "language", None)
             language_probability = getattr(info, "language_probability", None)
         elif backend == "mlx-whisper":
-            transcription = model.transcribe(path, path_or_hf_repo=model_name, task=task, language=forced_language, word_timestamps=True)
+            transcription = model.transcribe(path, path_or_hf_repo=model_name, task=task, language=forced_language, word_timestamps=True, initial_prompt=initial_prompt)
             transcription_segments = transcription.get("segments", [])
             detected_language = transcription.get("language")
             language_probability = transcription.get("language_probability")
         else:
-            transcription = model.transcribe(path, task=task, language=forced_language, fp16=False, verbose=False, condition_on_previous_text=False, word_timestamps=True)
+            transcription = model.transcribe(path, task=task, language=forced_language, fp16=False, verbose=False, condition_on_previous_text=True, word_timestamps=True, initial_prompt=initial_prompt)
             transcription_segments = transcription.get("segments", [])
             detected_language = transcription.get("language")
             language_probability = transcription.get("language_probability")
@@ -254,7 +262,7 @@ def transcribe_sources(
     payload = {
         "stage": "backstage_transcription", "version": WHISPER_TRANSCRIPTION_VERSION,
         "model": model_name, "task": task, "backend": backend, "status": "ready", "elapsed_sec": round(time.perf_counter() - started, 3),
-        "sources": output_sources, "story_bites": bites,
+        "sources": output_sources, "story_bites": bites, "initial_prompt": initial_prompt,
     }
     write_artifact_json(artifact, payload)
     progress_callback(100, "Backstage transcription ready")
