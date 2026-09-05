@@ -1494,6 +1494,9 @@ pre {
 .compose-live-caption { position: absolute; left: 8%; right: 8%; top: 68%; color: #fff; font: 700 clamp(1rem, 3vw, 2.1rem)/1.08 Arial,sans-serif; text-align: center; white-space: pre-line; text-shadow: 0 3px 5px #000; }
 .compose-player-tools { display: flex; gap: .6rem; align-items: center; padding: .65rem 0; }
 .compose-player-tools input[type="range"] { flex: 1; }
+.compose-add-caption { min-height: 44px; padding: .7rem 1rem; font-size: 1rem; }
+.compose-add-caption kbd { margin-left: .35rem; padding: .1rem .35rem; border: 1px solid currentColor; border-radius: 4px; font-size: .75em; opacity: .8; }
+.compose-player-tools #composeEndCaption { min-height: 44px; }
 .compose-timeline { display: grid; grid-column: 1 / -1; grid-template-columns: 80px minmax(0,1fr); gap: .35rem .7rem; width: 100%; margin: 1.25rem 0; }
 .compose-lane { position: relative; height: 25px; overflow: hidden; border-radius: 5px; background: color-mix(in srgb, var(--line,#ccd5d9) 38%, transparent); }
 .compose-lane-label { align-self: center; font-size: .8rem; color: var(--muted,#63727a); }
@@ -1511,6 +1514,11 @@ pre {
 .caption-block-main { display: grid; gap: .3rem; min-width: 0; }
 .caption-block-main strong { overflow-wrap: anywhere; white-space: pre-line; }
 .caption-block-main small { opacity: .65; white-space: nowrap; }
+.caption-block.active { border-color: var(--caption-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--caption-accent), transparent 72%); }
+.caption-row-text { width: 100%; min-width: 0; padding: .35rem .45rem; border: 1px solid var(--line,#ccd5d9); border-radius: 5px; background: var(--surface,#fff); color: inherit; }
+.caption-time-fields { display: flex; flex-wrap: wrap; gap: .5rem; }
+.caption-time-fields label { display: flex; align-items: center; gap: .25rem; font-size: .75rem; color: var(--muted,#63727a); }
+.caption-time-fields input { width: 5.4rem; padding: .25rem .35rem; }
 .caption-block-actions { display: flex; flex-wrap: wrap; gap: .4rem; justify-content: flex-end; position: relative; z-index: 3; }
 .caption-block button, .reel-text-line button { min-height: 32px; white-space: nowrap; position: relative; z-index: 3; }
 .compose-overlays-panel .reel-text-line { overflow: visible; }
@@ -1546,4 +1554,8 @@ pre {
 .guide-916 .captions-layout > div:last-child::after, .guide-1x1 .captions-layout > div:last-child::after { display: block; }
 .guide-1x1 .captions-layout > div:last-child::after { inset: 10% 10%; aspect-ratio: 1; }
 .caption-guides { display: flex; flex-wrap: wrap; gap: .9rem; margin: .8rem 0; }
+.compose-captions-panel .caption-block { grid-template-columns: minmax(0,1fr) auto; align-items: center; }
+.compose-captions-panel .caption-block-main { display: grid; gap: .3rem; min-width: 0; }
+.compose-captions-panel .caption-row-text { width: 100%; }
+.compose-captions-panel .caption-time-fields { display: flex; flex-wrap: wrap; gap: .5rem; }
 @media (max-width: 760px) { .captions-layout { grid-template-columns: 1fr; } .caption-block { grid-template-columns: 2rem 1fr; } .caption-block small { grid-column: 2; } }

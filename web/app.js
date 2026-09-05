@@ -37,6 +37,7 @@ let currentStep = 1;
 let captionCues = [];
 let captionMarkIndex = 0;
 let captionPendingStart = null;
+let captionActiveIndex = null;
 let lastProgressReportAt = 0;
 let trimDefaultsAppliedFor = "";
 let cameraRoleWeights = { "360": 50, handheld: 30, fixed_rear: 20 };
@@ -221,12 +222,51 @@ function captionBlocksFromText() {
 function renderCaptionBlocks() {
   const root = document.querySelector("#captionBlocks");
   if (!root) return;
-  root.innerHTML = captionCues.map((cue, index) => `<div class="caption-block" data-caption-seek="${index}" role="button" tabindex="0"><div class="caption-block-main"><strong>${index + 1}. ${escapeHtml(cue.lines.join("\n"))}</strong><small>${Number(cue.start).toFixed(2)}s – ${Number(cue.end).toFixed(2)}s</small></div><div class="caption-block-actions"><button type="button" class="icon-button small" data-caption-edit="${index}">Edit</button><button type="button" class="icon-button small" data-caption-delete="${index}">Delete</button></div></div>`).join("");
+  const videoDuration = Number(document.querySelector("#composeVideo")?.duration || 0);
+  root.innerHTML = captionCues.map((cue, index) => {
+    const end = cue.end == null ? (videoDuration || Number(cue.start) || 0) : Number(cue.end);
+    const active = captionActiveIndex === index ? " active" : "";
+    return `<div class="caption-block${active}" data-caption-seek="${index}" role="button" tabindex="0"><div class="caption-block-main"><strong>${index + 1}.</strong><input class="caption-row-text" data-caption-text="${index}" value="${escapeHtml(cue.lines.join("\n"))}" aria-label="Caption ${index + 1} text" /><div class="caption-time-fields"><label>Start <input data-caption-start="${index}" type="number" min="0" step="0.01" value="${Number(cue.start).toFixed(2)}" /></label><label>End <input data-caption-end="${index}" type="number" min="0" step="0.01" value="${end.toFixed(2)}" /></label></div></div><div class="caption-block-actions"><button type="button" class="icon-button small" data-caption-edit="${index}">Edit</button><button type="button" class="icon-button small" data-caption-delete="${index}">Delete</button></div></div>`;
+  }).join("");
   const preview = document.querySelector("#captionPreviewText");
   if (preview) preview.textContent = captionCues[0]?.lines?.join("\n") || "Caption preview";
   const lane = document.querySelector("#composeCaptionLane");
-  if (lane) lane.innerHTML = captionCues.map((cue, index) => `<span class="compose-timeline-block caption" style="left:${Math.max(0, Number(cue.start) / Math.max(1, document.querySelector('#composeVideo')?.duration || 30) * 100)}%;width:${Math.max(1, (Number(cue.end) - Number(cue.start)) / Math.max(1, document.querySelector('#composeVideo')?.duration || 30) * 100)}%">${index + 1}</span>`).join("");
+  if (lane) lane.innerHTML = captionCues.map((cue, index) => { const duration = Math.max(1, videoDuration || 30); const end = cue.end == null ? duration : Number(cue.end); return `<span class="compose-timeline-block caption" data-caption-seek="${index}" style="left:${Math.max(0, Number(cue.start) / duration * 100)}%;width:${Math.max(1, (end - Number(cue.start)) / duration * 100)}%">${index + 1}</span>`; }).join("");
   renderComposeOverlayLayer();
+}
+
+function syncCaptionTextArea() {
+  const textarea = document.querySelector("#captionText");
+  if (textarea) textarea.value = captionCues.map((cue) => cue.lines.join("\n")).join("\n\n");
+}
+
+function closeActiveCaption(endTime) {
+  if (captionActiveIndex == null || !captionCues[captionActiveIndex]) return;
+  const cue = captionCues[captionActiveIndex];
+  cue.end = Math.max(Number(cue.start) + 0.05, Number(endTime));
+  captionActiveIndex = null;
+  captionPendingStart = null;
+  captionMarkIndex = captionCues.length;
+  renderCaptionBlocks();
+}
+
+function addCaptionFromPlayback() {
+  const video = document.querySelector("#composeVideo");
+  if (!video) return;
+  const now = Number(video.currentTime || 0);
+  if (captionActiveIndex != null) closeActiveCaption(now);
+  const index = captionCues.length;
+  captionCues.push({ lines: [""], start: now, end: null });
+  captionActiveIndex = index;
+  captionMarkIndex = index;
+  captionPendingStart = now;
+  video.pause();
+  syncCaptionTextArea();
+  renderCaptionBlocks();
+  const field = document.querySelector(`[data-caption-text="${index}"]`);
+  if (field) { field.focus(); field.select(); }
+  const status = document.querySelector("#captionTapStatus");
+  if (status) status.textContent = `Caption ${index + 1} starts at ${now.toFixed(2)}s. Type it, then press Enter or play.`;
 }
 
 function renderComposeOverlayLayer() {
@@ -234,7 +274,7 @@ function renderComposeOverlayLayer() {
   const video = document.querySelector("#composeVideo");
   if (!layer || !video) return;
   const now = Number(video.currentTime || 0);
-  const caption = captionCues.find((cue) => now >= Number(cue.start) && now <= Number(cue.end));
+  const caption = captionCues.find((cue) => now >= Number(cue.start) && now <= (cue.end == null ? Number(video.duration || Infinity) : Number(cue.end)));
   const texts = reelTextOverlays.filter((item) => now >= Number(item.start_sec || 0) && now <= Number(item.start_sec || 0) + Number(item.duration_sec || 0));
   const images = reelImageOverlays.filter((item) => now >= Number(item.start_sec || 0) && now <= Number(item.start_sec || 0) + Number(item.duration_sec || 0));
   layer.innerHTML = texts.map((item) => `<span class="compose-live-text" style="left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;color:${item.color || '#fff'};opacity:${item.opacity ?? 1};font-size:${Math.max(12, Number(item.size || 48) / 3)}px;text-shadow:${Number(item.shadow_blur ?? 4)}px ${Number(item.shadow_blur ?? 4)}px ${item.shadow_color || '#000'}">${escapeHtml(item.text || '')}</span>`).join("") + images.map((item) => `<img class="compose-live-image" src="${escapeHtml(item.preview_url || item.path || '')}" style="left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;width:${Number(item.width ?? .35) * 100}%;opacity:${item.opacity ?? 1}" alt="" />`).join("") + (caption ? `<span class="compose-live-caption">${escapeHtml(caption.lines.join("\n"))}</span>` : "");
@@ -248,8 +288,8 @@ async function openCaptions() {
   if (video) {
     video.src = latestResult?.media_url ? `${latestResult.media_url}?t=${Date.now()}` : "/api/v1/wizard/result";
     video.load();
-    video.onloadedmetadata = () => { const scrub = document.querySelector("#composeScrub"); if (scrub) scrub.max = String(video.duration || 1); renderComposeOverlayLayer(); };
-    video.ontimeupdate = renderComposeOverlayLayer;
+    video.onloadedmetadata = () => { const scrub = document.querySelector("#composeScrub"); if (scrub) scrub.max = String(video.duration || 1); renderCaptionBlocks(); renderComposeOverlayLayer(); };
+    video.ontimeupdate = () => { renderComposeOverlayLayer(); };
   }
   const mount = document.querySelector("#composeReelMount");
   const reel = document.querySelector("#reelOptions");
@@ -2415,6 +2455,7 @@ document.addEventListener("click", (event) => {
     captionCues = [];
     captionMarkIndex = 0;
     captionPendingStart = null;
+    captionActiveIndex = null;
     const textarea = document.querySelector("#captionText");
     if (textarea) textarea.value = "";
     renderCaptionBlocks();
@@ -2430,8 +2471,16 @@ document.addEventListener("click", (event) => {
       if (textarea) textarea.value = blocks.join("\n\n");
       captionMarkIndex = Math.min(captionMarkIndex, captionCues.length);
       captionPendingStart = null;
+      if (captionActiveIndex === index) captionActiveIndex = null;
+      else if (captionActiveIndex != null && captionActiveIndex > index) captionActiveIndex -= 1;
       renderCaptionBlocks();
     }
+    return;
+  }
+  if (target.id === "composeAddCaption") { addCaptionFromPlayback(); return; }
+  if (target.id === "composeEndCaption") {
+    const video = document.querySelector("#composeVideo");
+    if (video) closeActiveCaption(Number(video.currentTime || 0));
     return;
   }
   if (target.dataset.captionEdit != null) {
@@ -2645,8 +2694,16 @@ document.addEventListener("keydown", (event) => {
     const modal = document.querySelector("#reviewLargeModal");
     if (modal && !modal.hidden) modal.hidden = true;
   }
-  if (event.code === "Space" && currentStep === 5 && document.activeElement?.tagName !== "TEXTAREA") {
-    event.preventDefault(); captionTap();
+  if (event.key === "Enter" && event.target instanceof HTMLElement && event.target.dataset.captionText != null) {
+    event.preventDefault();
+    document.querySelector("#composeVideo")?.play().catch(() => {});
+    return;
+  }
+  if ((event.key === "a" || event.key === "A") && currentStep === 5 && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement)) {
+    event.preventDefault(); addCaptionFromPlayback();
+  }
+  if (event.code === "Space" && currentStep === 5 && document.activeElement?.tagName !== "TEXTAREA" && document.activeElement?.dataset?.captionText == null) {
+    event.preventDefault(); addCaptionFromPlayback();
   }
 });
 
@@ -2660,7 +2717,7 @@ document.addEventListener("change", (event) => {
   if (!(input instanceof HTMLInputElement) || input.id !== "captionImport" || !input.files?.[0]) return;
   const source = input.files[0].name.toLowerCase().endsWith(".lrc") ? "lrc" : "srt";
   input.files[0].text().then((text) => api("/captions/parse", { method: "POST", body: JSON.stringify({ source, text }) })).then((parsed) => {
-    captionCues = parsed.cues || []; captionMarkIndex = captionCues.length; captionPendingStart = null;
+    captionCues = parsed.cues || []; captionMarkIndex = captionCues.length; captionPendingStart = null; captionActiveIndex = null;
     document.querySelector("#captionText").value = captionCues.map((cue) => cue.lines.join("\n")).join("\n\n"); renderCaptionBlocks();
   }).catch((error) => showToast(error.message, true));
 });
@@ -2672,6 +2729,8 @@ document.addEventListener("input", (event) => {
   if (input.id === "reelDuration" || input.id === "reelAspect") { renderReelOptions(); return; }
   if (input.id === "backstageDuration") { const value = document.querySelector("#backstageDurationValue"); if (value) value.textContent = `${input.value}s`; return; }
   if (input.id === "reelPlayhead") { reelPlayhead = Number(input.value); document.querySelector("#reelPlayheadValue").textContent = `${reelPlayhead.toFixed(1)}s`; drawReelPreview(); return; }
+  if (input.dataset.captionText != null) { const cue = captionCues[Number(input.dataset.captionText)]; if (cue) { cue.lines = input.value.split(/\r?\n/); syncCaptionTextArea(); renderComposeOverlayLayer(); } return; }
+  if (input.dataset.captionStart != null || input.dataset.captionEnd != null) { const index = Number(input.dataset.captionStart ?? input.dataset.captionEnd); const cue = captionCues[index]; if (cue) { if (input.dataset.captionStart != null) cue.start = Math.max(0, Number(input.value) || 0); else cue.end = Math.max(Number(cue.start) + 0.05, Number(input.value) || 0); renderComposeOverlayLayer(); } return; }
   if (input.id === "captionText") { const blocks = captionBlocksFromText(); captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: captionCues[index]?.start ?? index * 4, end: captionCues[index]?.end ?? index * 4 + 4 })); captionMarkIndex = Math.min(captionMarkIndex, captionCues.length); renderCaptionBlocks(); return; }
   const row = input.closest?.("[data-reel-text-index]");
   if (!row || !input.dataset.reelField) return;
