@@ -221,7 +221,7 @@ function captionBlocksFromText() {
 function renderCaptionBlocks() {
   const root = document.querySelector("#captionBlocks");
   if (!root) return;
-  root.innerHTML = captionCues.map((cue, index) => `<div class="caption-block"><strong>${index + 1}</strong><span>${escapeHtml(cue.lines.join("\n"))}</span><small>${Number(cue.start).toFixed(2)}s – ${Number(cue.end).toFixed(2)}s</small></div>`).join("");
+  root.innerHTML = captionCues.map((cue, index) => `<div class="caption-block" data-caption-seek="${index}" role="button" tabindex="0"><div class="caption-block-main"><strong>${index + 1}. ${escapeHtml(cue.lines.join("\n"))}</strong><small>${Number(cue.start).toFixed(2)}s – ${Number(cue.end).toFixed(2)}s</small></div><div class="caption-block-actions"><button type="button" class="icon-button small" data-caption-edit="${index}">Edit</button><button type="button" class="icon-button small" data-caption-delete="${index}">Delete</button></div></div>`).join("");
   const preview = document.querySelector("#captionPreviewText");
   if (preview) preview.textContent = captionCues[0]?.lines?.join("\n") || "Caption preview";
   const lane = document.querySelector("#composeCaptionLane");
@@ -2410,6 +2410,51 @@ document.addEventListener("click", (event) => {
   if (target.id === "addReelText") {
     reelTextOverlays.push({ text: "", color: "#ffffff", size: 54, position: "middle-center", x: 0.5, y: 0.5, opacity: 1, font: "bundled", font_weight: "bold", outline_color: "#000000", outline_width: 2, shadow_color: "#000000", shadow_offset_x: 3, shadow_offset_y: 3, shadow_blur: 4, background_color: "#000000", background_opacity: 0, background_radius: 8, animation: "fade", start_sec: 0, duration_sec: 3 });
     renderReelOptions();
+  }
+  if (target.id === "captionDeleteAll") {
+    captionCues = [];
+    captionMarkIndex = 0;
+    captionPendingStart = null;
+    const textarea = document.querySelector("#captionText");
+    if (textarea) textarea.value = "";
+    renderCaptionBlocks();
+    return;
+  }
+  if (target.dataset.captionDelete != null) {
+    const index = Number(target.dataset.captionDelete);
+    const blocks = captionBlocksFromText();
+    if (Number.isInteger(index) && index >= 0 && index < captionCues.length) {
+      captionCues.splice(index, 1);
+      blocks.splice(index, 1);
+      const textarea = document.querySelector("#captionText");
+      if (textarea) textarea.value = blocks.join("\n\n");
+      captionMarkIndex = Math.min(captionMarkIndex, captionCues.length);
+      captionPendingStart = null;
+      renderCaptionBlocks();
+    }
+    return;
+  }
+  if (target.dataset.captionEdit != null) {
+    const index = Number(target.dataset.captionEdit);
+    const blocks = captionBlocksFromText();
+    const textarea = document.querySelector("#captionText");
+    if (textarea && blocks[index] != null) {
+      const offset = blocks.slice(0, index).reduce((total, block) => total + block.length + 2, 0);
+      textarea.focus();
+      textarea.setSelectionRange(offset, offset + blocks[index].length);
+    }
+    return;
+  }
+  const captionRow = target.closest?.("[data-caption-seek]");
+  if (captionRow instanceof HTMLElement && captionRow.dataset.captionSeek != null) {
+    const cue = captionCues[Number(captionRow.dataset.captionSeek)];
+    const video = document.querySelector("#composeVideo");
+    if (cue && video) {
+      video.currentTime = Number(cue.start) || 0;
+      video.pause();
+      renderComposeOverlayLayer();
+    }
+    return;
   }
   if (target.dataset.removeReelText != null) {
     reelTextOverlays.splice(Number(target.dataset.removeReelText), 1);

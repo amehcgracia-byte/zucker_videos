@@ -1481,7 +1481,10 @@ pre {
   --caption-accent: #9be37a;
 }
 
-.compose-step { padding-bottom: 4rem; }
+.compose-step { width: min(1500px, calc(100% - 32px)); max-width: none; padding-bottom: 4rem; }
+.compose-workspace { display: grid; grid-template-columns: minmax(300px, .85fr) minmax(360px, 1fr) minmax(380px, 1.2fr); gap: 1.25rem; align-items: start; }
+.compose-center, .compose-captions-panel, .compose-overlays-panel { min-width: 0; }
+.compose-workspace .compose-player-wrap { max-width: none; margin: 0; }
 .compose-player-wrap { max-width: 980px; margin: 0 auto 1rem; }
 .compose-video-stage { position: relative; display: grid; place-items: center; min-height: 300px; overflow: hidden; border-radius: 14px; background: #101619; }
 .compose-video-stage video { display: block; width: 100%; max-height: 68vh; object-fit: contain; background: #101619; }
@@ -1491,18 +1494,38 @@ pre {
 .compose-live-caption { position: absolute; left: 8%; right: 8%; top: 68%; color: #fff; font: 700 clamp(1rem, 3vw, 2.1rem)/1.08 Arial,sans-serif; text-align: center; white-space: pre-line; text-shadow: 0 3px 5px #000; }
 .compose-player-tools { display: flex; gap: .6rem; align-items: center; padding: .65rem 0; }
 .compose-player-tools input[type="range"] { flex: 1; }
-.compose-timeline { display: grid; grid-template-columns: 80px minmax(0,1fr); gap: .35rem .7rem; margin: 1rem 0 1.25rem; }
+.compose-timeline { display: grid; grid-column: 1 / -1; grid-template-columns: 80px minmax(0,1fr); gap: .35rem .7rem; width: 100%; margin: 1.25rem 0; }
 .compose-lane { position: relative; height: 25px; overflow: hidden; border-radius: 5px; background: color-mix(in srgb, var(--line,#ccd5d9) 38%, transparent); }
 .compose-lane-label { align-self: center; font-size: .8rem; color: var(--muted,#63727a); }
 .compose-timeline-block { position: absolute; top: 3px; bottom: 3px; min-width: 8px; padding: 2px 4px; overflow: hidden; border-radius: 4px; background: #8dcf75; color: #142016; font-size: .7rem; }
 .compose-timeline-block.caption { background: #79aee6; }
-.compose-grid { display: grid; grid-template-columns: minmax(0,1.15fr) minmax(280px,.85fr); gap: 1rem; }
 .compose-panel { min-width: 0; padding: 1rem; border: 1px solid var(--line,#ccd5d9); border-radius: 12px; background: var(--panel,#fff); }
 .compose-panel textarea { width: 100%; min-height: 12rem; resize: vertical; }
 .compose-panel #reelOptions { display: block; margin-top: .7rem; }
+.compose-overlays-panel #reelOptions { max-height: none; overflow: visible; }
+.compose-panel, .compose-player-wrap, .compose-timeline { position: relative; z-index: 1; }
+.compose-overlay-layer { z-index: 2; }
+.compose-caption-list-actions { display: flex; align-items: center; justify-content: space-between; gap: .6rem; margin: .75rem 0 .5rem; }
+.caption-blocks { max-height: none; overflow: visible; }
+.caption-block { grid-template-columns: minmax(0,1fr) auto; align-items: center; cursor: pointer; }
+.caption-block-main { display: grid; gap: .3rem; min-width: 0; }
+.caption-block-main strong { overflow-wrap: anywhere; white-space: pre-line; }
+.caption-block-main small { opacity: .65; white-space: nowrap; }
+.caption-block-actions { display: flex; flex-wrap: wrap; gap: .4rem; justify-content: flex-end; position: relative; z-index: 3; }
+.caption-block button, .reel-text-line button { min-height: 32px; white-space: nowrap; position: relative; z-index: 3; }
+.compose-overlays-panel .reel-text-line { overflow: visible; }
 .header-controls { display: grid; gap: .55rem; margin: .8rem 0; padding: .7rem; border: 1px solid var(--line,#ccd5d9); border-radius: 8px; }
 .compose-actions { display: flex; justify-content: flex-end; margin-top: 1rem; }
 #step2 #reelOptions { display: none; }
+
+@media (max-width: 1099px) {
+  .compose-step { width: min(900px, calc(100% - 32px)); }
+  .compose-workspace { display: flex; flex-direction: column; }
+  .compose-center { order: 1; width: 100%; }
+  .compose-captions-panel { order: 2; width: 100%; }
+  .compose-overlays-panel { order: 3; width: 100%; }
+  .compose-timeline { order: 4; }
+}
 
 .captions-step { padding-bottom: 4rem; }
 .captions-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, .8fr); gap: 1.25rem; }
