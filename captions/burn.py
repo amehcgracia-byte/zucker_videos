@@ -23,6 +23,9 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
             width, height = int(letterbox.get("width", 1080)), int(letterbox.get("height", 1920))
             sigma = max(1, float(letterbox.get("blur", 18)))
             vf = f"split=2[bg][fg];[bg]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},gblur=sigma={sigma}[blur];[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[main];[blur][main]overlay=(W-w)/2:(H-h)/2,{vf}"
+        if header and header.get("title_enabled") and header.get("title"):
+            title = str(header["title"]).upper().replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("\n", r"\\n")
+            vf += f",drawbox=x=0.12*iw:y=40:w=0.76*iw:h=110:color=white:t=fill,drawtext=fontcolor=black:fontsize=42:text='{title}':x=(w-text_w)/2:y=70"
         command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", str(source)]
         if logo_path and header and header.get("logo_enabled"):
             command += ["-loop", "1", "-i", str(Path(logo_path).resolve())]
