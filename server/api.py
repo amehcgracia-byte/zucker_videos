@@ -49,7 +49,8 @@ from server.media import send_file_with_range
 from server.projects import delete_project_folder, find_project_by_inputs, input_signature, list_projects, project_input_signature
 from server.wizard import WizardRunner, merge_spherical_landmarks, serialize_wizard_job, wizard_report, wizard_song_options
 from captions.burn import burn as burn_captions
-from captions.model import Cue, CueTrack
+from captions.align import align_known_lyrics
+from captions.model import Cue, CueTrack, Word
 from captions.render import render_ass
 from captions.sources import from_lrc, from_lyrics, from_srt, to_srt
 from captions.styles import CAPTIONS_VERSION, get_style, list_styles
@@ -872,6 +873,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("bad_request", "source must be lyrics, srt, or lrc", 400)
         return jsonify({"lang": track.lang, "cues": [{"lines": list(cue.lines), "start": cue.start, "end": cue.end} for cue in track.cues]})
 
+    @app.post("/api/v1/captions/align")
+    def api_captions_align() -> Response:
+        body = request.get_json(silent=True) or {}
+        lyrics = from_lyrics(str(body.get("lyrics") or ""))
+        whisper = from_whisper(body.get("segments") or [], lang=str(body.get("lang") or "und"))
+        track = align_known_lyrics(lyrics, whisper)
+        return jsonify({"lang": track.lang, "cues": [{"lines": list(cue.lines), "start": cue.start, "end": cue.end, "words": [{"text": word.text, "start": word.start, "end": word.end} for word in cue.words]} for cue in track.cues]})
+
     @app.post("/api/v1/captions/burn")
     def api_captions_burn() -> Response:
         project = _require_project(state)
@@ -881,14 +890,18 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         body = request.get_json(silent=True) or {}
         try:
             style = get_style(str(body.get("style") or "clean_bottom"))
-            cues = tuple(Cue(tuple(str(line) for line in cue.get("lines", [])), float(cue["start"]), float(cue["end"])) for cue in body.get("cues", []))
+            cues = tuple(Cue(tuple(str(line) for line in cue.get("lines", [])), float(cue["start"]), float(cue["end"]), tuple(Word(str(word.get("text") or word.get("word") or ""), float(word["start"]), float(word["end"])) for word in cue.get("words", []))) for cue in body.get("cues", []))
             track = CueTrack(cues, str(body.get("lang") or "und"))
             cache = project.cache_dir / "captions" / CAPTIONS_VERSION
             cache.mkdir(parents=True, exist_ok=True)
             (cache / "captions.ass").write_text(render_ass(track, style), encoding="utf-8")
             (cache / "captions.srt").write_text(to_srt(track), encoding="utf-8")
             destination = project.exports_dir / f"{Path(result['path']).stem}_captions.mp4"
-            output = burn_captions(result["path"], track, style, output_path=destination)
+            header = body.get("header") if isinstance(body.get("header"), dict) else None
+            letterbox = body.get("letterbox") if isinstance(body.get("letterbox"), dict) else None
+            logo = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1])) / "web" / "logo_watermark.png"
+            if not logo.exists(): logo = Path(__file__).resolve().parents[1] / "assets" / "logo_watermark.png"
+            output = burn_captions(result["path"], track, style, output_path=destination, header=header, logo_path=logo if header and header.get("logo_enabled") else None, letterbox=letterbox)
             return jsonify({"path": str(output), "filename": output.name, "media_url": "/api/v1/captions/result", "version": CAPTIONS_VERSION})
         except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError) as exc:
             return error_response("caption_burn_failed", str(exc), 400)
@@ -900,6 +913,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not exports:
             return error_response("not_found", "No captioned export yet", 404)
         return send_file_with_range(str(exports[0]))
+
+    @app.post("/api/v1/wizard/compose")
+    def api_wizard_compose() -> Response:
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        texts = body.get("texts") if isinstance(body.get("texts"), list) else []
+        images = body.get("images") if isinstance(body.get("images"), list) else []
+        cues = body.get("cues") if isinstance(body.get("cues"), list) else []
+        overlay_spec = {"version": 1, "texts": texts, "images": images}
+        cue_track = {"version": CAPTIONS_VERSION, "lang": str(body.get("lang") or "und"), "cues": cues, "style": str(body.get("style") or "karaoke_word"), "header": body.get("header") or {}, "letterbox": body.get("letterbox") or {}}
+        (project.folder / "overlay_spec.json").write_text(json.dumps(overlay_spec, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        (project.folder / "cue_track.json").write_text(json.dumps(cue_track, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
+        wizard["reel_text_overlays"], wizard["reel_image_overlays"] = texts, images
+        project.save()
+        return jsonify({"ok": True, "overlay_spec": str(project.folder / "overlay_spec.json"), "cue_track": str(project.folder / "cue_track.json")})
 
     @app.post("/api/v1/inputs/classify-paths")
     def api_classify_paths() -> Response:

@@ -224,26 +224,49 @@ function renderCaptionBlocks() {
   root.innerHTML = captionCues.map((cue, index) => `<div class="caption-block"><strong>${index + 1}</strong><span>${escapeHtml(cue.lines.join("\n"))}</span><small>${Number(cue.start).toFixed(2)}s – ${Number(cue.end).toFixed(2)}s</small></div>`).join("");
   const preview = document.querySelector("#captionPreviewText");
   if (preview) preview.textContent = captionCues[0]?.lines?.join("\n") || "Caption preview";
+  const lane = document.querySelector("#composeCaptionLane");
+  if (lane) lane.innerHTML = captionCues.map((cue, index) => `<span class="compose-timeline-block caption" style="left:${Math.max(0, Number(cue.start) / Math.max(1, document.querySelector('#composeVideo')?.duration || 30) * 100)}%;width:${Math.max(1, (Number(cue.end) - Number(cue.start)) / Math.max(1, document.querySelector('#composeVideo')?.duration || 30) * 100)}%">${index + 1}</span>`).join("");
+  renderComposeOverlayLayer();
+}
+
+function renderComposeOverlayLayer() {
+  const layer = document.querySelector("#composeOverlayLayer");
+  const video = document.querySelector("#composeVideo");
+  if (!layer || !video) return;
+  const now = Number(video.currentTime || 0);
+  const caption = captionCues.find((cue) => now >= Number(cue.start) && now <= Number(cue.end));
+  const texts = reelTextOverlays.filter((item) => now >= Number(item.start_sec || 0) && now <= Number(item.start_sec || 0) + Number(item.duration_sec || 0));
+  const images = reelImageOverlays.filter((item) => now >= Number(item.start_sec || 0) && now <= Number(item.start_sec || 0) + Number(item.duration_sec || 0));
+  layer.innerHTML = texts.map((item) => `<span class="compose-live-text" style="left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;color:${item.color || '#fff'};opacity:${item.opacity ?? 1};font-size:${Math.max(12, Number(item.size || 48) / 3)}px;text-shadow:${Number(item.shadow_blur ?? 4)}px ${Number(item.shadow_blur ?? 4)}px ${item.shadow_color || '#000'}">${escapeHtml(item.text || '')}</span>`).join("") + images.map((item) => `<img class="compose-live-image" src="${escapeHtml(item.preview_url || item.path || '')}" style="left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;width:${Number(item.width ?? .35) * 100}%;opacity:${item.opacity ?? 1}" alt="" />`).join("") + (caption ? `<span class="compose-live-caption">${escapeHtml(caption.lines.join("\n"))}</span>` : "");
+  const time = document.querySelector("#composeTime"); if (time) time.textContent = `${Math.floor(now / 60).toString().padStart(2, '0')}:${(now % 60).toFixed(2).padStart(5, '0')}`;
+  const scrub = document.querySelector("#composeScrub"); if (scrub && Number.isFinite(video.duration)) { scrub.max = String(video.duration); scrub.value = String(now); }
 }
 
 async function openCaptions() {
-  setStep(6);
-  const frame = document.querySelector("#captionFrame");
-  const video = document.querySelector("#captionVideo");
-  if (frame) { frame.src = `/api/v1/captions/frame?ts=${Date.now()}`; frame.hidden = false; }
-  if (video && !video.src) video.src = "/api/v1/wizard/result";
+  setStep(5);
+  const video = document.querySelector("#composeVideo");
+  if (video) {
+    video.src = latestResult?.media_url ? `${latestResult.media_url}?t=${Date.now()}` : "/api/v1/wizard/result";
+    video.load();
+    video.onloadedmetadata = () => { const scrub = document.querySelector("#composeScrub"); if (scrub) scrub.max = String(video.duration || 1); renderComposeOverlayLayer(); };
+    video.ontimeupdate = renderComposeOverlayLayer;
+  }
+  const mount = document.querySelector("#composeReelMount");
+  const reel = document.querySelector("#reelOptions");
+  if (mount && reel && reel.parentElement !== mount) { mount.appendChild(reel); reel.hidden = false; reel.open = true; }
   const styles = await api("/captions/styles");
   const select = document.querySelector("#captionStyle");
   if (select && !select.options.length) select.innerHTML = (styles.styles || []).map((style) => `<option value="${escapeHtml(style.name)}">${escapeHtml(style.name.replaceAll("_", " "))}</option>`).join("");
   if (select) select.onchange = () => document.querySelector("#captionPreview")?.setAttribute("data-style", select.value);
-  document.querySelector("#captionPreview")?.setAttribute("data-style", select?.value || "clean_bottom");
+  if (select && !select.dataset.userChoice) select.value = "karaoke_word";
   const blocks = captionBlocksFromText();
   if (!captionCues.length && blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
   renderCaptionBlocks();
+  renderReelOptions();
 }
 
 function captionTap() {
-  const video = document.querySelector("#captionVideo");
+  const video = document.querySelector("#composeVideo");
   if (!video) return;
   if (captionPendingStart == null) {
     captionPendingStart = video.currentTime;
@@ -268,9 +291,13 @@ async function burnCaptionTrack() {
   const blocks = captionBlocksFromText();
   if (!captionCues.length || captionCues.length !== blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
   const style = document.querySelector("#captionStyle")?.value || "clean_bottom";
-  const result = await api("/captions/burn", { method: "POST", body: JSON.stringify({ style, cues: captionCues }) });
-  const video = document.querySelector("#captionVideo"); if (video) video.src = result.media_url;
+  const result = await api("/captions/burn", { method: "POST", body: JSON.stringify({ style, cues: captionCues, header: { title_enabled: document.querySelector("#captionHeaderEnabled")?.checked === true, title: document.querySelector("#captionHeaderTitle")?.value || "", logo_enabled: document.querySelector("#captionLogoEnabled")?.checked !== false, logo_height: 120 }, letterbox: { enabled: true, blur: Number(document.querySelector("#captionLetterboxBlur")?.value || 18) } }) });
+  const video = document.querySelector("#composeVideo"); if (video) { video.src = `${result.media_url}?t=${Date.now()}`; video.load(); }
   document.querySelector("#captionBurnStatus").textContent = `Created ${result.filename}`;
+}
+
+async function saveComposition() {
+  await api("/wizard/compose", { method: "POST", body: JSON.stringify({ texts: reelTextOverlays, images: reelImageOverlays, cues: captionCues, style: document.querySelector("#captionStyle")?.value || "karaoke_word", header: { title_enabled: document.querySelector("#captionHeaderEnabled")?.checked === true, title: document.querySelector("#captionHeaderTitle")?.value || "", logo_enabled: document.querySelector("#captionLogoEnabled")?.checked !== false }, letterbox: { enabled: true, blur: Number(document.querySelector("#captionLetterboxBlur")?.value || 18) } }) });
 }
 
 function projectIdFromStatus(status) {
@@ -1008,8 +1035,11 @@ async function openProject(path) {
     document.querySelector("#progressBox")?.setAttribute("hidden", "");
     document.querySelector("#paperEditBox")?.removeAttribute("hidden");
     openPaperEdit().catch((error) => showToast(error.message, true));
-  } else if (status.status === "done" || status.status === "failed") {
+  } else if (status.status === "done") {
     setStep(5);
+    openCaptions().catch((error) => showToast(error.message, true));
+  } else if (status.status === "failed") {
+    setStep(6);
   } else if (status.status === "waiting_choice") {
     setStep(2);
     loadSavedReelOverlays().catch(() => {});
@@ -1322,7 +1352,7 @@ function renderReelOptions() {
   const imageRoot = document.querySelector("#reelImageLines");
   if (imageRoot) imageRoot.innerHTML = reelImageOverlays.map((item, index) => `<div class="reel-text-line" data-reel-image-index="${index}"><span>Flyer ${index + 1}</span><label>Width <input data-reel-image-field="width" type="number" min="0.05" max="1" step="0.01" value="${item.width ?? .35}" /></label><label>Opacity <input data-reel-image-field="opacity" type="number" min="0.05" max="1" step="0.05" value="${item.opacity ?? 1}" /></label><label>Start <input data-reel-image-field="start_sec" type="number" min="0" max="60" step="0.1" value="${item.start_sec ?? 0}" /></label><label>Duration <input data-reel-image-field="duration_sec" type="number" min="0.1" max="60" step="0.1" value="${item.duration_sec ?? 3}" /></label><button type="button" data-duplicate-reel-image="${index}">Duplicate</button><button type="button" data-remove-reel-image="${index}">Remove</button></div>`).join("");
   renderReelTimeline();
-  drawReelPreview();
+  drawReelPreview(); renderComposeOverlayLayer();
 }
 
 function renderReelTimeline() {
@@ -1991,7 +2021,7 @@ function renderWizardStatus(status) {
     document.querySelector("#errorBox").hidden = false;
     document.querySelector("#resultBox").hidden = true;
     refreshProgressReport().catch((error) => logFrontendError(`progress report failed: ${error.message}`, error.stack || ""));
-    setStep(5);
+    setStep(6);
   }
   if (status.status === "done") {
     stopStatusPolling();
@@ -2029,6 +2059,8 @@ function renderWizardStatus(status) {
     document.querySelector("#errorBox").hidden = true;
     document.querySelector("#resultBox").hidden = false;
     setStep(5);
+    document.querySelector("#resultBox").hidden = true;
+    openCaptions().catch((error) => showToast(error.message, true));
   }
   if (status.status === "cancelled") {
     stopStatusPolling();
@@ -2036,7 +2068,7 @@ function renderWizardStatus(status) {
     document.querySelector("#resultTitle").textContent = "Cancelled";
     document.querySelector("#errorBox").hidden = false;
     document.querySelector("#resultBox").hidden = true;
-    setStep(5);
+    setStep(6);
   }
 }
 
@@ -2527,6 +2559,12 @@ document.addEventListener("click", (event) => {
     revealNative(latestResult?.path, S.reveal).catch((error) => showToast(error.message, true));
   }
   if (target.id === "openCaptions") openCaptions().catch((error) => showToast(error.message, true));
+  if (target.id === "composeContinue") saveComposition().then(() => { document.querySelector("#resultBox").hidden = false; setStep(6); }).catch((error) => showToast(error.message, true));
+  if (target.id === "composeDuplicateOverlay") {
+    if (reelImageOverlays.length) reelImageOverlays.push({ ...reelImageOverlays[reelImageOverlays.length - 1], x: Math.min(.95, Number(reelImageOverlays[reelImageOverlays.length - 1].x ?? .5) + .04) });
+    else if (reelTextOverlays.length) reelTextOverlays.push({ ...reelTextOverlays[reelTextOverlays.length - 1], x: Math.min(.95, Number(reelTextOverlays[reelTextOverlays.length - 1].x ?? .5) + .04) });
+    renderReelOptions(); renderComposeOverlayLayer();
+  }
   if (target.id === "captionExportSrt") exportCaptionSrt();
   if (target.id === "burnCaptions") burnCaptionTrack().catch((error) => showToast(error.message, true));
   if (target.id === "result360Play") toggleResult360Play();
@@ -2562,7 +2600,7 @@ document.addEventListener("keydown", (event) => {
     const modal = document.querySelector("#reviewLargeModal");
     if (modal && !modal.hidden) modal.hidden = true;
   }
-  if (event.code === "Space" && currentStep === 6 && document.activeElement?.tagName !== "TEXTAREA") {
+  if (event.code === "Space" && currentStep === 5 && document.activeElement?.tagName !== "TEXTAREA") {
     event.preventDefault(); captionTap();
   }
 });
@@ -2570,7 +2608,7 @@ document.addEventListener("keydown", (event) => {
 document.addEventListener("change", (event) => {
   const input = event.target;
   if (input instanceof HTMLInputElement && (input.id === "captionGuide916" || input.id === "captionGuide1x1")) {
-    const step = document.querySelector("#step6");
+    const step = document.querySelector("#step5");
     step?.classList.toggle("guide-916", document.querySelector("#captionGuide916")?.checked === true);
     step?.classList.toggle("guide-1x1", document.querySelector("#captionGuide1x1")?.checked === true);
   }
@@ -2585,9 +2623,11 @@ document.addEventListener("change", (event) => {
 document.addEventListener("input", (event) => {
   const input = event.target;
   if (!(input instanceof HTMLElement)) return;
+  if (input.id === "captionStyle") { input.dataset.userChoice = "1"; renderComposeOverlayLayer(); return; }
   if (input.id === "reelDuration" || input.id === "reelAspect") { renderReelOptions(); return; }
   if (input.id === "backstageDuration") { const value = document.querySelector("#backstageDurationValue"); if (value) value.textContent = `${input.value}s`; return; }
   if (input.id === "reelPlayhead") { reelPlayhead = Number(input.value); document.querySelector("#reelPlayheadValue").textContent = `${reelPlayhead.toFixed(1)}s`; drawReelPreview(); return; }
+  if (input.id === "captionText") { const blocks = captionBlocksFromText(); captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: captionCues[index]?.start ?? index * 4, end: captionCues[index]?.end ?? index * 4 + 4 })); captionMarkIndex = Math.min(captionMarkIndex, captionCues.length); renderCaptionBlocks(); return; }
   const row = input.closest?.("[data-reel-text-index]");
   if (!row || !input.dataset.reelField) return;
   const index = Number(row.dataset.reelTextIndex);
@@ -2596,7 +2636,19 @@ document.addEventListener("input", (event) => {
   const field = input.dataset.reelField;
   item[field] = ["size", "start_sec", "duration_sec", "opacity", "outline_width", "shadow_blur", "background_opacity", "background_radius", "shadow_offset_x", "shadow_offset_y"].includes(field) ? Number(input.value) : input.value;
   renderReelTimeline();
-  drawReelPreview();
+  drawReelPreview(); renderComposeOverlayLayer();
+});
+
+document.addEventListener("click", (event) => {
+  const target = event.target;
+  if (target?.id === "composeFrameBack" || target?.id === "composeFrameForward") {
+    const video = document.querySelector("#composeVideo"); if (!video) return;
+    video.pause(); video.currentTime = Math.max(0, Number(video.currentTime || 0) + (target.id === "composeFrameForward" ? 1 / 30 : -1 / 30)); renderComposeOverlayLayer();
+  }
+  if (target?.id === "composeScrub") return;
+});
+document.addEventListener("input", (event) => {
+  if (event.target?.id === "composeScrub") { const video = document.querySelector("#composeVideo"); if (video) { video.currentTime = Number(event.target.value); renderComposeOverlayLayer(); } }
 });
 
 document.addEventListener("input", (event) => {
@@ -2645,9 +2697,9 @@ document.addEventListener("pointermove", (event) => {
   const x = (event.clientX - rect.left) / rect.width, y = (event.clientY - rect.top) / rect.height;
   if (reelDrag.kind === "image" && reelDrag.resizing) reelDrag.item.width = Math.max(0.05, Math.min(0.9, Math.abs(x - Number(reelDrag.item.x ?? .5)) * 2));
   else { reelDrag.item.x = Math.max(0.02, Math.min(0.98, x)); reelDrag.item.y = Math.max(0.02, Math.min(0.98, y)); }
-  drawReelPreview();
+  drawReelPreview(); renderComposeOverlayLayer();
 });
-document.addEventListener("pointerup", () => { if (reelDrag) { reelDrag = null; renderReelTimeline(); } });
+document.addEventListener("pointerup", () => { if (reelDrag) { reelDrag = null; renderReelTimeline(); renderComposeOverlayLayer(); } });
 
 document.addEventListener("toggle", (event) => {
   const target = event.target;
@@ -2713,8 +2765,11 @@ async function boot() {
     setStep(4);
     document.querySelector("#paperEditBox")?.removeAttribute("hidden");
     openPaperEdit().catch((error) => showToast(error.message, true));
-  } else if (status.status === "done" || status.status === "failed") {
+  } else if (status.status === "done") {
     setStep(5);
+    openCaptions().catch((error) => showToast(error.message, true));
+  } else if (status.status === "failed") {
+    setStep(6);
   }
 }
 

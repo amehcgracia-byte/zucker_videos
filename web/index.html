@@ -19,8 +19,8 @@
         <button class="step-nav" data-step-nav="2">Edit type</button>
         <button class="step-nav" data-step-nav="3">Progress</button>
         <button class="step-nav" data-step-nav="4">Frames</button>
-        <button class="step-nav" data-step-nav="5">Result</button>
-        <button class="step-nav" data-step-nav="6">Captions</button>
+        <button class="step-nav" data-step-nav="5">Overlay &amp; Captions</button>
+        <button class="step-nav" data-step-nav="6">Result</button>
       </div>
       <div class="nav-actions">
         <button id="themeToggle" class="icon-button small" type="button">Dark mode</button>
@@ -269,9 +269,22 @@
         </div>
       </section>
 
-      <section class="step" id="step5">
+      <section class="step compose-step" id="step5">
+        <div class="step-header"><span>Step 5 of 6</span><h1>Overlay &amp; Captions</h1><p>Compose everything while the exported video plays. The mode export and caption burn remain separate.</p></div>
+        <div class="compose-player-wrap">
+          <div id="composeVideoStage" class="compose-video-stage"><video id="composeVideo" controls playsinline preload="metadata"></video><div id="composeOverlayLayer" class="compose-overlay-layer"></div></div>
+          <div class="compose-player-tools"><button id="composeFrameBack" class="icon-button small" type="button">◀ frame</button><button id="composeFrameForward" class="icon-button small" type="button">frame ▶</button><span id="composeTime">00:00.00</span><input id="composeScrub" type="range" min="0" max="1" step="0.01" value="0" /></div>
+        </div>
+        <div class="compose-timeline"><div class="compose-lane-label">Overlays</div><div id="composeOverlayLane" class="compose-lane"></div><div class="compose-lane-label">Captions</div><div id="composeCaptionLane" class="compose-lane"></div></div>
+        <div class="compose-grid">
+          <div class="compose-panel"><div class="setup-heading"><h2>Overlays</h2><span>Flyers and phrases from the Reel editor</span><button id="composeDuplicateOverlay" class="icon-button small" type="button">Duplicate</button></div><div id="composeOverlayControls"></div><div id="composeReelMount"></div></div>
+          <div class="compose-panel"><label class="field-label" for="captionText">Lyrics or text</label><textarea id="captionText" rows="8" placeholder="One block per paragraph&#10;&#10;A second block..."></textarea><div class="caption-actions"><label class="file-button">Import SRT/LRC<input id="captionImport" type="file" accept=".srt,.lrc" hidden /></label><button id="captionExportSrt" class="icon-button" type="button">Export SRT</button></div><div id="captionBlocks" class="caption-blocks"></div><label class="field-label" for="captionStyle">Preset</label><select id="captionStyle"></select><div class="caption-guides"><label><input id="captionGuide916" type="checkbox" /> 9:16 safe area</label><label><input id="captionGuide1x1" type="checkbox" /> 1:1 safe area</label></div><div class="header-controls"><label><input id="captionHeaderEnabled" type="checkbox" /> Fixed title</label><input id="captionHeaderTitle" placeholder="TITLE" maxlength="80" /><label><input id="captionLogoEnabled" type="checkbox" checked /> Band logo</label><label>Letterbox blur <input id="captionLetterboxBlur" type="number" min="1" max="50" value="18" /></label></div><p id="captionTapStatus" class="field-help">Press Space once for block start, again for end while the video plays.</p><button id="burnCaptions" class="primary icon-button" type="button">Burn captions</button><p id="captionBurnStatus" class="result-summary"></p></div>
+        </div>
+        <div class="compose-actions"><button id="composeContinue" class="primary icon-button" type="button">Continue to Result</button></div>
+      </section>
+      <section class="step" id="step6">
         <div class="step-header">
-          <span>Step 5 of 5</span>
+          <span>Step 6 of 6</span>
           <h1 id="resultTitle">Result</h1>
         </div>
         <div id="errorBox" class="error-box" hidden>
@@ -323,37 +336,17 @@
             <button id="openLogsSuccess" class="icon-button desktop-only" data-icon="doc">Open logs</button>
             <button id="retryWizardSuccess" class="icon-button" data-icon="retry">Retry</button>
             <button id="copyProgressReportResult" class="icon-button" data-icon="clipboard">Copy report</button>
-            <button id="openCaptions" class="icon-button" data-icon="doc">Captions</button>
+            <button id="openCaptions" class="icon-button" data-icon="doc">Overlay &amp; Captions</button>
             <button id="showFinder" class="icon-button desktop-only" data-icon="folder">Show in Finder</button>
             <button id="again" class="icon-button" data-icon="play">Make another</button>
           </div>
         </div>
       </section>
     </main>
-    <section class="step captions-step" id="step6">
-      <div class="step-header"><span>Captions</span><h1>Captions</h1><p>Add lyrics or text to the exported video without changing the original.</p></div>
-      <div class="captions-layout">
-        <div>
-          <label class="field-label" for="captionText">Lyrics or text</label>
-          <textarea id="captionText" rows="10" placeholder="One block per paragraph&#10;&#10;A second block..."></textarea>
-          <div class="caption-actions"><label class="file-button">Import SRT/LRC<input id="captionImport" type="file" accept=".srt,.lrc" hidden /></label><button id="captionExportSrt" class="icon-button" type="button">Export SRT</button></div>
-          <div id="captionBlocks" class="caption-blocks"></div>
-        </div>
-        <div>
-          <div id="captionPreview" class="caption-preview"><img id="captionFrame" class="caption-frame" alt="Export preview frame" hidden /><span id="captionPreviewText">Caption preview</span></div>
-          <label class="field-label" for="captionStyle">Preset</label><select id="captionStyle"></select>
-          <div class="caption-guides"><label><input id="captionGuide916" type="checkbox" /> 9:16 safe area</label><label><input id="captionGuide1x1" type="checkbox" /> 1:1 safe area</label></div>
-          <video id="captionVideo" class="caption-video" controls preload="metadata"></video>
-          <p id="captionTapStatus" class="field-help">Press Space once for block start, again for block end.</p>
-          <button id="burnCaptions" class="primary icon-button" type="button">Burn captions</button>
-          <p id="captionBurnStatus" class="result-summary"></p>
-        </div>
-      </div>
-    </section>
     <div id="toast" class="toast" hidden></div>
     <div id="flyerPreviewModal" class="flyer-preview-modal" hidden role="dialog" aria-modal="true" aria-label="Flyer preview"><button id="closeFlyerPreview" class="flyer-preview-close" type="button" aria-label="Close">×</button><img id="flyerPreviewImage" alt="Flyer preview" /></div>
     <script src="/strings.js?v=editor-ui-4"></script>
     <script src="/native_bridge.js?v=editor-ui-4"></script>
-    <script src="/app.js?v=editor-ui-6"></script>
+    <script src="/app.js?v=editor-ui-7"></script>
   </body>
 </html>

@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from captions.burn import burn
-from captions.model import Cue, CueTrack
+from captions.align import align_known_lyrics
+from captions.model import Cue, CueTrack, Word
 from captions.render import render_ass
 from captions.sources import from_lyrics, from_srt, to_srt
 from captions.styles import list_styles
@@ -42,6 +43,16 @@ def test_captions_has_no_mode_imports() -> None:
     forbidden = ("server.wizard", "core.stages", "core.backstage", "sync_map", "edit_plan")
     source = "\n".join(path.read_text(encoding="utf-8") for path in Path("captions").glob("*.py"))
     assert not any(token in source for token in forbidden)
+
+
+def test_forced_alignment_keeps_user_words_and_anchors_whisper() -> None:
+    lyrics = from_lyrics("HELLO WORLD")
+    whisper = CueTrack((Cue(("hello wurld",), 3.0, 4.0, (Word("hello", 3.1, 3.4), Word("wurld", 3.5, 3.9))),))
+    aligned = align_known_lyrics(lyrics, whisper)
+    assert aligned.cues[0].text == "HELLO WORLD"
+    assert [word.text for word in aligned.cues[0].words] == ["HELLO", "WORLD"]
+    assert aligned.cues[0].words[0].start == pytest.approx(3.1)
+    assert aligned.cues[0].words[1].start == pytest.approx(3.5)
 
 
 FFMPEG_FULL = "/usr/local/opt/ffmpeg-full/bin/ffmpeg"

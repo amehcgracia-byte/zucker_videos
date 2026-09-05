@@ -1481,6 +1481,29 @@ pre {
   --caption-accent: #9be37a;
 }
 
+.compose-step { padding-bottom: 4rem; }
+.compose-player-wrap { max-width: 980px; margin: 0 auto 1rem; }
+.compose-video-stage { position: relative; display: grid; place-items: center; min-height: 300px; overflow: hidden; border-radius: 14px; background: #101619; }
+.compose-video-stage video { display: block; width: 100%; max-height: 68vh; object-fit: contain; background: #101619; }
+.compose-overlay-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.compose-live-text { position: absolute; transform: translate(-50%, -50%); font-weight: 700; white-space: pre-wrap; text-align: center; max-width: 80%; }
+.compose-live-image { position: absolute; transform: translate(-50%, -50%); max-width: 80%; height: auto; }
+.compose-live-caption { position: absolute; left: 8%; right: 8%; top: 68%; color: #fff; font: 700 clamp(1rem, 3vw, 2.1rem)/1.08 Arial,sans-serif; text-align: center; white-space: pre-line; text-shadow: 0 3px 5px #000; }
+.compose-player-tools { display: flex; gap: .6rem; align-items: center; padding: .65rem 0; }
+.compose-player-tools input[type="range"] { flex: 1; }
+.compose-timeline { display: grid; grid-template-columns: 80px minmax(0,1fr); gap: .35rem .7rem; margin: 1rem 0 1.25rem; }
+.compose-lane { position: relative; height: 25px; overflow: hidden; border-radius: 5px; background: color-mix(in srgb, var(--line,#ccd5d9) 38%, transparent); }
+.compose-lane-label { align-self: center; font-size: .8rem; color: var(--muted,#63727a); }
+.compose-timeline-block { position: absolute; top: 3px; bottom: 3px; min-width: 8px; padding: 2px 4px; overflow: hidden; border-radius: 4px; background: #8dcf75; color: #142016; font-size: .7rem; }
+.compose-timeline-block.caption { background: #79aee6; }
+.compose-grid { display: grid; grid-template-columns: minmax(0,1.15fr) minmax(280px,.85fr); gap: 1rem; }
+.compose-panel { min-width: 0; padding: 1rem; border: 1px solid var(--line,#ccd5d9); border-radius: 12px; background: var(--panel,#fff); }
+.compose-panel textarea { width: 100%; min-height: 12rem; resize: vertical; }
+.compose-panel #reelOptions { display: block; margin-top: .7rem; }
+.header-controls { display: grid; gap: .55rem; margin: .8rem 0; padding: .7rem; border: 1px solid var(--line,#ccd5d9); border-radius: 8px; }
+.compose-actions { display: flex; justify-content: flex-end; margin-top: 1rem; }
+#step2 #reelOptions { display: none; }
+
 .captions-step { padding-bottom: 4rem; }
 .captions-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, .8fr); gap: 1.25rem; }
 .captions-layout textarea { width: 100%; min-height: 15rem; resize: vertical; }

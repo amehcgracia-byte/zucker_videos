@@ -27,7 +27,9 @@ def from_lyrics(text: str, *, default_duration: float = 4.0, start: float = 0.0,
     for block in re.split(r"(?:\r?\n){2,}", text):
         if block == "":
             continue
-        cues.append(Cue(_lines(block), cursor, cursor + default_duration))
+        lines = _lines(block)
+        words = tuple(Word(token, cursor, cursor + default_duration) for token in re.findall(r"\S+", " ".join(lines)))
+        cues.append(Cue(lines, cursor, cursor + default_duration, words))
         cursor += default_duration
     return CueTrack(tuple(cues), lang)
 
