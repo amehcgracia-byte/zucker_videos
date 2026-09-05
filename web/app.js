@@ -2760,6 +2760,7 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && event.target instanceof HTMLElement && event.target.dataset.captionText != null) {
     event.preventDefault();
     document.querySelector("#composeVideo")?.play().catch(() => {});
+    document.querySelector("#composeAddCaption")?.focus();
     return;
   }
   const commandKey = event.metaKey || event.ctrlKey;
