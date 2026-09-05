@@ -1,0 +1,8 @@
+{
+  "clean_bottom": {"font": "Arial", "size": 52, "color": "&H00FFFFFF", "outline": "&H00101010", "shadow": "&H80000000", "alignment": 2, "margin_l": 80, "margin_r": 80, "margin_v": 100, "entrance": "fade", "exit": "fade", "animation": "none"},
+  "karaoke_word": {"font": "Arial Bold", "size": 54, "color": "&H00FFFFFF", "outline": "&H00101010", "shadow": "&H80000000", "alignment": 2, "margin_l": 70, "margin_r": 70, "margin_v": 100, "entrance": "fade", "exit": "fade", "animation": "word"},
+  "lyric_center": {"font": "Arial", "size": 56, "color": "&H00FFFFFF", "outline": "&H00101010", "shadow": "&H80000000", "alignment": 5, "margin_l": 90, "margin_r": 90, "margin_v": 80, "entrance": "fade", "exit": "fade", "animation": "none"},
+  "lyric_minimal": {"font": "Arial", "size": 48, "color": "&H00FFFFFF", "outline": "&H00000000", "shadow": "&H00000000", "alignment": 2, "margin_l": 80, "margin_r": 80, "margin_v": 105, "entrance": "none", "exit": "none", "animation": "none"},
+  "bold_pop": {"font": "Arial Bold", "size": 64, "color": "&H0000D7FF", "outline": "&H00000000", "shadow": "&H80000000", "alignment": 5, "margin_l": 80, "margin_r": 80, "margin_v": 80, "entrance": "pop", "exit": "fade", "animation": "none"},
+  "documentary": {"font": "Arial", "size": 42, "color": "&H00F5EBD5", "outline": "&H00302018", "shadow": "&H80000000", "alignment": 2, "margin_l": 100, "margin_r": 100, "margin_v": 92, "entrance": "fade", "exit": "fade", "animation": "none"}
+}

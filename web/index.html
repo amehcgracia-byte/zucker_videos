@@ -20,6 +20,7 @@
         <button class="step-nav" data-step-nav="3">Progress</button>
         <button class="step-nav" data-step-nav="4">Frames</button>
         <button class="step-nav" data-step-nav="5">Result</button>
+        <button class="step-nav" data-step-nav="6">Captions</button>
       </div>
       <div class="nav-actions">
         <button id="themeToggle" class="icon-button small" type="button">Dark mode</button>
@@ -322,12 +323,33 @@
             <button id="openLogsSuccess" class="icon-button desktop-only" data-icon="doc">Open logs</button>
             <button id="retryWizardSuccess" class="icon-button" data-icon="retry">Retry</button>
             <button id="copyProgressReportResult" class="icon-button" data-icon="clipboard">Copy report</button>
+            <button id="openCaptions" class="icon-button" data-icon="doc">Captions</button>
             <button id="showFinder" class="icon-button desktop-only" data-icon="folder">Show in Finder</button>
             <button id="again" class="icon-button" data-icon="play">Make another</button>
           </div>
         </div>
       </section>
     </main>
+    <section class="step captions-step" id="step6">
+      <div class="step-header"><span>Captions</span><h1>Captions</h1><p>Add lyrics or text to the exported video without changing the original.</p></div>
+      <div class="captions-layout">
+        <div>
+          <label class="field-label" for="captionText">Lyrics or text</label>
+          <textarea id="captionText" rows="10" placeholder="One block per paragraph&#10;&#10;A second block..."></textarea>
+          <div class="caption-actions"><label class="file-button">Import SRT/LRC<input id="captionImport" type="file" accept=".srt,.lrc" hidden /></label><button id="captionExportSrt" class="icon-button" type="button">Export SRT</button></div>
+          <div id="captionBlocks" class="caption-blocks"></div>
+        </div>
+        <div>
+          <div id="captionPreview" class="caption-preview"><img id="captionFrame" class="caption-frame" alt="Export preview frame" hidden /><span id="captionPreviewText">Caption preview</span></div>
+          <label class="field-label" for="captionStyle">Preset</label><select id="captionStyle"></select>
+          <div class="caption-guides"><label><input id="captionGuide916" type="checkbox" /> 9:16 safe area</label><label><input id="captionGuide1x1" type="checkbox" /> 1:1 safe area</label></div>
+          <video id="captionVideo" class="caption-video" controls preload="metadata"></video>
+          <p id="captionTapStatus" class="field-help">Press Space once for block start, again for block end.</p>
+          <button id="burnCaptions" class="primary icon-button" type="button">Burn captions</button>
+          <p id="captionBurnStatus" class="result-summary"></p>
+        </div>
+      </div>
+    </section>
     <div id="toast" class="toast" hidden></div>
     <div id="flyerPreviewModal" class="flyer-preview-modal" hidden role="dialog" aria-modal="true" aria-label="Flyer preview"><button id="closeFlyerPreview" class="flyer-preview-close" type="button" aria-label="Close">×</button><img id="flyerPreviewImage" alt="Flyer preview" /></div>
     <script src="/strings.js?v=editor-ui-4"></script>

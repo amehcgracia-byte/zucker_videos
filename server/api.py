@@ -48,6 +48,11 @@ from server.inbox import (
 from server.media import send_file_with_range
 from server.projects import delete_project_folder, find_project_by_inputs, input_signature, list_projects, project_input_signature
 from server.wizard import WizardRunner, merge_spherical_landmarks, serialize_wizard_job, wizard_report, wizard_song_options
+from captions.burn import burn as burn_captions
+from captions.model import Cue, CueTrack
+from captions.render import render_ass
+from captions.sources import from_lrc, from_lyrics, from_srt, to_srt
+from captions.styles import CAPTIONS_VERSION, get_style, list_styles
 
 LOGGER = logging.getLogger(__name__)
 
@@ -830,6 +835,71 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if candidate.suffix.lower() != ".mp4" or not candidate.exists():
             return error_response("not_found", f"The result is not an exported MP4: {candidate}", 404)
         return send_file_with_range(str(candidate))
+
+    @app.get("/api/v1/captions/styles")
+    def api_captions_styles() -> Response:
+        return jsonify({"version": CAPTIONS_VERSION, "styles": [style.__dict__ for style in list_styles()]})
+
+    @app.get("/api/v1/captions/frame")
+    def api_captions_frame() -> Response:
+        project = _require_project(state)
+        result = _export_result(project)
+        if not result:
+            return error_response("not_found", "No exported video yet", 404)
+        cache = project.cache_dir / "captions" / CAPTIONS_VERSION
+        cache.mkdir(parents=True, exist_ok=True)
+        frame = cache / "export-frame.jpg"
+        if not frame.exists():
+            ffmpeg = tool_status().get("ffmpeg_path") or "ffmpeg"
+            subprocess.run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-ss", "1", "-i", result["path"], "-frames:v", "1", "-vf", "scale=720:-2", str(frame)], check=True)
+        return send_from_directory(frame.parent, frame.name)
+
+    @app.post("/api/v1/captions/parse")
+    def api_captions_parse() -> Response:
+        body = request.get_json(silent=True) or {}
+        source = str(body.get("source") or "lyrics")
+        text = str(body.get("text") or "")
+        if source == "lyrics":
+            track = from_lyrics(text)
+        elif source in {"srt", "lrc"}:
+            project = _require_project(state)
+            cache_dir = project.cache_dir / "captions" / CAPTIONS_VERSION
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_path = cache_dir / ("import.srt" if source == "srt" else "import.lrc")
+            cache_path.write_text(text, encoding="utf-8")
+            track = from_srt(cache_path) if source == "srt" else from_lrc(cache_path)
+        else:
+            return error_response("bad_request", "source must be lyrics, srt, or lrc", 400)
+        return jsonify({"lang": track.lang, "cues": [{"lines": list(cue.lines), "start": cue.start, "end": cue.end} for cue in track.cues]})
+
+    @app.post("/api/v1/captions/burn")
+    def api_captions_burn() -> Response:
+        project = _require_project(state)
+        result = _export_result(project)
+        if not result:
+            return error_response("not_found", "No exported video yet", 404)
+        body = request.get_json(silent=True) or {}
+        try:
+            style = get_style(str(body.get("style") or "clean_bottom"))
+            cues = tuple(Cue(tuple(str(line) for line in cue.get("lines", [])), float(cue["start"]), float(cue["end"])) for cue in body.get("cues", []))
+            track = CueTrack(cues, str(body.get("lang") or "und"))
+            cache = project.cache_dir / "captions" / CAPTIONS_VERSION
+            cache.mkdir(parents=True, exist_ok=True)
+            (cache / "captions.ass").write_text(render_ass(track, style), encoding="utf-8")
+            (cache / "captions.srt").write_text(to_srt(track), encoding="utf-8")
+            destination = project.exports_dir / f"{Path(result['path']).stem}_captions.mp4"
+            output = burn_captions(result["path"], track, style, output_path=destination)
+            return jsonify({"path": str(output), "filename": output.name, "media_url": "/api/v1/captions/result", "version": CAPTIONS_VERSION})
+        except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError) as exc:
+            return error_response("caption_burn_failed", str(exc), 400)
+
+    @app.get("/api/v1/captions/result")
+    def api_captions_result() -> Response:
+        project = _require_project(state)
+        exports = sorted(project.exports_dir.glob("*_captions.mp4"), key=lambda path: path.stat().st_mtime, reverse=True)
+        if not exports:
+            return error_response("not_found", "No captioned export yet", 404)
+        return send_file_with_range(str(exports[0]))
 
     @app.post("/api/v1/inputs/classify-paths")
     def api_classify_paths() -> Response:

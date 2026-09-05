@@ -34,6 +34,9 @@ let progressFloor = 0;
 let etaSmoothedSeconds = null;
 let rescueClipId = null;
 let currentStep = 1;
+let captionCues = [];
+let captionMarkIndex = 0;
+let captionPendingStart = null;
 let lastProgressReportAt = 0;
 let trimDefaultsAppliedFor = "";
 let cameraRoleWeights = { "360": 50, handheld: 30, fixed_rear: 20 };
@@ -205,9 +208,69 @@ function showToast(message, isError = false) {
 }
 
 function setStep(number) {
-  currentStep = Math.max(1, Math.min(5, Number(number) || 1));
+  currentStep = Math.max(1, Math.min(6, Number(number) || 1));
   document.querySelectorAll(".step").forEach((step, index) => step.classList.toggle("active", index === currentStep - 1));
   document.querySelectorAll("[data-step-nav]").forEach((button) => button.classList.toggle("active", Number(button.dataset.stepNav) === currentStep));
+}
+
+function captionBlocksFromText() {
+  const text = document.querySelector("#captionText")?.value || "";
+  return text.split(/(?:\r?\n){2,}/).filter((block) => block !== "");
+}
+
+function renderCaptionBlocks() {
+  const root = document.querySelector("#captionBlocks");
+  if (!root) return;
+  root.innerHTML = captionCues.map((cue, index) => `<div class="caption-block"><strong>${index + 1}</strong><span>${escapeHtml(cue.lines.join("\n"))}</span><small>${Number(cue.start).toFixed(2)}s – ${Number(cue.end).toFixed(2)}s</small></div>`).join("");
+  const preview = document.querySelector("#captionPreviewText");
+  if (preview) preview.textContent = captionCues[0]?.lines?.join("\n") || "Caption preview";
+}
+
+async function openCaptions() {
+  setStep(6);
+  const frame = document.querySelector("#captionFrame");
+  const video = document.querySelector("#captionVideo");
+  if (frame) { frame.src = `/api/v1/captions/frame?ts=${Date.now()}`; frame.hidden = false; }
+  if (video && !video.src) video.src = "/api/v1/wizard/result";
+  const styles = await api("/captions/styles");
+  const select = document.querySelector("#captionStyle");
+  if (select && !select.options.length) select.innerHTML = (styles.styles || []).map((style) => `<option value="${escapeHtml(style.name)}">${escapeHtml(style.name.replaceAll("_", " "))}</option>`).join("");
+  if (select) select.onchange = () => document.querySelector("#captionPreview")?.setAttribute("data-style", select.value);
+  document.querySelector("#captionPreview")?.setAttribute("data-style", select?.value || "clean_bottom");
+  const blocks = captionBlocksFromText();
+  if (!captionCues.length && blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
+  renderCaptionBlocks();
+}
+
+function captionTap() {
+  const video = document.querySelector("#captionVideo");
+  if (!video) return;
+  if (captionPendingStart == null) {
+    captionPendingStart = video.currentTime;
+    document.querySelector("#captionTapStatus").textContent = `Block ${captionMarkIndex + 1} start: ${video.currentTime.toFixed(2)}s — press Space again for end.`;
+    return;
+  }
+  const blocks = captionBlocksFromText();
+  const text = blocks[captionMarkIndex] || "";
+  captionCues[captionMarkIndex] = { lines: text.split(/\r?\n/), start: captionPendingStart, end: Math.max(video.currentTime, captionPendingStart + 0.1) };
+  captionMarkIndex += 1; captionPendingStart = null;
+  document.querySelector("#captionTapStatus").textContent = `Block ${captionMarkIndex} marked. Press Space to mark the next block.`;
+  renderCaptionBlocks();
+}
+
+function exportCaptionSrt() {
+  const stamp = (seconds) => { const ms = Math.max(0, Math.round(seconds * 1000)); const h = Math.floor(ms / 3600000); const m = Math.floor(ms % 3600000 / 60000); const s = Math.floor(ms % 60000 / 1000); return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")},${String(ms % 1000).padStart(3,"0")}`; };
+  const text = captionCues.map((cue, i) => `${i + 1}\n${stamp(cue.start)} --> ${stamp(cue.end)}\n${cue.lines.join("\n")}`).join("\n\n") + "\n";
+  const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([text], { type: "text/srt" })); link.download = "captions.srt"; link.click(); URL.revokeObjectURL(link.href);
+}
+
+async function burnCaptionTrack() {
+  const blocks = captionBlocksFromText();
+  if (!captionCues.length || captionCues.length !== blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
+  const style = document.querySelector("#captionStyle")?.value || "clean_bottom";
+  const result = await api("/captions/burn", { method: "POST", body: JSON.stringify({ style, cues: captionCues }) });
+  const video = document.querySelector("#captionVideo"); if (video) video.src = result.media_url;
+  document.querySelector("#captionBurnStatus").textContent = `Created ${result.filename}`;
 }
 
 function projectIdFromStatus(status) {
@@ -2463,6 +2526,9 @@ document.addEventListener("click", (event) => {
     }
     revealNative(latestResult?.path, S.reveal).catch((error) => showToast(error.message, true));
   }
+  if (target.id === "openCaptions") openCaptions().catch((error) => showToast(error.message, true));
+  if (target.id === "captionExportSrt") exportCaptionSrt();
+  if (target.id === "burnCaptions") burnCaptionTrack().catch((error) => showToast(error.message, true));
   if (target.id === "result360Play") toggleResult360Play();
   if (target.id === "statusStrip") setStep(3);
   const rescueButton = target.closest?.("[data-rescue]");
@@ -2496,6 +2562,24 @@ document.addEventListener("keydown", (event) => {
     const modal = document.querySelector("#reviewLargeModal");
     if (modal && !modal.hidden) modal.hidden = true;
   }
+  if (event.code === "Space" && currentStep === 6 && document.activeElement?.tagName !== "TEXTAREA") {
+    event.preventDefault(); captionTap();
+  }
+});
+
+document.addEventListener("change", (event) => {
+  const input = event.target;
+  if (input instanceof HTMLInputElement && (input.id === "captionGuide916" || input.id === "captionGuide1x1")) {
+    const step = document.querySelector("#step6");
+    step?.classList.toggle("guide-916", document.querySelector("#captionGuide916")?.checked === true);
+    step?.classList.toggle("guide-1x1", document.querySelector("#captionGuide1x1")?.checked === true);
+  }
+  if (!(input instanceof HTMLInputElement) || input.id !== "captionImport" || !input.files?.[0]) return;
+  const source = input.files[0].name.toLowerCase().endsWith(".lrc") ? "lrc" : "srt";
+  input.files[0].text().then((text) => api("/captions/parse", { method: "POST", body: JSON.stringify({ source, text }) })).then((parsed) => {
+    captionCues = parsed.cues || []; captionMarkIndex = captionCues.length; captionPendingStart = null;
+    document.querySelector("#captionText").value = captionCues.map((cue) => cue.lines.join("\n")).join("\n\n"); renderCaptionBlocks();
+  }).catch((error) => showToast(error.message, true));
 });
 
 document.addEventListener("input", (event) => {

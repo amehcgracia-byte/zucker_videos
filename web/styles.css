@@ -1477,3 +1477,27 @@ pre {
 .paper-edit-main .paper-edit-english { color: var(--muted, #69736f); font-size: 0.95rem; line-height: 1.35; }
 .paper-edit-subtitle { width: 100%; min-height: 36px; padding: 6px 8px; }
 .paper-edit-row select { width: 100%; }
+:root {
+  --caption-accent: #9be37a;
+}
+
+.captions-step { padding-bottom: 4rem; }
+.captions-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, .8fr); gap: 1.25rem; }
+.captions-layout textarea { width: 100%; min-height: 15rem; resize: vertical; }
+.caption-actions { display: flex; gap: .6rem; margin: .7rem 0; align-items: center; }
+.caption-blocks { display: grid; gap: .45rem; max-height: 18rem; overflow: auto; }
+.caption-block { display: grid; grid-template-columns: 2rem 1fr auto; gap: .65rem; padding: .65rem .75rem; border: 1px solid color-mix(in srgb, var(--caption-accent), transparent 65%); border-radius: .5rem; white-space: pre-line; }
+.caption-block small { opacity: .65; white-space: nowrap; }
+.caption-frame, .caption-video { display: block; width: 100%; max-height: 22rem; object-fit: contain; background: #111; border-radius: .55rem; margin-bottom: .8rem; }
+.caption-preview { position: relative; background: #111; border-radius: .55rem; overflow: hidden; margin-bottom: .8rem; }
+.caption-preview .caption-frame { margin-bottom: 0; }
+.caption-preview > span { position: absolute; left: 8%; right: 8%; bottom: 12%; color: white; text-align: center; font: 700 1.25rem Arial, sans-serif; text-shadow: 0 2px 4px #000; white-space: pre-line; }
+.caption-preview[data-style="lyric_center"] > span, .caption-preview[data-style="bold_pop"] > span { top: 43%; bottom: auto; font-size: 1.5rem; }
+.caption-preview[data-style="lyric_minimal"] > span { font-weight: 400; text-shadow: none; }
+.caption-preview[data-style="documentary"] > span { font-size: 1rem; color: #f5ebd5; }
+.captions-layout > div:last-child { position: relative; }
+.captions-layout > div:last-child::after { content: ""; display: none; position: absolute; inset: 14% 8% 20%; border: 1px dashed var(--caption-accent); pointer-events: none; opacity: .8; }
+.guide-916 .captions-layout > div:last-child::after, .guide-1x1 .captions-layout > div:last-child::after { display: block; }
+.guide-1x1 .captions-layout > div:last-child::after { inset: 10% 10%; aspect-ratio: 1; }
+.caption-guides { display: flex; flex-wrap: wrap; gap: .9rem; margin: .8rem 0; }
+@media (max-width: 760px) { .captions-layout { grid-template-columns: 1fr; } .caption-block { grid-template-columns: 2rem 1fr; } .caption-block small { grid-column: 2; } }

@@ -49,6 +49,7 @@ PY
   --add-data "$ROOT/web:web" \
   --add-data "$ROOT/assets/intro_card_watermark.png:assets" \
   --add-data "$ROOT/assets/models:assets/models" \
+  --add-data "$ROOT/captions/presets.json:captions" \
   --add-data "$ROOT/assets/parchment_full.png:assets" \
   --add-data "$ROOT/core/vendor:core/vendor" \
   --add-data "/System/Library/Fonts/Supplemental/Verdana Bold.ttf:assets/fonts" \
