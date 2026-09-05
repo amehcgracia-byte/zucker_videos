@@ -17,11 +17,21 @@ from captions.styles import list_styles
 
 def test_six_presets_render_valid_ass() -> None:
     track = CueTrack((Cue(("Hello", "world"), 0, 2),))
-    for style in list_styles():
+    styles = list_styles()
+    assert len(styles) == 12
+    for style in styles:
         ass = render_ass(track, style, width=1080, height=1920)
         assert "[Script Info]" in ass
         assert "[V4+ Styles]" in ass
         assert "Dialogue:" in ass
+
+
+def test_caption_style_override_renders_inline_tags() -> None:
+    track = CueTrack((Cue(("Override",), 0, 2, style_override={"color": "#00ff00", "size": 80, "vertical": 68}),))
+    ass = render_ass(track, list_styles()[0], width=1080, height=1920)
+    assert r"\c&H0000FF00&" in ass
+    assert r"\fs80" in ass
+    assert r"\pos(540,1305.6)" in ass
 
 
 def test_lyrics_preserves_exact_lines() -> None:
