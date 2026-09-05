@@ -890,7 +890,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         body = request.get_json(silent=True) or {}
         try:
             style = get_style(str(body.get("style") or "clean_bottom"))
-            cues = tuple(Cue(tuple(str(line) for line in cue.get("lines", [])), float(cue["start"]), float(cue["end"]), tuple(Word(str(word.get("text") or word.get("word") or ""), float(word["start"]), float(word["end"])) for word in cue.get("words", []))) for cue in body.get("cues", []))
+            cues = tuple(Cue(tuple(str(line) for line in cue.get("lines", [])), float(cue["start"]), float(cue["end"]), tuple(Word(str(word.get("text") or word.get("word") or ""), float(word["start"]), float(word["end"])) for word in cue.get("words", [])), dict(cue.get("style_override") or {})) for cue in body.get("cues", []))
             track = CueTrack(cues, str(body.get("lang") or "und"))
             cache = project.cache_dir / "captions" / CAPTIONS_VERSION
             cache.mkdir(parents=True, exist_ok=True)

@@ -230,7 +230,8 @@ function renderCaptionBlocks() {
   root.innerHTML = captionCues.map((cue, index) => {
     const end = cue.end == null ? (videoDuration || Number(cue.start) || 0) : Number(cue.end);
     const active = captionActiveIndex === index ? " active" : "";
-    return `<div class="caption-block${active}" data-caption-seek="${index}" role="button" tabindex="0"><div class="caption-block-main"><strong>${index + 1}.</strong><input class="caption-row-text" data-caption-text="${index}" value="${escapeHtml(cue.lines.join("\n"))}" aria-label="Caption ${index + 1} text" /><div class="caption-time-fields"><label>Start <input data-caption-start="${index}" type="number" min="0" step="0.01" value="${Number(cue.start).toFixed(2)}" /></label><label>End <input data-caption-end="${index}" type="number" min="0" step="0.01" value="${end.toFixed(2)}" /></label></div></div><div class="caption-block-actions"><button type="button" class="icon-button small" data-caption-edit="${index}">Edit</button><button type="button" class="icon-button small" data-caption-delete="${index}">Delete</button></div></div>`;
+    const override = cue.style_override || {};
+    return `<div class="caption-block${active}" data-caption-seek="${index}" role="button" tabindex="0"><div class="caption-block-main"><strong>${index + 1}.</strong><input class="caption-row-text" data-caption-text="${index}" value="${escapeHtml(cue.lines.join("\n"))}" aria-label="Caption ${index + 1} text" /><div class="caption-time-fields"><label>Start <input data-caption-start="${index}" type="number" min="0" step="0.01" value="${Number(cue.start).toFixed(2)}" /></label><label>End <input data-caption-end="${index}" type="number" min="0" step="0.01" value="${end.toFixed(2)}" /></label></div><div class="caption-style-overrides"><label>Color <input data-caption-color="${index}" type="color" value="${override.color || "#ffffff"}" /></label><label>Size <input data-caption-size="${index}" type="number" min="8" max="180" step="1" value="${override.size ?? ""}" /></label><label>Vertical % <input data-caption-vertical="${index}" type="number" min="0" max="100" step="1" value="${override.vertical ?? ""}" /></label></div></div><div class="caption-block-actions"><button type="button" class="icon-button small" data-caption-edit="${index}">Edit</button><button type="button" class="icon-button small" data-caption-delete="${index}">Delete</button></div></div>`;
   }).join("");
   const preview = document.querySelector("#captionPreviewText");
   if (preview) preview.textContent = captionCues[0]?.lines?.join("\n") || "Caption preview";
@@ -324,9 +325,12 @@ function renderComposeOverlayLayer() {
   if (!layer || !video) return;
   const now = Number(video.currentTime || 0);
   const caption = captionCues.find((cue) => now >= Number(cue.start) && now <= (cue.end == null ? Number(video.duration || Infinity) : Number(cue.end)));
+  const captionStyle = document.querySelector("#captionStyle")?.value || "karaoke_word";
   const texts = reelTextOverlays.filter((item) => now >= Number(item.start_sec || 0) && now <= Number(item.start_sec || 0) + Number(item.duration_sec || 0));
   const images = reelImageOverlays.filter((item) => now >= Number(item.start_sec || 0) && now <= Number(item.start_sec || 0) + Number(item.duration_sec || 0));
-  layer.innerHTML = texts.map((item) => `<span class="compose-live-text" style="left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;color:${item.color || '#fff'};opacity:${item.opacity ?? 1};font-size:${Math.max(12, Number(item.size || 48) / 3)}px;text-shadow:${Number(item.shadow_blur ?? 4)}px ${Number(item.shadow_blur ?? 4)}px ${item.shadow_color || '#000'}">${escapeHtml(item.text || '')}</span>`).join("") + images.map((item) => `<img class="compose-live-image" src="${escapeHtml(item.preview_url || item.path || '')}" style="left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;width:${Number(item.width ?? .35) * 100}%;opacity:${item.opacity ?? 1}" alt="" />`).join("") + (caption ? `<span class="compose-live-caption">${escapeHtml(caption.lines.join("\n"))}</span>` : "");
+  const override = caption?.style_override || {};
+  const captionInline = [`color:${override.color || "#fff"}`, override.size ? `font-size:${Number(override.size) / 3}px` : "", override.vertical != null ? `top:${Number(override.vertical)}%` : ""].filter(Boolean).join(";");
+  layer.innerHTML = texts.map((item) => `<span class="compose-live-text" style="left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;color:${item.color || '#fff'};opacity:${item.opacity ?? 1};font-size:${Math.max(12, Number(item.size || 48) / 3)}px;text-shadow:${Number(item.shadow_blur ?? 4)}px ${Number(item.shadow_blur ?? 4)}px ${item.shadow_color || '#000'}">${escapeHtml(item.text || '')}</span>`).join("") + images.map((item) => `<img class="compose-live-image" src="${escapeHtml(item.preview_url || item.path || '')}" style="left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;width:${Number(item.width ?? .35) * 100}%;opacity:${item.opacity ?? 1}" alt="" />`).join("") + (caption ? `<span class="compose-live-caption caption-style-${escapeHtml(captionStyle)}" style="${captionInline}">${escapeHtml(caption.lines.join("\n"))}</span>` : "");
   const time = document.querySelector("#composeTime"); if (time) time.textContent = `${Math.floor(now / 60).toString().padStart(2, '0')}:${(now % 60).toFixed(2).padStart(5, '0')}`;
   const scrub = document.querySelector("#composeScrub"); if (scrub && Number.isFinite(video.duration)) { scrub.max = String(video.duration); scrub.value = String(now); }
 }
@@ -372,7 +376,8 @@ function captionTap() {
 
 function exportCaptionSrt() {
   const stamp = (seconds) => { const ms = Math.max(0, Math.round(seconds * 1000)); const h = Math.floor(ms / 3600000); const m = Math.floor(ms % 3600000 / 60000); const s = Math.floor(ms % 60000 / 1000); return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")},${String(ms % 1000).padStart(3,"0")}`; };
-  const text = captionCues.map((cue, i) => `${i + 1}\n${stamp(cue.start)} --> ${stamp(cue.end)}\n${cue.lines.join("\n")}`).join("\n\n") + "\n";
+  const duration = composeTimelineDuration();
+  const text = captionCues.map((cue, i) => `${i + 1}\n${stamp(cue.start)} --> ${stamp(cue.end == null ? duration : cue.end)}\n${cue.lines.join("\n")}`).join("\n\n") + "\n";
   const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([text], { type: "text/srt" })); link.download = "captions.srt"; link.click(); URL.revokeObjectURL(link.href);
 }
 
@@ -380,13 +385,15 @@ async function burnCaptionTrack() {
   const blocks = captionBlocksFromText();
   if (!captionCues.length || captionCues.length !== blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
   const style = document.querySelector("#captionStyle")?.value || "clean_bottom";
-  const result = await api("/captions/burn", { method: "POST", body: JSON.stringify({ style, cues: captionCues, header: { title_enabled: document.querySelector("#captionHeaderEnabled")?.checked === true, title: document.querySelector("#captionHeaderTitle")?.value || "", logo_enabled: document.querySelector("#captionLogoEnabled")?.checked !== false, logo_height: 120 }, letterbox: { enabled: true, blur: Number(document.querySelector("#captionLetterboxBlur")?.value || 18) } }) });
+  const cues = captionCues.map((cue) => ({ ...cue, end: cue.end == null ? composeTimelineDuration() : cue.end }));
+  const result = await api("/captions/burn", { method: "POST", body: JSON.stringify({ style, cues, header: { title_enabled: document.querySelector("#captionHeaderEnabled")?.checked === true, title: document.querySelector("#captionHeaderTitle")?.value || "", logo_enabled: document.querySelector("#captionLogoEnabled")?.checked !== false, logo_height: 120 }, letterbox: { enabled: true, blur: Number(document.querySelector("#captionLetterboxBlur")?.value || 18) } }) });
   const video = document.querySelector("#composeVideo"); if (video) { video.src = `${result.media_url}?t=${Date.now()}`; video.load(); }
   document.querySelector("#captionBurnStatus").textContent = `Created ${result.filename}`;
 }
 
 async function saveComposition() {
-  await api("/wizard/compose", { method: "POST", body: JSON.stringify({ texts: reelTextOverlays, images: reelImageOverlays, cues: captionCues, style: document.querySelector("#captionStyle")?.value || "karaoke_word", header: { title_enabled: document.querySelector("#captionHeaderEnabled")?.checked === true, title: document.querySelector("#captionHeaderTitle")?.value || "", logo_enabled: document.querySelector("#captionLogoEnabled")?.checked !== false }, letterbox: { enabled: true, blur: Number(document.querySelector("#captionLetterboxBlur")?.value || 18) } }) });
+  const cues = captionCues.map((cue) => ({ ...cue, end: cue.end == null ? composeTimelineDuration() : cue.end }));
+  await api("/wizard/compose", { method: "POST", body: JSON.stringify({ texts: reelTextOverlays, images: reelImageOverlays, cues, style: document.querySelector("#captionStyle")?.value || "karaoke_word", header: { title_enabled: document.querySelector("#captionHeaderEnabled")?.checked === true, title: document.querySelector("#captionHeaderTitle")?.value || "", logo_enabled: document.querySelector("#captionLogoEnabled")?.checked !== false }, letterbox: { enabled: true, blur: Number(document.querySelector("#captionLetterboxBlur")?.value || 18) } }) });
 }
 
 function projectIdFromStatus(status) {
@@ -2803,6 +2810,7 @@ document.addEventListener("input", (event) => {
   if (input.id === "reelPlayhead") { reelPlayhead = Number(input.value); document.querySelector("#reelPlayheadValue").textContent = `${reelPlayhead.toFixed(1)}s`; drawReelPreview(); return; }
   if (input.dataset.captionText != null) { const cue = captionCues[Number(input.dataset.captionText)]; if (cue) { cue.lines = input.value.split(/\r?\n/); syncCaptionTextArea(); renderComposeOverlayLayer(); } return; }
   if (input.dataset.captionStart != null || input.dataset.captionEnd != null) { const index = Number(input.dataset.captionStart ?? input.dataset.captionEnd); const cue = captionCues[index]; if (cue) { if (input.dataset.captionStart != null) cue.start = Math.max(0, Number(input.value) || 0); else cue.end = Math.max(Number(cue.start) + 0.05, Number(input.value) || 0); renderComposeOverlayLayer(); } return; }
+  if (input.dataset.captionColor != null || input.dataset.captionSize != null || input.dataset.captionVertical != null) { const index = Number(input.dataset.captionColor ?? input.dataset.captionSize ?? input.dataset.captionVertical); const cue = captionCues[index]; if (cue) { cue.style_override ||= {}; const key = input.dataset.captionColor != null ? "color" : input.dataset.captionSize != null ? "size" : "vertical"; if (input.value === "") delete cue.style_override[key]; else cue.style_override[key] = key === "color" ? input.value : Number(input.value); renderComposeOverlayLayer(); } return; }
   if (input.id === "captionText") { const blocks = captionBlocksFromText(); captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: captionCues[index]?.start ?? index * 4, end: captionCues[index]?.end ?? index * 4 + 4 })); captionMarkIndex = Math.min(captionMarkIndex, captionCues.length); renderCaptionBlocks(); return; }
   const row = input.closest?.("[data-reel-text-index]");
   if (!row || !input.dataset.reelField) return;
