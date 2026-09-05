@@ -1498,10 +1498,21 @@ pre {
 .compose-add-caption kbd { margin-left: .35rem; padding: .1rem .35rem; border: 1px solid currentColor; border-radius: 4px; font-size: .75em; opacity: .8; }
 .compose-player-tools #composeEndCaption { min-height: 44px; }
 .compose-timeline { display: grid; grid-column: 1 / -1; grid-template-columns: 80px minmax(0,1fr); gap: .35rem .7rem; width: 100%; margin: 1.25rem 0; }
+.compose-timeline-tools { display: flex; align-items: center; gap: .55rem; margin-top: .9rem; color: var(--muted,#63727a); font-size: .85rem; }
+.compose-timeline-tools select { min-width: 4.5rem; }
+.compose-timeline-tools span { opacity: .8; }
+.compose-lane-scroll { position: relative; min-width: 0; overflow-x: auto; overflow-y: hidden; border-radius: 5px; scrollbar-width: thin; }
 .compose-lane { position: relative; height: 25px; overflow: hidden; border-radius: 5px; background: color-mix(in srgb, var(--line,#ccd5d9) 38%, transparent); }
 .compose-lane-label { align-self: center; font-size: .8rem; color: var(--muted,#63727a); }
 .compose-timeline-block { position: absolute; top: 3px; bottom: 3px; min-width: 8px; padding: 2px 4px; overflow: hidden; border-radius: 4px; background: #8dcf75; color: #142016; font-size: .7rem; }
 .compose-timeline-block.caption { background: #79aee6; }
+.compose-timeline-block.overlay { display: flex; align-items: center; justify-content: space-between; min-width: 18px; padding: 0; cursor: grab; user-select: none; }
+.compose-timeline-block.overlay.selected { outline: 2px solid var(--caption-accent); z-index: 2; }
+.compose-timeline-block.overlay.image { background: #83d6c5; }
+.compose-timeline-block.overlay.text { background: #ffd166; }
+.timeline-block-label { min-width: 0; padding: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.timeline-handle { width: 5px; height: 100%; flex: 0 0 5px; cursor: ew-resize; background: rgb(20 32 22 / 30%); }
+.compose-timeline-playhead { position: absolute; top: 0; bottom: 0; width: 2px; z-index: 4; pointer-events: none; background: #ff6b6b; box-shadow: 0 0 0 1px rgb(255 107 107 / 25%); }
 .compose-panel { min-width: 0; padding: 1rem; border: 1px solid var(--line,#ccd5d9); border-radius: 12px; background: var(--panel,#fff); }
 .compose-panel textarea { width: 100%; min-height: 12rem; resize: vertical; }
 .compose-panel #reelOptions { display: block; margin-top: .7rem; }

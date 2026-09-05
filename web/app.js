@@ -46,6 +46,10 @@ let reelTextOverlays = [];
 let reelImageOverlays = [];
 let reelPlayhead = 0;
 let reelDrag = null;
+let timelineDrag = null;
+let timelineSuppressClick = false;
+let selectedComposeOverlay = null;
+let copiedComposeOverlay = null;
 const reelPreviewImages = new Map();
 let shotReviewItems = [];
 let paperEditCuts = [];
@@ -232,6 +236,7 @@ function renderCaptionBlocks() {
   if (preview) preview.textContent = captionCues[0]?.lines?.join("\n") || "Caption preview";
   const lane = document.querySelector("#composeCaptionLane");
   if (lane) lane.innerHTML = captionCues.map((cue, index) => { const duration = Math.max(1, videoDuration || 30); const end = cue.end == null ? duration : Number(cue.end); return `<span class="compose-timeline-block caption" data-caption-seek="${index}" style="left:${Math.max(0, Number(cue.start) / duration * 100)}%;width:${Math.max(1, (end - Number(cue.start)) / duration * 100)}%">${index + 1}</span>`; }).join("");
+  renderComposeTimeline();
   renderComposeOverlayLayer();
 }
 
@@ -269,6 +274,50 @@ function addCaptionFromPlayback() {
   if (status) status.textContent = `Caption ${index + 1} starts at ${now.toFixed(2)}s. Type it, then press Enter or play.`;
 }
 
+function composeTimelineDuration() {
+  return Math.max(1, Number(document.querySelector("#composeVideo")?.duration || document.querySelector("#reelDuration")?.value || 30));
+}
+
+function renderComposeTimeline() {
+  const duration = composeTimelineDuration();
+  const zoom = Number(document.querySelector("#composeTimelineZoom")?.value || 1);
+  const overlayLane = document.querySelector("#composeOverlayLane");
+  const captionLane = document.querySelector("#composeCaptionLane");
+  const overlayItems = [...reelTextOverlays.map((item, index) => ({ ...item, _kind: "text", _index: index })), ...reelImageOverlays.map((item, index) => ({ ...item, _kind: "image", _index: index }))];
+  const block = (item) => {
+    const selected = selectedComposeOverlay?.kind === item._kind && selectedComposeOverlay.index === item._index ? " selected" : "";
+    const start = Math.max(0, Number(item.start_sec || 0));
+    const width = Math.max(0.1, Number(item.duration_sec || 0.1));
+    return `<span class="compose-timeline-block overlay ${item._kind}${selected}" data-overlay-kind="${item._kind}" data-overlay-index="${item._index}" style="left:${start / duration * 100}%;width:${width / duration * 100}%"><span class="timeline-handle left" data-timeline-resize="left"></span><span class="timeline-block-label">${item._kind === "text" ? escapeHtml(item.text || "Text") : "Image"}</span><span class="timeline-handle right" data-timeline-resize="right"></span></span>`;
+  };
+  if (overlayLane) overlayLane.innerHTML = `${overlayItems.map(block).join("")}<span class="compose-timeline-playhead"></span>`;
+  if (captionLane) { const captions = captionCues.map((cue, index) => { const end = cue.end == null ? duration : Number(cue.end); return `<span class="compose-timeline-block caption" data-caption-seek="${index}" style="left:${Math.max(0, Number(cue.start) / duration * 100)}%;width:${Math.max(0.1, (end - Number(cue.start)) / duration * 100)}%">${index + 1}</span>`; }).join(""); captionLane.innerHTML = `${captions}<span class="compose-timeline-playhead"></span>`; }
+  document.querySelectorAll(".compose-lane").forEach((lane) => { lane.style.width = `${zoom * 100}%`; lane.style.minWidth = "100%"; });
+  updateComposeTimelinePlayhead();
+}
+
+function updateComposeTimelinePlayhead() {
+  const video = document.querySelector("#composeVideo");
+  const duration = composeTimelineDuration();
+  const now = Number(video?.currentTime || 0);
+  const percent = Math.max(0, Math.min(100, now / duration * 100));
+  document.querySelectorAll(".compose-timeline-playhead").forEach((head) => { head.style.left = `${percent}%`; });
+  document.querySelectorAll("[data-compose-timeline]").forEach((scroll) => {
+    const x = percent / 100 * scroll.scrollWidth;
+    if (x < scroll.scrollLeft || x > scroll.scrollLeft + scroll.clientWidth) scroll.scrollLeft = Math.max(0, x - scroll.clientWidth * .25);
+  });
+}
+
+function seekFromComposeTimeline(event, scroll) {
+  const video = document.querySelector("#composeVideo");
+  if (!video) return;
+  const lane = scroll.querySelector(".compose-lane");
+  const rect = lane.getBoundingClientRect();
+  const position = Math.max(0, Math.min(lane.scrollWidth, event.clientX - rect.left + scroll.scrollLeft));
+  video.currentTime = position / lane.scrollWidth * composeTimelineDuration();
+  renderComposeOverlayLayer();
+}
+
 function renderComposeOverlayLayer() {
   const layer = document.querySelector("#composeOverlayLayer");
   const video = document.querySelector("#composeVideo");
@@ -289,7 +338,7 @@ async function openCaptions() {
     video.src = latestResult?.media_url ? `${latestResult.media_url}?t=${Date.now()}` : "/api/v1/wizard/result";
     video.load();
     video.onloadedmetadata = () => { const scrub = document.querySelector("#composeScrub"); if (scrub) scrub.max = String(video.duration || 1); renderCaptionBlocks(); renderComposeOverlayLayer(); };
-    video.ontimeupdate = () => { renderComposeOverlayLayer(); };
+    video.ontimeupdate = () => { renderComposeOverlayLayer(); updateComposeTimelinePlayhead(); };
   }
   const mount = document.querySelector("#composeReelMount");
   const reel = document.querySelector("#reelOptions");
@@ -1392,6 +1441,7 @@ function renderReelOptions() {
   const imageRoot = document.querySelector("#reelImageLines");
   if (imageRoot) imageRoot.innerHTML = reelImageOverlays.map((item, index) => `<div class="reel-text-line" data-reel-image-index="${index}"><span>Flyer ${index + 1}</span><label>Width <input data-reel-image-field="width" type="number" min="0.05" max="1" step="0.01" value="${item.width ?? .35}" /></label><label>Opacity <input data-reel-image-field="opacity" type="number" min="0.05" max="1" step="0.05" value="${item.opacity ?? 1}" /></label><label>Start <input data-reel-image-field="start_sec" type="number" min="0" max="60" step="0.1" value="${item.start_sec ?? 0}" /></label><label>Duration <input data-reel-image-field="duration_sec" type="number" min="0.1" max="60" step="0.1" value="${item.duration_sec ?? 3}" /></label><button type="button" data-duplicate-reel-image="${index}">Duplicate</button><button type="button" data-remove-reel-image="${index}">Remove</button></div>`).join("");
   renderReelTimeline();
+  renderComposeTimeline();
   drawReelPreview(); renderComposeOverlayLayer();
 }
 
@@ -2494,6 +2544,12 @@ document.addEventListener("click", (event) => {
     }
     return;
   }
+  const timelineScroll = target.closest?.("[data-compose-timeline]");
+  if (timelineScroll instanceof HTMLElement) {
+    if (timelineSuppressClick) { timelineSuppressClick = false; return; }
+    seekFromComposeTimeline(event, timelineScroll);
+    return;
+  }
   const captionRow = target.closest?.("[data-caption-seek]");
   if (captionRow instanceof HTMLElement && captionRow.dataset.captionSeek != null) {
     const cue = captionCues[Number(captionRow.dataset.captionSeek)];
@@ -2699,6 +2755,21 @@ document.addEventListener("keydown", (event) => {
     document.querySelector("#composeVideo")?.play().catch(() => {});
     return;
   }
+  const commandKey = event.metaKey || event.ctrlKey;
+  const editingField = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement;
+  if (commandKey && event.key.toLowerCase() === "c" && selectedComposeOverlay && !editingField) {
+    const source = selectedComposeOverlay.kind === "text" ? reelTextOverlays[selectedComposeOverlay.index] : reelImageOverlays[selectedComposeOverlay.index];
+    if (source) { copiedComposeOverlay = { kind: selectedComposeOverlay.kind, item: { ...source } }; event.preventDefault(); }
+    return;
+  }
+  if (commandKey && event.key.toLowerCase() === "v" && copiedComposeOverlay && !editingField) {
+    const item = { ...copiedComposeOverlay.item, start_sec: Number(document.querySelector("#composeVideo")?.currentTime || 0) };
+    if (copiedComposeOverlay.kind === "text") { reelTextOverlays.push(item); selectedComposeOverlay = { kind: "text", index: reelTextOverlays.length - 1 }; }
+    else { reelImageOverlays.push(item); selectedComposeOverlay = { kind: "image", index: reelImageOverlays.length - 1 }; }
+    renderReelOptions();
+    event.preventDefault();
+    return;
+  }
   if ((event.key === "a" || event.key === "A") && currentStep === 5 && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement)) {
     event.preventDefault(); addCaptionFromPlayback();
   }
@@ -2727,6 +2798,7 @@ document.addEventListener("input", (event) => {
   if (!(input instanceof HTMLElement)) return;
   if (input.id === "captionStyle") { input.dataset.userChoice = "1"; renderComposeOverlayLayer(); return; }
   if (input.id === "reelDuration" || input.id === "reelAspect") { renderReelOptions(); return; }
+  if (input.id === "composeTimelineZoom") { renderComposeTimeline(); return; }
   if (input.id === "backstageDuration") { const value = document.querySelector("#backstageDurationValue"); if (value) value.textContent = `${input.value}s`; return; }
   if (input.id === "reelPlayhead") { reelPlayhead = Number(input.value); document.querySelector("#reelPlayheadValue").textContent = `${reelPlayhead.toFixed(1)}s`; drawReelPreview(); return; }
   if (input.dataset.captionText != null) { const cue = captionCues[Number(input.dataset.captionText)]; if (cue) { cue.lines = input.value.split(/\r?\n/); syncCaptionTextArea(); renderComposeOverlayLayer(); } return; }
@@ -2804,6 +2876,48 @@ document.addEventListener("pointermove", (event) => {
   drawReelPreview(); renderComposeOverlayLayer();
 });
 document.addEventListener("pointerup", () => { if (reelDrag) { reelDrag = null; renderReelTimeline(); renderComposeOverlayLayer(); } });
+
+document.addEventListener("pointerdown", (event) => {
+  const block = event.target.closest?.(".compose-timeline-block.overlay");
+  if (!(block instanceof HTMLElement)) return;
+  const kind = block.dataset.overlayKind;
+  const index = Number(block.dataset.overlayIndex);
+  const item = kind === "text" ? reelTextOverlays[index] : reelImageOverlays[index];
+  if (!item) return;
+  selectedComposeOverlay = { kind, index };
+  const handle = event.target.closest?.("[data-timeline-resize]");
+  timelineDrag = { kind, index, mode: handle?.dataset.timelineResize || "move", startX: event.clientX, startStart: Number(item.start_sec || 0), startDuration: Number(item.duration_sec || 0.1), moved: false };
+  event.preventDefault();
+  renderComposeTimeline();
+});
+
+document.addEventListener("pointermove", (event) => {
+  if (!timelineDrag) return;
+  const item = timelineDrag.kind === "text" ? reelTextOverlays[timelineDrag.index] : reelImageOverlays[timelineDrag.index];
+  const scroll = document.querySelector("[data-compose-timeline] .compose-lane");
+  if (!item || !scroll) return;
+  const delta = (event.clientX - timelineDrag.startX) / Math.max(1, scroll.scrollWidth) * composeTimelineDuration();
+  if (Math.abs(delta) > 1) timelineDrag.moved = true;
+  if (timelineDrag.mode === "left") {
+    item.start_sec = Math.max(0, Math.min(timelineDrag.startStart + timelineDrag.startDuration - 0.1, timelineDrag.startStart + delta));
+    item.duration_sec = Math.max(0.1, timelineDrag.startDuration - (item.start_sec - timelineDrag.startStart));
+  } else if (timelineDrag.mode === "right") {
+    item.duration_sec = Math.max(0.1, timelineDrag.startDuration + delta);
+  } else {
+    item.start_sec = Math.max(0, timelineDrag.startStart + delta);
+  }
+  renderComposeTimeline();
+  drawReelPreview();
+  renderComposeOverlayLayer();
+});
+
+document.addEventListener("pointerup", () => {
+  if (!timelineDrag) return;
+  timelineSuppressClick = timelineDrag.moved;
+  timelineDrag = null;
+  renderReelTimeline();
+  renderComposeTimeline();
+});
 
 document.addEventListener("toggle", (event) => {
   const target = event.target;

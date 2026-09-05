@@ -291,7 +291,8 @@
           </div>
           <div class="compose-panel compose-overlays-panel"><div class="setup-heading"><h2>Overlays</h2><span>Flyers and phrases from the Reel editor</span><button id="composeDuplicateOverlay" class="icon-button small" type="button">Duplicate</button></div><div id="composeOverlayControls"></div><div id="composeReelMount"></div></div>
         </div>
-        <div class="compose-timeline"><div class="compose-lane-label">Overlays</div><div id="composeOverlayLane" class="compose-lane"></div><div class="compose-lane-label">Captions</div><div id="composeCaptionLane" class="compose-lane"></div></div>
+        <div class="compose-timeline-tools"><label for="composeTimelineZoom">Timeline zoom</label><select id="composeTimelineZoom"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option></select><span id="composeTimelineHint">Click to seek · drag overlays to retime</span></div>
+        <div class="compose-timeline"><div class="compose-lane-label">Overlays</div><div class="compose-lane-scroll" data-compose-timeline><div id="composeOverlayLane" class="compose-lane"></div></div><div class="compose-lane-label">Captions</div><div class="compose-lane-scroll" data-compose-timeline><div id="composeCaptionLane" class="compose-lane"></div></div></div>
         <div class="compose-actions"><button id="composeContinue" class="primary icon-button" type="button">Continue to Result</button></div>
       </section>
       <section class="step" id="step6">
