@@ -58,6 +58,42 @@ from captions.styles import CAPTIONS_VERSION, get_style, list_styles
 LOGGER = logging.getLogger(__name__)
 
 
+def _expand_caption_animations(track: CueTrack) -> CueTrack:
+    """Encode per-cue slide/scale motion as short ASS cue segments.
+
+    The captions package remains deliberately pure; this adapter translates
+    UI-only animation overrides into ordinary position/size overrides before
+    the package's single-pass burn is invoked.
+    """
+    expanded: list[Cue] = []
+    for cue in track.cues:
+        override = dict(cue.style_override or {})
+        enter = str(override.pop("animation_in", "none") or "none")
+        exit_ = str(override.pop("animation_out", "none") or "none")
+        base_vertical = float(override.get("vertical", 68))
+        base_size = float(override.get("size", 54))
+        cuts = {float(cue.start), float(cue.end)}
+        if enter in {"slide", "scale"}:
+            cuts.update(float(cue.start) + step for step in (0.08, 0.16, 0.24) if float(cue.start) + step < float(cue.end))
+        if exit_ in {"slide", "scale"}:
+            cuts.update(float(cue.end) - step for step in (0.24, 0.16, 0.08) if float(cue.end) - step > float(cue.start))
+        points = sorted(cuts)
+        for index, (start, end) in enumerate(zip(points, points[1:])):
+            local = dict(override)
+            progress_in = min(1.0, max(0.0, (start - float(cue.start)) / 0.24))
+            progress_out = min(1.0, max(0.0, (float(cue.end) - end) / 0.24))
+            if enter == "slide" and start < float(cue.start) + 0.24:
+                local["vertical"] = 105 - (105 - base_vertical) * progress_in
+            elif exit_ == "slide" and end > float(cue.end) - 0.24:
+                local["vertical"] = 105 - (105 - base_vertical) * progress_out
+            if enter == "scale" and start < float(cue.start) + 0.24:
+                local["size"] = base_size * (0.72 + 0.28 * progress_in)
+            elif exit_ == "scale" and end > float(cue.end) - 0.24:
+                local["size"] = base_size * (0.72 + 0.28 * progress_out)
+            expanded.append(Cue(cue.lines, start, end, cue.words, local))
+    return CueTrack(tuple(expanded), track.lang)
+
+
 def _invalidate_stale_sync_on_open(project: Project) -> None:
     if invalidate_stale_sync_artifact(project):
         LOGGER.warning("Invalidated stale sync_map.json for %s; sync will be recomputed", project.folder)
@@ -928,6 +964,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             letterbox = body.get("letterbox") if isinstance(body.get("letterbox"), dict) else None
             logo = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1])) / "web" / "logo_watermark.png"
             if not logo.exists(): logo = Path(__file__).resolve().parents[1] / "assets" / "logo_watermark.png"
+            track = _expand_caption_animations(track)
             output = burn_captions(result["path"], track, style, output_path=destination, header=header, logo_path=logo if header and header.get("logo_enabled") else None, letterbox=letterbox)
             return jsonify({"path": str(output), "filename": output.name, "media_url": "/api/v1/captions/result", "version": CAPTIONS_VERSION})
         except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError) as exc:
