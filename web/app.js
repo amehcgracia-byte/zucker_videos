@@ -2605,6 +2605,7 @@ document.addEventListener("click", (event) => {
     const video = document.querySelector("#composeVideo");
     if (cue && video) {
       captionActiveIndex = captionIndex;
+      selectedComposeOverlay = null;
       video.currentTime = Number(cue.start) || 0;
       video.pause();
       renderCaptionBlocks();
@@ -2983,6 +2984,7 @@ document.addEventListener("pointerdown", (event) => {
   const item = kind === "image" ? reelImageOverlays[index] : reelVideoOverlays[index];
   if (!item) return;
   selectedComposeOverlay = { kind, index };
+  captionActiveIndex = null;
   const handle = event.target.closest?.("[data-timeline-resize]");
   timelineDrag = { kind, index, mode: handle?.dataset.timelineResize || "move", startX: event.clientX, startStart: Number(item.start_sec || 0), startDuration: Number(item.duration_sec || 0.1), moved: false };
   event.preventDefault();
