@@ -4100,9 +4100,15 @@ def _drawtext(text: str, placement: str) -> str:
 
 def _overlay_config(platform: str, first_segment: dict[str, Any]) -> dict[str, Any]:
     config = _global_config()
+    title = str(first_segment.get("title") or config.get("project_name") or "").strip()
+    # Generic source-window labels are metadata, not user-authored Reel copy.
+    # In particular, older projects persisted "Full video" and the Reel
+    # filtergraph then painted it over the live/exported picture.
+    if title.casefold() in {"full video", "video"}:
+        title = ""
     return {
         "platform": platform,
-        "title": first_segment.get("title") or config.get("project_name"),
+        "title": title,
         "band_name": config.get("band_name") or "",
         "handle": config.get("handle") or "",
     }

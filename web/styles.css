@@ -1528,7 +1528,7 @@ pre {
 .timeline-handle { width: 5px; height: 100%; flex: 0 0 5px; cursor: ew-resize; background: rgb(20 32 22 / 30%); }
 .compose-timeline-playhead { position: absolute; top: 0; bottom: 0; width: 2px; z-index: 4; pointer-events: none; background: #ff6b6b; box-shadow: 0 0 0 1px rgb(255 107 107 / 25%); }
 .compose-panel { min-width: 0; padding: 1rem; border: 1px solid var(--line,#ccd5d9); border-radius: 12px; background: var(--panel,#fff); }
-.compose-panel textarea { width: 100%; min-height: 12rem; resize: vertical; }
+.compose-panel textarea { width: 100%; min-height: 12rem; resize: vertical; background: #17242d; color: #f7fbfc; caret-color: #ffffff; border-color: #6f8792; }
 .compose-panel, .compose-player-wrap, .compose-timeline { position: relative; z-index: 1; }
 .compose-overlay-layer { z-index: 2; }
 .compose-caption-list-actions { display: flex; align-items: center; justify-content: space-between; gap: .6rem; margin: .75rem 0 .5rem; }
@@ -1538,7 +1538,8 @@ pre {
 .caption-block-main strong { overflow-wrap: anywhere; white-space: pre-line; }
 .caption-block-main small { opacity: .65; white-space: nowrap; }
 .caption-block.active { border-color: var(--caption-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--caption-accent), transparent 72%); }
-.caption-row-text { width: 100%; min-width: 0; padding: .35rem .45rem; border: 1px solid var(--line,#ccd5d9); border-radius: 5px; background: var(--surface,#fff); color: inherit; }
+.caption-row-text { width: 100%; min-width: 0; padding: .35rem .45rem; border: 1px solid #6f8792; border-radius: 5px; background: #17242d; color: #f7fbfc; caret-color: #ffffff; }
+.caption-row-text:focus, .compose-panel textarea:focus { border-color: var(--caption-accent); outline: 2px solid color-mix(in srgb, var(--caption-accent), transparent 65%); outline-offset: 1px; }
 .caption-time-fields { display: flex; flex-wrap: wrap; gap: .5rem; }
 .caption-time-fields label { display: flex; align-items: center; gap: .25rem; font-size: .75rem; color: var(--muted,#63727a); }
 .caption-time-fields input { width: 5.4rem; padding: .25rem .35rem; }

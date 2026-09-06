@@ -356,7 +356,7 @@ function renderComposeOverlayLayer() {
   const captionInline = [`color:${override.color || "#fff"}`, override.size ? `font-size:${Number(override.size) / 3}px` : "", override.vertical != null ? `top:${Number(override.vertical)}%` : ""].filter(Boolean).join(";");
   const captionOverride = caption?.style_override || {};
   const captionAnimation = ` caption-animation-in-${escapeHtml(captionOverride.animation_in || "fade")} caption-animation-out-${escapeHtml(captionOverride.animation_out || "fade")}`;
-  layer.innerHTML = images.map((item) => `<img class="compose-live-image" src="${escapeHtml(item.preview_url || item.path || '')}" style="left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;width:${Number(item.width ?? .35) * 100}%;opacity:${item.opacity ?? 1}" alt="" />`).join("") + videos.map((item) => `<video class="compose-live-video" src="${escapeHtml(item.preview_url || item.path || '')}" autoplay muted loop playsinline style="left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;width:${Number(item.width ?? .35) * 100}%;opacity:${item.opacity ?? 1}" aria-label="Video overlay"></video>`).join("") + (caption ? `<span class="compose-live-caption caption-style-${escapeHtml(captionStyle)}${captionAnimation}" style="${captionInline}">${escapeHtml(caption.lines.join("\n"))}</span>` : "");
+  layer.innerHTML = images.map((item) => `<img class="compose-live-image" src="${escapeHtml(item.preview_url || item.path || '')}" style="left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;width:${Number(item.width ?? .35) * 100}%;opacity:${item.opacity ?? 1}" alt="" />`).join("") + videos.map((item) => `<video class="compose-live-video" src="${escapeHtml(item.preview_url || item.path || '')}" autoplay muted loop playsinline style="left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;width:${Number(item.width ?? .35) * 100}%;opacity:${item.opacity ?? 1}" aria-label="Video overlay"></video>`).join("") + (caption ? `<span class="compose-live-caption caption-style-${escapeHtml(captionStyle)}${captionAnimation}" data-caption-preview-index="${captionCues.indexOf(caption)}" tabindex="0" style="${captionInline}">${escapeHtml(caption.lines.join("\n"))}</span>` : "");
   const time = document.querySelector("#composeTime"); if (time) time.textContent = `${Math.floor(now / 60).toString().padStart(2, '0')}:${(now % 60).toFixed(2).padStart(5, '0')}`;
   const scrub = document.querySelector("#composeScrub"); if (scrub && Number.isFinite(video.duration)) { scrub.max = String(video.duration); scrub.value = String(now); }
 }
@@ -2620,6 +2620,17 @@ document.addEventListener("click", (event) => {
     return;
   }
   if (target.id === "composeAddCaption") { addCaptionFromPlayback(); return; }
+  const captionPreview = target.closest?.("[data-caption-preview-index]");
+  if (captionPreview instanceof HTMLElement) {
+    const index = Number(captionPreview.dataset.captionPreviewIndex);
+    const field = document.querySelector(`[data-caption-text="${index}"]`);
+    if (Number.isInteger(index) && field instanceof HTMLElement) {
+      captionActiveIndex = index;
+      renderCaptionBlocks();
+      document.querySelector(`[data-caption-text="${index}"]`)?.focus();
+    }
+    return;
+  }
   if (target.id === "composeEndCaption") {
     const video = document.querySelector("#composeVideo");
     if (video) closeActiveCaption(Number(video.currentTime || 0));
