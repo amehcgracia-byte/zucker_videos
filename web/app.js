@@ -311,7 +311,7 @@ function renderComposeTimeline() {
     const selected = selectedComposeOverlay?.kind === item._kind && selectedComposeOverlay.index === item._index ? " selected" : "";
     const start = Math.max(0, Number(item.start_sec || 0));
     const width = Math.max(0.1, Number(item.duration_sec || 0.1));
-    return `<span class="compose-timeline-block overlay ${item._kind}${selected}" data-overlay-kind="${item._kind}" data-overlay-index="${item._index}" style="left:${start / duration * 100}%;width:${width / duration * 100}%"><span class="timeline-handle left" data-timeline-resize="left"></span><span class="timeline-block-label">${item._kind === "video" ? "Video" : "Image"}</span><span class="timeline-handle right" data-timeline-resize="right"></span></span>`;
+    return `<span class="compose-timeline-block overlay ${item._kind}${selected}" data-overlay-kind="${item._kind}" data-overlay-index="${item._index}" tabindex="0" style="left:${start / duration * 100}%;width:${width / duration * 100}%"><span class="timeline-handle left" data-timeline-resize="left"></span><span class="timeline-block-label">${item._kind === "video" ? "Video" : "Image"}</span><span class="timeline-handle right" data-timeline-resize="right"></span></span>`;
   };
   if (overlayLane) overlayLane.innerHTML = `${overlayItems.map(block).join("")}<span class="compose-timeline-playhead"></span>`;
   if (captionLane) { const captions = captionCues.map((cue, index) => { const end = cue.end == null ? duration : Number(cue.end); return `<span class="compose-timeline-block caption" data-caption-seek="${index}" style="left:${Math.max(0, Number(cue.start) / duration * 100)}%;width:${Math.max(0.1, (end - Number(cue.start)) / duration * 100)}%">${index + 1}</span>`; }).join(""); captionLane.innerHTML = `${captions}<span class="compose-timeline-playhead"></span>`; }
@@ -2985,6 +2985,7 @@ document.addEventListener("pointerdown", (event) => {
   if (!item) return;
   selectedComposeOverlay = { kind, index };
   captionActiveIndex = null;
+  block.focus();
   const handle = event.target.closest?.("[data-timeline-resize]");
   timelineDrag = { kind, index, mode: handle?.dataset.timelineResize || "move", startX: event.clientX, startStart: Number(item.start_sec || 0), startDuration: Number(item.duration_sec || 0.1), moved: false };
   event.preventDefault();
