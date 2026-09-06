@@ -304,6 +304,67 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         save_global_config(config)
         return jsonify({"personal_logo_path": source_path})
 
+    @app.get("/api/v1/wizard/logo")
+    def api_wizard_logo() -> Response:
+        project = _require_project(state)
+        wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
+        custom = Path(str(wizard.get("reel_logo_path") or "")).expanduser()
+        config = load_global_config()
+        default = Path(str(config.get("personal_logo_path") or "")).expanduser()
+        return jsonify({
+            "custom": {"path": str(custom), "url": "/api/v1/wizard/logo/project"} if custom.is_file() else None,
+            "default": {"path": str(default), "url": "/api/v1/wizard/logo/default"} if default.is_file() else None,
+        })
+
+    @app.post("/api/v1/wizard/logo")
+    def api_wizard_logo_upload() -> Response:
+        project = _require_project(state)
+        uploaded = request.files.get("file")
+        raw_path = str(request.form.get("path") or "").strip()
+        source = Path(raw_path).expanduser().resolve() if raw_path else None
+        suffix = Path(uploaded.filename).suffix.lower() if uploaded and uploaded.filename else (source.suffix.lower() if source else "")
+        if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+            return error_response("bad_request", "Logo must be PNG, JPEG, or WebP", 400)
+        destination = project.folder / f"overlay_logo{suffix}"
+        for old in project.folder.glob("overlay_logo.*"):
+            old.unlink(missing_ok=True)
+        if uploaded and uploaded.filename:
+            uploaded.save(destination)
+        elif source and source.is_file():
+            shutil.copy2(source, destination)
+        else:
+            return error_response("bad_request", "Choose a valid logo file", 400)
+        wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
+        wizard["reel_logo_path"] = str(destination.resolve())
+        project.save()
+        return jsonify({"path": str(destination.resolve()), "url": "/api/v1/wizard/logo/project", "name": destination.name})
+
+    @app.delete("/api/v1/wizard/logo")
+    def api_wizard_logo_remove() -> Response:
+        project = _require_project(state)
+        wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
+        for old in project.folder.glob("overlay_logo.*"):
+            old.unlink(missing_ok=True)
+        wizard["reel_logo_path"] = ""
+        project.save()
+        return jsonify({"ok": True})
+
+    @app.get("/api/v1/wizard/logo/project")
+    def api_wizard_logo_project_file() -> Response:
+        project = _require_project(state)
+        wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
+        path = Path(str(wizard.get("reel_logo_path") or ""))
+        if not path.is_file() or path.parent.resolve() != project.folder.resolve():
+            return error_response("not_found", "No project logo", 404)
+        return send_file(str(path))
+
+    @app.get("/api/v1/wizard/logo/default")
+    def api_wizard_logo_default_file() -> Response:
+        path = Path(str(load_global_config().get("personal_logo_path") or ""))
+        if not path.is_file():
+            return error_response("not_found", "No default brand logo", 404)
+        return send_file(str(path))
+
     @app.post("/api/v1/inbox/register")
     def api_inbox_register() -> Response:
         project = _require_project(state)
@@ -962,10 +1023,15 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             destination = project.exports_dir / f"{Path(result['path']).stem}_captions.mp4"
             header = body.get("header") if isinstance(body.get("header"), dict) else None
             letterbox = body.get("letterbox") if isinstance(body.get("letterbox"), dict) else None
-            logo = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1])) / "web" / "logo_watermark.png"
-            if not logo.exists(): logo = Path(__file__).resolve().parents[1] / "assets" / "logo_watermark.png"
+            logo = None
+            if header and header.get("logo_source") == "custom":
+                candidate = Path(str(project.data.get("settings", {}).get("wizard", {}).get("reel_logo_path") or ""))
+                if candidate.is_file() and candidate.parent.resolve() == project.folder.resolve(): logo = candidate
+            elif header and header.get("logo_source") == "default":
+                candidate = Path(str(load_global_config().get("personal_logo_path") or ""))
+                if candidate.is_file(): logo = candidate
             track = _expand_caption_animations(track)
-            output = burn_captions(result["path"], track, style, output_path=destination, header=header, logo_path=logo if header and header.get("logo_enabled") else None, letterbox=letterbox)
+            output = burn_captions(result["path"], track, style, output_path=destination, header=header, logo_path=logo, letterbox=letterbox)
             return jsonify({"path": str(output), "filename": output.name, "media_url": "/api/v1/captions/result", "version": CAPTIONS_VERSION})
         except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError) as exc:
             return error_response("caption_burn_failed", str(exc), 400)

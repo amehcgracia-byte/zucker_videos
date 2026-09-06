@@ -1529,8 +1529,6 @@ pre {
 .compose-timeline-playhead { position: absolute; top: 0; bottom: 0; width: 2px; z-index: 4; pointer-events: none; background: #ff6b6b; box-shadow: 0 0 0 1px rgb(255 107 107 / 25%); }
 .compose-panel { min-width: 0; padding: 1rem; border: 1px solid var(--line,#ccd5d9); border-radius: 12px; background: var(--panel,#fff); }
 .compose-panel textarea { width: 100%; min-height: 12rem; resize: vertical; }
-.compose-panel #reelOptions { display: block; margin-top: .7rem; }
-.compose-overlays-panel #reelOptions { max-height: none; overflow: visible; }
 .compose-panel, .compose-player-wrap, .compose-timeline { position: relative; z-index: 1; }
 .compose-overlay-layer { z-index: 2; }
 .compose-caption-list-actions { display: flex; align-items: center; justify-content: space-between; gap: .6rem; margin: .75rem 0 .5rem; }
@@ -1550,17 +1548,18 @@ pre {
 .caption-block-actions { display: flex; flex-wrap: wrap; gap: .4rem; justify-content: flex-end; position: relative; z-index: 3; }
 .caption-block button, .reel-text-line button { min-height: 32px; white-space: nowrap; position: relative; z-index: 3; }
 .compose-overlays-panel .reel-text-line { overflow: visible; }
-.compose-overlays-panel #reelTextLines,
-.compose-overlays-panel .reel-text-tools,
-.compose-overlays-panel #reelTimeline,
-.compose-overlays-panel #reelPreview,
-.compose-overlays-panel .reel-playhead-label { display: none !important; }
-.compose-overlays-panel .reel-visual-tools .reel-text-tool { display: none; }
 .compose-video-import { margin: .6rem 0; }
 .caption-style-overrides select { min-width: 4.5rem; padding: .25rem .35rem; }
 .header-controls { display: grid; gap: .55rem; margin: .8rem 0; padding: .7rem; border: 1px solid var(--line,#ccd5d9); border-radius: 8px; }
+.compose-overlay-actions { display: flex; flex-wrap: wrap; gap: .55rem; margin: .75rem 0; }
+.compose-logo-controls { display: grid; gap: .55rem; margin-top: 1rem; padding-top: .8rem; border-top: 1px solid var(--line,#ccd5d9); }
+.compose-logo-controls .setup-heading { margin: 0; }
+.compose-logo-controls h3 { margin: 0; font-size: 1rem; }
+.logo-choice-row { display: grid; gap: .4rem; }
+.logo-file-row { display: flex; flex-wrap: wrap; gap: .55rem; align-items: center; }
+.compose-logo-preview { display: flex; align-items: center; gap: .6rem; min-height: 56px; }
+.compose-logo-preview img { width: 56px; height: 56px; object-fit: contain; border: 1px solid var(--line,#ccd5d9); border-radius: 8px; background: #fff; }
 .compose-actions { display: flex; justify-content: flex-end; margin-top: 1rem; }
-#step2 #reelOptions { display: none; }
 
 @media (max-width: 1099px) {
   .compose-step { width: min(900px, calc(100% - 32px)); }

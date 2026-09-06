@@ -46,6 +46,7 @@ let reelTextOverlays = [];
 let reelImageOverlays = [];
 let reelVideoOverlays = [];
 let reelPlayhead = 0;
+let projectLogo = { choice: "none", path: "", url: "", name: "", defaultPath: "", defaultUrl: "" };
 let reelDrag = null;
 let timelineDrag = null;
 let timelineSuppressClick = false;
@@ -369,10 +370,8 @@ async function openCaptions() {
     video.onloadedmetadata = () => { const scrub = document.querySelector("#composeScrub"); if (scrub) scrub.max = String(video.duration || 1); renderCaptionBlocks(); renderComposeOverlayLayer(); };
     video.ontimeupdate = () => { renderComposeOverlayLayer(); updateComposeTimelinePlayhead(); };
   }
-  const mount = document.querySelector("#composeReelMount");
-  const reel = document.querySelector("#reelOptions");
-  if (mount && reel && reel.parentElement !== mount) { mount.appendChild(reel); reel.hidden = false; reel.open = true; }
   migrateTextOverlaysToCaptions();
+  loadProjectLogo().catch(() => {});
   const styles = await api("/captions/styles");
   const select = document.querySelector("#captionStyle");
   if (select && !select.options.length) select.innerHTML = (styles.styles || []).map((style) => `<option value="${escapeHtml(style.name)}">${escapeHtml(style.name.replaceAll("_", " "))}</option>`).join("");
@@ -412,14 +411,14 @@ async function burnCaptionTrack() {
   if (!captionCues.length || captionCues.length !== blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
   const style = document.querySelector("#captionStyle")?.value || "clean_bottom";
   const cues = captionCues.map((cue) => ({ ...cue, end: cue.end == null ? composeTimelineDuration() : cue.end }));
-  const result = await api("/captions/burn", { method: "POST", body: JSON.stringify({ style, cues, header: { title_enabled: document.querySelector("#captionHeaderEnabled")?.checked === true, title: document.querySelector("#captionHeaderTitle")?.value || "", logo_enabled: document.querySelector("#captionLogoEnabled")?.checked !== false, logo_height: 120 }, letterbox: { enabled: true, blur: Number(document.querySelector("#captionLetterboxBlur")?.value || 18) } }) });
+  const result = await api("/captions/burn", { method: "POST", body: JSON.stringify({ style, cues, header: { title_enabled: document.querySelector("#captionHeaderEnabled")?.checked === true, title: document.querySelector("#captionHeaderTitle")?.value || "", logo_source: selectedLogoSource(), logo_height: 120 }, letterbox: { enabled: true, blur: Number(document.querySelector("#captionLetterboxBlur")?.value || 18) } }) });
   const video = document.querySelector("#composeVideo"); if (video) { video.src = `${result.media_url}?t=${Date.now()}`; video.load(); }
   document.querySelector("#captionBurnStatus").textContent = `Created ${result.filename}`;
 }
 
 async function saveComposition() {
   const cues = captionCues.map((cue) => ({ ...cue, end: cue.end == null ? composeTimelineDuration() : cue.end }));
-  await api("/wizard/compose", { method: "POST", body: JSON.stringify({ texts: reelTextOverlays, images: reelImageOverlays, videos: reelVideoOverlays, cues, style: document.querySelector("#captionStyle")?.value || "karaoke_word", header: { title_enabled: document.querySelector("#captionHeaderEnabled")?.checked === true, title: document.querySelector("#captionHeaderTitle")?.value || "", logo_enabled: document.querySelector("#captionLogoEnabled")?.checked !== false }, letterbox: { enabled: true, blur: Number(document.querySelector("#captionLetterboxBlur")?.value || 18) } }) });
+  await api("/wizard/compose", { method: "POST", body: JSON.stringify({ texts: reelTextOverlays, images: reelImageOverlays, videos: reelVideoOverlays, cues, style: document.querySelector("#captionStyle")?.value || "karaoke_word", header: { title_enabled: document.querySelector("#captionHeaderEnabled")?.checked === true, title: document.querySelector("#captionHeaderTitle")?.value || "", logo_source: selectedLogoSource() }, letterbox: { enabled: true, blur: Number(document.querySelector("#captionLetterboxBlur")?.value || 18) } }) });
 }
 
 function projectIdFromStatus(status) {
@@ -1190,11 +1189,13 @@ async function newProject() {
   reelTextOverlays = [];
   reelImageOverlays = [];
   reelVideoOverlays = [];
+  projectLogo = { choice: "none", path: "", url: "", name: "", defaultPath: "", defaultUrl: "" };
   selectedComposeOverlay = null;
   copiedComposeOverlay = null;
   copiedCaption = null;
   document.querySelector("#captionText")?.replaceChildren();
   if (document.querySelector("#captionText")) document.querySelector("#captionText").value = "";
+  document.querySelector("#captionLogoNone")?.click();
   clearDetected();
   resetSphericalSetupToGlobal();
   document.querySelector("#videoName").value = todayName();
@@ -1299,16 +1300,7 @@ async function prepareStep2() {
 }
 
 async function loadSavedReelOverlays() {
-  if (reelTextOverlays.length || reelImageOverlays.length || reelVideoOverlays.length) { loadFlyerLibrary().catch(() => {}); return; }
-  try {
-    const saved = await api("/wizard/overlays");
-    if (saved.source === "project" || saved.source === "last") {
-      reelTextOverlays = saved.texts || [];
-      reelImageOverlays = saved.images || [];
-      reelVideoOverlays = saved.videos || [];
-      renderReelOptions();
-    }
-  } catch (_error) { /* overlays are optional */ }
+  // New projects start empty. Reuse is an explicit action in Overlay & Captions.
   loadFlyerLibrary().catch(() => {});
 }
 
@@ -1317,6 +1309,67 @@ async function loadFlyerLibrary() {
   if (!root) return;
   const result = await api("/wizard/flyers");
   root.innerHTML = (result.items || []).map((item) => `<article class="flyer-library-item"><button type="button" class="flyer-library-thumb" data-flyer-preview="${escapeHtml(item.url)}" aria-label="Preview ${escapeHtml(item.name)}"><img src="${escapeHtml(item.url)}" alt="${escapeHtml(item.name)}" loading="lazy" /></button><span class="flyer-library-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</span><button type="button" class="flyer-library-use" data-add-flyer="${escapeHtml(item.path)}" data-flyer-url="${escapeHtml(item.url)}">Use</button></article>`).join("");
+}
+
+function selectedLogoSource() {
+  return document.querySelector("input[name='captionLogoChoice']:checked")?.value || "none";
+}
+
+function renderProjectLogo() {
+  const choice = selectedLogoSource();
+  const preview = document.querySelector("#composeLogoPreview");
+  const image = document.querySelector("#composeLogoThumbnail");
+  const name = document.querySelector("#composeLogoName");
+  const status = document.querySelector("#composeLogoStatus");
+  const active = choice === "custom" ? projectLogo : choice === "default" ? { url: projectLogo.defaultUrl, name: "Default brand logo" } : projectLogo.url ? projectLogo : null;
+  if (preview) preview.hidden = !active?.url;
+  if (image && active?.url) image.src = `${active.url}?t=${Date.now()}`;
+  if (name) name.textContent = active?.name || "";
+  if (status) status.textContent = choice === "none" ? "No logo will be added to this project." : active?.url ? "Selected for this project." : "Choose or upload a logo.";
+}
+
+async function loadProjectLogo() {
+  const result = await api("/wizard/logo");
+  projectLogo = {
+    choice: "none",
+    path: result.custom?.path || "",
+    url: result.custom?.url || "",
+    name: result.custom?.path ? filename(result.custom.path) : "",
+    defaultPath: result.default?.path || "",
+    defaultUrl: result.default?.url || "",
+  };
+  const custom = document.querySelector("#captionLogoCustom");
+  const defaultChoice = document.querySelector("#captionLogoDefault");
+  const none = document.querySelector("#captionLogoNone");
+  if (custom) custom.disabled = !projectLogo.url;
+  if (defaultChoice) defaultChoice.disabled = !projectLogo.defaultUrl;
+  if (none) none.checked = true;
+  renderProjectLogo();
+}
+
+async function uploadProjectLogo(file) {
+  if (!file) return;
+  const form = new FormData();
+  if (file.path) form.append("path", file.path);
+  else form.append("file", file, file.name);
+  const result = await apiForm("/wizard/logo", form);
+  projectLogo.path = result.path || "";
+  projectLogo.url = result.url || "/api/v1/wizard/logo/project";
+  projectLogo.name = result.name || filename(projectLogo.path);
+  const custom = document.querySelector("#captionLogoCustom");
+  if (custom) { custom.disabled = false; custom.checked = true; }
+  renderProjectLogo();
+}
+
+async function removeProjectLogo() {
+  await api("/wizard/logo", { method: "DELETE" });
+  projectLogo.path = "";
+  projectLogo.url = "";
+  const none = document.querySelector("#captionLogoNone");
+  if (none) none.checked = true;
+  const custom = document.querySelector("#captionLogoCustom");
+  if (custom) custom.disabled = true;
+  renderProjectLogo();
 }
 
 function addFlyerReference(path, url) {
@@ -1462,35 +1515,15 @@ function applyEditTypeMode() {
 }
 
 function renderReelOptions() {
-  const root = document.querySelector("#reelTextLines");
-  if (!root) return;
   const duration = Number(document.querySelector("#reelDuration")?.value || 30);
   const value = document.querySelector("#reelDurationValue");
   if (value) value.textContent = `${duration}s`;
-  const playhead = document.querySelector("#reelPlayhead");
-  if (playhead) { playhead.max = String(duration); playhead.value = String(Math.min(duration, reelPlayhead)); reelPlayhead = Number(playhead.value); }
-  root.innerHTML = reelTextOverlays.map((item, index) => `<div class="reel-text-line" data-reel-text-index="${index}">
-    <input data-reel-field="text" placeholder="Text" value="${escapeHtml(item.text)}" />
-    <input data-reel-field="color" type="color" value="${item.color}" title="Colour" />
-    <label>Size <input data-reel-field="size" type="number" min="18" max="160" value="${item.size}" /></label>
-    <label>Font <select data-reel-field="font"><option value="bundled" ${item.font === "bundled" ? "selected" : ""}>Verdana Bold</option><option value="arial" ${item.font === "arial" ? "selected" : ""}>Arial</option></select></label>
-    <label>Weight <select data-reel-field="font_weight"><option value="normal" ${item.font_weight === "normal" ? "selected" : ""}>Normal</option><option value="bold" ${item.font_weight !== "normal" ? "selected" : ""}>Bold</option></select></label>
-    <label>Opacity <input data-reel-field="opacity" type="range" min="0.05" max="1" step="0.05" value="${item.opacity ?? 1}" /></label>
-    <label>Outline <input data-reel-field="outline_color" type="color" value="${item.outline_color || "#000000"}" /> <input data-reel-field="outline_width" type="number" min="0" max="12" value="${item.outline_width ?? 2}" /></label>
-    <label>Shadow <input data-reel-field="shadow_color" type="color" value="${item.shadow_color || "#000000"}" /> <input data-reel-field="shadow_blur" type="number" min="0" max="30" value="${item.shadow_blur ?? 4}" /></label>
-    <label>Box <input data-reel-field="background_color" type="color" value="${item.background_color || "#000000"}" /> <input data-reel-field="background_opacity" type="number" min="0" max="1" step="0.05" value="${item.background_opacity ?? 0}" /></label>
-    <label>Style <select data-reel-field="animation"><option value="none" ${item.animation === "none" ? "selected" : ""}>None</option><option value="fade" ${item.animation !== "none" ? "selected" : ""}>Fade</option><option value="slide" ${item.animation === "slide" ? "selected" : ""}>Slide</option><option value="scale" ${item.animation === "scale" ? "selected" : ""}>Scale</option></select></label>
-    <label>Start <input data-reel-field="start_sec" type="number" min="0" max="60" step="0.1" value="${item.start_sec}" /></label>
-    <label>Duration <input data-reel-field="duration_sec" type="number" min="0.1" max="60" step="0.1" value="${item.duration_sec}" /></label>
-    <button type="button" data-remove-reel-text="${index}">Remove</button>
-  </div>`).join("");
   const imageRoot = document.querySelector("#reelImageLines");
   if (imageRoot) imageRoot.innerHTML = reelImageOverlays.map((item, index) => `<div class="reel-text-line" data-reel-image-index="${index}"><span>Flyer ${index + 1}</span><label>Width <input data-reel-image-field="width" type="number" min="0.05" max="1" step="0.01" value="${item.width ?? .35}" /></label><label>Opacity <input data-reel-image-field="opacity" type="number" min="0.05" max="1" step="0.05" value="${item.opacity ?? 1}" /></label><label>Start <input data-reel-image-field="start_sec" type="number" min="0" max="60" step="0.1" value="${item.start_sec ?? 0}" /></label><label>Duration <input data-reel-image-field="duration_sec" type="number" min="0.1" max="60" step="0.1" value="${item.duration_sec ?? 3}" /></label><button type="button" data-duplicate-reel-image="${index}">Duplicate</button><button type="button" data-remove-reel-image="${index}">Remove</button></div>`).join("");
   const videoRoot = document.querySelector("#reelVideoLines");
   if (videoRoot) videoRoot.innerHTML = reelVideoOverlays.map((item, index) => `<div class="reel-text-line" data-reel-video-index="${index}"><span>Video ${index + 1}</span><label>Width <input data-reel-video-field="width" type="number" min="0.05" max="1" step="0.01" value="${item.width ?? .35}" /></label><label>Opacity <input data-reel-video-field="opacity" type="number" min="0.05" max="1" step="0.05" value="${item.opacity ?? 1}" /></label><label>Start <input data-reel-video-field="start_sec" type="number" min="0" max="60" step="0.1" value="${item.start_sec ?? 0}" /></label><label>Duration <input data-reel-video-field="duration_sec" type="number" min="0.1" max="60" step="0.1" value="${item.duration_sec ?? 3}" /></label><button type="button" data-remove-reel-video="${index}">Remove</button></div>`).join("");
-  renderReelTimeline();
   renderComposeTimeline();
-  drawReelPreview(); renderComposeOverlayLayer();
+  renderComposeOverlayLayer();
 }
 
 function renderReelTimeline() {
@@ -2543,7 +2576,18 @@ document.addEventListener("click", (event) => {
       .finally(() => { target.disabled = false; });
   }
   if (target.id === "reuseReelOverlays") {
-    api("/wizard/overlays").then((saved) => { reelTextOverlays = saved.texts || []; reelImageOverlays = saved.images || []; renderReelOptions(); }).catch((error) => showToast(error.message, true));
+    api("/wizard/overlays").then((saved) => {
+      reelImageOverlays = saved.images || [];
+      reelVideoOverlays = saved.videos || [];
+      const reusedText = (saved.texts || []).map((item) => ({
+        lines: String(item.text || "").split(/\r?\n/),
+        start: Number(item.start_sec || 0),
+        end: Number(item.start_sec || 0) + Math.max(0.1, Number(item.duration_sec || 3)),
+        style_override: { color: item.color || "#ffffff", size: Number(item.size || 54), vertical: item.y != null ? Number(item.y) * 100 : 50, animation_in: item.animation || "fade", animation_out: item.animation || "fade" },
+      })).filter((cue) => cue.lines.join("").trim());
+      captionCues = [...captionCues, ...reusedText];
+      syncCaptionTextArea(); renderCaptionBlocks(); renderReelOptions();
+    }).catch((error) => showToast(error.message, true));
   }
   if (target.id === "addReelText") {
     reelTextOverlays.push({ text: "", color: "#ffffff", size: 54, position: "middle-center", x: 0.5, y: 0.5, opacity: 1, font: "bundled", font_weight: "bold", outline_color: "#000000", outline_width: 2, shadow_color: "#000000", shadow_offset_x: 3, shadow_offset_y: 3, shadow_blur: 4, background_color: "#000000", background_opacity: 0, background_radius: 8, animation: "fade", start_sec: 0, duration_sec: 3 });
@@ -2771,6 +2815,7 @@ document.addEventListener("click", (event) => {
     else if (reelVideoOverlays.length) reelVideoOverlays.push({ ...reelVideoOverlays[reelVideoOverlays.length - 1], x: Math.min(.95, Number(reelVideoOverlays[reelVideoOverlays.length - 1].x ?? .5) + .04) });
     renderReelOptions(); renderComposeOverlayLayer();
   }
+  if (target.id === "composeRemoveLogo") removeProjectLogo().catch((error) => showToast(error.message, true));
   if (target.id === "captionExportSrt") exportCaptionSrt();
   if (target.id === "burnCaptions") burnCaptionTrack().catch((error) => showToast(error.message, true));
   if (target.id === "result360Play") toggleResult360Play();
@@ -2921,6 +2966,11 @@ document.addEventListener("input", (event) => {
 document.addEventListener("change", (event) => {
   const input = event.target;
   if (!(input instanceof HTMLElement)) return;
+  if (input.name === "captionLogoChoice") { renderProjectLogo(); return; }
+  if (input.id === "composeLogoInput" && input.files?.[0]) {
+    uploadProjectLogo(input.files[0]).catch((error) => showToast(error.message, true));
+    return;
+  }
   if (input.dataset.captionAnimationIn != null || input.dataset.captionAnimationOut != null) {
     const index = Number(input.dataset.captionAnimationIn ?? input.dataset.captionAnimationOut);
     const cue = captionCues[index];
