@@ -2920,6 +2920,16 @@ document.addEventListener("input", (event) => {
 document.addEventListener("change", (event) => {
   const input = event.target;
   if (!(input instanceof HTMLElement)) return;
+  if (input.dataset.captionAnimationIn != null || input.dataset.captionAnimationOut != null) {
+    const index = Number(input.dataset.captionAnimationIn ?? input.dataset.captionAnimationOut);
+    const cue = captionCues[index];
+    if (cue) {
+      cue.style_override ||= {};
+      cue.style_override[input.dataset.captionAnimationIn != null ? "animation_in" : "animation_out"] = input.value;
+      renderComposeOverlayLayer();
+    }
+    return;
+  }
   if (input.id === "reelAspect") drawReelPreview();
   if (input.id === "addReelImage" && input.files?.[0]) {
     const form = new FormData(); form.append("file", input.files[0]);
