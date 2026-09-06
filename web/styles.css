@@ -1491,6 +1491,7 @@ pre {
 .compose-overlay-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .compose-live-text { position: absolute; transform: translate(-50%, -50%); font-weight: 700; white-space: pre-wrap; text-align: center; max-width: 80%; }
 .compose-live-image { position: absolute; transform: translate(-50%, -50%); max-width: 80%; height: auto; }
+.compose-live-video { position: absolute; transform: translate(-50%, -50%); max-width: 90%; max-height: 90%; height: auto; object-fit: contain; }
 .compose-live-caption { position: absolute; left: 8%; right: 8%; top: 68%; color: #fff; font: 700 clamp(1rem, 3vw, 2.1rem)/1.08 Arial,sans-serif; text-align: center; white-space: pre-line; text-shadow: 0 3px 5px #000; }
 .compose-live-caption.caption-style-solid_box { padding: .35em .55em; border-radius: .22em; background: rgb(16 16 16 / 82%); }
 .compose-live-caption.caption-style-marker_word { text-decoration: underline 0.22em #ffdf5d; text-decoration-skip-ink: none; }
@@ -1498,6 +1499,13 @@ pre {
 .compose-live-caption.caption-style-hard_shadow { text-shadow: 7px 7px 0 #000; }
 .compose-live-caption.caption-style-lyric_serif { font-family: Georgia, serif; font-weight: 500; font-style: italic; }
 .compose-live-caption.caption-style-corner_comment { left: auto; right: 5%; top: 5%; max-width: 42%; font-size: .9rem; text-align: right; }
+.compose-live-caption.caption-animation-in-fade { animation: composeCaptionFadeIn .25s ease-out both; }
+.compose-live-caption.caption-animation-in-slide { animation: composeCaptionSlideIn .25s ease-out both; }
+.compose-live-caption.caption-animation-in-scale { animation: composeCaptionScaleIn .25s ease-out both; }
+.compose-live-caption.caption-animation-out-fade { animation-fill-mode: both; }
+@keyframes composeCaptionFadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes composeCaptionSlideIn { from { opacity: 0; transform: translate(-35%, -50%); } to { opacity: 1; transform: translate(-50%, -50%); } }
+@keyframes composeCaptionScaleIn { from { opacity: 0; transform: translate(-50%, -50%) scale(.72); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
 .compose-player-tools { display: flex; gap: .6rem; align-items: center; padding: .65rem 0; }
 .compose-player-tools input[type="range"] { flex: 1; }
 .compose-add-caption { min-height: 44px; padding: .7rem 1rem; font-size: 1rem; }
@@ -1542,6 +1550,14 @@ pre {
 .caption-block-actions { display: flex; flex-wrap: wrap; gap: .4rem; justify-content: flex-end; position: relative; z-index: 3; }
 .caption-block button, .reel-text-line button { min-height: 32px; white-space: nowrap; position: relative; z-index: 3; }
 .compose-overlays-panel .reel-text-line { overflow: visible; }
+.compose-overlays-panel #reelTextLines,
+.compose-overlays-panel .reel-text-tools,
+.compose-overlays-panel #reelTimeline,
+.compose-overlays-panel #reelPreview,
+.compose-overlays-panel .reel-playhead-label { display: none !important; }
+.compose-overlays-panel .reel-visual-tools .reel-text-tool { display: none; }
+.compose-video-import { margin: .6rem 0; }
+.caption-style-overrides select { min-width: 4.5rem; padding: .25rem .35rem; }
 .header-controls { display: grid; gap: .55rem; margin: .8rem 0; padding: .7rem; border: 1px solid var(--line,#ccd5d9); border-radius: 8px; }
 .compose-actions { display: flex; justify-content: flex-end; margin-top: 1rem; }
 #step2 #reelOptions { display: none; }

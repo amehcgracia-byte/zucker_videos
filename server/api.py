@@ -360,6 +360,29 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         destination.write_bytes(payload)
         return jsonify({"path": str(destination.resolve()), "url": f"/api/v1/wizard/reel-overlay/{destination.name}"})
 
+    @app.post("/api/v1/wizard/reel-video-overlay")
+    def api_wizard_reel_video_overlay() -> Response:
+        storage = request.files.get("file")
+        if not storage or not storage.filename:
+            return error_response("bad_request", "file is required", 400)
+        suffix = Path(storage.filename).suffix.lower()
+        if suffix not in {".mp4", ".mov", ".m4v", ".webm"}:
+            return error_response("bad_request", "Video overlays must be MP4, MOV, M4V, or WEBM", 400)
+        destination_dir = app_home() / "ReelOverlays"
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        payload = storage.read()
+        digest = hashlib.sha256(payload).hexdigest()
+        for existing in sorted(destination_dir.iterdir()) if destination_dir.exists() else []:
+            if existing.is_file() and existing.suffix.lower() in {".mp4", ".mov", ".m4v", ".webm"}:
+                try:
+                    if hashlib.sha256(existing.read_bytes()).hexdigest() == digest:
+                        return jsonify({"path": str(existing.resolve()), "url": f"/api/v1/wizard/reel-video-overlay/{existing.name}", "reused": True})
+                except OSError:
+                    continue
+        destination = unique_destination(destination_dir / Path(storage.filename).name)
+        destination.write_bytes(payload)
+        return jsonify({"path": str(destination.resolve()), "url": f"/api/v1/wizard/reel-video-overlay/{destination.name}"})
+
     @app.get("/api/v1/wizard/flyers")
     def api_wizard_flyers() -> Response:
         root = app_home() / "ReelOverlays"
@@ -376,6 +399,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_wizard_reel_overlay_file(filename: str) -> Response:
         # Browsers cannot load an absolute local path; serve only uploaded
         # overlays from the dedicated directory.
+        return send_from_directory(app_home() / "ReelOverlays", Path(filename).name)
+
+    @app.get("/api/v1/wizard/reel-video-overlay/<path:filename>")
+    def api_wizard_reel_video_overlay_file(filename: str) -> Response:
         return send_from_directory(app_home() / "ReelOverlays", Path(filename).name)
 
     @app.post("/api/v1/wizard/songs")
@@ -638,13 +665,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.get("/api/v1/wizard/overlays")
     def api_wizard_overlays() -> Response:
         wizard = (state.project.data.get("settings", {}).get("wizard", {}) if state.project else {})
-        if wizard.get("reel_text_overlays") or wizard.get("reel_image_overlays"):
-            return jsonify({"texts": wizard.get("reel_text_overlays") or [], "images": wizard.get("reel_image_overlays") or [], "source": "project"})
+        if wizard.get("reel_text_overlays") or wizard.get("reel_image_overlays") or wizard.get("reel_video_overlays"):
+            return jsonify({"texts": wizard.get("reel_text_overlays") or [], "images": wizard.get("reel_image_overlays") or [], "videos": wizard.get("reel_video_overlays") or [], "source": "project"})
         path = app_home() / "reel_overlays.json"
         try:
             return jsonify({**json.loads(path.read_text(encoding="utf-8")), "source": "last"})
         except (OSError, ValueError, TypeError):
-            return jsonify({"texts": [], "images": [], "source": "none"})
+            return jsonify({"texts": [], "images": [], "videos": [], "source": "none"})
 
     @app.get("/api/v1/wizard/master-preview")
     def api_wizard_master_preview() -> Response:
@@ -920,13 +947,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         body = request.get_json(silent=True) or {}
         texts = body.get("texts") if isinstance(body.get("texts"), list) else []
         images = body.get("images") if isinstance(body.get("images"), list) else []
+        videos = body.get("videos") if isinstance(body.get("videos"), list) else []
         cues = body.get("cues") if isinstance(body.get("cues"), list) else []
-        overlay_spec = {"version": 1, "texts": texts, "images": images}
+        overlay_spec = {"version": 2, "texts": texts, "images": images, "videos": videos}
         cue_track = {"version": CAPTIONS_VERSION, "lang": str(body.get("lang") or "und"), "cues": cues, "style": str(body.get("style") or "karaoke_word"), "header": body.get("header") or {}, "letterbox": body.get("letterbox") or {}}
         (project.folder / "overlay_spec.json").write_text(json.dumps(overlay_spec, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         (project.folder / "cue_track.json").write_text(json.dumps(cue_track, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
-        wizard["reel_text_overlays"], wizard["reel_image_overlays"] = texts, images
+        wizard["reel_text_overlays"], wizard["reel_image_overlays"], wizard["reel_video_overlays"] = texts, images, videos
         project.save()
         return jsonify({"ok": True, "overlay_spec": str(project.folder / "overlay_spec.json"), "cue_track": str(project.folder / "cue_track.json")})
 

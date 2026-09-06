@@ -515,6 +515,7 @@ def _render_plan(
     if platform in {"reel", "reel_horizontal"}:
         overlay_config["reel_texts"] = list(project.data.get("settings", {}).get("wizard", {}).get("reel_text_overlays") or [])
         overlay_config["reel_images"] = list(project.data.get("settings", {}).get("wizard", {}).get("reel_image_overlays") or [])
+        overlay_config["reel_videos"] = list(project.data.get("settings", {}).get("wizard", {}).get("reel_video_overlays") or [])
         # Reel overlay times are already expressed on the final 0-based Reel
         # timeline. They are composited once after segment assembly.
         overlay_config["reel_origin_sec"] = 0.0
@@ -523,6 +524,7 @@ def _render_plan(
         segment_overlay_config = dict(overlay_config)
         segment_overlay_config["reel_texts"] = []
         segment_overlay_config["reel_images"] = []
+        segment_overlay_config["reel_videos"] = []
     verify_motion = bool(project.data.get("settings", {}).get("export", {}).get("verify_motion", True))
     phase_times: dict[str, float] = {}
     export_started = time.perf_counter()
@@ -3089,19 +3091,28 @@ def _render_reel_overlays(
         fade_out = f"fade=t=out:st={max(0.0, end - 0.25):.3f}:d=0.25:alpha=1," if animation in {"fade", "slide", "scale"} else ""
         source_transform = ""
         overlay_x = "0"
-        if animation == "slide":
+        overlay_y = "0"
+        if item.get("kind") == "video":
+            target_width = max(40, int(1080 * max(0.05, min(1.0, float(item.get("width") or 0.35)))))
+            source_transform = f"scale={target_width}:-2:force_original_aspect_ratio=decrease,colorchannelmixer=aa={max(0.05, min(1.0, float(item.get('opacity') or 1.0))):.3f},"
+            overlay_x = f"(W-w)*{max(0.0, min(1.0, float(item.get('x') or 0.5))):.4f}"
+            overlay_y = f"(H-h)*{max(0.0, min(1.0, float(item.get('y') or 0.5))):.4f}"
+        elif animation == "slide":
             overlay_x = f"if(lt(t\\,{start + 0.25:.3f})\\,-overlay_w+overlay_w*(t-{start:.3f})/0.25\\,0)"
         elif animation == "scale":
             source_transform = f"scale=w='trunc(iw*if(lt(t,{start + 0.25:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':h='trunc(ih*if(lt(t,{start + 0.25:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':eval=frame,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0,"
         graph_parts.append(
             f"[{input_index}:v]format=rgba,{source_transform}{fade_in}{fade_out}setpts=PTS-STARTPTS[reel_src_{index}];"
-            f"[{current}][reel_src_{index}]overlay=x='{overlay_x}':y=0:enable='between(t,{start:.3f},{end:.3f})':format=auto[{label}]"
+            f"[{current}][reel_src_{index}]overlay=x='{overlay_x}':y='{overlay_y}':enable='between(t,{start:.3f},{end:.3f})':format=auto[{label}]"
         )
         current = label
     graph += ";" + ";".join(graph_parts) + f";[{current}]format=yuv420p[v]"
     command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:1", "-i", str(video_path)]
     for item in items:
-        command.extend(["-loop", "1", "-i", str(item["path"])])
+        if item.get("kind") == "video":
+            command.extend(["-i", str(item["path"])])
+        else:
+            command.extend(["-loop", "1", "-i", str(item["path"])])
     command.extend(["-filter_threads", "1", "-filter_complex_threads", "1", "-filter_complex", graph, "-map", "[v]", "-an", "-t", f"{duration:.3f}", "-pix_fmt", "yuv420p", "-r", f"{TARGET_EXPORT_FPS:.3f}", "-fps_mode", "cfr"])
     command.extend(_video_encode_args("libx264", video_bitrate))
     command.append(str(output_path))
@@ -3948,6 +3959,7 @@ def _reel_overlay_items(
         return []
     overlay_specs = [("text", item) for item in config.get("reel_texts") or []]
     overlay_specs += [("image", item) for item in config.get("reel_images") or []]
+    overlay_specs += [("video", item) for item in config.get("reel_videos") or []]
     segment_start = float(segment.get("master_start_sec") or 0.0) - float(config.get("reel_origin_sec") or 0.0)
     segment_duration = max(0.0, float(segment.get("duration_sec") or 0.0))
     segment_end = segment_start + segment_duration
@@ -3971,6 +3983,11 @@ def _reel_overlay_items(
         if interval is None:
             continue
         start, end = interval
+        if kind == "video":
+            video_path = Path(str(raw.get("path") or "")).expanduser().resolve()
+            if video_path.exists() and video_path.is_file():
+                items.append({"kind": "video", "path": video_path, "start_sec": start, "end_sec": end, "animation": raw.get("animation") or "fade", "x": float(raw.get("x") if raw.get("x") is not None else 0.5), "y": float(raw.get("y") if raw.get("y") is not None else 0.5), "width": float(raw.get("width") or 0.35), "opacity": float(raw.get("opacity") or 1.0)})
+            continue
         if kind == "image":
             try:
                 image = Image.open(str(raw.get("path"))).convert("RGBA")

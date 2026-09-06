@@ -44,12 +44,14 @@ let cameraRoleWeights = { "360": 50, handheld: 30, fixed_rear: 20 };
 let fixedRearMotion = true;
 let reelTextOverlays = [];
 let reelImageOverlays = [];
+let reelVideoOverlays = [];
 let reelPlayhead = 0;
 let reelDrag = null;
 let timelineDrag = null;
 let timelineSuppressClick = false;
 let selectedComposeOverlay = null;
 let copiedComposeOverlay = null;
+let copiedCaption = null;
 const reelPreviewImages = new Map();
 let shotReviewItems = [];
 let paperEditCuts = [];
@@ -231,7 +233,8 @@ function renderCaptionBlocks() {
     const end = cue.end == null ? (videoDuration || Number(cue.start) || 0) : Number(cue.end);
     const active = captionActiveIndex === index ? " active" : "";
     const override = cue.style_override || {};
-    return `<div class="caption-block${active}" data-caption-seek="${index}" role="button" tabindex="0"><div class="caption-block-main"><strong>${index + 1}.</strong><input class="caption-row-text" data-caption-text="${index}" value="${escapeHtml(cue.lines.join("\n"))}" aria-label="Caption ${index + 1} text" /><div class="caption-time-fields"><label>Start <input data-caption-start="${index}" type="number" min="0" step="0.01" value="${Number(cue.start).toFixed(2)}" /></label><label>End <input data-caption-end="${index}" type="number" min="0" step="0.01" value="${end.toFixed(2)}" /></label></div><div class="caption-style-overrides"><label>Color <input data-caption-color="${index}" type="color" value="${override.color || "#ffffff"}" /></label><label>Size <input data-caption-size="${index}" type="number" min="8" max="180" step="1" value="${override.size ?? ""}" /></label><label>Vertical % <input data-caption-vertical="${index}" type="number" min="0" max="100" step="1" value="${override.vertical ?? ""}" /></label></div></div><div class="caption-block-actions"><button type="button" class="icon-button small" data-caption-edit="${index}">Edit</button><button type="button" class="icon-button small" data-caption-delete="${index}">Delete</button></div></div>`;
+    const animationOptions = (value) => ["none", "fade", "slide", "scale"].map((name) => `<option value="${name}" ${String(value || "none") === name ? "selected" : ""}>${name}</option>`).join("");
+    return `<div class="caption-block${active}" data-caption-seek="${index}" role="button" tabindex="0"><div class="caption-block-main"><strong>${index + 1}.</strong><input class="caption-row-text" data-caption-text="${index}" value="${escapeHtml(cue.lines.join("\n"))}" aria-label="Caption ${index + 1} text" /><div class="caption-time-fields"><label>Start <input data-caption-start="${index}" type="number" min="0" step="0.01" value="${Number(cue.start).toFixed(2)}" /></label><label>End <input data-caption-end="${index}" type="number" min="0" step="0.01" value="${end.toFixed(2)}" /></label><label>Duration <output data-caption-duration="${index}">${Math.max(0, end - Number(cue.start)).toFixed(2)}s</output></label></div><div class="caption-style-overrides"><label>Color <input data-caption-color="${index}" type="color" value="${override.color || "#ffffff"}" /></label><label>Size <input data-caption-size="${index}" type="number" min="8" max="180" step="1" value="${override.size ?? ""}" /></label><label>Vertical % <input data-caption-vertical="${index}" type="number" min="0" max="100" step="1" value="${override.vertical ?? ""}" /></label><label>Enter <select data-caption-animation-in="${index}">${animationOptions(override.animation_in || "fade")}</select></label><label>Exit <select data-caption-animation-out="${index}">${animationOptions(override.animation_out || "fade")}</select></label></div></div><div class="caption-block-actions"><button type="button" class="icon-button small" data-caption-edit="${index}">Edit</button><button type="button" class="icon-button small" data-caption-delete="${index}">Delete</button></div></div>`;
   }).join("");
   const preview = document.querySelector("#captionPreviewText");
   if (preview) preview.textContent = captionCues[0]?.lines?.join("\n") || "Caption preview";
@@ -239,6 +242,25 @@ function renderCaptionBlocks() {
   if (lane) lane.innerHTML = captionCues.map((cue, index) => { const duration = Math.max(1, videoDuration || 30); const end = cue.end == null ? duration : Number(cue.end); return `<span class="compose-timeline-block caption" data-caption-seek="${index}" style="left:${Math.max(0, Number(cue.start) / duration * 100)}%;width:${Math.max(1, (end - Number(cue.start)) / duration * 100)}%">${index + 1}</span>`; }).join("");
   renderComposeTimeline();
   renderComposeOverlayLayer();
+}
+
+function migrateTextOverlaysToCaptions() {
+  if (!reelTextOverlays.length) return;
+  const migrated = reelTextOverlays.map((item) => ({
+    lines: String(item.text || "").split(/\r?\n/),
+    start: Number(item.start_sec || 0),
+    end: Number(item.start_sec || 0) + Math.max(0.1, Number(item.duration_sec || 3)),
+    style_override: {
+      color: item.color || "#ffffff",
+      size: Number(item.size || 54),
+      vertical: item.y != null ? Number(item.y) * 100 : 50,
+      animation_in: item.animation || "fade",
+      animation_out: item.animation || "fade",
+    },
+  })).filter((cue) => cue.lines.join("").trim());
+  captionCues = [...captionCues, ...migrated];
+  reelTextOverlays = [];
+  syncCaptionTextArea();
 }
 
 function syncCaptionTextArea() {
@@ -284,12 +306,12 @@ function renderComposeTimeline() {
   const zoom = Number(document.querySelector("#composeTimelineZoom")?.value || 1);
   const overlayLane = document.querySelector("#composeOverlayLane");
   const captionLane = document.querySelector("#composeCaptionLane");
-  const overlayItems = [...reelTextOverlays.map((item, index) => ({ ...item, _kind: "text", _index: index })), ...reelImageOverlays.map((item, index) => ({ ...item, _kind: "image", _index: index }))];
+  const overlayItems = [...reelImageOverlays.map((item, index) => ({ ...item, _kind: "image", _index: index })), ...reelVideoOverlays.map((item, index) => ({ ...item, _kind: "video", _index: index }))];
   const block = (item) => {
     const selected = selectedComposeOverlay?.kind === item._kind && selectedComposeOverlay.index === item._index ? " selected" : "";
     const start = Math.max(0, Number(item.start_sec || 0));
     const width = Math.max(0.1, Number(item.duration_sec || 0.1));
-    return `<span class="compose-timeline-block overlay ${item._kind}${selected}" data-overlay-kind="${item._kind}" data-overlay-index="${item._index}" style="left:${start / duration * 100}%;width:${width / duration * 100}%"><span class="timeline-handle left" data-timeline-resize="left"></span><span class="timeline-block-label">${item._kind === "text" ? escapeHtml(item.text || "Text") : "Image"}</span><span class="timeline-handle right" data-timeline-resize="right"></span></span>`;
+    return `<span class="compose-timeline-block overlay ${item._kind}${selected}" data-overlay-kind="${item._kind}" data-overlay-index="${item._index}" style="left:${start / duration * 100}%;width:${width / duration * 100}%"><span class="timeline-handle left" data-timeline-resize="left"></span><span class="timeline-block-label">${item._kind === "video" ? "Video" : "Image"}</span><span class="timeline-handle right" data-timeline-resize="right"></span></span>`;
   };
   if (overlayLane) overlayLane.innerHTML = `${overlayItems.map(block).join("")}<span class="compose-timeline-playhead"></span>`;
   if (captionLane) { const captions = captionCues.map((cue, index) => { const end = cue.end == null ? duration : Number(cue.end); return `<span class="compose-timeline-block caption" data-caption-seek="${index}" style="left:${Math.max(0, Number(cue.start) / duration * 100)}%;width:${Math.max(0.1, (end - Number(cue.start)) / duration * 100)}%">${index + 1}</span>`; }).join(""); captionLane.innerHTML = `${captions}<span class="compose-timeline-playhead"></span>`; }
@@ -328,9 +350,12 @@ function renderComposeOverlayLayer() {
   const captionStyle = document.querySelector("#captionStyle")?.value || "karaoke_word";
   const texts = reelTextOverlays.filter((item) => now >= Number(item.start_sec || 0) && now <= Number(item.start_sec || 0) + Number(item.duration_sec || 0));
   const images = reelImageOverlays.filter((item) => now >= Number(item.start_sec || 0) && now <= Number(item.start_sec || 0) + Number(item.duration_sec || 0));
+  const videos = reelVideoOverlays.filter((item) => now >= Number(item.start_sec || 0) && now <= Number(item.start_sec || 0) + Number(item.duration_sec || 0));
   const override = caption?.style_override || {};
   const captionInline = [`color:${override.color || "#fff"}`, override.size ? `font-size:${Number(override.size) / 3}px` : "", override.vertical != null ? `top:${Number(override.vertical)}%` : ""].filter(Boolean).join(";");
-  layer.innerHTML = texts.map((item) => `<span class="compose-live-text" style="left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;color:${item.color || '#fff'};opacity:${item.opacity ?? 1};font-size:${Math.max(12, Number(item.size || 48) / 3)}px;text-shadow:${Number(item.shadow_blur ?? 4)}px ${Number(item.shadow_blur ?? 4)}px ${item.shadow_color || '#000'}">${escapeHtml(item.text || '')}</span>`).join("") + images.map((item) => `<img class="compose-live-image" src="${escapeHtml(item.preview_url || item.path || '')}" style="left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;width:${Number(item.width ?? .35) * 100}%;opacity:${item.opacity ?? 1}" alt="" />`).join("") + (caption ? `<span class="compose-live-caption caption-style-${escapeHtml(captionStyle)}" style="${captionInline}">${escapeHtml(caption.lines.join("\n"))}</span>` : "");
+  const captionOverride = caption?.style_override || {};
+  const captionAnimation = ` caption-animation-in-${escapeHtml(captionOverride.animation_in || "fade")} caption-animation-out-${escapeHtml(captionOverride.animation_out || "fade")}`;
+  layer.innerHTML = images.map((item) => `<img class="compose-live-image" src="${escapeHtml(item.preview_url || item.path || '')}" style="left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;width:${Number(item.width ?? .35) * 100}%;opacity:${item.opacity ?? 1}" alt="" />`).join("") + videos.map((item) => `<video class="compose-live-video" src="${escapeHtml(item.preview_url || item.path || '')}" autoplay muted loop playsinline style="left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;width:${Number(item.width ?? .35) * 100}%;opacity:${item.opacity ?? 1}" aria-label="Video overlay"></video>`).join("") + (caption ? `<span class="compose-live-caption caption-style-${escapeHtml(captionStyle)}${captionAnimation}" style="${captionInline}">${escapeHtml(caption.lines.join("\n"))}</span>` : "");
   const time = document.querySelector("#composeTime"); if (time) time.textContent = `${Math.floor(now / 60).toString().padStart(2, '0')}:${(now % 60).toFixed(2).padStart(5, '0')}`;
   const scrub = document.querySelector("#composeScrub"); if (scrub && Number.isFinite(video.duration)) { scrub.max = String(video.duration); scrub.value = String(now); }
 }
@@ -347,6 +372,7 @@ async function openCaptions() {
   const mount = document.querySelector("#composeReelMount");
   const reel = document.querySelector("#reelOptions");
   if (mount && reel && reel.parentElement !== mount) { mount.appendChild(reel); reel.hidden = false; reel.open = true; }
+  migrateTextOverlaysToCaptions();
   const styles = await api("/captions/styles");
   const select = document.querySelector("#captionStyle");
   if (select && !select.options.length) select.innerHTML = (styles.styles || []).map((style) => `<option value="${escapeHtml(style.name)}">${escapeHtml(style.name.replaceAll("_", " "))}</option>`).join("");
@@ -393,7 +419,7 @@ async function burnCaptionTrack() {
 
 async function saveComposition() {
   const cues = captionCues.map((cue) => ({ ...cue, end: cue.end == null ? composeTimelineDuration() : cue.end }));
-  await api("/wizard/compose", { method: "POST", body: JSON.stringify({ texts: reelTextOverlays, images: reelImageOverlays, cues, style: document.querySelector("#captionStyle")?.value || "karaoke_word", header: { title_enabled: document.querySelector("#captionHeaderEnabled")?.checked === true, title: document.querySelector("#captionHeaderTitle")?.value || "", logo_enabled: document.querySelector("#captionLogoEnabled")?.checked !== false }, letterbox: { enabled: true, blur: Number(document.querySelector("#captionLetterboxBlur")?.value || 18) } }) });
+  await api("/wizard/compose", { method: "POST", body: JSON.stringify({ texts: reelTextOverlays, images: reelImageOverlays, videos: reelVideoOverlays, cues, style: document.querySelector("#captionStyle")?.value || "karaoke_word", header: { title_enabled: document.querySelector("#captionHeaderEnabled")?.checked === true, title: document.querySelector("#captionHeaderTitle")?.value || "", logo_enabled: document.querySelector("#captionLogoEnabled")?.checked !== false }, letterbox: { enabled: true, blur: Number(document.querySelector("#captionLetterboxBlur")?.value || 18) } }) });
 }
 
 function projectIdFromStatus(status) {
@@ -1157,6 +1183,18 @@ async function newProject() {
   try { sessionStorage.removeItem("zucker.selectedPlatform"); } catch (_error) { /* private mode */ }
   selectedSong = null;
   currentSongs = [];
+  captionCues = [];
+  captionMarkIndex = 0;
+  captionPendingStart = null;
+  captionActiveIndex = null;
+  reelTextOverlays = [];
+  reelImageOverlays = [];
+  reelVideoOverlays = [];
+  selectedComposeOverlay = null;
+  copiedComposeOverlay = null;
+  copiedCaption = null;
+  document.querySelector("#captionText")?.replaceChildren();
+  if (document.querySelector("#captionText")) document.querySelector("#captionText").value = "";
   clearDetected();
   resetSphericalSetupToGlobal();
   document.querySelector("#videoName").value = todayName();
@@ -1261,12 +1299,13 @@ async function prepareStep2() {
 }
 
 async function loadSavedReelOverlays() {
-  if (reelTextOverlays.length || reelImageOverlays.length) { loadFlyerLibrary().catch(() => {}); return; }
+  if (reelTextOverlays.length || reelImageOverlays.length || reelVideoOverlays.length) { loadFlyerLibrary().catch(() => {}); return; }
   try {
     const saved = await api("/wizard/overlays");
     if (saved.source === "project" || saved.source === "last") {
       reelTextOverlays = saved.texts || [];
       reelImageOverlays = saved.images || [];
+      reelVideoOverlays = saved.videos || [];
       renderReelOptions();
     }
   } catch (_error) { /* overlays are optional */ }
@@ -1447,6 +1486,8 @@ function renderReelOptions() {
   </div>`).join("");
   const imageRoot = document.querySelector("#reelImageLines");
   if (imageRoot) imageRoot.innerHTML = reelImageOverlays.map((item, index) => `<div class="reel-text-line" data-reel-image-index="${index}"><span>Flyer ${index + 1}</span><label>Width <input data-reel-image-field="width" type="number" min="0.05" max="1" step="0.01" value="${item.width ?? .35}" /></label><label>Opacity <input data-reel-image-field="opacity" type="number" min="0.05" max="1" step="0.05" value="${item.opacity ?? 1}" /></label><label>Start <input data-reel-image-field="start_sec" type="number" min="0" max="60" step="0.1" value="${item.start_sec ?? 0}" /></label><label>Duration <input data-reel-image-field="duration_sec" type="number" min="0.1" max="60" step="0.1" value="${item.duration_sec ?? 3}" /></label><button type="button" data-duplicate-reel-image="${index}">Duplicate</button><button type="button" data-remove-reel-image="${index}">Remove</button></div>`).join("");
+  const videoRoot = document.querySelector("#reelVideoLines");
+  if (videoRoot) videoRoot.innerHTML = reelVideoOverlays.map((item, index) => `<div class="reel-text-line" data-reel-video-index="${index}"><span>Video ${index + 1}</span><label>Width <input data-reel-video-field="width" type="number" min="0.05" max="1" step="0.01" value="${item.width ?? .35}" /></label><label>Opacity <input data-reel-video-field="opacity" type="number" min="0.05" max="1" step="0.05" value="${item.opacity ?? 1}" /></label><label>Start <input data-reel-video-field="start_sec" type="number" min="0" max="60" step="0.1" value="${item.start_sec ?? 0}" /></label><label>Duration <input data-reel-video-field="duration_sec" type="number" min="0.1" max="60" step="0.1" value="${item.duration_sec ?? 3}" /></label><button type="button" data-remove-reel-video="${index}">Remove</button></div>`).join("");
   renderReelTimeline();
   renderComposeTimeline();
   drawReelPreview(); renderComposeOverlayLayer();
@@ -1500,7 +1541,7 @@ function drawReelPreview() {
 }
 
 function reelOptionsFromForm() {
-  return { duration: Number(document.querySelector("#reelDuration")?.value || 30), aspect: document.querySelector("#reelAspect")?.value || "9:16", texts: reelTextOverlays, images: reelImageOverlays };
+  return { duration: Number(document.querySelector("#reelDuration")?.value || 30), aspect: document.querySelector("#reelAspect")?.value || "9:16", texts: reelTextOverlays, images: reelImageOverlays, videos: reelVideoOverlays };
 }
 
 function backstageMessagesFromForm() {
@@ -2559,11 +2600,14 @@ document.addEventListener("click", (event) => {
   }
   const captionRow = target.closest?.("[data-caption-seek]");
   if (captionRow instanceof HTMLElement && captionRow.dataset.captionSeek != null) {
-    const cue = captionCues[Number(captionRow.dataset.captionSeek)];
+    const captionIndex = Number(captionRow.dataset.captionSeek);
+    const cue = captionCues[captionIndex];
     const video = document.querySelector("#composeVideo");
     if (cue && video) {
+      captionActiveIndex = captionIndex;
       video.currentTime = Number(cue.start) || 0;
       video.pause();
+      renderCaptionBlocks();
       renderComposeOverlayLayer();
     }
     return;
@@ -2574,6 +2618,10 @@ document.addEventListener("click", (event) => {
   }
   if (target.dataset.removeReelImage != null) {
     reelImageOverlays.splice(Number(target.dataset.removeReelImage), 1);
+    renderReelOptions();
+  }
+  if (target.dataset.removeReelVideo != null) {
+    reelVideoOverlays.splice(Number(target.dataset.removeReelVideo), 1);
     renderReelOptions();
   }
   if (target.id === "showAllClips") restoreSetAsideVideos();
@@ -2719,7 +2767,7 @@ document.addEventListener("click", (event) => {
   if (target.id === "composeContinue") saveComposition().then(() => { document.querySelector("#resultBox").hidden = false; setStep(6); }).catch((error) => showToast(error.message, true));
   if (target.id === "composeDuplicateOverlay") {
     if (reelImageOverlays.length) reelImageOverlays.push({ ...reelImageOverlays[reelImageOverlays.length - 1], x: Math.min(.95, Number(reelImageOverlays[reelImageOverlays.length - 1].x ?? .5) + .04) });
-    else if (reelTextOverlays.length) reelTextOverlays.push({ ...reelTextOverlays[reelTextOverlays.length - 1], x: Math.min(.95, Number(reelTextOverlays[reelTextOverlays.length - 1].x ?? .5) + .04) });
+    else if (reelVideoOverlays.length) reelVideoOverlays.push({ ...reelVideoOverlays[reelVideoOverlays.length - 1], x: Math.min(.95, Number(reelVideoOverlays[reelVideoOverlays.length - 1].x ?? .5) + .04) });
     renderReelOptions(); renderComposeOverlayLayer();
   }
   if (target.id === "captionExportSrt") exportCaptionSrt();
@@ -2765,15 +2813,29 @@ document.addEventListener("keydown", (event) => {
   }
   const commandKey = event.metaKey || event.ctrlKey;
   const editingField = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement;
+  if (commandKey && event.key.toLowerCase() === "c" && captionActiveIndex != null && captionCues[captionActiveIndex]) {
+    copiedCaption = { ...captionCues[captionActiveIndex], lines: [...captionCues[captionActiveIndex].lines], style_override: { ...(captionCues[captionActiveIndex].style_override || {}) } };
+    event.preventDefault();
+    return;
+  }
+  if (commandKey && event.key.toLowerCase() === "v" && copiedCaption) {
+    const now = Number(document.querySelector("#composeVideo")?.currentTime || 0);
+    const duration = Math.max(0.1, Number(copiedCaption.end) - Number(copiedCaption.start));
+    captionCues.push({ ...copiedCaption, start: now, end: now + duration, lines: [...copiedCaption.lines], style_override: { ...(copiedCaption.style_override || {}) } });
+    captionActiveIndex = captionCues.length - 1;
+    syncCaptionTextArea(); renderCaptionBlocks(); renderComposeOverlayLayer();
+    event.preventDefault();
+    return;
+  }
   if (commandKey && event.key.toLowerCase() === "c" && selectedComposeOverlay && !editingField) {
-    const source = selectedComposeOverlay.kind === "text" ? reelTextOverlays[selectedComposeOverlay.index] : reelImageOverlays[selectedComposeOverlay.index];
+    const source = selectedComposeOverlay.kind === "image" ? reelImageOverlays[selectedComposeOverlay.index] : reelVideoOverlays[selectedComposeOverlay.index];
     if (source) { copiedComposeOverlay = { kind: selectedComposeOverlay.kind, item: { ...source } }; event.preventDefault(); }
     return;
   }
   if (commandKey && event.key.toLowerCase() === "v" && copiedComposeOverlay && !editingField) {
     const item = { ...copiedComposeOverlay.item, start_sec: Number(document.querySelector("#composeVideo")?.currentTime || 0) };
-    if (copiedComposeOverlay.kind === "text") { reelTextOverlays.push(item); selectedComposeOverlay = { kind: "text", index: reelTextOverlays.length - 1 }; }
-    else { reelImageOverlays.push(item); selectedComposeOverlay = { kind: "image", index: reelImageOverlays.length - 1 }; }
+    if (copiedComposeOverlay.kind === "image") { reelImageOverlays.push(item); selectedComposeOverlay = { kind: "image", index: reelImageOverlays.length - 1 }; }
+    else { reelVideoOverlays.push(item); selectedComposeOverlay = { kind: "video", index: reelVideoOverlays.length - 1 }; }
     renderReelOptions();
     event.preventDefault();
     return;
@@ -2811,7 +2873,7 @@ document.addEventListener("input", (event) => {
   if (input.id === "reelPlayhead") { reelPlayhead = Number(input.value); document.querySelector("#reelPlayheadValue").textContent = `${reelPlayhead.toFixed(1)}s`; drawReelPreview(); return; }
   if (input.dataset.captionText != null) { const cue = captionCues[Number(input.dataset.captionText)]; if (cue) { cue.lines = input.value.split(/\r?\n/); syncCaptionTextArea(); renderComposeOverlayLayer(); } return; }
   if (input.dataset.captionStart != null || input.dataset.captionEnd != null) { const index = Number(input.dataset.captionStart ?? input.dataset.captionEnd); const cue = captionCues[index]; if (cue) { if (input.dataset.captionStart != null) cue.start = Math.max(0, Number(input.value) || 0); else cue.end = Math.max(Number(cue.start) + 0.05, Number(input.value) || 0); renderComposeOverlayLayer(); } return; }
-  if (input.dataset.captionColor != null || input.dataset.captionSize != null || input.dataset.captionVertical != null) { const index = Number(input.dataset.captionColor ?? input.dataset.captionSize ?? input.dataset.captionVertical); const cue = captionCues[index]; if (cue) { cue.style_override ||= {}; const key = input.dataset.captionColor != null ? "color" : input.dataset.captionSize != null ? "size" : "vertical"; if (input.value === "") delete cue.style_override[key]; else cue.style_override[key] = key === "color" ? input.value : Number(input.value); renderComposeOverlayLayer(); } return; }
+  if (input.dataset.captionColor != null || input.dataset.captionSize != null || input.dataset.captionVertical != null || input.dataset.captionAnimationIn != null || input.dataset.captionAnimationOut != null) { const index = Number(input.dataset.captionColor ?? input.dataset.captionSize ?? input.dataset.captionVertical ?? input.dataset.captionAnimationIn ?? input.dataset.captionAnimationOut); const cue = captionCues[index]; if (cue) { cue.style_override ||= {}; const key = input.dataset.captionColor != null ? "color" : input.dataset.captionSize != null ? "size" : input.dataset.captionVertical != null ? "vertical" : input.dataset.captionAnimationIn != null ? "animation_in" : "animation_out"; if (input.value === "") delete cue.style_override[key]; else cue.style_override[key] = ["size", "vertical"].includes(key) ? Number(input.value) : input.value; renderCaptionBlocks(); renderComposeOverlayLayer(); } return; }
   if (input.id === "captionText") { const blocks = captionBlocksFromText(); captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: captionCues[index]?.start ?? index * 4, end: captionCues[index]?.end ?? index * 4 + 4 })); captionMarkIndex = Math.min(captionMarkIndex, captionCues.length); renderCaptionBlocks(); return; }
   const row = input.closest?.("[data-reel-text-index]");
   if (!row || !input.dataset.reelField) return;
@@ -2838,6 +2900,16 @@ document.addEventListener("input", (event) => {
 
 document.addEventListener("input", (event) => {
   const input = event.target;
+  if (!(input instanceof HTMLElement) || !input.dataset.reelVideoField) return;
+  const row = input.closest?.("[data-reel-video-index]"); if (!row) return;
+  const item = reelVideoOverlays[Number(row.dataset.reelVideoIndex)]; if (!item) return;
+  const field = input.dataset.reelVideoField;
+  item[field] = ["width", "opacity", "start_sec", "duration_sec"].includes(field) ? Number(input.value) : input.value;
+  renderComposeTimeline(); renderComposeOverlayLayer();
+});
+
+document.addEventListener("input", (event) => {
+  const input = event.target;
   if (!(input instanceof HTMLElement) || !input.dataset.reelImageField) return;
   const row = input.closest?.("[data-reel-image-index]"); if (!row) return;
   const item = reelImageOverlays[Number(row.dataset.reelImageIndex)]; if (!item) return;
@@ -2854,6 +2926,13 @@ document.addEventListener("change", (event) => {
     api("/wizard/reel-overlay", { method: "POST", body: form, headers: {} }).then((result) => {
       reelImageOverlays.push({ path: result.path, preview_url: result.url || result.path, x: 0.5, y: 0.5, width: 0.35, opacity: 1, animation: "fade", start_sec: 0, duration_sec: 3 });
       renderReelOptions();
+    }).catch((error) => showToast(error.message, true));
+  }
+  if ((input.id === "addReelVideo" || input.id === "composeAddReelVideo") && input.files?.[0]) {
+    const form = new FormData(); form.append("file", input.files[0]);
+    api("/wizard/reel-video-overlay", { method: "POST", body: form, headers: {} }).then((result) => {
+      reelVideoOverlays.push({ path: result.path, preview_url: result.url || result.path, x: 0.5, y: 0.5, width: 0.35, opacity: 1, animation: "fade", start_sec: Number(document.querySelector("#composeVideo")?.currentTime || 0), duration_sec: 3 });
+      renderReelOptions(); renderComposeTimeline(); renderComposeOverlayLayer();
     }).catch((error) => showToast(error.message, true));
   }
   if (input.dataset.reviewKeep != null) {
@@ -2891,7 +2970,7 @@ document.addEventListener("pointerdown", (event) => {
   if (!(block instanceof HTMLElement)) return;
   const kind = block.dataset.overlayKind;
   const index = Number(block.dataset.overlayIndex);
-  const item = kind === "text" ? reelTextOverlays[index] : reelImageOverlays[index];
+  const item = kind === "image" ? reelImageOverlays[index] : reelVideoOverlays[index];
   if (!item) return;
   selectedComposeOverlay = { kind, index };
   const handle = event.target.closest?.("[data-timeline-resize]");
@@ -2902,7 +2981,7 @@ document.addEventListener("pointerdown", (event) => {
 
 document.addEventListener("pointermove", (event) => {
   if (!timelineDrag) return;
-  const item = timelineDrag.kind === "text" ? reelTextOverlays[timelineDrag.index] : reelImageOverlays[timelineDrag.index];
+  const item = timelineDrag.kind === "image" ? reelImageOverlays[timelineDrag.index] : reelVideoOverlays[timelineDrag.index];
   const scroll = document.querySelector("[data-compose-timeline] .compose-lane");
   if (!item || !scroll) return;
   const delta = (event.clientX - timelineDrag.startX) / Math.max(1, scroll.scrollWidth) * composeTimelineDuration();
