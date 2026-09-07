@@ -3040,6 +3040,11 @@ document.addEventListener("keydown", (event) => {
 
 document.addEventListener("change", (event) => {
   const input = event.target;
+  if (input instanceof HTMLSelectElement && (input.id === "reelAspect" || input.id === "reelMixVerticalRatio")) {
+    renderReelOptions();
+    if (input.id === "reelAspect") drawReelPreview();
+    return;
+  }
   if (!(input instanceof HTMLInputElement) || input.id !== "captionImport" || !input.files?.[0]) return;
   const source = input.files[0].name.toLowerCase().endsWith(".lrc") ? "lrc" : "srt";
   input.files[0].text().then((text) => api("/captions/parse", { method: "POST", body: JSON.stringify({ source, text }) })).then((parsed) => {
