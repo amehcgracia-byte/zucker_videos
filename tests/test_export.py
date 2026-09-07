@@ -47,7 +47,9 @@ from core.stages.export import (
     _intro_card_path,
     _logo_filtergraph,
     _missing_project_sources,
+    _native_clip_geometry,
     _reel_overlay_items,
+    _reel_letterbox_filter,
     _segment_filtergraph,
     _segment_worker_count,
     _stream_copy_eligible,
@@ -213,6 +215,26 @@ def test_segment_filtergraph_adds_watermark_and_texts():
     assert "eq=brightness=0.0200:saturation=1.0500" in graph
     assert "fade=t=in:st=0:d=1.500" not in graph
     assert "fade=t=out:st=10.500:d=1.500" not in graph
+
+
+def test_reel_letterbox_uses_native_geometry_and_project_cache(tmp_path):
+    project = create_project("Letterbox", str(tmp_path / "Letterbox.zuckervid"))
+    source = tmp_path / "vertical.mp4"
+    source.write_bytes(b"test media")
+    record = file_record(str(source))
+    record["probe"] = {"width": 608, "height": 1080, "sample_aspect_ratio": "1:1"}
+    project.data["inputs"]["videos"] = [record]
+    segment = {"source_path": str(source), "clip_path": str(source), "duration_sec": 1.0}
+
+    geometry = _native_clip_geometry(project, segment)
+    assert geometry["width"] == 608
+    assert geometry["height"] == 1080
+    assert geometry["aspect"] == pytest.approx(608 / 1080)
+    cache_path = project.cache_dir / "reel_letterbox" / f"{geometry['fingerprint']}.json"
+    assert cache_path.is_file()
+    letterbox = _reel_letterbox_filter(project, segment, "reel")
+    assert letterbox and "gblur=sigma=18.0" in letterbox
+    assert _reel_letterbox_filter(project, segment, "youtube") is None
 
 
 def test_segment_filtergraph_keeps_only_explicit_intro_outro_fades():

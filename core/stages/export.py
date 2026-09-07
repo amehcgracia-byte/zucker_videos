@@ -25,7 +25,7 @@ from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.messages import t
 from core.media_validation import record_is_usable_camera_video, record_media_path
 from core.normalization import EVEN_SDR_FILTER, NORMALIZATION_VERSION, SDR_TONEMAP_FILTER, ensure_global_cache_dirs, global_cache_root, global_segment_path, source_cache_key
-from core.project import Project
+from core.project import Project, atomic_write_json
 from core.spherical_metadata import SphericalMetadataError, inject_spherical_metadata
 from core.spherical_view import (
     MAX_SPHERICAL_FOV,
@@ -79,6 +79,8 @@ SPHERICAL_NORMAL_FOV_MAX = NORMAL_FOV_MAX
 SPHERICAL_MAX_HOLD_YAW_DEG = 10.0
 INTRO_DURATION = 10.0
 COLOR_PROFILE_VERSION = 4
+REEL_LETTERBOX_CACHE_VERSION = 1
+REEL_LETTERBOX_BLUR_SIGMA = 18.0
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
 TRANSITION_PROFILES = {
@@ -1687,6 +1689,7 @@ def _render_segment(
     duration = max(0.1, float(segment["duration_sec"]))
     frame_count = _segment_frame_count(segment)
     source = _segment_source_info(project, segment)
+    reel_letterbox_filter = _reel_letterbox_filter(project, segment, platform)
     watermark = _watermark_path()
     if source.get("paired_path") and not force_proxy:
         force_proxy = True
@@ -1715,6 +1718,7 @@ def _render_segment(
             intro_logo,
             outro_logo,
             command_recorder,
+            reel_letterbox_filter=reel_letterbox_filter,
             source_filter=_export_source_filter(
                 source.get("probe") or {},
                 _spherical_shot(segment),
@@ -1743,6 +1747,7 @@ def _render_segment(
         frame_count=frame_count,
         segment=segment,
         reel_overlay_items=reel_overlay_items,
+        reel_letterbox_filter=reel_letterbox_filter,
     )
     command_base = _segment_video_command_base(
         ffmpeg,
@@ -1829,6 +1834,7 @@ def _render_segment(
                 intro_logo,
                 outro_logo,
                 command_recorder,
+                reel_letterbox_filter=reel_letterbox_filter,
                 source_filter=_export_source_filter(
                     source.get("probe") or {},
                     _spherical_shot(segment),
@@ -2093,6 +2099,7 @@ def _render_proxy_segment(
     outro_logo: bool,
     command_recorder: list[list[str]] | None,
     source_filter: str | None = None,
+    reel_letterbox_filter: str | None = None,
 ) -> str:
     reel_overlay_items = _reel_overlay_items(segment, overlay_config, platform, output_path.parent)
     proxy_filter = _segment_filtergraph(
@@ -2110,6 +2117,7 @@ def _render_proxy_segment(
         frame_count=frame_count,
         segment=segment,
         reel_overlay_items=reel_overlay_items,
+        reel_letterbox_filter=reel_letterbox_filter,
     )
     proxy_command = _segment_video_command_base(ffmpeg, proxy_path, segment, duration)
     if watermark:
@@ -2440,6 +2448,82 @@ def _base_video_filter(platform: str) -> str:
     if platform == "360":
         return "scale=3840:1920:force_original_aspect_ratio=decrease,pad=3840:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
     return "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
+
+
+def _reel_letterbox_cache_path(project: Project, fingerprint: str) -> Path:
+    """Return the per-project cache path for one source's native geometry."""
+    return project.cache_dir / "reel_letterbox" / f"{fingerprint}.json"
+
+
+def _native_clip_geometry(project: Project, segment: dict[str, Any]) -> dict[str, Any]:
+    """Read and cache the original source dimensions used by Reel letterbox."""
+    source = _segment_source_info(project, segment)
+    fingerprint = str(source.get("cache_key") or "")
+    if not fingerprint:
+        fingerprint = stable_fingerprint({"source": source.get("source_path"), "probe": source.get("probe")})[:24]
+    cache_path = _reel_letterbox_cache_path(project, fingerprint)
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        if cached.get("version") == REEL_LETTERBOX_CACHE_VERSION and cached.get("fingerprint") == fingerprint:
+            return cached
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    probe = dict(source.get("probe") or {})
+    width = int(probe.get("width") or 0)
+    height = int(probe.get("height") or 0)
+    if width <= 0 or height <= 0:
+        metadata = ffprobe(str(source.get("source_path") or source.get("proxy_path") or ""))
+        stream = next((item for item in metadata.get("streams") or [] if item.get("codec_type") == "video"), {})
+        width = int(stream.get("width") or 0)
+        height = int(stream.get("height") or 0)
+        probe = stream
+    if width <= 0 or height <= 0:
+        width, height = 16, 9
+    sar = str(probe.get("sample_aspect_ratio") or "1:1")
+    try:
+        sar_num, sar_den = (int(part) for part in sar.split(":", 1))
+        sample_aspect = sar_num / max(1, sar_den)
+    except (ValueError, TypeError):
+        sample_aspect = 1.0
+    geometry = {
+        "version": REEL_LETTERBOX_CACHE_VERSION,
+        "fingerprint": fingerprint,
+        "source_path": str(source.get("source_path") or ""),
+        "width": width,
+        "height": height,
+        "sample_aspect": round(sample_aspect, 8),
+        "aspect": round(width * sample_aspect / height, 8),
+    }
+    try:
+        atomic_write_json(cache_path, geometry)
+    except OSError:
+        LOGGER.warning("Could not cache Reel native geometry at %s", cache_path, exc_info=True)
+    return geometry
+
+
+def _reel_letterbox_filter(project: Project, segment: dict[str, Any], platform: str) -> str | None:
+    """Build a per-source Reel letterbox graph; other modes remain unchanged."""
+    if platform != "reel":
+        return None
+    geometry = _native_clip_geometry(project, segment)
+    aspect = float(geometry.get("aspect") or (16.0 / 9.0))
+    LOGGER.info(
+        "Reel per-clip letterbox source=%s native=%sx%s aspect=%.6f cache=%s",
+        Path(str(geometry.get("source_path") or "")).name,
+        geometry.get("width"), geometry.get("height"), aspect,
+        _reel_letterbox_cache_path(project, str(geometry.get("fingerprint") or "")),
+    )
+    # Contain the real clip in the 9:16 canvas while using the same clip as a
+    # blurred cover behind it.  The geometry is deliberately not inferred from
+    # the output canvas, so every cut can change its visible native proportion.
+    return (
+        "split=2[reel_bg][reel_fg];"
+        f"[reel_bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma={REEL_LETTERBOX_BLUR_SIGMA:.1f}[reel_blur];"
+        "[reel_fg]format=rgba,scale=1080:1920:force_original_aspect_ratio=decrease,"
+        "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0[reel_main];"
+        "[reel_blur][reel_main]overlay=(W-w)/2:(H-h)/2:format=auto"
+    )
 
 
 def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> str | None:
@@ -2990,27 +3074,34 @@ def _segment_filtergraph(
     frame_count: int | None = None,
     segment: dict[str, Any] | None = None,
     reel_overlay_items: list[dict[str, Any]] | None = None,
+    reel_letterbox_filter: str | None = None,
 ) -> str:
     filters = []
     if source_filter:
         filters.append(source_filter)
     base_filter = _base_video_filter(platform)
-    if platform == "reel" and segment and segment.get("reel_subject_center") and not motion_filter:
+    if platform == "reel" and not reel_letterbox_filter and segment and segment.get("reel_subject_center") and not motion_filter:
         center = segment["reel_subject_center"]
         cx = max(0.0, min(1.0, float(center.get("x") or 0.5)))
         cy = max(0.0, min(1.0, float(center.get("y") or 0.5)))
         base_filter = f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:x='(iw-ow)*{cx:.4f}':y='(ih-oh)*{cy:.4f}',setsar=1,format=yuv420p"
-    filters.extend([base_filter, motion_filter, _color_filter(color_profile)])
-    filters.append(_exact_cadence_filter(frame_count) if frame_count else _constant_cadence_filter())
+    post_filters = [motion_filter, _exact_cadence_filter(frame_count) if frame_count else _constant_cadence_filter()]
     if intro_fade:
-        filters.append(f"fade=t=in:st=0:d={CONTENT_FADE_DURATION:.3f}")
+        post_filters.append(f"fade=t=in:st=0:d={CONTENT_FADE_DURATION:.3f}")
     if outro_fade:
-        filters.append(f"fade=t=out:st={max(0.0, duration - CONTENT_FADE_DURATION):.3f}:d={CONTENT_FADE_DURATION:.3f}")
+        post_filters.append(f"fade=t=out:st={max(0.0, duration - CONTENT_FADE_DURATION):.3f}:d={CONTENT_FADE_DURATION:.3f}")
     if text_enabled:
-        filters.extend(_text_filters(platform, duration, overlay_config))
-    filters.append(f"tpad=stop_mode=clone:stop_duration={1.0 / TARGET_EXPORT_FPS:.6f}")
-    filters.append("format=yuv420p")
-    graph = f"[0:v]{','.join(filter for filter in filters if filter)}[base]"
+        post_filters.extend(_text_filters(platform, duration, overlay_config))
+    post_filters.extend([f"tpad=stop_mode=clone:stop_duration={1.0 / TARGET_EXPORT_FPS:.6f}", "format=yuv420p"])
+    if reel_letterbox_filter:
+        pre_filters = [source_filter, _color_filter(color_profile)]
+        prefix = ",".join(item for item in pre_filters if item)
+        graph = f"[0:v]{prefix + ',' if prefix else ''}{reel_letterbox_filter}[reel_letterboxed];"
+        graph += f"[reel_letterboxed]{','.join(item for item in post_filters if item)}[base]"
+    else:
+        filters.extend([base_filter, motion_filter, _color_filter(color_profile)])
+        filters.extend(post_filters)
+        graph = f"[0:v]{','.join(filter for filter in filters if filter)}[base]"
     overlay_items = reel_overlay_items or []
     current_label = "base"
     overlay_graph = []
@@ -3216,6 +3307,7 @@ def cached_segment_path(
             "motion": segment.get("motion") or {},
             "normalization_version": NORMALIZATION_VERSION,
             "export_segment_recipe": EXPORT_SEGMENT_RECIPE_VERSION,
+            "reel_letterbox_version": REEL_LETTERBOX_CACHE_VERSION if platform == "reel" else None,
             # Authored shot JSON alone is not enough: renderer-side motion
             # semantics can change while the plan stays byte-for-byte equal.
             "spherical_motion_recipe": spherical_motion_recipe,
