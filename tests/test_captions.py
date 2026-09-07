@@ -15,15 +15,24 @@ from captions.sources import from_lyrics, from_srt, to_srt
 from captions.styles import list_styles
 
 
-def test_six_presets_render_valid_ass() -> None:
+def test_caption_presets_render_valid_ass() -> None:
     track = CueTrack((Cue(("Hello", "world"), 0, 2),))
     styles = list_styles()
-    assert len(styles) == 12
+    assert len(styles) == 13
     for style in styles:
         ass = render_ass(track, style, width=1080, height=1920)
         assert "[Script Info]" in ass
         assert "[V4+ Styles]" in ass
         assert "Dialogue:" in ass
+        assert f"\\an{style.alignment}" in ass
+
+
+def test_neon_glow_preset_and_override_render_layers() -> None:
+    track = CueTrack((Cue(("NEON",), 0, 2, style_override={"glow_color": "#00ff00", "glow_blur": 10, "glow_layers": 3, "glow_intensity": 0.8}),))
+    ass = render_ass(track, list_styles()[-1], width=1080, height=1920)
+    assert ass.count("Dialogue:") == 4
+    assert r"\blur10" in ass
+    assert r"\3c&H0000FF00&" in ass
 
 
 def test_caption_style_override_renders_inline_tags() -> None:

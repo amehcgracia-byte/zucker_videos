@@ -1564,7 +1564,8 @@ def _save_last_reel_overlays(texts: list[dict[str, Any]], images: list[dict[str,
 
 
 def _reel_aspect_from_body(body: dict[str, Any]) -> str:
-    return "16:9" if str(body.get("reel_aspect") or "9:16") == "16:9" else "9:16"
+    value = str(body.get("reel_aspect") or "9:16")
+    return value if value in {"9:16", "16:9", "mix"} else "9:16"
 
 
 def _reel_text_overlays_from_body(body: dict[str, Any]) -> list[dict[str, Any]]:

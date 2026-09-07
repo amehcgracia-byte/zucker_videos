@@ -1500,6 +1500,7 @@ pre {
 .compose-live-caption.caption-style-hard_shadow { text-shadow: 7px 7px 0 #000; }
 .compose-live-caption.caption-style-lyric_serif { font-family: Georgia, serif; font-weight: 500; font-style: italic; }
 .compose-live-caption.caption-style-corner_comment { left: auto; right: 5%; top: 5%; max-width: 42%; font-size: .9rem; text-align: right; }
+.compose-live-caption.caption-style-neon_glow { color: #00ffff; text-shadow: 0 0 8px #00ffff, 0 0 18px #00ffff, 0 0 32px #00ffff; }
 .compose-live-caption.caption-animation-in-fade { animation: composeCaptionFadeIn .25s ease-out both; }
 .compose-live-caption.caption-animation-in-slide { animation: composeCaptionSlideIn .25s ease-out both; }
 .compose-live-caption.caption-animation-in-scale { animation: composeCaptionScaleIn .25s ease-out both; }

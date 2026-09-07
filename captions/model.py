@@ -56,3 +56,7 @@ class Style:
     animation: str = "none"
     box: bool = False
     box_color: str = "&H00000000"
+    glow_color: str = "&H00000000"
+    glow_blur: float = 0.0
+    glow_layers: int = 0
+    glow_intensity: float = 1.0

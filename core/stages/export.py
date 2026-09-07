@@ -2503,8 +2503,11 @@ def _native_clip_geometry(project: Project, segment: dict[str, Any]) -> dict[str
 
 
 def _reel_letterbox_filter(project: Project, segment: dict[str, Any], platform: str) -> str | None:
-    """Build a per-source Reel letterbox graph; other modes remain unchanged."""
+    """Build a per-source Reel letterbox graph only for the explicit Mix mode."""
     if platform != "reel":
+        return None
+    reel_aspect = str(project.data.get("settings", {}).get("wizard", {}).get("reel_aspect") or "9:16")
+    if reel_aspect != "mix":
         return None
     geometry = _native_clip_geometry(project, segment)
     aspect = float(geometry.get("aspect") or (16.0 / 9.0))

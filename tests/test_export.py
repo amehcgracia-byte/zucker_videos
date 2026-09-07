@@ -219,6 +219,7 @@ def test_segment_filtergraph_adds_watermark_and_texts():
 
 def test_reel_letterbox_uses_native_geometry_and_project_cache(tmp_path):
     project = create_project("Letterbox", str(tmp_path / "Letterbox.zuckervid"))
+    project.data.setdefault("settings", {}).setdefault("wizard", {})["reel_aspect"] = "mix"
     source = tmp_path / "vertical.mp4"
     source.write_bytes(b"test media")
     record = file_record(str(source))
@@ -234,6 +235,8 @@ def test_reel_letterbox_uses_native_geometry_and_project_cache(tmp_path):
     assert cache_path.is_file()
     letterbox = _reel_letterbox_filter(project, segment, "reel")
     assert letterbox and "gblur=sigma=18.0" in letterbox
+    project.data["settings"]["wizard"]["reel_aspect"] = "9:16"
+    assert _reel_letterbox_filter(project, segment, "reel") is None
     assert _reel_letterbox_filter(project, segment, "youtube") is None
 
 

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .model import Style
 
-CAPTIONS_VERSION = "captions-v2"
+CAPTIONS_VERSION = "captions-v3"
 _PRESETS = Path(__file__).with_name("presets.json")
 
 
