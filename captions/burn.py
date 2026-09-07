@@ -8,7 +8,7 @@ from .model import CueTrack, Style
 from .render import render_ass
 
 
-def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_path: str | Path | None = None, ffmpeg: str = "ffmpeg", header: dict | None = None, logo_path: str | Path | None = None, letterbox: dict | None = None) -> Path:
+def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_path: str | Path | None = None, ffmpeg: str = "ffmpeg", header: dict | None = None, logo_path: str | Path | None = None, letterbox: dict | None = None, progress_callback=None) -> Path:
     source = Path(video_path).resolve()
     destination = Path(output_path).resolve() if output_path else source.with_name(f"{source.stem}_captions.mp4")
     if destination == source:
@@ -26,7 +26,10 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
         if header and header.get("title_enabled") and header.get("title"):
             title = str(header["title"]).upper().replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("\n", r"\\n")
             vf += f",drawbox=x=0.12*iw:y=40:w=0.76*iw:h=110:color=white:t=fill,drawtext=fontcolor=black:fontsize=42:text='{title}':x=(w-text_w)/2:y=70"
-        command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", str(source)]
+        command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error"]
+        if progress_callback is not None:
+            command += ["-progress", "pipe:1", "-nostats"]
+        command += ["-i", str(source)]
         logo_enabled = bool(header and (header.get("logo_enabled") or header.get("logo_source") in {"custom", "default"}))
         if logo_path and logo_enabled:
             command += ["-loop", "1", "-i", str(Path(logo_path).resolve())]
@@ -39,5 +42,19 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
         else:
             command += ["-vf", vf]
         command += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy", str(destination)]
-        subprocess.run(command, check=True)
+        if progress_callback is None:
+            subprocess.run(command, check=True)
+        else:
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            assert process.stdout is not None
+            for line in process.stdout:
+                if line.startswith("out_time_ms="):
+                    try:
+                        progress_callback(float(line.split("=", 1)[1]) / 1_000_000.0)
+                    except (TypeError, ValueError):
+                        pass
+            stderr = process.stderr.read() if process.stderr is not None else ""
+            return_code = process.wait()
+            if return_code:
+                raise subprocess.CalledProcessError(return_code, command, stderr=stderr)
     return destination

@@ -1507,6 +1507,9 @@ pre {
 .compose-overlay-handle.se { right: -7px; bottom: -7px; cursor: nwse-resize; }
 .compose-live-text { position: absolute; transform: translate(-50%, -50%); font-weight: 700; white-space: pre-wrap; text-align: center; max-width: 80%; }
 .compose-live-image, .compose-live-video { position: static; display: block; transform: none; width: 100%; height: auto; max-width: none; }
+.compose-image-effect { position: relative; display: block; width: 100%; height: 100%; }
+.compose-image-effect::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: var(--tint-color, transparent); opacity: var(--tint-opacity, 0); mix-blend-mode: color; }
+.compose-image-effect > .compose-live-image { position: relative; z-index: 0; }
 .compose-live-logo-wrap { z-index: 3; }
 .compose-live-logo { object-fit: contain; }
 .compose-live-video { max-height: 100%; object-fit: contain; }

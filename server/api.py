@@ -11,6 +11,7 @@ import threading
 import shutil
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -47,7 +48,7 @@ from server.inbox import (
 )
 from server.media import send_file_with_range
 from server.projects import delete_project_folder, find_project_by_inputs, input_signature, list_projects, project_input_signature
-from server.wizard import WizardRunner, merge_spherical_landmarks, serialize_wizard_job, wizard_report, wizard_song_options
+from server.wizard import WizardRunner, merge_spherical_landmarks, same_project_path, serialize_wizard_job, wizard_report, wizard_song_options
 from captions.burn import burn as burn_captions
 from captions.align import align_known_lyrics
 from captions.model import Cue, CueTrack, Word
@@ -56,6 +57,255 @@ from captions.sources import from_lrc, from_lyrics, from_srt, to_srt
 from captions.styles import CAPTIONS_VERSION, get_style, list_styles
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class CompositionJob:
+    id: str
+    status: str = "running"
+    progress: int = 0
+    message: str = "Composing overlays and captions"
+    detail: str = "Preparing the final composition"
+    stage: str = "compose"
+    error: str | None = None
+    result: dict[str, Any] | None = None
+    project_path: str | None = None
+    started_at: float = field(default_factory=time.time)
+
+    def snapshot(self) -> dict[str, Any]:
+        return dict(self.__dict__)
+
+
+class CompositionRunner:
+    """Post-export composition job: visual overlays first, captions last."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._job: CompositionJob | None = None
+        self._thread: threading.Thread | None = None
+        self._process: subprocess.Popen | None = None
+
+    def status(self) -> dict[str, Any] | None:
+        with self._lock:
+            return self._job.snapshot() if self._job else None
+
+    def reset(self) -> None:
+        with self._lock:
+            if self._job and self._job.status == "running":
+                self.cancel()
+            self._job = None
+
+    def cancel(self) -> bool:
+        with self._lock:
+            job = self._job
+            process = self._process
+            if not job or job.status != "running":
+                return False
+            job.status = "cancelled"
+            job.message = "Composition cancelled"
+            job.detail = "The active FFmpeg process was stopped"
+            if process and process.poll() is None:
+                process.terminate()
+            return True
+
+    def start(self, project: Project) -> CompositionJob:
+        with self._lock:
+            if self._job and self._job.status == "running":
+                raise RuntimeError("A composition is already running")
+            job = CompositionJob(id=f"compose-{uuid.uuid4().hex[:10]}", project_path=str(project.folder))
+            self._job = job
+            self._thread = threading.Thread(target=self._run, args=(job, project), daemon=True, name="zucker-compose")
+            self._thread.start()
+            return job
+
+    def _run(self, job: CompositionJob, project: Project) -> None:
+        try:
+            base = _export_result(project)
+            if not base:
+                raise RuntimeError("No base export is available for composition")
+            base_path = Path(base["path"]).resolve()
+            spec_path = project.folder / "overlay_spec.json"
+            track_path = project.folder / "cue_track.json"
+            spec = json.loads(spec_path.read_text(encoding="utf-8")) if spec_path.is_file() else {"images": [], "videos": []}
+            track_data = json.loads(track_path.read_text(encoding="utf-8")) if track_path.is_file() else {"cues": [], "style": "clean_bottom"}
+            LOGGER.info("Composition source base=%s overlay_spec=%s cue_track=%s", base_path, spec_path, track_path)
+            job.progress = 8
+            job.detail = "Applying current image and video overlays"
+            composed = project.exports_dir / f"{base_path.stem}_overlay-composed.mp4"
+            _compose_visual_overlays(base_path, spec, composed, lambda value: _set_job_progress(job, 8 + round(value * 45)))
+            if job.status == "cancelled":
+                return
+            job.progress = 55
+            job.detail = "Burning captions onto the composed MP4"
+            cues = tuple(
+                Cue(
+                    tuple(str(line) for line in cue.get("lines", [])),
+                    float(cue["start"]),
+                    float(cue.get("end", cue["start"])),
+                    tuple(Word(str(word.get("text") or word.get("word") or ""), float(word["start"]), float(word["end"])) for word in cue.get("words", [])),
+                    dict(cue.get("style_override") or {}),
+                )
+                for cue in track_data.get("cues", [])
+            )
+            track = CueTrack(cues, str(track_data.get("lang") or "und"))
+            style = get_style(str(track_data.get("style") or "clean_bottom"))
+            header = track_data.get("header") if isinstance(track_data.get("header"), dict) else {}
+            logo = _composition_logo(project, str(header.get("logo_source") or "none"))
+            final = project.exports_dir / f"{base_path.stem}_composed-captions.mp4"
+            def burn_progress(seconds: float) -> None:
+                duration = _media_duration(base_path)
+                _set_job_progress(job, 55 + round(min(1.0, seconds / duration if duration else 0.0) * 40))
+            output = burn_captions(
+                composed,
+                _expand_caption_animations(track),
+                style,
+                output_path=final,
+                header=header,
+                logo_path=logo,
+                letterbox=track_data.get("letterbox") if isinstance(track_data.get("letterbox"), dict) else None,
+                progress_callback=burn_progress,
+            )
+            if job.status == "cancelled":
+                output.unlink(missing_ok=True)
+                return
+            job.progress = 100
+            job.status = "done"
+            job.message = "Result ready"
+            job.detail = "Overlays and captions were rendered from the saved project state"
+            job.result = {**base, "path": str(output), "filename": output.name, "media_url": "/api/v1/wizard/result"}
+            project.data.setdefault("settings", {}).setdefault("wizard", {})["last_composed_result"] = str(output)
+            project.save()
+            LOGGER.info("Composition complete base=%s overlays=%s final=%s", base_path, composed, output)
+        except Exception as exc:
+            if job.status == "cancelled":
+                return
+            LOGGER.exception("Composition failed for %s", project.folder)
+            job.status = "failed"
+            job.error = str(exc)
+            job.detail = "The final composition failed"
+
+
+def _set_job_progress(job: CompositionJob, progress: int) -> None:
+    if job.status == "running":
+        job.progress = max(job.progress, min(98, int(progress)))
+
+
+def _media_duration(path: Path) -> float:
+    try:
+        probe = ffprobe(str(path))
+        return float((probe.get("format") or {}).get("duration") or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _composition_logo(project: Project, mode: str) -> Path | None:
+    wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
+    if mode == "custom":
+        candidate = Path(str(wizard.get("reel_logo_path") or "")).expanduser().resolve()
+        return candidate if candidate.is_file() and candidate.parent == project.folder.resolve() else None
+    if mode == "default":
+        candidate = Path(str(load_global_config().get("personal_logo_path") or "")).expanduser().resolve()
+        return candidate if candidate.is_file() else None
+    return None
+
+
+def _hex_rgb(value: Any, default: tuple[int, int, int] = (255, 255, 255)) -> tuple[int, int, int]:
+    raw = str(value or "").strip()
+    if len(raw) == 7 and raw.startswith("#"):
+        try:
+            return tuple(int(raw[offset:offset + 2], 16) for offset in (1, 3, 5))
+        except ValueError:
+            pass
+    return default
+
+
+def _image_overlay_canvas(path: Path, raw: dict[str, Any], width: int, height: int, output: Path) -> None:
+    from PIL import Image, ImageFilter
+
+    image = Image.open(path).convert("RGBA")
+    target_width = max(2, int(width * max(0.02, min(1.0, float(raw.get("width") or 0.35)))))
+    image.thumbnail((target_width, height), Image.Resampling.LANCZOS)
+    opacity = max(0.0, min(1.0, float(raw.get("opacity") or 1.0)))
+    alpha = image.getchannel("A").point(lambda value: round(value * opacity))
+    image.putalpha(alpha)
+    canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    x = int(float(raw.get("x") if raw.get("x") is not None else 0.5) * width - image.width / 2)
+    y = int(float(raw.get("y") if raw.get("y") is not None else 0.5) * height - image.height / 2)
+    tint = raw.get("tint_color") or raw.get("overlay_color")
+    tint_strength = max(0.0, min(1.0, float(raw.get("tint_opacity") or 0.0)))
+    if tint and tint_strength:
+        tint_layer = Image.new("RGBA", image.size, (*_hex_rgb(tint), 255))
+        image = Image.blend(image, tint_layer, tint_strength)
+        image.putalpha(alpha)
+    effect_alpha = image.getchannel("A")
+    shadow_distance = max(0, int(float(raw.get("shadow_distance") or raw.get("shadow_offset") or 0)))
+    shadow_blur = max(0, int(float(raw.get("shadow_blur") or 0)))
+    shadow_opacity = max(0.0, min(1.0, float(raw.get("shadow_opacity") if raw.get("shadow_opacity") is not None else 0.0)))
+    if shadow_distance or shadow_blur or shadow_opacity:
+        shadow_mask = effect_alpha.point(lambda value: round(value * shadow_opacity))
+        shadow = Image.new("RGBA", image.size, (*_hex_rgb(raw.get("shadow_color"), (0, 0, 0)), 0))
+        shadow.putalpha(shadow_mask)
+        if shadow_blur:
+            shadow = shadow.filter(ImageFilter.GaussianBlur(shadow_blur))
+        shadow_canvas = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        shadow_canvas.alpha_composite(shadow, (x + shadow_distance, y + shadow_distance))
+        canvas.alpha_composite(shadow_canvas)
+    glow_layers = max(0, min(8, int(float(raw.get("glow_layers") or 0))))
+    glow_blur = max(0, int(float(raw.get("glow_blur") or 0)))
+    if glow_layers and glow_blur:
+        for layer_index in range(glow_layers, 0, -1):
+            glow = Image.new("RGBA", image.size, (*_hex_rgb(raw.get("glow_color") or tint, (255, 255, 255)), 0))
+            glow.putalpha(effect_alpha.point(lambda value, n=layer_index: round(value * min(1.0, 0.18 * n))))
+            glow = glow.filter(ImageFilter.GaussianBlur(glow_blur * layer_index / glow_layers))
+            canvas.alpha_composite(glow, (x, y))
+    canvas.alpha_composite(image, (x, y))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output, "PNG")
+
+
+def _compose_visual_overlays(source: Path, spec: dict[str, Any], destination: Path, progress_callback) -> Path:
+    """Render saved image/video overlays onto one full-length base export."""
+    from tempfile import TemporaryDirectory
+    probe = ffprobe(str(source))
+    video_stream = next((stream for stream in probe.get("streams", []) if stream.get("codec_type") == "video"), {})
+    width, height = int(video_stream.get("width") or 1080), int(video_stream.get("height") or 1920)
+    images = [item for item in spec.get("images") or [] if isinstance(item, dict) and Path(str(item.get("path") or "")).is_file()]
+    videos = [item for item in spec.get("videos") or [] if isinstance(item, dict) and Path(str(item.get("path") or "")).is_file()]
+    if not images and not videos:
+        shutil.copy2(source, destination)
+        progress_callback(1.0)
+        return destination
+    duration = float((probe.get("format") or {}).get("duration") or 0.0)
+    with TemporaryDirectory(prefix="zucker-compose-") as tmp:
+        tmp_dir = Path(tmp)
+        inputs: list[str] = ["-i", str(source)]
+        filters = ["[0:v]setpts=PTS-STARTPTS[base]"]
+        current = "base"
+        for index, raw in enumerate(images):
+            canvas = tmp_dir / f"image-{index}.png"
+            _image_overlay_canvas(Path(str(raw["path"])).resolve(), raw, width, height, canvas)
+            inputs += ["-loop", "1", "-i", str(canvas)]
+            start = max(0.0, float(raw.get("start_sec") or 0.0))
+            end = min(duration, start + max(0.1, float(raw.get("duration_sec") or 3.0)))
+            next_label = f"ov{index}"
+            filters.append(f"[{index + 1}:v]format=rgba[{next_label}src]")
+            filters.append(f"[{current}][{next_label}src]overlay=0:0:enable='between(t,{start:.3f},{end:.3f})':eof_action=pass[v{index}]")
+            current = f"v{index}"
+            progress_callback((index + 1) / max(1, len(images) + len(videos)))
+        for offset, raw in enumerate(videos, start=len(images)):
+            inputs += ["-stream_loop", "-1", "-i", str(Path(str(raw["path"])).resolve())]
+            start = max(0.0, float(raw.get("start_sec") or 0.0))
+            end = min(duration, start + max(0.1, float(raw.get("duration_sec") or 3.0)))
+            scale = max(2, int(width * max(0.02, min(1.0, float(raw.get("width") or 0.35)))))
+            x = max(0, int(float(raw.get("x") or 0.5) * width - scale / 2))
+            y = max(0, int(float(raw.get("y") or 0.5) * height - scale / 2))
+            filters.append(f"[{offset + 1}:v]format=rgba,scale={scale}:-2,colorchannelmixer=aa={max(0.0, min(1.0, float(raw.get('opacity') or 1.0))):.3f}[vid{offset}]")
+            filters.append(f"[{current}][vid{offset}]overlay={x}:{y}:enable='between(t,{start:.3f},{end:.3f})':eof_action=pass[v{offset}]")
+            current = f"v{offset}"
+            progress_callback((offset + 1) / max(1, len(images) + len(videos)))
+        command = [str(tool_status().get("ffmpeg_path") or "ffmpeg"), "-y", "-hide_banner", "-loglevel", "error", *inputs, "-filter_complex", ";".join(filters), "-map", f"[{current}]", "-map", "0:a?", "-t", f"{duration:.3f}", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy", str(destination)]
+        subprocess.run(command, check=True)
+    return destination
 
 
 def _expand_caption_animations(track: CueTrack) -> CueTrack:
@@ -119,6 +369,7 @@ class AppState:
     project: Project | None = None
     dev: bool = False
     wizard: WizardRunner | None = None
+    composition: CompositionRunner = field(default_factory=CompositionRunner)
 
 
 def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
@@ -191,6 +442,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not folder:
             return error_response("bad_request", "folder is required", 400)
         try:
+            state.composition.reset()
             state.project = load_project(folder)
             _invalidate_stale_sync_on_open(state.project)
             reconciled = reconcile_registered_inputs(state.project)
@@ -880,6 +1132,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 # process-global wizard job. Return the requested project's
                 # persisted state instead; the browser also validates the id.
                 return jsonify(_project_wizard_status(requested_project))
+        composition_status = state.composition.status()
+        if composition_status and composition_status.get("status") in {"running", "failed"}:
+            return jsonify(composition_status)
+        if composition_status and composition_status.get("status") == "done":
+            return jsonify(composition_status)
         status = state.wizard.status()
         if status.get("status") == "idle" and state.project:
             return jsonify(_project_wizard_status(state.project))
@@ -896,6 +1153,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not folder:
             return error_response("bad_request", "path is required", 400)
         try:
+            state.composition.reset()
             state.project = load_project(folder)
             _invalidate_stale_sync_on_open(state.project)
             reconciled = reconcile_registered_inputs(state.project)
@@ -935,6 +1193,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.post("/api/v1/wizard/projects/new")
     def api_wizard_project_new() -> Response:
         state.project = None
+        state.composition.reset()
         state.wizard.reset()
         config = load_global_config()
         if config.pop("last_project_path", None) is not None:
@@ -948,6 +1207,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.post("/api/v1/wizard/cancel")
     def api_wizard_cancel() -> Response:
+        if state.composition.cancel():
+            return jsonify({"ok": True})
         cancelled = state.wizard.cancel()
         if not cancelled:
             return error_response("not_running", "No job is currently running", 409)
@@ -999,7 +1260,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.get("/api/v1/wizard/result")
     def api_wizard_result() -> Response:
-        status = state.wizard.status()
+        status = state.composition.status() or state.wizard.status()
         if status.get("status") == "idle" and state.project:
             status = _project_wizard_status(state.project)
         result = status.get("result") or {}
@@ -1018,7 +1279,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.get("/api/v1/captions/frame")
     def api_captions_frame() -> Response:
         project = _require_project(state)
-        result = _export_result(project)
+        result = _latest_media_result(state, project)
         if not result:
             return error_response("not_found", "No exported video yet", 404)
         cache = project.cache_dir / "captions" / CAPTIONS_VERSION
@@ -1058,7 +1319,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.post("/api/v1/captions/burn")
     def api_captions_burn() -> Response:
         project = _require_project(state)
-        result = _export_result(project)
+        result = _latest_media_result(state, project)
         if not result:
             return error_response("not_found", "No exported video yet", 404)
         body = request.get_json(silent=True) or {}
@@ -1122,7 +1383,21 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 "width": max(0.05, min(0.9, _coerce_float(logo_overlay.get("width")) if _coerce_float(logo_overlay.get("width")) is not None else 0.22)),
             }
         project.save()
-        return jsonify({"ok": True, "overlay_spec": str(project.folder / "overlay_spec.json"), "cue_track": str(project.folder / "cue_track.json")})
+        try:
+            job = state.composition.start(project)
+        except RuntimeError as exc:
+            return error_response("composition_busy", str(exc), 409)
+        return jsonify({"ok": True, "overlay_spec": str(project.folder / "overlay_spec.json"), "cue_track": str(project.folder / "cue_track.json"), "job": job.snapshot()}), 202
+
+    @app.get("/api/v1/wizard/compose")
+    def api_wizard_compose_state() -> Response:
+        project = _require_project(state)
+        try:
+            overlay_spec = json.loads((project.folder / "overlay_spec.json").read_text(encoding="utf-8")) if (project.folder / "overlay_spec.json").is_file() else {"texts": [], "images": [], "videos": []}
+            cue_track = json.loads((project.folder / "cue_track.json").read_text(encoding="utf-8")) if (project.folder / "cue_track.json").is_file() else {"cues": [], "style": "karaoke_word"}
+        except (OSError, json.JSONDecodeError) as exc:
+            return error_response("compose_state_invalid", str(exc), 409)
+        return jsonify({"overlay_spec": overlay_spec, "cue_track": cue_track})
 
     @app.post("/api/v1/inputs/classify-paths")
     def api_classify_paths() -> Response:
@@ -1532,8 +1807,14 @@ def _export_result(project: Project) -> dict[str, Any] | None:
         return None
     export = exports[0]
     path = Path(export.get("path") or "")
-    if not path.exists():
-        return None
+    if not path.is_file() or path.stat().st_size < 1024:
+        # A cancelled/failed export can leave the manifest pointing at a
+        # zero-byte MP4. Result must never serve that stale pointer; recover
+        # the newest valid base export instead.
+        candidates = sorted(project.exports_dir.glob("*.mp4"), key=lambda item: item.stat().st_mtime, reverse=True)
+        path = next((candidate for candidate in candidates if candidate.stat().st_size >= 1024 and "_composed" not in candidate.name and "_captions" not in candidate.name and "_overlay-composed" not in candidate.name), None)
+        if path is None:
+            return None
     return {
         "project_path": str(project.folder),
         "filename": path.name,
@@ -1549,6 +1830,15 @@ def _export_result(project: Project) -> dict[str, Any] | None:
         "excluded_clips": export.get("excluded_clips") or [],
         "clip_fates": export.get("clip_fates") or [],
     }
+
+
+def _latest_media_result(state: AppState, project: Project) -> dict[str, Any] | None:
+    composition = state.composition.status()
+    if composition and composition.get("status") == "done" and same_project_path(composition.get("project_path"), str(project.folder)):
+        result = composition.get("result")
+        if isinstance(result, dict) and Path(str(result.get("path") or "")).is_file():
+            return result
+    return _export_result(project)
 
 
 def _stage_progress(stage_name: str) -> int:

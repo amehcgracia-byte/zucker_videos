@@ -381,6 +381,20 @@ function editableOverlayMarkup(kind, item, index, selected, content) {
   return `<div class="compose-live-overlay compose-live-${kind}-wrap${selected ? " selected" : ""}" ${identity} style="${position}">${content}<i class="compose-overlay-handle nw" data-compose-resize="nw" aria-label="Resize ${kind} top left"></i><i class="compose-overlay-handle ne" data-compose-resize="ne" aria-label="Resize ${kind} top right"></i><i class="compose-overlay-handle sw" data-compose-resize="sw" aria-label="Resize ${kind} bottom left"></i><i class="compose-overlay-handle se" data-compose-resize="se" aria-label="Resize ${kind} bottom right"></i></div>`;
 }
 
+function imageEffectMarkup(item) {
+  const tint = item.tint_color || "#ffffff";
+  const tintOpacity = Math.max(0, Math.min(1, Number(item.tint_opacity || 0)));
+  const shadowDistance = Math.max(0, Number(item.shadow_distance || 0));
+  const shadowBlur = Math.max(0, Number(item.shadow_blur || 0));
+  const shadowOpacity = Math.max(0, Math.min(1, Number(item.shadow_opacity || 0)));
+  const glowBlur = Math.max(0, Number(item.glow_blur || 0));
+  const glowLayers = Math.max(0, Math.min(8, Number(item.glow_layers || 0)));
+  const shadow = shadowOpacity && (shadowDistance || shadowBlur) ? `drop-shadow(${shadowDistance}px ${shadowDistance}px ${shadowBlur}px ${item.shadow_color || "#000000"}${Math.round(shadowOpacity * 255).toString(16).padStart(2, "0")})` : "";
+  const glow = glowLayers && glowBlur ? Array.from({ length: glowLayers }, (_, i) => `drop-shadow(0 0 ${Math.max(1, glowBlur * (i + 1) / glowLayers)}px ${item.glow_color || tint})`).join(" ") : "";
+  const filter = [shadow, glow].filter(Boolean).join(" ");
+  return `<span class="compose-image-effect" style="--tint-color:${escapeHtml(tint)};--tint-opacity:${tintOpacity};filter:${escapeHtml(filter)}">${content}</span>`;
+}
+
 function renderComposeOverlayLayer() {
   const layer = document.querySelector("#composeOverlayLayer");
   const video = document.querySelector("#composeVideo");
@@ -404,7 +418,7 @@ function renderComposeOverlayLayer() {
   const logo = logoSource === "custom" ? projectLogo.url : logoSource === "default" ? projectLogo.defaultUrl : "";
   const logoOverlay = projectLogo.overlay || { x: .5, y: .08, width: .22 };
   const logoMarkup = logo ? editableOverlayMarkup("logo", logoOverlay, null, selectedComposeLogo, `<img class="compose-live-logo" src="${escapeHtml(logo)}" alt="Project logo" />`) : "";
-  const imageMarkup = images.map((item) => editableOverlayMarkup("image", item, item._index, selectedComposeOverlay?.kind === "image" && selectedComposeOverlay.index === item._index, `<img class="compose-live-image" src="${escapeHtml(item.preview_url || item.path || '')}" alt="Flyer overlay" />`)).join("");
+  const imageMarkup = images.map((item) => editableOverlayMarkup("image", item, item._index, selectedComposeOverlay?.kind === "image" && selectedComposeOverlay.index === item._index, imageEffectMarkup(item).replace("</span>", `<img class="compose-live-image" src="${escapeHtml(item.preview_url || item.path || '')}" alt="Flyer overlay" /></span>`))).join("");
   const videoMarkup = videos.map((item) => editableOverlayMarkup("video", item, item._index, selectedComposeOverlay?.kind === "video" && selectedComposeOverlay.index === item._index, `<video class="compose-live-video" src="${escapeHtml(item.preview_url || item.path || '')}" autoplay muted loop playsinline aria-label="Video overlay"></video>`)).join("");
   layer.innerHTML = logoMarkup + imageMarkup + videoMarkup + (caption ? `<span class="compose-live-caption caption-style-${escapeHtml(captionStyle)}${captionAnimation}" data-caption-preview-index="${captionCues.indexOf(caption)}" tabindex="0" style="${captionInline}">${escapeHtml(caption.lines.join("\n"))}</span>` : "");
   const editing = Boolean(selectedComposeLogo || selectedComposeOverlay || captionActiveIndex != null);
@@ -426,13 +440,30 @@ async function openCaptions() {
     video.ontimeupdate = () => { renderComposeOverlayLayer(); updateComposeTimelinePlayhead(); };
   }
   migrateTextOverlaysToCaptions();
+  let savedComposeStyle = null;
+  if (!captionCues.length && !reelTextOverlays.length && !reelImageOverlays.length && !reelVideoOverlays.length) {
+    try {
+      const saved = await api("/wizard/compose");
+      const overlaySpec = saved.overlay_spec || {};
+      const cueTrack = saved.cue_track || {};
+      reelTextOverlays = Array.isArray(overlaySpec.texts) ? overlaySpec.texts : [];
+      reelImageOverlays = Array.isArray(overlaySpec.images) ? overlaySpec.images : [];
+      reelVideoOverlays = Array.isArray(overlaySpec.videos) ? overlaySpec.videos : [];
+      captionCues = Array.isArray(cueTrack.cues) ? cueTrack.cues : [];
+      savedComposeStyle = cueTrack.style || null;
+      const textarea = document.querySelector("#captionText");
+      if (textarea) textarea.value = captionCues.map((cue) => (cue.lines || []).join("\n")).join("\n\n");
+    } catch (error) {
+      logFrontendError(`saved composition state failed: ${error.message}`, error.stack || "");
+    }
+  }
   loadProjectLogo().catch(() => {});
   loadFlyerLibrary().catch(() => {});
   const styles = await api("/captions/styles");
   const select = document.querySelector("#captionStyle");
   if (select && !select.options.length) select.innerHTML = (styles.styles || []).map((style) => `<option value="${escapeHtml(style.name)}">${escapeHtml(style.name.replaceAll("_", " "))}</option>`).join("");
   if (select) select.onchange = () => document.querySelector("#captionPreview")?.setAttribute("data-style", select.value);
-  if (select && !select.dataset.userChoice) select.value = "karaoke_word";
+  if (select && !select.dataset.userChoice) select.value = savedComposeStyle || "karaoke_word";
   const blocks = captionBlocksFromText();
   if (!captionCues.length && blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
   renderCaptionBlocks();
@@ -475,7 +506,10 @@ async function burnCaptionTrack() {
 async function saveComposition() {
   const cues = captionCues.map((cue) => ({ ...cue, end: cue.end == null ? composeTimelineDuration() : cue.end }));
   const header = { title_enabled: false, title: "", logo_source: selectedLogoSource(), logo_overlay: projectLogo.overlay || { x: .5, y: .08, width: .22 } };
-  await api("/wizard/compose", { method: "POST", body: JSON.stringify({ texts: reelTextOverlays, images: reelImageOverlays, videos: reelVideoOverlays, cues, style: document.querySelector("#captionStyle")?.value || "karaoke_word", header, letterbox: { enabled: true, blur: 18 } }) });
+  return api("/wizard/compose", {
+    method: "POST",
+    body: JSON.stringify({ texts: reelTextOverlays, images: reelImageOverlays, videos: reelVideoOverlays, cues, style: document.querySelector("#captionStyle")?.value || "karaoke_word", header, letterbox: { enabled: true, blur: 18 } })
+  });
 }
 
 function projectIdFromStatus(status) {
@@ -1592,7 +1626,9 @@ function renderReelOptions() {
   if (ratioWrap) ratioWrap.hidden = document.querySelector("#reelAspect")?.value !== "mix_vertical_horizontal";
   const imageRoot = document.querySelector("#reelImageLines");
   const overlayRange = (label, icon, field, value, min, max, step) => `<label class="compact-control" title="${label}" aria-label="${label}"><span class="control-icon" aria-hidden="true">${icon}</span><input data-reel-image-field="${field}" type="range" min="${min}" max="${max}" step="${step}" value="${value}" aria-label="${label}" /><output>${Math.round(Number(value) * 100)}%</output></label>`;
-  if (imageRoot) imageRoot.innerHTML = reelImageOverlays.map((item, index) => `<div class="reel-text-line" data-reel-image-index="${index}"><span>Flyer ${index + 1}</span>${overlayRange("Width", "↔", "width", item.width ?? .35, .05, 1, .01)}${overlayRange("Opacity", "◐", "opacity", item.opacity ?? 1, .05, 1, .05)}<button class="overlay-icon-button" type="button" data-duplicate-reel-image="${index}" title="Duplicate flyer" aria-label="Duplicate flyer">⧉</button><button class="overlay-icon-button" type="button" data-remove-reel-image="${index}" title="Remove flyer" aria-label="Remove flyer">×</button></div>`).join("");
+  const imageColor = (label, field, value) => `<label class="compact-control" title="${label}" aria-label="${label}"><span class="control-icon" aria-hidden="true">●</span><input data-reel-image-field="${field}" type="color" value="${value || "#ffffff"}" aria-label="${label}" /></label>`;
+  const imageRange = (label, icon, field, value, min, max, step, percent = false) => `<label class="compact-control" title="${label}" aria-label="${label}"><span class="control-icon" aria-hidden="true">${icon}</span><input data-reel-image-field="${field}" type="range" min="${min}" max="${max}" step="${step}" value="${value}" aria-label="${label}" /><output>${percent ? `${Math.round(Number(value) * 100)}%` : value}</output></label>`;
+  if (imageRoot) imageRoot.innerHTML = reelImageOverlays.map((item, index) => `<div class="reel-text-line reel-image-properties" data-reel-image-index="${index}"><span>Flyer ${index + 1}</span>${overlayRange("Width", "↔", "width", item.width ?? .35, .05, 1, .01)}${overlayRange("Opacity", "◐", "opacity", item.opacity ?? 1, .05, 1, .05)}${imageColor("Tint color", "tint_color", item.tint_color || "#ffffff")}${imageRange("Tint strength", "T", "tint_opacity", item.tint_opacity ?? 0, 0, 1, .05, true)}${imageRange("Shadow distance", "↘", "shadow_distance", item.shadow_distance ?? 0, 0, 40, 1)}${imageRange("Shadow blur", "◌", "shadow_blur", item.shadow_blur ?? 0, 0, 40, 1)}${imageRange("Shadow opacity", "S", "shadow_opacity", item.shadow_opacity ?? 0, 0, 1, .05, true)}${imageColor("Shadow color", "shadow_color", item.shadow_color || "#000000")}${imageColor("Glow color", "glow_color", item.glow_color || "#ffffff")}${imageRange("Glow blur", "✦", "glow_blur", item.glow_blur ?? 0, 0, 40, 1)}${imageRange("Glow layers", "✧", "glow_layers", item.glow_layers ?? 0, 0, 8, 1)}<button class="overlay-icon-button" type="button" data-duplicate-reel-image="${index}" title="Duplicate flyer" aria-label="Duplicate flyer">⧉</button><button class="overlay-icon-button" type="button" data-remove-reel-image="${index}" title="Remove flyer" aria-label="Remove flyer">×</button></div>`).join("");
   const videoRoot = document.querySelector("#reelVideoLines");
   const videoRange = (label, icon, field, value, min, max, step) => `<label class="compact-control" title="${label}" aria-label="${label}"><span class="control-icon" aria-hidden="true">${icon}</span><input data-reel-video-field="${field}" type="range" min="${min}" max="${max}" step="${step}" value="${value}" aria-label="${label}" /><output>${Math.round(Number(value) * 100)}%</output></label>`;
   if (videoRoot) videoRoot.innerHTML = reelVideoOverlays.map((item, index) => `<div class="reel-text-line" data-reel-video-index="${index}"><span>Video ${index + 1}</span>${videoRange("Width", "↔", "width", item.width ?? .35, .05, 1, .01)}${videoRange("Opacity", "◐", "opacity", item.opacity ?? 1, .05, 1, .05)}<button class="overlay-icon-button" type="button" data-remove-reel-video="${index}" title="Remove video overlay" aria-label="Remove video overlay">×</button></div>`).join("");
@@ -2304,6 +2340,10 @@ function renderWizardStatus(status) {
     }
     document.querySelector("#errorBox").hidden = true;
     document.querySelector("#resultBox").hidden = false;
+    if (status.stage === "compose") {
+      setStep(6);
+      return;
+    }
     setStep(5);
     document.querySelector("#resultBox").hidden = true;
     openCaptions().catch((error) => showToast(error.message, true));
@@ -2942,7 +2982,16 @@ document.addEventListener("click", (event) => {
     const video = document.querySelector("#composeVideo");
     if (video) { if (video.paused) video.play().catch(() => {}); else video.pause(); }
   }
-  if (target.id === "composeContinue") saveComposition().then(() => { document.querySelector("#resultBox").hidden = false; setStep(6); }).catch((error) => showToast(error.message, true));
+  if (target.id === "composeContinue") saveComposition().then(() => {
+    document.querySelector("#resultBox").hidden = true;
+    document.querySelector("#errorBox").hidden = true;
+    progressFloor = 0;
+    progressStartedAt = Date.now();
+    progressSamples = [];
+    document.querySelector("#progressTitle").textContent = "Rendering your final composition";
+    setStep(3);
+    ensureStatusPolling();
+  }).catch((error) => showToast(error.message, true));
   if (target.id === "composeDuplicateOverlay") {
     if (reelImageOverlays.length) reelImageOverlays.push({ ...reelImageOverlays[reelImageOverlays.length - 1], x: Math.min(.95, Number(reelImageOverlays[reelImageOverlays.length - 1].x ?? .5) + .04) });
     else if (reelVideoOverlays.length) reelVideoOverlays.push({ ...reelVideoOverlays[reelVideoOverlays.length - 1], x: Math.min(.95, Number(reelVideoOverlays[reelVideoOverlays.length - 1].x ?? .5) + .04) });
@@ -3132,8 +3181,8 @@ document.addEventListener("input", (event) => {
   if (output) output.textContent = ["opacity", "width"].includes(input.dataset.reelImageField) ? `${Math.round(Number(input.value) * 100)}%` : input.value;
   const row = input.closest?.("[data-reel-image-index]"); if (!row) return;
   const item = reelImageOverlays[Number(row.dataset.reelImageIndex)]; if (!item) return;
-  item[input.dataset.reelImageField] = ["width", "opacity", "start_sec", "duration_sec"].includes(input.dataset.reelImageField) ? Number(input.value) : input.value;
-  renderReelTimeline(); drawReelPreview();
+  item[input.dataset.reelImageField] = ["width", "opacity", "start_sec", "duration_sec", "tint_opacity", "shadow_distance", "shadow_blur", "shadow_opacity", "glow_blur", "glow_layers"].includes(input.dataset.reelImageField) ? Number(input.value) : input.value;
+  renderReelTimeline(); drawReelPreview(); renderComposeOverlayLayer();
 });
 
 document.addEventListener("change", (event) => {
