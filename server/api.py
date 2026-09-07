@@ -311,7 +311,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         custom = Path(str(wizard.get("reel_logo_path") or "")).expanduser()
         config = load_global_config()
         default = Path(str(config.get("personal_logo_path") or "")).expanduser()
+        mode = str(wizard.get("reel_logo_mode") or ("custom" if custom.is_file() else "none"))
+        if mode not in {"custom", "default", "none"}:
+            mode = "none"
         return jsonify({
+            "mode": mode,
             "custom": {"path": str(custom), "url": "/api/v1/wizard/logo/project"} if custom.is_file() else None,
             "default": {"path": str(default), "url": "/api/v1/wizard/logo/default"} if default.is_file() else None,
         })
@@ -336,6 +340,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("bad_request", "Choose a valid logo file", 400)
         wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
         wizard["reel_logo_path"] = str(destination.resolve())
+        wizard["reel_logo_mode"] = "custom"
         project.save()
         return jsonify({"path": str(destination.resolve()), "url": "/api/v1/wizard/logo/project", "name": destination.name})
 
@@ -346,6 +351,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         for old in project.folder.glob("overlay_logo.*"):
             old.unlink(missing_ok=True)
         wizard["reel_logo_path"] = ""
+        wizard["reel_logo_mode"] = "none"
         project.save()
         return jsonify({"ok": True})
 
@@ -1052,12 +1058,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         images = body.get("images") if isinstance(body.get("images"), list) else []
         videos = body.get("videos") if isinstance(body.get("videos"), list) else []
         cues = body.get("cues") if isinstance(body.get("cues"), list) else []
+        header = body.get("header") if isinstance(body.get("header"), dict) else {}
+        logo_mode = str(header.get("logo_source") or "none")
+        if logo_mode not in {"custom", "default", "none"}:
+            logo_mode = "none"
         overlay_spec = {"version": 2, "texts": texts, "images": images, "videos": videos}
-        cue_track = {"version": CAPTIONS_VERSION, "lang": str(body.get("lang") or "und"), "cues": cues, "style": str(body.get("style") or "karaoke_word"), "header": body.get("header") or {}, "letterbox": body.get("letterbox") or {}}
+        header = {**header, "logo_source": logo_mode, "logo_enabled": logo_mode != "none"}
+        cue_track = {"version": CAPTIONS_VERSION, "lang": str(body.get("lang") or "und"), "cues": cues, "style": str(body.get("style") or "karaoke_word"), "header": header, "letterbox": body.get("letterbox") or {}}
         (project.folder / "overlay_spec.json").write_text(json.dumps(overlay_spec, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         (project.folder / "cue_track.json").write_text(json.dumps(cue_track, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
         wizard["reel_text_overlays"], wizard["reel_image_overlays"], wizard["reel_video_overlays"] = texts, images, videos
+        wizard["reel_logo_mode"] = logo_mode
+        if logo_mode != "custom":
+            wizard["reel_logo_path"] = ""
+            for old in project.folder.glob("overlay_logo.*"):
+                old.unlink(missing_ok=True)
         project.save()
         return jsonify({"ok": True, "overlay_spec": str(project.folder / "overlay_spec.json"), "cue_track": str(project.folder / "cue_track.json")})
 

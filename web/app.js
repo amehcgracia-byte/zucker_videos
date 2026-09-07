@@ -1350,7 +1350,7 @@ function renderProjectLogo() {
 async function loadProjectLogo() {
   const result = await api("/wizard/logo");
   projectLogo = {
-    choice: "none",
+    choice: result.mode || "none",
     path: result.custom?.path || "",
     url: result.custom?.url || "",
     name: result.custom?.path ? filename(result.custom.path) : "",
@@ -1362,8 +1362,9 @@ async function loadProjectLogo() {
   const none = document.querySelector("#captionLogoNone");
   if (custom) custom.disabled = !projectLogo.url;
   if (defaultChoice) defaultChoice.disabled = !projectLogo.defaultUrl;
-  if (none) none.checked = !projectLogo.url;
-  if (custom) custom.checked = Boolean(projectLogo.url);
+  if (none) none.checked = projectLogo.choice === "none";
+  if (custom) custom.checked = projectLogo.choice === "custom" && Boolean(projectLogo.url);
+  if (defaultChoice) defaultChoice.checked = projectLogo.choice === "default" && Boolean(projectLogo.defaultUrl);
   renderProjectLogo();
 }
 
