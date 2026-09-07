@@ -79,7 +79,7 @@ SPHERICAL_NORMAL_FOV_MAX = NORMAL_FOV_MAX
 SPHERICAL_MAX_HOLD_YAW_DEG = 10.0
 INTRO_DURATION = 10.0
 COLOR_PROFILE_VERSION = 4
-REEL_LETTERBOX_CACHE_VERSION = 1
+REEL_LETTERBOX_CACHE_VERSION = 2
 REEL_LETTERBOX_BLUR_SIGMA = 18.0
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
@@ -2581,10 +2581,10 @@ def _reel_letterbox_filter(project: Project, segment: dict[str, Any], platform: 
     # the output canvas, so every cut can change its visible native proportion.
     return (
         "split=2[reel_bg][reel_fg];"
-        f"[reel_bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma={REEL_LETTERBOX_BLUR_SIGMA:.1f}[reel_blur];"
+        f"[reel_bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,gblur=sigma={REEL_LETTERBOX_BLUR_SIGMA:.1f}[reel_blur];"
         "[reel_fg]format=rgba,scale=1080:1920:force_original_aspect_ratio=decrease,"
-        "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0[reel_main];"
-        "[reel_blur][reel_main]overlay=(W-w)/2:(H-h)/2:format=auto"
+        "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1[reel_main];"
+        "[reel_blur][reel_main]overlay=(W-w)/2:(H-h)/2:format=auto,setsar=1"
     )
 
 

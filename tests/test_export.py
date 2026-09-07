@@ -234,7 +234,7 @@ def test_reel_letterbox_uses_native_geometry_and_project_cache(tmp_path):
     cache_path = project.cache_dir / "reel_letterbox" / f"{geometry['fingerprint']}.json"
     assert cache_path.is_file()
     letterbox = _reel_letterbox_filter(project, segment, "reel")
-    assert letterbox and "gblur=sigma=18.0" in letterbox
+    assert letterbox and "gblur=sigma=18.0" in letterbox and "setsar=1" in letterbox
     project.data["settings"]["wizard"]["reel_aspect"] = "9:16"
     assert _reel_letterbox_filter(project, segment, "reel") is None
     assert _reel_letterbox_filter(project, segment, "youtube") is None
