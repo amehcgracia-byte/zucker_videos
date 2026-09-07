@@ -21,6 +21,14 @@ def _ass_color(value: object) -> str:
     return f"&H00{text[4:6]}{text[2:4]}{text[0:2]}&".upper()
 
 
+def _ass_alpha(opacity: object) -> str:
+    try:
+        value = max(0.0, min(1.0, float(opacity)))
+    except (TypeError, ValueError):
+        value = 1.0
+    return f"&H{round((1.0 - value) * 255):02X}&"
+
+
 def _dialogue(cue, *, width: int, height: int) -> str:
     override = cue.style_override or {}
     tags = []
@@ -32,6 +40,18 @@ def _dialogue(cue, *, width: int, height: int) -> str:
     if override.get("vertical") is not None:
         y = max(0, min(height, height * float(override["vertical"]) / 100.0))
         tags.append(f"\\pos({width / 2:g},{y:g})")
+    if override.get("outline_width") is not None:
+        tags.append(f"\\bord{max(0.0, float(override['outline_width'])):g}")
+    outline_color = _ass_color(override.get("outline_color"))
+    if outline_color:
+        tags.append(f"\\3c{outline_color}")
+    if override.get("shadow_distance") is not None:
+        tags.append(f"\\shad{max(0.0, float(override['shadow_distance'])):g}")
+    shadow_color = _ass_color(override.get("shadow_color"))
+    if shadow_color:
+        tags.append(f"\\4c{shadow_color}")
+    if override.get("shadow_opacity") is not None:
+        tags.append(f"\\4a{_ass_alpha(override['shadow_opacity'])}")
     prefix = "{" + "".join(tags) + "}" if tags else ""
     if not cue.words:
         return prefix + _escape(cue.text)

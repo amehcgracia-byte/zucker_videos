@@ -1546,6 +1546,7 @@ pre {
 .caption-style-overrides { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
 .caption-style-overrides label { display: flex; align-items: center; gap: .25rem; font-size: .75rem; color: var(--muted,#63727a); }
 .caption-style-overrides input[type="number"] { width: 4.6rem; padding: .25rem .35rem; }
+.caption-style-overrides input[type="color"] { width: 2.2rem; min-height: 1.8rem; padding: .1rem; }
 .caption-block-actions { display: flex; flex-wrap: wrap; gap: .4rem; justify-content: flex-end; position: relative; z-index: 3; }
 .caption-block button, .reel-text-line button { min-height: 32px; white-space: nowrap; position: relative; z-index: 3; }
 .compose-overlays-panel .reel-text-line { overflow: visible; }

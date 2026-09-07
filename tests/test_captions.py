@@ -27,11 +27,16 @@ def test_six_presets_render_valid_ass() -> None:
 
 
 def test_caption_style_override_renders_inline_tags() -> None:
-    track = CueTrack((Cue(("Override",), 0, 2, style_override={"color": "#00ff00", "size": 80, "vertical": 68}),))
+    track = CueTrack((Cue(("Override",), 0, 2, style_override={"color": "#00ff00", "size": 80, "vertical": 68, "outline_color": "#ff0000", "outline_width": 4, "shadow_distance": 6, "shadow_color": "#0000ff", "shadow_opacity": 0.5}),))
     ass = render_ass(track, list_styles()[0], width=1080, height=1920)
     assert r"\c&H0000FF00&" in ass
     assert r"\fs80" in ass
     assert r"\pos(540,1305.6)" in ass
+    assert r"\bord4" in ass
+    assert r"\3c&H000000FF&" in ass
+    assert r"\shad6" in ass
+    assert r"\4c&H00FF0000&" in ass
+    assert r"\4a&H80&" in ass
 
 
 def test_lyrics_preserves_exact_lines() -> None:
