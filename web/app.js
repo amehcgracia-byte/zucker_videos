@@ -396,6 +396,8 @@ async function openCaptions() {
   if (video) {
     video.src = latestResult?.media_url ? `${latestResult.media_url}?t=${Date.now()}` : "/api/v1/wizard/result";
     video.load();
+    video.onplay = () => { const button = document.querySelector("#composePlayPause"); if (button) button.textContent = "Pause"; };
+    video.onpause = () => { const button = document.querySelector("#composePlayPause"); if (button) button.textContent = "Play"; };
     video.onloadedmetadata = () => { const scrub = document.querySelector("#composeScrub"); if (scrub) scrub.max = String(video.duration || 1); renderCaptionBlocks(); renderComposeOverlayLayer(); };
     video.ontimeupdate = () => { renderComposeOverlayLayer(); updateComposeTimelinePlayhead(); };
   }
@@ -2871,6 +2873,10 @@ document.addEventListener("click", (event) => {
     revealNative(latestResult?.path, S.reveal).catch((error) => showToast(error.message, true));
   }
   if (target.id === "openCaptions") openCaptions().catch((error) => showToast(error.message, true));
+  if (target.id === "composePlayPause") {
+    const video = document.querySelector("#composeVideo");
+    if (video) { if (video.paused) video.play().catch(() => {}); else video.pause(); }
+  }
   if (target.id === "composeContinue") saveComposition().then(() => { document.querySelector("#resultBox").hidden = false; setStep(6); }).catch((error) => showToast(error.message, true));
   if (target.id === "composeDuplicateOverlay") {
     if (reelImageOverlays.length) reelImageOverlays.push({ ...reelImageOverlays[reelImageOverlays.length - 1], x: Math.min(.95, Number(reelImageOverlays[reelImageOverlays.length - 1].x ?? .5) + .04) });

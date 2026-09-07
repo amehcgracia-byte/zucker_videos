@@ -1488,7 +1488,7 @@ pre {
 .compose-player-wrap { max-width: 980px; margin: 0 auto 1rem; }
 .compose-video-stage { position: relative; display: grid; place-items: center; min-height: 300px; overflow: hidden; border-radius: 14px; background: #101619; }
 .compose-video-stage video { display: block; width: 100%; max-height: 68vh; object-fit: contain; background: #101619; }
-.compose-overlay-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.compose-overlay-layer { position: absolute; inset: 0; pointer-events: auto; overflow: hidden; }
 .compose-live-overlay { position: absolute; transform: translate(-50%, -50%); box-sizing: border-box; pointer-events: auto; cursor: move; }
 .compose-live-overlay.selected { outline: 2px solid #4dd4ff; outline-offset: 2px; }
 .compose-live-overlay > img, .compose-live-overlay > video { display: block; width: 100%; height: auto; max-width: none; pointer-events: none; }
