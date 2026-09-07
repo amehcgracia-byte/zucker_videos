@@ -403,6 +403,7 @@ async function openCaptions() {
   }
   migrateTextOverlaysToCaptions();
   loadProjectLogo().catch(() => {});
+  loadFlyerLibrary().catch(() => {});
   const styles = await api("/captions/styles");
   const select = document.querySelector("#captionStyle");
   if (select && !select.options.length) select.innerHTML = (styles.styles || []).map((style) => `<option value="${escapeHtml(style.name)}">${escapeHtml(style.name.replaceAll("_", " "))}</option>`).join("");
