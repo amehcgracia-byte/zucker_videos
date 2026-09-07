@@ -375,6 +375,12 @@ function seekFromComposeTimeline(event, scroll) {
   renderComposeOverlayLayer();
 }
 
+function editableOverlayMarkup(kind, item, index, selected, content) {
+  const position = `left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;width:${Number(item.width ?? .35) * 100}%;opacity:${item.opacity ?? 1}`;
+  const identity = kind === "logo" ? `data-compose-preview-kind="logo"` : `data-compose-preview-kind="${kind}" data-compose-preview-index="${index}"`;
+  return `<div class="compose-live-overlay compose-live-${kind}-wrap${selected ? " selected" : ""}" ${identity} style="${position}">${content}<i class="compose-overlay-handle nw" data-compose-resize="nw" aria-label="Resize ${kind} top left"></i><i class="compose-overlay-handle ne" data-compose-resize="ne" aria-label="Resize ${kind} top right"></i><i class="compose-overlay-handle sw" data-compose-resize="sw" aria-label="Resize ${kind} bottom left"></i><i class="compose-overlay-handle se" data-compose-resize="se" aria-label="Resize ${kind} bottom right"></i></div>`;
+}
+
 function renderComposeOverlayLayer() {
   const layer = document.querySelector("#composeOverlayLayer");
   const video = document.querySelector("#composeVideo");
@@ -397,11 +403,13 @@ function renderComposeOverlayLayer() {
   const logoSource = selectedLogoSource();
   const logo = logoSource === "custom" ? projectLogo.url : logoSource === "default" ? projectLogo.defaultUrl : "";
   const logoOverlay = projectLogo.overlay || { x: .5, y: .08, width: .22 };
-  const logoSelected = selectedComposeLogo ? " selected" : "";
-  const logoMarkup = logo ? `<div class="compose-live-overlay compose-live-logo-wrap${logoSelected}" data-compose-preview-kind="logo" style="left:${Number(logoOverlay.x ?? .5) * 100}%;top:${Number(logoOverlay.y ?? .08) * 100}%;width:${Number(logoOverlay.width ?? .22) * 100}%"><img class="compose-live-logo" src="${escapeHtml(logo)}" alt="Project logo" /><i class="compose-overlay-handle nw" data-compose-resize="nw"></i><i class="compose-overlay-handle ne" data-compose-resize="ne"></i><i class="compose-overlay-handle sw" data-compose-resize="sw"></i><i class="compose-overlay-handle se" data-compose-resize="se"></i></div>` : "";
-  const imageMarkup = images.map((item) => { const selected = selectedComposeOverlay?.kind === "image" && selectedComposeOverlay.index === item._index ? " selected" : ""; return `<div class="compose-live-overlay compose-live-image-wrap${selected}" data-compose-preview-kind="image" data-compose-preview-index="${item._index}" style="left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;width:${Number(item.width ?? .35) * 100}%;opacity:${item.opacity ?? 1}"><img class="compose-live-image" src="${escapeHtml(item.preview_url || item.path || '')}" alt="" /><i class="compose-overlay-handle nw" data-compose-resize="nw"></i><i class="compose-overlay-handle ne" data-compose-resize="ne"></i><i class="compose-overlay-handle sw" data-compose-resize="sw"></i><i class="compose-overlay-handle se" data-compose-resize="se"></i></div>`; }).join("");
-  const videoMarkup = videos.map((item) => { const selected = selectedComposeOverlay?.kind === "video" && selectedComposeOverlay.index === item._index ? " selected" : ""; return `<div class="compose-live-overlay compose-live-video-wrap${selected}" data-compose-preview-kind="video" data-compose-preview-index="${item._index}" style="left:${Number(item.x ?? .5) * 100}%;top:${Number(item.y ?? .5) * 100}%;width:${Number(item.width ?? .35) * 100}%;opacity:${item.opacity ?? 1}"><video class="compose-live-video" src="${escapeHtml(item.preview_url || item.path || '')}" autoplay muted loop playsinline aria-label="Video overlay"></video><i class="compose-overlay-handle nw" data-compose-resize="nw"></i><i class="compose-overlay-handle ne" data-compose-resize="ne"></i><i class="compose-overlay-handle sw" data-compose-resize="sw"></i><i class="compose-overlay-handle se" data-compose-resize="se"></i></div>`; }).join("");
+  const logoMarkup = logo ? editableOverlayMarkup("logo", logoOverlay, null, selectedComposeLogo, `<img class="compose-live-logo" src="${escapeHtml(logo)}" alt="Project logo" />`) : "";
+  const imageMarkup = images.map((item) => editableOverlayMarkup("image", item, item._index, selectedComposeOverlay?.kind === "image" && selectedComposeOverlay.index === item._index, `<img class="compose-live-image" src="${escapeHtml(item.preview_url || item.path || '')}" alt="Flyer overlay" />`)).join("");
+  const videoMarkup = videos.map((item) => editableOverlayMarkup("video", item, item._index, selectedComposeOverlay?.kind === "video" && selectedComposeOverlay.index === item._index, `<video class="compose-live-video" src="${escapeHtml(item.preview_url || item.path || '')}" autoplay muted loop playsinline aria-label="Video overlay"></video>`)).join("");
   layer.innerHTML = logoMarkup + imageMarkup + videoMarkup + (caption ? `<span class="compose-live-caption caption-style-${escapeHtml(captionStyle)}${captionAnimation}" data-caption-preview-index="${captionCues.indexOf(caption)}" tabindex="0" style="${captionInline}">${escapeHtml(caption.lines.join("\n"))}</span>` : "");
+  const editing = Boolean(selectedComposeLogo || selectedComposeOverlay || captionActiveIndex != null);
+  document.querySelector(".compose-player-wrap")?.classList.toggle("overlay-editing", editing);
+  video.controls = !editing;
   const time = document.querySelector("#composeTime"); if (time) time.textContent = `${Math.floor(now / 60).toString().padStart(2, '0')}:${(now % 60).toFixed(2).padStart(5, '0')}`;
   const scrub = document.querySelector("#composeScrub"); if (scrub && Number.isFinite(video.duration)) { scrub.max = String(video.duration); scrub.value = String(now); }
 }
@@ -2719,6 +2727,39 @@ document.addEventListener("click", (event) => {
   const timelineScroll = target.closest?.("[data-compose-timeline]");
   if (timelineScroll instanceof HTMLElement) {
     if (timelineSuppressClick) { timelineSuppressClick = false; return; }
+    const overlayBlock = target.closest?.(".compose-timeline-block.overlay");
+    if (overlayBlock instanceof HTMLElement) {
+      const kind = overlayBlock.dataset.overlayKind;
+      const index = Number(overlayBlock.dataset.overlayIndex);
+      const item = kind === "image" ? reelImageOverlays[index] : reelVideoOverlays[index];
+      const video = document.querySelector("#composeVideo");
+      if (item && video) {
+        selectedComposeOverlay = { kind, index };
+        selectedComposeLogo = false;
+        captionActiveIndex = null;
+        video.pause();
+        video.currentTime = Number(item.start_sec || 0);
+        renderReelOptions();
+        renderComposeOverlayLayer();
+      }
+      return;
+    }
+    const captionBlock = target.closest?.(".compose-timeline-block.caption");
+    if (captionBlock instanceof HTMLElement) {
+      const index = Number(captionBlock.dataset.captionSeek);
+      const cue = captionCues[index];
+      const video = document.querySelector("#composeVideo");
+      if (cue && video) {
+        captionActiveIndex = index;
+        selectedComposeOverlay = null;
+        selectedComposeLogo = false;
+        video.pause();
+        video.currentTime = Number(cue.start) || 0;
+        renderCaptionBlocks();
+        renderComposeOverlayLayer();
+      }
+      return;
+    }
     seekFromComposeTimeline(event, timelineScroll);
     return;
   }
@@ -3136,6 +3177,8 @@ document.addEventListener("pointerdown", (event) => {
   if (!(layer instanceof HTMLElement)) {
     selectedComposeOverlay = null;
     selectedComposeLogo = false;
+    captionActiveIndex = null;
+    renderReelOptions();
     renderComposeOverlayLayer();
     return;
   }
@@ -3146,6 +3189,7 @@ document.addEventListener("pointerdown", (event) => {
   if (!(overlay instanceof HTMLElement)) {
     selectedComposeOverlay = null;
     selectedComposeLogo = false;
+    captionActiveIndex = null;
     renderReelOptions();
     renderComposeOverlayLayer();
     return;
@@ -3156,6 +3200,7 @@ document.addEventListener("pointerdown", (event) => {
   if (!item) return;
   selectedComposeLogo = kind === "logo";
   selectedComposeOverlay = kind === "logo" ? null : { kind, index };
+  captionActiveIndex = null;
   const rect = layer.getBoundingClientRect();
   const handle = event.target.closest?.("[data-compose-resize]");
   composePreviewDrag = { kind, index, item, mode: handle?.dataset.composeResize || "move", rect, startX: event.clientX, startY: event.clientY, x: Number(item.x ?? .5), y: Number(item.y ?? .5), width: Number(item.width ?? .35) };

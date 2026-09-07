@@ -174,6 +174,8 @@ audio {
   padding: 42px 0;
 }
 
+.wizard:has(.compose-step.active) { width: min(1500px, calc(100% - 32px)); }
+
 .wizard-nav {
   position: sticky;
   top: 0;
@@ -1493,21 +1495,22 @@ pre {
 .compose-player-wrap { max-width: 980px; margin: 0 auto 1rem; }
 .compose-video-stage { position: relative; display: grid; place-items: center; min-height: 300px; overflow: hidden; border-radius: 14px; background: #101619; }
 .compose-video-stage video { display: block; width: 100%; max-height: 68vh; object-fit: contain; background: #101619; }
-.compose-overlay-layer { position: absolute; inset: 0; pointer-events: auto; overflow: hidden; }
+.compose-overlay-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; }
 .compose-live-overlay { position: absolute; transform: translate(-50%, -50%); box-sizing: border-box; pointer-events: auto; cursor: move; }
 .compose-live-overlay.selected { outline: 2px solid #4dd4ff; outline-offset: 2px; }
 .compose-live-overlay > img, .compose-live-overlay > video { display: block; width: 100%; height: auto; max-width: none; pointer-events: none; }
 .compose-overlay-handle { position: absolute; width: 10px; height: 10px; border: 2px solid #fff; border-radius: 50%; background: #147d9c; box-shadow: 0 0 0 1px #102027; pointer-events: auto; }
+.compose-live-overlay:not(.selected) .compose-overlay-handle { display: none; }
 .compose-overlay-handle.nw { left: -7px; top: -7px; cursor: nwse-resize; }
 .compose-overlay-handle.ne { right: -7px; top: -7px; cursor: nesw-resize; }
 .compose-overlay-handle.sw { left: -7px; bottom: -7px; cursor: nesw-resize; }
 .compose-overlay-handle.se { right: -7px; bottom: -7px; cursor: nwse-resize; }
 .compose-live-text { position: absolute; transform: translate(-50%, -50%); font-weight: 700; white-space: pre-wrap; text-align: center; max-width: 80%; }
-.compose-live-image { position: absolute; transform: translate(-50%, -50%); max-width: 80%; height: auto; }
+.compose-live-image, .compose-live-video { position: static; display: block; transform: none; width: 100%; height: auto; max-width: none; }
 .compose-live-logo-wrap { z-index: 3; }
 .compose-live-logo { object-fit: contain; }
-.compose-live-video { position: absolute; transform: translate(-50%, -50%); max-width: 90%; max-height: 90%; height: auto; object-fit: contain; }
-.compose-live-caption { position: absolute; left: 50%; top: 68%; width: 84%; transform: translate(-50%, -50%); color: #fff; font: 700 clamp(1rem, 3vw, 2.1rem)/1.08 Arial,sans-serif; text-align: center; white-space: pre-line; text-shadow: 0 3px 5px #000; }
+.compose-live-video { max-height: 100%; object-fit: contain; }
+.compose-live-caption { position: absolute; left: 50%; top: 68%; width: 84%; transform: translate(-50%, -50%); pointer-events: none; color: #fff; font: 700 clamp(1rem, 3vw, 2.1rem)/1.08 Arial,sans-serif; text-align: center; white-space: pre-line; text-shadow: 0 3px 5px #000; }
 .compose-live-caption.caption-style-solid_box { padding: .35em .55em; border-radius: .22em; background: rgb(16 16 16 / 82%); }
 .compose-live-caption.caption-style-marker_word { text-decoration: underline 0.22em #ffdf5d; text-decoration-skip-ink: none; }
 .compose-live-caption.caption-style-one_word { font-size: clamp(2rem, 7vw, 5rem); font-weight: 800; }
@@ -1527,6 +1530,8 @@ pre {
 .compose-add-caption { min-height: 44px; padding: .7rem 1rem; font-size: 1rem; }
 .compose-add-caption kbd { margin-left: .35rem; padding: .1rem .35rem; border: 1px solid currentColor; border-radius: 4px; font-size: .75em; opacity: .8; }
 .compose-player-tools #composeEndCaption { min-height: 44px; }
+.compose-player-wrap.overlay-editing .compose-player-tools { visibility: hidden; pointer-events: none; }
+.compose-player-wrap.overlay-editing .compose-video-stage { cursor: default; }
 .compose-timeline { display: grid; grid-column: 1 / -1; grid-template-columns: 80px minmax(0,1fr); gap: .35rem .7rem; width: 100%; margin: 1.25rem 0; }
 .compose-timeline-tools { display: flex; align-items: center; gap: .55rem; margin-top: .9rem; color: var(--muted,#63727a); font-size: .85rem; }
 .compose-timeline-tools select { min-width: 4.5rem; }
@@ -1585,7 +1590,8 @@ pre {
 .compose-actions { display: flex; justify-content: flex-end; margin-top: 1rem; }
 
 @media (max-width: 1099px) {
-  .compose-step { width: min(900px, calc(100% - 32px)); }
+  .wizard:has(.compose-step.active) { width: calc(100% - 24px); }
+  .compose-step { width: 100%; }
   .compose-workspace { display: flex; flex-direction: column; }
   .compose-center { order: 1; width: 100%; }
   .compose-captions-panel { order: 2; width: 100%; }
