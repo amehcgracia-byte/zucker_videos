@@ -33,7 +33,7 @@ SPHERICAL_MOTION_PLAN_VERSION = 10
 # edit cadence accidentally.
 REEL_MIN_CUT_SEC = 1.5
 REEL_MAX_CUT_SEC = 2.0
-REEL_PLAN_VERSION = 3
+REEL_PLAN_VERSION = 4
 MOTION_CATALOG = (
     "full_static", "full_zoom_in", "zoom_in_center", "zoom_out_center", "zoom_in", "zoom_out",
     "pan_right_center", "pan_left_center", "pan_down_center", "pan_up_center",
@@ -372,6 +372,7 @@ def _reel_promo_plan(
             target_x, target_y = _reel_target_for_source(source, clip_start, seg_duration)
             segment["reel_subject_center"] = {"x": target_x, "y": target_y}
         segments.append(segment)
+    _assign_reel_mix_treatments(segments, sources, wizard)
     _validate_motion_segments(segments)
     return {
         "stage": "edit",
@@ -379,6 +380,7 @@ def _reel_promo_plan(
         "reel_plan_version": REEL_PLAN_VERSION,
         "reel_duration_sec": round(duration, 6),
         "reel_aspect": str(wizard.get("reel_aspect") or "9:16"),
+        "reel_mix_vertical_ratio": wizard.get("reel_mix_vertical_ratio", "auto"),
         "reel_text_overlays": list(wizard.get("reel_text_overlays") or []),
         "reel_image_overlays": list(wizard.get("reel_image_overlays") or []),
         "title": window.get("title") or t("full_video"),
@@ -390,6 +392,93 @@ def _reel_promo_plan(
         "cut_count": max(0, len(segments) - 1),
         "segments": segments,
     }
+
+
+def _reel_framing_confidence(source: dict[str, Any], clip_start_sec: float, duration_sec: float) -> float:
+    """Score whether the existing Reel framing analysis can hold a subject.
+
+    This is deliberately a read-only consumer of the cached detector output.
+    It never runs detection during edit or export.  A score of zero means the
+    source has no usable subject evidence for this cut.
+    """
+    profile = source.get("reel_framing") or {}
+    if not isinstance(profile, dict):
+        return 0.0
+    end = float(clip_start_sec) + max(0.0, float(duration_sec))
+    samples = [
+        sample for sample in profile.get("samples") or []
+        if float(sample.get("t") or 0.0) >= float(clip_start_sec) - 0.35
+        and float(sample.get("t") or 0.0) <= end + 0.35
+    ]
+    confidences = [
+        float(box.get("confidence") or 0.0)
+        for sample in samples
+        for box in sample.get("boxes") or []
+        if float(box.get("confidence") or 0.0) >= 0.20
+    ]
+    if not confidences:
+        return 0.0
+    # Two or more observations cover a normal 1.5–2s cut.  Sparse evidence is
+    # still useful, but is weighted down so a wide/general shot prefers blur.
+    coverage = min(1.0, len(samples) / 2.0)
+    return round(sum(confidences) / len(confidences) * coverage, 4)
+
+
+def _assign_reel_mix_treatments(
+    segments: list[dict[str, Any]],
+    sources: list[dict[str, Any]],
+    wizard: dict[str, Any],
+) -> None:
+    """Assign the new editorial vertical/horizontal treatment per cut.
+
+    ``mix`` remains the native-geometry mode and is intentionally untouched.
+    The new mode uses the existing subject framing confidence by default, with
+    a small deterministic alternation guard so a run of otherwise good
+    detections does not become visually monotonous.
+    """
+    if str(wizard.get("reel_aspect") or "9:16") != "mix_vertical_horizontal":
+        return
+    source_by_path = {str(source.get("path") or source.get("source_path") or source.get("clip_path") or ""): source for source in sources}
+    scored: list[float] = []
+    for segment in segments:
+        key = str(segment.get("clip_path") or segment.get("source_path") or "")
+        source = source_by_path.get(key) or next(
+            (item for item in sources if str(item.get("path") or item.get("source_path") or item.get("clip_path") or "") == key),
+            {},
+        )
+        score = _reel_framing_confidence(source, float(segment.get("clip_start_sec") or 0.0), float(segment.get("duration_sec") or 0.0))
+        scored.append(score)
+        segment["reel_mix_confidence"] = score
+
+    ratio = wizard.get("reel_mix_vertical_ratio", "auto")
+    selected: set[int] = set()
+    if str(ratio).lower() != "auto":
+        try:
+            target_count = max(0, min(len(segments), round(len(segments) * float(ratio))))
+        except (TypeError, ValueError):
+            target_count = round(len(segments) * 0.5)
+        selected = {index for index, _ in sorted(enumerate(scored), key=lambda item: (-item[1], item[0]))[:target_count]}
+    else:
+        selected = {index for index, score in enumerate(scored) if score >= 0.45}
+        # Confidence remains the first choice.  If all cuts have the same
+        # confidence class, introduce a deterministic rhythmic change; this
+        # is an editorial treatment, not a claim that the source geometry
+        # changed.
+        if len(segments) >= 4:
+            if not selected:
+                selected.update(index for index in range(0, len(segments), 3))
+            elif len(selected) == len(segments):
+                selected.difference_update(index for index in range(2, len(segments), 3))
+            for index in range(2, len(segments)):
+                previous = index - 1 in selected
+                previous_previous = index - 2 in selected
+                if previous and previous_previous:
+                    selected.discard(index)
+                elif not previous and not previous_previous:
+                    selected.add(index)
+
+    for index, segment in enumerate(segments):
+        segment["reel_mix_treatment"] = "vertical" if index in selected else "horizontal"
 
 
 def _youtube_multicam_plan(

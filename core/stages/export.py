@@ -319,6 +319,15 @@ class ExportStage(Stage):
                     record["segment"], record["source"], record["width"], record["height"],
                     record["ratio"], record["fingerprint"],
                 )
+        if platform == "reel" and reel_aspect_mode == "mix_vertical_horizontal":
+            for index, segment in enumerate(segments):
+                LOGGER.info(
+                    "REEL MIX VERTICAL/HORIZONTAL segment=%d treatment=%s confidence=%.4f source=%s",
+                    index,
+                    str(segment.get("reel_mix_treatment") or "horizontal"),
+                    float(segment.get("reel_mix_confidence") or 0.0),
+                    Path(str(segment.get("source_path") or segment.get("clip_path") or "")).name,
+                )
         run_id = _export_run_id()
         output_path = _output_path(project, platform, run_id)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -382,6 +391,18 @@ class ExportStage(Stage):
                 "operator_avoidance_segments": 0 if platform == "360" else count_avoidance_adjustments(segments),
                 "reel_aspect_mode": reel_aspect_mode if platform == "reel" else None,
                 "reel_mix_clip_geometry": reel_mix_geometry if reel_mix_geometry else None,
+                "reel_mix_treatments": (
+                    [
+                        {
+                            "segment": index,
+                            "treatment": str(segment.get("reel_mix_treatment") or ""),
+                            "confidence": float(segment.get("reel_mix_confidence") or 0.0),
+                            "source": Path(str(segment.get("source_path") or segment.get("clip_path") or "")).name,
+                        }
+                        for index, segment in enumerate(segments)
+                        if reel_aspect_mode == "mix_vertical_horizontal"
+                    ] or None
+                ),
                 "performance": project.data.pop("_export_performance", None),
                 "exports": [
                     {
@@ -1718,6 +1739,7 @@ def _render_segment(
     frame_count = _segment_frame_count(segment)
     source = _segment_source_info(project, segment)
     reel_letterbox_filter = _reel_letterbox_filter(project, segment, platform)
+    mix_horizontal = platform == "reel" and segment.get("reel_mix_treatment") == "horizontal"
     watermark = _watermark_path()
     if source.get("paired_path") and not force_proxy:
         force_proxy = True
@@ -1771,7 +1793,7 @@ def _render_segment(
         intro_logo=intro_logo,
         outro_logo=outro_logo,
         source_filter=source_filter,
-        motion_filter=_motion_filter(segment, platform, duration),
+        motion_filter=None if mix_horizontal else _motion_filter(segment, platform, duration),
         frame_count=frame_count,
         segment=segment,
         reel_overlay_items=reel_overlay_items,
@@ -2531,20 +2553,29 @@ def _native_clip_geometry(project: Project, segment: dict[str, Any]) -> dict[str
 
 
 def _reel_letterbox_filter(project: Project, segment: dict[str, Any], platform: str) -> str | None:
-    """Build a per-source Reel letterbox graph only for the explicit Mix mode."""
+    """Build the blurred horizontal treatment for Reel Mix modes."""
     if platform != "reel":
         return None
     reel_aspect = str(project.data.get("settings", {}).get("wizard", {}).get("reel_aspect") or "9:16")
-    if reel_aspect != "mix":
+    native_mix = reel_aspect == "mix"
+    editorial_mix = reel_aspect == "mix_vertical_horizontal" and segment.get("reel_mix_treatment") == "horizontal"
+    if not native_mix and not editorial_mix:
         return None
-    geometry = _native_clip_geometry(project, segment)
-    aspect = float(geometry.get("aspect") or (16.0 / 9.0))
-    LOGGER.info(
-        "Reel per-clip letterbox source=%s native=%sx%s aspect=%.6f cache=%s",
-        Path(str(geometry.get("source_path") or "")).name,
-        geometry.get("width"), geometry.get("height"), aspect,
-        _reel_letterbox_cache_path(project, str(geometry.get("fingerprint") or "")),
-    )
+    if native_mix:
+        geometry = _native_clip_geometry(project, segment)
+        aspect = float(geometry.get("aspect") or (16.0 / 9.0))
+        LOGGER.info(
+            "Reel per-clip letterbox source=%s native=%sx%s aspect=%.6f cache=%s",
+            Path(str(geometry.get("source_path") or "")).name,
+            geometry.get("width"), geometry.get("height"), aspect,
+            _reel_letterbox_cache_path(project, str(geometry.get("fingerprint") or "")),
+        )
+    else:
+        LOGGER.info(
+            "Reel editorial horizontal treatment source=%s confidence=%.4f",
+            Path(str(segment.get("source_path") or segment.get("clip_path") or "")).name,
+            float(segment.get("reel_mix_confidence") or 0.0),
+        )
     # Contain the real clip in the 9:16 canvas while using the same clip as a
     # blurred cover behind it.  The geometry is deliberately not inferred from
     # the output canvas, so every cut can change its visible native proportion.
@@ -3344,6 +3375,8 @@ def cached_segment_path(
             # modes. Keep the mode in the segment recipe so switching the UI
             # cannot silently reuse the other geometry from the global cache.
             "reel_aspect_mode": reel_aspect_mode if platform == "reel" else None,
+            "reel_mix_treatment": segment.get("reel_mix_treatment") if platform == "reel" else None,
+            "reel_mix_confidence": segment.get("reel_mix_confidence") if platform == "reel" else None,
             # Authored shot JSON alone is not enough: renderer-side motion
             # semantics can change while the plan stays byte-for-byte equal.
             "spherical_motion_recipe": spherical_motion_recipe,

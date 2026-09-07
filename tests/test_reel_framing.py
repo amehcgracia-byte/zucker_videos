@@ -43,3 +43,32 @@ def test_reel_plan_keeps_360_out_of_phase_one_framing():
     assert plan["segments"]
     assert not any("reel_framing" in segment for segment in plan["segments"])
     assert all(segment.get("spherical_shot") for segment in plan["segments"])
+
+
+def test_reel_vertical_horizontal_mix_uses_confidence_and_keeps_rhythm():
+    sources = [
+        {
+            "path": "/tmp/subject.mp4", "source_path": "/tmp/subject.mp4", "duration_sec": 30.0,
+            "reel_framing": {"samples": [{"t": 0.0, "boxes": [{"x1": .3, "y1": .2, "x2": .6, "y2": .8, "confidence": .9}]}, {"t": 2.0, "boxes": [{"x1": .32, "y1": .2, "x2": .62, "y2": .8, "confidence": .9}]}]},
+        },
+        {"path": "/tmp/general.mp4", "source_path": "/tmp/general.mp4", "duration_sec": 30.0, "reel_framing": {"samples": []}},
+    ]
+    plan = _reel_promo_plan(
+        {"platform": "reel", "window": {"start_sec": 0.0, "duration_sec": 20.0, "title": "test"}, "sources": sources},
+        {},
+        {"wizard": {"reel_duration_sec": 20.0, "reel_aspect": "mix_vertical_horizontal", "reel_mix_vertical_ratio": "auto"}},
+    )
+    treatments = [segment["reel_mix_treatment"] for segment in plan["segments"]]
+    assert "vertical" in treatments and "horizontal" in treatments
+    assert all(segment["reel_mix_treatment"] in {"vertical", "horizontal"} for segment in plan["segments"])
+
+
+def test_reel_vertical_horizontal_mix_honors_configured_ratio():
+    sources = [{"path": "/tmp/camera.mp4", "source_path": "/tmp/camera.mp4", "duration_sec": 30.0}]
+    plan = _reel_promo_plan(
+        {"platform": "reel", "window": {"start_sec": 0.0, "duration_sec": 20.0}, "sources": sources},
+        {},
+        {"wizard": {"reel_duration_sec": 20.0, "reel_aspect": "mix_vertical_horizontal", "reel_mix_vertical_ratio": 0.25}},
+    )
+    vertical_count = sum(segment["reel_mix_treatment"] == "vertical" for segment in plan["segments"])
+    assert vertical_count == round(len(plan["segments"]) * 0.25)

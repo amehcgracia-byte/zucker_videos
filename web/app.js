@@ -1588,6 +1588,8 @@ function renderReelOptions() {
   const duration = Number(document.querySelector("#reelDuration")?.value || 30);
   const value = document.querySelector("#reelDurationValue");
   if (value) value.textContent = `${duration}s`;
+  const ratioWrap = document.querySelector("#reelMixVerticalRatioWrap");
+  if (ratioWrap) ratioWrap.hidden = document.querySelector("#reelAspect")?.value !== "mix_vertical_horizontal";
   const imageRoot = document.querySelector("#reelImageLines");
   const overlayRange = (label, icon, field, value, min, max, step) => `<label class="compact-control" title="${label}" aria-label="${label}"><span class="control-icon" aria-hidden="true">${icon}</span><input data-reel-image-field="${field}" type="range" min="${min}" max="${max}" step="${step}" value="${value}" aria-label="${label}" /><output>${Math.round(Number(value) * 100)}%</output></label>`;
   if (imageRoot) imageRoot.innerHTML = reelImageOverlays.map((item, index) => `<div class="reel-text-line" data-reel-image-index="${index}"><span>Flyer ${index + 1}</span>${overlayRange("Width", "↔", "width", item.width ?? .35, .05, 1, .01)}${overlayRange("Opacity", "◐", "opacity", item.opacity ?? 1, .05, 1, .05)}<button class="overlay-icon-button" type="button" data-duplicate-reel-image="${index}" title="Duplicate flyer" aria-label="Duplicate flyer">⧉</button><button class="overlay-icon-button" type="button" data-remove-reel-image="${index}" title="Remove flyer" aria-label="Remove flyer">×</button></div>`).join("");
@@ -1646,7 +1648,7 @@ function drawReelPreview() {
 }
 
 function reelOptionsFromForm() {
-  return { duration: Number(document.querySelector("#reelDuration")?.value || 30), aspect: document.querySelector("#reelAspect")?.value || "9:16", texts: reelTextOverlays, images: reelImageOverlays, videos: reelVideoOverlays };
+  return { duration: Number(document.querySelector("#reelDuration")?.value || 30), aspect: document.querySelector("#reelAspect")?.value || "9:16", mixVerticalRatio: document.querySelector("#reelMixVerticalRatio")?.value || "auto", texts: reelTextOverlays, images: reelImageOverlays, videos: reelVideoOverlays };
 }
 
 function backstageMessagesFromForm() {
@@ -1977,6 +1979,7 @@ async function startWizard(options = {}) {
       reel_duration_sec: reelOptionsFromForm().duration,
       backstage_duration_sec: Number(document.querySelector("#backstageDuration")?.value || 180),
       reel_aspect: reelOptionsFromForm().aspect,
+      reel_mix_vertical_ratio: reelOptionsFromForm().mixVerticalRatio,
       reel_text_overlays: reelOptionsFromForm().texts,
       reel_image_overlays: reelOptionsFromForm().images,
       backstage_messages: backstageMessagesFromForm(),
@@ -3054,7 +3057,7 @@ document.addEventListener("input", (event) => {
     rangeOutput.textContent = percent ? `${Math.round(Number(input.value) * 100)}%` : input.value;
   }
   if (input.id === "captionStyle") { input.dataset.userChoice = "1"; renderComposeOverlayLayer(); return; }
-  if (input.id === "reelDuration" || input.id === "reelAspect") { renderReelOptions(); return; }
+  if (input.id === "reelDuration" || input.id === "reelAspect" || input.id === "reelMixVerticalRatio") { renderReelOptions(); return; }
   if (input.id === "composeTimelineZoom") { renderComposeTimeline(); return; }
   if (input.id === "backstageDuration") { const value = document.querySelector("#backstageDurationValue"); if (value) value.textContent = `${input.value}s`; return; }
   if (input.id === "reelPlayhead") { reelPlayhead = Number(input.value); document.querySelector("#reelPlayheadValue").textContent = `${reelPlayhead.toFixed(1)}s`; drawReelPreview(); return; }

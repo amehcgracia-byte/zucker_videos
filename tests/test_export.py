@@ -240,6 +240,18 @@ def test_reel_letterbox_uses_native_geometry_and_project_cache(tmp_path):
     assert _reel_letterbox_filter(project, segment, "youtube") is None
 
 
+def test_reel_vertical_horizontal_mix_only_letterboxes_horizontal_treatment(tmp_path):
+    project = create_project("Editorial Mix", str(tmp_path / "Editorial Mix.zuckervid"))
+    project.data.setdefault("settings", {}).setdefault("wizard", {})["reel_aspect"] = "mix_vertical_horizontal"
+    source = tmp_path / "wide.mp4"
+    source.write_bytes(b"test media")
+    segment = {"source_path": str(source), "clip_path": str(source), "duration_sec": 1.0}
+    assert _reel_letterbox_filter(project, {**segment, "reel_mix_treatment": "vertical"}, "reel") is None
+    assert _reel_letterbox_filter(project, {**segment, "reel_mix_treatment": "horizontal"}, "reel")
+    project.data["settings"]["wizard"]["reel_aspect"] = "9:16"
+    assert _reel_letterbox_filter(project, {**segment, "reel_mix_treatment": "horizontal"}, "reel") is None
+
+
 def test_segment_filtergraph_keeps_only_explicit_intro_outro_fades():
     graph = _segment_filtergraph("youtube", 12.0, {}, {}, has_watermark=False, text_enabled=False, intro_fade=True, outro_fade=True)
 

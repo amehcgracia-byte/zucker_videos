@@ -577,6 +577,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         sweep_speed_deg_per_sec = _sweep_speed_from_body(body)
         reel_duration_sec = _backstage_duration_from_body(body) if platform == "backstage" else _reel_duration_from_body(body)
         reel_aspect = _reel_aspect_from_body(body)
+        reel_mix_vertical_ratio = _reel_mix_vertical_ratio_from_body(body)
         reel_text_overlays = _reel_text_overlays_from_body(body)
         reel_image_overlays = _reel_image_overlays_from_body(body)
         backstage_messages = body.get("backstage_messages") or []
@@ -605,6 +606,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 "sweep_speed_deg_per_sec": sweep_speed_deg_per_sec,
                 "reel_duration_sec": reel_duration_sec,
                 "reel_aspect": reel_aspect,
+                "reel_mix_vertical_ratio": reel_mix_vertical_ratio,
                 "reel_text_overlays": reel_text_overlays,
                 "reel_image_overlays": reel_image_overlays,
                 "backstage_messages": backstage_messages,
@@ -1610,7 +1612,17 @@ def _save_last_reel_overlays(texts: list[dict[str, Any]], images: list[dict[str,
 
 def _reel_aspect_from_body(body: dict[str, Any]) -> str:
     value = str(body.get("reel_aspect") or "9:16")
-    return value if value in {"9:16", "16:9", "mix"} else "9:16"
+    return value if value in {"9:16", "16:9", "mix", "mix_vertical_horizontal"} else "9:16"
+
+
+def _reel_mix_vertical_ratio_from_body(body: dict[str, Any]) -> str | float:
+    value = body.get("reel_mix_vertical_ratio", "auto")
+    if str(value).lower() == "auto":
+        return "auto"
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return "auto"
 
 
 def _reel_text_overlays_from_body(body: dict[str, Any]) -> list[dict[str, Any]]:
