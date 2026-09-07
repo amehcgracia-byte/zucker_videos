@@ -1807,12 +1807,12 @@ def _export_result(project: Project) -> dict[str, Any] | None:
         return None
     export = exports[0]
     path = Path(export.get("path") or "")
-    if not path.is_file() or path.stat().st_size < 1024:
+    if not path.is_file() or path.stat().st_size == 0:
         # A cancelled/failed export can leave the manifest pointing at a
         # zero-byte MP4. Result must never serve that stale pointer; recover
         # the newest valid base export instead.
         candidates = sorted(project.exports_dir.glob("*.mp4"), key=lambda item: item.stat().st_mtime, reverse=True)
-        path = next((candidate for candidate in candidates if candidate.stat().st_size >= 1024 and "_composed" not in candidate.name and "_captions" not in candidate.name and "_overlay-composed" not in candidate.name), None)
+        path = next((candidate for candidate in candidates if candidate.stat().st_size > 0 and "_composed" not in candidate.name and "_captions" not in candidate.name and "_overlay-composed" not in candidate.name), None)
         if path is None:
             return None
     return {
