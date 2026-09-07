@@ -268,12 +268,10 @@
           <div class="compose-panel compose-captions-panel">
             <div class="setup-heading"><h2>Captions</h2><span>Text, timing and caption style</span></div>
             <label class="field-label" for="captionText">Lyrics or text</label><textarea id="captionText" rows="8" placeholder="One block per paragraph&#10;&#10;A second block..."></textarea>
-            <div class="caption-actions"><label class="file-button">Import SRT/LRC<input id="captionImport" type="file" accept=".srt,.lrc" hidden /></label><button id="captionExportSrt" class="icon-button" type="button">Export SRT</button></div>
+            <div class="srt-controls" aria-labelledby="srtHeading"><h3 id="srtHeading">SRT</h3><div class="srt-actions"><label class="file-button icon-button" title="Import SRT or LRC" aria-label="Import SRT or LRC">⇩ <span>Import</span><input id="captionImport" type="file" accept=".srt,.lrc" hidden /></label><button id="captionExportSrt" class="icon-button" type="button" title="Export SRT" aria-label="Export SRT">⇧ <span>Export</span></button></div></div>
             <div class="compose-caption-list-actions"><strong>Caption blocks</strong><button id="captionDeleteAll" class="icon-button small" type="button">Delete all captions</button></div>
             <div id="captionBlocks" class="caption-blocks"></div>
             <label class="field-label" for="captionStyle">Preset</label><select id="captionStyle"></select>
-            <div class="caption-guides"><label><input id="captionGuide916" type="checkbox" /> 9:16 safe area</label><label><input id="captionGuide1x1" type="checkbox" /> 1:1 safe area</label></div>
-            <div class="header-controls"><label><input id="captionHeaderEnabled" type="checkbox" /> Fixed title</label><input id="captionHeaderTitle" placeholder="TITLE" maxlength="80" /><label>Letterbox blur <input id="captionLetterboxBlur" type="number" min="1" max="50" value="18" /></label></div>
             <p id="captionTapStatus" class="field-help">Press Space once for block start, again for end while the video plays.</p><button id="burnCaptions" class="primary icon-button" type="button">Burn captions</button><p id="captionBurnStatus" class="result-summary"></p>
           </div>
           <div class="compose-center">

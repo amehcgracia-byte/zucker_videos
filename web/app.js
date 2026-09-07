@@ -244,6 +244,22 @@ function renderCaptionBlocks() {
     const animationOptions = (value) => ["none", "fade", "slide", "scale"].map((name) => `<option value="${name}" ${String(value || "none") === name ? "selected" : ""}>${name}</option>`).join("");
     return `<div class="caption-block${active}" data-caption-seek="${index}" role="button" tabindex="0"><div class="caption-block-main"><strong>${index + 1}.</strong><input class="caption-row-text" data-caption-text="${index}" value="${escapeHtml(cue.lines.join("\n"))}" aria-label="Caption ${index + 1} text" /><div class="caption-time-fields"><label>Start <input data-caption-start="${index}" type="number" min="0" step="0.01" value="${Number(cue.start).toFixed(2)}" /></label><label>End <input data-caption-end="${index}" type="number" min="0" step="0.01" value="${end.toFixed(2)}" /></label><label>Duration <input data-caption-duration="${index}" type="number" min="0.05" step="0.01" value="${Math.max(0.05, end - Number(cue.start)).toFixed(2)}" /></label></div><div class="caption-style-overrides"><label>Color <input data-caption-color="${index}" type="color" value="${override.color || "#ffffff"}" /></label><label>Size <input data-caption-size="${index}" type="number" min="8" max="180" step="1" value="${override.size ?? ""}" /></label><label>Vertical % <input data-caption-vertical="${index}" type="number" min="0" max="100" step="1" value="${override.vertical ?? ""}" /></label><label>Outline <input data-caption-outline-color="${index}" type="color" value="${override.outline_color || "#101010"}" /></label><label>Stroke <input data-caption-outline-width="${index}" type="number" min="0" max="20" step="0.5" value="${override.outline_width ?? ""}" /></label><label>Shadow distance <input data-caption-shadow-distance="${index}" type="number" min="0" max="30" step="1" value="${override.shadow_distance ?? ""}" /></label><label>Shadow opacity <input data-caption-shadow-opacity="${index}" type="number" min="0" max="1" step="0.05" value="${override.shadow_opacity ?? ""}" /></label><label>Glow color <input data-caption-glow-color="${index}" type="color" value="${override.glow_color || "#ffff00"}" /></label><label>Glow blur <input data-caption-glow-blur="${index}" type="number" min="0" max="40" step="1" value="${override.glow_blur ?? ""}" /></label><label>Glow layers <input data-caption-glow-layers="${index}" type="number" min="0" max="8" step="1" value="${override.glow_layers ?? ""}" /></label><label>Glow intensity <input data-caption-glow-intensity="${index}" type="number" min="0" max="1" step="0.05" value="${override.glow_intensity ?? ""}" /></label><label>Enter <select data-caption-animation-in="${index}">${animationOptions(override.animation_in || "fade")}</select></label><label>Exit <select data-caption-animation-out="${index}">${animationOptions(override.animation_out || "fade")}</select></label></div></div><div class="caption-block-actions"><button type="button" class="icon-button small" data-caption-edit="${index}">Edit</button><button type="button" class="icon-button small" data-caption-delete="${index}">Delete</button></div></div>`;
   }).join("");
+  root.querySelectorAll('input[type="number"][data-caption-start], input[type="number"][data-caption-end], input[type="number"][data-caption-duration], input[type="number"][data-caption-size], input[type="number"][data-caption-vertical], input[type="number"][data-caption-outline-width], input[type="number"][data-caption-shadow-distance], input[type="number"][data-caption-shadow-opacity], input[type="number"][data-caption-glow-blur], input[type="number"][data-caption-glow-layers], input[type="number"][data-caption-glow-intensity]').forEach((input) => {
+    const key = Object.keys(input.dataset).find((name) => name.startsWith("caption"));
+    const style = ["captionSize", "captionVertical", "captionOutlineWidth", "captionShadowDistance", "captionShadowOpacity", "captionGlowBlur", "captionGlowLayers", "captionGlowIntensity"].includes(key);
+    const label = input.closest("label");
+    const labelText = label?.textContent?.trim() || key || "Value";
+    if (label) { label.title = labelText; label.setAttribute("aria-label", labelText); const first = label.firstChild; if (first?.nodeType === Node.TEXT_NODE) first.textContent = `${style ? "◈" : labelText} `; }
+    const oldValue = input.value;
+    input.type = "range";
+    if (["captionStart", "captionEnd", "captionDuration"].includes(key)) input.max = String(Math.max(1, videoDuration || 600));
+    if (style && input.value === "") input.value = input.min || "0";
+    const output = document.createElement("output");
+    output.textContent = oldValue === "" ? "auto" : oldValue;
+    label?.append(output);
+    input.setAttribute("aria-label", labelText);
+    input.classList.add("compact-range");
+  });
   if (focusedKey && focusedValue != null) {
     const selector = `[data-${focusedKey.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}="${focusedValue}"]`;
     const restored = root.querySelector(selector);
@@ -443,15 +459,15 @@ async function burnCaptionTrack() {
   if (!captionCues.length || captionCues.length !== blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
   const style = document.querySelector("#captionStyle")?.value || "clean_bottom";
   const cues = captionCues.map((cue) => ({ ...cue, end: cue.end == null ? composeTimelineDuration() : cue.end }));
-  const result = await api("/captions/burn", { method: "POST", body: JSON.stringify({ style, cues, header: { title_enabled: document.querySelector("#captionHeaderEnabled")?.checked === true, title: document.querySelector("#captionHeaderTitle")?.value || "", logo_source: selectedLogoSource(), logo_height: 120, logo_overlay: projectLogo.overlay || { x: .5, y: .08, width: .22 } }, letterbox: { enabled: true, blur: Number(document.querySelector("#captionLetterboxBlur")?.value || 18) } }) });
+  const result = await api("/captions/burn", { method: "POST", body: JSON.stringify({ style, cues, header: { title_enabled: false, title: "", logo_source: selectedLogoSource(), logo_height: 120, logo_overlay: projectLogo.overlay || { x: .5, y: .08, width: .22 } }, letterbox: { enabled: true, blur: 18 } }) });
   const video = document.querySelector("#composeVideo"); if (video) { video.src = `${result.media_url}?t=${Date.now()}`; video.load(); }
   document.querySelector("#captionBurnStatus").textContent = `Created ${result.filename}`;
 }
 
 async function saveComposition() {
   const cues = captionCues.map((cue) => ({ ...cue, end: cue.end == null ? composeTimelineDuration() : cue.end }));
-  const header = { title_enabled: document.querySelector("#captionHeaderEnabled")?.checked === true, title: document.querySelector("#captionHeaderTitle")?.value || "", logo_source: selectedLogoSource(), logo_overlay: projectLogo.overlay || { x: .5, y: .08, width: .22 } };
-  await api("/wizard/compose", { method: "POST", body: JSON.stringify({ texts: reelTextOverlays, images: reelImageOverlays, videos: reelVideoOverlays, cues, style: document.querySelector("#captionStyle")?.value || "karaoke_word", header, letterbox: { enabled: true, blur: Number(document.querySelector("#captionLetterboxBlur")?.value || 18) } }) });
+  const header = { title_enabled: false, title: "", logo_source: selectedLogoSource(), logo_overlay: projectLogo.overlay || { x: .5, y: .08, width: .22 } };
+  await api("/wizard/compose", { method: "POST", body: JSON.stringify({ texts: reelTextOverlays, images: reelImageOverlays, videos: reelVideoOverlays, cues, style: document.querySelector("#captionStyle")?.value || "karaoke_word", header, letterbox: { enabled: true, blur: 18 } }) });
 }
 
 function projectIdFromStatus(status) {
@@ -1565,9 +1581,11 @@ function renderReelOptions() {
   const value = document.querySelector("#reelDurationValue");
   if (value) value.textContent = `${duration}s`;
   const imageRoot = document.querySelector("#reelImageLines");
-  if (imageRoot) imageRoot.innerHTML = reelImageOverlays.map((item, index) => `<div class="reel-text-line" data-reel-image-index="${index}"><span>Flyer ${index + 1}</span><label>Width <input data-reel-image-field="width" type="number" min="0.05" max="1" step="0.01" value="${item.width ?? .35}" /></label><label>Opacity <input data-reel-image-field="opacity" type="number" min="0.05" max="1" step="0.05" value="${item.opacity ?? 1}" /></label><button type="button" data-duplicate-reel-image="${index}">Duplicate</button><button type="button" data-remove-reel-image="${index}">Remove</button></div>`).join("");
+  const overlayRange = (label, icon, field, value, min, max, step) => `<label class="compact-control" title="${label}" aria-label="${label}"><span class="control-icon" aria-hidden="true">${icon}</span><input data-reel-image-field="${field}" type="range" min="${min}" max="${max}" step="${step}" value="${value}" aria-label="${label}" /><output>${Math.round(Number(value) * 100)}%</output></label>`;
+  if (imageRoot) imageRoot.innerHTML = reelImageOverlays.map((item, index) => `<div class="reel-text-line" data-reel-image-index="${index}"><span>Flyer ${index + 1}</span>${overlayRange("Width", "↔", "width", item.width ?? .35, .05, 1, .01)}${overlayRange("Opacity", "◐", "opacity", item.opacity ?? 1, .05, 1, .05)}<button class="overlay-icon-button" type="button" data-duplicate-reel-image="${index}" title="Duplicate flyer" aria-label="Duplicate flyer">⧉</button><button class="overlay-icon-button" type="button" data-remove-reel-image="${index}" title="Remove flyer" aria-label="Remove flyer">×</button></div>`).join("");
   const videoRoot = document.querySelector("#reelVideoLines");
-  if (videoRoot) videoRoot.innerHTML = reelVideoOverlays.map((item, index) => `<div class="reel-text-line" data-reel-video-index="${index}"><span>Video ${index + 1}</span><label>Width <input data-reel-video-field="width" type="number" min="0.05" max="1" step="0.01" value="${item.width ?? .35}" /></label><label>Opacity <input data-reel-video-field="opacity" type="number" min="0.05" max="1" step="0.05" value="${item.opacity ?? 1}" /></label><button type="button" data-remove-reel-video="${index}">Remove</button></div>`).join("");
+  const videoRange = (label, icon, field, value, min, max, step) => `<label class="compact-control" title="${label}" aria-label="${label}"><span class="control-icon" aria-hidden="true">${icon}</span><input data-reel-video-field="${field}" type="range" min="${min}" max="${max}" step="${step}" value="${value}" aria-label="${label}" /><output>${Math.round(Number(value) * 100)}%</output></label>`;
+  if (videoRoot) videoRoot.innerHTML = reelVideoOverlays.map((item, index) => `<div class="reel-text-line" data-reel-video-index="${index}"><span>Video ${index + 1}</span>${videoRange("Width", "↔", "width", item.width ?? .35, .05, 1, .01)}${videoRange("Opacity", "◐", "opacity", item.opacity ?? 1, .05, 1, .05)}<button class="overlay-icon-button" type="button" data-remove-reel-video="${index}" title="Remove video overlay" aria-label="Remove video overlay">×</button></div>`).join("");
   renderComposeTimeline();
   renderComposeOverlayLayer();
 }
@@ -2978,11 +2996,6 @@ document.addEventListener("keydown", (event) => {
 
 document.addEventListener("change", (event) => {
   const input = event.target;
-  if (input instanceof HTMLInputElement && (input.id === "captionGuide916" || input.id === "captionGuide1x1")) {
-    const step = document.querySelector("#step5");
-    step?.classList.toggle("guide-916", document.querySelector("#captionGuide916")?.checked === true);
-    step?.classList.toggle("guide-1x1", document.querySelector("#captionGuide1x1")?.checked === true);
-  }
   if (!(input instanceof HTMLInputElement) || input.id !== "captionImport" || !input.files?.[0]) return;
   const source = input.files[0].name.toLowerCase().endsWith(".lrc") ? "lrc" : "srt";
   input.files[0].text().then((text) => api("/captions/parse", { method: "POST", body: JSON.stringify({ source, text }) })).then((parsed) => {
@@ -2994,6 +3007,11 @@ document.addEventListener("change", (event) => {
 document.addEventListener("input", (event) => {
   const input = event.target;
   if (!(input instanceof HTMLElement)) return;
+  const rangeOutput = input.closest("label")?.querySelector("output");
+  if (rangeOutput && input.type === "range") {
+    const percent = ["opacity", "shadowOpacity", "glowIntensity"].some((part) => Object.keys(input.dataset).some((key) => key.toLowerCase().includes(part.toLowerCase())));
+    rangeOutput.textContent = percent ? `${Math.round(Number(input.value) * 100)}%` : input.value;
+  }
   if (input.id === "captionStyle") { input.dataset.userChoice = "1"; renderComposeOverlayLayer(); return; }
   if (input.id === "reelDuration" || input.id === "reelAspect") { renderReelOptions(); return; }
   if (input.id === "composeTimelineZoom") { renderComposeTimeline(); return; }
@@ -3049,6 +3067,8 @@ document.addEventListener("input", (event) => {
 document.addEventListener("input", (event) => {
   const input = event.target;
   if (!(input instanceof HTMLElement) || !input.dataset.reelVideoField) return;
+  const output = input.closest("label")?.querySelector("output");
+  if (output) output.textContent = ["opacity", "width"].includes(input.dataset.reelVideoField) ? `${Math.round(Number(input.value) * 100)}%` : input.value;
   const row = input.closest?.("[data-reel-video-index]"); if (!row) return;
   const item = reelVideoOverlays[Number(row.dataset.reelVideoIndex)]; if (!item) return;
   const field = input.dataset.reelVideoField;
@@ -3059,6 +3079,8 @@ document.addEventListener("input", (event) => {
 document.addEventListener("input", (event) => {
   const input = event.target;
   if (!(input instanceof HTMLElement) || !input.dataset.reelImageField) return;
+  const output = input.closest("label")?.querySelector("output");
+  if (output) output.textContent = ["opacity", "width"].includes(input.dataset.reelImageField) ? `${Math.round(Number(input.value) * 100)}%` : input.value;
   const row = input.closest?.("[data-reel-image-index]"); if (!row) return;
   const item = reelImageOverlays[Number(row.dataset.reelImageIndex)]; if (!item) return;
   item[input.dataset.reelImageField] = ["width", "opacity", "start_sec", "duration_sec"].includes(input.dataset.reelImageField) ? Number(input.value) : input.value;
