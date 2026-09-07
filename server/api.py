@@ -83,9 +83,12 @@ def _expand_caption_animations(track: CueTrack) -> CueTrack:
             progress_in = min(1.0, max(0.0, (start - float(cue.start)) / 0.24))
             progress_out = min(1.0, max(0.0, (float(cue.end) - end) / 0.24))
             if enter == "slide" and start < float(cue.start) + 0.24:
-                local["vertical"] = 105 - (105 - base_vertical) * progress_in
+                # Stay inside the frame while approaching the preset's
+                # position. Horizontal centering remains controlled by the
+                # preset's explicit ASS alignment.
+                local["vertical"] = max(5.0, min(95.0, base_vertical + 12.0 * (1.0 - progress_in)))
             elif exit_ == "slide" and end > float(cue.end) - 0.24:
-                local["vertical"] = 105 - (105 - base_vertical) * progress_out
+                local["vertical"] = max(5.0, min(95.0, base_vertical + 12.0 * progress_out))
             if enter == "scale" and start < float(cue.start) + 0.24:
                 local["size"] = base_size * (0.72 + 0.28 * progress_in)
             elif exit_ == "scale" and end > float(cue.end) - 0.24:
@@ -314,10 +317,17 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         mode = str(wizard.get("reel_logo_mode") or ("custom" if custom.is_file() else "none"))
         if mode not in {"custom", "default", "none"}:
             mode = "none"
+        def versioned(url: str, path: Path) -> str:
+            try:
+                stat = path.stat()
+                return f"{url}?v={stat.st_mtime_ns}-{stat.st_size}"
+            except OSError:
+                return url
         return jsonify({
             "mode": mode,
-            "custom": {"path": str(custom), "url": "/api/v1/wizard/logo/project"} if custom.is_file() else None,
-            "default": {"path": str(default), "url": "/api/v1/wizard/logo/default"} if default.is_file() else None,
+            "custom": {"path": str(custom), "url": versioned("/api/v1/wizard/logo/project", custom)} if custom.is_file() else None,
+            "default": {"path": str(default), "url": versioned("/api/v1/wizard/logo/default", default)} if default.is_file() else None,
+            "overlay": wizard.get("reel_logo_overlay") or {"x": 0.5, "y": 0.08, "width": 0.22},
         })
 
     @app.post("/api/v1/wizard/logo")
@@ -497,6 +507,38 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 continue
             items.append({"name": path.name, "path": str(path.resolve()), "url": f"/api/v1/wizard/reel-overlay/{path.name}"})
         return jsonify({"items": items})
+
+    @app.delete("/api/v1/wizard/flyers/<path:filename>")
+    def api_wizard_flyer_delete(filename: str) -> Response:
+        """Remove a flyer from the reusable library without breaking projects."""
+        root = (app_home() / "ReelOverlays").resolve()
+        candidate = (root / Path(filename).name).resolve()
+        if candidate.parent != root or not candidate.is_file():
+            return error_response("not_found", "Flyer not found", 404)
+        digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        used_by: list[str] = []
+        for summary in list_projects():
+            try:
+                other = load_project(summary["path"])
+            except ProjectError:
+                continue
+            wizard = other.data.get("settings", {}).get("wizard", {})
+            references = []
+            for item in (wizard.get("reel_image_overlays") or []):
+                if isinstance(item, dict): references.append(item.get("path"))
+            for item in (json.loads((other.folder / "overlay_spec.json").read_text(encoding="utf-8")).get("images") or []) if (other.folder / "overlay_spec.json").is_file() else []:
+                if isinstance(item, dict): references.append(item.get("path"))
+            for raw in references:
+                try:
+                    if Path(str(raw or "")).expanduser().resolve() == candidate:
+                        used_by.append(str(other.folder))
+                        break
+                except (OSError, RuntimeError):
+                    continue
+        if used_by:
+            return jsonify({"ok": True, "removed": False, "retained": True, "sha256": digest, "used_by": used_by})
+        candidate.unlink()
+        return jsonify({"ok": True, "removed": True, "retained": False, "sha256": digest, "used_by": []})
 
     @app.get("/api/v1/wizard/reel-overlay/<path:filename>")
     def api_wizard_reel_overlay_file(filename: str) -> Response:
@@ -1070,10 +1112,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
         wizard["reel_text_overlays"], wizard["reel_image_overlays"], wizard["reel_video_overlays"] = texts, images, videos
         wizard["reel_logo_mode"] = logo_mode
-        if logo_mode != "custom":
-            wizard["reel_logo_path"] = ""
-            for old in project.folder.glob("overlay_logo.*"):
-                old.unlink(missing_ok=True)
+        logo_overlay = header.get("logo_overlay") if isinstance(header.get("logo_overlay"), dict) else None
+        if logo_overlay is not None:
+            wizard["reel_logo_overlay"] = {
+                "x": max(0.05, min(0.95, _coerce_float(logo_overlay.get("x")) if _coerce_float(logo_overlay.get("x")) is not None else 0.5)),
+                "y": max(0.05, min(0.95, _coerce_float(logo_overlay.get("y")) if _coerce_float(logo_overlay.get("y")) is not None else 0.08)),
+                "width": max(0.05, min(0.9, _coerce_float(logo_overlay.get("width")) if _coerce_float(logo_overlay.get("width")) is not None else 0.22)),
+            }
         project.save()
         return jsonify({"ok": True, "overlay_spec": str(project.folder / "overlay_spec.json"), "cue_track": str(project.folder / "cue_track.json")})
 

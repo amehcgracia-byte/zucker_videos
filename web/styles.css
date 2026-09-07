@@ -1489,24 +1489,33 @@ pre {
 .compose-video-stage { position: relative; display: grid; place-items: center; min-height: 300px; overflow: hidden; border-radius: 14px; background: #101619; }
 .compose-video-stage video { display: block; width: 100%; max-height: 68vh; object-fit: contain; background: #101619; }
 .compose-overlay-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.compose-live-overlay { position: absolute; transform: translate(-50%, -50%); box-sizing: border-box; pointer-events: auto; cursor: move; }
+.compose-live-overlay.selected { outline: 2px solid #4dd4ff; outline-offset: 2px; }
+.compose-live-overlay > img, .compose-live-overlay > video { display: block; width: 100%; height: auto; max-width: none; pointer-events: none; }
+.compose-overlay-handle { position: absolute; width: 10px; height: 10px; border: 2px solid #fff; border-radius: 50%; background: #147d9c; box-shadow: 0 0 0 1px #102027; pointer-events: auto; }
+.compose-overlay-handle.nw { left: -7px; top: -7px; cursor: nwse-resize; }
+.compose-overlay-handle.ne { right: -7px; top: -7px; cursor: nesw-resize; }
+.compose-overlay-handle.sw { left: -7px; bottom: -7px; cursor: nesw-resize; }
+.compose-overlay-handle.se { right: -7px; bottom: -7px; cursor: nwse-resize; }
 .compose-live-text { position: absolute; transform: translate(-50%, -50%); font-weight: 700; white-space: pre-wrap; text-align: center; max-width: 80%; }
 .compose-live-image { position: absolute; transform: translate(-50%, -50%); max-width: 80%; height: auto; }
-.compose-live-logo { position: absolute; z-index: 3; top: 8%; left: 50%; width: 22%; max-height: 16%; object-fit: contain; transform: translateX(-50%); }
+.compose-live-logo-wrap { z-index: 3; }
+.compose-live-logo { object-fit: contain; }
 .compose-live-video { position: absolute; transform: translate(-50%, -50%); max-width: 90%; max-height: 90%; height: auto; object-fit: contain; }
-.compose-live-caption { position: absolute; left: 8%; right: 8%; top: 68%; color: #fff; font: 700 clamp(1rem, 3vw, 2.1rem)/1.08 Arial,sans-serif; text-align: center; white-space: pre-line; text-shadow: 0 3px 5px #000; }
+.compose-live-caption { position: absolute; left: 50%; top: 68%; width: 84%; transform: translate(-50%, -50%); color: #fff; font: 700 clamp(1rem, 3vw, 2.1rem)/1.08 Arial,sans-serif; text-align: center; white-space: pre-line; text-shadow: 0 3px 5px #000; }
 .compose-live-caption.caption-style-solid_box { padding: .35em .55em; border-radius: .22em; background: rgb(16 16 16 / 82%); }
 .compose-live-caption.caption-style-marker_word { text-decoration: underline 0.22em #ffdf5d; text-decoration-skip-ink: none; }
 .compose-live-caption.caption-style-one_word { font-size: clamp(2rem, 7vw, 5rem); font-weight: 800; }
 .compose-live-caption.caption-style-hard_shadow { text-shadow: 7px 7px 0 #000; }
 .compose-live-caption.caption-style-lyric_serif { font-family: Georgia, serif; font-weight: 500; font-style: italic; }
-.compose-live-caption.caption-style-corner_comment { left: auto; right: 5%; top: 5%; max-width: 42%; font-size: .9rem; text-align: right; }
+.compose-live-caption.caption-style-corner_comment { left: auto; right: 5%; top: 5%; width: 42%; transform: translateY(-50%); font-size: .9rem; text-align: right; }
 .compose-live-caption.caption-style-neon_glow { color: #00ffff; text-shadow: 0 0 8px #00ffff, 0 0 18px #00ffff, 0 0 32px #00ffff; }
 .compose-live-caption.caption-animation-in-fade { animation: composeCaptionFadeIn .25s ease-out both; }
 .compose-live-caption.caption-animation-in-slide { animation: composeCaptionSlideIn .25s ease-out both; }
 .compose-live-caption.caption-animation-in-scale { animation: composeCaptionScaleIn .25s ease-out both; }
 .compose-live-caption.caption-animation-out-fade { animation-fill-mode: both; }
 @keyframes composeCaptionFadeIn { from { opacity: 0; } to { opacity: 1; } }
-@keyframes composeCaptionSlideIn { from { opacity: 0; transform: translate(-35%, -50%); } to { opacity: 1; transform: translate(-50%, -50%); } }
+@keyframes composeCaptionSlideIn { from { opacity: 0; transform: translate(-50%, -50%) translateX(-24px); } to { opacity: 1; transform: translate(-50%, -50%) translateX(0); } }
 @keyframes composeCaptionScaleIn { from { opacity: 0; transform: translate(-50%, -50%) scale(.72); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
 .compose-player-tools { display: flex; gap: .6rem; align-items: center; padding: .65rem 0; }
 .compose-player-tools input[type="range"] { flex: 1; }
@@ -1540,6 +1549,8 @@ pre {
 .caption-block-main strong { overflow-wrap: anywhere; white-space: pre-line; }
 .caption-block-main small { opacity: .65; white-space: nowrap; }
 .caption-block.active { border-color: var(--caption-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--caption-accent), transparent 72%); }
+.flyer-library-item { position: relative; }
+.flyer-library-delete { position: absolute; top: .15rem; right: .15rem; z-index: 2; width: 1.7rem; height: 1.7rem; padding: 0; border: 1px solid #fff; border-radius: 50%; background: #7f2631; color: #fff; font-size: 1.1rem; line-height: 1; cursor: pointer; }
 .caption-row-text { width: 100%; min-width: 0; padding: .35rem .45rem; border: 1px solid #6f8792; border-radius: 5px; background: #17242d; color: #f7fbfc; caret-color: #ffffff; }
 .caption-row-text:focus, .compose-panel textarea:focus { border-color: var(--caption-accent); outline: 2px solid color-mix(in srgb, var(--caption-accent), transparent 65%); outline-offset: 1px; }
 .caption-time-fields { display: flex; flex-wrap: wrap; gap: .5rem; }

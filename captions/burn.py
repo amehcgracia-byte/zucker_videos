@@ -30,7 +30,11 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
         logo_enabled = bool(header and (header.get("logo_enabled") or header.get("logo_source") in {"custom", "default"}))
         if logo_path and logo_enabled:
             command += ["-loop", "1", "-i", str(Path(logo_path).resolve())]
-            command += ["-filter_complex", f"[0:v]{vf}[captioned];[1:v]format=rgba,scale=-1:{int(header.get('logo_height', 120))}[logo];[captioned][logo]overlay=(W-w)/2:{int(header.get('logo_top', 150))}:shortest=1[v]"]
+            overlay = header.get("logo_overlay") if isinstance(header.get("logo_overlay"), dict) else {}
+            logo_width = max(40, int(1080 * max(0.05, min(0.9, float(overlay.get("width", 0.22))))))
+            logo_x = max(0.0, min(1.0, float(overlay.get("x", 0.5))))
+            logo_y = max(0.0, min(1.0, float(overlay.get("y", 0.08))))
+            command += ["-filter_complex", f"[0:v]{vf}[captioned];[1:v]format=rgba,scale={logo_width}:-1[logo];[captioned][logo]overlay=(W-w)*{logo_x:.5f}:(H-h)*{logo_y:.5f}:shortest=1[v]"]
             command += ["-map", "[v]", "-map", "0:a?", "-shortest"]
         else:
             command += ["-vf", vf]

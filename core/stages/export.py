@@ -293,6 +293,32 @@ class ExportStage(Stage):
         if not master:
             raise ValueError(t("missing_master_for_export"))
         platform = plan.get("platform") or project.data["settings"].get("wizard", {}).get("platform") or "youtube"
+        reel_aspect_mode = str(
+            plan.get("reel_aspect")
+            or project.data.get("settings", {}).get("wizard", {}).get("reel_aspect")
+            or "9:16"
+        )
+        reel_mix_geometry = []
+        if platform == "reel" and reel_aspect_mode == "mix":
+            # This diagnostic deliberately runs once per export, including
+            # cache hits, so a Mix export always leaves an auditable record of
+            # the native geometry used for every cut.
+            for index, segment in enumerate(segments):
+                geometry = _native_clip_geometry(project, segment)
+                record = {
+                    "segment": index,
+                    "source": Path(str(geometry.get("source_path") or "")).name,
+                    "width": int(geometry.get("width") or 0),
+                    "height": int(geometry.get("height") or 0),
+                    "ratio": float(geometry.get("aspect") or 0.0),
+                    "fingerprint": str(geometry.get("fingerprint") or ""),
+                }
+                reel_mix_geometry.append(record)
+                LOGGER.info(
+                    "REEL MIX CLIP segment=%d source=%s native=%sx%s ratio=%.6f fingerprint=%s",
+                    record["segment"], record["source"], record["width"], record["height"],
+                    record["ratio"], record["fingerprint"],
+                )
         run_id = _export_run_id()
         output_path = _output_path(project, platform, run_id)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -327,7 +353,7 @@ class ExportStage(Stage):
             # while carrying an incorrect duration/timestamp timeline.
             duration = _media_duration(str(output_path))
         else:
-            render_platform = "reel_horizontal" if platform == "reel" and str(plan.get("reel_aspect") or project.data.get("settings", {}).get("wizard", {}).get("reel_aspect") or "9:16") == "16:9" else platform
+            render_platform = "reel_horizontal" if platform == "reel" and reel_aspect_mode == "16:9" else platform
             _render_plan(
                 project, segments, master["path"], output_path, render_platform,
                 bitrate_info["video_bitrate"], warnings, progress_callback, required_space,
@@ -354,6 +380,8 @@ class ExportStage(Stage):
                 "spherical_shot_usage": plan.get("spherical_shot_usage") or _spherical_shot_usage(segments),
                 "spherical_recording_usage": plan.get("spherical_recording_usage") or _spherical_recording_usage(segments),
                 "operator_avoidance_segments": 0 if platform == "360" else count_avoidance_adjustments(segments),
+                "reel_aspect_mode": reel_aspect_mode if platform == "reel" else None,
+                "reel_mix_clip_geometry": reel_mix_geometry if reel_mix_geometry else None,
                 "performance": project.data.pop("_export_performance", None),
                 "exports": [
                     {
@@ -3290,6 +3318,7 @@ def cached_segment_path(
     """Return the global cache path for a rendered segment recipe."""
     source = _segment_source_info(project, segment)
     spherical_motion_recipe = _spherical_motion_cache_recipe()
+    reel_aspect_mode = str(project.data.get("settings", {}).get("wizard", {}).get("reel_aspect") or "9:16")
     recipe = stable_fingerprint(
         {
             "cache_key": source["cache_key"],
@@ -3311,6 +3340,10 @@ def cached_segment_path(
             "normalization_version": NORMALIZATION_VERSION,
             "export_segment_recipe": EXPORT_SEGMENT_RECIPE_VERSION,
             "reel_letterbox_version": REEL_LETTERBOX_CACHE_VERSION if platform == "reel" else None,
+            # The same source/cut has different pixels in fixed 9:16 and Mix
+            # modes. Keep the mode in the segment recipe so switching the UI
+            # cannot silently reuse the other geometry from the global cache.
+            "reel_aspect_mode": reel_aspect_mode if platform == "reel" else None,
             # Authored shot JSON alone is not enough: renderer-side motion
             # semantics can change while the plan stays byte-for-byte equal.
             "spherical_motion_recipe": spherical_motion_recipe,
