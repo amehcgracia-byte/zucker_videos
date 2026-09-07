@@ -2668,6 +2668,11 @@ document.addEventListener("click", (event) => {
     }
     return;
   }
+  // Caption rows are also clickable seek targets. Do not let that parent
+  // handler rebuild the row when a form control inside it is clicked: native
+  // color pickers in particular must keep the original input alive while the
+  // browser opens their picker.
+  if (target.closest?.(".caption-block") && target.closest("input, select, textarea")) return;
   const timelineScroll = target.closest?.("[data-compose-timeline]");
   if (timelineScroll instanceof HTMLElement) {
     if (timelineSuppressClick) { timelineSuppressClick = false; return; }
@@ -2890,7 +2895,15 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   const commandKey = event.metaKey || event.ctrlKey;
-  const editingField = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement;
+  const isTextEditingTarget = (target) => {
+    if (!(target instanceof HTMLElement)) return false;
+    return target instanceof HTMLInputElement
+      || target instanceof HTMLTextAreaElement
+      || target instanceof HTMLSelectElement
+      || target.isContentEditable
+      || Boolean(target.closest("[contenteditable=\"true\"]"));
+  };
+  const editingField = isTextEditingTarget(event.target) || isTextEditingTarget(document.activeElement);
   if (commandKey && event.key.toLowerCase() === "c" && captionActiveIndex != null && captionCues[captionActiveIndex]) {
     copiedCaption = { ...captionCues[captionActiveIndex], lines: [...captionCues[captionActiveIndex].lines], style_override: { ...(captionCues[captionActiveIndex].style_override || {}) } };
     event.preventDefault();
@@ -2918,11 +2931,14 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     return;
   }
-  if ((event.key === "a" || event.key === "A") && currentStep === 5 && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement)) {
+  if ((event.key === "a" || event.key === "A") && currentStep === 5 && !editingField) {
     event.preventDefault(); addCaptionFromPlayback();
   }
-  if (event.code === "Space" && currentStep === 5 && document.activeElement?.tagName !== "TEXTAREA" && document.activeElement?.dataset?.captionText == null) {
-    event.preventDefault(); addCaptionFromPlayback();
+  if (event.code === "Space" && currentStep === 5 && !editingField) {
+    const video = document.querySelector("#composeVideo");
+    if (video && !video.paused && !video.ended) {
+      event.preventDefault(); addCaptionFromPlayback();
+    }
   }
 });
 
