@@ -1402,6 +1402,7 @@ async function uploadProjectLogo(file) {
   const custom = document.querySelector("#captionLogoCustom");
   if (custom) { custom.disabled = false; custom.checked = true; }
   renderProjectLogo();
+  renderComposeOverlayLayer();
 }
 
 async function removeProjectLogo() {
@@ -1413,6 +1414,7 @@ async function removeProjectLogo() {
   const custom = document.querySelector("#captionLogoCustom");
   if (custom) custom.disabled = true;
   renderProjectLogo();
+  renderComposeOverlayLayer();
 }
 
 function addFlyerReference(path, url) {
@@ -3065,7 +3067,7 @@ document.addEventListener("input", (event) => {
 document.addEventListener("change", (event) => {
   const input = event.target;
   if (!(input instanceof HTMLElement)) return;
-  if (input.name === "captionLogoChoice") { renderProjectLogo(); return; }
+  if (input.name === "captionLogoChoice") { renderProjectLogo(); renderComposeOverlayLayer(); return; }
   if (input.id === "composeLogoInput" && input.files?.[0]) {
     uploadProjectLogo(input.files[0]).catch((error) => showToast(error.message, true));
     return;
