@@ -316,7 +316,10 @@ def review_items(
     # Color normalization is calculated once for the complete plan, never per
     # thumbnail/segment.  It is the same profile map used by final export.
     from core.stages.export import _color_profiles_for_segments
-    color_profiles = _color_profiles_for_segments(project, segments, [])
+    # A status-only review request must be cheap.  It is used while a
+    # replacement thumbnail is rendering and must not launch/inspect the
+    # complete 65-shot plan just to report missing URLs.
+    color_profiles = _color_profiles_for_segments(project, segments, []) if render_missing else {}
     for index, segment in enumerate(segments):
         source = _source_for(segment)
         duration = max(0.1, float(segment.get("duration_sec") or 0.1))
