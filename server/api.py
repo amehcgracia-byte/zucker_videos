@@ -49,7 +49,7 @@ from server.inbox import (
 from server.media import send_file_with_range
 from server.projects import delete_project_folder, find_project_by_inputs, input_signature, list_projects, project_input_signature
 from server.wizard import WizardRunner, merge_spherical_landmarks, same_project_path, serialize_wizard_job, wizard_report, wizard_song_options
-from captions.burn import burn as burn_captions
+from captions.burn import _video_dimensions, burn as burn_captions
 from captions.align import align_known_lyrics
 from captions.model import Cue, CueTrack, Word
 from captions.render import render_ass
@@ -1345,11 +1345,15 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             track = CueTrack(cues, str(body.get("lang") or "und"))
             cache = project.cache_dir / "captions" / CAPTIONS_VERSION
             cache.mkdir(parents=True, exist_ok=True)
-            (cache / "captions.ass").write_text(render_ass(track, style), encoding="utf-8")
-            (cache / "captions.srt").write_text(to_srt(track), encoding="utf-8")
             destination = project.exports_dir / f"{Path(result['path']).stem}_captions.mp4"
             header = body.get("header") if isinstance(body.get("header"), dict) else None
             letterbox = body.get("letterbox") if isinstance(body.get("letterbox"), dict) else None
+            ass_width, ass_height = _video_dimensions(Path(result["path"]), str(tool_status().get("ffmpeg_path") or "ffmpeg"))
+            if letterbox and letterbox.get("enabled"):
+                ass_width = int(letterbox.get("width", ass_width))
+                ass_height = int(letterbox.get("height", ass_height))
+            (cache / "captions.ass").write_text(render_ass(track, style, width=ass_width, height=ass_height, header=header), encoding="utf-8")
+            (cache / "captions.srt").write_text(to_srt(track), encoding="utf-8")
             logo = None
             if header and header.get("logo_source") == "custom":
                 candidate = Path(str(project.data.get("settings", {}).get("wizard", {}).get("reel_logo_path") or ""))
