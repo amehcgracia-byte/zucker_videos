@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import logging
 import math
@@ -38,6 +39,9 @@ EQUIRECT_FILTER = "v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:v_fov
 CACHE_SUBDIRS = ("proxies", "normalized", "segments", "audio", "envelopes", "thumbnails")
 SEGMENT_CACHE_MAX_BYTES = 40 * 1024 * 1024 * 1024
 SEGMENT_CACHE_MAX_AGE_DAYS = 14
+PROXY_TIMEOUT_MIN_SEC = 300
+PROXY_TIMEOUT_PER_SOURCE_SEC = 12
+PROXY_TIMEOUT_MARGIN_SEC = 120
 
 
 def ensure_global_cache_dirs() -> Path:
@@ -632,11 +636,32 @@ def _run_ffmpeg_progress(command: list[str], duration: float, filename: str, pro
     # Consume stderr together with the progress stream. Keeping stderr in a
     # separate pipe while reading only stdout can deadlock ffmpeg when a
     # problematic/verbose source fills the stderr pipe.
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
+    )
     assert process.stdout is not None
     current = 0
     last_emit = 0.0
     diagnostic_tail: deque[str] = deque(maxlen=100)
+    timeout_sec = max(PROXY_TIMEOUT_MIN_SEC, duration * PROXY_TIMEOUT_PER_SOURCE_SEC + PROXY_TIMEOUT_MARGIN_SEC)
+    timed_out = False
+
+    def stop_stuck_process() -> None:
+        nonlocal timed_out
+        timed_out = True
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+    watchdog = threading.Timer(timeout_sec, stop_stuck_process)
+    watchdog.daemon = True
+    watchdog.start()
     try:
         for line in process.stdout:
             diagnostic_tail.append(line)
@@ -656,7 +681,14 @@ def _run_ffmpeg_progress(command: list[str], duration: float, filename: str, pro
         process.kill()
         process.wait()
         raise
+    finally:
+        watchdog.cancel()
     output, _ = process.communicate()
+    if timed_out:
+        raise FFmpegError(
+            f"ffmpeg normalization timed out after {timeout_sec:.0f}s for {filename}; "
+            f"source may be damaged, unavailable, or the decoder may be stuck"
+        )
     if process.returncode != 0:
         details = "".join(diagnostic_tail) + (output or "")
         raise FFmpegError(details.strip()[-4000:] or "ffmpeg normalization failed")

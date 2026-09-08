@@ -72,3 +72,37 @@ def test_reel_vertical_horizontal_mix_honors_configured_ratio():
     )
     vertical_count = sum(segment["reel_mix_treatment"] == "vertical" for segment in plan["segments"])
     assert vertical_count == round(len(plan["segments"]) * 0.25)
+
+
+def test_single_source_reel_is_one_continuous_take_at_audio_offset():
+    plan = _reel_promo_plan(
+        {
+            "platform": "reel",
+            "window": {"start_sec": 42.0, "duration_sec": 30.0, "title": "song"},
+            "single_source_reel": True,
+            "sources": [{"path": "/tmp/take.mp4", "source_path": "/tmp/take.mp4", "filename": "take.mp4", "duration_sec": 90.0}],
+        },
+        {},
+        {"wizard": {"reel_duration_sec": 30.0, "reel_aspect": "9:16", "reel_cuts_per_source": 3}},
+    )
+    assert len(plan["segments"]) == 1
+    assert plan["cut_count"] == 0
+    assert plan["segments"][0]["clip_start_sec"] == 42.0
+    assert plan["segments"][0]["duration_sec"] == 30.0
+    assert plan["segments"][0]["single_source_continuous"] is True
+    assert plan["real_edit_logic"].startswith("single-source Reel")
+
+
+def test_single_source_reel_warns_when_video_does_not_reach_audio_offset():
+    plan = _reel_promo_plan(
+        {
+            "platform": "reel",
+            "window": {"start_sec": 42.0, "duration_sec": 30.0},
+            "single_source_reel": True,
+            "sources": [{"path": "/tmp/take.mp4", "source_path": "/tmp/take.mp4", "duration_sec": 20.0}],
+        },
+        {},
+        {"wizard": {"reel_duration_sec": 30.0}},
+    )
+    assert plan["segments"][0]["clip_start_sec"] == 0.0
+    assert any("shorter than the selected audio offset" in warning for warning in plan["warnings"])

@@ -315,6 +315,57 @@ def _reel_promo_plan(
     if not sources:
         raise ValueError("Reel has no usable video sources")
 
+    # One video is a continuous Reel source, not a one-camera multicam edit.
+    # Keep the take intact and align its source position with the selected
+    # audio window. Aspect ratio is applied later by the export renderer.
+    if len(sources) == 1 and coverage.get("single_source_reel") is True:
+        source = sources[0]
+        source_duration = max(0.0, float(source.get("duration_sec") or 0.0))
+        warnings = list(coverage.get("warnings") or [])
+        clip_start = start if source_duration >= start + duration else 0.0
+        if clip_start == 0.0 and start > 0.0:
+            warnings.append(
+                f"The video is shorter than the selected audio offset ({start:.1f}s); "
+                "the video starts at 0s while the audio keeps the requested offset."
+            )
+        if source_duration > 0 and clip_start + duration > source_duration:
+            duration = max(0.1, source_duration - clip_start)
+            warnings.append(
+                f"The video covers only {duration:.1f}s of the requested Reel window; "
+                "the export was trimmed to the available video duration."
+            )
+        segment = {
+            "title": window.get("title") or t("full_video"),
+            "clip_path": source.get("path") or source.get("clip_path"),
+            "source_path": source.get("source_path") or source.get("path") or source.get("clip_path"),
+            "clip_start_sec": round(clip_start, 6),
+            "master_start_sec": round(start, 6),
+            "duration_sec": round(duration, 6),
+            "clip_offset_sec": 0.0,
+            "filename": source.get("filename") or Path(str(source.get("path") or "video")).name,
+            "projection": source.get("projection"),
+            "camera_id": _camera_id(source),
+            "single_source_continuous": True,
+        }
+        return {
+            "stage": "edit",
+            "platform": "reel",
+            "reel_plan_version": REEL_PLAN_VERSION,
+            "reel_duration_sec": round(duration, 6),
+            "reel_aspect": str(wizard.get("reel_aspect") or "9:16"),
+            "reel_mix_vertical_ratio": wizard.get("reel_mix_vertical_ratio", "auto"),
+            "reel_text_overlays": list(wizard.get("reel_text_overlays") or []),
+            "reel_image_overlays": list(wizard.get("reel_image_overlays") or []),
+            "title": window.get("title") or t("full_video"),
+            "real_edit_logic": "single-source Reel: continuous video aligned to the selected audio offset",
+            "warnings": warnings,
+            "excluded_clips": coverage.get("excluded_clips") or [],
+            "clip_diagnostics": coverage.get("clip_diagnostics") or [],
+            "camera_usage": _camera_usage([segment]),
+            "cut_count": 0,
+            "segments": [segment],
+        }
+
     # Preserve ingest order.  Reel is deliberately unsynchronised and its
     # visual rhythm comes from cycling through every available Drop box
     # source, rather than allowing quality sorting to starve quieter cameras.

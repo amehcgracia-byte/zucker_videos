@@ -105,8 +105,13 @@ class IngestStage(Stage):
             ensure_normalized_space(project, valid_records)
             prepare_videos(project, valid_records, progress_callback)
             if platform == "reel":
-                analyze_reel_framing_records(valid_records, progress_callback)
-                analyze_operator_presence(valid_records, progress_callback)
+                # A single-source Reel is a continuous take. Subject
+                # detection and operator avoidance are multicamera editorial
+                # passes; running them here both violates that contract and
+                # can make ingest spend an unbounded amount of time in OpenCV.
+                if len(valid_records) > 1:
+                    analyze_reel_framing_records(valid_records, progress_callback)
+                    analyze_operator_presence(valid_records, progress_callback)
             else:
                 analyze_operator_presence(valid_records, progress_callback)
         progress_callback(100, "Ingest complete")

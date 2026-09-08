@@ -23,6 +23,12 @@ class FFmpegError(RuntimeError):
     """Raised when ffmpeg or ffprobe fails."""
 
 
+# Media tools are allowed to take longer for large camera files, but they must
+# never wait forever on a damaged file, an unavailable volume, or a stuck
+# hardware decoder.
+MEDIA_COMMAND_TIMEOUT_SEC = 300
+
+
 def locate_executable(name: str) -> str | None:
     """Resolve an executable from PATH and common macOS Homebrew locations."""
     for folder in COMMON_BIN_DIRS:
@@ -117,7 +123,16 @@ def ffprobe(path: str) -> dict[str, Any]:
         "-show_streams",
         str(Path(path)),
     ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=MEDIA_COMMAND_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise FFmpegError(f"ffprobe timed out after {MEDIA_COMMAND_TIMEOUT_SEC}s for {path}") from exc
     if result.returncode != 0:
         raise FFmpegError(result.stderr.strip() or f"ffprobe failed for {path}")
     return json.loads(result.stdout or "{}")
@@ -140,6 +155,15 @@ def extract_audio(video_path: str, output_path: str) -> None:
         "48000",
         str(Path(output_path)),
     ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=MEDIA_COMMAND_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise FFmpegError(f"ffmpeg audio extraction timed out after {MEDIA_COMMAND_TIMEOUT_SEC}s for {video_path}") from exc
     if result.returncode != 0:
         raise FFmpegError(result.stderr.strip() or f"ffmpeg failed for {video_path}")

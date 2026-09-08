@@ -153,6 +153,7 @@ class CutStage(Stage):
                 "song_choice": song_choice,
                 "songs": songs,
                 "window": window,
+                "single_source_reel": platform == "reel" and len(selection["clips"]) == 1,
                 "warnings": warnings,
                 "excluded_clips": selection["excluded"],
                 "clip_diagnostics": selection["diagnostics"],

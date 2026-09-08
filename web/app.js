@@ -1702,6 +1702,14 @@ function renderReelOptions() {
   if (densityValue) densityValue.textContent = `${density.toFixed(1)}× source`;
   const ratioWrap = document.querySelector("#reelMixVerticalRatioWrap");
   if (ratioWrap) ratioWrap.hidden = document.querySelector("#reelAspect")?.value !== "mix_vertical_horizontal";
+  const singleSource = detected.videos.length === 1;
+  const singleNote = document.querySelector("#reelSingleSourceNote");
+  if (singleNote) singleNote.hidden = !singleSource;
+  const densityInput = document.querySelector("#reelCutsPerSource");
+  const densityLabel = densityInput?.closest("label");
+  if (densityInput) densityInput.disabled = singleSource;
+  if (densityLabel) densityLabel.title = singleSource ? "Disabled for a single continuous video" : "";
+  if (ratioWrap && singleSource) ratioWrap.hidden = true;
   const imageRoot = document.querySelector("#reelImageLines");
   const overlayRange = (label, icon, field, value, min, max, step) => `<label class="compact-control" title="${label}" aria-label="${label}"><span class="control-icon" aria-hidden="true">${icon}</span><input data-reel-image-field="${field}" type="range" min="${min}" max="${max}" step="${step}" value="${value}" aria-label="${label}" /><output>${Math.round(Number(value) * 100)}%</output></label>`;
   const imageColor = (label, field, value) => `<label class="compact-control" title="${label}" aria-label="${label}"><span class="control-icon" aria-hidden="true">●</span><input data-reel-image-field="${field}" type="color" value="${value || "#ffffff"}" aria-label="${label}" /></label>`;
