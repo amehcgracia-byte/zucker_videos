@@ -1481,7 +1481,7 @@ class BackstageExportStage(Stage):
                 height=int(_target_size("youtube")[1]),
                 fps=30,
             )
-            command = [str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:1", *graph_inputs, "-filter_complex", filtergraph, "-map", "[vout]", "-map", "[aout]", "-fps_mode", "cfr", "-r", "30", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(output_path)]
+            command = [str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:1", *graph_inputs, "-filter_complex", filtergraph, "-map", "[vout]", "-map", "[aout]", "-fps_mode", "cfr", "-r", "30", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-t", f"{content_duration:.3f}", str(output_path)]
             progress_callback(2, "Rendering Backstage in one FFmpeg pass")
             _run_backstage_ffmpeg(command, progress_callback=progress_callback, cut_boundaries=[sum(float(item.get("duration_sec") or 0.0) for item in segments[:index + 1]) for index in range(len(segments))])
             # Transcription is intentionally retained even when subtitle
