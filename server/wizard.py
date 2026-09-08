@@ -69,6 +69,23 @@ def serialize_wizard_job(job: WizardJob) -> dict[str, Any]:
     return snapshot
 
 
+def is_single_source_reel(project: Project) -> bool:
+    """Return whether a Reel plan is the one-take, no-review workflow."""
+    wizard = (project.data.get("settings") or {}).get("wizard") or {}
+    if wizard.get("platform") != "reel" or len(project.data.get("inputs", {}).get("videos") or []) != 1:
+        return False
+    plan_path = ((project.data.get("stages") or {}).get("edit") or {}).get("outputs", {}).get("edit_plan")
+    if not plan_path:
+        plan_path = str(project.artifacts_dir / "edit_plan.json")
+    try:
+        with Path(plan_path).open("r", encoding="utf-8") as fh:
+            plan = json.load(fh)
+    except (OSError, json.JSONDecodeError, TypeError):
+        return False
+    segments = plan.get("segments") or []
+    return bool(segments) and all(segment.get("single_source_continuous") for segment in segments)
+
+
 @dataclass
 class WizardRunner:
     """Runs one wizard render job at a time."""
@@ -682,7 +699,12 @@ class WizardRunner:
                 job.stage = "reconnect"
                 job.message = "This project is already running; reconnecting to it…"
                 return
-            self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
+            ingest = (project.data.get("stages") or {}).get("ingest") or {}
+            if ingest.get("status") == "done":
+                job.progress = 22
+                _write_stage_log(project, "wizard", "REUSING completed ingest; no re-ingest required")
+            else:
+                self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
             if platform not in {"reel", "backstage"}:
                 self._run_stage(job, project, SyncStage(), 22, 48, t("syncing_audio"))
             else:
@@ -790,7 +812,7 @@ class WizardRunner:
                 job.paper_edit_available = True
                 _write_stage_log(project, "wizard", "PAPER EDIT READY before export")
                 return
-            if platform == "reel":
+            if platform == "reel" and not is_single_source_reel(project):
                 # Review-ready is a user-visible promise. Materialize every
                 # thumbnail first, including the authored crop/motion frame.
                 review = review_items(project)

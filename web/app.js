@@ -2893,7 +2893,6 @@ document.addEventListener("click", (event) => {
     }
     return;
   }
-  if (target.id === "composeAddCaption") { addCaptionFromPlayback(); return; }
   const captionPreview = target.closest?.("[data-caption-preview-index]");
   if (captionPreview instanceof HTMLElement) {
     const index = Number(captionPreview.dataset.captionPreviewIndex);
@@ -2903,11 +2902,6 @@ document.addEventListener("click", (event) => {
       renderCaptionBlocks();
       document.querySelector(`[data-caption-text="${index}"]`)?.focus();
     }
-    return;
-  }
-  if (target.id === "composeEndCaption") {
-    const video = document.querySelector("#composeVideo");
-    if (video) closeActiveCaption(Number(video.currentTime || 0));
     return;
   }
   if (target.dataset.captionEdit != null) {
@@ -3198,7 +3192,6 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && event.target instanceof HTMLElement && event.target.dataset.captionText != null) {
     event.preventDefault();
     document.querySelector("#composeVideo")?.play().catch(() => {});
-    document.querySelector("#composeAddCaption")?.focus();
     return;
   }
   const commandKey = event.metaKey || event.ctrlKey;

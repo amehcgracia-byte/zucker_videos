@@ -40,6 +40,7 @@ REEL_MIN_CUT_SEC = 0.5
 REEL_MAX_CUT_SEC = 2.0
 REEL_DEFAULT_CUT_TARGET_SEC = 1.75
 REEL_DEFAULT_CUTS_PER_SOURCE = 1.0
+REEL_SINGLE_SOURCE_MIX_INTERVAL_SEC = 5.0
 REEL_PLAN_VERSION = 5
 MOTION_CATALOG = (
     "full_static", "full_zoom_in", "zoom_in_center", "zoom_out_center", "zoom_in", "zoom_out",
@@ -348,19 +349,31 @@ def _reel_promo_plan(
                 f"The video covers only {duration:.1f}s of the requested Reel window; "
                 "the export was trimmed to the available video duration."
             )
-        segment = {
-            "title": window.get("title") or t("full_video"),
-            "clip_path": source.get("path") or source.get("clip_path"),
-            "source_path": source.get("source_path") or source.get("path") or source.get("clip_path"),
-            "clip_start_sec": round(clip_start, 6),
-            "master_start_sec": round(start, 6),
-            "duration_sec": round(duration, 6),
-            "clip_offset_sec": 0.0,
-            "filename": source.get("filename") or Path(str(source.get("path") or "video")).name,
-            "projection": source.get("projection"),
-            "camera_id": _camera_id(source),
-            "single_source_continuous": True,
-        }
+        # Mix is still one continuous cut: split only the renderer's work into
+        # adjacent, treatment-only intervals so the framing can alternate
+        # inside the cut. The source and audio timeline remain contiguous.
+        interval_count = 1
+        if str(wizard.get("reel_aspect") or "9:16") == "mix_vertical_horizontal":
+            interval_count = max(3, math.ceil(duration / REEL_SINGLE_SOURCE_MIX_INTERVAL_SEC))
+        interval_duration = duration / interval_count
+        segments = []
+        for index in range(interval_count):
+            segment_duration = interval_duration if index < interval_count - 1 else duration - interval_duration * index
+            segments.append({
+                "title": window.get("title") or t("full_video"),
+                "clip_path": source.get("path") or source.get("clip_path"),
+                "source_path": source.get("source_path") or source.get("path") or source.get("clip_path"),
+                "clip_start_sec": round(clip_start + interval_duration * index, 6),
+                "master_start_sec": round(start + interval_duration * index, 6),
+                "duration_sec": round(segment_duration, 6),
+                "clip_offset_sec": 0.0,
+                "filename": source.get("filename") or Path(str(source.get("path") or "video")).name,
+                "projection": source.get("projection"),
+                "camera_id": _camera_id(source),
+                "single_source_continuous": True,
+                "single_source_continuous_group": "single-source-reel",
+            })
+        _assign_reel_mix_treatments(segments, [source], wizard)
         return {
             "stage": "edit",
             "platform": "reel",
@@ -375,9 +388,9 @@ def _reel_promo_plan(
             "warnings": warnings,
             "excluded_clips": coverage.get("excluded_clips") or [],
             "clip_diagnostics": coverage.get("clip_diagnostics") or [],
-            "camera_usage": _camera_usage([segment]),
+            "camera_usage": _camera_usage(segments),
             "cut_count": 0,
-            "segments": [segment],
+            "segments": segments,
         }
 
     # Preserve ingest order.  Reel is deliberately unsynchronised and its
@@ -551,11 +564,11 @@ def _assign_reel_mix_treatments(
         # confidence class, introduce a deterministic rhythmic change; this
         # is an editorial treatment, not a claim that the source geometry
         # changed.
-        if len(segments) >= 4:
+        if len(segments) >= 3:
             if not selected:
-                selected.update(index for index in range(0, len(segments), 3))
+                selected.update(index for index in range(0, len(segments), 2))
             elif len(selected) == len(segments):
-                selected.difference_update(index for index in range(2, len(segments), 3))
+                selected.difference_update(index for index in range(1, len(segments), 2))
             for index in range(2, len(segments)):
                 previous = index - 1 in selected
                 previous_previous = index - 2 in selected

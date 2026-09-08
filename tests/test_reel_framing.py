@@ -106,3 +106,26 @@ def test_single_source_reel_warns_when_video_does_not_reach_audio_offset():
     )
     assert plan["segments"][0]["clip_start_sec"] == 0.0
     assert any("shorter than the selected audio offset" in warning for warning in plan["warnings"])
+
+
+def test_single_source_reel_mix_alternates_inside_one_continuous_cut():
+    plan = _reel_promo_plan(
+        {
+            "platform": "reel",
+            "window": {"start_sec": 80.0, "duration_sec": 36.0},
+            "single_source_reel": True,
+            "sources": [{"path": "/tmp/take.mp4", "source_path": "/tmp/take.mp4", "duration_sec": 200.0}],
+        },
+        {},
+        {"wizard": {"reel_duration_sec": 36.0, "reel_aspect": "mix_vertical_horizontal", "reel_mix_vertical_ratio": "auto"}},
+    )
+    segments = plan["segments"]
+    assert len(segments) >= 3
+    assert plan["cut_count"] == 0
+    assert {segment["reel_mix_treatment"] for segment in segments} == {"vertical", "horizontal"}
+    assert all(segment["single_source_continuous"] for segment in segments)
+    assert all(segment["single_source_continuous_group"] == "single-source-reel" for segment in segments)
+    assert all(
+        abs(float(left["clip_start_sec"]) + float(left["duration_sec"]) - float(right["clip_start_sec"])) < 1e-5
+        for left, right in zip(segments, segments[1:])
+    )

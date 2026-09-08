@@ -113,6 +113,13 @@ def _transition_boundaries(segments: list[dict[str, Any]], profile: dict[str, An
         return []
     boundaries: list[int] = []
     for index in range(len(segments) - 1):
+        # A single-source Reel Mix is internally subdivided only to change
+        # framing. It is still one continuous take, so never crossfade or
+        # otherwise turn those treatment boundaries into content cuts.
+        left_group = segments[index].get("single_source_continuous_group")
+        right_group = segments[index + 1].get("single_source_continuous_group")
+        if left_group and left_group == right_group:
+            continue
         if profile.get("sections_only"):
             left = segments[index].get("section") or segments[index].get("section_id")
             right = segments[index + 1].get("section") or segments[index + 1].get("section_id")

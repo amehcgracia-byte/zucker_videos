@@ -30,7 +30,7 @@ from core.stages.sync import clear_manual_override, cleanup_closed_sync_diagnost
 from core.shot_review import mark_review_render_failed, replace_slots, review_items
 from core.backstage_feedback import record_feedback
 from core.stages.backstage import update_backstage_cue_text
-from core.backstage_transcription import DEFAULT_WHISPER_MODEL, transcribe_sources
+from core.backstage_transcription import transcribe_sources
 from server.inbox import (
     app_home,
     classify_paths,
@@ -49,7 +49,7 @@ from server.inbox import (
 )
 from server.media import send_file_with_range
 from server.projects import delete_project_folder, find_project_by_inputs, input_signature, list_projects, project_input_signature
-from server.wizard import WizardRunner, merge_spherical_landmarks, same_project_path, serialize_wizard_job, wizard_report, wizard_song_options
+from server.wizard import WizardRunner, is_single_source_reel, merge_spherical_landmarks, same_project_path, serialize_wizard_job, wizard_report, wizard_song_options
 from captions.burn import _video_dimensions, burn as burn_captions
 from captions.align import align_known_lyrics
 from captions.model import Cue, CueTrack, Word
@@ -104,7 +104,7 @@ class AutoReadJob:
 
 
 def _caption_audio_source(project: Project) -> dict[str, str] | None:
-    """Choose only audio already registered in this project."""
+    """Choose a registered master or a registered video that has audio."""
     wizard = project.data.get("settings", {}).get("wizard", {})
     inputs = project.data.get("inputs", {})
     candidates = [
@@ -113,7 +113,9 @@ def _caption_audio_source(project: Project) -> dict[str, str] | None:
     ]
     for item in inputs.get("videos") or []:
         if isinstance(item, dict):
-            candidates.append(item.get("path"))
+            probe = item.get("probe") or {}
+            if probe.get("audio_codec"):
+                candidates.append(item.get("path"))
         else:
             candidates.append(item)
     for raw in candidates:
@@ -151,7 +153,10 @@ class AutoReadRunner:
     def _run(self, job: AutoReadJob, project: Project, source: dict[str, str]) -> None:
         try:
             wizard = project.data.get("settings", {}).get("wizard", {})
-            model_name = str(wizard.get("backstage_whisper_model") or DEFAULT_WHISPER_MODEL)
+            # Auto Read is an interactive caption helper. Prefer the small
+            # model already shipped/usually cached locally; Backstage's
+            # heavyweight large-v3 choice remains independently configurable.
+            model_name = str(wizard.get("auto_read_whisper_model") or wizard.get("backstage_whisper_model") or "tiny")
             language_overrides = wizard.get("backstage_whisper_language_overrides") or {}
             artifact = project.cache_dir / "captions" / CAPTIONS_VERSION / "auto_read.json"
 
@@ -1022,12 +1027,19 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 "video_paths": videos,
             }
             if state.project is not None and state.wizard._prepared_project is None:
-                state.project.data.setdefault("settings", {}).setdefault("wizard", {})["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
-                state.project.save()
-                job = state.wizard.start_existing(state.project, **options)
-                return jsonify(serialize_wizard_job(job)), 202
+                if _project_matches_inputs(state.project, master, songs, videos) and _project_can_skip_prepare(state.project, platform):
+                    state.project.data.setdefault("settings", {}).setdefault("wizard", {})["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
+                    state.project.save()
+                    state.wizard.adopt_prepared_project(state.project)
+                    job = state.wizard.start(**options)
+                    return jsonify(serialize_wizard_job(job)), 202
+                else:
+                    state.project.data.setdefault("settings", {}).setdefault("wizard", {})["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
+                    state.project.save()
+                    job = state.wizard.start_existing(state.project, **options)
+                    return jsonify(serialize_wizard_job(job)), 202
             matching_project = state.project if _can_reuse_prepared_project(state.project, master, songs, videos) else find_project_by_inputs(master, songs, videos)
-            if matching_project and _project_can_skip_prepare(matching_project):
+            if matching_project and _project_can_skip_prepare(matching_project, platform):
                 state.project = matching_project
                 state.wizard.adopt_prepared_project(state.project)
             elif matching_project:
@@ -1881,7 +1893,7 @@ def _project_wizard_status(project: Project) -> dict[str, Any]:
                 "project_path": str(project.folder),
                 "logs_path": logs_path,
             }
-        if platform in {"youtube", "reel"}:
+        if platform == "youtube" or (platform == "reel" and not is_single_source_reel(project)):
             return {
                 "id": "project",
                 "status": "waiting_review",
@@ -1935,12 +1947,29 @@ def _can_reuse_prepared_project(project: Project | None, master: str, songs: str
     return project_input_signature(project) == input_signature(master, songs, videos)
 
 
-def _project_can_skip_prepare(project: Project) -> bool:
+def _project_can_skip_prepare(project: Project, platform: str | None = None) -> bool:
     """Return True when an existing project can resume at edit-choice time."""
     if project.refresh_input_records():
         project.save()
     stages = project.data.get("stages") or {}
+    selected_platform = platform or str((project.data.get("settings", {}).get("wizard") or {}).get("platform") or "youtube")
+    if selected_platform in {"reel", "backstage"}:
+        return stages.get("ingest", {}).get("status") == "done"
     return stages.get("sync", {}).get("status") == "done" and _project_has_sync_candidates(project)
+
+
+def _project_matches_inputs(project: Project, master: str, songs: str | None, videos: list[str]) -> bool:
+    """Compare paths for a reopened video-only project without requiring a master."""
+    inputs = project.data.get("inputs") or {}
+    registered_master = (inputs.get("master") or {}).get("path") if isinstance(inputs.get("master"), dict) else inputs.get("master")
+    registered_songs = (inputs.get("songs") or {}).get("path") if isinstance(inputs.get("songs"), dict) else inputs.get("songs")
+    registered_videos = [str(item.get("path") or "") if isinstance(item, dict) else str(item) for item in inputs.get("videos") or []]
+    resolve = lambda value: str(Path(value).expanduser().resolve()) if value else None
+    return (
+        resolve(registered_master) == resolve(master)
+        and resolve(registered_songs) == resolve(songs)
+        and sorted(resolve(value) for value in registered_videos) == sorted(resolve(value) for value in videos)
+    )
 
 
 def _resolved(path: str | None) -> str | None:

@@ -75,7 +75,17 @@ from core.stages.export import (
     _check_export_disk_space,
     _required_export_space_bytes,
     _segment_failure_message,
+    _transition_boundaries,
 )
+
+
+def test_single_source_reel_mix_does_not_create_crossfade_boundaries():
+    segments = [
+        {"single_source_continuous_group": "single-source-reel"},
+        {"single_source_continuous_group": "single-source-reel"},
+        {"single_source_continuous_group": "single-source-reel"},
+    ]
+    assert _transition_boundaries(segments, {"duration": 0.08, "every": 1}) == []
 
 
 def test_segment_failure_diagnostics_distinguish_missing_drive_and_codec(tmp_path):
