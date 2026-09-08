@@ -963,6 +963,7 @@ function renderChips() {
   const hasVideo = detected.videos.length > 0;
   const hasMaster = detected.master.length > 0;
   const hasSongs = detected.songs.length > 0;
+  renderSingleVideoChoice();
   renderRaw360Callout();
   const note = document.querySelector("#softRule");
   const button = document.querySelector("#confirmFiles");
@@ -972,6 +973,26 @@ function renderChips() {
   else if (!hasMaster) note.textContent = "Choose Backstage to edit with the original camera audio (no master required)";
   else if (!hasSongs) note.textContent = S.noSongsContinuous;
   else note.textContent = S.ready;
+}
+
+function renderSingleVideoChoice() {
+  const panel = document.querySelector("#singleVideoChoice");
+  if (!panel) return;
+  const singleSource = detected.videos.length === 1;
+  panel.hidden = !singleSource;
+  if (!singleSource) return;
+  // Keep Backstage as the safe default for a video-only drop, but make the
+  // destination explicit so Confirm and continue always has a real mode.
+  if (!['backstage', 'reel'].includes(selectedPlatform)) selectedPlatform = "backstage";
+  panel.querySelectorAll("[data-single-platform]").forEach((card) => {
+    card.classList.toggle("selected", card.dataset.singlePlatform === selectedPlatform);
+  });
+  const hint = document.querySelector("#singleVideoChoiceHint");
+  if (hint) {
+    hint.textContent = selectedPlatform === "reel" && !detected.master.length
+      ? "Reel needs a master audio file. Add one above before confirming Reel."
+      : "Select one destination, then confirm to continue.";
+  }
 }
 
 function renderRaw360Callout() {
@@ -1438,7 +1459,18 @@ async function prepareStep2() {
   progressFloor = 0;
   progressStartedAt = Date.now();
   progressSamples = [];
-  if ((!inputs.master && selectedPlatform !== "backstage") || !inputs.videos.length) return;
+  if (!inputs.videos.length) {
+    showToast(S.missingVideo || "Add at least one video before continuing", true);
+    return false;
+  }
+  if (!selectedPlatform) {
+    selectedPlatform = inputs.master ? "reel" : "backstage";
+    renderSingleVideoChoice();
+  }
+  if (!inputs.master && selectedPlatform !== "backstage") {
+    showToast("Reel needs a master audio file. Add one above or choose Backstage.", true);
+    return false;
+  }
   setStep(2);
   if (inputs.master) setupTrimControls(inputs.master);
   applyEditTypeMode();
@@ -1449,6 +1481,7 @@ async function prepareStep2() {
   } else {
     renderSongOptions([]);
   }
+  return true;
 }
 
 async function loadSavedReelOverlays() {
@@ -2733,6 +2766,12 @@ document.addEventListener("click", (event) => {
   const rawTarget = event.target;
   const target = rawTarget instanceof HTMLElement ? rawTarget.closest("button, [data-remove-kind], [data-open-project], [data-delete-project], [data-rescue], [data-rescan-folder], [data-remove-folder]") || rawTarget : rawTarget;
   if (!(target instanceof HTMLElement)) return;
+  const singlePlatform = target.closest("[data-single-platform]");
+  if (singlePlatform instanceof HTMLElement) {
+    choosePlatformInUi(singlePlatform.dataset.singlePlatform);
+    renderSingleVideoChoice();
+    return;
+  }
   const reviewThumb = rawTarget instanceof HTMLElement ? rawTarget.closest("[data-review-thumb]") : null;
   if (reviewThumb) {
     const item = shotReviewItems.find((entry) => Number(entry.index) === Number(reviewThumb.dataset.reviewThumb));
@@ -2963,7 +3002,10 @@ document.addEventListener("click", (event) => {
     saveSourceFolders(remaining)
       .catch((error) => showToast(error.message, true));
   }
-  if (target.id === "confirmFiles") prepareStep2().catch((error) => showToast(error.message, true));
+  if (target.id === "confirmFiles") prepareStep2().catch((error) => {
+    logFrontendError(`confirm files failed: ${error.message}`, error.stack || "");
+    showToast(error.message, true);
+  });
   if (target.id === "newProject") newProject().catch((error) => showToast(error.message, true));
   if (target.id === "refreshProjects") loadProjects().catch((error) => showToast(error.message, true));
   const stepNav = target.closest?.("[data-step-nav]");

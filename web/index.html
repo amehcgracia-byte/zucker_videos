@@ -98,6 +98,21 @@
             <li>Drop the MP4 into Zucker Editor.</li>
           </ol>
         </div>
+        <div id="singleVideoChoice" class="callout single-video-choice" hidden>
+          <strong>Single video detected</strong>
+          <p>Choose how to continue with this video:</p>
+          <div class="single-video-options">
+            <button type="button" class="platform-card" data-single-platform="backstage">
+              <strong>Backstage</strong>
+              <span>Use the original camera audio; no master audio required.</span>
+            </button>
+            <button type="button" class="platform-card" data-single-platform="reel">
+              <strong>Reel</strong>
+              <span>One continuous video cut, with the selected audio offset and aspect ratio applied.</span>
+            </button>
+          </div>
+          <small id="singleVideoChoiceHint" class="field-help"></small>
+        </div>
         <p id="softRule" class="soft-rule">Missing master audio</p>
         <div id="masterMismatchNotice" class="callout warning" hidden role="alert"></div>
         <button id="confirmFiles" class="primary icon-button" data-icon="arrow" disabled>Confirm and continue</button>

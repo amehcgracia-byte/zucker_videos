@@ -565,6 +565,28 @@ h1 {
   padding-left: 20px;
 }
 
+.single-video-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.single-video-options .platform-card {
+  min-height: 120px;
+  padding: 16px;
+  border-radius: 16px;
+  text-align: left;
+}
+
+.single-video-options .platform-card strong {
+  font-size: 20px;
+}
+
+.single-video-options .platform-card span {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
 .soft-rule {
   min-height: 24px;
   font-weight: 700;
@@ -670,6 +692,10 @@ button:disabled {
 .song-option.selected {
   border-color: var(--accent-strong);
   background: var(--highlight-bg);
+}
+
+.single-video-options .platform-card.selected {
+  box-shadow: 0 0 0 2px var(--accent-strong);
 }
 
 .trim-box,
