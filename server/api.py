@@ -103,7 +103,7 @@ class AutoReadJob:
         return dict(self.__dict__)
 
 
-def _caption_audio_source(project: Project) -> dict[str, str] | None:
+def _caption_audio_source(project: Project) -> dict[str, Any] | None:
     """Choose a registered master or a registered video that has audio."""
     wizard = project.data.get("settings", {}).get("wizard", {})
     inputs = project.data.get("inputs", {})
@@ -121,7 +121,12 @@ def _caption_audio_source(project: Project) -> dict[str, str] | None:
     for raw in candidates:
         path = Path(str(raw or "")).expanduser()
         if path.is_file():
-            return {"path": str(path.resolve()), "filename": path.name}
+            duration = None
+            try:
+                duration = float((ffprobe(str(path)).get("format") or {}).get("duration") or 0.0)
+            except Exception:
+                duration = None
+            return {"path": str(path.resolve()), "filename": path.name, "duration_sec": duration}
     return None
 
 
@@ -137,7 +142,7 @@ class AutoReadRunner:
         with self._lock:
             return self._job.snapshot() if self._job else None
 
-    def start(self, project: Project) -> AutoReadJob:
+    def start(self, project: Project, requested_model: str | None = None) -> AutoReadJob:
         with self._lock:
             if self._job and self._job.status == "running":
                 raise RuntimeError("Auto Read is already transcribing")
@@ -146,17 +151,18 @@ class AutoReadRunner:
                 raise ValueError("This project has no readable audio source")
             job = AutoReadJob(id=f"auto-read-{uuid.uuid4().hex[:10]}", project_path=str(project.folder))
             self._job = job
-            self._thread = threading.Thread(target=self._run, args=(job, project, source), daemon=True, name="zucker-auto-read")
+            self._thread = threading.Thread(target=self._run, args=(job, project, source, requested_model), daemon=True, name="zucker-auto-read")
             self._thread.start()
             return job
 
-    def _run(self, job: AutoReadJob, project: Project, source: dict[str, str]) -> None:
+    def _run(self, job: AutoReadJob, project: Project, source: dict[str, Any], requested_model: str | None) -> None:
         try:
             wizard = project.data.get("settings", {}).get("wizard", {})
-            # Auto Read is an interactive caption helper. Prefer the small
-            # model already shipped/usually cached locally; Backstage's
-            # heavyweight large-v3 choice remains independently configurable.
-            model_name = str(wizard.get("auto_read_whisper_model") or wizard.get("backstage_whisper_model") or "tiny")
+            requested_model = str(requested_model or wizard.get("auto_read_whisper_model") or "auto").strip().lower()
+            if requested_model not in {"auto", "tiny", "base", "small", "medium", "large-v3"}:
+                raise ValueError(f"Unsupported Auto Read model: {requested_model}")
+            duration = float(source.get("duration_sec") or 0.0)
+            model_name = "large-v3" if requested_model == "auto" and duration < 60.0 else ("small" if requested_model == "auto" else requested_model)
             language_overrides = wizard.get("backstage_whisper_language_overrides") or {}
             artifact = project.cache_dir / "captions" / CAPTIONS_VERSION / "auto_read.json"
 
@@ -179,6 +185,16 @@ class AutoReadRunner:
             transcription_source = (payload.get("sources") or [{}])[0]
             segments = transcription_source.get("segments") or []
             text = "\n\n".join(str(segment.get("text") or "").strip() for segment in segments if str(segment.get("text") or "").strip())
+            cues = []
+            for segment in segments:
+                value = str(segment.get("text") or "").strip()
+                start = float(segment.get("start_sec") or 0.0)
+                end = max(start + 0.05, float(segment.get("end_sec") or start + 0.05))
+                if value:
+                    cues.append({
+                        "lines": [value], "start": start, "end": end,
+                        "words": segment.get("words") or [], "style_override": {},
+                    })
             with self._lock:
                 job.progress = 100
                 job.status = "done"
@@ -186,10 +202,12 @@ class AutoReadRunner:
                 job.detail = "Review the local audio transcription before synchronizing"
                 job.result = {
                     "text": text,
+                    "cues": cues,
                     "source_path": source["path"],
                     "source_filename": source["filename"],
                     "backend": payload.get("backend"),
                     "model": payload.get("model"),
+                    "duration_sec": duration,
                     "provenance": "project_audio_transcription",
                 }
         except Exception as exc:
@@ -1453,7 +1471,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_captions_auto_read() -> Response:
         project = _require_project(state)
         try:
-            job = state.auto_read.start(project)
+            body = request.get_json(silent=True) or {}
+            requested_model = body.get("model")
+            job = state.auto_read.start(project, str(requested_model) if requested_model is not None else None)
             return jsonify(job.snapshot()), 202
         except RuntimeError as exc:
             return error_response("auto_read_busy", str(exc), 409)

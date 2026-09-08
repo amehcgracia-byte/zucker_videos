@@ -1605,6 +1605,8 @@ pre {
 .caption-style-overrides output { min-width: 3rem; font-variant-numeric: tabular-nums; }
 .caption-style-overrides input[type="color"] { width: 2.2rem; min-height: 1.8rem; padding: .1rem; }
 .caption-block-actions { display: flex; flex-wrap: wrap; gap: .4rem; justify-content: flex-end; position: relative; z-index: 3; }
+.caption-auto-read-options { display: flex; align-items: center; gap: .5rem; margin-top: .35rem; }
+.caption-auto-read-options select { max-width: 100%; }
 .caption-block button, .reel-text-line button { min-height: 32px; white-space: nowrap; position: relative; z-index: 3; }
 .compose-overlays-panel .reel-text-line { overflow: visible; }
 .compose-video-import { margin: .6rem 0; }

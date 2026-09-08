@@ -56,6 +56,7 @@ let selectedComposeLogo = false;
 let composePreviewDrag = null;
 let copiedComposeOverlay = null;
 let copiedCaption = null;
+let copiedCaptionStyle = null;
 let captionStyleCatalog = {};
 const reelPreviewImages = new Map();
 let shotReviewItems = [];
@@ -244,7 +245,7 @@ function renderCaptionBlocks() {
     const active = captionActiveIndex === index ? " active" : "";
     const override = cue.style_override || {};
     const animationOptions = (value) => ["none", "fade", "slide", "scale"].map((name) => `<option value="${name}" ${String(value || "none") === name ? "selected" : ""}>${name}</option>`).join("");
-    return `<div class="caption-block${active}" data-caption-seek="${index}" role="button" tabindex="0"><div class="caption-block-main"><strong>${index + 1}.</strong><input class="caption-row-text" data-caption-text="${index}" value="${escapeHtml(cue.lines.join("\n"))}" aria-label="Caption ${index + 1} text" /><div class="caption-time-fields"><label>Start <input data-caption-start="${index}" type="number" min="0" step="0.01" value="${Number(cue.start).toFixed(2)}" /></label><label>End <input data-caption-end="${index}" type="number" min="0" step="0.01" value="${end.toFixed(2)}" /></label><label>Duration <input data-caption-duration="${index}" type="number" min="0.05" step="0.01" value="${Math.max(0.05, end - Number(cue.start)).toFixed(2)}" /></label></div><div class="caption-style-overrides"><label>Color <input data-caption-color="${index}" type="color" value="${override.color || "#ffffff"}" /></label><label>Size <input data-caption-size="${index}" type="number" min="8" max="180" step="1" value="${override.size ?? ""}" /></label><label>Vertical % <input data-caption-vertical="${index}" type="number" min="0" max="100" step="1" value="${override.vertical ?? ""}" /></label><label>Outline <input data-caption-outline-color="${index}" type="color" value="${override.outline_color || "#101010"}" /></label><label>Stroke <input data-caption-outline-width="${index}" type="number" min="0" max="20" step="0.5" value="${override.outline_width ?? ""}" /></label><label>Shadow distance <input data-caption-shadow-distance="${index}" type="number" min="0" max="30" step="1" value="${override.shadow_distance ?? ""}" /></label><label>Shadow opacity <input data-caption-shadow-opacity="${index}" type="number" min="0" max="1" step="0.05" value="${override.shadow_opacity ?? ""}" /></label><label>Glow color <input data-caption-glow-color="${index}" type="color" value="${override.glow_color || "#ffff00"}" /></label><label>Glow blur <input data-caption-glow-blur="${index}" type="number" min="0" max="40" step="1" value="${override.glow_blur ?? ""}" /></label><label>Glow layers <input data-caption-glow-layers="${index}" type="number" min="0" max="8" step="1" value="${override.glow_layers ?? ""}" /></label><label>Glow intensity <input data-caption-glow-intensity="${index}" type="number" min="0" max="1" step="0.05" value="${override.glow_intensity ?? ""}" /></label><label>Enter <select data-caption-animation-in="${index}">${animationOptions(override.animation_in || "fade")}</select></label><label>Exit <select data-caption-animation-out="${index}">${animationOptions(override.animation_out || "fade")}</select></label></div></div><div class="caption-block-actions"><button type="button" class="icon-button small" data-caption-edit="${index}">Edit</button><button type="button" class="icon-button small" data-caption-delete="${index}">Delete</button></div></div>`;
+    return `<div class="caption-block${active}" data-caption-seek="${index}" role="button" tabindex="0"><div class="caption-block-main"><strong>${index + 1}.</strong><input class="caption-row-text" data-caption-text="${index}" value="${escapeHtml(cue.lines.join("\n"))}" aria-label="Caption ${index + 1} text" /><div class="caption-time-fields"><label>Start <input data-caption-start="${index}" type="number" min="0" step="0.01" value="${Number(cue.start).toFixed(2)}" /></label><label>End <input data-caption-end="${index}" type="number" min="0" step="0.01" value="${end.toFixed(2)}" /></label><label>Duration <input data-caption-duration="${index}" type="number" min="0.05" step="0.01" value="${Math.max(0.05, end - Number(cue.start)).toFixed(2)}" /></label></div><div class="caption-style-overrides"><label>Color <input data-caption-color="${index}" type="color" value="${override.color || "#ffffff"}" /></label><label>Size <input data-caption-size="${index}" type="number" min="8" max="180" step="1" value="${override.size ?? ""}" /></label><label>Vertical % <input data-caption-vertical="${index}" type="number" min="0" max="100" step="1" value="${override.vertical ?? ""}" /></label><label>Outline <input data-caption-outline-color="${index}" type="color" value="${override.outline_color || "#101010"}" /></label><label>Stroke <input data-caption-outline-width="${index}" type="number" min="0" max="20" step="0.5" value="${override.outline_width ?? ""}" /></label><label>Shadow distance <input data-caption-shadow-distance="${index}" type="number" min="0" max="30" step="1" value="${override.shadow_distance ?? ""}" /></label><label>Shadow opacity <input data-caption-shadow-opacity="${index}" type="number" min="0" max="1" step="0.05" value="${override.shadow_opacity ?? ""}" /></label><label>Glow color <input data-caption-glow-color="${index}" type="color" value="${override.glow_color || "#ffff00"}" /></label><label>Glow blur <input data-caption-glow-blur="${index}" type="number" min="0" max="40" step="1" value="${override.glow_blur ?? ""}" /></label><label>Glow layers <input data-caption-glow-layers="${index}" type="number" min="0" max="8" step="1" value="${override.glow_layers ?? ""}" /></label><label>Glow intensity <input data-caption-glow-intensity="${index}" type="number" min="0" max="1" step="0.05" value="${override.glow_intensity ?? ""}" /></label><label>Enter <select data-caption-animation-in="${index}">${animationOptions(override.animation_in || "fade")}</select></label><label>Exit <select data-caption-animation-out="${index}">${animationOptions(override.animation_out || "fade")}</select></label></div></div><div class="caption-block-actions"><button type="button" class="icon-button small" data-caption-copy-style="${index}">Copy style</button>${copiedCaptionStyle ? `<button type="button" class="icon-button small" data-caption-paste-style="${index}">Paste style</button>` : ""}<button type="button" class="icon-button small" data-caption-edit="${index}">Edit</button><button type="button" class="icon-button small" data-caption-delete="${index}">Delete</button></div></div>`;
   }).join("");
   root.querySelectorAll('input[type="number"][data-caption-start], input[type="number"][data-caption-end], input[type="number"][data-caption-duration], input[type="number"][data-caption-size], input[type="number"][data-caption-vertical], input[type="number"][data-caption-outline-width], input[type="number"][data-caption-shadow-distance], input[type="number"][data-caption-shadow-opacity], input[type="number"][data-caption-glow-blur], input[type="number"][data-caption-glow-layers], input[type="number"][data-caption-glow-intensity]').forEach((input) => {
     const key = Object.keys(input.dataset).find((name) => name.startsWith("caption"));
@@ -318,7 +319,8 @@ async function autoReadProjectAudio() {
   button.disabled = true;
   setAutoReadStatus("Transcribing the project's audio locally…");
   try {
-    await api("/captions/auto-read", { method: "POST" });
+    const model = document.querySelector("#captionWhisperModel")?.value || "auto";
+    await api("/captions/auto-read", { method: "POST", body: JSON.stringify({ model }) });
     const poll = async () => {
       const job = await api("/captions/auto-read/status");
       if (job.status === "running") {
@@ -327,17 +329,13 @@ async function autoReadProjectAudio() {
         return;
       }
       if (job.status === "done") {
-        const textarea = document.querySelector("#captionText");
-        if (textarea) {
-          textarea.value = job.result?.text || "";
-          captionCues = [];
-          captionActiveIndex = null;
-          captionPendingStart = null;
-          captionMarkIndex = 0;
-          renderCaptionBlocks();
-          renderComposeOverlayLayer();
-        }
-        setAutoReadStatus("Transcription ready. Review and edit it before synchronizing.");
+        captionCues = Array.isArray(job.result?.cues) ? job.result.cues : [];
+        captionActiveIndex = null;
+        captionPendingStart = null;
+        captionMarkIndex = captionCues.length;
+        renderCaptionBlocks();
+        renderComposeOverlayLayer();
+        setAutoReadStatus(`Transcription ready: ${captionCues.length} editable captions. Review their text and timings.`);
         button.disabled = false;
         return;
       }
@@ -370,7 +368,8 @@ function addCaptionFromPlayback() {
   const index = captionCues.length;
   const nextStart = captionCues.slice(index).map((cue) => Number(cue.start)).filter((start) => start > now).sort((a, b) => a - b)[0];
   const defaultEnd = Math.min(Number(video.duration || Infinity), nextStart ?? now + 1.0);
-  captionCues.push({ lines: [""], start: now, end: Math.max(now + 0.05, defaultEnd) });
+  const previousStyle = captionCues.length ? { ...(captionCues[captionCues.length - 1].style_override || {}) } : {};
+  captionCues.push({ lines: [""], start: now, end: Math.max(now + 0.05, defaultEnd), style_override: previousStyle });
   captionActiveIndex = index;
   captionMarkIndex = index;
   captionPendingStart = now;
@@ -557,7 +556,7 @@ function exportCaptionSrt() {
 
 async function burnCaptionTrack() {
   const blocks = captionBlocksFromText();
-  if (!captionCues.length || captionCues.length !== blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
+  if (!captionCues.length && blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
   const style = document.querySelector("#captionStyle")?.value || "clean_bottom";
   const cues = captionCues.map((cue) => ({ ...cue, end: cue.end == null ? composeTimelineDuration() : cue.end }));
   const result = await api("/captions/burn", { method: "POST", body: JSON.stringify({ style, cues, header: { title_enabled: false, title: "", logo_source: selectedLogoSource(), logo_height: 120, logo_overlay: projectLogo.overlay || { x: .5, y: .08, width: .22 } }, letterbox: { enabled: true, blur: 18 } }) });
@@ -2889,6 +2888,20 @@ document.addEventListener("click", (event) => {
       captionPendingStart = null;
       if (captionActiveIndex === index) captionActiveIndex = null;
       else if (captionActiveIndex != null && captionActiveIndex > index) captionActiveIndex -= 1;
+      renderCaptionBlocks();
+    }
+    return;
+  }
+  if (target.dataset.captionCopyStyle != null) {
+    const cue = captionCues[Number(target.dataset.captionCopyStyle)];
+    copiedCaptionStyle = cue ? { ...(cue.style_override || {}) } : null;
+    renderCaptionBlocks();
+    return;
+  }
+  if (target.dataset.captionPasteStyle != null) {
+    const cue = captionCues[Number(target.dataset.captionPasteStyle)];
+    if (cue && copiedCaptionStyle) {
+      cue.style_override = { ...copiedCaptionStyle };
       renderCaptionBlocks();
     }
     return;

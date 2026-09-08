@@ -92,9 +92,50 @@ def test_caption_auto_read_uses_registered_project_audio_and_returns_editable_te
     assert status["status"] == "done"
     assert status["result"]["text"] == "Hello from the project audio."
     assert status["result"]["provenance"] == "project_audio_transcription"
-    assert observed["sources"] == [{"path": str(audio.resolve()), "filename": audio.name}]
+    assert observed["sources"] == [{"path": str(audio.resolve()), "filename": audio.name, "duration_sec": None}]
     assert observed["kwargs"]["task"] == "transcribe"
     assert "initial_prompt" not in observed["kwargs"]
+
+
+def test_caption_auto_read_returns_timestamped_cues_and_selects_large_for_short_audio(tmp_path, monkeypatch):
+    import server.api as api_module
+
+    audio = tmp_path / "short.wav"
+    audio.write_bytes(b"audio")
+    folder = tmp_path / "AutoReadCues.zuckervid"
+    project = create_project("Auto Read cues", str(folder))
+    project.data["settings"].setdefault("wizard", {})["master_path"] = str(audio)
+    project.save()
+    observed = {}
+
+    monkeypatch.setattr(api_module, "ffprobe", lambda path: {"format": {"duration": "30.0"}, "streams": []})
+
+    def fake_transcribe(sources, artifact, progress_callback, **kwargs):
+        observed["kwargs"] = kwargs
+        return {
+            "status": "ready", "backend": "faster-whisper", "model": kwargs["model_name"],
+            "sources": [{"segments": [
+                {"start_sec": 1.25, "end_sec": 3.5, "text": " First phrase. ", "words": []},
+                {"start_sec": 4.0, "end_sec": 6.25, "text": " Second phrase. ", "words": []},
+            ]}],
+        }
+
+    monkeypatch.setattr(api_module, "transcribe_sources", fake_transcribe)
+    client = api_module.create_app(project_path=str(folder)).test_client()
+    started = client.post("/api/v1/captions/auto-read", json={"model": "auto"})
+    assert started.status_code == 202
+    for _ in range(20):
+        status = client.get("/api/v1/captions/auto-read/status").get_json()
+        if status["status"] != "running":
+            break
+        time.sleep(0.01)
+
+    assert status["status"] == "done"
+    assert observed["kwargs"]["model_name"] == "large-v3"
+    assert status["result"]["cues"] == [
+        {"lines": ["First phrase."], "start": 1.25, "end": 3.5, "words": [], "style_override": {}},
+        {"lines": ["Second phrase."], "start": 4.0, "end": 6.25, "words": [], "style_override": {}},
+    ]
 
 
 def test_api_spherical_landmark_save_merges_partial_and_empty_payloads(tmp_path, monkeypatch):
