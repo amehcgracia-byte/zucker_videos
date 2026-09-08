@@ -28,6 +28,7 @@ from core.project import Project
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.export import (
     _ffmpeg_path,
+    _ffprobe_path,
     _logo_clip_cache_path,
     _logo_path,
     _personal_logo_path,
@@ -1305,14 +1306,15 @@ def _filter_path(path: Path) -> str:
 
 def measure_backstage_av_drift(path: str | Path) -> list[float]:
     """Measure audio/video packet-edge drift at one, two and three thirds."""
-    probe = [str(_ffmpeg_path()).replace("ffmpeg", "ffprobe"), "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)]
+    ffprobe = _ffprobe_path()
+    probe = [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)]
     duration = float(subprocess.check_output(probe, text=True).strip() or 0.0)
     result: list[float] = []
     for fraction in (1 / 3, 2 / 3, 1.0):
         target = duration * fraction
         streams = []
         for selector in ("v:0", "a:0"):
-            cmd = [str(_ffmpeg_path()).replace("ffmpeg", "ffprobe"), "-v", "error", "-select_streams", selector, "-read_intervals", f"%+{target:.6f}", "-show_entries", "packet=pts_time,duration_time", "-of", "csv=p=0", str(path)]
+            cmd = [ffprobe, "-v", "error", "-select_streams", selector, "-read_intervals", f"%+{target:.6f}", "-show_entries", "packet=pts_time,duration_time", "-of", "csv=p=0", str(path)]
             pts = []
             for line in subprocess.check_output(cmd, text=True).splitlines():
                 try:
