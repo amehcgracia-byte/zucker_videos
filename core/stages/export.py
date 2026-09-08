@@ -443,7 +443,7 @@ class ExportStage(Stage):
                         "filename": output_path.name,
                         "duration_sec": duration,
                         "warnings": warnings,
-                        "cut_count": int(plan.get("cut_count") or max(0, len(segments) - 1)),
+                        "cut_count": int(plan["cut_count"] if plan.get("cut_count") is not None else max(0, len(segments) - 1)),
                         "camera_usage": {} if platform == "360" else (plan.get("camera_usage") or _camera_usage(segments)),
                         "camera_sequence": [] if platform == "360" else [
                             str(segment.get("camera_id") or Path(str(segment.get("clip_path"))).name)
