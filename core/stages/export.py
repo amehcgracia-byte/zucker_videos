@@ -81,6 +81,10 @@ INTRO_DURATION = 10.0
 COLOR_PROFILE_VERSION = 4
 REEL_LETTERBOX_CACHE_VERSION = 2
 REEL_LETTERBOX_BLUR_SIGMA = 18.0
+# Reel logos are composed after the base export by Overlay & Captions. Keep
+# this version in the segment recipe so old segments with the historical
+# corner watermark can never be reused in a new Result render.
+REEL_BASE_LOGO_POLICY_VERSION = 1
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
 TRANSITION_PROFILES = {
@@ -390,6 +394,7 @@ class ExportStage(Stage):
                 "spherical_recording_usage": plan.get("spherical_recording_usage") or _spherical_recording_usage(segments),
                 "operator_avoidance_segments": 0 if platform == "360" else count_avoidance_adjustments(segments),
                 "reel_aspect_mode": reel_aspect_mode if platform == "reel" else None,
+                "reel_base_logo_policy_version": REEL_BASE_LOGO_POLICY_VERSION if platform in {"reel", "reel_horizontal"} else None,
                 "reel_mix_clip_geometry": reel_mix_geometry if reel_mix_geometry else None,
                 "reel_mix_treatments": (
                     [
@@ -1740,7 +1745,11 @@ def _render_segment(
     source = _segment_source_info(project, segment)
     reel_letterbox_filter = _reel_letterbox_filter(project, segment, platform)
     mix_horizontal = platform == "reel" and segment.get("reel_mix_treatment") == "horizontal"
-    watermark = _watermark_path()
+    # Reel's user-selectable logo is applied exactly once by the post-export
+    # Overlay & Captions composition. The historical export watermark belongs
+    # to the older base-export path and must not be baked into Reel footage;
+    # otherwise "No logo" cannot remove it from Result.
+    watermark = None if platform in {"reel", "reel_horizontal"} else _watermark_path()
     if source.get("paired_path") and not force_proxy:
         force_proxy = True
     if force_proxy:
@@ -3371,6 +3380,7 @@ def cached_segment_path(
             "normalization_version": NORMALIZATION_VERSION,
             "export_segment_recipe": EXPORT_SEGMENT_RECIPE_VERSION,
             "reel_letterbox_version": REEL_LETTERBOX_CACHE_VERSION if platform == "reel" else None,
+            "reel_base_logo_policy_version": REEL_BASE_LOGO_POLICY_VERSION if platform in {"reel", "reel_horizontal"} else None,
             # The same source/cut has different pixels in fixed 9:16 and Mix
             # modes. Keep the mode in the segment recipe so switching the UI
             # cannot silently reuse the other geometry from the global cache.

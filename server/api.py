@@ -123,6 +123,22 @@ class CompositionRunner:
             base = _export_result(project)
             if not base:
                 raise RuntimeError("No base export is available for composition")
+            if str(base.get("platform") or "") == "reel" and base.get("reel_base_logo_policy_version") != 1:
+                # Existing Reel exports predate the unified logo selector and
+                # may already contain the historical corner watermark. Rebuild
+                # that base once under the current policy before composing so
+                # No logo is truly logo-free and Custom/Default is applied once.
+                from core.stages.export import ExportStage
+
+                job.progress = 2
+                job.detail = "Refreshing the Reel base without the legacy watermark"
+                ExportStage().run(
+                    project,
+                    lambda percent, detail: _set_job_progress(job, 2 + round(min(1.0, float(percent) / 100.0) * 6)),
+                )
+                base = _export_result(project)
+                if not base:
+                    raise RuntimeError("The refreshed Reel base export is unavailable")
             base_path = Path(base["path"]).resolve()
             spec_path = project.folder / "overlay_spec.json"
             track_path = project.folder / "cue_track.json"
@@ -1821,6 +1837,7 @@ def _export_result(project: Project) -> dict[str, Any] | None:
         "path": str(path),
         "media_url": "/api/v1/wizard/result",
         "platform": export.get("platform"),
+        "reel_base_logo_policy_version": manifest.get("reel_base_logo_policy_version"),
         "logs_path": str(project.cache_dir / "logs"),
         "cut_count": export.get("cut_count"),
         "camera_usage": export.get("camera_usage"),
