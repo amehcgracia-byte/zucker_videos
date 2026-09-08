@@ -140,7 +140,10 @@ def _render_flat_video_transitions(
         inputs += ["-i", str(path)]
         label = f"v{index}"
         labels.append(label)
-        filters.append(f"[{index}:v]settb=AVTB,setpts=PTS-STARTPTS,fps=30,format=yuv420p[{label}]")
+        # Normalize both timing and sample aspect ratio before concat/xfade.
+        # Some phone sources carry a non-1:1 SAR; without setsar the
+        # transition graph can reject otherwise identical 1080x1920 frames.
+        filters.append(f"[{index}:v]settb=AVTB,setpts=PTS-STARTPTS,fps=30,setsar=1,format=yuv420p[{label}]")
     chunks: list[tuple[str, float]] = []
     start = 0
     for boundary in [*boundaries, len(paths) - 1]:
@@ -157,7 +160,7 @@ def _render_flat_video_transitions(
         # match, so normalize every chunk at the boundary immediately before
         # the transition chain.
         chunk_label = f"chunk{len(chunks)}"
-        filters.append(f"[{raw_chunk_label}]settb=AVTB,setpts=PTS-STARTPTS[{chunk_label}]")
+        filters.append(f"[{raw_chunk_label}]settb=AVTB,setpts=PTS-STARTPTS,setsar=1[{chunk_label}]")
         chunks.append((chunk_label, chunk_duration))
         start = end
     current, current_duration = chunks[0]
