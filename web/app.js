@@ -432,7 +432,7 @@ function editableOverlayMarkup(kind, item, index, selected, content) {
   return `<div class="compose-live-overlay compose-live-${kind}-wrap${selected ? " selected" : ""}" ${identity} style="${position}">${content}<i class="compose-overlay-handle nw" data-compose-resize="nw" aria-label="Resize ${kind} top left"></i><i class="compose-overlay-handle ne" data-compose-resize="ne" aria-label="Resize ${kind} top right"></i><i class="compose-overlay-handle sw" data-compose-resize="sw" aria-label="Resize ${kind} bottom left"></i><i class="compose-overlay-handle se" data-compose-resize="se" aria-label="Resize ${kind} bottom right"></i></div>`;
 }
 
-function imageEffectMarkup(item) {
+function imageEffectMarkup(item, content) {
   const tint = item.tint_color || "#ffffff";
   const tintOpacity = Math.max(0, Math.min(1, Number(item.tint_opacity || 0)));
   const video = document.querySelector("#composeVideo");
@@ -445,7 +445,7 @@ function imageEffectMarkup(item) {
   const shadow = shadowOpacity && (shadowDistance || shadowBlur) ? `drop-shadow(${shadowDistance}px ${shadowDistance}px ${shadowBlur}px ${item.shadow_color || "#000000"}${Math.round(shadowOpacity * 255).toString(16).padStart(2, "0")})` : "";
   const glow = glowLayers && glowBlur ? Array.from({ length: glowLayers }, (_, i) => `drop-shadow(0 0 ${Math.max(1, glowBlur * (i + 1) / glowLayers)}px ${item.glow_color || tint})`).join(" ") : "";
   const filter = [shadow, glow].filter(Boolean).join(" ");
-  return `<span class="compose-image-effect" style="--tint-color:${escapeHtml(tint)};--tint-opacity:${tintOpacity};filter:${escapeHtml(filter)}">${content}</span>`;
+  return `<span class="compose-image-effect" style="--tint-color:${escapeHtml(tint)};--tint-opacity:${tintOpacity};filter:${escapeHtml(filter)}">${content || ""}</span>`;
 }
 
 function renderComposeOverlayLayer() {
@@ -475,7 +475,10 @@ function renderComposeOverlayLayer() {
   const logo = logoSource === "custom" ? projectLogo.url : logoSource === "default" ? projectLogo.defaultUrl : "";
   const logoOverlay = projectLogo.overlay || { x: .5, y: .08, width: .22 };
   const logoMarkup = logo ? editableOverlayMarkup("logo", logoOverlay, null, selectedComposeLogo, `<img class="compose-live-logo" src="${escapeHtml(logo)}" alt="Project logo" />`) : "";
-  const imageMarkup = images.map((item) => editableOverlayMarkup("image", item, item._index, selectedComposeOverlay?.kind === "image" && selectedComposeOverlay.index === item._index, imageEffectMarkup(item).replace("</span>", `<img class="compose-live-image" src="${escapeHtml(item.preview_url || item.path || '')}" alt="Flyer overlay" /></span>`))).join("");
+  const imageMarkup = images.map((item) => {
+    const image = `<img class="compose-live-image" src="${escapeHtml(item.preview_url || item.path || '')}" alt="Flyer overlay" />`;
+    return editableOverlayMarkup("image", item, item._index, selectedComposeOverlay?.kind === "image" && selectedComposeOverlay.index === item._index, imageEffectMarkup(item, image));
+  }).join("");
   const videoMarkup = videos.map((item) => editableOverlayMarkup("video", item, item._index, selectedComposeOverlay?.kind === "video" && selectedComposeOverlay.index === item._index, `<video class="compose-live-video" src="${escapeHtml(item.preview_url || item.path || '')}" autoplay muted loop playsinline aria-label="Video overlay"></video>`)).join("");
   layer.innerHTML = logoMarkup + imageMarkup + videoMarkup + (caption ? `<span class="compose-live-caption caption-style-${escapeHtml(captionStyle)}${captionAnimation}" data-caption-preview-index="${captionCues.indexOf(caption)}" tabindex="0" style="${captionInline}">${escapeHtml(caption.lines.join("\n"))}</span>` : "");
   const editing = Boolean(selectedComposeLogo || selectedComposeOverlay || captionActiveIndex != null);

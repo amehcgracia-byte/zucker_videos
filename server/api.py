@@ -231,19 +231,35 @@ class CompositionRunner:
             base = _export_result(project)
             if not base:
                 raise RuntimeError("No base export is available for composition")
-            if str(base.get("platform") or "") == "reel" and base.get("reel_base_logo_policy_version") != 1:
-                # Existing Reel exports predate the unified logo selector and
-                # may already contain the historical corner watermark. Rebuild
-                # that base once under the current policy before composing so
-                # No logo is truly logo-free and Custom/Default is applied once.
+            if str(base.get("platform") or "") == "reel":
+                # The mode export historically baked its saved Reel overlays
+                # into the base file. Result must start from a clean base and
+                # apply exactly the current Overlay & Captions state once;
+                # otherwise removed flyers (and a removed logo-like flyer)
+                # survive as ghost pixels even when overlay_spec.json is empty.
                 from core.stages.export import ExportStage
 
-                job.progress = 2
-                job.detail = "Refreshing the Reel base without the legacy watermark"
-                ExportStage().run(
-                    project,
-                    lambda percent, detail: _set_job_progress(job, 2 + round(min(1.0, float(percent) / 100.0) * 6)),
-                )
+                wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
+                saved_overlay_state = {
+                    key: wizard.get(key)
+                    for key in ("reel_text_overlays", "reel_image_overlays", "reel_video_overlays")
+                }
+                wizard.update({
+                    "reel_text_overlays": [],
+                    "reel_image_overlays": [],
+                    "reel_video_overlays": [],
+                })
+                project.save()
+                try:
+                    job.progress = 2
+                    job.detail = "Refreshing the Reel base without saved overlays"
+                    ExportStage().run(
+                        project,
+                        lambda percent, detail: _set_job_progress(job, 2 + round(min(1.0, float(percent) / 100.0) * 6)),
+                    )
+                finally:
+                    wizard.update(saved_overlay_state)
+                    project.save()
                 base = _export_result(project)
                 if not base:
                     raise RuntimeError("The refreshed Reel base export is unavailable")
@@ -982,6 +998,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 "spherical_sweep": spherical_sweep,
                 "sweep_speed_deg_per_sec": sweep_speed_deg_per_sec,
                 "reel_duration_sec": reel_duration_sec,
+                "backstage_target_duration_sec": reel_duration_sec if platform == "backstage" else None,
                 "reel_aspect": reel_aspect,
                 "reel_mix_vertical_ratio": reel_mix_vertical_ratio,
                 "reel_text_overlays": reel_text_overlays,
@@ -2124,7 +2141,29 @@ def _reel_image_overlays_from_body(body: dict[str, Any]) -> list[dict[str, Any]]
         start = max(0.0, _coerce_float(item.get("start_sec")) or 0.0)
         duration = min(60.0, max(0.1, _coerce_float(item.get("duration_sec")) or 3.0))
         x_value = _coerce_float(item.get("x")); y_value = _coerce_float(item.get("y"))
-        result.append({"path": str(path), "x": max(0.0, min(1.0, x_value if x_value is not None else 0.5)), "y": max(0.0, min(1.0, y_value if y_value is not None else 0.5)), "width": max(0.05, min(1.0, _coerce_float(item.get("width")) or 0.35)), "opacity": max(0.05, min(1.0, _coerce_float(item.get("opacity")) or 1.0)), "animation": str(item.get("animation") or "fade") if str(item.get("animation") or "fade") in {"none", "fade", "slide", "scale"} else "fade", "start_sec": start, "duration_sec": duration})
+        def color_value(key: str, fallback: str) -> str:
+            value = str(item.get(key) or fallback).strip()
+            return value if len(value) == 7 and value.startswith("#") else fallback
+
+        result.append({
+            "path": str(path),
+            "x": max(0.0, min(1.0, x_value if x_value is not None else 0.5)),
+            "y": max(0.0, min(1.0, y_value if y_value is not None else 0.5)),
+            "width": max(0.05, min(1.0, _coerce_float(item.get("width")) or 0.35)),
+            "opacity": max(0.05, min(1.0, _coerce_float(item.get("opacity")) or 1.0)),
+            "animation": str(item.get("animation") or "fade") if str(item.get("animation") or "fade") in {"none", "fade", "slide", "scale"} else "fade",
+            "start_sec": start,
+            "duration_sec": duration,
+            "tint_color": color_value("tint_color", "#ffffff"),
+            "tint_opacity": max(0.0, min(1.0, _coerce_float(item.get("tint_opacity")) or 0.0)),
+            "shadow_color": color_value("shadow_color", "#000000"),
+            "shadow_distance": max(0.0, min(40.0, _coerce_float(item.get("shadow_distance")) or 0.0)),
+            "shadow_blur": max(0.0, min(40.0, _coerce_float(item.get("shadow_blur")) or 0.0)),
+            "shadow_opacity": max(0.0, min(1.0, _coerce_float(item.get("shadow_opacity")) or 0.0)),
+            "glow_color": color_value("glow_color", "#ffffff"),
+            "glow_blur": max(0.0, min(40.0, _coerce_float(item.get("glow_blur")) or 0.0)),
+            "glow_layers": max(0, min(8, int(_coerce_float(item.get("glow_layers")) or 0))),
+        })
     return result
 
 

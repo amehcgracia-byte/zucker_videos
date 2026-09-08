@@ -21,6 +21,7 @@ from server.api import (
     _can_reuse_prepared_project,
     _project_wizard_status,
     _sanitize_camera_role_weights,
+    _reel_image_overlays_from_body,
     _sanitize_spherical_landmarks,
 )
 from server.inbox import load_global_config
@@ -432,6 +433,33 @@ def test_reopening_saved_project_only_loads_inputs(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert response.get_json()["status"] in {"done", "waiting_choice", "idle"}
+
+
+def test_reel_image_overlay_effects_survive_request_sanitization(tmp_path):
+    flyer = tmp_path / "flyer.png"
+    flyer.write_bytes(b"png")
+    overlays = _reel_image_overlays_from_body({
+        "reel_image_overlays": [{
+            "path": str(flyer),
+            "tint_color": "#12abef",
+            "tint_opacity": 0.4,
+            "shadow_color": "#112233",
+            "shadow_distance": 7,
+            "shadow_blur": 9,
+            "shadow_opacity": 0.6,
+            "glow_color": "#00ff00",
+            "glow_blur": 12,
+            "glow_layers": 4,
+        }],
+    })
+    assert overlays[0]["tint_color"] == "#12abef"
+    assert overlays[0]["tint_opacity"] == 0.4
+    assert overlays[0]["shadow_distance"] == 7
+    assert overlays[0]["shadow_blur"] == 9
+    assert overlays[0]["shadow_opacity"] == 0.6
+    assert overlays[0]["glow_color"] == "#00ff00"
+    assert overlays[0]["glow_blur"] == 12
+    assert overlays[0]["glow_layers"] == 4
 
 
 def test_new_project_action_clears_resume_without_deleting_project(tmp_path, monkeypatch):
