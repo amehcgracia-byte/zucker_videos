@@ -224,7 +224,7 @@ def test_reel_uses_every_source_round_robin_with_independent_short_cuts():
         {"wizard": {"reel_duration_sec": 30.0}, "spherical_landmarks": {}},
     )
     durations = [float(segment["duration_sec"]) for segment in plan["segments"]]
-    assert len(plan["segments"]) == 15
+    assert len(plan["segments"]) == 18
     assert min(durations) >= REEL_MIN_CUT_SEC
     assert max(durations) <= REEL_MAX_CUT_SEC
     assert {segment["source_path"] for segment in plan["segments"]} == {source["path"] for source in sources}

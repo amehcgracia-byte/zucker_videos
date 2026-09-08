@@ -191,6 +191,29 @@ def _review_candidate_pool(
             if key not in seen:
                 pool.append(candidate)
                 seen.add(key)
+        # A Reel has no sync constraint, so each source can provide several
+        # genuinely different moments for the same review slot.  Keep the
+        # explicit source records above for backwards compatibility, then add
+        # six deterministic positions spread across the usable source
+        # duration: the current frame plus five possible replacements. The
+        # per-slot exclusion history prevents repeats.
+        if platform == "reel":
+            source = source_records[0]
+            try:
+                duration = max(0.0, float(source.get("duration_sec") or 0.0))
+            except (TypeError, ValueError):
+                duration = 0.0
+            segment_duration = max(0.1, float(segment.get("duration_sec") or 0.1))
+            max_start = max(0.0, duration - segment_duration)
+            for moment_index in range(6):
+                fraction = moment_index / 5.0
+                candidate = dict(source)
+                candidate["clip_start_sec"] = round(max_start * fraction, 6)
+                candidate["review_candidate_index"] = moment_index
+                key = _candidate_key(candidate)
+                if key not in seen:
+                    pool.append(candidate)
+                    seen.add(key)
     for planned in segments:
         path = str(planned.get("clip_path") or planned.get("proxy_path") or planned.get("source_path") or "")
         source = (by_path.get(path) or [None])[0]

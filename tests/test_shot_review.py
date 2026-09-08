@@ -94,6 +94,28 @@ def test_replacements_never_repeat_a_candidate_for_the_same_slot(tmp_path: Path)
     assert project.data["settings"]["wizard"]["review_exclusions"]["0"]
 
 
+def test_reel_review_pool_exposes_five_distinct_moments_per_source(tmp_path: Path) -> None:
+    clip = tmp_path / "long.mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+        "-i", "testsrc=size=320x180:rate=10:duration=10", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(clip),
+    ], check=True)
+    project = create_project("Review pool", str(tmp_path / "Review pool.zuckervid"))
+    segment = {"clip_path": str(clip), "source_path": str(clip), "clip_start_sec": 0.0, "master_start_sec": 0.0, "duration_sec": 1.0}
+    coverage = {"platform": "reel", "sources": [{"path": str(clip), "filename": clip.name, "duration_sec": 10.0}]}
+    artifact_path(project, "edit_plan.json").write_text(json.dumps({"platform": "reel", "segments": [segment]}), encoding="utf-8")
+    artifact_path(project, "coverage.json").write_text(json.dumps(coverage), encoding="utf-8")
+
+    shown_starts = [0.0]
+    for _ in range(5):
+        result = replace_slots(project, [0])
+        assert result["replaced"] == [0]
+        plan = json.loads(artifact_path(project, "edit_plan.json").read_text(encoding="utf-8"))
+        shown_starts.append(plan["segments"][0]["clip_start_sec"])
+
+    assert len(set(shown_starts)) == 6
+
+
 def test_replacement_excludes_current_synced_frame_by_clip_offset(tmp_path: Path) -> None:
     clip = tmp_path / "clip.mp4"
     subprocess.run([

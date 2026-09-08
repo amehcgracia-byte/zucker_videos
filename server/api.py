@@ -971,6 +971,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         reel_duration_sec = _backstage_duration_from_body(body) if platform == "backstage" else _reel_duration_from_body(body)
         reel_aspect = _reel_aspect_from_body(body)
         reel_mix_vertical_ratio = _reel_mix_vertical_ratio_from_body(body)
+        reel_cuts_per_source = _reel_cuts_per_source_from_body(body)
         reel_text_overlays = _reel_text_overlays_from_body(body)
         reel_image_overlays = _reel_image_overlays_from_body(body)
         backstage_messages = body.get("backstage_messages") or []
@@ -1001,6 +1002,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 "backstage_target_duration_sec": reel_duration_sec if platform == "backstage" else None,
                 "reel_aspect": reel_aspect,
                 "reel_mix_vertical_ratio": reel_mix_vertical_ratio,
+                "reel_cuts_per_source": reel_cuts_per_source,
                 "reel_text_overlays": reel_text_overlays,
                 "reel_image_overlays": reel_image_overlays,
                 "backstage_messages": backstage_messages,
@@ -2078,6 +2080,11 @@ def _reel_mix_vertical_ratio_from_body(body: dict[str, Any]) -> str | float:
         return max(0.0, min(1.0, float(value)))
     except (TypeError, ValueError):
         return "auto"
+
+
+def _reel_cuts_per_source_from_body(body: dict[str, Any]) -> float:
+    value = _coerce_float(body.get("reel_cuts_per_source"))
+    return max(1.0, min(5.0, value if value is not None else 1.0))
 
 
 def _reel_text_overlays_from_body(body: dict[str, Any]) -> list[dict[str, Any]]:

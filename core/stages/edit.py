@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import random
 from pathlib import Path
 from typing import Any
@@ -31,9 +32,15 @@ SPHERICAL_MOTION_PLAN_VERSION = 10
 # Reel has its own pacing contract.  Keep this independent from the
 # YouTube/360 segment limits so a Reel change cannot invalidate or alter their
 # edit cadence accidentally.
-REEL_MIN_CUT_SEC = 1.5
+# Reel pacing is intentionally independent from the long-form edit cadence.
+# The slot count is also source-aware: a project with more usable sources must
+# get more visual decisions, while still allowing very short slots when the
+# user asks for a short Reel containing many sources.
+REEL_MIN_CUT_SEC = 0.5
 REEL_MAX_CUT_SEC = 2.0
-REEL_PLAN_VERSION = 4
+REEL_DEFAULT_CUT_TARGET_SEC = 1.75
+REEL_DEFAULT_CUTS_PER_SOURCE = 1.0
+REEL_PLAN_VERSION = 5
 MOTION_CATALOG = (
     "full_static", "full_zoom_in", "zoom_in_center", "zoom_out_center", "zoom_in", "zoom_out",
     "pan_right_center", "pan_left_center", "pan_down_center", "pan_up_center",
@@ -312,11 +319,26 @@ def _reel_promo_plan(
     # visual rhythm comes from cycling through every available Drop box
     # source, rather than allowing quality sorting to starve quieter cameras.
     sources = [source for source in sources if source.get("path") or source.get("source_path")]
-    # Use a fixed number of evenly sized slots.  Beat boundaries are retained
-    # for the music analysis, but may not create a final 0.6 s fragment or a
-    # 4–6 s YouTube-like shot.  Choosing ceil(duration / 2) guarantees every
-    # slot is within the Reel contract for the normal 20–60 s range.
-    duration_slots = max(1, int((end - start + REEL_MAX_CUT_SEC - 1e-9) // REEL_MAX_CUT_SEC))
+    # Use evenly sized slots.  The target is configurable, and the source
+    # relation is a hard lower bound so every usable source contributes at
+    # least one cut.  This deliberately permits sub-second cuts when a short
+    # Reel contains more sources than can fit at the normal pacing target.
+    try:
+        target_cut_sec = float(wizard.get("reel_cut_target_sec") or REEL_DEFAULT_CUT_TARGET_SEC)
+    except (TypeError, ValueError):
+        target_cut_sec = REEL_DEFAULT_CUT_TARGET_SEC
+    target_cut_sec = max(REEL_MIN_CUT_SEC, min(REEL_MAX_CUT_SEC, target_cut_sec))
+    try:
+        cuts_per_source = float(wizard.get("reel_cuts_per_source") or REEL_DEFAULT_CUTS_PER_SOURCE)
+    except (TypeError, ValueError):
+        cuts_per_source = REEL_DEFAULT_CUTS_PER_SOURCE
+    cuts_per_source = max(1.0, min(5.0, cuts_per_source))
+    duration_slots = max(
+        1,
+        math.ceil((end - start) / target_cut_sec),
+        math.ceil(len(sources) * cuts_per_source),
+        len(sources),
+    )
     slot_duration = (end - start) / duration_slots
     boundaries = [start + slot_duration * index for index in range(duration_slots + 1)]
 

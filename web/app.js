@@ -1566,6 +1566,7 @@ function renderShotReview(items) {
       ? `<em class="review-thumb-error">${escapeHtml(item.thumbnail_error)}</em>` : "";
     return `<article class="review-card ${item.keep ? "keep" : "reject"}" data-review-index="${item.index}">
     <button class="review-thumb-button" data-review-thumb="${item.index}">${thumb}</button>
+    <button type="button" class="review-other-frame" data-review-replace="${item.index}">Otro frame</button>
     <label class="review-keep"><input type="checkbox" data-review-keep="${item.index}" ${item.keep ? "checked" : ""}/> Keep</label>
     <strong>#${item.index + 1} · ${escapeHtml(item.source)}</strong>
     <span>${Number(item.duration_sec).toFixed(1)}s${item.landmark ? ` · ${escapeHtml(item.landmark)} frame` : ""}</span>
@@ -1573,6 +1574,19 @@ function renderShotReview(items) {
     ${item.no_alternative ? '<em>No alternative coverage available</em>' : ""}
   </article>`;
   }).join("");
+}
+
+function replaceReviewShot(index, button) {
+  if (button) button.disabled = true;
+  return api("/wizard/review/replace", { method: "POST", body: JSON.stringify({ rejected: [Number(index)] }) })
+    .then((result) => {
+      renderShotReview(result.items || []);
+      const unavailable = result.replacement_diagnostics?.some((item) => Number(item.index) === Number(index) && item.status === "unavailable");
+      if (unavailable) showToast("No hay más frames alternativos para esta toma", true);
+      else refreshShotReviewAfterReplace();
+    })
+    .catch((error) => showToast(error.message, true))
+    .finally(() => { if (button) button.disabled = false; });
 }
 
 function refreshShotReviewAfterReplace(attempt = 0) {
@@ -1683,6 +1697,9 @@ function renderReelOptions() {
   const duration = Number(document.querySelector("#reelDuration")?.value || 30);
   const value = document.querySelector("#reelDurationValue");
   if (value) value.textContent = `${duration}s`;
+  const density = Number(document.querySelector("#reelCutsPerSource")?.value || 1);
+  const densityValue = document.querySelector("#reelCutsPerSourceValue");
+  if (densityValue) densityValue.textContent = `${density.toFixed(1)}× source`;
   const ratioWrap = document.querySelector("#reelMixVerticalRatioWrap");
   if (ratioWrap) ratioWrap.hidden = document.querySelector("#reelAspect")?.value !== "mix_vertical_horizontal";
   const imageRoot = document.querySelector("#reelImageLines");
@@ -1745,7 +1762,7 @@ function drawReelPreview() {
 }
 
 function reelOptionsFromForm() {
-  return { duration: Number(document.querySelector("#reelDuration")?.value || 30), aspect: document.querySelector("#reelAspect")?.value || "9:16", mixVerticalRatio: document.querySelector("#reelMixVerticalRatio")?.value || "auto", texts: reelTextOverlays, images: reelImageOverlays, videos: reelVideoOverlays };
+  return { duration: Number(document.querySelector("#reelDuration")?.value || 30), aspect: document.querySelector("#reelAspect")?.value || "9:16", mixVerticalRatio: document.querySelector("#reelMixVerticalRatio")?.value || "auto", cutsPerSource: Number(document.querySelector("#reelCutsPerSource")?.value || 1), texts: reelTextOverlays, images: reelImageOverlays, videos: reelVideoOverlays };
 }
 
 function backstageMessagesFromForm() {
@@ -2077,6 +2094,7 @@ async function startWizard(options = {}) {
       backstage_duration_sec: Number(document.querySelector("#backstageDuration")?.value || 180),
       reel_aspect: reelOptionsFromForm().aspect,
       reel_mix_vertical_ratio: reelOptionsFromForm().mixVerticalRatio,
+      reel_cuts_per_source: reelOptionsFromForm().cutsPerSource,
       reel_text_overlays: reelOptionsFromForm().texts,
       reel_image_overlays: reelOptionsFromForm().images,
       backstage_messages: backstageMessagesFromForm(),
@@ -2730,6 +2748,9 @@ document.addEventListener("click", (event) => {
       .catch((error) => showToast(error.message, true))
       .finally(() => { target.disabled = false; });
   }
+  if (target.dataset.reviewReplace != null) {
+    replaceReviewShot(target.dataset.reviewReplace, target);
+  }
   if (target.id === "renderReviewed") {
     if (shotReviewItems.some((item) => !item.keep)) { showToast("Replace or re-approve rejected shots before rendering", true); return; }
     api("/wizard/review/render", { method: "POST" }).then((started) => { activeProjectId = projectIdFromStatus(started) || activeProjectId; document.querySelector("#reviewBox").hidden = true; document.querySelector("#progressBox").hidden = false; setStep(3); ensureStatusPolling(); return pollStatus(statusPollGeneration); }).catch((error) => showToast(error.message, true));
@@ -3172,7 +3193,7 @@ document.addEventListener("input", (event) => {
     rangeOutput.textContent = percent ? `${Math.round(Number(input.value) * 100)}%` : input.value;
   }
   if (input.id === "captionStyle") { input.dataset.userChoice = "1"; renderComposeOverlayLayer(); return; }
-  if (input.id === "reelDuration" || input.id === "reelAspect" || input.id === "reelMixVerticalRatio") { renderReelOptions(); return; }
+  if (input.id === "reelDuration" || input.id === "reelAspect" || input.id === "reelMixVerticalRatio" || input.id === "reelCutsPerSource") { renderReelOptions(); return; }
   if (input.id === "composeTimelineZoom") { renderComposeTimeline(); return; }
   if (input.id === "backstageDuration") { const value = document.querySelector("#backstageDurationValue"); if (value) value.textContent = `${input.value}s`; return; }
   if (input.id === "reelPlayhead") { reelPlayhead = Number(input.value); document.querySelector("#reelPlayheadValue").textContent = `${reelPlayhead.toFixed(1)}s`; drawReelPreview(); return; }
