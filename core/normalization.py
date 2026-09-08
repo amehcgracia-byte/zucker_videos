@@ -19,6 +19,7 @@ from core.build_info import build_info
 from core.messages import t
 from core.project import Project
 from core.stages.base import stable_fingerprint
+from core.trash import move_to_trash
 
 Progress = Callable[[int, str], None]
 
@@ -51,6 +52,11 @@ def ensure_global_cache_dirs() -> Path:
     for name in CACHE_SUBDIRS:
         (root / name).mkdir(parents=True, exist_ok=True)
     cleanup_expired_segment_cache()
+    try:
+        from core.retention import cleanup_automatic_retention
+        cleanup_automatic_retention()
+    except Exception:
+        LOGGER.debug("Automatic storage retention skipped", exc_info=True)
     return root
 
 
@@ -361,7 +367,7 @@ def cleanup_expired_segment_cache(
                 continue
             try:
                 bytes_removed = path.stat().st_size
-                path.unlink()
+                move_to_trash(path)
             except OSError:
                 continue
             deleted_files += 1
@@ -408,7 +414,7 @@ def cleanup_unreferenced_cache(projects_root: Path | None = None) -> dict[str, A
                 continue
             try:
                 size = path.stat().st_size
-                path.unlink()
+                move_to_trash(path)
             except OSError:
                 continue
             deleted_files += 1
