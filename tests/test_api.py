@@ -271,6 +271,98 @@ def test_wizard_start_soft_rules_require_video_and_master(tmp_path):
     assert response.get_json()["error"]["code"] == "missing_master"
 
 
+def test_reel_single_video_embedded_audio_can_start_without_master(tmp_path, monkeypatch):
+    import server.api as api_module
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video")
+    monkeypatch.setattr(api_module, "_single_video_has_audio", lambda paths: True)
+    monkeypatch.setattr(
+        "server.wizard.WizardRunner.start",
+        lambda self, **kwargs: WizardJob(id="embedded-audio"),
+    )
+
+    response = create_app().test_client().post(
+        "/api/v1/wizard/start",
+        json={"name": "Embedded", "platform": "reel", "master": "", "videos": [str(video)]},
+    )
+
+    assert response.status_code == 202
+
+
+def test_reel_single_video_without_audio_still_requires_master(tmp_path, monkeypatch):
+    import server.api as api_module
+
+    video = tmp_path / "silent.mp4"
+    video.write_bytes(b"video")
+    monkeypatch.setattr(api_module, "_single_video_has_audio", lambda paths: False)
+
+    response = create_app().test_client().post(
+        "/api/v1/wizard/start",
+        json={"name": "Silent", "platform": "reel", "master": "", "videos": [str(video)]},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "missing_master"
+
+
+def test_reel_single_video_with_explicit_master_keeps_master_path(tmp_path, monkeypatch):
+    import server.api as api_module
+
+    video = tmp_path / "clip.mp4"
+    master = tmp_path / "master.wav"
+    video.write_bytes(b"video")
+    master.write_bytes(b"master")
+    monkeypatch.setattr(api_module, "_single_video_has_audio", lambda paths: False)
+    observed = {}
+
+    def fake_start(self, **kwargs):
+        observed.update(kwargs)
+        return WizardJob(id="master-audio")
+
+    monkeypatch.setattr("server.wizard.WizardRunner.start", fake_start)
+    response = create_app().test_client().post(
+        "/api/v1/wizard/start",
+        json={"name": "Master", "platform": "reel", "master": str(master), "videos": [str(video)]},
+    )
+
+    assert response.status_code == 202
+    assert observed["master_path"] == str(master)
+
+
+def test_reel_single_video_embedded_audio_uses_video_timeline_for_trim(tmp_path):
+    project = create_project("Embedded trim", str(tmp_path / "Embedded.zuckervid"))
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video")
+    record = file_record(str(video))
+    record.update({
+        "probe": {
+            "valid_video": True,
+            "video_codec": "h264",
+            "audio_codec": "aac",
+            "duration": 180.0,
+            "width": 1280,
+            "height": 720,
+        },
+        "normalized": {"path": str(video)},
+    })
+    project.data["inputs"]["videos"] = [record]
+    project.data["settings"]["wizard"] = {
+        "platform": "reel",
+        "song_choice": None,
+        "reel_duration_sec": 30.0,
+        "audio_trim": {"start_sec": 80.0, "end_sec": 110.0},
+    }
+
+    CutStage().run(project, lambda *_: None)
+    coverage = json.loads((project.artifacts_dir / "coverage.json").read_text(encoding="utf-8"))
+    segment = coverage["segments"][0]
+    assert coverage["single_source_reel"] is True
+    assert segment["clip_start_sec"] == 80.0
+    assert segment["master_start_sec"] == 80.0
+    assert segment["duration_sec"] == 30.0
+
+
 def test_360_input_selection_keeps_audio_candidates(tmp_path, monkeypatch):
     """360 narrowing must filter only camera videos, never the master audio."""
     spherical = tmp_path / "camera.mp4"

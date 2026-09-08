@@ -222,7 +222,14 @@ def _load_or_analyze_beats(project: Project, coverage: dict[str, Any], progress_
             progress_callback(45, t("rhythm_cached"))
             return cached
     master = project.data.get("inputs", {}).get("master")
-    if not master:
+    audio_path = str((master or {}).get("path") or "")
+    if not audio_path:
+        videos = project.data.get("inputs", {}).get("videos") or []
+        if coverage.get("platform") == "reel" and len(videos) == 1:
+            source = videos[0]
+            if (source.get("probe") or {}).get("audio_codec"):
+                audio_path = str(source.get("path") or "")
+    if not audio_path:
         raise ValueError(t("missing_master_for_edit"))
     window = coverage.get("window") or {}
     start = float(window.get("start_sec") or 0.0)
@@ -230,7 +237,7 @@ def _load_or_analyze_beats(project: Project, coverage: dict[str, Any], progress_
     try:
         import librosa
 
-        y, sr = librosa.load(str(Path(master["path"])), sr=22050, mono=True, offset=start, duration=duration)
+        y, sr = librosa.load(audio_path, sr=22050, mono=True, offset=start, duration=duration)
         tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr, units="frames")
         local_beats = [float(value) for value in librosa.frames_to_time(beat_frames, sr=sr)]
         beat_times = [round(start + value, 3) for value in local_beats]
@@ -258,7 +265,14 @@ def _load_or_analyze_beats(project: Project, coverage: dict[str, Any], progress_
 
 
 def _beat_fingerprint(project: Project, coverage: dict[str, Any]) -> str:
-    return stable_fingerprint({"master": project.data.get("inputs", {}).get("master"), "window": coverage.get("window")})
+    inputs = project.data.get("inputs", {})
+    master = inputs.get("master")
+    audio = master
+    if not audio and coverage.get("platform") == "reel" and len(inputs.get("videos") or []) == 1:
+        source = inputs["videos"][0]
+        if (source.get("probe") or {}).get("audio_codec"):
+            audio = {"path": source.get("path"), "probe": source.get("probe")}
+    return stable_fingerprint({"audio": audio, "window": coverage.get("window")})
 
 
 def _camera_moves_fingerprint(project: Project) -> str:

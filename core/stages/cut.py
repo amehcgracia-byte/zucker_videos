@@ -92,10 +92,16 @@ class CutStage(Stage):
         if platform == "reel" and not sync_map:
             reel_sync_metadata = {}
             master_path = str((project.data.get("inputs", {}).get("master") or {}).get("path") or "")
-            try:
-                reel_sync_metadata["master_duration_sec"] = float((ffprobe(master_path).get("format") or {}).get("duration") or 0.0)
-            except (OSError, TypeError, ValueError, RuntimeError):
-                reel_sync_metadata = {}
+            if master_path:
+                try:
+                    reel_sync_metadata["master_duration_sec"] = float((ffprobe(master_path).get("format") or {}).get("duration") or 0.0)
+                except (OSError, TypeError, ValueError, RuntimeError):
+                    reel_sync_metadata = {}
+            elif len(selection["clips"]) == 1:
+                # A single Reel may deliberately use the source video's own
+                # audio. Its duration is the available timeline, so trim
+                # selection must be applied to video and embedded audio alike.
+                reel_sync_metadata["master_duration_sec"] = float(selection["clips"][0].get("duration_sec") or 0.0)
             window = _selected_window(songs, song_choice, reel_sync_metadata, wizard)
             coverage_warnings = []
         else:

@@ -60,6 +60,16 @@ from captions.styles import CAPTIONS_VERSION, get_style, list_styles
 LOGGER = logging.getLogger(__name__)
 
 
+def _single_video_has_audio(video_paths: list[str]) -> bool:
+    """Return whether the exact single Reel source carries usable audio."""
+    if len(video_paths) != 1:
+        return False
+    try:
+        return any(stream.get("codec_type") == "audio" for stream in ffprobe(video_paths[0]).get("streams") or [])
+    except Exception:
+        return False
+
+
 @dataclass
 class CompositionJob:
     id: str
@@ -981,10 +991,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         _save_last_reel_overlays(reel_text_overlays, reel_image_overlays)
         if platform not in {"youtube", "instagram", "tiktok", "reel", "360", "backstage"}:
             return error_response("bad_request", "platform must be youtube, reel, instagram, tiktok, 360, or backstage", 400)
-        if not master and platform != "backstage":
-            return error_response("missing_master", t("missing_master"), 400)
         if not isinstance(videos, list) or not all(isinstance(path, str) for path in videos) or not videos:
             return error_response("missing_video", t("missing_video"), 400)
+        embedded_reel_audio = platform == "reel" and _single_video_has_audio(videos)
+        if not master and platform != "backstage" and not embedded_reel_audio:
+            return error_response("missing_master", t("missing_master"), 400)
         try:
             options = {
                 "name": name or "Jam",
@@ -1224,8 +1235,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not project and project_path:
             project = load_project(project_path)
         requested = Path(str(request.args.get("path") or "")).expanduser().resolve()
-        if requested.exists() and requested.is_file() and requested.suffix.lower() in {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}:
-            return send_file_with_range(str(requested))
+        if requested.exists() and requested.is_file():
+            if requested.suffix.lower() in {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}:
+                return send_file_with_range(str(requested))
+            try:
+                if any(stream.get("codec_type") == "audio" for stream in ffprobe(str(requested)).get("streams") or []):
+                    return send_file_with_range(str(requested))
+            except Exception:
+                pass
         if not project or not project.data.get("inputs", {}).get("master"):
             return error_response("not_found", "Master media is not registered", 404)
         master_path = project.data["inputs"]["master"]["path"]
@@ -1239,10 +1256,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         master = str(body.get("master") or "").strip()
         songs = str(body.get("songs") or "").strip() or None
         videos = body.get("videos") or []
-        if not master and platform != "backstage":
-            return error_response("missing_master", t("missing_master"), 400)
         if not isinstance(videos, list) or not all(isinstance(path, str) for path in videos) or not videos:
             return error_response("missing_video", t("missing_video"), 400)
+        if not master and platform != "backstage" and not (platform == "reel" and _single_video_has_audio(videos)):
+            return error_response("missing_master", t("missing_master"), 400)
         try:
             matching_project = state.project if _can_reuse_prepared_project(state.project, master, songs, videos) else find_project_by_inputs(master, songs, videos)
             if matching_project and _project_can_skip_prepare(matching_project):

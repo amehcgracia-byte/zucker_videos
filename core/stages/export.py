@@ -302,10 +302,18 @@ class ExportStage(Stage):
                 f"{listed}{extra}\n\n"
                 "Re-link the files in the Inbox or choose Rebuild project to run analysis again."
             )
-        master = project.data["inputs"].get("master")
-        if not master:
-            raise ValueError(t("missing_master_for_export"))
         platform = plan.get("platform") or project.data["settings"].get("wizard", {}).get("platform") or "youtube"
+        master = project.data["inputs"].get("master")
+        audio_source = "master"
+        audio_path = str((master or {}).get("path") or "")
+        if not audio_path and platform == "reel" and len(project.data.get("inputs", {}).get("videos") or []) == 1:
+            source_record = project.data["inputs"]["videos"][0]
+            source_probe = source_record.get("probe") or {}
+            if source_probe.get("audio_codec"):
+                audio_path = str(source_record.get("path") or "")
+                audio_source = "video"
+        if not audio_path:
+            raise ValueError(t("missing_master_for_export"))
         reel_aspect_mode = str(
             plan.get("reel_aspect")
             or project.data.get("settings", {}).get("wizard", {}).get("reel_aspect")
@@ -363,7 +371,7 @@ class ExportStage(Stage):
             _render_360_plan(
                 project,
                 segments,
-                master["path"],
+                audio_path,
                 output_path,
                 bitrate_info["video_bitrate"],
                 warnings,
@@ -377,7 +385,7 @@ class ExportStage(Stage):
         else:
             render_platform = "reel_horizontal" if platform == "reel" and reel_aspect_mode == "16:9" else platform
             _render_plan(
-                project, segments, master["path"], output_path, render_platform,
+                project, segments, audio_path, output_path, render_platform,
                 bitrate_info["video_bitrate"], warnings, progress_callback, required_space,
             )
         progress_callback(95, t("saving_result"))
@@ -396,6 +404,7 @@ class ExportStage(Stage):
                     if platform == "360"
                     else "video-only edit-plan segments plus intro/outro clips; concat; one continuous final master-audio mux"
                 ),
+                "audio_source": audio_source,
                 "warnings": warnings,
                 "max_export_bytes": MAX_EXPORT_BYTES,
                 "target_video_bitrate": bitrate_info["video_bitrate"],

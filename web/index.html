@@ -111,6 +111,17 @@
               <span>One continuous video cut, with the selected audio offset and aspect ratio applied.</span>
             </button>
           </div>
+          <div id="singleReelAudioChoice" class="single-reel-audio-choice" hidden>
+            <strong>Reel audio</strong>
+            <button type="button" class="platform-card" data-reel-audio-source="video">
+              <strong>Use this video's audio</strong>
+              <span>Use the embedded audio from this video; no master is required.</span>
+            </button>
+            <button type="button" class="platform-card" data-reel-audio-source="master">
+              <strong>Use master audio</strong>
+              <span>Use the optional master audio selected above.</span>
+            </button>
+          </div>
           <small id="singleVideoChoiceHint" class="field-help"></small>
         </div>
         <p id="softRule" class="soft-rule">Missing master audio</p>

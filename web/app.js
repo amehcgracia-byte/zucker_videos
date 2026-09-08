@@ -6,6 +6,7 @@ let transitionTimer = null;
 let transitionVersion = 0;
 let selectedSong = null;
 let selectedMasterPath = null;
+let selectedReelAudioSource = null;
 // Inbox clips set aside because they belong to a different session than the
 // chosen song. Kept (not discarded) so "Show all clips" can restore them.
 let setAsideVideos = [];
@@ -802,6 +803,7 @@ function mergeDetected(result, source = "") {
 function clearDetected() {
   for (const key of ["master", "songs", "videos", "ignored"]) detected[key] = [];
   selectedMasterPath = null;
+  selectedReelAudioSource = null;
   analysisSetAsideVideos = [];
   inboxAnalysis = null;
 }
@@ -984,14 +986,30 @@ function renderSingleVideoChoice() {
   // Keep Backstage as the safe default for a video-only drop, but make the
   // destination explicit so Confirm and continue always has a real mode.
   if (!['backstage', 'reel'].includes(selectedPlatform)) selectedPlatform = "backstage";
+  const videoHasAudio = Boolean(detected.videos[0]?.probe?.audio_codec || detected.videos[0]?.audio_codec);
+  if (videoHasAudio && !["video", "master"].includes(selectedReelAudioSource)) {
+    selectedReelAudioSource = detected.master.length ? "master" : "video";
+  }
+  const audioChoice = document.querySelector("#singleReelAudioChoice");
+  if (audioChoice) {
+    audioChoice.hidden = selectedPlatform !== "reel" || !videoHasAudio;
+    audioChoice.querySelectorAll("[data-reel-audio-source]").forEach((button) => {
+      if (button.dataset.reelAudioSource === "master") {
+        button.hidden = !detected.master.length;
+      }
+      button.classList.toggle("selected", button.dataset.reelAudioSource === selectedReelAudioSource);
+    });
+  }
   panel.querySelectorAll("[data-single-platform]").forEach((card) => {
     card.classList.toggle("selected", card.dataset.singlePlatform === selectedPlatform);
   });
   const hint = document.querySelector("#singleVideoChoiceHint");
   if (hint) {
-    hint.textContent = selectedPlatform === "reel" && !detected.master.length
-      ? "Reel needs a master audio file. Add one above before confirming Reel."
-      : "Select one destination, then confirm to continue.";
+    hint.textContent = selectedPlatform === "reel" && !videoHasAudio && !detected.master.length
+      ? "This video has no audio. Add a master audio file or choose Backstage."
+      : selectedPlatform === "reel" && selectedReelAudioSource === "video"
+        ? "Reel will use the selected video's own audio; trim start/end applies to both tracks."
+        : "Select one destination, then confirm to continue.";
   }
 }
 
@@ -1074,8 +1092,9 @@ function removeDetectedItem(kind, path) {
 }
 
 function selectedInputs() {
+  const useVideoAudio = selectedPlatform === "reel" && selectedReelAudioSource === "video";
   return {
-    master: selectedMasterPath || detected.master[0]?.path || "",
+    master: useVideoAudio ? "" : selectedMasterPath || detected.master[0]?.path || "",
     songs: detected.songs[0]?.path || "",
     videos: detected.videos.map((item) => item.path),
   };
@@ -1467,12 +1486,15 @@ async function prepareStep2() {
     selectedPlatform = inputs.master ? "reel" : "backstage";
     renderSingleVideoChoice();
   }
-  if (!inputs.master && selectedPlatform !== "backstage") {
+  const singleVideoHasAudio = detected.videos.length === 1 && Boolean(detected.videos[0]?.probe?.audio_codec || detected.videos[0]?.audio_codec);
+  const canUseVideoAudio = selectedPlatform === "reel" && selectedReelAudioSource === "video" && singleVideoHasAudio;
+  if (!inputs.master && selectedPlatform !== "backstage" && !canUseVideoAudio) {
     showToast("Reel needs a master audio file. Add one above or choose Backstage.", true);
     return false;
   }
   setStep(2);
-  if (inputs.master) setupTrimControls(inputs.master);
+  const trimSource = canUseVideoAudio ? detected.videos[0].path : inputs.master;
+  if (trimSource) setupTrimControls(trimSource);
   applyEditTypeMode();
   await loadSavedReelOverlays();
   if (inputs.songs) {
@@ -2033,13 +2055,15 @@ function updateResult360Scrub() {
 }
 
 function setupTrimControls(masterPath) {
-  const master = detected.master.find((item) => item.path === masterPath) || {};
-  const duration = Number(master.duration || 0);
+  const source = detected.master.find((item) => item.path === masterPath)
+    || detected.videos.find((item) => item.path === masterPath)
+    || {};
+  const duration = Number(source.duration || source.probe?.duration || 0);
   const preview = document.querySelector("#masterPreview");
   if (preview && preview.dataset.path !== masterPath) {
     preview.dataset.path = masterPath || "";
     preview.src = `/api/v1/wizard/master-preview?path=${encodeURIComponent(masterPath)}&t=${Date.now()}`;
-    preview.onerror = () => showToast("Could not load the master audio preview", true);
+    preview.onerror = () => showToast("Could not load the selected audio preview", true);
   }
   if (trimDefaultsAppliedFor !== masterPath) {
     const saved = savedAudioTrim[masterPath] || {};
@@ -2769,6 +2793,12 @@ document.addEventListener("click", (event) => {
   const singlePlatform = target.closest("[data-single-platform]");
   if (singlePlatform instanceof HTMLElement) {
     choosePlatformInUi(singlePlatform.dataset.singlePlatform);
+    renderSingleVideoChoice();
+    return;
+  }
+  const reelAudioSource = rawTarget instanceof HTMLElement ? rawTarget.closest("[data-reel-audio-source]") : null;
+  if (reelAudioSource instanceof HTMLElement) {
+    selectedReelAudioSource = reelAudioSource.dataset.reelAudioSource || null;
     renderSingleVideoChoice();
     return;
   }
