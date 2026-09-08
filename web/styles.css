@@ -1556,6 +1556,10 @@ pre {
 .compose-panel, .compose-player-wrap, .compose-timeline { position: relative; z-index: 1; }
 .compose-overlay-layer { z-index: 2; }
 .compose-caption-list-actions { display: flex; align-items: center; justify-content: space-between; gap: .6rem; margin: .75rem 0 .5rem; }
+.caption-text-heading { display: flex; align-items: center; justify-content: space-between; gap: .6rem; margin-bottom: .35rem; }
+.caption-text-heading .field-label { margin: 0; }
+#captionAutoRead { flex: 0 0 auto; min-height: 34px; }
+#captionAutoReadStatus { min-height: 1.2em; }
 .caption-blocks { max-height: none; overflow: visible; }
 .caption-block { grid-template-columns: minmax(0,1fr) auto; align-items: center; cursor: pointer; }
 .caption-block-main { display: grid; gap: .3rem; min-width: 0; }

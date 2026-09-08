@@ -301,6 +301,56 @@ function syncCaptionTextArea() {
   if (textarea) textarea.value = captionCues.map((cue) => cue.lines.join("\n")).join("\n\n");
 }
 
+let autoReadPollTimer = null;
+
+function setAutoReadStatus(text, isError = false) {
+  const status = document.querySelector("#captionAutoReadStatus");
+  if (status) {
+    status.textContent = text;
+    status.classList.toggle("error", isError);
+  }
+}
+
+async function autoReadProjectAudio() {
+  const button = document.querySelector("#captionAutoRead");
+  if (!button) return;
+  button.disabled = true;
+  setAutoReadStatus("Transcribing the project's audio locally…");
+  try {
+    await api("/captions/auto-read", { method: "POST" });
+    const poll = async () => {
+      const job = await api("/captions/auto-read/status");
+      if (job.status === "running") {
+        setAutoReadStatus((job.detail || "Transcribing project audio…") + " " + (job.progress || 0) + "%");
+        autoReadPollTimer = window.setTimeout(poll, 700);
+        return;
+      }
+      if (job.status === "done") {
+        const textarea = document.querySelector("#captionText");
+        if (textarea) {
+          textarea.value = job.result?.text || "";
+          captionCues = [];
+          captionActiveIndex = null;
+          captionPendingStart = null;
+          captionMarkIndex = 0;
+          renderCaptionBlocks();
+          renderComposeOverlayLayer();
+        }
+        setAutoReadStatus("Transcription ready. Review and edit it before synchronizing.");
+        button.disabled = false;
+        return;
+      }
+      throw new Error(job.error || "Auto Read failed");
+    };
+    await poll();
+  } catch (error) {
+    if (autoReadPollTimer) window.clearTimeout(autoReadPollTimer);
+    autoReadPollTimer = null;
+    setAutoReadStatus(error.message, true);
+    button.disabled = false;
+  }
+}
+
 function closeActiveCaption(endTime) {
   if (captionActiveIndex == null || !captionCues[captionActiveIndex]) return;
   const cue = captionCues[captionActiveIndex];
@@ -3160,6 +3210,10 @@ document.addEventListener("input", (event) => {
 
 document.addEventListener("click", (event) => {
   const target = event.target;
+  if (target?.id === "captionAutoRead") {
+    autoReadProjectAudio().catch((error) => setAutoReadStatus(error.message, true));
+    return;
+  }
   if (target?.id === "composeFrameBack" || target?.id === "composeFrameForward") {
     const video = document.querySelector("#composeVideo"); if (!video) return;
     video.pause(); video.currentTime = Math.max(0, Number(video.currentTime || 0) + (target.id === "composeFrameForward" ? 1 / 30 : -1 / 30)); renderComposeOverlayLayer();

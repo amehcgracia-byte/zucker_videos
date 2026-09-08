@@ -53,6 +53,49 @@ def test_new_project_uses_global_spherical_landmarks_when_form_is_blank(tmp_path
     assert config["spherical_landmarks"] == defaults
 
 
+def test_caption_auto_read_uses_registered_project_audio_and_returns_editable_text(tmp_path, monkeypatch):
+    import server.api as api_module
+
+    audio = tmp_path / "project-song.wav"
+    audio.write_bytes(b"audio")
+    folder = tmp_path / "AutoRead.zuckervid"
+    project = create_project("Auto Read", str(folder))
+    project.data["settings"].setdefault("wizard", {})["master_path"] = str(audio)
+    project.save()
+
+    observed = {}
+
+    def fake_transcribe(sources, artifact, progress_callback, **kwargs):
+        observed["sources"] = sources
+        observed["artifact"] = artifact
+        observed["kwargs"] = kwargs
+        progress_callback(40, "Transcribing project-song.wav")
+        return {
+            "status": "ready",
+            "backend": "faster-whisper",
+            "model": "large-v3",
+            "sources": [{"segments": [{"text": " Hello from the project audio. "}]}],
+        }
+
+    monkeypatch.setattr(api_module, "transcribe_sources", fake_transcribe)
+    client = api_module.create_app(project_path=str(folder)).test_client()
+
+    started = client.post("/api/v1/captions/auto-read")
+    assert started.status_code == 202
+    for _ in range(20):
+        status = client.get("/api/v1/captions/auto-read/status").get_json()
+        if status["status"] != "running":
+            break
+        time.sleep(0.01)
+
+    assert status["status"] == "done"
+    assert status["result"]["text"] == "Hello from the project audio."
+    assert status["result"]["provenance"] == "project_audio_transcription"
+    assert observed["sources"] == [{"path": str(audio.resolve()), "filename": audio.name}]
+    assert observed["kwargs"]["task"] == "transcribe"
+    assert "initial_prompt" not in observed["kwargs"]
+
+
 def test_api_spherical_landmark_save_merges_partial_and_empty_payloads(tmp_path, monkeypatch):
     import server.api as api_module
 

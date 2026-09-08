@@ -30,6 +30,7 @@ from core.stages.sync import clear_manual_override, cleanup_closed_sync_diagnost
 from core.shot_review import mark_review_render_failed, replace_slots, review_items
 from core.backstage_feedback import record_feedback
 from core.stages.backstage import update_backstage_cue_text
+from core.backstage_transcription import DEFAULT_WHISPER_MODEL, transcribe_sources
 from server.inbox import (
     app_home,
     classify_paths,
@@ -74,6 +75,113 @@ class CompositionJob:
 
     def snapshot(self) -> dict[str, Any]:
         return dict(self.__dict__)
+
+
+@dataclass
+class AutoReadJob:
+    id: str
+    status: str = "running"
+    progress: int = 0
+    message: str = "Transcribing project audio"
+    detail: str = "Preparing local Whisper transcription"
+    error: str | None = None
+    result: dict[str, Any] | None = None
+    project_path: str | None = None
+    started_at: float = field(default_factory=time.time)
+
+    def snapshot(self) -> dict[str, Any]:
+        return dict(self.__dict__)
+
+
+def _caption_audio_source(project: Project) -> dict[str, str] | None:
+    """Choose only audio already registered in this project."""
+    wizard = project.data.get("settings", {}).get("wizard", {})
+    inputs = project.data.get("inputs", {})
+    candidates = [
+        wizard.get("master_path"),
+        (inputs.get("master") or {}).get("path") if isinstance(inputs.get("master"), dict) else inputs.get("master"),
+    ]
+    for item in inputs.get("videos") or []:
+        if isinstance(item, dict):
+            candidates.append(item.get("path"))
+        else:
+            candidates.append(item)
+    for raw in candidates:
+        path = Path(str(raw or "")).expanduser()
+        if path.is_file():
+            return {"path": str(path.resolve()), "filename": path.name}
+    return None
+
+
+class AutoReadRunner:
+    """Asynchronous local-only Whisper transcription for the captions editor."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._job: AutoReadJob | None = None
+        self._thread: threading.Thread | None = None
+
+    def status(self) -> dict[str, Any] | None:
+        with self._lock:
+            return self._job.snapshot() if self._job else None
+
+    def start(self, project: Project) -> AutoReadJob:
+        with self._lock:
+            if self._job and self._job.status == "running":
+                raise RuntimeError("Auto Read is already transcribing")
+            source = _caption_audio_source(project)
+            if not source:
+                raise ValueError("This project has no readable audio source")
+            job = AutoReadJob(id=f"auto-read-{uuid.uuid4().hex[:10]}", project_path=str(project.folder))
+            self._job = job
+            self._thread = threading.Thread(target=self._run, args=(job, project, source), daemon=True, name="zucker-auto-read")
+            self._thread.start()
+            return job
+
+    def _run(self, job: AutoReadJob, project: Project, source: dict[str, str]) -> None:
+        try:
+            wizard = project.data.get("settings", {}).get("wizard", {})
+            model_name = str(wizard.get("backstage_whisper_model") or DEFAULT_WHISPER_MODEL)
+            language_overrides = wizard.get("backstage_whisper_language_overrides") or {}
+            artifact = project.cache_dir / "captions" / CAPTIONS_VERSION / "auto_read.json"
+
+            def progress(value: int, detail: str) -> None:
+                with self._lock:
+                    if job.status == "running":
+                        job.progress = max(0, min(100, int(value)))
+                        job.detail = detail
+
+            payload = transcribe_sources(
+                [source],
+                artifact,
+                progress_callback=progress,
+                model_name=model_name,
+                task="transcribe",
+                language_overrides=language_overrides,
+            )
+            if payload.get("status") != "ready":
+                raise RuntimeError(str(payload.get("reason") or "Local Whisper transcription was unavailable"))
+            transcription_source = (payload.get("sources") or [{}])[0]
+            segments = transcription_source.get("segments") or []
+            text = "\n\n".join(str(segment.get("text") or "").strip() for segment in segments if str(segment.get("text") or "").strip())
+            with self._lock:
+                job.progress = 100
+                job.status = "done"
+                job.message = "Auto Read ready"
+                job.detail = "Review the local audio transcription before synchronizing"
+                job.result = {
+                    "text": text,
+                    "source_path": source["path"],
+                    "source_filename": source["filename"],
+                    "backend": payload.get("backend"),
+                    "model": payload.get("model"),
+                    "provenance": "project_audio_transcription",
+                }
+        except Exception as exc:
+            with self._lock:
+                job.status = "failed"
+                job.error = str(exc)
+                job.detail = "Auto Read failed"
 
 
 class CompositionRunner:
@@ -386,6 +494,7 @@ class AppState:
     dev: bool = False
     wizard: WizardRunner | None = None
     composition: CompositionRunner = field(default_factory=CompositionRunner)
+    auto_read: AutoReadRunner = field(default_factory=AutoReadRunner)
 
 
 def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
@@ -1291,6 +1400,24 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.get("/api/v1/captions/styles")
     def api_captions_styles() -> Response:
         return jsonify({"version": CAPTIONS_VERSION, "styles": [style.__dict__ for style in list_styles()]})
+
+    @app.post("/api/v1/captions/auto-read")
+    def api_captions_auto_read() -> Response:
+        project = _require_project(state)
+        try:
+            job = state.auto_read.start(project)
+            return jsonify(job.snapshot()), 202
+        except RuntimeError as exc:
+            return error_response("auto_read_busy", str(exc), 409)
+        except ValueError as exc:
+            return error_response("auto_read_unavailable", str(exc), 409)
+
+    @app.get("/api/v1/captions/auto-read/status")
+    def api_captions_auto_read_status() -> Response:
+        job = state.auto_read.status()
+        if not job:
+            return jsonify({"status": "idle"})
+        return jsonify(job)
 
     @app.get("/api/v1/captions/frame")
     def api_captions_frame() -> Response:
