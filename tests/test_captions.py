@@ -35,6 +35,14 @@ def test_neon_glow_preset_and_override_render_layers() -> None:
     assert r"\3c&H0000FF00&" in ass
 
 
+def test_glow_layers_share_caption_position_and_size() -> None:
+    track = CueTrack((Cue(("Last Session",), 14.0, 16.0, style_override={"size": 103, "vertical": 75, "glow_blur": 9, "glow_layers": 1}),))
+    ass = render_ass(track, list_styles()[4], width=1080, height=1920)
+    assert ass.count("Last Session") == 2
+    assert ass.count(r"\fs103") == 2
+    assert ass.count(r"\pos(540,1440)") == 2
+
+
 def test_caption_style_override_renders_inline_tags() -> None:
     track = CueTrack((Cue(("Override",), 0, 2, style_override={"color": "#00ff00", "size": 80, "vertical": 68, "outline_color": "#ff0000", "outline_width": 4, "shadow_distance": 6, "shadow_color": "#0000ff", "shadow_opacity": 0.5}),))
     ass = render_ass(track, list_styles()[0], width=1080, height=1920)

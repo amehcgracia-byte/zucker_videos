@@ -76,13 +76,19 @@ def _glow_dialogues(cue, style: Style, *, width: int, height: int, start_layer: 
     outline_width = max(2.0, blur * 1.7)
     alpha = _ass_alpha(intensity)
     text = _escape(cue.text)
+    shared_position = [f"\\an{alignment}"]
+    if override.get("size") is not None:
+        shared_position.append(f"\\fs{max(8, float(override['size'])):g}")
+    if override.get("vertical") is not None:
+        y = max(0, min(height, height * float(override["vertical"]) / 100.0))
+        shared_position.append(f"\\pos({width / 2:g},{y:g})")
     return [
         "Dialogue: %d,%s,%s,%s,,0,0,0,,{%s}%s" % (
             start_layer + index,
             _ass_time(cue.start),
             _ass_time(cue.end),
             style.name,
-            "".join((f"\\an{alignment}", f"\\1a&HFF&", f"\\3c{color}", f"\\3a{alpha}", f"\\bord{outline_width:g}", f"\\blur{blur:g}", "\\shad0")),
+            "".join((*shared_position, f"\\1a&HFF&", f"\\3c{color}", f"\\3a{alpha}", f"\\bord{outline_width:g}", f"\\blur{blur:g}", "\\shad0")),
             text,
         )
         for index in range(layers)

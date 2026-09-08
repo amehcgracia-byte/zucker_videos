@@ -1,11 +1,33 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
 from pathlib import Path
 
 from .model import CueTrack, Style
 from .render import render_ass
+
+
+def _video_dimensions(video_path: Path, ffmpeg: str) -> tuple[int, int]:
+    """Read the real output geometry without importing any mode pipeline."""
+    ffmpeg_path = Path(ffmpeg)
+    ffprobe = str(ffmpeg_path.with_name("ffprobe")) if ffmpeg_path.parent != Path(".") else "ffprobe"
+    try:
+        result = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", str(video_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        stream = (json.loads(result.stdout).get("streams") or [{}])[0]
+        width = int(stream.get("width") or 0)
+        height = int(stream.get("height") or 0)
+        if width > 0 and height > 0:
+            return width, height
+    except (OSError, subprocess.CalledProcessError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+    return 1920, 1080
 
 
 def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_path: str | Path | None = None, ffmpeg: str = "ffmpeg", header: dict | None = None, logo_path: str | Path | None = None, letterbox: dict | None = None, progress_callback=None) -> Path:
@@ -16,7 +38,11 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="captions-") as directory:
         ass = Path(directory) / "captions.ass"
-        ass.write_text(render_ass(cue_track, style, header=header), encoding="utf-8")
+        width, height = _video_dimensions(source, ffmpeg)
+        if letterbox and letterbox.get("enabled"):
+            width = int(letterbox.get("width", width))
+            height = int(letterbox.get("height", height))
+        ass.write_text(render_ass(cue_track, style, width=width, height=height, header=header), encoding="utf-8")
         escaped = str(ass).replace("\\", r"\\").replace(":", r"\:").replace("'", r"\'")
         vf = "subtitles=filename=%s" % escaped
         if letterbox and letterbox.get("enabled"):
@@ -34,7 +60,7 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
         if logo_path and logo_enabled:
             command += ["-loop", "1", "-i", str(Path(logo_path).resolve())]
             overlay = header.get("logo_overlay") if isinstance(header.get("logo_overlay"), dict) else {}
-            logo_width = max(40, int(1080 * max(0.05, min(0.9, float(overlay.get("width", 0.22))))))
+            logo_width = max(40, int(width * max(0.05, min(0.9, float(overlay.get("width", 0.22))))))
             logo_x = max(0.0, min(1.0, float(overlay.get("x", 0.5))))
             logo_y = max(0.0, min(1.0, float(overlay.get("y", 0.08))))
             command += ["-filter_complex", f"[0:v]{vf}[captioned];[1:v]format=rgba,scale={logo_width}:-1[logo];[captioned][logo]overlay=(W-w)*{logo_x:.5f}:(H-h)*{logo_y:.5f}:shortest=1[v]"]
