@@ -1527,7 +1527,10 @@ class BackstageExportStage(Stage):
                 inputs.extend(["-ss", str(segment["clip_start_sec"]), "-t", str(segment["duration_sec"]), "-i", path])
                 video_labels.append(f"v{index}")
                 audio_labels.append(f"a{index}")
-                filters.append(f"[{index}:v]setpts=PTS-STARTPTS,fps=30,format=yuv420p[v{index}]")
+                # xfade requires identical timebases for every input. Some
+                # camera files arrive with a microsecond timebase even after
+                # fps normalization, so normalize it explicitly here.
+                filters.append(f"[{index}:v]fps=30,settb=AVTB,setpts=PTS-STARTPTS,format=yuv420p[v{index}]")
                 filters.append(f"[{index}:a]aresample=48000,loudnorm=I=-20:TP=-1.5:LRA=11[a{index}]")
                 if segment.get("background_music_policy") == "background_music_only":
                     muted_audio = f"am{index}"

@@ -148,10 +148,16 @@ def _render_flat_video_transitions(
         chunk_labels = labels[start:end]
         chunk_duration = sum(float(value) for value in durations[start:end])
         if len(chunk_labels) == 1:
-            chunk_label = chunk_labels[0]
+            raw_chunk_label = chunk_labels[0]
         else:
-            chunk_label = f"chunk{len(chunks)}"
-            filters.append("".join(f"[{label}]" for label in chunk_labels) + f"concat=n={len(chunk_labels)}:v=1:a=0[{chunk_label}]")
+            raw_chunk_label = f"chunk{len(chunks)}_raw"
+            filters.append("".join(f"[{label}]" for label in chunk_labels) + f"concat=n={len(chunk_labels)}:v=1:a=0[{raw_chunk_label}]")
+        # concat can emit its own microsecond timebase while a single source
+        # still carries the source timebase. xfade requires both inputs to
+        # match, so normalize every chunk at the boundary immediately before
+        # the transition chain.
+        chunk_label = f"chunk{len(chunks)}"
+        filters.append(f"[{raw_chunk_label}]settb=AVTB,setpts=PTS-STARTPTS[{chunk_label}]")
         chunks.append((chunk_label, chunk_duration))
         start = end
     current, current_duration = chunks[0]

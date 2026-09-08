@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 import os
 import re
 import shutil
@@ -51,18 +52,48 @@ def ensure_global_cache_dirs() -> Path:
 
 def ensure_normalized_space(project: Project, records: list[dict[str, Any]]) -> None:
     """Fail early when cache storage is unlikely to fit normalized outputs."""
-    estimate = sum(int(record.get("size") or 0) for record in records) // 4
+    # Proxy size is determined by the output bitrate and duration, not by the
+    # often much larger camera-file byte size. The old size/4 heuristic made a
+    # valid disk look full for high-bitrate PCM/H.264 camera files.
+    estimate = 0
+    fallback_bytes = 0
+    for record in records:
+        probe = record.get("probe") or {}
+        if proxy_transcode_compliant(probe):
+            # The original is already a valid analysis proxy and produces no
+            # cache output, so it must not consume the preflight budget.
+            continue
+        duration = float(probe.get("duration") or 0.0)
+        if duration > 0:
+            estimate += int(duration * (2_500_000 + 192_000) / 8 * 1.35)
+        else:
+            fallback_bytes += int(record.get("size") or 0) // 4
+    estimate += fallback_bytes
     if estimate <= 0:
         return
     root = ensure_global_cache_dirs()
-    free = shutil.disk_usage(root).free
+    usage = shutil.disk_usage(root)
+    free = usage.free
+    LOGGER.info(
+        "Normalization cache preflight root=%s device=%d free_bytes=%d estimate_bytes=%d required_bytes=%d records=%d",
+        root.resolve(),
+        root.stat().st_dev,
+        free,
+        estimate,
+        estimate * 2,
+        len(records),
+    )
     if free < estimate * 2:
-        raise RuntimeError(t("not_enough_space"))
+        raise RuntimeError(
+            f"{t('not_enough_space')} Available: {free / (1024 ** 3):.1f} GB; "
+            f"estimated requirement: {(estimate * 2) / (1024 ** 3):.1f} GB; cache: {root.resolve()}"
+        )
 
 
 def normalize_video_record(project: Project, record: dict[str, Any], progress: Progress) -> dict[str, Any]:
     """Create or reuse the low-resolution proxy for one validated video record."""
     source = Path(record["path"]).expanduser().resolve()
+    LOGGER.info("Normalization start source=%s size_bytes=%s", source, record.get("size"))
     destination = normalized_path(project, record)
     signature = _source_signature(source)
     key = cache_key_for_signature(source, signature)
@@ -112,6 +143,10 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
     if probe.get("projection") == "equirect":
         LOGGER.info("Normalizing equirectangular source %s with probe=%s filter=%s", source, probe, filtergraph)
     try:
+        LOGGER.info(
+            "Proxy ffmpeg start source=%s destination=%s duration=%.3f fps=%.3f codec=h264_videotoolbox",
+            source, tmp_path, duration, fps,
+        )
         _run_ffmpeg_progress(
             _normalization_command(source, tmp_path, fps, filtergraph, "h264_videotoolbox", hwaccel=True, paired_source=_paired_source(record)),
             duration,
@@ -120,9 +155,14 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
         )
         encode_path = "hardware"
         LOGGER.info("Proxy generated with hardware decode/encode for %s", source)
-    except FFmpegError:
+    except FFmpegError as exc:
+        LOGGER.warning("Proxy hardware encode failed source=%s error=%s; retrying software", source, exc)
         if tmp_path.exists():
             tmp_path.unlink()
+        LOGGER.info(
+            "Proxy ffmpeg start source=%s destination=%s duration=%.3f fps=%.3f codec=libx264",
+            source, tmp_path, duration, fps,
+        )
         _run_ffmpeg_progress(_normalization_command(source, tmp_path, fps, filtergraph, "libx264", paired_source=_paired_source(record)), duration, source.name, progress)
         encode_path = "software"
         LOGGER.info("Proxy generated with software fallback for %s", source)
@@ -147,6 +187,7 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
         normalized["projection"] = "equirect"
         normalized["reframe"] = {"yaw": 0, "pitch": 0, "h_fov": 100, "width": PROXY_MAX_WIDTH, "height": PROXY_MAX_HEIGHT}
     record["normalized"] = normalized
+    LOGGER.info("Normalization complete source=%s destination=%s encode_path=%s", source, destination, encode_path)
     return normalized
 
 
@@ -587,12 +628,18 @@ def _paired_source(record: dict[str, Any]) -> Path | None:
 
 
 def _run_ffmpeg_progress(command: list[str], duration: float, filename: str, progress: Progress) -> None:
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    LOGGER.info("ffmpeg normalization process start filename=%s command=%s", filename, " ".join(command))
+    # Consume stderr together with the progress stream. Keeping stderr in a
+    # separate pipe while reading only stdout can deadlock ffmpeg when a
+    # problematic/verbose source fills the stderr pipe.
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     assert process.stdout is not None
     current = 0
     last_emit = 0.0
+    diagnostic_tail: deque[str] = deque(maxlen=100)
     try:
         for line in process.stdout:
+            diagnostic_tail.append(line)
             match = re.match(r"out_time_ms=(\d+)", line.strip())
             if not match or duration <= 0:
                 continue
@@ -609,9 +656,11 @@ def _run_ffmpeg_progress(command: list[str], duration: float, filename: str, pro
         process.kill()
         process.wait()
         raise
-    _, stderr = process.communicate()
+    output, _ = process.communicate()
     if process.returncode != 0:
-        raise FFmpegError((stderr or "").strip() or "ffmpeg normalization failed")
+        details = "".join(diagnostic_tail) + (output or "")
+        raise FFmpegError(details.strip()[-4000:] or "ffmpeg normalization failed")
+    LOGGER.info("ffmpeg normalization process complete filename=%s", filename)
     progress(100, f"{filename} — 100%")
 
 

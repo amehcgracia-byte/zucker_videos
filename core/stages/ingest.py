@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import threading
+import logging
 from typing import Any
 
 from core.ffmpeg import ffprobe
@@ -15,6 +16,8 @@ from core.operator_avoidance import OPERATOR_AVOIDANCE_VERSION, analyze_and_cach
 from core.reel_framing import REEL_FRAMING_VERSION, analyze_reel_framing_records
 from core.project import Project
 from core.stages.base import ProgressCallback, Stage, stable_fingerprint
+
+LOGGER = logging.getLogger(__name__)
 
 
 class IngestStage(Stage):
@@ -130,13 +133,18 @@ def prepare_videos(project: Project, records: list[dict[str, Any]], progress_cal
         progress_callback(overall, t("preparing_videos", count=len(records), details=active))
 
     def run_one(index: int, record: dict[str, Any]) -> None:
+        LOGGER.info("Ingest normalization queued index=%d source=%s", index, record.get("path"))
         def clip_progress(percent: int, message: str) -> None:
             set_progress(index, percent)
             emit()
-
-        normalize_video_record(project, record, clip_progress)
-        set_progress(index, 100)
-        emit()
+        try:
+            normalize_video_record(project, record, clip_progress)
+            set_progress(index, 100)
+            emit()
+            LOGGER.info("Ingest normalization finished index=%d source=%s", index, record.get("path"))
+        except Exception:
+            LOGGER.exception("Ingest normalization failed index=%d source=%s", index, record.get("path"))
+            raise
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = [executor.submit(run_one, index, record) for index, record in enumerate(records)]
