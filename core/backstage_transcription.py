@@ -8,6 +8,7 @@ passes can consume it without decoding the clips again.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 import sys
@@ -17,9 +18,10 @@ from typing import Any, Callable
 
 from core.stages.base import stable_fingerprint, write_artifact_json
 from core.normalization import global_cache_root
-from core.ffmpeg import ensure_tools_on_path
+from core.ffmpeg import ensure_tools_on_path, ffprobe
 
-WHISPER_TRANSCRIPTION_VERSION = 7
+LOGGER = logging.getLogger(__name__)
+WHISPER_TRANSCRIPTION_VERSION = 8
 DEFAULT_WHISPER_MODEL = "large-v3"
 DEFAULT_WHISPER_TASK = "transcribe"
 LANGUAGE_CONFIDENCE_THRESHOLD = 0.75
@@ -100,7 +102,14 @@ def extract_story_bites(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return bites
 
 
-def _source_fingerprint(path: str, model_name: str, task: str, backend: str, forced_language: str | None = None) -> str:
+def _source_fingerprint(
+    path: str,
+    model_name: str,
+    task: str,
+    backend: str,
+    forced_language: str | None = None,
+    transcription_options: dict[str, Any] | None = None,
+) -> str:
     source = Path(path)
     stat = source.stat()
     return stable_fingerprint({
@@ -108,7 +117,32 @@ def _source_fingerprint(path: str, model_name: str, task: str, backend: str, for
         "mtime_ns": stat.st_mtime_ns, "model": model_name,
         "version": WHISPER_TRANSCRIPTION_VERSION, "task": task,
         "forced_language": forced_language or "auto",
+        "transcription_options": transcription_options or {},
     })
+
+
+def _media_diagnostics(path: str) -> dict[str, Any]:
+    """Describe the exact media handed to Whisper without extracting/truncating it."""
+    metadata: dict[str, Any] = {
+        "audio_input_path": str(Path(path).resolve()),
+        "extraction_command": None,
+        "audio_extracted": False,
+        "video_duration_sec": None,
+        "audio_duration_sec": None,
+        "audio_codec": None,
+    }
+    try:
+        probe = ffprobe(path)
+        streams = probe.get("streams") or []
+        video = next((item for item in streams if item.get("codec_type") == "video"), None)
+        audio = next((item for item in streams if item.get("codec_type") == "audio"), None)
+        metadata["video_duration_sec"] = float((video or {}).get("duration") or 0.0) or None
+        metadata["audio_duration_sec"] = float((audio or {}).get("duration") or ((probe.get("format") or {}).get("duration") if audio else 0.0) or 0.0) or None
+        metadata["audio_codec"] = (audio or {}).get("codec_name")
+    except Exception as exc:
+        metadata["probe_error"] = str(exc)
+        LOGGER.warning("Unable to probe Whisper input %s: %s", path, exc)
+    return metadata
 
 
 def _cache_path(fingerprint: str) -> Path:
@@ -142,6 +176,8 @@ def transcribe_sources(
     language_confidence_threshold: float = LANGUAGE_CONFIDENCE_THRESHOLD,
     model_by_language: dict[str, str] | None = None,
     initial_prompt: str | None = None,
+    vad_filter: bool = True,
+    vad_parameters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Transcribe/translate all sources, using an app-wide fingerprint cache."""
     progress_callback = progress_callback or (lambda _p, _m: None)
@@ -153,6 +189,12 @@ def transcribe_sources(
         write_artifact_json(artifact, payload)
         return payload
     backend = _backend_name()
+    vad_parameters = dict(vad_parameters or {})
+    transcription_options = {
+        "vad_filter": bool(vad_filter),
+        "vad_parameters": vad_parameters,
+        "condition_on_previous_text": True,
+    }
 
     old = {}
     if artifact.exists():
@@ -173,8 +215,20 @@ def transcribe_sources(
         forced_language = language_overrides.get(path) or language_overrides.get(str(source.get("filename") or Path(path).name)) or source.get("language_hint")
         forced_language = str(forced_language).strip().lower() if forced_language else None
         source_model = model_by_language.get(forced_language or "", model_name)
-        fingerprint = _source_fingerprint(path, source_model, task, backend, forced_language)
+        fingerprint = _source_fingerprint(path, source_model, task, backend, forced_language, transcription_options)
         cache = _cache_path(fingerprint)
+        media_diagnostics = _media_diagnostics(path)
+        LOGGER.info(
+            "Whisper input path=%s video_duration_sec=%s audio_duration_sec=%s "
+            "audio_input_path=%s extraction_command=%s vad_filter=%s vad_parameters=%s",
+            path,
+            media_diagnostics.get("video_duration_sec"),
+            media_diagnostics.get("audio_duration_sec"),
+            media_diagnostics.get("audio_input_path"),
+            media_diagnostics.get("extraction_command"),
+            vad_filter,
+            vad_parameters,
+        )
         cached = None
         try:
             if cache.exists():
@@ -185,6 +239,8 @@ def transcribe_sources(
             cached = dict(cached)
             cached["path"] = path
             cached["filename"] = source.get("filename") or Path(path).name
+            cached["media_diagnostics"] = media_diagnostics
+            LOGGER.info("Whisper cache hit path=%s fingerprint=%s segments=%s", path, fingerprint, len(cached.get("segments") or []))
             output_sources.append(cached)
         else:
             missing.append((source, path, fingerprint, cache, forced_language, source_model))
@@ -212,7 +268,13 @@ def transcribe_sources(
         progress_callback(int(index / max(1, len(sources)) * 90), f"Transcribing {Path(path).name}")
         model = models[source_model]
         if backend == "faster-whisper":
-            kwargs = {"task": task, "language": forced_language, "beam_size": 5, "word_timestamps": True, "vad_filter": True, "condition_on_previous_text": True}
+            kwargs = {
+                "task": task, "language": forced_language, "beam_size": 5,
+                "word_timestamps": True, "vad_filter": bool(vad_filter),
+                "condition_on_previous_text": True,
+            }
+            if vad_filter and vad_parameters:
+                kwargs["vad_parameters"] = vad_parameters
             if initial_prompt:
                 kwargs["initial_prompt"] = initial_prompt
             # Whisper language is selected once per source. This prevents a
@@ -255,7 +317,16 @@ def transcribe_sources(
             "language_forced": bool(forced_language),
             "language_review_required": not bool(forced_language) and (language_probability is None or float(language_probability) < language_confidence_threshold),
             "segments": segments,
+            "media_diagnostics": media_diagnostics,
+            "transcription_options": transcription_options,
         }
+        LOGGER.info(
+            "Whisper result path=%s segments=%s range_sec=%s-%s",
+            path,
+            len(segments),
+            segments[0]["start_sec"] if segments else None,
+            segments[-1]["end_sec"] if segments else None,
+        )
         cache.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
         output_sources.append(result)
     bites = extract_story_bites(output_sources)
@@ -263,6 +334,7 @@ def transcribe_sources(
         "stage": "backstage_transcription", "version": WHISPER_TRANSCRIPTION_VERSION,
         "model": model_name, "task": task, "backend": backend, "status": "ready", "elapsed_sec": round(time.perf_counter() - started, 3),
         "sources": output_sources, "story_bites": bites, "initial_prompt": initial_prompt,
+        "transcription_options": transcription_options,
     }
     write_artifact_json(artifact, payload)
     progress_callback(100, "Backstage transcription ready")

@@ -132,6 +132,7 @@ def test_caption_auto_read_returns_timestamped_cues_and_selects_large_for_short_
 
     assert status["status"] == "done"
     assert observed["kwargs"]["model_name"] == "large-v3"
+    assert observed["kwargs"]["vad_filter"] is False
     assert status["result"]["cues"] == [
         {"lines": ["First phrase."], "start": 1.25, "end": 3.5, "words": [], "style_override": {}},
         {"lines": ["Second phrase."], "start": 4.0, "end": 6.25, "words": [], "style_override": {}},

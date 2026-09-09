@@ -179,6 +179,7 @@ class AutoReadRunner:
                 model_name=model_name,
                 task="transcribe",
                 language_overrides=language_overrides,
+                vad_filter=False,
             )
             if payload.get("status") != "ready":
                 raise RuntimeError(str(payload.get("reason") or "Local Whisper transcription was unavailable"))
@@ -208,6 +209,8 @@ class AutoReadRunner:
                     "backend": payload.get("backend"),
                     "model": payload.get("model"),
                     "duration_sec": duration,
+                    "media_diagnostics": transcription_source.get("media_diagnostics") or {},
+                    "transcription_options": payload.get("transcription_options") or {},
                     "provenance": "project_audio_transcription",
                 }
         except Exception as exc:
