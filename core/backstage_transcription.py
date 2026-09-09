@@ -280,8 +280,20 @@ def transcribe_sources(
             # Whisper language is selected once per source. This prevents a
             # low-confidence segment from changing language in the middle of
             # a sentence; callers may still force a source language.
-            segments_iter, info = model.transcribe(path, **kwargs)
-            transcription_segments = list(segments_iter)
+            try:
+                segments_iter, info = model.transcribe(path, **kwargs)
+                transcription_segments = list(segments_iter)
+            except (IndexError, ValueError) as exc:
+                # Some short AAC/MP4 montages make faster-whisper's word
+                # alignment index empty even though segment transcription is
+                # valid. Auto Read's fixed-colour default does not require
+                # word timings, so recover the captions instead of failing
+                # the whole job; explicit karaoke remains available whenever
+                # the backend returns word timestamps successfully.
+                LOGGER.warning("Whisper word alignment failed for %s; retrying without word timestamps: %s", path, exc)
+                fallback_kwargs = {**kwargs, "word_timestamps": False}
+                segments_iter, info = model.transcribe(path, **fallback_kwargs)
+                transcription_segments = list(segments_iter)
             detected_language = getattr(info, "language", None)
             language_probability = getattr(info, "language_probability", None)
         elif backend == "mlx-whisper":
@@ -304,7 +316,7 @@ def transcribe_sources(
                     "start_sec": round(float(start), 3), "end_sec": round(float(end), 3), "text": str(text).strip(),
                     "words": [
                         {"start_sec": round(float(getattr(word, "start", 0.0) if not isinstance(word, dict) else word.get("start", 0.0)), 3), "end_sec": round(float(getattr(word, "end", 0.0) if not isinstance(word, dict) else word.get("end", 0.0)), 3), "word": str(getattr(word, "word", "") if not isinstance(word, dict) else word.get("word", ""))}
-                        for word in words
+                        for word in (words or [])
                     ],
                 })
         accepted_language = forced_language or (str(detected_language or "").lower() if language_probability is not None and float(language_probability) >= language_confidence_threshold else None)
