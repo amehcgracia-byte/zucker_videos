@@ -18,7 +18,7 @@ from captions.styles import list_styles
 def test_caption_presets_render_valid_ass() -> None:
     track = CueTrack((Cue(("Hello", "world"), 0, 2),))
     styles = list_styles()
-    assert len(styles) == 13
+    assert len(styles) == 16
     for style in styles:
         ass = render_ass(track, style, width=1080, height=1920)
         assert "[Script Info]" in ass
