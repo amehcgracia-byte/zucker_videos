@@ -45,6 +45,24 @@ def test_autoread_fixed_and_phrase_presets_do_not_enable_word_karaoke() -> None:
     assert "\\k" in karaoke
 
 
+def test_autoread_word_preset_falls_back_to_visible_phrase_without_words() -> None:
+    track = CueTrack((Cue(("Words are unavailable but this remains visible",), 0, 2),))
+    ass = render_ass(track, get_style("autoread_karaoke_yellow"))
+    assert "Words are unavailable but this remains visible" in ass
+    assert "\\k" not in ass
+    assert r"\c&H00FFFFFF&" in ass
+
+
+def test_autoread_visual_presets_are_not_accidentally_word_animation() -> None:
+    track = CueTrack((Cue(("VISIBLE",), 0, 2, (Word("VISIBLE", 0, 2),)),))
+    glow = render_ass(track, get_style("autoread_green_glow"))
+    box = render_ass(track, get_style("autoread_solid_box"))
+    assert "\\k" not in glow
+    assert r"\3c&H0000FF00&" in glow
+    assert "\\k" not in box
+    assert ",3,2,2," in box
+
+
 def test_glow_layers_share_caption_position_and_size() -> None:
     track = CueTrack((Cue(("Last Session",), 14.0, 16.0, style_override={"size": 103, "vertical": 75, "glow_blur": 9, "glow_layers": 1}),))
     ass = render_ass(track, list_styles()[4], width=1080, height=1920)

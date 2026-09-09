@@ -482,8 +482,9 @@ function renderComposeOverlayLayer() {
   const captionVertical = override.vertical != null ? Number(override.vertical) : 68;
   const captionColor = override.color || assColorToCss(styleDefinition.color, "#fff");
   const captionSecondary = assColorToCss(styleDefinition.secondary, "#00ff00");
-  const captionMarkup = caption && styleDefinition.animation === "word" && caption.words?.length
-    ? caption.words.map((word) => `<span style="color:${now >= Number(word.start) && now <= Number(word.end) ? captionSecondary : captionColor}">${escapeHtml(String(word.text || "").trim())}</span>`).join(" ")
+  const usableCaptionWords = (caption?.words || []).filter((word) => String(word.text || word.word || "").trim() && Number(word.end ?? word.end_sec) > Number(word.start ?? word.start_sec));
+  const captionMarkup = caption && styleDefinition.animation === "word" && usableCaptionWords.length
+    ? usableCaptionWords.map((word) => `<span style="color:${now >= Number(word.start ?? word.start_sec) && now <= Number(word.end ?? word.end_sec) ? captionColor : captionSecondary}">${escapeHtml(String(word.text || word.word || "").trim())}</span>`).join(" ")
     : caption && styleDefinition.animation === "phrase"
       ? `<span style="color:${captionSecondary}">${escapeHtml(caption.lines.join("\n"))}</span>`
     : escapeHtml(caption?.lines?.join("\n") || "");

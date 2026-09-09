@@ -31,6 +31,26 @@ def _ass_alpha(opacity: object) -> str:
     return f"&H{round((1.0 - value) * 255):02X}&"
 
 
+def _usable_words(cue) -> tuple:
+    """Return only word timings that can safely drive an ASS karaoke event.
+
+    Auto Read deliberately falls back to segment-only transcription when the
+    backend cannot align words.  A style must never turn that valid caption
+    into an empty event just because it requests word animation.
+    """
+    words = []
+    for word in cue.words or ():
+        text = str(getattr(word, "text", "") or "").strip()
+        try:
+            start = float(word.start)
+            end = float(word.end)
+        except (TypeError, ValueError):
+            continue
+        if text and end > start:
+            words.append((text, start, end))
+    return tuple(words)
+
+
 def _dialogue(cue, style: Style, *, width: int, height: int) -> str:
     override = cue.style_override or {}
     alignment = int(override.get("alignment", style.alignment))
@@ -61,9 +81,18 @@ def _dialogue(cue, style: Style, *, width: int, height: int) -> str:
         if phrase_color:
             tags.append(f"\\t(100,100,\\c{phrase_color})")
         return "{" + "".join(tags) + "}" + _escape(cue.text)
-    if style.animation != "word" or not cue.words:
+    words = _usable_words(cue)
+    if style.animation != "word" or not words:
+        # Word styles degrade to a visible, fixed-colour phrase when Whisper
+        # had to use its no-word-timestamps fallback.
+        if style.animation == "word":
+            fallback_color = _ass_color(style.secondary)
+            if fallback_color:
+                tags.append(f"\\c{fallback_color}")
+        return "{" + "".join(tags) + "}" + _escape(cue.text)
+    if style.animation != "word":
         return prefix + _escape(cue.text)
-    return prefix + " ".join("{\\k%d}%s" % (max(1, int(round((word.end - word.start) * 100))), _escape(word.text)) for word in cue.words)
+    return prefix + " ".join("{\\k%d}%s" % (max(1, int(round((end - start) * 100))), _escape(text)) for text, start, end in words)
 
 
 def _glow_dialogues(cue, style: Style, *, width: int, height: int, start_layer: int = 0) -> list[str]:
