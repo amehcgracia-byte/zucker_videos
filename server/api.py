@@ -272,7 +272,7 @@ class AutoReadRunner:
                     "duration_sec": duration,
                     "media_diagnostics": transcription_source.get("media_diagnostics") or {},
                     "transcription_options": payload.get("transcription_options") or {},
-                    "style": "autoread_karaoke_yellow",
+                    "style": "autoread_fixed_white",
                     "source_kind": source.get("source_kind"),
                     "provenance": "project_audio_transcription",
                 }

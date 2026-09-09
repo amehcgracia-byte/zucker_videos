@@ -330,7 +330,7 @@ async function autoReadProjectAudio() {
       }
       if (job.status === "done") {
         captionCues = Array.isArray(job.result?.cues) ? job.result.cues : [];
-        const generatedStyle = job.result?.style || "autoread_karaoke_yellow";
+        const generatedStyle = job.result?.style || "autoread_fixed_white";
         const styleSelect = document.querySelector("#captionStyle");
         if (styleSelect && Array.from(styleSelect.options).some((option) => option.value === generatedStyle)) {
           styleSelect.value = generatedStyle;
@@ -454,6 +454,12 @@ function imageEffectMarkup(item, content) {
   return `<span class="compose-image-effect" style="--tint-color:${escapeHtml(tint)};--tint-opacity:${tintOpacity};filter:${escapeHtml(filter)}">${content || ""}</span>`;
 }
 
+function assColorToCss(value, fallback = "#ffffff") {
+  const text = String(value || "").replace(/^&H|&$/gi, "");
+  if (!/^[0-9a-f]{8}$/i.test(text)) return fallback;
+  return `#${text.slice(6, 8)}${text.slice(4, 6)}${text.slice(2, 4)}`;
+}
+
 function renderComposeOverlayLayer() {
   const layer = document.querySelector("#composeOverlayLayer");
   const video = document.querySelector("#composeVideo");
@@ -474,7 +480,14 @@ function renderComposeOverlayLayer() {
   const shadow = shadowDistance > 0 ? `${shadowDistance}px ${shadowDistance}px ${override.shadow_color || "#000"}` : "";
   const captionSize = Number(override.size ?? styleDefinition.size ?? 54);
   const captionVertical = override.vertical != null ? Number(override.vertical) : 68;
-  const captionInline = [`color:${override.color || styleDefinition.color || "#fff"}`, `font-size:${captionSize * previewScale}px`, `top:${captionVertical}%`, override.outline_width != null ? `-webkit-text-stroke:${Number(override.outline_width) * previewScale}px ${override.outline_color || "#101010"}` : "", glow || shadow ? `text-shadow:${[glow, shadow].filter(Boolean).join(",")}` : ""].filter(Boolean).join(";");
+  const captionColor = override.color || assColorToCss(styleDefinition.color, "#fff");
+  const captionSecondary = assColorToCss(styleDefinition.secondary, "#00ff00");
+  const captionMarkup = caption && styleDefinition.animation === "word" && caption.words?.length
+    ? caption.words.map((word) => `<span style="color:${now >= Number(word.start) && now <= Number(word.end) ? captionSecondary : captionColor}">${escapeHtml(String(word.text || "").trim())}</span>`).join(" ")
+    : caption && styleDefinition.animation === "phrase"
+      ? `<span style="color:${captionSecondary}">${escapeHtml(caption.lines.join("\n"))}</span>`
+    : escapeHtml(caption?.lines?.join("\n") || "");
+  const captionInline = [`color:${captionColor}`, `font-size:${captionSize * previewScale}px`, `top:${captionVertical}%`, override.outline_width != null ? `-webkit-text-stroke:${Number(override.outline_width) * previewScale}px ${override.outline_color || "#101010"}` : "", glow || shadow ? `text-shadow:${[glow, shadow].filter(Boolean).join(",")}` : ""].filter(Boolean).join(";");
   const captionOverride = caption?.style_override || {};
   const captionAnimation = ` caption-animation-in-${escapeHtml(captionOverride.animation_in || "fade")} caption-animation-out-${escapeHtml(captionOverride.animation_out || "fade")}`;
   const logoSource = selectedLogoSource();
@@ -486,7 +499,7 @@ function renderComposeOverlayLayer() {
     return editableOverlayMarkup("image", item, item._index, selectedComposeOverlay?.kind === "image" && selectedComposeOverlay.index === item._index, imageEffectMarkup(item, image));
   }).join("");
   const videoMarkup = videos.map((item) => editableOverlayMarkup("video", item, item._index, selectedComposeOverlay?.kind === "video" && selectedComposeOverlay.index === item._index, `<video class="compose-live-video" src="${escapeHtml(item.preview_url || item.path || '')}" autoplay muted loop playsinline aria-label="Video overlay"></video>`)).join("");
-  layer.innerHTML = logoMarkup + imageMarkup + videoMarkup + (caption ? `<span class="compose-live-caption caption-style-${escapeHtml(captionStyle)}${captionAnimation}" data-caption-preview-index="${captionCues.indexOf(caption)}" tabindex="0" style="${captionInline}">${escapeHtml(caption.lines.join("\n"))}</span>` : "");
+  layer.innerHTML = logoMarkup + imageMarkup + videoMarkup + (caption ? `<span class="compose-live-caption caption-style-${escapeHtml(captionStyle)}${captionAnimation}" data-caption-preview-index="${captionCues.indexOf(caption)}" tabindex="0" style="${captionInline}">${captionMarkup}</span>` : "");
   const editing = Boolean(selectedComposeLogo || selectedComposeOverlay || captionActiveIndex != null);
   document.querySelector(".compose-player-wrap")?.classList.toggle("overlay-editing", editing);
   video.controls = !editing;
@@ -529,13 +542,15 @@ async function openCaptions() {
   captionStyleCatalog = Object.fromEntries((styles.styles || []).map((style) => [style.name, style]));
   const select = document.querySelector("#captionStyle");
   const styleLabels = {
-    autoread_karaoke_yellow: "Auto Read — Karaoke amarillo",
+    autoread_fixed_white: "Auto Read — Color fijo blanco",
+    autoread_phrase_color: "Auto Read — Cambio de frase",
+    autoread_karaoke_yellow: "Auto Read — Karaoke por palabra",
     autoread_green_glow: "Auto Read — Glow verde",
     autoread_solid_box: "Auto Read — Caja sobria",
   };
   if (select && !select.options.length) select.innerHTML = (styles.styles || []).map((style) => `<option value="${escapeHtml(style.name)}">${escapeHtml(styleLabels[style.name] || style.name.replaceAll("_", " "))}</option>`).join("");
   if (select) select.onchange = () => document.querySelector("#captionPreview")?.setAttribute("data-style", select.value);
-  if (select && !select.dataset.userChoice) select.value = savedComposeStyle || "autoread_karaoke_yellow";
+  if (select && !select.dataset.userChoice) select.value = savedComposeStyle || "autoread_fixed_white";
   const blocks = captionBlocksFromText();
   if (!captionCues.length && blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
   renderCaptionBlocks();
@@ -1829,7 +1844,30 @@ function drawReelPreview() {
     if (!image) { image = new Image(); image.onload = () => drawReelPreview(); image.src = previewPath; reelPreviewImages.set(previewPath, image); }
     if (!image.complete || !image.naturalWidth) continue;
     const iw = canvas.width * Number(item.width || .35); const ratio = image.naturalHeight / Math.max(1, image.naturalWidth); const ih = iw * ratio;
-    ctx.globalAlpha = Number(item.opacity ?? 1); ctx.drawImage(image, Number(item.x ?? .5) * canvas.width - iw / 2, Number(item.y ?? .5) * canvas.height - ih / 2, iw, ih); ctx.globalAlpha = 1;
+    const dx = Number(item.x ?? .5) * canvas.width - iw / 2;
+    const dy = Number(item.y ?? .5) * canvas.height - ih / 2;
+    const opacity = Number(item.opacity ?? 1);
+    const tintOpacity = Math.max(0, Math.min(1, Number(item.tint_opacity || 0)));
+    const shadowOpacity = Math.max(0, Math.min(1, Number(item.shadow_opacity || 0)));
+    const shadowBlur = Math.max(0, Number(item.shadow_blur || 0));
+    const shadowDistance = Math.max(0, Number(item.shadow_distance || 0));
+    const glowLayers = Math.max(0, Math.min(8, Number(item.glow_layers || 0)));
+    const glowBlur = Math.max(0, Number(item.glow_blur || 0));
+    const drawEffect = (filter, alpha = opacity) => {
+      ctx.save(); ctx.globalAlpha = alpha; ctx.filter = filter || "none";
+      ctx.drawImage(image, dx, dy, iw, ih); ctx.restore();
+    };
+    if (shadowOpacity && (shadowDistance || shadowBlur)) {
+      ctx.save(); ctx.globalAlpha = opacity * shadowOpacity; ctx.shadowColor = item.shadow_color || "#000000"; ctx.shadowBlur = shadowBlur; ctx.shadowOffsetX = shadowDistance; ctx.shadowOffsetY = shadowDistance;
+      ctx.drawImage(image, dx, dy, iw, ih); ctx.restore();
+    }
+    if (glowLayers && glowBlur) {
+      for (let layer = glowLayers; layer > 0; layer -= 1) drawEffect(`drop-shadow(0 0 ${Math.max(1, glowBlur * layer / glowLayers)}px ${item.glow_color || item.tint_color || "#ffffff"})`, opacity * Math.min(1, 0.18 * layer));
+    }
+    drawEffect("none", opacity);
+    if (tintOpacity) {
+      ctx.save(); ctx.globalAlpha = opacity * tintOpacity; ctx.globalCompositeOperation = "source-atop"; ctx.fillStyle = item.tint_color || "#ffffff"; ctx.fillRect(dx, dy, iw, ih); ctx.restore();
+    }
     if (reelDrag?.item === item) { ctx.strokeStyle = "#fff"; ctx.setLineDash([4, 3]); ctx.strokeRect(Number(item.x ?? .5) * canvas.width - iw / 2, Number(item.y ?? .5) * canvas.height - ih / 2, iw, ih); ctx.setLineDash([]); ctx.fillStyle = "#fff"; ctx.fillRect(Number(item.x ?? .5) * canvas.width + iw / 2 - 8, Number(item.y ?? .5) * canvas.height + ih / 2 - 8, 12, 12); }
   }
 }

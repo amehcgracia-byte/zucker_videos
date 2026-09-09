@@ -2012,3 +2012,31 @@ def _frame_luma(path: Path, timestamp: float) -> float:
     )
     match = re.search(r"lavfi.signalstats.YAVG=([0-9.]+)", f"{result.stdout}\n{result.stderr}")
     return float(match.group(1)) if match else 0.0
+
+
+def test_reel_image_overlay_effects_are_rasterized(tmp_path: Path) -> None:
+    from PIL import Image
+
+    source = tmp_path / "overlay.png"
+    Image.new("RGBA", (40, 40), (255, 255, 255, 255)).save(source)
+    items = _reel_overlay_items(
+        {"master_start_sec": 0.0, "duration_sec": 3.0},
+        {
+            "reel_images": [{
+                "path": str(source), "x": 0.5, "y": 0.5, "width": 0.1,
+                "opacity": 1.0, "start_sec": 0.0, "duration_sec": 3.0,
+                "tint_color": "#00ff00", "tint_opacity": 1.0,
+                "shadow_color": "#ff00ff", "shadow_distance": 12,
+                "shadow_blur": 4, "shadow_opacity": 1.0,
+                "glow_color": "#00ffff", "glow_blur": 10, "glow_layers": 3,
+            }],
+            "reel_origin_sec": 0.0,
+        },
+        "reel",
+        tmp_path,
+    )
+    assert len(items) == 1
+    rendered = Image.open(items[0]["path"]).convert("RGBA")
+    center = rendered.getpixel((540, 960))
+    assert center[1] > 200 and center[0] < 80 and center[2] < 80
+    assert any(pixel[3] > 0 for pixel in rendered.crop((530, 950, 560, 980)).getdata())

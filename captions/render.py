@@ -56,7 +56,12 @@ def _dialogue(cue, style: Style, *, width: int, height: int) -> str:
     if override.get("shadow_opacity") is not None:
         tags.append(f"\\4a{_ass_alpha(override['shadow_opacity'])}")
     prefix = "{" + "".join(tags) + "}" if tags else ""
-    if not cue.words:
+    if style.animation == "phrase":
+        phrase_color = _ass_color(style.secondary)
+        if phrase_color:
+            tags.append(f"\\t(100,100,\\c{phrase_color})")
+        return "{" + "".join(tags) + "}" + _escape(cue.text)
+    if style.animation != "word" or not cue.words:
         return prefix + _escape(cue.text)
     return prefix + " ".join("{\\k%d}%s" % (max(1, int(round((word.end - word.start) * 100))), _escape(word.text)) for word in cue.words)
 

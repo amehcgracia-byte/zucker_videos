@@ -12,13 +12,13 @@ from captions.align import align_known_lyrics
 from captions.model import Cue, CueTrack, Word
 from captions.render import render_ass
 from captions.sources import from_lyrics, from_srt, to_srt
-from captions.styles import list_styles
+from captions.styles import get_style, list_styles
 
 
 def test_caption_presets_render_valid_ass() -> None:
     track = CueTrack((Cue(("Hello", "world"), 0, 2),))
     styles = list_styles()
-    assert len(styles) == 16
+    assert len(styles) == 18
     for style in styles:
         ass = render_ass(track, style, width=1080, height=1920)
         assert "[Script Info]" in ass
@@ -33,6 +33,16 @@ def test_neon_glow_preset_and_override_render_layers() -> None:
     assert ass.count("Dialogue:") == 4
     assert r"\blur10" in ass
     assert r"\3c&H0000FF00&" in ass
+
+
+def test_autoread_fixed_and_phrase_presets_do_not_enable_word_karaoke() -> None:
+    track = CueTrack((Cue(("Hello", "world"), 0, 2, (Word("Hello", 0, 1), Word("world", 1, 2))),))
+    fixed = render_ass(track, get_style("autoread_fixed_white"))
+    phrase = render_ass(track, get_style("autoread_phrase_color"))
+    karaoke = render_ass(track, get_style("autoread_karaoke_yellow"))
+    assert "\\k" not in fixed
+    assert "\\t(100,100" in phrase
+    assert "\\k" in karaoke
 
 
 def test_glow_layers_share_caption_position_and_size() -> None:

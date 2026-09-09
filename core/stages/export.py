@@ -4194,6 +4194,30 @@ def _reel_overlay_items(
                 canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
                 x = int(float(raw.get("x") or 0.5) * width - image.width / 2)
                 y = int(float(raw.get("y") or 0.5) * height - image.height / 2)
+                tint = raw.get("tint_color") or raw.get("overlay_color")
+                tint_strength = max(0.0, min(1.0, float(raw.get("tint_opacity") or 0.0)))
+                if tint and tint_strength:
+                    tint_layer = Image.new("RGBA", image.size, (*hex_rgba(tint, 255)[:3], 255))
+                    image = Image.blend(image, tint_layer, tint_strength)
+                    image.putalpha(alpha)
+                effect_alpha = image.getchannel("A")
+                shadow_distance = max(0, int(float(raw.get("shadow_distance") or raw.get("shadow_offset") or 0)))
+                shadow_blur = max(0, min(40, int(float(raw.get("shadow_blur") or 0))))
+                shadow_opacity = max(0.0, min(1.0, float(raw.get("shadow_opacity") if raw.get("shadow_opacity") is not None else 0.0)))
+                if shadow_distance or shadow_blur or shadow_opacity:
+                    shadow = Image.new("RGBA", image.size, (*hex_rgba(raw.get("shadow_color"), 255)[:3], 0))
+                    shadow.putalpha(effect_alpha.point(lambda value: round(value * shadow_opacity)))
+                    if shadow_blur:
+                        shadow = shadow.filter(ImageFilter.GaussianBlur(shadow_blur))
+                    canvas.alpha_composite(shadow, (x + shadow_distance, y + shadow_distance))
+                glow_layers = max(0, min(8, int(float(raw.get("glow_layers") or 0))))
+                glow_blur = max(0, min(40, int(float(raw.get("glow_blur") or 0))))
+                if glow_layers and glow_blur:
+                    for layer_index in range(glow_layers, 0, -1):
+                        glow = Image.new("RGBA", image.size, (*hex_rgba(raw.get("glow_color") or tint, 255)[:3], 0))
+                        glow.putalpha(effect_alpha.point(lambda value, n=layer_index: round(value * min(1.0, 0.18 * n))))
+                        glow = glow.filter(ImageFilter.GaussianBlur(glow_blur * layer_index / glow_layers))
+                        canvas.alpha_composite(glow, (x, y))
                 canvas.alpha_composite(image, (x, y))
                 image_path = output_dir / f"reel-overlay-image-{index}.png"
                 canvas.save(image_path)
