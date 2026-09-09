@@ -565,6 +565,10 @@ def _expand_caption_animations(track: CueTrack) -> CueTrack:
         override = dict(cue.style_override or {})
         enter = str(override.pop("animation_in", "none") or "none")
         exit_ = str(override.pop("animation_out", "none") or "none")
+        if enter == "fade":
+            override["_fade_in_ms"] = 250
+        if exit_ == "fade":
+            override["_fade_out_ms"] = 250
         base_vertical = float(override.get("vertical", 68))
         base_size = float(override.get("size", 54))
         cuts = {float(cue.start), float(cue.end)}

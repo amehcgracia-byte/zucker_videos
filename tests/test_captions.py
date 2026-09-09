@@ -11,6 +11,7 @@ from captions.burn import burn
 from captions.align import align_known_lyrics
 from captions.model import Cue, CueTrack, Word
 from captions.render import render_ass
+from captions.layout import caption_layout
 from captions.sources import from_lyrics, from_srt, to_srt
 from captions.styles import get_style, list_styles
 
@@ -41,7 +42,7 @@ def test_autoread_fixed_and_phrase_presets_do_not_enable_word_karaoke() -> None:
     phrase = render_ass(track, get_style("autoread_phrase_color"))
     karaoke = render_ass(track, get_style("autoread_karaoke_yellow"))
     assert "\\k" not in fixed
-    assert "\\t(100,100" in phrase
+    assert "\\t(250,250" in phrase
     assert "\\k" in karaoke
 
 
@@ -82,6 +83,34 @@ def test_caption_style_override_renders_inline_tags() -> None:
     assert r"\shad6" in ass
     assert r"\4c&H00FF0000&" in ass
     assert r"\4a&H80&" in ass
+
+
+def test_long_caption_wraps_to_two_word_boundary_lines_and_fits() -> None:
+    cue = Cue(("u try to come around now but everything goes",), 0, 2)
+    ass = render_ass(CueTrack((cue,)), get_style("autoread_fixed_white"), width=1080, height=1920)
+    assert r"u try to come around now but\Neverything goes" in ass
+    assert "\\fs" not in ass
+    assert len(caption_layout(cue.text, width=1080, requested_size=56, margin_l=65, margin_r=65)[0]) == 2
+
+
+def test_long_caption_reduces_size_when_two_lines_need_it() -> None:
+    lines, size = caption_layout("one two three four five six seven eight nine ten eleven twelve", width=640, requested_size=80, margin_l=40, margin_r=40)
+    assert len(lines) == 2
+    assert size < 80
+
+
+def test_phrase_transition_has_initial_colour_and_delayed_whole_phrase_change() -> None:
+    ass = render_ass(CueTrack((Cue(("A phrase",), 0, 2),)), get_style("autoread_phrase_color"))
+    assert r"\t(250,250,\c&H0000FFFF&" in ass
+
+
+def test_caption_fade_override_is_emitted_as_ass_fade() -> None:
+    from server.api import _expand_caption_animations
+    track = CueTrack((Cue(("Fade",), 0, 2, style_override={"color": "#00ff00", "animation_in": "fade", "animation_out": "fade"}),))
+    expanded = _expand_caption_animations(track)
+    ass = render_ass(expanded, get_style("autoread_fixed_white"))
+    assert r"\fad(250,250)" in ass
+    assert r"\c&H0000FF00&" in ass
 
 
 def test_lyrics_preserves_exact_lines() -> None:

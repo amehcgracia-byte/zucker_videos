@@ -58,6 +58,32 @@ let copiedComposeOverlay = null;
 let copiedCaption = null;
 let copiedCaptionStyle = null;
 let captionStyleCatalog = {};
+
+// Must match captions/layout.py exactly: ASS and the editor use the same
+// 1080-wide logical canvas and the same conservative glyph-width estimate.
+const CAPTION_AVERAGE_GLYPH_WIDTH = 0.55;
+const CAPTION_MIN_SIZE = 12;
+function captionLayout(text, width, requestedSize, marginLeft, marginRight) {
+  const words = String(text || "").match(/\S+/g) || [];
+  if (!words.length) return { lines: [""], size: CAPTION_MIN_SIZE };
+  const available = Math.max(80, Number(width) - Number(marginLeft) - Number(marginRight));
+  let size = Math.max(CAPTION_MIN_SIZE, Number(requestedSize) || CAPTION_MIN_SIZE);
+  while (size >= CAPTION_MIN_SIZE) {
+    const maxChars = Math.max(8, Math.floor(available / (size * CAPTION_AVERAGE_GLYPH_WIDTH)));
+    const lines = [];
+    let current = "";
+    words.forEach((word) => {
+      const candidate = current ? `${current} ${word}` : word;
+      if (current && candidate.length > maxChars) { lines.push(current); current = word; }
+      else current = candidate;
+    });
+    if (current) lines.push(current);
+    if (lines.length <= 2) return { lines, size };
+    size = Math.round((size - 1) * 1000) / 1000;
+  }
+  const midpoint = Math.max(1, Math.floor(words.length / 2));
+  return { lines: [words.slice(0, midpoint).join(" "), words.slice(midpoint).join(" ")], size: CAPTION_MIN_SIZE };
+}
 const reelPreviewImages = new Map();
 let shotReviewItems = [];
 let paperEditCuts = [];
@@ -480,17 +506,29 @@ function renderComposeOverlayLayer() {
   const shadow = shadowDistance > 0 ? `${shadowDistance}px ${shadowDistance}px ${override.shadow_color || "#000"}` : "";
   const captionSize = Number(override.size ?? styleDefinition.size ?? 54);
   const captionVertical = override.vertical != null ? Number(override.vertical) : 68;
+  const captionLayoutResult = captionLayout(caption?.lines?.join(" ") || "", 1080, captionSize, styleDefinition.margin_l ?? 65, styleDefinition.margin_r ?? 65);
+  const captionMarginLeft = Number(styleDefinition.margin_l ?? 65);
+  const captionMarginRight = Number(styleDefinition.margin_r ?? 65);
+  const captionWidth = Math.max(1, (100 * (1080 - captionMarginLeft - captionMarginRight)) / 1080);
   const captionColor = override.color || assColorToCss(styleDefinition.color, "#fff");
   const captionSecondary = assColorToCss(styleDefinition.secondary, "#00ff00");
   const usableCaptionWords = (caption?.words || []).filter((word) => String(word.text || word.word || "").trim() && Number(word.end ?? word.end_sec) > Number(word.start ?? word.start_sec));
   const captionMarkup = caption && styleDefinition.animation === "word" && usableCaptionWords.length
-    ? usableCaptionWords.map((word) => `<span style="color:${now >= Number(word.start ?? word.start_sec) && now <= Number(word.end ?? word.end_sec) ? captionColor : captionSecondary}">${escapeHtml(String(word.text || word.word || "").trim())}</span>`).join(" ")
+    ? (() => {
+      let wordCursor = 0;
+      return captionLayoutResult.lines.map((line) => {
+        const count = line.trim().split(/\s+/).filter(Boolean).length;
+        const lineWords = usableCaptionWords.slice(wordCursor, wordCursor + count);
+        wordCursor += count;
+        return lineWords.map((word) => `<span style="color:${now >= Number(word.start ?? word.start_sec) && now <= Number(word.end ?? word.end_sec) ? captionColor : captionSecondary}">${escapeHtml(String(word.text || word.word || "").trim())}</span>`).join(" ");
+      }).join("\n");
+    })()
     : caption && styleDefinition.animation === "phrase"
-      ? `<span style="color:${captionSecondary}">${escapeHtml(caption.lines.join("\n"))}</span>`
-    : escapeHtml(caption?.lines?.join("\n") || "");
-  const captionInline = [`color:${captionColor}`, `font-size:${captionSize * previewScale}px`, `top:${captionVertical}%`, override.outline_width != null ? `-webkit-text-stroke:${Number(override.outline_width) * previewScale}px ${override.outline_color || "#101010"}` : "", glow || shadow ? `text-shadow:${[glow, shadow].filter(Boolean).join(",")}` : ""].filter(Boolean).join(";");
+      ? `<span style="color:${now >= Number(caption.start) + 0.25 ? captionSecondary : captionColor}">${escapeHtml(captionLayoutResult.lines.join("\n"))}</span>`
+    : escapeHtml(captionLayoutResult.lines.join("\n"));
+  const captionInline = [`color:${captionColor}`, `font-size:${captionLayoutResult.size * previewScale}px`, `top:${captionVertical}%`, `width:${captionWidth}%`, override.outline_width != null ? `-webkit-text-stroke:${Number(override.outline_width) * previewScale}px ${override.outline_color || "#101010"}` : "", glow || shadow ? `text-shadow:${[glow, shadow].filter(Boolean).join(",")}` : ""].filter(Boolean).join(";");
   const captionOverride = caption?.style_override || {};
-  const captionAnimation = ` caption-animation-in-${escapeHtml(captionOverride.animation_in || "fade")} caption-animation-out-${escapeHtml(captionOverride.animation_out || "fade")}`;
+  const captionAnimation = ` caption-animation-in-${escapeHtml(captionOverride.animation_in || "none")} caption-animation-out-${escapeHtml(captionOverride.animation_out || "none")}`;
   const logoSource = selectedLogoSource();
   const logo = logoSource === "custom" ? projectLogo.url : logoSource === "default" ? projectLogo.defaultUrl : "";
   const logoOverlay = projectLogo.overlay || { x: .5, y: .08, width: .22 };

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .layout import caption_layout
 from .model import CueTrack, Style
 
 
@@ -53,13 +54,21 @@ def _usable_words(cue) -> tuple:
 
 def _dialogue(cue, style: Style, *, width: int, height: int) -> str:
     override = cue.style_override or {}
+    requested_size = float(override.get("size", style.size))
+    lines, fitted_size = caption_layout(
+        cue.text,
+        width=width,
+        requested_size=requested_size,
+        margin_l=style.margin_l,
+        margin_r=style.margin_r,
+    )
     alignment = int(override.get("alignment", style.alignment))
     tags = [f"\\an{max(1, min(9, alignment))}"]
     color = _ass_color(override.get("color"))
     if color:
         tags.append(f"\\c{color}")
-    if override.get("size") is not None:
-        tags.append(f"\\fs{max(8, float(override['size'])):g}")
+    if override.get("size") is not None or fitted_size != requested_size:
+        tags.append(f"\\fs{max(8, fitted_size):g}")
     if override.get("vertical") is not None:
         y = max(0, min(height, height * float(override["vertical"]) / 100.0))
         tags.append(f"\\pos({width / 2:g},{y:g})")
@@ -75,12 +84,19 @@ def _dialogue(cue, style: Style, *, width: int, height: int) -> str:
         tags.append(f"\\4c{shadow_color}")
     if override.get("shadow_opacity") is not None:
         tags.append(f"\\4a{_ass_alpha(override['shadow_opacity'])}")
+    fade_in = max(0, int(float(override.get("_fade_in_ms", 0) or 0)))
+    fade_out = max(0, int(float(override.get("_fade_out_ms", 0) or 0)))
+    if fade_in or fade_out:
+        tags.append(f"\\fad({fade_in},{fade_out})")
     prefix = "{" + "".join(tags) + "}" if tags else ""
+    escaped_lines = r"\N".join(_escape(line) for line in lines)
     if style.animation == "phrase":
         phrase_color = _ass_color(style.secondary)
         if phrase_color:
-            tags.append(f"\\t(100,100,\\c{phrase_color})")
-        return "{" + "".join(tags) + "}" + _escape(cue.text)
+            # Keep the initial primary colour long enough to be observable in
+            # the preview/export, then switch the whole phrase at once.
+            tags.append(f"\\t(250,250,\\c{phrase_color})")
+        return "{" + "".join(tags) + "}" + escaped_lines
     words = _usable_words(cue)
     if style.animation != "word" or not words:
         # Word styles degrade to a visible, fixed-colour phrase when Whisper
@@ -89,10 +105,19 @@ def _dialogue(cue, style: Style, *, width: int, height: int) -> str:
             fallback_color = _ass_color(style.secondary)
             if fallback_color:
                 tags.append(f"\\c{fallback_color}")
-        return "{" + "".join(tags) + "}" + _escape(cue.text)
-    if style.animation != "word":
-        return prefix + _escape(cue.text)
-    return prefix + " ".join("{\\k%d}%s" % (max(1, int(round((end - start) * 100))), _escape(text)) for text, start, end in words)
+        return "{" + "".join(tags) + "}" + escaped_lines
+    # Rebuild the same word-boundary lines used above, retaining karaoke
+    # timings and inserting ASS line breaks at the selected word boundaries.
+    word_lines = []
+    cursor = 0
+    for line in lines:
+        count = len(line.split())
+        word_lines.append(words[cursor:cursor + count])
+        cursor += count
+    rendered = []
+    for word_line in word_lines:
+        rendered.append(" ".join("{\\k%d}%s" % (max(1, int(round((end - start) * 100))), _escape(text)) for text, start, end in word_line))
+    return prefix + r"\N".join(rendered)
 
 
 def _glow_dialogues(cue, style: Style, *, width: int, height: int, start_layer: int = 0) -> list[str]:
@@ -109,10 +134,18 @@ def _glow_dialogues(cue, style: Style, *, width: int, height: int, start_layer: 
     alignment = max(1, min(9, int(override.get("alignment", style.alignment))))
     outline_width = max(2.0, blur * 1.7)
     alpha = _ass_alpha(intensity)
-    text = _escape(cue.text)
+    requested_size = float(override.get("size", style.size))
+    lines, fitted_size = caption_layout(
+        cue.text,
+        width=width,
+        requested_size=requested_size,
+        margin_l=style.margin_l,
+        margin_r=style.margin_r,
+    )
+    text = r"\N".join(_escape(line) for line in lines)
     shared_position = [f"\\an{alignment}"]
-    if override.get("size") is not None:
-        shared_position.append(f"\\fs{max(8, float(override['size'])):g}")
+    if override.get("size") is not None or fitted_size != requested_size:
+        shared_position.append(f"\\fs{max(8, fitted_size):g}")
     if override.get("vertical") is not None:
         y = max(0, min(height, height * float(override["vertical"]) / 100.0))
         shared_position.append(f"\\pos({width / 2:g},{y:g})")
