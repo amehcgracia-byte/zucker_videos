@@ -330,12 +330,18 @@ async function autoReadProjectAudio() {
       }
       if (job.status === "done") {
         captionCues = Array.isArray(job.result?.cues) ? job.result.cues : [];
+        const generatedStyle = job.result?.style || "autoread_karaoke_yellow";
+        const styleSelect = document.querySelector("#captionStyle");
+        if (styleSelect && Array.from(styleSelect.options).some((option) => option.value === generatedStyle)) {
+          styleSelect.value = generatedStyle;
+          styleSelect.dataset.userChoice = "true";
+        }
         captionActiveIndex = null;
         captionPendingStart = null;
         captionMarkIndex = captionCues.length;
         renderCaptionBlocks();
         renderComposeOverlayLayer();
-        setAutoReadStatus(`Transcription ready: ${captionCues.length} editable captions. Review their text and timings.`);
+        setAutoReadStatus(`Mounted Reel ready: ${captionCues.length} editable captions. Style: ${generatedStyle}.`);
         button.disabled = false;
         return;
       }
@@ -522,9 +528,14 @@ async function openCaptions() {
   const styles = await api("/captions/styles");
   captionStyleCatalog = Object.fromEntries((styles.styles || []).map((style) => [style.name, style]));
   const select = document.querySelector("#captionStyle");
-  if (select && !select.options.length) select.innerHTML = (styles.styles || []).map((style) => `<option value="${escapeHtml(style.name)}">${escapeHtml(style.name.replaceAll("_", " "))}</option>`).join("");
+  const styleLabels = {
+    autoread_karaoke_yellow: "Auto Read — Karaoke amarillo",
+    autoread_green_glow: "Auto Read — Glow verde",
+    autoread_solid_box: "Auto Read — Caja sobria",
+  };
+  if (select && !select.options.length) select.innerHTML = (styles.styles || []).map((style) => `<option value="${escapeHtml(style.name)}">${escapeHtml(styleLabels[style.name] || style.name.replaceAll("_", " "))}</option>`).join("");
   if (select) select.onchange = () => document.querySelector("#captionPreview")?.setAttribute("data-style", select.value);
-  if (select && !select.dataset.userChoice) select.value = savedComposeStyle || "karaoke_word";
+  if (select && !select.dataset.userChoice) select.value = savedComposeStyle || "autoread_karaoke_yellow";
   const blocks = captionBlocksFromText();
   if (!captionCues.length && blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
   renderCaptionBlocks();

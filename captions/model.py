@@ -60,3 +60,4 @@ class Style:
     glow_blur: float = 0.0
     glow_layers: int = 0
     glow_intensity: float = 1.0
+    secondary: str = "&H0000FF00"

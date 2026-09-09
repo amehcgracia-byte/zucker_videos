@@ -79,6 +79,7 @@ def test_caption_auto_read_uses_registered_project_audio_and_returns_editable_te
         }
 
     monkeypatch.setattr(api_module, "transcribe_sources", fake_transcribe)
+    monkeypatch.setattr(api_module, "_caption_montage_source", lambda _project, _progress=None: {"path": str(audio.resolve()), "filename": audio.name, "duration_sec": None, "source_kind": "mounted_export"})
     client = api_module.create_app(project_path=str(folder)).test_client()
 
     started = client.post("/api/v1/captions/auto-read")
@@ -92,7 +93,7 @@ def test_caption_auto_read_uses_registered_project_audio_and_returns_editable_te
     assert status["status"] == "done"
     assert status["result"]["text"] == "Hello from the project audio."
     assert status["result"]["provenance"] == "project_audio_transcription"
-    assert observed["sources"] == [{"path": str(audio.resolve()), "filename": audio.name, "duration_sec": None}]
+    assert observed["sources"] == [{"path": str(audio.resolve()), "filename": audio.name, "duration_sec": None, "source_kind": "mounted_export"}]
     assert observed["kwargs"]["task"] == "transcribe"
     assert "initial_prompt" not in observed["kwargs"]
 
@@ -121,6 +122,7 @@ def test_caption_auto_read_returns_timestamped_cues_and_selects_large_for_short_
         }
 
     monkeypatch.setattr(api_module, "transcribe_sources", fake_transcribe)
+    monkeypatch.setattr(api_module, "_caption_montage_source", lambda _project, _progress=None: {"path": str(audio.resolve()), "filename": audio.name, "duration_sec": 30.0, "source_kind": "mounted_export"})
     client = api_module.create_app(project_path=str(folder)).test_client()
     started = client.post("/api/v1/captions/auto-read", json={"model": "auto"})
     assert started.status_code == 202

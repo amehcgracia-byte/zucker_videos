@@ -101,7 +101,7 @@ def render_ass(track: CueTrack, style: Style, *, width: int = 1920, height: int 
         header_style = "Style: FixedHeader,Arial Bold,42,&H00000000,&H00000000,&H00000000,&H00FFFFFF,1,0,0,0,100,100,0,0,3,12,2,8,60,60,70,1\n"
     border_style = 3 if style.box else 1
     back_colour = style.box_color if style.box else style.shadow
-    styles = "Style: %s,%s,%s,%s,&H0000FF00,%s,%s,0,0,0,0,100,100,0,0,%s,2,2,%s,%s,%s,%s,1\n" % (style.name, style.font, style.size, style.color, style.outline, back_colour, border_style, style.alignment, style.margin_l, style.margin_r, style.margin_v)
+    styles = "Style: %s,%s,%s,%s,%s,%s,%s,0,0,0,0,100,100,0,0,%s,2,2,%s,%s,%s,%s,1\n" % (style.name, style.font, style.size, style.color, style.secondary, style.outline, back_colour, border_style, style.alignment, style.margin_l, style.margin_r, style.margin_v)
     header_text = "[Script Info]\nScriptType: v4.00+\nPlayResX: %d\nPlayResY: %d\nWrapStyle: 2\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n%s%s\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n" % (width, height, styles, header_style)
     events = []
     for cue in track.cues:

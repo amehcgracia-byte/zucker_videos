@@ -104,7 +104,7 @@ class AutoReadJob:
 
 
 def _caption_audio_source(project: Project) -> dict[str, Any] | None:
-    """Choose a registered master or a registered video that has audio."""
+    """Legacy source selector retained for projects without a mounted result."""
     wizard = project.data.get("settings", {}).get("wizard", {})
     inputs = project.data.get("inputs", {})
     candidates = [
@@ -130,6 +130,56 @@ def _caption_audio_source(project: Project) -> dict[str, Any] | None:
     return None
 
 
+def _caption_montage_source(project: Project, progress_callback=None) -> dict[str, Any]:
+    """Return the clean, already-mounted MP4 used as Auto Read's timeline.
+
+    Auto Read must see the same clock the user sees in the composition player.
+    If the mode export has not happened yet, create/reuse that base export
+    before starting Whisper; captions are never transcribed from source clips.
+    """
+    progress_callback = progress_callback or (lambda _value, _detail: None)
+    base = _export_result(project)
+    if not base:
+        from core.stages.export import ExportStage
+
+        progress_callback(5, "Preparing the mounted video for Auto Read")
+        ExportStage().run(
+            project,
+            lambda value, detail: progress_callback(5 + round(min(1.0, float(value) / 100.0) * 20), detail),
+        )
+        base = _export_result(project)
+    if not base:
+        raise ValueError("No mounted video is available for Auto Read")
+    path = Path(str(base.get("path") or "")).resolve()
+    if not path.is_file() or path.stat().st_size == 0:
+        raise ValueError("The mounted video is missing or empty")
+    metadata = ffprobe(str(path))
+    streams = metadata.get("streams") or []
+    audio = next((item for item in streams if item.get("codec_type") == "audio"), None)
+    if not audio:
+        raise ValueError("The mounted video has no audio track for Auto Read")
+    duration = float((metadata.get("format") or {}).get("duration") or audio.get("duration") or 0.0)
+    return {
+        "path": str(path),
+        "filename": path.name,
+        "duration_sec": duration,
+        "source_kind": "mounted_export",
+        "source_platform": base.get("platform"),
+    }
+
+
+def _caption_lines(text: str, max_line_chars: int = 38) -> list[str]:
+    """Keep generated captions readable without changing their timestamps."""
+    words = str(text or "").split()
+    if not words:
+        return [""]
+    if len(str(text)) <= max_line_chars:
+        return [str(text)]
+    midpoint = max(1, len(words) // 2)
+    best = min(range(1, len(words)), key=lambda index: abs(len(" ".join(words[:index])) - len(" ".join(words[index:]))))
+    return [" ".join(words[:best]), " ".join(words[best:])]
+
+
 class AutoReadRunner:
     """Asynchronous local-only Whisper transcription for the captions editor."""
 
@@ -146,23 +196,24 @@ class AutoReadRunner:
         with self._lock:
             if self._job and self._job.status == "running":
                 raise RuntimeError("Auto Read is already transcribing")
-            source = _caption_audio_source(project)
-            if not source:
-                raise ValueError("This project has no readable audio source")
             job = AutoReadJob(id=f"auto-read-{uuid.uuid4().hex[:10]}", project_path=str(project.folder))
             self._job = job
-            self._thread = threading.Thread(target=self._run, args=(job, project, source, requested_model), daemon=True, name="zucker-auto-read")
+            self._thread = threading.Thread(target=self._run, args=(job, project, requested_model), daemon=True, name="zucker-auto-read")
             self._thread.start()
             return job
 
-    def _run(self, job: AutoReadJob, project: Project, source: dict[str, Any], requested_model: str | None) -> None:
+    def _run(self, job: AutoReadJob, project: Project, requested_model: str | None) -> None:
         try:
+            source = _caption_montage_source(
+                project,
+                lambda value, detail: self._set_progress(job, value, detail),
+            )
             wizard = project.data.get("settings", {}).get("wizard", {})
             requested_model = str(requested_model or wizard.get("auto_read_whisper_model") or "auto").strip().lower()
             if requested_model not in {"auto", "tiny", "base", "small", "medium", "large-v3"}:
                 raise ValueError(f"Unsupported Auto Read model: {requested_model}")
             duration = float(source.get("duration_sec") or 0.0)
-            model_name = "large-v3" if requested_model == "auto" and duration < 60.0 else ("small" if requested_model == "auto" else requested_model)
+            model_name = "large-v3" if requested_model == "auto" else requested_model
             language_overrides = wizard.get("backstage_whisper_language_overrides") or {}
             artifact = project.cache_dir / "captions" / CAPTIONS_VERSION / "auto_read.json"
 
@@ -193,7 +244,7 @@ class AutoReadRunner:
                 end = max(start + 0.05, float(segment.get("end_sec") or start + 0.05))
                 if value:
                     cues.append({
-                        "lines": [value], "start": start, "end": end,
+                        "lines": _caption_lines(value), "start": start, "end": end,
                         "words": segment.get("words") or [], "style_override": {},
                     })
             with self._lock:
@@ -211,6 +262,8 @@ class AutoReadRunner:
                     "duration_sec": duration,
                     "media_diagnostics": transcription_source.get("media_diagnostics") or {},
                     "transcription_options": payload.get("transcription_options") or {},
+                    "style": "autoread_karaoke_yellow",
+                    "source_kind": source.get("source_kind"),
                     "provenance": "project_audio_transcription",
                 }
         except Exception as exc:
@@ -218,6 +271,12 @@ class AutoReadRunner:
                 job.status = "failed"
                 job.error = str(exc)
                 job.detail = "Auto Read failed"
+
+    def _set_progress(self, job: AutoReadJob, value: int, detail: str) -> None:
+        with self._lock:
+            if job.status == "running":
+                job.progress = max(0, min(100, int(value)))
+                job.detail = detail
 
 
 class CompositionRunner:
