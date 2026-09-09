@@ -180,6 +180,16 @@ def _caption_lines(text: str, max_line_chars: int = 38) -> list[str]:
     return [" ".join(words[:best]), " ".join(words[best:])]
 
 
+def _caption_words(cue: dict[str, Any]) -> tuple[Word, ...]:
+    """Accept both UI word keys and the start_sec/end_sec Whisper keys."""
+    words = []
+    for word in cue.get("words", []) or []:
+        start = word.get("start", word.get("start_sec", 0.0))
+        end = word.get("end", word.get("end_sec", start))
+        words.append(Word(str(word.get("text") or word.get("word") or ""), float(start), float(end)))
+    return tuple(words)
+
+
 class AutoReadRunner:
     """Asynchronous local-only Whisper transcription for the captions editor."""
 
@@ -377,7 +387,7 @@ class CompositionRunner:
                     tuple(str(line) for line in cue.get("lines", [])),
                     float(cue["start"]),
                     float(cue.get("end", cue["start"])),
-                    tuple(Word(str(word.get("text") or word.get("word") or ""), float(word["start"]), float(word["end"])) for word in cue.get("words", [])),
+                    _caption_words(cue),
                     dict(cue.get("style_override") or {}),
                 )
                 for cue in track_data.get("cues", [])
@@ -1598,7 +1608,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         body = request.get_json(silent=True) or {}
         try:
             style = get_style(str(body.get("style") or "clean_bottom"))
-            cues = tuple(Cue(tuple(str(line) for line in cue.get("lines", [])), float(cue["start"]), float(cue["end"]), tuple(Word(str(word.get("text") or word.get("word") or ""), float(word["start"]), float(word["end"])) for word in cue.get("words", [])), dict(cue.get("style_override") or {})) for cue in body.get("cues", []))
+            cues = tuple(Cue(tuple(str(line) for line in cue.get("lines", [])), float(cue["start"]), float(cue["end"]), _caption_words(cue), dict(cue.get("style_override") or {})) for cue in body.get("cues", []))
             track = CueTrack(cues, str(body.get("lang") or "und"))
             cache = project.cache_dir / "captions" / CAPTIONS_VERSION
             cache.mkdir(parents=True, exist_ok=True)
