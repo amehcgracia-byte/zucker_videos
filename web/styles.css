@@ -1515,7 +1515,9 @@ pre {
 }
 
 .compose-step { width: min(1500px, calc(100% - 32px)); max-width: none; padding-bottom: 4rem; }
-.compose-workspace { display: grid; grid-template-columns: minmax(300px, .85fr) minmax(360px, 1fr) minmax(380px, 1.2fr); gap: 1.25rem; align-items: start; }
+.compose-workspace { --compose-left-fr: .85; --compose-center-fr: 1; --compose-right-fr: 1.2; display: grid; grid-template-columns: minmax(260px, var(--compose-left-fr)fr) minmax(360px, var(--compose-center-fr)fr) minmax(300px, var(--compose-right-fr)fr); gap: 1.25rem; align-items: start; }
+.compose-workspace[data-video-orientation="horizontal"] { --compose-left-fr: .68; --compose-center-fr: 1.75; --compose-right-fr: .9; }
+.compose-workspace[data-video-orientation="square"] { --compose-left-fr: .78; --compose-center-fr: 1.3; --compose-right-fr: 1.05; }
 .compose-center, .compose-captions-panel, .compose-overlays-panel { min-width: 0; }
 .compose-workspace .compose-player-wrap { max-width: none; margin: 0; }
 .compose-player-wrap { max-width: 980px; margin: 0 auto 1rem; }
@@ -1556,6 +1558,15 @@ pre {
 @keyframes composeCaptionScaleIn { from { opacity: 0; transform: translate(-50%, -50%) scale(.72); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
 .compose-player-tools { display: flex; gap: .6rem; align-items: center; padding: .65rem 0; }
 .compose-player-tools input[type="range"] { flex: 1; }
+.compose-player-tools #composeExpand { margin-left: auto; }
+.compose-player-wrap.is-expanded { position: fixed; inset: 1rem; z-index: 100; display: flex; flex-direction: column; padding: 1rem 1.25rem; border: 1px solid var(--line,#ccd5d9); border-radius: 14px; background: var(--panel,#fff); box-shadow: 0 24px 80px rgb(0 0 0 / 45%); }
+.compose-player-wrap.is-expanded .compose-video-stage { flex: 1; min-height: 0; height: auto; }
+.compose-player-wrap.is-expanded .compose-video-stage video { max-height: calc(100vh - 7rem); }
+.compose-player-wrap.is-expanded #composeExpand::after { content: "Close"; }
+.compose-player-wrap.is-expanded #composeExpand { font-size: 0; }
+.compose-player-wrap.is-expanded #composeExpand::after { font-size: .85rem; }
+.compose-captions-panel > .setup-heading { align-items: center; }
+.compose-captions-panel > .setup-heading button { margin-left: auto; }
 .compose-add-caption { min-height: 44px; padding: .7rem 1rem; font-size: 1rem; }
 .compose-add-caption kbd { margin-left: .35rem; padding: .1rem .35rem; border: 1px solid currentColor; border-radius: 4px; font-size: .75em; opacity: .8; }
 .compose-player-tools #composeEndCaption { min-height: 44px; }

@@ -252,6 +252,42 @@ function setStep(number) {
   document.querySelectorAll("[data-step-nav]").forEach((button) => button.classList.toggle("active", Number(button.dataset.stepNav) === currentStep));
 }
 
+function composePlatform() {
+  return selectedPlatform || latestResult?.platform || latestStatus?.result?.platform || "";
+}
+
+function setCaptionPanelExpanded(expanded, platform = composePlatform()) {
+  const body = document.querySelector("#captionPanelBody");
+  const button = document.querySelector("#captionDisclosure");
+  if (!body || !button) return;
+  const open = Boolean(expanded);
+  body.hidden = !open;
+  button.setAttribute("aria-expanded", String(open));
+  button.textContent = open ? "Hide captions" : "Add captions";
+  button.title = open ? "Hide caption tools" : `Add captions in ${platform || "this mode"}`;
+}
+
+function updateComposeVideoLayout() {
+  const video = document.querySelector("#composeVideo");
+  const workspace = document.querySelector(".compose-workspace");
+  if (!video || !workspace || !video.videoWidth || !video.videoHeight) return;
+  const ratio = video.videoWidth / video.videoHeight;
+  const orientation = ratio > 1.18 ? "horizontal" : ratio < 0.82 ? "vertical" : "square";
+  workspace.dataset.videoOrientation = orientation;
+  workspace.style.setProperty("--compose-video-ratio", ratio.toFixed(4));
+}
+
+function setComposePlayerExpanded(expanded) {
+  const wrap = document.querySelector(".compose-player-wrap");
+  const button = document.querySelector("#composeExpand");
+  if (!wrap || !button) return;
+  const open = Boolean(expanded);
+  wrap.classList.toggle("is-expanded", open);
+  button.setAttribute("aria-expanded", String(open));
+  button.setAttribute("aria-label", open ? "Close expanded player" : "Expand player");
+  button.textContent = open ? "Close" : "Expand";
+}
+
 function captionBlocksFromText() {
   const text = document.querySelector("#captionText")?.value || "";
   return text.split(/(?:\r?\n){2,}/).filter((block) => block !== "");
@@ -548,13 +584,14 @@ function renderComposeOverlayLayer() {
 
 async function openCaptions() {
   setStep(5);
+  setCaptionPanelExpanded(composePlatform() === "reel", composePlatform());
   const video = document.querySelector("#composeVideo");
   if (video) {
     video.src = latestResult?.media_url ? `${latestResult.media_url}?t=${Date.now()}` : "/api/v1/wizard/result";
     video.load();
     video.onplay = () => { const button = document.querySelector("#composePlayPause"); if (button) button.textContent = "Pause"; };
     video.onpause = () => { const button = document.querySelector("#composePlayPause"); if (button) button.textContent = "Play"; };
-    video.onloadedmetadata = () => { const scrub = document.querySelector("#composeScrub"); if (scrub) scrub.max = String(video.duration || 1); renderCaptionBlocks(); renderComposeOverlayLayer(); };
+    video.onloadedmetadata = () => { const scrub = document.querySelector("#composeScrub"); if (scrub) scrub.max = String(video.duration || 1); updateComposeVideoLayout(); renderCaptionBlocks(); renderComposeOverlayLayer(); };
     video.ontimeupdate = () => { renderComposeOverlayLayer(); updateComposeTimelinePlayhead(); };
   }
   migrateTextOverlaysToCaptions();
@@ -3239,6 +3276,14 @@ document.addEventListener("click", (event) => {
     const video = document.querySelector("#composeVideo");
     if (video) { if (video.paused) video.play().catch(() => {}); else video.pause(); }
   }
+  if (target.id === "captionDisclosure") {
+    const body = document.querySelector("#captionPanelBody");
+    setCaptionPanelExpanded(Boolean(body?.hidden), composePlatform());
+  }
+  if (target.id === "composeExpand") {
+    const wrap = document.querySelector(".compose-player-wrap");
+    setComposePlayerExpanded(!wrap?.classList.contains("is-expanded"));
+  }
   if (target.id === "composeContinue") saveComposition().then(() => {
     document.querySelector("#resultBox").hidden = true;
     document.querySelector("#errorBox").hidden = true;
@@ -3287,6 +3332,11 @@ document.addEventListener("change", (event) => {
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
+    const player = document.querySelector(".compose-player-wrap");
+    if (player?.classList.contains("is-expanded")) {
+      setComposePlayerExpanded(false);
+      event.preventDefault();
+    }
     const modal = document.querySelector("#reviewLargeModal");
     if (modal && !modal.hidden) modal.hidden = true;
   }
