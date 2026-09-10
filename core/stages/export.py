@@ -453,7 +453,11 @@ class ExportStage(Stage):
                             {
                                 "camera_id": str(segment.get("camera_id") or Path(str(segment.get("clip_path"))).name),
                                 "available_camera_ids": list(segment.get("available_camera_ids") or []),
+                                "alternative_count": int(segment.get("fixed_camera_alternative_count") or 0),
                                 "alternative_available": bool(segment.get("camera_alternative_available")),
+                                "fixed_camera_zoom_policy": segment.get("fixed_camera_zoom_policy"),
+                                "zoom_start": (segment.get("motion") or {}).get("zoom_start"),
+                                "zoom_end": (segment.get("motion") or {}).get("zoom_end"),
                             }
                             for segment in segments
                         ],

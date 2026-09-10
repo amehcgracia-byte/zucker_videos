@@ -70,7 +70,11 @@ MOTION_SPEEDS = (("very_slow", 0.50), ("slow", 0.72), ("fast", 1.0))
 IPHONE_CROP_TOP_LIMIT = 0.80
 # Bump this whenever the YouTube camera-choice invariant changes so an older
 # cached edit plan cannot keep producing the previous camera runs.
-YOUTUBE_CAMERA_SELECTION_VERSION = 13
+YOUTUBE_CAMERA_SELECTION_VERSION = 14
+# Number of *alternative* physical cameras that must cover the same synced
+# window before the fixed/iPhone camera stops being used as a close-up filler.
+# The selected fixed camera itself is deliberately not counted.
+DEFAULT_FIXED_CAMERA_ZOOM_COVERAGE_THRESHOLD = 2
 MAX_CONSECUTIVE_CAMERA_SEGMENTS = 2
 # Retained as a versioned emergency switch for diagnostics; normal builds use
 # the shared gentle hold/sweep motion below.
@@ -631,6 +635,16 @@ def _youtube_multicam_plan(
     use_recorded_360 = False
     role_weights = _camera_role_weights(edit_settings)
     fixed_rear_motion = bool(edit_settings.get("fixed_rear_motion", True))
+    try:
+        fixed_zoom_coverage_threshold = max(
+            1,
+            int(edit_settings.get(
+                "fixed_camera_zoom_coverage_threshold",
+                DEFAULT_FIXED_CAMERA_ZOOM_COVERAGE_THRESHOLD,
+            )),
+        )
+    except (TypeError, ValueError):
+        fixed_zoom_coverage_threshold = DEFAULT_FIXED_CAMERA_ZOOM_COVERAGE_THRESHOLD
     # Static 360 holds are the safe shipped default. Motion remains an explicit
     # project opt-in until a filter path that does not reconfigure v360 per
     # frame is available.
@@ -704,9 +718,10 @@ def _youtube_multicam_plan(
         segment = _segment_from_source(source, segment_start, segment_end, window.get("title") or t("full_video"), platform=platform)
         segment["camera_id"] = selected_camera
         segment["available_camera_ids"] = sorted(available_camera_ids)
-        segment["camera_alternative_available"] = bool(
-            any(camera_id != selected_camera for camera_id in available_camera_ids)
-        )
+        alternative_camera_ids = sorted(camera_id for camera_id in available_camera_ids if camera_id != selected_camera)
+        segment["camera_alternative_available"] = bool(alternative_camera_ids)
+        segment["fixed_camera_alternative_count"] = len(alternative_camera_ids)
+        segment["fixed_camera_zoom_coverage_threshold"] = fixed_zoom_coverage_threshold
         _apply_non_music_insert(segment, source, segment_index)
         if (
             _source_role(source) == "fixed_rear"
@@ -744,14 +759,24 @@ def _youtube_multicam_plan(
             # not the filename, is authoritative: files such as ZZ24.7 .mov
             # are fixed cameras even when they are not named "iPhone".
             target_x, target_y = _visible_iphone_target(source, float(segment.get("clip_start_sec") or 0.0), segment_end - segment_start, operator_samples_cache)
-            segment["motion"] = _ken_burns_motion(
-                fixed_rear_motion_index,
-                target_x,
-                target_y,
-                allow_static=False,
-                force_full_zoom=(fixed_rear_motion_index % 2 == 0),
-                force_close=(fixed_rear_motion_index % 2 == 1),
-            )
+            if len(alternative_camera_ids) >= fixed_zoom_coverage_threshold:
+                # When other synchronized cameras cover this exact window,
+                # the fixed camera is no longer a gap filler. Keep the whole
+                # frame and avoid manufacturing a close-up the edit does not
+                # need. This is intentionally a real 1.0x static recipe, not
+                # a UI-only annotation, so preview and export share it.
+                segment["motion"] = _full_frame_static_motion()
+                segment["fixed_camera_zoom_policy"] = "full_frame_static_sufficient_coverage"
+            else:
+                segment["motion"] = _ken_burns_motion(
+                    fixed_rear_motion_index,
+                    target_x,
+                    target_y,
+                    allow_static=False,
+                    force_full_zoom=(fixed_rear_motion_index % 2 == 0),
+                    force_close=(fixed_rear_motion_index % 2 == 1),
+                )
+                segment["fixed_camera_zoom_policy"] = "close_up_motion_low_coverage"
             fixed_rear_motion_index += 1
         _apply_operator_avoidance(segment, source, operator_samples_cache)
         previous_framing = _framing_descriptor(source, segment)
@@ -1899,6 +1924,29 @@ def _clamp_pan_y_for_top_edge(pan_y: float, zoom: float, top_limit: float = IPHO
 def _minimum_zoom_for_target(target: float) -> float:
     edge = min(max(0.01, float(target)), 1.0 - max(0.01, float(target)))
     return max(1.0, 0.5 / edge)
+
+
+def _full_frame_static_motion() -> dict[str, Any]:
+    """Return the low-aggression fixed-camera recipe used with good coverage."""
+    return {
+        "type": "ken_burns",
+        "movement": "full_static",
+        "speed": "static",
+        "speed_factor": 1.0,
+        "lock_target": False,
+        "target_x": 0.5,
+        "target_y": 0.5,
+        "zoom_start": 1.0,
+        "zoom_end": 1.0,
+        "pan_x_start": 0.5,
+        "pan_x_end": 0.5,
+        "pan_y_start": 0.5,
+        "pan_y_end": 0.5,
+        "pan_x": 0.5,
+        "pan_y": 0.5,
+        "top_edge_limit": IPHONE_CROP_TOP_LIMIT,
+        "vertical_motion": "static",
+    }
 
 
 def _ken_burns_motion(

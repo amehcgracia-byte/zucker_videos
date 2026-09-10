@@ -49,6 +49,10 @@ def default_settings() -> dict[str, Any]:
             "style": "coverage_first",
             "camera_role_weights": {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0},
             "fixed_rear_motion": True,
+            # With this many alternative physical cameras covering the same
+            # synced window, a fixed/iPhone source stays full-frame instead of
+            # being forced into a close-up filler shot.
+            "fixed_camera_zoom_coverage_threshold": 2,
             # Runtime sendcmd events visibly damage frames on the packaged
             # ffmpeg build. Keep the safe default frozen; subtle remains an
             # explicit experiment with only two absolute pose events.

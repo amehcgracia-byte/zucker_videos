@@ -774,6 +774,80 @@ def test_fixed_rear_segments_get_subtle_motion_on_some_holds():
     assert all(motion["type"] == "ken_burns" for motion in motions)
 
 
+def test_fixed_rear_keeps_close_up_when_synced_coverage_is_sparse():
+    coverage = {
+        "platform": "youtube",
+        "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 8.0},
+        "sources": [{
+            "path": "/tmp/iphone.mov", "filename": "iphone.mov", "camera_id": "iphone",
+            "camera_role": "fixed_rear", "offset_sec": 0.0, "duration_sec": 8.0, "confidence": 9.0,
+        }],
+    }
+    beats = {"bars_sec": [0.0, 2.0, 4.0, 6.0, 8.0], "sections_sec": []}
+
+    plan = _youtube_multicam_plan(coverage, beats)
+
+    fixed = [segment for segment in plan["segments"] if segment["camera_id"] == "iphone"]
+    assert fixed
+    assert all(segment["fixed_camera_alternative_count"] == 0 for segment in fixed)
+    assert all(segment["fixed_camera_zoom_policy"] == "close_up_motion_low_coverage" for segment in fixed)
+    assert all(float(segment["motion"]["zoom_start"]) >= 3.0 for segment in fixed)
+
+
+def test_fixed_rear_uses_full_static_frame_when_coverage_reaches_threshold():
+    coverage = {
+        "platform": "youtube",
+        "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 8.0},
+        "sources": [
+            {
+                "path": "/tmp/iphone.mov", "filename": "iphone.mov", "camera_id": "iphone",
+                "camera_role": "fixed_rear", "offset_sec": 0.0, "duration_sec": 8.0, "confidence": 9.0,
+            },
+            {
+                "path": "/tmp/sony.mp4", "filename": "sony.mp4", "camera_id": "sony",
+                "camera_role": "handheld", "offset_sec": 0.0, "duration_sec": 8.0, "confidence": 9.0,
+            },
+            {
+                "path": "/tmp/360.mp4", "filename": "360.mp4", "camera_id": "360",
+                "camera_role": "360", "projection": "equirect", "offset_sec": 0.0,
+                "duration_sec": 8.0, "confidence": 9.0,
+            },
+        ],
+    }
+    beats = {"bars_sec": [0.0, 2.0, 4.0, 6.0, 8.0], "sections_sec": []}
+    settings = {"edit": {"camera_role_weights": {"360": 0, "handheld": 0, "fixed_rear": 1}}}
+
+    plan = _youtube_multicam_plan(coverage, beats, settings)
+
+    fixed = [segment for segment in plan["segments"] if segment["camera_id"] == "iphone"]
+    assert fixed
+    assert all(segment["fixed_camera_alternative_count"] == 2 for segment in fixed)
+    assert all(segment["fixed_camera_zoom_coverage_threshold"] == 2 for segment in fixed)
+    assert all(segment["fixed_camera_zoom_policy"] == "full_frame_static_sufficient_coverage" for segment in fixed)
+    assert all(segment["motion"]["movement"] == "full_static" for segment in fixed)
+    assert all(segment["motion"]["zoom_start"] == 1.0 == segment["motion"]["zoom_end"] for segment in fixed)
+    assert all(segment["motion"]["pan_x_start"] == segment["motion"]["pan_x_end"] for segment in fixed)
+    assert all(segment["motion"]["pan_y_start"] == segment["motion"]["pan_y_end"] for segment in fixed)
+
+
+def test_fixed_camera_coverage_threshold_is_configurable():
+    coverage = {
+        "platform": "youtube",
+        "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 4.0},
+        "sources": [
+            {"path": "/tmp/iphone.mov", "filename": "iphone.mov", "camera_id": "iphone", "camera_role": "fixed_rear", "offset_sec": 0.0, "duration_sec": 4.0, "confidence": 9.0},
+            {"path": "/tmp/sony.mp4", "filename": "sony.mp4", "camera_id": "sony", "camera_role": "handheld", "offset_sec": 0.0, "duration_sec": 4.0, "confidence": 9.0},
+        ],
+    }
+    beats = {"bars_sec": [0.0, 2.0, 4.0], "sections_sec": []}
+    plan = _youtube_multicam_plan(coverage, beats, {"edit": {"fixed_camera_zoom_coverage_threshold": 1, "camera_role_weights": {"360": 0, "handheld": 0, "fixed_rear": 1}}})
+
+    fixed = [segment for segment in plan["segments"] if segment["camera_id"] == "iphone"]
+    assert fixed
+    assert all(segment["fixed_camera_zoom_coverage_threshold"] == 1 for segment in fixed)
+    assert all(segment["motion"]["zoom_start"] == 1.0 for segment in fixed)
+
+
 def test_youtube_plan_assigns_spherical_shots_to_360_segments():
     coverage = {
         "platform": "youtube",
