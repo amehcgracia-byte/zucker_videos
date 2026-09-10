@@ -70,11 +70,17 @@ MOTION_SPEEDS = (("very_slow", 0.50), ("slow", 0.72), ("fast", 1.0))
 IPHONE_CROP_TOP_LIMIT = 0.80
 # Bump this whenever the YouTube camera-choice invariant changes so an older
 # cached edit plan cannot keep producing the previous camera runs.
-YOUTUBE_CAMERA_SELECTION_VERSION = 14
-# Number of *alternative* physical cameras that must cover the same synced
-# window before the fixed/iPhone camera stops being used as a close-up filler.
-# The selected fixed camera itself is deliberately not counted.
+YOUTUBE_CAMERA_SELECTION_VERSION = 15
+# Legacy diagnostic threshold retained in project settings/manifests. The
+# production policy now stops close-up filler as soon as one alternative
+# physical camera covers the same synced window.
 DEFAULT_FIXED_CAMERA_ZOOM_COVERAGE_THRESHOLD = 2
+# A fixed camera is a gap filler only when it is the sole usable source for
+# the interval.  With any alternative available its movement is deliberately
+# tiny: the full frame is the editorial baseline, not a 3x crop.
+FIXED_CAMERA_GENTLE_ZOOM_FRACTION = 0.15
+FIXED_CAMERA_GENTLE_ZOOM_MIN = 1.10
+FIXED_CAMERA_GENTLE_ZOOM_MAX = 1.20
 MAX_CONSECUTIVE_CAMERA_SEGMENTS = 2
 # Retained as a versioned emergency switch for diagnostics; normal builds use
 # the shared gentle hold/sweep motion below.
@@ -116,7 +122,14 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 15
+EDIT_PLAN_ALGORITHM_VERSION = 16
+# Editorial targets for the measured 360 landmarks.  The remaining 20% is
+# assigned to every other available landmark in equal relative shares.
+DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
+    "singer": 0.60,
+    "full_stage": 0.10,
+    "audience": 0.10,
+}
 
 
 class EditStage(Stage):
@@ -201,6 +214,7 @@ class EditStage(Stage):
         else:
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, t("choosing_cameras"))
+            coverage = {**coverage, "singing_segments": _detect_singing_segments(project, coverage)}
             plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}), recorded_moves=recorded_moves)
         write_artifact_json(artifact_path(project, "beats.json"), beats)
         plan["edit_plan_algorithm_version"] = EDIT_PLAN_ALGORITHM_VERSION
@@ -267,6 +281,47 @@ def _load_or_analyze_beats(project: Project, coverage: dict[str, Any], progress_
         "bars_sec": bars,
         "sections_sec": section_times,
     }
+
+
+def _detect_singing_segments(project: Project, coverage: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return conservative sung windows using the existing master analysis."""
+    master = project.data.get("inputs", {}).get("master") or {}
+    path = str(master.get("path") or "")
+    window = coverage.get("window") or {}
+    start = float(window.get("start_sec") or 0.0)
+    duration = max(0.0, float(window.get("duration_sec") or 0.0))
+    if not path or not Path(path).exists() or duration <= 0.0:
+        return []
+    try:
+        import librosa
+        import numpy as np
+
+        y, sr = librosa.load(path, sr=11025, mono=True, offset=start, duration=duration)
+        if len(y) < sr:
+            return []
+        harmonic, _percussive = librosa.effects.hpss(y)
+        hop = 512
+        rms = librosa.feature.rms(y=harmonic, hop_length=hop)[0]
+        threshold = max(float(np.percentile(rms, 55)), 0.015)
+        active = rms >= threshold
+        raw: list[tuple[float, float]] = []
+        for index, value in enumerate(active):
+            if not value:
+                continue
+            local_start = index * hop / sr
+            local_end = min(duration, (index + 1) * hop / sr)
+            if raw and local_start <= raw[-1][1] + 0.35:
+                raw[-1] = (raw[-1][0], local_end)
+            else:
+                raw.append((local_start, local_end))
+        return [
+            {"start_sec": round(start + begin, 3), "end_sec": round(start + end, 3), "classification": "singing"}
+            for begin, end in raw
+            if end - begin >= 1.0
+        ]
+    except Exception:
+        LOGGER.warning("Singing analysis unavailable; continuing without singer preference", exc_info=True)
+        return []
 
 
 def _beat_fingerprint(project: Project, coverage: dict[str, Any]) -> str:
@@ -634,6 +689,7 @@ def _youtube_multicam_plan(
     spherical_mode = "automatic"
     use_recorded_360 = False
     role_weights = _camera_role_weights(edit_settings)
+    spherical_target_weights = _spherical_target_weights(edit_settings)
     fixed_rear_motion = bool(edit_settings.get("fixed_rear_motion", True))
     try:
         fixed_zoom_coverage_threshold = max(
@@ -695,6 +751,9 @@ def _youtube_multicam_plan(
             segment_start, segment_end, segment_index, spherical_landmarks, use_recorded_360, recorded_moves or [],
             forced_alternatives=forced_alternatives,
             prefer_battery_camera=segment_end >= end - 0.001,
+            preferred_camera_ids=_preferred_singing_camera_ids(
+                available, _is_singing_window(coverage, segment_start, segment_end)
+            ),
         )
         is_automatic_360 = _source_role(source) == "360" and not (
             use_recorded_360 and recorded_move_covering(recorded_moves or [], segment_start, segment_end)
@@ -717,6 +776,7 @@ def _youtube_multicam_plan(
         chosen_stats["chosen_seconds"] += segment_end - segment_start
         segment = _segment_from_source(source, segment_start, segment_end, window.get("title") or t("full_video"), platform=platform)
         segment["camera_id"] = selected_camera
+        segment["singing_detected"] = _is_singing_window(coverage, segment_start, segment_end)
         segment["available_camera_ids"] = sorted(available_camera_ids)
         alternative_camera_ids = sorted(camera_id for camera_id in available_camera_ids if camera_id != selected_camera)
         segment["camera_alternative_available"] = bool(alternative_camera_ids)
@@ -745,6 +805,7 @@ def _youtube_multicam_plan(
                 shot = _next_weighted_spherical_shot(
                     available_shots,
                     _spherical_type_usage(segments),
+                    target_weights=spherical_target_weights,
                     include_planet=include_planet,
                     previous_yaw=previous_spherical_yaw,
                     previous_type=previous_spherical_type,
@@ -759,14 +820,13 @@ def _youtube_multicam_plan(
             # not the filename, is authoritative: files such as ZZ24.7 .mov
             # are fixed cameras even when they are not named "iPhone".
             target_x, target_y = _visible_iphone_target(source, float(segment.get("clip_start_sec") or 0.0), segment_end - segment_start, operator_samples_cache)
-            if len(alternative_camera_ids) >= fixed_zoom_coverage_threshold:
-                # When other synchronized cameras cover this exact window,
-                # the fixed camera is no longer a gap filler. Keep the whole
-                # frame and avoid manufacturing a close-up the edit does not
-                # need. This is intentionally a real 1.0x static recipe, not
-                # a UI-only annotation, so preview and export share it.
-                segment["motion"] = _full_frame_static_motion()
-                segment["fixed_camera_zoom_policy"] = "full_frame_static_sufficient_coverage"
+            if alternative_camera_ids:
+                # One valid alternative is enough to stop treating the fixed
+                # camera as a gap filler. The old threshold compared against
+                # two, so a fixed camera plus one other source still got the
+                # aggressive 3x recipe.
+                segment["motion"] = _gentle_fixed_camera_motion(fixed_rear_motion_index)
+                segment["fixed_camera_zoom_policy"] = "gentle_center_motion_sufficient_coverage"
             else:
                 segment["motion"] = _ken_burns_motion(
                     fixed_rear_motion_index,
@@ -807,12 +867,15 @@ def _youtube_multicam_plan(
     return {
         "stage": "edit",
         "platform": coverage.get("platform") or "youtube",
+        "singing_segments": coverage.get("singing_segments") or [],
         "title": window.get("title") or t("full_video"),
         "real_edit_logic": "youtube beat-aligned multicam v1" if (coverage.get("platform") or "youtube") == "youtube" else "reel beat-aligned multicam (vertical highlight)",
         "warnings": warnings,
         "excluded_clips": coverage.get("excluded_clips") or [],
         "clip_diagnostics": coverage.get("clip_diagnostics") or [],
         "selection_diagnostics": finalized_stats,
+        "camera_distribution": _camera_distribution(finalized_stats),
+        "singing_camera_assignments": _singing_camera_assignments(segments),
         "non_music_bank": {
             str(source.get("filename") or source.get("path") or "source"): source.get("non_music_windows") or []
             for source in sources
@@ -827,6 +890,8 @@ def _youtube_multicam_plan(
         "cut_count": max(0, len(segments) - 1),
         "camera_usage": usage,
         "spherical_shot_usage": _spherical_shot_usage(segments),
+        "spherical_shot_distribution": _spherical_shot_distribution(segments, spherical_target_weights),
+        "spherical_target_weights": spherical_target_weights,
         "spherical_landmark_weights": {
             shot_type: float(data.get("weight") or 0.0)
             for shot_type, data in spherical_landmarks.items()
@@ -1078,6 +1143,7 @@ def _plan_spherical_fov(shot: dict[str, Any]) -> float:
 def _next_weighted_spherical_shot(
     shots: list[dict[str, Any]],
     usage: dict[str, int],
+    target_weights: dict[str, float] | None = None,
     include_planet: bool = False,
     previous_yaw: float | None = None,
     previous_type: str | None = None,
@@ -1103,9 +1169,12 @@ def _next_weighted_spherical_shot(
             return 0.0
         return abs(((float(shot.get("yaw") or 0.0) - previous_yaw + 180.0) % 360.0) - 180.0)
 
+    target_weights = target_weights or {str(shot.get("type")): float(shot.get("weight") or 1.0) for shot in candidates}
+    total_target = sum(max(0.0, float(target_weights.get(str(shot.get("type")), 0.0))) for shot in candidates) or 1.0
+
     def score(shot: dict[str, Any]) -> tuple[float, float, float, str]:
         shot_type = str(shot.get("type") or "")
-        weight = max(0.001, float(shot.get("weight") or 1.0))
+        weight = max(0.001, float(target_weights.get(shot_type, 0.0)) / total_target)
         # Deficit from the configured weighted rotation is primary. A shot
         # below its target share beats a nearby shot that is already overused.
         weighted_deficit = usage.get(shot_type, 0) / weight
@@ -1120,6 +1189,53 @@ def _next_weighted_spherical_shot(
         return (weighted_deficit, distance(shot), usage.get(shot_type, 0), shot_type)
 
     return dict(min(candidates, key=score))
+
+
+def _spherical_target_weights(settings: dict[str, Any] | None) -> dict[str, float]:
+    """Return normalized 360 shot targets, preserving the 60/10/10/20 rule.
+
+    ``spherical_shot_target_weights`` is intentionally separate from the
+    landmark ``weight`` field: the latter is a legacy per-landmark preference
+    and cannot express the requested hierarchy reliably.
+    """
+    raw = (settings or {}).get("spherical_shot_target_weights") or {}
+    targets = dict(DEFAULT_SPHERICAL_TARGET_WEIGHTS)
+    for key in SPHERICAL_SHOT_ORDER:
+        if key in raw:
+            try:
+                value = float(raw[key])
+                targets[key] = max(0.0, value / 100.0 if value > 1.0 else value)
+            except (TypeError, ValueError):
+                continue
+    explicit = sum(targets.get(key, 0.0) for key in ("singer", "full_stage", "audience"))
+    remaining = max(0.0, 1.0 - explicit)
+    others = [key for key in SPHERICAL_SHOT_ORDER if key not in {"singer", "full_stage", "audience", "planet"}]
+    configured_other = {key for key in others if key in raw}
+    if configured_other:
+        configured_total = sum(targets.get(key, 0.0) for key in configured_other) or 1.0
+        for key in others:
+            targets[key] = remaining * targets.get(key, 0.0) / configured_total if key in configured_other else 0.0
+    else:
+        share = remaining / max(1, len(others))
+        for key in others:
+            targets[key] = share
+    targets["planet"] = 0.0
+    total = sum(targets.values()) or 1.0
+    return {key: round(value / total, 6) for key, value in targets.items() if value > 0.0}
+
+
+def _spherical_shot_distribution(segments: list[dict[str, Any]], targets: dict[str, float]) -> list[dict[str, Any]]:
+    usage = _spherical_type_usage(segments)
+    total = sum(usage.values()) or 1
+    return [
+        {
+            "shot_type": shot_type,
+            "cuts": int(usage.get(shot_type, 0)),
+            "actual_percent": round(usage.get(shot_type, 0) / total * 100.0, 2),
+            "target_percent": round(float(targets.get(shot_type, 0.0)) * 100.0, 2),
+        }
+        for shot_type in sorted(set(targets) | set(usage))
+    ]
 
 
 def _extend_360_hold_index(
@@ -1428,6 +1544,7 @@ def _choose_source_avoiding_identical_framing(
     recorded_moves: list[dict[str, Any]],
     forced_alternatives: set[str] | None = None,
     prefer_battery_camera: bool = False,
+    preferred_camera_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Pick the best source while avoiding consecutive near-identical framing (Issue C).
 
@@ -1444,6 +1561,7 @@ def _choose_source_avoiding_identical_framing(
     # passthrough and Reel use separate paths and are untouched.
     usage_counts_copy = dict(usage_counts)
     role_weights_copy = dict(role_weights)
+    preferred_camera_ids = preferred_camera_ids or set()
     role_source_ids = {_source_id(source): _source_role(source) for source in sources}
     ranked: list[dict[str, Any]] = []
     # Produce a sorted list by calling _choose_source iteratively isn't clean; instead
@@ -1459,7 +1577,8 @@ def _choose_source_avoiding_identical_framing(
         covered_seconds = max(1.0, float((selection_stats.get(_source_id(src)) or {}).get("covered_seconds") or 0.0))
         director_bonus = float(src.get("director_segment_score") or 1.0) if role == "handheld" else 1.0
         battery_bonus = 1 if prefer_battery_camera and _is_battery_camera(src) else 0
-        return (role_chosen_seconds / target_share, -battery_bonus, chosen_seconds / covered_seconds, usage_counts_copy.get(_source_id(src), 0), -director_bonus, -float(src.get("confidence") or 0.0), _source_id(src))
+        singing_bonus = 1 if _camera_id(src) in preferred_camera_ids else 0
+        return (-singing_bonus, role_chosen_seconds / target_share, -battery_bonus, chosen_seconds / covered_seconds, usage_counts_copy.get(_source_id(src), 0), -director_bonus, -float(src.get("confidence") or 0.0), _source_id(src))
 
     usable = [src for src in sources if float(role_weights_copy.get(_source_role(src), role_weights_copy.get("handheld", 0.3))) > 0.0] or list(sources)
     if forced_alternatives:
@@ -1599,13 +1718,63 @@ def _source_role(source: dict[str, Any]) -> str:
     explicit_role = str(source.get("camera_role") or "").strip().lower()
     if explicit_role in {"360", "fixed_rear", "handheld"}:
         return explicit_role
+    if source.get("is_static_camera") is True or source.get("static_camera") is True:
+        return "fixed_rear"
+    camera_type = str(source.get("camera_type") or source.get("device_type") or "").lower()
+    if camera_type in {"iphone", "phone", "mobile", "smartphone", "static"}:
+        return "fixed_rear"
     projection = str(source.get("projection") or "").lower()
     filename = str(source.get("filename") or source.get("path") or source.get("source_path") or "").lower()
     if projection in {"equirect", "raw_insv"} or filename.endswith(".insv") or "360" in filename:
         return "360"
-    if "iphone" in filename or filename.endswith(".mov"):
+    if any(marker in filename for marker in ("iphone", "phone", "mobile", "pixel", "samsung", "galaxy", "android")) or filename.endswith(".mov"):
         return "fixed_rear"
     return "handheld"
+
+
+def _camera_distribution(selection_stats: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    total = sum(float(item.get("chosen_seconds") or 0.0) for item in selection_stats) or 1.0
+    return [
+        {
+            "camera_id": _camera_id(item),
+            "filename": item.get("filename"),
+            "role": item.get("role"),
+            "configured_percent": round(float(item.get("configured_weight") or 0.0) * 100.0, 2),
+            "chosen_seconds": round(float(item.get("chosen_seconds") or 0.0), 3),
+            "actual_percent": round(float(item.get("chosen_seconds") or 0.0) / total * 100.0, 2),
+        }
+        for item in selection_stats
+    ]
+
+
+def _singing_camera_assignments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "start_sec": round(float(segment.get("master_start_sec") or 0.0), 3),
+            "end_sec": round(float(segment.get("master_start_sec") or 0.0) + float(segment.get("duration_sec") or 0.0), 3),
+            "camera_id": segment.get("camera_id"),
+            "source": segment.get("filename") or Path(str(segment.get("clip_path") or "")).name,
+            "sung": bool(segment.get("singing_detected")),
+        }
+        for segment in segments
+        if segment.get("singing_detected")
+    ]
+
+
+def _is_singing_window(coverage: dict[str, Any], start: float, end: float) -> bool:
+    return any(
+        float(item.get("start_sec") or 0.0) < end and float(item.get("end_sec") or 0.0) > start
+        for item in (coverage.get("singing_segments") or [])
+    )
+
+
+def _preferred_singing_camera_ids(sources: list[dict[str, Any]], singing: bool) -> set[str]:
+    if not singing:
+        return set()
+    sony = {_camera_id(source) for source in sources if _source_role(source) == "handheld" and "sony" in str(source.get("filename") or source.get("path") or "").lower()}
+    if sony:
+        return sony
+    return {_camera_id(source) for source in sources if _source_role(source) == "360"}
 
 
 def _reel_target_for_source(source: dict[str, Any], clip_start_sec: float, duration_sec: float) -> tuple[float, float]:
@@ -1946,6 +2115,39 @@ def _full_frame_static_motion() -> dict[str, Any]:
         "pan_y": 0.5,
         "top_edge_limit": IPHONE_CROP_TOP_LIMIT,
         "vertical_motion": "static",
+    }
+
+
+def _gentle_fixed_camera_motion(index: int) -> dict[str, Any]:
+    """One centred, barely perceptible move from/to the full frame.
+
+    This is deliberately not built from ``_ken_burns_motion``. That helper's
+    historical ``force_full_zoom`` recipe starts around 3x, which was the
+    source of the apparent double/aggressive zoom in otherwise well-covered
+    YouTube cuts.
+    """
+    zoom = round(1.0 + FIXED_CAMERA_GENTLE_ZOOM_FRACTION, 3)
+    zoom_in = index % 2 == 0
+    return {
+        "type": "ken_burns",
+        "movement": "zoom_in_center" if zoom_in else "zoom_out_center",
+        "speed": "very_slow",
+        "speed_factor": MOTION_SPEEDS[0][1],
+        "lock_target": False,
+        "centered": True,
+        "target_x": 0.5,
+        "target_y": 0.5,
+        "zoom_start": 1.0 if zoom_in else zoom,
+        "zoom_end": zoom if zoom_in else 1.0,
+        "pan_x_start": 0.5,
+        "pan_x_end": 0.5,
+        "pan_y_start": 0.5,
+        "pan_y_end": 0.5,
+        "pan_x": 0.5,
+        "pan_y": 0.5,
+        "top_edge_limit": IPHONE_CROP_TOP_LIMIT,
+        "vertical_motion": "static",
+        "zoom_path_fraction": FIXED_CAMERA_GENTLE_ZOOM_FRACTION,
     }
 
 

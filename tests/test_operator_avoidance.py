@@ -25,6 +25,7 @@ def test_role_for_record_classifies_360_iphone_and_sony():
     assert role_for_record(None, "raw.insv") == "360"
     assert role_for_record(None, "IMG_0018.MOV") == "fixed_rear"
     assert role_for_record(None, "C0059.MP4") == "handheld"
+    assert role_for_record(None, "phone-camera.mp4", {"is_static_camera": True}) == "fixed_rear"
 
 
 def test_secondary_subject_rejects_duplicate_boxes_for_back_facing_operator():

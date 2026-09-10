@@ -103,6 +103,17 @@ def test_next_landmark_prefers_nearby_yaw_while_preserving_variety():
     assert chosen["type"] == "audience"
 
 
+def test_spherical_target_weights_normalize_requested_60_10_10_20_split():
+    from core.stages.edit import _spherical_target_weights
+
+    weights = _spherical_target_weights({"spherical_shot_target_weights": {"singer": 60, "full_stage": 10, "audience": 10}})
+
+    assert weights["singer"] == pytest.approx(0.60)
+    assert weights["full_stage"] == pytest.approx(0.10)
+    assert weights["audience"] == pytest.approx(0.10)
+    assert sum(weights.values()) == pytest.approx(1.0)
+
+
 def test_weighted_landmark_rotation_does_not_lock_to_nearest_yaw():
     from core.stages.edit import _next_weighted_spherical_shot
 
@@ -794,7 +805,7 @@ def test_fixed_rear_keeps_close_up_when_synced_coverage_is_sparse():
     assert all(float(segment["motion"]["zoom_start"]) >= 3.0 for segment in fixed)
 
 
-def test_fixed_rear_uses_full_static_frame_when_coverage_reaches_threshold():
+def test_fixed_rear_uses_gentle_center_motion_when_coverage_is_available():
     coverage = {
         "platform": "youtube",
         "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 8.0},
@@ -823,11 +834,11 @@ def test_fixed_rear_uses_full_static_frame_when_coverage_reaches_threshold():
     assert fixed
     assert all(segment["fixed_camera_alternative_count"] == 2 for segment in fixed)
     assert all(segment["fixed_camera_zoom_coverage_threshold"] == 2 for segment in fixed)
-    assert all(segment["fixed_camera_zoom_policy"] == "full_frame_static_sufficient_coverage" for segment in fixed)
-    assert all(segment["motion"]["movement"] == "full_static" for segment in fixed)
-    assert all(segment["motion"]["zoom_start"] == 1.0 == segment["motion"]["zoom_end"] for segment in fixed)
-    assert all(segment["motion"]["pan_x_start"] == segment["motion"]["pan_x_end"] for segment in fixed)
-    assert all(segment["motion"]["pan_y_start"] == segment["motion"]["pan_y_end"] for segment in fixed)
+    assert all(segment["fixed_camera_zoom_policy"] == "gentle_center_motion_sufficient_coverage" for segment in fixed)
+    assert all(abs(float(segment["motion"]["zoom_end"]) - float(segment["motion"]["zoom_start"])) <= 0.15 for segment in fixed)
+    assert all(1.0 <= float(segment["motion"]["zoom_start"]) <= 1.15 for segment in fixed)
+    assert all(1.0 <= float(segment["motion"]["zoom_end"]) <= 1.15 for segment in fixed)
+    assert all(segment["motion"].get("centered") is True for segment in fixed)
 
 
 def test_fixed_camera_coverage_threshold_is_configurable():

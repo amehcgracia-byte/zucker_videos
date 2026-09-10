@@ -397,6 +397,15 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any], *, allo
         selected_clip = dict(clip)
         if diagnostic.get("projection"):
             selected_clip["projection"] = diagnostic["projection"]
+        if record:
+            selected_clip["camera_role"] = role_for_record(
+                str(diagnostic.get("projection") or ""),
+                str(diagnostic.get("filename") or ""),
+                record,
+            )
+            for key in ("camera_id", "camera_name", "camera_type", "device_type", "is_static_camera", "static_camera"):
+                if key in record:
+                    selected_clip[key] = record[key]
         selected.append(selected_clip)
     warnings = []
     for diagnostic in diagnostics:
@@ -427,7 +436,7 @@ def _selectable_reel_clips(project: Project) -> dict[str, Any]:
             "filename": original_filename,
             "duration_sec": float(probe.get("duration") or record.get("duration") or 0.0),
             "projection": projection,
-            "camera_role": role_for_record(str(projection or ""), str(original_filename)),
+            "camera_role": role_for_record(str(projection or ""), str(original_filename), record),
             "probe": probe,
             "offset_sec": 0.0,
         }

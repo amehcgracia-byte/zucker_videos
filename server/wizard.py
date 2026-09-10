@@ -812,7 +812,7 @@ class WizardRunner:
                 job.paper_edit_available = True
                 _write_stage_log(project, "wizard", "PAPER EDIT READY before export")
                 return
-            if platform == "reel" and not is_single_source_reel(project):
+            if platform in {"reel", "youtube"} and not (platform == "reel" and is_single_source_reel(project)):
                 # Review-ready is a user-visible promise. Materialize every
                 # thumbnail first, including the authored crop/motion frame.
                 review = review_items(project)

@@ -166,7 +166,7 @@ def analyze_operator_presence(records: list[dict[str, Any]], progress_callback: 
     candidates = [
         record
         for record in records
-        if role_for_record(str((record.get("probe") or {}).get("projection") or record.get("projection") or ""), Path(str(record.get("path") or "")).name) != "handheld"
+        if role_for_record(str((record.get("probe") or {}).get("projection") or record.get("projection") or ""), Path(str(record.get("path") or "")).name, record) != "handheld"
     ]
     if not candidates:
         return

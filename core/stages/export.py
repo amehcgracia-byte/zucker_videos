@@ -462,7 +462,12 @@ class ExportStage(Stage):
                             for segment in segments
                         ],
                         "camera_runs": [] if platform == "360" else _camera_runs(segments),
+                        "camera_distribution": plan.get("camera_distribution") or [],
                         "spherical_shot_usage": plan.get("spherical_shot_usage") or _spherical_shot_usage(segments),
+                        "spherical_shot_distribution": plan.get("spherical_shot_distribution") or [],
+                        "spherical_target_weights": plan.get("spherical_target_weights") or {},
+                        "singing_segments": plan.get("singing_segments") or [],
+                        "singing_camera_assignments": plan.get("singing_camera_assignments") or [],
                         "spherical_recording_usage": plan.get("spherical_recording_usage") or _spherical_recording_usage(segments),
                         "operator_avoidance_segments": 0 if platform == "360" else count_avoidance_adjustments(segments),
                         "excluded_clips": plan.get("excluded_clips") or [],
@@ -2676,7 +2681,14 @@ def _ken_burns_filter(motion: dict[str, Any], platform: str, duration: float) ->
             pan_y_expr = f"max(({IPHONE_CROP_TOP_LIMIT:.6f}+0.5/({zoom_expr})),min(1,max(0,(({zoom_expr})*{target_y:.6f}-0.5)/(({zoom_expr})-1))))"
     else:
         pan_x_expr = f"({pan_x_start:.6f}+({pan_x_end:.6f}-{pan_x_start:.6f})*{progress})"
-        pan_y_expr = f"max(({IPHONE_CROP_TOP_LIMIT:.6f}+0.5/({zoom_expr})),({pan_y_start:.6f}+({pan_y_end:.6f}-{pan_y_start:.6f})*{progress}))"
+        # A centred gentle fixed-camera move is already guaranteed to keep
+        # the top edge well below the 0.80 ceiling. Applying the historical
+        # crop-space lower bound here would push a 1.15x centre crop to the
+        # bottom of the frame and make the motion look like a second crop.
+        if motion.get("centered"):
+            pan_y_expr = f"({pan_y_start:.6f}+({pan_y_end:.6f}-{pan_y_start:.6f})*{progress})"
+        else:
+            pan_y_expr = f"max(({IPHONE_CROP_TOP_LIMIT:.6f}+0.5/({zoom_expr})),({pan_y_start:.6f}+({pan_y_end:.6f}-{pan_y_start:.6f})*{progress}))"
     scaled_width = f"ceil({width}*{zoom_expr}/2)*2"
     scaled_height = f"ceil({height}*{zoom_expr}/2)*2"
     return (

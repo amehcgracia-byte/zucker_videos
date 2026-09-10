@@ -250,7 +250,7 @@ def _secondary_subject(ranked_blobs: list[dict[str, float]], dominant: dict[str,
 # ---------------------------------------------------------------------------
 
 
-def role_for_record(projection: str | None, filename: str) -> str:
+def role_for_record(projection: str | None, filename: str, metadata: dict[str, Any] | None = None) -> str:
     """Classify a source into 360 / fixed_rear / handheld from cheap metadata.
 
     Mirrors ``core.stages.edit._source_role``; kept independent here so ingest
@@ -258,9 +258,17 @@ def role_for_record(projection: str | None, filename: str) -> str:
     """
     projection_l = str(projection or "").lower()
     filename_l = str(filename or "").lower()
+    metadata = metadata or {}
+    explicit_role = str(metadata.get("camera_role") or "").strip().lower()
+    if explicit_role in {"360", "fixed_rear", "handheld"}:
+        return explicit_role
+    if metadata.get("is_static_camera") is True or metadata.get("static_camera") is True:
+        return "fixed_rear"
+    if str(metadata.get("camera_type") or metadata.get("device_type") or "").lower() in {"iphone", "phone", "mobile", "smartphone", "static"}:
+        return "fixed_rear"
     if projection_l in {"equirect", "raw_insv"} or filename_l.endswith(".insv") or "360" in filename_l:
         return "360"
-    if "iphone" in filename_l or filename_l.endswith(".mov"):
+    if any(marker in filename_l for marker in ("iphone", "phone", "mobile", "pixel", "samsung", "galaxy", "android")) or filename_l.endswith(".mov"):
         return "fixed_rear"
     return "handheld"
 

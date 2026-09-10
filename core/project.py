@@ -53,6 +53,7 @@ def default_settings() -> dict[str, Any]:
             # synced window, a fixed/iPhone source stays full-frame instead of
             # being forced into a close-up filler shot.
             "fixed_camera_zoom_coverage_threshold": 2,
+            "spherical_shot_target_weights": {"singer": 0.60, "full_stage": 0.10, "audience": 0.10},
             # Runtime sendcmd events visibly damage frames on the packaged
             # ffmpeg build. Keep the safe default frozen; subtle remains an
             # explicit experiment with only two absolute pose events.
