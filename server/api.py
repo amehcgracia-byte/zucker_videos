@@ -1388,6 +1388,27 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("preview_failed", "Could not render the 360 shot preview", 500)
         return send_file(io.BytesIO(result.stdout), mimetype="image/jpeg", download_name="spherical-preview.jpg")
 
+    @app.get("/api/v1/wizard/spherical-source-frame")
+    def api_wizard_spherical_source_frame() -> Response:
+        """Serve one equirectangular frame for the interactive client viewer."""
+        project = _require_project(state)
+        requested = Path(str(request.args.get("source") or "")).expanduser().resolve()
+        allowed = set()
+        for record in project.data.get("inputs", {}).get("videos", []):
+            allowed.update({Path(str(record.get("path") or "")).resolve(), Path(record_media_path(record)).resolve()})
+        if requested not in allowed or not requested.is_file():
+            return error_response("not_found", "360 source is not registered in this project", 404)
+        ffmpeg_path = str(load_global_config().get("ffmpeg_path") or "ffmpeg")
+        result = subprocess.run(
+            [ffmpeg_path, "-hide_banner", "-loglevel", "error", "-ss", "30", "-i", str(requested),
+             "-frames:v", "1", "-vf", "scale=2048:1024:force_original_aspect_ratio=decrease,pad=2048:1024:(ow-iw)/2:(oh-ih)/2",
+             "-q:v", "3", "-f", "mjpeg", "pipe:1"],
+            capture_output=True, check=False, timeout=30,
+        )
+        if result.returncode != 0 or not result.stdout:
+            return error_response("preview_failed", "Could not read the equirectangular 360 frame", 500)
+        return send_file(io.BytesIO(result.stdout), mimetype="image/jpeg", download_name="spherical-source-frame.jpg")
+
     @app.post("/api/v1/wizard/prepare")
     def api_wizard_prepare() -> Response:
         body = _json_body()

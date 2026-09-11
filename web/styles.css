@@ -779,13 +779,29 @@ button:disabled {
   padding: 10px;
 }
 
-.spherical-fields fieldset img[data-spherical-preview] {
+.spherical-fields fieldset canvas[data-spherical-canvas] {
   grid-column: 1 / -1;
   width: 100%;
   aspect-ratio: 16 / 9;
-  object-fit: cover;
   border-radius: 8px;
   background: #111;
+  cursor: grab;
+  touch-action: none;
+}
+
+.spherical-fields fieldset canvas[data-spherical-canvas].dragging {
+  cursor: grabbing;
+}
+
+.spherical-fields fieldset details {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.spherical-fields fieldset details[open] {
+  display: grid;
+  gap: 8px;
 }
 
 .spherical-fields label {
