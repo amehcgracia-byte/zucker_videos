@@ -19,6 +19,17 @@ from core.stages.edit import IPHONE_CROP_TOP_LIMIT, _camera_id
 
 LOGGER = logging.getLogger(__name__)
 
+_REVIEW_SHOT_LABELS = {
+    "singer": "Cantante",
+    "full_stage": "Escenario completo",
+    "audience": "Publico",
+    "left": "Lado izquierdo",
+    "right": "Lado derecho",
+    "audience_stage_wide": "Publico y escenario",
+    "drummer": "Bateria",
+    "planet": "Planeta",
+}
+
 
 class ThumbnailRenderError(RuntimeError):
     """A review thumbnail could not be rendered by FFmpeg."""
@@ -37,6 +48,67 @@ def _source_for(segment: dict[str, Any]) -> str:
     if segment.get("spherical_shot") and segment.get("source_path"):
         return str(segment["source_path"])
     return str(segment.get("proxy_path") or segment.get("clip_path") or segment.get("source_path") or "")
+
+
+def _current_spherical_landmarks(project: Project) -> dict[str, dict[str, Any]]:
+    raw = project.data.get("settings", {}).get("spherical_landmarks") or {}
+    return {str(key): dict(value) for key, value in raw.items() if isinstance(value, dict)}
+
+
+def _review_segment(project: Project, segment: dict[str, Any]) -> dict[str, Any]:
+    """Overlay current saved landmark angles onto a planned review segment.
+
+    Review can be opened after a user edits landmarks but before a stale edit
+    plan has been rebuilt.  The card label and its image must then use the same
+    current source of truth, rather than silently trusting the old plan pose.
+    """
+    shot = segment.get("spherical_shot") or {}
+    shot_type = str(shot.get("shot_id") or shot.get("type") or "")
+    saved = _current_spherical_landmarks(project).get(shot_type)
+    if not saved or not shot:
+        return dict(segment)
+    effective = dict(shot)
+    for field in ("yaw", "pitch", "fov", "weight"):
+        if field in saved:
+            effective[field] = saved[field]
+    effective["type"] = shot_type
+    effective["shot_id"] = shot_type
+    effective["label"] = _REVIEW_SHOT_LABELS.get(shot_type, shot.get("label") or shot_type)
+    result = dict(segment)
+    result["spherical_shot"] = effective
+    return result
+
+
+def _review_segments(project: Project) -> list[dict[str, Any]]:
+    return [_review_segment(project, segment) for segment in (_plan(project).get("segments") or [])]
+
+
+def _review_pose_for_cache(segment: dict[str, Any]) -> dict[str, Any]:
+    shot = segment.get("spherical_shot") or {}
+    pose = {key: shot.get(key) for key in ("type", "shot_id", "pitch", "fov")}
+    try:
+        pose["yaw"] = float(shot.get("yaw") or 0.0) % 360.0
+    except (TypeError, ValueError):
+        pose["yaw"] = 0.0
+    pose["motion"] = segment.get("motion") or {}
+    return pose
+
+
+def _review_signature(segments: list[dict[str, Any]]) -> str:
+    payload = []
+    for segment in segments:
+        item = dict(segment)
+        pose = _review_pose_for_cache(segment)
+        # The plan may retain the authored yaw as either 330° or -30°.  Keep
+        # that representation out of the cache namespace: both values are
+        # the same spherical direction and must address the same thumbnail.
+        shot = dict(item.get("spherical_shot") or {})
+        if shot:
+            shot["yaw"] = pose["yaw"]
+            item["spherical_shot"] = shot
+        item["review_pose"] = pose
+        payload.append(item)
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
 def _thumbnail_filter(segment: dict[str, Any], color_profile: dict[str, Any] | None = None) -> str:
@@ -258,9 +330,8 @@ def _save_render_status(root: Path, status: dict[str, dict[str, Any]]) -> None:
 
 def mark_review_render_failed(project: Project, indices: set[int], message: str) -> None:
     """Persist a background render failure so the review UI can show it."""
-    plan = _plan(project)
-    segments = plan.get("segments") or []
-    signature = hashlib.sha256(json.dumps(segments, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    segments = _review_segments(project)
+    signature = _review_signature(segments)
     root = project.cache_dir / "shot_review" / signature
     root.mkdir(parents=True, exist_ok=True)
     status = _load_render_status(root)
@@ -304,9 +375,8 @@ def review_items(
     render_indices: set[int] | None = None,
 ) -> list[dict[str, Any]]:
     """Return review items, optionally rendering only selected missing thumbnails."""
-    plan = _plan(project)
-    segments = plan.get("segments") or []
-    signature = hashlib.sha256(json.dumps(segments, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    segments = _review_segments(project)
+    signature = _review_signature(segments)
     root = project.cache_dir / "shot_review" / signature
     root.mkdir(parents=True, exist_ok=True)
     render_status = _load_render_status(root)
@@ -327,10 +397,7 @@ def review_items(
         timestamp = clip_start + duration / 2.0
         source_stat = Path(source).stat() if Path(source).exists() else None
         shot = segment.get("spherical_shot") or {}
-        pose = json.dumps({
-            "spherical": {key: shot.get(key) for key in ("type", "yaw", "pitch", "fov")},
-            "motion": segment.get("motion") or {},
-        }, sort_keys=True)
+        pose = json.dumps(_review_pose_for_cache(segment), sort_keys=True)
         key = hashlib.sha256(f"{source}|{source_stat.st_mtime_ns if source_stat else 0}|{timestamp:.4f}|{pose}".encode()).hexdigest()[:20]
         output = root / f"shot-{index:04d}-{key}.jpg"
         should_render = render_missing and (render_indices is None or index in render_indices)

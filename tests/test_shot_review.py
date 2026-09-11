@@ -7,7 +7,7 @@ from pathlib import Path
 from core.project import create_project, load_project
 import pytest
 
-from core.shot_review import ThumbnailRenderError, _candidate_covers_slot, _candidate_keys, _thumbnail_filter, replace_slots, review_items
+from core.shot_review import ThumbnailRenderError, _candidate_covers_slot, _candidate_keys, _review_segment, _review_signature, _thumbnail_filter, replace_slots, review_items
 from core.stages.base import artifact_path
 
 
@@ -150,6 +150,27 @@ def test_spherical_thumbnail_uses_the_segment_landmark_pose() -> None:
     assert singer != drummer
     assert "yaw=25.000" in singer and "h_fov=82.000" in singer
     assert "yaw=-150.000" in drummer and "h_fov=125.000" in drummer
+
+
+def test_review_uses_current_saved_landmark_and_invalidates_pose_cache(tmp_path: Path) -> None:
+    project = create_project("Review spherical", str(tmp_path / "Review spherical.zuckervid"))
+    segment = {
+        "source_path": "/tmp/equirect.mp4", "projection": "equirect",
+        "spherical_shot": {"type": "singer", "shot_id": "singer", "label": "Cantante", "yaw": 10, "pitch": 0, "fov": 90},
+    }
+    project.data["settings"]["spherical_landmarks"] = {"singer": {"yaw": 330.068, "pitch": -26.556, "fov": 74.8}}
+    effective = _review_segment(project, segment)
+    assert effective["spherical_shot"]["yaw"] == 330.068
+    assert effective["spherical_shot"]["pitch"] == -26.556
+    first = _review_signature([effective])
+    project.data["settings"]["spherical_landmarks"]["singer"]["yaw"] = 323.336
+    changed = _review_segment(project, segment)
+    assert _review_signature([changed]) != first
+    project.data["settings"]["spherical_landmarks"]["singer"]["yaw"] = -29.932
+    signed = _review_segment(project, segment)
+    project.data["settings"]["spherical_landmarks"]["singer"]["yaw"] = 330.068
+    canonical = _review_segment(project, segment)
+    assert _review_signature([signed]) == _review_signature([canonical])
 
 
 def test_youtube_replacement_requires_verified_coverage_for_the_slot() -> None:
