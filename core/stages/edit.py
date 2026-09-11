@@ -543,6 +543,10 @@ def _reel_promo_plan(
         "reel_text_overlays": list(wizard.get("reel_text_overlays") or []),
         "reel_image_overlays": list(wizard.get("reel_image_overlays") or []),
         "title": window.get("title") or t("full_video"),
+        # Keep the user's master selection as an explicit timeline anchor;
+        # export must not infer it from whichever segment happens to sort first.
+        "master_window_start_sec": round(start, 6),
+        "master_window_end_sec": round(end, 6),
         "real_edit_logic": "reel unsynchronised promo: independent dynamic source selection on master beats",
         "warnings": coverage.get("warnings") or [],
         "excluded_clips": coverage.get("excluded_clips") or [],
@@ -686,9 +690,10 @@ def _youtube_multicam_plan(
     project_settings = settings or {}
     edit_settings = project_settings.get("edit") if "edit" in project_settings else project_settings
     spherical_landmarks = migrate_spherical_landmarks(project_settings.get("spherical_landmarks") or {})
-    spherical_mode = "automatic"
-    use_recorded_360 = False
+    spherical_mode = str(edit_settings.get("spherical_mode") or "automatic").lower()
+    use_recorded_360 = spherical_mode == "directed"
     role_weights = _camera_role_weights(edit_settings)
+    camera_target_weights = _camera_target_weights(sources, role_weights, edit_settings)
     spherical_target_weights = _spherical_target_weights(edit_settings)
     fixed_rear_motion = bool(edit_settings.get("fixed_rear_motion", True))
     try:
@@ -750,6 +755,7 @@ def _youtube_multicam_plan(
             available, previous_source, previous_framing, usage_counts, selection_stats, role_weights,
             segment_start, segment_end, segment_index, spherical_landmarks, use_recorded_360, recorded_moves or [],
             forced_alternatives=forced_alternatives,
+            camera_target_weights=camera_target_weights,
             prefer_battery_camera=segment_end >= end - 0.001,
             preferred_camera_ids=_preferred_singing_camera_ids(
                 available, _is_singing_window(coverage, segment_start, segment_end)
@@ -758,7 +764,7 @@ def _youtube_multicam_plan(
         is_automatic_360 = _source_role(source) == "360" and not (
             use_recorded_360 and recorded_move_covering(recorded_moves or [], segment_start, segment_end)
         )
-        if is_automatic_360:
+        if is_automatic_360 and len(available_camera_ids) == 1:
             next_index = _extend_360_hold_index(bar_times, next_index, segment_start, end, source)
             segment_end = min(end, float(bar_times[next_index]))
             # The source may not cover the longer phrase-aligned window. Keep
@@ -869,12 +875,15 @@ def _youtube_multicam_plan(
         "platform": coverage.get("platform") or "youtube",
         "singing_segments": coverage.get("singing_segments") or [],
         "title": window.get("title") or t("full_video"),
+        "master_window_start_sec": round(start, 6),
+        "master_window_end_sec": round(end, 6),
         "real_edit_logic": "youtube beat-aligned multicam v1" if (coverage.get("platform") or "youtube") == "youtube" else "reel beat-aligned multicam (vertical highlight)",
         "warnings": warnings,
         "excluded_clips": coverage.get("excluded_clips") or [],
         "clip_diagnostics": coverage.get("clip_diagnostics") or [],
         "selection_diagnostics": finalized_stats,
-        "camera_distribution": _camera_distribution(finalized_stats),
+        "camera_distribution": _camera_distribution(finalized_stats, camera_target_weights),
+        "camera_target_weights": camera_target_weights,
         "singing_camera_assignments": _singing_camera_assignments(segments),
         "non_music_bank": {
             str(source.get("filename") or source.get("path") or "source"): source.get("non_music_windows") or []
@@ -1177,7 +1186,10 @@ def _next_weighted_spherical_shot(
         weight = max(0.001, float(target_weights.get(shot_type, 0.0)) / total_target)
         # Deficit from the configured weighted rotation is primary. A shot
         # below its target share beats a nearby shot that is already overused.
-        weighted_deficit = usage.get(shot_type, 0) / weight
+        # Start every landmark with one virtual slot. Without this prior all
+        # counts are zero and the alphabetical tiebreaker starves the 60%
+        # singer target before the weighted rotation has any evidence.
+        weighted_deficit = (usage.get(shot_type, 0) + 1.0) / weight
         if shot_type == previous_type:
             weighted_deficit += 100.0
         elif shot_type in recent_types[-3:]:
@@ -1545,6 +1557,7 @@ def _choose_source_avoiding_identical_framing(
     forced_alternatives: set[str] | None = None,
     prefer_battery_camera: bool = False,
     preferred_camera_ids: set[str] | None = None,
+    camera_target_weights: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Pick the best source while avoiding consecutive near-identical framing (Issue C).
 
@@ -1562,23 +1575,29 @@ def _choose_source_avoiding_identical_framing(
     usage_counts_copy = dict(usage_counts)
     role_weights_copy = dict(role_weights)
     preferred_camera_ids = preferred_camera_ids or set()
+    camera_target_weights = camera_target_weights or {}
     role_source_ids = {_source_id(source): _source_role(source) for source in sources}
     ranked: list[dict[str, Any]] = []
     # Produce a sorted list by calling _choose_source iteratively isn't clean; instead
     # replicate the sort key inline.
     def score(src: dict[str, Any]) -> tuple:
         role = _source_role(src)
-        target_share = max(0.001, float(role_weights_copy.get(role, role_weights_copy.get("handheld", 0.3))))
+        target_share = max(0.001, float(camera_target_weights.get(_camera_id(src), role_weights_copy.get(role, role_weights_copy.get("handheld", 0.3)))))
         chosen_seconds = float((selection_stats.get(_source_id(src)) or {}).get("chosen_seconds") or 0.0)
         role_chosen_seconds = sum(
             float((selection_stats.get(source_id) or {}).get("chosen_seconds") or 0.0)
             for source_id, source_role in role_source_ids.items() if source_role == role
         )
+        camera_chosen_seconds = sum(
+            float((selection_stats.get(source_id) or {}).get("chosen_seconds") or 0.0)
+            for source_id in role_source_ids
+            if _camera_id(next(item for item in sources if _source_id(item) == source_id)) == _camera_id(src)
+        )
         covered_seconds = max(1.0, float((selection_stats.get(_source_id(src)) or {}).get("covered_seconds") or 0.0))
         director_bonus = float(src.get("director_segment_score") or 1.0) if role == "handheld" else 1.0
         battery_bonus = 1 if prefer_battery_camera and _is_battery_camera(src) else 0
         singing_bonus = 1 if _camera_id(src) in preferred_camera_ids else 0
-        return (-singing_bonus, role_chosen_seconds / target_share, -battery_bonus, chosen_seconds / covered_seconds, usage_counts_copy.get(_source_id(src), 0), -director_bonus, -float(src.get("confidence") or 0.0), _source_id(src))
+        return (-singing_bonus, camera_chosen_seconds / target_share, role_chosen_seconds / max(0.001, float(role_weights_copy.get(role, 0.3))), -battery_bonus, chosen_seconds / covered_seconds, usage_counts_copy.get(_source_id(src), 0), -director_bonus, -float(src.get("confidence") or 0.0), _source_id(src))
 
     usable = [src for src in sources if float(role_weights_copy.get(_source_role(src), role_weights_copy.get("handheld", 0.3))) > 0.0] or list(sources)
     if forced_alternatives:
@@ -1714,7 +1733,42 @@ def _camera_role_weights(settings: dict[str, Any] | None) -> dict[str, float]:
     return {key: value / total for key, value in weights.items()}
 
 
+def _camera_target_weights(sources: list[dict[str, Any]], role_weights: dict[str, float], settings: dict[str, Any] | None = None) -> dict[str, float]:
+    """Expand configured role targets into physical-camera targets.
+
+    The UI historically stores role weights, while a role can contain several
+    physical cameras. Splitting a role target across its cameras prevents one
+    camera from consuming the whole role allocation and makes the configured
+    percentage auditable in the final manifest.
+    """
+    settings = settings or {}
+    explicit = settings.get("camera_weights") or {}
+    cameras: dict[str, str] = {}
+    for source in sources:
+        cameras[_camera_id(source)] = _source_role(source)
+    if not cameras:
+        return {}
+    targets: dict[str, float] = {}
+    for camera_id, role in cameras.items():
+        raw = explicit.get(camera_id, explicit.get(str(camera_id).lower())) if isinstance(explicit, dict) else None
+        try:
+            if raw is not None:
+                value = float(raw)
+                targets[camera_id] = value / 100.0 if value > 1.0 else max(0.0, value)
+                continue
+        except (TypeError, ValueError):
+            pass
+        same_role = sum(1 for item in cameras.values() if item == role)
+        targets[camera_id] = float(role_weights.get(role, 0.0)) / max(1, same_role)
+    total = sum(targets.values()) or 1.0
+    return {camera_id: value / total for camera_id, value in targets.items()}
+
+
 def _source_role(source: dict[str, Any]) -> str:
+    projection = str(source.get("projection") or "").lower()
+    filename = str(source.get("filename") or source.get("path") or source.get("source_path") or "").lower()
+    if projection in {"equirect", "raw_insv"} or filename.endswith(".insv") or "360" in filename:
+        return "360"
     explicit_role = str(source.get("camera_role") or "").strip().lower()
     if explicit_role in {"360", "fixed_rear", "handheld"}:
         return explicit_role
@@ -1723,27 +1777,26 @@ def _source_role(source: dict[str, Any]) -> str:
     camera_type = str(source.get("camera_type") or source.get("device_type") or "").lower()
     if camera_type in {"iphone", "phone", "mobile", "smartphone", "static"}:
         return "fixed_rear"
-    projection = str(source.get("projection") or "").lower()
-    filename = str(source.get("filename") or source.get("path") or source.get("source_path") or "").lower()
-    if projection in {"equirect", "raw_insv"} or filename.endswith(".insv") or "360" in filename:
-        return "360"
     if any(marker in filename for marker in ("iphone", "phone", "mobile", "pixel", "samsung", "galaxy", "android")) or filename.endswith(".mov"):
         return "fixed_rear"
     return "handheld"
 
 
-def _camera_distribution(selection_stats: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _camera_distribution(selection_stats: list[dict[str, Any]], target_weights: dict[str, float] | None = None) -> list[dict[str, Any]]:
     total = sum(float(item.get("chosen_seconds") or 0.0) for item in selection_stats) or 1.0
+    grouped: dict[str, dict[str, Any]] = {}
+    for item in selection_stats:
+        camera_id = _camera_id(item)
+        entry = grouped.setdefault(camera_id, {"camera_id": camera_id, "filename": item.get("filename"), "role": item.get("role"), "chosen_seconds": 0.0})
+        entry["chosen_seconds"] += float(item.get("chosen_seconds") or 0.0)
     return [
         {
-            "camera_id": _camera_id(item),
-            "filename": item.get("filename"),
-            "role": item.get("role"),
-            "configured_percent": round(float(item.get("configured_weight") or 0.0) * 100.0, 2),
-            "chosen_seconds": round(float(item.get("chosen_seconds") or 0.0), 3),
-            "actual_percent": round(float(item.get("chosen_seconds") or 0.0) / total * 100.0, 2),
+            **entry,
+            "configured_percent": round(float((target_weights or {}).get(camera_id, entry.get("configured_weight", 0.0))) * 100.0, 2),
+            "chosen_seconds": round(float(entry["chosen_seconds"]), 3),
+            "actual_percent": round(float(entry["chosen_seconds"]) / total * 100.0, 2),
         }
-        for item in selection_stats
+        for camera_id, entry in grouped.items()
     ]
 
 

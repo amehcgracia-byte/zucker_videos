@@ -369,7 +369,7 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any], *, allo
             "verification": clip.get("verification"),
             "error": clip.get("error"),
             "no_audio": bool(clip.get("no_audio")),
-            "projection": (record.get("probe") or {}).get("projection") if record else None,
+            "projection": clip.get("projection") or ((record.get("probe") or {}).get("projection") if record else None),
             "path": clip.get("path"),
             "source_path": clip.get("source_path"),
         }

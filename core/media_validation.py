@@ -165,6 +165,21 @@ def is_probably_cfr(stream: dict[str, Any]) -> bool:
 def projection(metadata: dict[str, Any], width: int | None, height: int | None) -> str | None:
     """Detect equirectangular 360 exports by metadata or 2:1 geometry."""
     text = str(metadata).lower()
+    # ffprobe exposes projection in different places depending on whether the
+    # file came from Insta360 Studio, a phone editor, or a metadata injector.
+    # Inspect the structured fields first; the broad text fallback retains
+    # compatibility with older ffprobe builds.
+    structured = []
+    for stream in metadata.get("streams") or []:
+        structured.extend([
+            str((stream.get("tags") or {}).get(key) or "")
+            for key in ("projection", "projection_type", "spherical", "stereo_mode")
+        ])
+        structured.extend(str(item) for item in (stream.get("side_data_list") or []))
+    structured.extend(str((metadata.get("format") or {}).get("tags", {}).get(key) or "") for key in ("projection", "projection_type", "spherical"))
+    projection_text = " ".join(structured).lower()
+    if any(marker in projection_text for marker in ("equirect", "spherical", "360 video", "insta360")):
+        return "equirect"
     if "equirectangular" in text or "spherical" in text:
         return "equirect"
     if width and height and height > 0:

@@ -394,6 +394,7 @@ class ExportStage(Stage):
             _render_plan(
                 project, segments, audio_path, output_path, render_platform,
                 bitrate_info["video_bitrate"], warnings, progress_callback, required_space,
+                float(plan.get("master_window_start_sec") or segments[0].get("master_start_sec") or 0.0),
             )
         progress_callback(95, t("saving_result"))
         path = artifact_path(project, "export_manifest.json")
@@ -577,6 +578,7 @@ def _render_plan(
     warnings: list[str],
     progress_callback: ProgressCallback,
     required_space: int | None = None,
+    master_window_start: float | None = None,
 ) -> None:
     required_space = required_space or _required_export_space_bytes(
         _plan_duration(segments) + INTRO_DURATION + OUTRO_DURATION,
@@ -756,7 +758,8 @@ def _render_plan(
                 lambda percent, detail: progress_callback(89 + int(percent * 1 / 100), detail),
             )
             real_duration = _media_duration(str(video_for_mux))
-        audio_start, audio_delay = _audio_mux_start_and_delay(segments) if include_bookends else (float(segments[0].get("master_start_sec") or 0.0), 0.0)
+        audio_anchor = float(master_window_start) if master_window_start is not None else float(segments[0].get("master_start_sec") or 0.0)
+        audio_start, audio_delay = _audio_mux_start_and_delay(segments, first_master_start=audio_anchor) if include_bookends else (audio_anchor, 0.0)
         phase_started = time.perf_counter()
         _mux_continuous_master_audio(
             video_for_mux,
@@ -1730,8 +1733,8 @@ def _intro_master_start(segments: list[dict[str, Any]]) -> float:
     return max(0.0, first - INTRO_DURATION)
 
 
-def _audio_mux_start_and_delay(segments: list[dict[str, Any]]) -> tuple[float, float]:
-    first = float(segments[0].get("master_start_sec") or 0.0) if segments else 0.0
+def _audio_mux_start_and_delay(segments: list[dict[str, Any]], first_master_start: float | None = None) -> tuple[float, float]:
+    first = float(first_master_start) if first_master_start is not None else (float(segments[0].get("master_start_sec") or 0.0) if segments else 0.0)
     desired_start = first - INTRO_DURATION
     return max(0.0, desired_start), max(0.0, -desired_start)
 

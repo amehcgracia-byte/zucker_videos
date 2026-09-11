@@ -259,6 +259,11 @@ def role_for_record(projection: str | None, filename: str, metadata: dict[str, A
     projection_l = str(projection or "").lower()
     filename_l = str(filename or "").lower()
     metadata = metadata or {}
+    # Projection is authoritative. A 360 camera can be mounted statically or
+    # be described as a mobile camera by the uploader; neither may demote it
+    # out of the spherical candidate pool.
+    if projection_l in {"equirect", "raw_insv"} or filename_l.endswith(".insv") or "360" in filename_l:
+        return "360"
     explicit_role = str(metadata.get("camera_role") or "").strip().lower()
     if explicit_role in {"360", "fixed_rear", "handheld"}:
         return explicit_role
@@ -266,8 +271,6 @@ def role_for_record(projection: str | None, filename: str, metadata: dict[str, A
         return "fixed_rear"
     if str(metadata.get("camera_type") or metadata.get("device_type") or "").lower() in {"iphone", "phone", "mobile", "smartphone", "static"}:
         return "fixed_rear"
-    if projection_l in {"equirect", "raw_insv"} or filename_l.endswith(".insv") or "360" in filename_l:
-        return "360"
     if any(marker in filename_l for marker in ("iphone", "phone", "mobile", "pixel", "samsung", "galaxy", "android")) or filename_l.endswith(".mov"):
         return "fixed_rear"
     return "handheld"

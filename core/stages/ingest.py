@@ -73,6 +73,13 @@ class IngestStage(Stage):
                 record["probe"]["input_projection"] = "dfisheye"
                 record["probe"]["insv_fov"] = int(project.data["settings"].get("ingest", {}).get("insv_fov") or raw_360_model_fov(metadata))
                 record.setdefault("info", "360 stitched automatically — for best quality, export from Insta360 Studio instead")
+            # Persist the resolved role at ingest. Downstream stages must not
+            # have to re-infer a 360 source from a normalized proxy filename.
+            record["camera_role"] = role_for_record(
+                str(record.get("projection") or record["probe"].get("projection") or ""),
+                Path(path).name,
+                record,
+            )
             if validation.valid:
                 record.pop("status", None)
                 record.pop("not_a_video_reason", None)
