@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -323,8 +324,14 @@ def _load_render_status(root: Path) -> dict[str, dict[str, Any]]:
 
 def _save_render_status(root: Path, status: dict[str, dict[str, Any]]) -> None:
     path = _render_status_path(root)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(status, ensure_ascii=False), encoding="utf-8")
+    # Review can be opened/polled concurrently from the browser.  A fixed
+    # sibling temporary name lets one request replace the other request's
+    # temporary file before it calls replace().
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=root, prefix="render_status.", suffix=".tmp", delete=False
+    ) as handle:
+        handle.write(json.dumps(status, ensure_ascii=False))
+        temporary = Path(handle.name)
     temporary.replace(path)
 
 
