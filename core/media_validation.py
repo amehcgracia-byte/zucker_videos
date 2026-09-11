@@ -102,6 +102,7 @@ def validate_camera_video_metadata(metadata: dict[str, Any]) -> VideoValidation:
         "fps": dominant_fps(video_stream or {}),
         "cfr": is_probably_cfr(video_stream or {}),
         "projection": projection(metadata, width, height),
+        "projection_reason": projection_reason(metadata, width, height),
         "bit_depth": bit_depth(video_stream or {}),
         "hdr": is_hdr_video(video_stream or {}),
         "valid_video": False,
@@ -187,6 +188,25 @@ def projection(metadata: dict[str, Any], width: int | None, height: int | None) 
         if 1.95 <= ratio <= 2.05:
             return "equirect"
     return None
+
+
+def projection_reason(metadata: dict[str, Any], width: int | None, height: int | None) -> str:
+    """Explain the property-based projection decision for the UI/audit log."""
+    structured = []
+    for stream in metadata.get("streams") or []:
+        structured.extend(str(item) for item in (stream.get("side_data_list") or []))
+        structured.extend(str((stream.get("tags") or {}).get(key) or "") for key in ("projection", "projection_type", "spherical"))
+    structured.extend(str((metadata.get("format") or {}).get("tags", {}).get(key) or "") for key in ("projection", "projection_type", "spherical"))
+    text = " ".join(structured).lower()
+    if "equirect" in text:
+        return "ffprobe spherical mapping: equirectangular"
+    if "spherical" in text or "360 video" in text:
+        return "ffprobe spherical metadata"
+    if width and height and height > 0 and 1.95 <= width / height <= 2.05:
+        return f"equirectangular geometry: {width}x{height} ({width / height:.3f}:1)"
+    if width and height and height > 0:
+        return f"no spherical metadata and non-2:1 geometry: {width}x{height} ({width / height:.3f}:1)"
+    return "no spherical metadata or usable dimensions"
 
 
 def bit_depth(stream: dict[str, Any]) -> int | None:

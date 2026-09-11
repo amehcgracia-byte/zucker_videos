@@ -20,10 +20,12 @@ from core.operator_avoidance import (
 from core.normalization import global_cache_root
 
 
-def test_role_for_record_classifies_360_iphone_and_sony():
+def test_role_for_record_uses_properties_not_filename_markers():
     assert role_for_record("equirect", "clip.mp4") == "360"
-    assert role_for_record(None, "raw.insv") == "360"
-    assert role_for_record(None, "IMG_0018.MOV") == "fixed_rear"
+    assert role_for_record(None, "raw.insv") == "handheld"
+    assert role_for_record(None, "VID_20260824_203210.mp4") == "handheld"
+    assert role_for_record(None, "IMG_0018.MOV") == "handheld"
+    assert role_for_record(None, "anything.mp4", {"raw_360": True}) == "360"
     assert role_for_record(None, "C0059.MP4") == "handheld"
     assert role_for_record(None, "phone-camera.mp4", {"is_static_camera": True}) == "fixed_rear"
 

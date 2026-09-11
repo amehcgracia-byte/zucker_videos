@@ -257,12 +257,13 @@ def role_for_record(projection: str | None, filename: str, metadata: dict[str, A
     doesn't need to import the edit stage.
     """
     projection_l = str(projection or "").lower()
-    filename_l = str(filename or "").lower()
     metadata = metadata or {}
     # Projection is authoritative. A 360 camera can be mounted statically or
     # be described as a mobile camera by the uploader; neither may demote it
     # out of the spherical candidate pool.
-    if projection_l in {"equirect", "raw_insv"} or filename_l.endswith(".insv") or "360" in filename_l:
+    # The filename is deliberately ignored.  In particular, Insta360's
+    # exported VID_*.mp4 names are indistinguishable from phone filenames.
+    if projection_l in {"equirect", "raw_insv"} or metadata.get("raw_360") is True:
         return "360"
     explicit_role = str(metadata.get("camera_role") or "").strip().lower()
     if explicit_role in {"360", "fixed_rear", "handheld"}:
@@ -270,8 +271,6 @@ def role_for_record(projection: str | None, filename: str, metadata: dict[str, A
     if metadata.get("is_static_camera") is True or metadata.get("static_camera") is True:
         return "fixed_rear"
     if str(metadata.get("camera_type") or metadata.get("device_type") or "").lower() in {"iphone", "phone", "mobile", "smartphone", "static"}:
-        return "fixed_rear"
-    if any(marker in filename_l for marker in ("iphone", "phone", "mobile", "pixel", "samsung", "galaxy", "android")) or filename_l.endswith(".mov"):
         return "fixed_rear"
     return "handheld"
 

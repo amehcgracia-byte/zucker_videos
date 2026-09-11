@@ -282,7 +282,7 @@ def test_youtube_plan_role_weights_bias_eligible_camera_share():
 
 def test_final_segment_softly_prefers_battery_camera_when_covered():
     sony = {"path": "/tmp/sony.mp4", "filename": "C0064.MP4", "offset_sec": 0.0, "duration_sec": 12.0, "confidence": 10.0}
-    iphone = {"path": "/tmp/iphone.mov", "filename": "IMG_0022.MOV", "offset_sec": 0.0, "duration_sec": 12.0, "confidence": 9.0}
+    iphone = {"path": "/tmp/iphone.mov", "filename": "IMG_0022.MOV", "camera_role": "fixed_rear", "offset_sec": 0.0, "duration_sec": 12.0, "confidence": 9.0}
     chosen = _choose_source_avoiding_identical_framing(
         [sony, iphone], None, None, {}, {}, {"360": 0.0, "handheld": 1.0, "fixed_rear": 1.0},
         8.0, 12.0, 0, {}, False, [], prefer_battery_camera=True,
@@ -353,7 +353,7 @@ def test_youtube_plan_role_weight_zero_excludes_role():
         "sources": [
             {"path": "/tmp/360.mp4", "filename": "wide360.mp4", "projection": "equirect", "offset_sec": 0.0, "duration_sec": 12.0, "confidence": 8.0},
             {"path": "/tmp/sony.mp4", "filename": "sony.mp4", "offset_sec": 0.0, "duration_sec": 12.0, "confidence": 10.0},
-            {"path": "/tmp/iphone.mov", "filename": "iphone.mov", "offset_sec": 0.0, "duration_sec": 12.0, "confidence": 9.0},
+            {"path": "/tmp/iphone.mov", "filename": "iphone.mov", "camera_role": "fixed_rear", "offset_sec": 0.0, "duration_sec": 12.0, "confidence": 9.0},
         ],
     }
     beats = {"bars_sec": [0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0], "sections_sec": []}
@@ -774,7 +774,7 @@ def test_fixed_rear_segments_get_subtle_motion_on_some_holds():
     coverage = {
         "platform": "youtube",
         "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 12.0},
-        "sources": [{"path": "/tmp/iphone.mov", "filename": "iphone.mov", "offset_sec": 0.0, "duration_sec": 12.0, "confidence": 9.0}],
+        "sources": [{"path": "/tmp/iphone.mov", "filename": "iphone.mov", "camera_role": "fixed_rear", "offset_sec": 0.0, "duration_sec": 12.0, "confidence": 9.0}],
     }
     beats = {"bars_sec": [0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0], "sections_sec": []}
 

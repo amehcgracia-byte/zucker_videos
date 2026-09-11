@@ -1766,8 +1766,7 @@ def _camera_target_weights(sources: list[dict[str, Any]], role_weights: dict[str
 
 def _source_role(source: dict[str, Any]) -> str:
     projection = str(source.get("projection") or "").lower()
-    filename = str(source.get("filename") or source.get("path") or source.get("source_path") or "").lower()
-    if projection in {"equirect", "raw_insv"} or filename.endswith(".insv") or "360" in filename:
+    if projection in {"equirect", "raw_insv"} or source.get("raw_360") is True:
         return "360"
     explicit_role = str(source.get("camera_role") or "").strip().lower()
     if explicit_role in {"360", "fixed_rear", "handheld"}:
@@ -1776,8 +1775,6 @@ def _source_role(source: dict[str, Any]) -> str:
         return "fixed_rear"
     camera_type = str(source.get("camera_type") or source.get("device_type") or "").lower()
     if camera_type in {"iphone", "phone", "mobile", "smartphone", "static"}:
-        return "fixed_rear"
-    if any(marker in filename for marker in ("iphone", "phone", "mobile", "pixel", "samsung", "galaxy", "android")) or filename.endswith(".mov"):
         return "fixed_rear"
     return "handheld"
 
@@ -2433,6 +2430,20 @@ def _selection_stats_for_source(source: dict[str, Any], window_start: float, win
         "filename": source.get("filename") or Path(str(source.get("path") or source.get("source_path") or "")).name,
         "path": source.get("path"),
         "source_path": source.get("source_path"),
+        # Keep ingest's property-based classification attached to the
+        # statistics record.  Reconstructing a source from path/filename here
+        # used to turn a real equirectangular camera back into a flat
+        # handheld, which made the audit and target weights lie even when the
+        # segment itself was spherical.
+        "projection": source.get("projection"),
+        "raw_360": source.get("raw_360") is True,
+        "camera_role": source.get("camera_role"),
+        "camera_id": source.get("camera_id"),
+        "camera_name": source.get("camera_name"),
+        "camera_type": source.get("camera_type"),
+        "device_type": source.get("device_type"),
+        "is_static_camera": source.get("is_static_camera"),
+        "static_camera": source.get("static_camera"),
         "confidence": float(source.get("confidence") or 0.0),
         "offset_sec": offset,
         "duration_sec": duration,

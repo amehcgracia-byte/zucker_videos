@@ -1027,6 +1027,7 @@ function renderChips() {
           ${item.source === "inbox" ? "<small>from Inbox</small>" : ""}
           ${item.sync_confidence != null ? `<small>sync ${Number(item.sync_confidence).toFixed(1)} · offset ${formatDuration(item.sync_offset_sec || 0)}</small>` : ""}
           ${isRaw360(item) ? `<small>${escapeHtml(item.info || "360 stitched automatically")}</small>` : ""}
+          ${item.projection_warning ? `<small class="warning-text">${escapeHtml(item.projection_warning)}</small>` : ""}
           ${item.kind === "ignored" ? `<small>${escapeHtml(item.note || S.ignored)}</small>` : ""}
           <button class="chip-remove" data-remove-kind="${escapeHtml(item.kind)}" data-remove-path="${escapeHtml(item.path)}" aria-label="Remove ${escapeHtml(
         item.filename || filename(item.path)
