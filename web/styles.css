@@ -779,6 +779,15 @@ button:disabled {
   padding: 10px;
 }
 
+.spherical-fields fieldset img[data-spherical-preview] {
+  grid-column: 1 / -1;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 8px;
+  background: #111;
+}
+
 .spherical-fields label {
   display: grid;
   gap: 5px;

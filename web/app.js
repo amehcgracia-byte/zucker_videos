@@ -910,7 +910,69 @@ function clearDetected() {
 }
 
 function resetSphericalSetupToGlobal() {
-  // 360 landmarks are persisted configuration, not editable per-export UI.
+  lastSphericalSetup = normalizeSphericalSetup(appConfig?.spherical_landmarks || {});
+  renderSphericalSetup();
+}
+
+function hasSphericalInput() {
+  return detected.videos.some(isSphericalVideo);
+}
+
+function normalizeSphericalSetup(raw = {}) {
+  const defaults = { full_stage: 110, singer: 74.8, drummer: 95, left: 95, right: 95, audience: 95, audience_stage_wide: 113.6, planet: 150 };
+  const result = {};
+  for (const key of Object.keys(defaults)) {
+    const source = raw[key];
+    if (!source || source.yaw == null) continue;
+    result[key] = {
+      yaw: Number(source.yaw), pitch: Number(source.pitch ?? 0),
+      fov: Number(source.fov ?? defaults[key]), weight: Number(source.weight ?? 1),
+    };
+  }
+  return result;
+}
+
+function applySphericalSetup(values = {}) {
+  const normalized = normalizeSphericalSetup(values);
+  document.querySelectorAll("fieldset[data-spherical-landmark]").forEach((group) => {
+    const data = normalized[group.dataset.sphericalLandmark] || {};
+    group.querySelectorAll("[data-field]").forEach((input) => {
+      if (data[input.dataset.field] != null) input.value = String(data[input.dataset.field]);
+    });
+    const preview = group.querySelector("[data-spherical-preview]");
+    if (preview && selectedSphericalSourcePath() && data.yaw != null) {
+      preview.src = `/api/v1/wizard/spherical-preview?source=${encodeURIComponent(selectedSphericalSourcePath())}&shot=${encodeURIComponent(group.dataset.sphericalLandmark)}&yaw=${encodeURIComponent(data.yaw)}&pitch=${encodeURIComponent(data.pitch)}&fov=${encodeURIComponent(data.fov)}&t=${Date.now()}`;
+    }
+  });
+}
+
+function sphericalLandmarksFromForm() {
+  const values = {};
+  document.querySelectorAll("fieldset[data-spherical-landmark]").forEach((group) => {
+    const valuesForShot = {};
+    for (const field of ["yaw", "pitch", "fov", "weight"]) {
+      const value = Number(group.querySelector(`[data-field="${field}"]`)?.value);
+      if (Number.isFinite(value)) valuesForShot[field] = value;
+    }
+    if (Number.isFinite(valuesForShot.yaw)) values[group.dataset.sphericalLandmark] = valuesForShot;
+  });
+  return values;
+}
+
+function renderSphericalSetup() {
+  const panel = document.querySelector("#sphericalSetup");
+  if (!panel) return;
+  panel.hidden = !hasSphericalInput();
+  if (!panel.hidden) applySphericalSetup(lastSphericalSetup);
+}
+
+async function saveSphericalSetup() {
+  const incoming = sphericalLandmarksFromForm();
+  const result = await api("/settings/spherical-landmarks", { method: "POST", body: JSON.stringify({ spherical_landmarks: incoming }) });
+  lastSphericalSetup = normalizeSphericalSetup(result.spherical_landmarks || incoming);
+  appConfig.spherical_landmarks = lastSphericalSetup;
+  applySphericalSetup(lastSphericalSetup);
+  showToast("360 shot angles saved");
 }
 
 function recordToDetectedItem(record, kind, source = "project") {
@@ -1605,6 +1667,7 @@ async function prepareStep2() {
   } else {
     renderSongOptions([]);
   }
+  renderSphericalSetup();
   return true;
 }
 
@@ -2272,8 +2335,7 @@ async function startWizard(options = {}) {
       song_index: selectedSong,
       trim_start_sec: timeToSeconds(document.querySelector("#trimStart").value),
       trim_end_sec: timeToSeconds(document.querySelector("#trimEnd").value),
-      // 360 shot angles remain project configuration, not a per-export UI step.
-      spherical_landmarks: appConfig?.spherical_landmarks || {},
+      spherical_landmarks: sphericalLandmarksFromForm(),
       camera_role_weights: cameraRoleWeightsFromForm(),
       fixed_rear_motion: fixedRearMotionFromForm(),
       spherical_motion: false,
@@ -3304,6 +3366,7 @@ document.addEventListener("click", (event) => {
   if (target.id === "captionExportSrt") exportCaptionSrt();
   if (target.id === "burnCaptions") burnCaptionTrack().catch((error) => showToast(error.message, true));
   if (target.id === "result360Play") toggleResult360Play();
+  if (target.id === "saveSphericalSetup") saveSphericalSetup().catch((error) => showToast(error.message, true));
   if (target.id === "statusStrip") setStep(3);
   const rescueButton = target.closest?.("[data-rescue]");
   if (rescueButton instanceof HTMLElement) {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import io
 import logging
 import math
 import sys
@@ -1353,6 +1354,39 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("not_found", "Master media is not registered", 404)
         master_path = project.data["inputs"]["master"]["path"]
         return send_file_with_range(master_path)
+
+    @app.get("/api/v1/wizard/spherical-preview")
+    def api_wizard_spherical_preview() -> Response:
+        """Render one real equirectangular frame at an authored landmark pose."""
+        project = _require_project(state)
+        requested = Path(str(request.args.get("source") or "")).expanduser().resolve()
+        allowed = set()
+        for record in project.data.get("inputs", {}).get("videos", []):
+            allowed.update({Path(str(record.get("path") or "")).resolve(), Path(record_media_path(record)).resolve()})
+        if requested not in allowed or not requested.is_file():
+            return error_response("not_found", "360 source is not registered in this project", 404)
+        try:
+            yaw = float(request.args.get("yaw", 0.0))
+            yaw = ((yaw + 180.0) % 360.0) - 180.0
+            pitch = max(-89.0, min(89.0, float(request.args.get("pitch", 0.0))))
+            h_fov = max(30.0, min(150.0, float(request.args.get("fov", 95.0))))
+        except (TypeError, ValueError):
+            return error_response("bad_request", "Invalid spherical preview angles", 400)
+        aspect = 16.0 / 9.0
+        v_fov = 2.0 * math.degrees(math.atan(math.tan(math.radians(h_fov / 2.0)) / aspect))
+        ffmpeg_path = str(load_global_config().get("ffmpeg_path") or "ffmpeg")
+        result = subprocess.run(
+            # The first seconds of the real Insta360 exports are often dark
+            # while the camera is being positioned. Use a representative
+            # mid-clip frame so the editor's previews are actually useful.
+            [ffmpeg_path, "-hide_banner", "-loglevel", "error", "-ss", "30", "-i", str(requested),
+             "-vf", f"v360=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f},scale=640:360",
+             "-frames:v", "1", "-f", "mjpeg", "pipe:1"],
+            capture_output=True, check=False, timeout=30,
+        )
+        if result.returncode != 0 or not result.stdout:
+            return error_response("preview_failed", "Could not render the 360 shot preview", 500)
+        return send_file(io.BytesIO(result.stdout), mimetype="image/jpeg", download_name="spherical-preview.jpg")
 
     @app.post("/api/v1/wizard/prepare")
     def api_wizard_prepare() -> Response:
