@@ -19,7 +19,7 @@ from werkzeug.exceptions import RequestEntityTooLarge
 
 from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
 from core.director_proxy import director_proxy_status, ensure_director_proxy, is_360_record
-from core.ffmpeg import FFmpegError, ffprobe, tool_status
+from core.ffmpeg import FFmpegError, FFMPEG_COMMAND_TIMEOUT_SECONDS, ffprobe, tool_status
 from core.messages import t
 from core.project import Project, ProjectError, create_project, load_project
 from core.camera_moves import delete_camera_move, list_camera_moves, save_camera_move
@@ -343,10 +343,25 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         pitch = _optional_float_setting(request.args.get("pitch"), 0.0)
         fov = max(65.0, min(150.0, _optional_float_setting(request.args.get("fov"), 95.0)))
         quality = str(request.args.get("quality") or "final").strip().lower()
+        timestamp = _coerce_float(request.args.get("timestamp") or request.args.get("time_sec"))
+        segment_id = str(request.args.get("segment_id") or "").strip() or None
         if not source or yaw is None:
             return error_response("bad_request", "source and yaw are required", 400)
         try:
-            return send_file_with_range(str(_spherical_preview_frame(state.project, source, yaw, pitch, fov, quality=quality)))
+            return send_file_with_range(
+                str(
+                    _spherical_preview_frame(
+                        state.project,
+                        source,
+                        yaw,
+                        pitch,
+                        fov,
+                        quality=quality,
+                        timestamp=timestamp,
+                        segment_id=segment_id,
+                    )
+                )
+            )
         except (OSError, FFmpegError, ValueError) as exc:
             return error_response("ffmpeg_error", str(exc), 500)
 
@@ -1046,7 +1061,16 @@ def _coerce_float(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _spherical_preview_frame(project: Project | None, source: str, yaw: float, pitch: float, fov: float, quality: str = "final") -> Path:
+def _spherical_preview_frame(
+    project: Project | None,
+    source: str,
+    yaw: float,
+    pitch: float,
+    fov: float,
+    quality: str = "final",
+    timestamp: float | None = None,
+    segment_id: str | None = None,
+) -> Path:
     source_path = Path(source).expanduser().resolve()
     if not source_path.exists():
         raise ValueError("360 source does not exist")
@@ -1055,6 +1079,9 @@ def _spherical_preview_frame(project: Project | None, source: str, yaw: float, p
     stat = source_path.stat()
     size = (320, 180) if quality == "drag" else (480, 270)
     h_fov, v_fov = _paired_flat_fov(fov, size[0] / size[1])
+    duration = _preview_source_duration(source_path)
+    requested_timestamp = duration * 0.35 if timestamp is None else float(timestamp)
+    timestamp = max(0.0, min(requested_timestamp, max(0.0, duration - 0.1)))
     key = sha256(
         json.dumps(
             {
@@ -1066,6 +1093,8 @@ def _spherical_preview_frame(project: Project | None, source: str, yaw: float, p
                 "h_fov": round(h_fov, 3),
                 "v_fov": round(v_fov, 3),
                 "preview_size": size,
+                "timestamp": round(timestamp, 3),
+                "segment_id": segment_id or "",
             },
             sort_keys=True,
         ).encode()
@@ -1077,8 +1106,6 @@ def _spherical_preview_frame(project: Project | None, source: str, yaw: float, p
     ffmpeg = status.get("ffmpeg_path")
     if not ffmpeg:
         raise FFmpegError("ffmpeg is missing. Install it with: brew install ffmpeg")
-    duration = _preview_source_duration(source_path)
-    timestamp = max(0.0, min(duration * 0.35, max(0.0, duration - 0.1)))
     tmp = output.with_suffix(".tmp.jpg")
     filtergraph = (
         f"v360=input=equirect:output=flat:yaw={_signed_degrees(yaw):.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:"
@@ -1102,7 +1129,18 @@ def _spherical_preview_frame(project: Project | None, source: str, yaw: float, p
         "3",
         str(tmp),
     ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=FFMPEG_COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        if tmp.exists():
+            tmp.unlink()
+        raise FFmpegError("Timed out while rendering 360 preview") from exc
     if result.returncode != 0:
         if tmp.exists():
             tmp.unlink()
