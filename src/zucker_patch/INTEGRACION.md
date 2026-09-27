@@ -1,9 +1,8 @@
 # Zucker Editor - dynamic moves
 
-Estos archivos han sido recreados en la rama fix/phase-0-input-readiness. Son
-un módulo de planificación y pruebas; todavía no activan movimientos
-automáticamente. La integración queda separada para que se pueda probar por
-fases.
+Estos archivos han sido recreados en la rama fix/phase-0-input-readiness. El
+planificador vive en core/dynamic_moves.py y ya está conectado al pipeline de
+edición; esta guía documenta la integración y los límites de seguridad.
 
 ## Qué resuelve
 
@@ -16,15 +15,11 @@ fases.
   load_cached_person_track().
 - Nunca inicia una detección nueva durante la planificación.
 
-## Instalación del módulo
+## Ubicación
 
-Copia:
-
-    src/zucker_patch/dynamic_moves.py
-
-a core/dynamic_moves.py cuando se vaya a activar en el pipeline. Mantenerlo
-en src/zucker_patch permite revisar y probar el módulo sin modificar todavía
-el exportador.
+La aplicación importa la implementación desde core/dynamic_moves.py. El archivo
+src/zucker_patch/dynamic_moves.py es un wrapper compatible y conserva el punto
+de entrada de revisión/pruebas.
 
 Ejecuta las pruebas desde la raíz:
 
@@ -32,7 +27,7 @@ Ejecuta las pruebas desde la raíz:
 
 ## Integración por fases
 
-### Fase A - planificar después de crear segmentos
+### Integración actual: planificar después de crear segmentos
 
 En core/stages/edit.py, después de construir todos los segmentos y antes de
 escribir el artefacto final:
@@ -58,18 +53,16 @@ recomendada es:
 No se debe aplicar el movimiento a clips inferiores a seis segundos, ni a
 segmentos consecutivos, ni a tomas 360 dirigidas por el usuario.
 
-### Fase B - movimiento suave del recorte iPhone
+### Movimiento suave del recorte iPhone
 
-El exportador actual ya anima zoom_start -> zoom_end, pero actualmente usa un
-único pan_x/pan_y. Para consumir los campos nuevos de generate_iphone_motion,
-modificar core/stages/export.py::_ken_burns_filter para interpolar:
+El exportador consume los campos nuevos de generate_iphone_motion e interpola:
 
     pan_x_start -> pan_x_end
     pan_y_start -> pan_y_end
 
 con la misma expresión progress usada para el zoom y con easing smoothstep.
-Si no existen los campos nuevos, conservar pan_x/pan_y como fallback. No
-superar el rango 0..1 ni el zoom máximo actual 1.14.
+Si no existen los campos nuevos, conserva pan_x/pan_y como fallback. El rango
+se limita a 0..1 y el zoom máximo sigue siendo 1.14.
 
 ### Fase C - 360
 
@@ -99,10 +92,14 @@ no hay sujeto cacheado, degrada a un zoom suave y no bloquea el pipeline. No
 reutilizar la detección dominante como sujeto porque normalmente es el operador
 de cámara.
 
-### Fase E - screenshots 360 y timestamps
+### Screenshots 360 y timestamps
 
-El endpoint /api/v1/wizard/spherical-preview ya acepta timestamp/time_sec y
-segment_id. El frontend usa opcionalmente:
+El endpoint /api/v1/wizard/spherical-preview acepta timestamp/time_sec,
+timestamp_ratio y segment_id. El frontend envía el identificador de cada
+landmark; si no hay un timestamp explícito, el servidor asigna un instante
+estable y distinto por selección (ya no usa siempre el 35% del vídeo).
+
+El frontend usa opcionalmente:
 
     data-spherical-timestamp
     data-frame-time
