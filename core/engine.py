@@ -94,6 +94,11 @@ class PipelineEngine:
         reran: list[str] = []
         for name in planned:
             stage = self.stages[name]
+            input_reasons = self._input_reasons(project, name)
+            if input_reasons:
+                self._mark_input_blocked(project, name, input_reasons)
+                project.save()
+                raise StageBlockedError(f"{name} blocked by input: {'; '.join(input_reasons)}")
             dependency_failure = self._first_failed_dependency(stage, project)
             if dependency_failure:
                 self._mark_blocked(project, name, dependency_failure)
@@ -220,35 +225,45 @@ class PipelineEngine:
             state["status"] = "blocked"
             state["error"] = f"Blocked by failed dependency: {stage_name}"
 
+    def _input_reasons(self, project: Project, stage_name: str) -> list[str]:
+        """Return only the input problems relevant to a planned stage."""
+        inputs = project.data.get("inputs", {})
+        videos = inputs.get("videos") or []
+        usable_videos = [record for record in videos if not record.get("missing") and record.get("path")]
+        reasons: list[str] = []
+        if not usable_videos:
+            reasons.append("No usable videos are registered")
+        if stage_name != "ingest":
+            master = inputs.get("master") or {}
+            if not master or master.get("missing") or not master.get("path"):
+                reasons.append("Master audio is missing")
+        return reasons
+
+    def _mark_input_blocked(self, project: Project, stage_name: str, reasons: list[str]) -> None:
+        """Mark a stage and its downstream stages blocked by invalid inputs."""
+        state = project.data["stages"][stage_name]
+        state.update(
+            {
+                "status": "blocked",
+                "finished_at": utc_now(),
+                "error": "Blocked by input: " + "; ".join(reasons),
+            }
+        )
+        self._mark_downstream_blocked(project, stage_name)
+
     def _readiness(self, project: Project | None) -> dict[str, Any]:
         if project is None:
             return {name: {"ready": False, "reasons": ["No project is open"]} for name in self.stages}
+        project.refresh_input_records()
         readiness: dict[str, Any] = {}
-        for name, stage in self.stages.items():
-            reasons: list[str] = []
-            if name == "ingest":
-                inputs = project.data.get("inputs", {})
-                if not inputs.get("videos"):
-                    reasons.append("No videos are registered")
-            if name == "sync":
-                inputs = project.data.get("inputs", {})
-                if not inputs.get("master"):
-                    reasons.append("Master audio is not registered")
-            if name in {"cut", "edit", "export"}:
-                inputs = project.data.get("inputs", {})
-                if not inputs.get("songs"):
-                    reasons.append("songs.json is not registered")
-            for dependency in stage.dependencies:
-                status = project.data["stages"][dependency]["status"]
-                if status != "done":
-                    reasons.append(f"{dependency} is {status}")
+        for name in self.stages:
+            reasons = self._input_reasons(project, name)
             state = project.data["stages"][name]
             readiness[name] = {
                 "ready": not reasons and state["status"] not in {"running", "blocked"},
                 "reasons": reasons,
             }
         return readiness
-
 
 def _stage_logger(project: Project, stage_name: str) -> logging.Logger:
     logger = logging.getLogger(f"zucker_videos.stage.{stage_name}.{id(project)}")
