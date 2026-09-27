@@ -344,6 +344,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         fov = max(65.0, min(150.0, _optional_float_setting(request.args.get("fov"), 95.0)))
         quality = str(request.args.get("quality") or "final").strip().lower()
         timestamp = _coerce_float(request.args.get("timestamp") or request.args.get("time_sec"))
+        timestamp_ratio = _coerce_float(request.args.get("timestamp_ratio") or request.args.get("time_ratio"))
         segment_id = str(request.args.get("segment_id") or "").strip() or None
         if not source or yaw is None:
             return error_response("bad_request", "source and yaw are required", 400)
@@ -358,6 +359,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                         fov,
                         quality=quality,
                         timestamp=timestamp,
+                        timestamp_ratio=timestamp_ratio,
                         segment_id=segment_id,
                     )
                 )
@@ -1069,6 +1071,7 @@ def _spherical_preview_frame(
     fov: float,
     quality: str = "final",
     timestamp: float | None = None,
+    timestamp_ratio: float | None = None,
     segment_id: str | None = None,
 ) -> Path:
     source_path = Path(source).expanduser().resolve()
@@ -1080,7 +1083,14 @@ def _spherical_preview_frame(
     size = (320, 180) if quality == "drag" else (480, 270)
     h_fov, v_fov = _paired_flat_fov(fov, size[0] / size[1])
     duration = _preview_source_duration(source_path)
-    requested_timestamp = duration * 0.35 if timestamp is None else float(timestamp)
+    if timestamp is not None:
+        requested_timestamp = float(timestamp)
+    elif timestamp_ratio is not None:
+        requested_timestamp = duration * max(0.0, min(1.0, float(timestamp_ratio)))
+    elif segment_id:
+        requested_timestamp = duration * _preview_timestamp_ratio(segment_id)
+    else:
+        requested_timestamp = duration * 0.35
     timestamp = max(0.0, min(requested_timestamp, max(0.0, duration - 0.1)))
     key = sha256(
         json.dumps(
@@ -1147,6 +1157,27 @@ def _spherical_preview_frame(
         raise FFmpegError(result.stderr.strip() or "Could not render 360 preview")
     os.replace(tmp, output)
     return output
+
+
+_PREVIEW_TIMESTAMP_RATIOS = {
+    "full_stage": 0.12,
+    "singer": 0.24,
+    "drummer": 0.36,
+    "left": 0.48,
+    "right": 0.60,
+    "audience": 0.72,
+    "audience_stage_wide": 0.84,
+    "planet": 0.92,
+}
+
+
+def _preview_timestamp_ratio(segment_id: str) -> float:
+    """Choose a stable, distinct frame when the UI has no explicit time yet."""
+    key = str(segment_id or "").strip().lower()
+    if key in _PREVIEW_TIMESTAMP_RATIOS:
+        return _PREVIEW_TIMESTAMP_RATIOS[key]
+    digest = int(sha256(key.encode("utf-8")).hexdigest()[:8], 16)
+    return 0.15 + (digest / 0xFFFFFFFF) * 0.70
 
 
 def _preview_source_duration(path: Path) -> float:
