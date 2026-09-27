@@ -7,6 +7,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import json
 import logging
 import math
@@ -15,7 +17,7 @@ from typing import Any
 
 from core.camera_moves import clip_curve_for_segment, interpolate_curve, load_camera_moves, normalize_recorded_samples, recorded_move_covering, recorded_shot_for_segment
 from core.operator_avoidance import count_avoidance_adjustments
-from core.ffmpeg import FFmpegError, ffprobe, tool_status
+from core.ffmpeg import FFmpegError, FFMPEG_COMMAND_TIMEOUT_SECONDS, ffprobe, tool_status
 from core.messages import t
 from core.media_validation import record_is_usable_camera_video, record_media_path
 from core.normalization import EVEN_SDR_FILTER, NORMALIZATION_VERSION, SDR_TONEMAP_FILTER, global_cache_root, global_segment_path, source_cache_key
@@ -1404,6 +1406,18 @@ def _run_ffmpeg_progress(command: list[str], duration: float, label: str, progre
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     assert process.stdout is not None
     current = -1
+    timeout_seconds = max(FFMPEG_COMMAND_TIMEOUT_SECONDS, max(60.0, float(duration or 0.0) * 120.0))
+    timed_out = threading.Event()
+
+    def watchdog() -> None:
+        try:
+            process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            timed_out.set()
+            process.kill()
+
+    watcher = threading.Thread(target=watchdog, daemon=True, name="zucker-ffmpeg-watchdog")
+    watcher.start()
     try:
         for line in process.stdout:
             match = re.match(r"out_time_ms=(\d+)", line.strip())
@@ -1417,10 +1431,15 @@ def _run_ffmpeg_progress(command: list[str], duration: float, label: str, progre
     except BaseException:
         # progress() can raise (e.g. a user cancellation) — don't leave the
         # ffmpeg process running in the background when that happens.
-        process.kill()
+        if process.poll() is None:
+            process.kill()
         process.wait()
         raise
+    finally:
+        watcher.join(timeout=1.0)
     _, stderr = process.communicate()
+    if timed_out.is_set():
+        raise FFmpegError(f"ffmpeg timed out after {timeout_seconds:.0f}s during {label}")
     if process.returncode != 0:
         raise FFmpegError((stderr or "").strip() or "ffmpeg export failed")
     if progress:
