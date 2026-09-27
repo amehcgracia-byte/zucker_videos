@@ -178,10 +178,8 @@ def generate_iphone_motion(
     duration = segment_duration(segment)
     if duration < MIN_DYNAMIC_SEGMENT_SEC:
         raise ValueError("Dynamic motion requires a segment of at least 6 seconds")
-    if kind not in MOVE_KINDS[:-1]:
-        if kind != "person_track":
-            raise ValueError(f"Unknown dynamic move kind: {kind}")
-        kind = "zoom_pan"
+    if kind not in MOVE_KINDS:
+        raise ValueError(f"Unknown dynamic move kind: {kind}")
 
     rng = _rng(seed)
     pan_x_start = pan_x_end = 0.5
