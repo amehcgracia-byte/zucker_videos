@@ -229,8 +229,11 @@ class PipelineEngine:
         """Return only the input problems relevant to a planned stage."""
         inputs = project.data.get("inputs", {})
         videos = inputs.get("videos") or []
+        missing_videos = [record for record in videos if record.get("missing")]
         usable_videos = [record for record in videos if not record.get("missing") and record.get("path")]
         reasons: list[str] = []
+        if missing_videos:
+            reasons.append(f"{len(missing_videos)} registered video input(s) are missing")
         if not usable_videos:
             reasons.append("No usable videos are registered")
         if stage_name != "ingest":
@@ -238,7 +241,6 @@ class PipelineEngine:
             if not master or master.get("missing") or not master.get("path"):
                 reasons.append("Master audio is missing")
         return reasons
-
     def _mark_input_blocked(self, project: Project, stage_name: str, reasons: list[str]) -> None:
         """Mark a stage and its downstream stages blocked by invalid inputs."""
         state = project.data["stages"][stage_name]
