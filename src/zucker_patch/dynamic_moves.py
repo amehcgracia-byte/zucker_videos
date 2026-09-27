@@ -256,15 +256,15 @@ def generate_360_curve(
 
     max_yaw_travel = min(
         MAX_DYNAMIC_YAW_TRAVEL_DEG,
-        MAX_DYNAMIC_YAW_RATE_DEG_PER_SEC * duration * 0.72,
+        MAX_DYNAMIC_YAW_RATE_DEG_PER_SEC * duration * 0.62,
     )
     max_pitch_travel = min(
         MAX_DYNAMIC_PITCH_TRAVEL_DEG,
-        MAX_DYNAMIC_PITCH_RATE_DEG_PER_SEC * duration * 0.72,
+        MAX_DYNAMIC_PITCH_RATE_DEG_PER_SEC * duration * 0.62,
     )
     max_fov_travel = min(
         MAX_DYNAMIC_FOV_TRAVEL_DEG,
-        MAX_DYNAMIC_FOV_RATE_DEG_PER_SEC * duration * 0.72,
+        MAX_DYNAMIC_FOV_RATE_DEG_PER_SEC * duration * 0.62,
     )
 
     if kind == "pan_left":
