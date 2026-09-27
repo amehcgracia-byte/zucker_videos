@@ -130,6 +130,9 @@ def classify_paths(paths: list[str], inbox_path: str | None = None) -> dict[str,
             result["ignored"].append(item)
             log_classification_verdict(path, item)
             continue
+        if record.get("missing"):
+            record["missing"] = False
+            changed = True
         item = classify_file(path)
         result[item["kind"]].append(item)
         log_classification_verdict(path, item)
@@ -246,7 +249,10 @@ def reconcile_registered_inputs(project: Project) -> bool:
     for record in project.data.get("inputs", {}).get("videos", []):
         path = Path(record.get("path") or "").expanduser()
         if not path.exists():
-            changed = True
+            if not record.get("missing", False):
+                record["missing"] = True
+                changed = True
+            kept_videos.append(record)
             continue
         item = classify_file(path)
         if item["kind"] == "videos":
