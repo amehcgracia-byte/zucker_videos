@@ -226,7 +226,14 @@ class PipelineEngine:
             state["error"] = f"Blocked by failed dependency: {stage_name}"
 
     def _input_reasons(self, project: Project, stage_name: str) -> list[str]:
-        """Return only the input problems relevant to a planned stage."""
+        """Return input problems only for the editor's real pipeline stages.
+
+        Custom stages used by integrations and unit tests may not consume media
+        inputs, so they must not be blocked by the wizard's media gate.
+        """
+
+        if stage_name not in {"ingest", "sync", "cut", "edit", "export"}:
+            return []
         inputs = project.data.get("inputs", {})
         videos = inputs.get("videos") or []
         missing_videos = [record for record in videos if record.get("missing")]
@@ -239,7 +246,7 @@ class PipelineEngine:
         if stage_name != "ingest":
             master = inputs.get("master") or {}
             if not master or master.get("missing") or not master.get("path"):
-                reasons.append("Master audio is missing")
+                reasons.append("Master audio is not registered")
         return reasons
     def _mark_input_blocked(self, project: Project, stage_name: str, reasons: list[str]) -> None:
         """Mark a stage and its downstream stages blocked by invalid inputs."""
@@ -258,8 +265,16 @@ class PipelineEngine:
             return {name: {"ready": False, "reasons": ["No project is open"]} for name in self.stages}
         project.refresh_input_records()
         readiness: dict[str, Any] = {}
-        for name in self.stages:
+        for name, stage in self.stages.items():
             reasons = self._input_reasons(project, name)
+            for dependency in getattr(stage, "dependencies", []) or []:
+                dependency_state = project.data["stages"].get(dependency, {})
+                dependency_status = dependency_state.get("status", "pending")
+                if dependency_status != "done":
+                    reasons.append(f"{dependency} is {dependency_status}")
+            # Preserve order while avoiding duplicate messages when an input
+            # gate and a dependency gate describe the same condition.
+            reasons = list(dict.fromkeys(reasons))
             state = project.data["stages"][name]
             readiness[name] = {
                 "ready": not reasons and state["status"] not in {"running", "blocked"},
