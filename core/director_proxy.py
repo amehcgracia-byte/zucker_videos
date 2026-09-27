@@ -6,12 +6,13 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable
 
-from core.ffmpeg import FFmpegError, ffprobe, tool_status
+from core.ffmpeg import FFmpegError, FFMPEG_COMMAND_TIMEOUT_SECONDS, ffprobe, tool_status
 from core.media_validation import record_media_path
 from core.normalization import global_cache_root
 
@@ -178,22 +179,44 @@ def _run_proxy_command(command: list[str], duration: float, filename: str, progr
     current = 0
     started = time.monotonic()
     last_emit = 0.0
-    for line in process.stdout:
-        match = re.match(r"out_time_ms=(\d+)", line.strip())
-        if not match or duration <= 0:
-            continue
-        seconds = int(match.group(1)) / 1_000_000
-        percent = max(current, min(99, int(seconds / duration * 100)))
-        now = time.monotonic()
-        if progress and (percent > current or now - last_emit >= 3):
-            current = percent
-            last_emit = now
-            eta = ""
-            if percent > 0:
-                remaining = max(0.0, (now - started) * (100 - percent) / percent)
-                eta = f" · about {max(1, round(remaining / 60))} min remaining" if remaining >= 45 else f" · about {round(remaining)}s remaining"
-            progress(percent, f"Preparing lightweight 360 preview for {filename} — {percent}%{eta}")
+    timeout_seconds = max(FFMPEG_COMMAND_TIMEOUT_SECONDS, max(60.0, float(duration or 0.0) * 120.0))
+    timed_out = threading.Event()
+
+    def watchdog() -> None:
+        try:
+            process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            timed_out.set()
+            process.kill()
+
+    watcher = threading.Thread(target=watchdog, daemon=True, name="zucker-360-ffmpeg-watchdog")
+    watcher.start()
+    try:
+        for line in process.stdout:
+            match = re.match(r"out_time_ms=(\d+)", line.strip())
+            if not match or duration <= 0:
+                continue
+            seconds = int(match.group(1)) / 1_000_000
+            percent = max(current, min(99, int(seconds / duration * 100)))
+            now = time.monotonic()
+            if progress and (percent > current or now - last_emit >= 3):
+                current = percent
+                last_emit = now
+                eta = ""
+                if percent > 0:
+                    remaining = max(0.0, (now - started) * (100 - percent) / percent)
+                    eta = f" · about {max(1, round(remaining / 60))} min remaining" if remaining >= 45 else f" · about {round(remaining)}s remaining"
+                progress(percent, f"Preparing lightweight 360 preview for {filename} — {percent}%{eta}")
+    except BaseException:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        raise
+    finally:
+        watcher.join(timeout=1.0)
     _, stderr = process.communicate()
+    if timed_out.is_set():
+        raise FFmpegError(f"ffmpeg timed out after {timeout_seconds:.0f}s while preparing 360 preview for {filename}")
     if process.returncode != 0:
         raise FFmpegError((stderr or "").strip() or "Could not generate 360 Director proxy")
 
