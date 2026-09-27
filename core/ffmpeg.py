@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 COMMON_BIN_DIRS = (Path("/opt/homebrew/bin"), Path("/usr/local/bin"))
+FFPROBE_TIMEOUT_SECONDS = 60
+FFMPEG_COMMAND_TIMEOUT_SECONDS = 30 * 60
 _FFMPEG_PATH: str | None = None
 _FFPROBE_PATH: str | None = None
 
@@ -73,7 +75,16 @@ def ffprobe(path: str) -> dict[str, Any]:
         "-show_streams",
         str(Path(path)),
     ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=FFPROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise FFmpegError(f"ffprobe timed out after {FFPROBE_TIMEOUT_SECONDS}s for {path}") from exc
     if result.returncode != 0:
         raise FFmpegError(result.stderr.strip() or f"ffprobe failed for {path}")
     return json.loads(result.stdout or "{}")
@@ -96,6 +107,15 @@ def extract_audio(video_path: str, output_path: str) -> None:
         "48000",
         str(Path(output_path)),
     ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=FFMPEG_COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise FFmpegError(f"ffmpeg timed out after {FFMPEG_COMMAND_TIMEOUT_SECONDS}s for {video_path}") from exc
     if result.returncode != 0:
         raise FFmpegError(result.stderr.strip() or f"ffmpeg failed for {video_path}")
