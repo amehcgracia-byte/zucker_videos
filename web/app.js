@@ -919,6 +919,10 @@ function queueSphericalPreview(group, quality = "final") {
   const yaw = normalizeYaw(group.querySelector('[data-field="yaw"]')?.value);
   const pitch = parseLocaleNumber(group.querySelector('[data-field="pitch"]')?.value);
   const fov = parseLocaleNumber(group.querySelector('[data-field="fov"]')?.value);
+  const timestamp = parseLocaleNumber(
+    group.dataset.sphericalTimestamp || group.dataset.frameTime || group.dataset.timestamp
+  );
+  const segmentId = group.dataset.sphericalSegment || group.dataset.segmentId || group.dataset.sphericalLandmark;
   if (!image || !source || yaw == null) return;
   const key = group.dataset.sphericalLandmark;
   clearTimeout(previewTimers.get(key));
@@ -936,6 +940,8 @@ function queueSphericalPreview(group, quality = "final") {
         fov: formatCanonicalNumber(fov ?? 95),
         quality,
       });
+      if (timestamp != null) params.set("timestamp", formatCanonicalNumber(timestamp));
+      if (segmentId) params.set("segment_id", segmentId);
       const nextSrc = `/api/v1/wizard/spherical-preview?${params.toString()}`;
       if (image.dataset.pendingSrc === nextSrc || image.src.endsWith(nextSrc)) return;
       image.dataset.pendingSrc = nextSrc;
