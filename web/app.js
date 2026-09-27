@@ -318,8 +318,9 @@ async function resumeInputsFromProject() {
 }
 
 function chooseDefaultMaster() {
-  if (selectedMasterPath && detected.master.some((item) => item.path === selectedMasterPath)) return;
-  const sorted = [...detected.master].sort((a, b) => Number(b.duration || 0) - Number(a.duration || 0));
+  const availableMasters = detected.master.filter((item) => item.missing !== true);
+  if (selectedMasterPath && availableMasters.some((item) => item.path === selectedMasterPath)) return;
+  const sorted = [...availableMasters].sort((a, b) => Number(b.duration || 0) - Number(a.duration || 0));
   selectedMasterPath = sorted[0]?.path || null;
 }
 
@@ -354,10 +355,11 @@ function renderChips() {
   root.innerHTML = items
     .map(
       (item) => `
-        <span class="chip ${item.kind === "ignored" ? "muted" : ""} ${isHelpfulWarning(item) ? "warning" : ""} ${isRaw360(item) ? "info" : ""}" title="${escapeHtml(
+        <span class="chip ${item.kind === "ignored" ? "muted" : ""} ${isHelpfulWarning(item) ? "warning" : ""} ${isRaw360(item) ? "info" : ""} ${item.missing === true ? "missing" : ""}" title="${escapeHtml(
         item.path
       )}">
           ${iconFor(item)} ${escapeHtml(item.filename || filename(item.path))}
+          ${item.missing === true ? '<small class="missing-badge">Missing</small>' : ""}
           ${isSphericalVideo(item) ? "<small>360°</small>" : ""}
           ${item.source === "inbox" ? "<small>from Inbox</small>" : ""}
           ${isRaw360(item) ? `<small>${escapeHtml(item.info || "360 stitched automatically")}</small>` : ""}
@@ -396,14 +398,18 @@ function renderChips() {
       </span>`
     );
   }
-  const hasVideo = detected.videos.length > 0;
-  const hasMaster = detected.master.length > 0;
-  const hasSongs = detected.songs.length > 0;
+  const availableVideos = detected.videos.filter((item) => item.missing !== true);
+  const availableMasters = detected.master.filter((item) => item.missing !== true);
+  const hasVideo = availableVideos.length > 0;
+  const hasMaster = availableMasters.length > 0;
+  const hasMissing = [...detected.videos, ...detected.master, ...detected.songs].some((item) => item.missing === true);
+  const hasSongs = detected.songs.some((item) => item.missing !== true);
   renderRaw360Callout();
   const note = document.querySelector("#softRule");
   const button = document.querySelector("#confirmFiles");
   button.disabled = !(hasVideo && hasMaster);
-  if (!hasVideo) note.textContent = S.missingVideo;
+  if (hasMissing && (!hasVideo || !hasMaster)) note.textContent = "Resolve missing files before continuing.";
+  else if (!hasVideo) note.textContent = S.missingVideo;
   else if (!hasMaster) note.textContent = S.missingMaster;
   else if (!hasSongs) note.textContent = S.noSongsContinuous;
   else note.textContent = S.ready;
@@ -488,10 +494,11 @@ function removeDetectedItem(kind, path) {
 }
 
 function selectedInputs() {
+  const availableMasters = detected.master.filter((item) => item.missing !== true);
   return {
-    master: selectedMasterPath || detected.master[0]?.path || "",
-    songs: detected.songs[0]?.path || "",
-    videos: detected.videos.map((item) => item.path),
+    master: selectedMasterPath || availableMasters[0]?.path || "",
+    songs: detected.songs.find((item) => item.missing !== true)?.path || "",
+    videos: detected.videos.filter((item) => item.missing !== true).map((item) => item.path),
   };
 }
 
