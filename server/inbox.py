@@ -130,9 +130,6 @@ def classify_paths(paths: list[str], inbox_path: str | None = None) -> dict[str,
             result["ignored"].append(item)
             log_classification_verdict(path, item)
             continue
-        if record.get("missing"):
-            record["missing"] = False
-            changed = True
         item = classify_file(path)
         result[item["kind"]].append(item)
         log_classification_verdict(path, item)
@@ -255,6 +252,9 @@ def reconcile_registered_inputs(project: Project) -> bool:
             kept_videos.append(record)
             continue
         item = classify_file(path)
+        if record.get("missing"):
+            record["missing"] = False
+            changed = True
         if item["kind"] == "videos":
             for key, value in video_classification_metadata(path).items():
                 if record.get(key) != value:
