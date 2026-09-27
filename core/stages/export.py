@@ -1616,22 +1616,33 @@ def _ken_burns_filter(motion: dict[str, Any], platform: str, duration: float) ->
     try:
         zoom_start = float(motion.get("zoom_start", 1.0))
         zoom_end = float(motion.get("zoom_end", 1.06))
-        pan_x = float(motion.get("pan_x", 0.5))
-        pan_y = float(motion.get("pan_y", 0.5))
+        pan_x_start = float(motion.get("pan_x_start", motion.get("pan_x", 0.5)))
+        pan_x_end = float(motion.get("pan_x_end", motion.get("pan_x", 0.5)))
+        pan_y_start = float(motion.get("pan_y_start", motion.get("pan_y", 0.5)))
+        pan_y_end = float(motion.get("pan_y_end", motion.get("pan_y", 0.5)))
     except (TypeError, ValueError):
         return None
     zoom_start = max(1.0, min(1.14, zoom_start))
     zoom_end = max(1.0, min(1.14, zoom_end))
-    pan_x = max(0.0, min(1.0, pan_x))
-    pan_y = max(0.0, min(1.0, pan_y))
+    pan_x_start = max(0.0, min(1.0, pan_x_start))
+    pan_x_end = max(0.0, min(1.0, pan_x_end))
+    pan_y_start = max(0.0, min(1.0, pan_y_start))
+    pan_y_end = max(0.0, min(1.0, pan_y_end))
     frame_count = max(1, int(round(max(0.1, float(duration)) * TARGET_EXPORT_FPS)))
     progress = f"min(1,n/{max(1, frame_count - 1)})"
-    zoom_expr = f"({zoom_start:.6f}+({zoom_end:.6f}-{zoom_start:.6f})*{progress})"
+    easing = str(motion.get("easing") or "").lower()
+    if easing == "smoothstep":
+        motion_progress = f"(({progress})*({progress})*(3-2*({progress})))"
+    else:
+        motion_progress = progress
+    zoom_expr = f"({zoom_start:.6f}+({zoom_end:.6f}-{zoom_start:.6f})*{motion_progress})"
+    pan_x_expr = f"({pan_x_start:.6f}+({pan_x_end:.6f}-{pan_x_start:.6f})*{motion_progress})"
+    pan_y_expr = f"({pan_y_start:.6f}+({pan_y_end:.6f}-{pan_y_start:.6f})*{motion_progress})"
     scaled_width = f"ceil({width}*{zoom_expr}/2)*2"
     scaled_height = f"ceil({height}*{zoom_expr}/2)*2"
     return (
         f"scale=w='{scaled_width}':h='{scaled_height}':eval=frame,"
-        f"crop={width}:{height}:x='(iw-{width})*{pan_x:.4f}':y='(ih-{height})*{pan_y:.4f}'"
+        f"crop={width}:{height}:x='(iw-{width})*{pan_x_expr}':y='(ih-{height})*{pan_y_expr}'"
     )
 
 
