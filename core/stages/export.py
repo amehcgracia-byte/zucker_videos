@@ -1410,6 +1410,12 @@ def _run_ffmpeg_progress(command: list[str], duration: float, label: str, progre
     timed_out = threading.Event()
 
     def watchdog() -> None:
+        # Some lightweight test doubles expose poll/communicate but not wait.
+        # Real subprocess.Popen always has wait; skipping the watchdog for a
+        # test double keeps the progress path deterministic without changing
+        # production timeout behaviour.
+        if not hasattr(process, "wait"):
+            return
         try:
             process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
