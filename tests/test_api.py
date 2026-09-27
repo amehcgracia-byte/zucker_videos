@@ -124,7 +124,7 @@ def test_readiness_matrix_defers_master_and_songs_until_later_stages(tmp_path, m
     assert status["readiness"]["sync"]["ready"] is False
     assert "ingest is pending" in status["readiness"]["sync"]["reasons"]
     assert "Master audio is not registered" in status["readiness"]["sync"]["reasons"]
-    assert "songs.json is not registered" in status["readiness"]["cut"]["reasons"]
+    assert "sync is pending" in status["readiness"]["cut"]["reasons"]
 
     assert client.post("/api/v1/stages/ingest/run").status_code == 202
     deadline = time.time() + 5
@@ -141,8 +141,9 @@ def test_readiness_matrix_defers_master_and_songs_until_later_stages(tmp_path, m
     status = client.get("/api/v1/stages/status").get_json()
     assert status["readiness"]["sync"]["ready"] is True
     assert status["readiness"]["cut"]["ready"] is False
-    assert "songs.json is not registered" in status["readiness"]["cut"]["reasons"]
+    assert "sync is pending" in status["readiness"]["cut"]["reasons"]
 
+    # songs.json remains optional for the continuous-video workflow.
     assert client.post("/api/v1/inputs/master", json={"songs": str(songs)}).status_code == 200
     status = client.get("/api/v1/stages/status").get_json()
     assert status["readiness"]["cut"]["ready"] is False
@@ -773,7 +774,7 @@ def test_spherical_preview_frame_renders_cached_vertical_fov_jpeg(tmp_path, monk
     monkeypatch.setattr("server.api.tool_status", lambda: {"ffmpeg_path": "ffmpeg"})
     monkeypatch.setattr("server.api.ffprobe", lambda path: {"format": {"duration": "10"}})
 
-    def fake_run(command, capture_output, text, check):
+    def fake_run(command, capture_output, text, check, **kwargs):
         calls.append(command)
         Path(command[-1]).write_bytes(b"jpg")
         return subprocess.CompletedProcess(command, 0, "", "")
@@ -946,7 +947,8 @@ def test_missing_video_is_dropped_on_project_refresh(tmp_path, monkeypatch):
     client = app.test_client()
     payload = client.get("/api/v1/project").get_json()
 
-    assert [Path(record["path"]).name for record in payload["inputs"]["videos"]] == ["a.mp4"]
+    assert [Path(record["path"]).name for record in payload["inputs"]["videos"]] == ["a.mp4", "b.mp4"]
+    assert payload["inputs"]["videos"][1]["missing"] is True
     assert payload["stages"]["ingest"]["status"] == "stale"
 
 
