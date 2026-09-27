@@ -122,9 +122,39 @@ class Project:
         self.data["modified_at"] = utc_now()
         atomic_write_json(self.json_path, self.data)
 
+    def missing_inputs(self) -> dict[str, list[str]]:
+        """Return registered inputs whose files are no longer available, by role."""
+        inputs = self.data.get("inputs", {})
+
+        def gone(record: dict[str, Any] | None) -> bool:
+            return bool(record) and bool(record.get("missing"))
+
+        return {
+            "master": [inputs["master"]["path"]] if gone(inputs.get("master")) else [],
+            "songs": [inputs["songs"]["path"]] if gone(inputs.get("songs")) else [],
+            "videos": [record["path"] for record in inputs.get("videos", []) if gone(record)],
+        }
+
+    def blockers(self) -> list[dict[str, Any]]:
+        """Return input problems that must block the pipeline."""
+        missing = self.missing_inputs()
+        reasons: list[dict[str, Any]] = []
+        if missing["videos"]:
+            reasons.append({"code": "missing_videos", "paths": missing["videos"]})
+        if missing["master"]:
+            reasons.append({"code": "missing_master", "paths": missing["master"]})
+        return reasons
+
     def snapshot(self) -> dict[str, Any]:
         """Return a deep-copy snapshot suitable for JSON responses."""
-        return deepcopy(self.data)
+        data = deepcopy(self.data)
+        blockers = self.blockers()
+        data["readiness"] = {
+            "ready": not blockers,
+            "blockers": blockers,
+            "missing_inputs": self.missing_inputs(),
+        }
+        return data
 
     def set_master_and_songs(self, master_path: str, songs_path: str) -> None:
         """Register master audio and songs JSON inputs."""
