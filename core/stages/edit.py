@@ -110,14 +110,18 @@ class EditStage(Stage):
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, t("choosing_cameras"))
             plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}), recorded_moves=recorded_moves)
-        plan = _apply_dynamic_moves(plan, project.data.get("settings", {}))
+        plan = _apply_dynamic_moves(plan, project.data.get("settings", {}), recorded_moves=recorded_moves)
         write_artifact_json(artifact_path(project, "beats.json"), beats)
         write_artifact_json(artifact_path(project, "edit_plan.json"), plan)
         progress_callback(100, t("edit_plan_ready"))
         return self.outputs(project)
 
 
-def _apply_dynamic_moves(plan: dict[str, Any], project_settings: dict[str, Any] | None = None) -> dict[str, Any]:
+def _apply_dynamic_moves(
+    plan: dict[str, Any],
+    project_settings: dict[str, Any] | None = None,
+    recorded_moves: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Apply sparse, deterministic motion without replacing directed shots.
 
     Automatic motion is deliberately disabled for the true 360 passthrough
@@ -216,6 +220,11 @@ def _apply_dynamic_moves(plan: dict[str, Any], project_settings: dict[str, Any] 
 
     plan["dynamic_moves"] = metadata
     plan["spherical_shot_usage"] = _spherical_shot_usage(segments)
+    plan["spherical_recording_usage"] = _spherical_recording_usage(
+        segments,
+        edit_settings.get("spherical_mode"),
+        recorded_moves,
+    )
     return plan
 
 
