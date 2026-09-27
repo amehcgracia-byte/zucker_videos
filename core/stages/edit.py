@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from core.camera_moves import load_camera_moves, recorded_move_covering, recorded_shot_for_segment
+from core.dynamic_moves import (
+    DYNAMIC_MOVES_VERSION,
+    build_dynamic_360_shot,
+    generate_iphone_motion,
+    load_cached_person_track,
+    plan_dynamic_moves,
+)
 from core.messages import t
 from core.operator_avoidance import OPERATOR_AVOIDANCE_VERSION, avoidance_for_segment, load_cached_operator_presence
 from core.project import Project
@@ -72,6 +79,7 @@ class EditStage(Stage):
                 "shot_quality_version": SHOT_QUALITY_VERSION,
                 "director_score_threshold": DIRECTOR_SCORE_THRESHOLD,
                 "operator_avoidance_version": OPERATOR_AVOIDANCE_VERSION,
+                "dynamic_moves_version": DYNAMIC_MOVES_VERSION,
             }
         )
 
@@ -102,10 +110,113 @@ class EditStage(Stage):
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, t("choosing_cameras"))
             plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}), recorded_moves=recorded_moves)
+        plan = _apply_dynamic_moves(plan, project.data.get("settings", {}))
         write_artifact_json(artifact_path(project, "beats.json"), beats)
         write_artifact_json(artifact_path(project, "edit_plan.json"), plan)
         progress_callback(100, t("edit_plan_ready"))
         return self.outputs(project)
+
+
+def _apply_dynamic_moves(plan: dict[str, Any], project_settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Apply sparse, deterministic motion without replacing directed shots.
+
+    Automatic motion is deliberately disabled for the true 360 passthrough
+    export. For reframed outputs it only touches segments long enough to carry
+    a gentle move, never adjacent segments, and never an existing Director
+    recording or operator-avoidance crop.
+    """
+    settings = project_settings or {}
+    edit_settings = settings.get("edit") if "edit" in settings else settings
+    edit_settings = edit_settings or {}
+    enabled = bool(edit_settings.get("dynamic_moves_enabled", True))
+    metadata: dict[str, Any] = {"enabled": enabled, "applied": [], "skipped": []}
+    if not enabled or str(plan.get("platform") or "") == "360":
+        plan["dynamic_moves"] = metadata
+        return plan
+
+    segments = plan.get("segments") or []
+    if not segments:
+        plan["dynamic_moves"] = metadata
+        return plan
+
+    try:
+        ratio = max(0.0, min(1.0, float(edit_settings.get("dynamic_moves_ratio", 0.25))))
+    except (TypeError, ValueError):
+        ratio = 0.25
+    seed = stable_fingerprint(
+        {
+            "version": DYNAMIC_MOVES_VERSION,
+            "platform": plan.get("platform"),
+            "segments": [
+                {
+                    "source": segment.get("source_path") or segment.get("clip_path"),
+                    "start": segment.get("clip_start_sec"),
+                    "duration": segment.get("duration_sec"),
+                }
+                for segment in segments
+            ],
+        }
+    )
+    source_paths = [
+        str(segment.get("source_path") or segment.get("clip_path") or "")
+        for segment in segments
+    ]
+    cached_tracks = {
+        path: load_cached_person_track(path)
+        for path in sorted({path for path in source_paths if path})
+    }
+    assignments = plan_dynamic_moves(
+        segments,
+        ratio=ratio,
+        seed=seed,
+        person_track_available=any(bool(samples) for samples in cached_tracks.values()),
+    )
+    fixed_rear_motion = edit_settings.get("fixed_rear_motion", True) is not False
+
+    for assignment in assignments:
+        index = int(assignment["segment_index"])
+        segment = segments[index]
+        role = _source_role(segment)
+        shot = segment.get("spherical_shot") if isinstance(segment.get("spherical_shot"), dict) else {}
+        if role == "360":
+            if str(shot.get("type") or "") in {"recorded_move", "planet"}:
+                metadata["skipped"].append({"segment_index": index, "reason": "existing_directed_or_planet_shot"})
+                continue
+            base_shot = {
+                "yaw": shot.get("yaw", 0.0),
+                "pitch": shot.get("pitch", 0.0),
+                "fov": shot.get("fov", 100.0),
+            }
+            segment["spherical_shot"] = build_dynamic_360_shot(
+                base_shot,
+                float(segment.get("duration_sec") or 0.0),
+                str(assignment["kind"]),
+                seed=str(assignment["seed"]),
+                person_samples=cached_tracks.get(source_paths[index], []),
+            )
+            segment["dynamic_move"] = assignment["kind"]
+        elif role in {"fixed_rear", "handheld"}:
+            if role == "fixed_rear" and not fixed_rear_motion:
+                metadata["skipped"].append({"segment_index": index, "reason": "fixed_rear_motion_disabled"})
+                continue
+            if segment.get("motion"):
+                metadata["skipped"].append({"segment_index": index, "reason": "existing_motion"})
+                continue
+            segment["motion"] = generate_iphone_motion(
+                segment,
+                str(assignment["kind"]),
+                seed=str(assignment["seed"]),
+                person_samples=cached_tracks.get(source_paths[index], []),
+            )
+            segment["dynamic_move"] = assignment["kind"]
+        else:
+            metadata["skipped"].append({"segment_index": index, "reason": "unsupported_source_role"})
+            continue
+        metadata["applied"].append({"segment_index": index, "kind": assignment["kind"], "role": role})
+
+    plan["dynamic_moves"] = metadata
+    plan["spherical_shot_usage"] = _spherical_shot_usage(segments)
+    return plan
 
 
 def load_edit_plan(project: Project) -> dict[str, Any]:
@@ -587,13 +698,16 @@ def _spherical_recording_usage(
     recorded_moves: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     recorded = 0
+    dynamic = 0
     landmark = 0
     by_take: dict[str, int] = {}
     for segment in segments:
         if _source_role(segment) != "360":
             continue
         shot = segment.get("spherical_shot") or {}
-        if shot.get("type") == "recorded_move":
+        if shot.get("type") == "recorded_move" and shot.get("dynamic_move"):
+            dynamic += 1
+        elif shot.get("type") == "recorded_move":
             recorded += 1
             take = str(shot.get("recorded_take") or "Take")
             by_take[take] = by_take.get(take, 0) + 1
@@ -604,6 +718,7 @@ def _spherical_recording_usage(
     return {
         "mode": mode,
         "recorded_segments": recorded,
+        "dynamic_segments": dynamic,
         "landmark_segments": landmark,
         "takes": by_take,
         "recorded_takes_available": takes_available,
