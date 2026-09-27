@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 from scipy.signal import butter, correlate, sosfiltfilt
 
-from core.ffmpeg import FFmpegError, ffprobe, tool_status
+from core.ffmpeg import FFmpegError, FFMPEG_COMMAND_TIMEOUT_SECONDS, ffprobe, tool_status
 from core.media_validation import record_is_usable_camera_video, record_media_path
 from core.messages import t
 from core.normalization import global_clip_audio_path, global_clip_envelope_path, global_thumbnail_path, source_cache_key
@@ -633,7 +633,16 @@ def record_for_clip_id(project: Project, clip_id: str) -> dict[str, Any]:
 
 def run_ffmpeg(command: list[str]) -> None:
     """Run ffmpeg and raise a compact error on failure."""
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=FFMPEG_COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise FFmpegError(f"ffmpeg timed out after {FFMPEG_COMMAND_TIMEOUT_SECONDS}s during sync") from exc
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "ffmpeg failed")
 
