@@ -281,6 +281,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             elif matching_project:
                 state.project = matching_project
                 state.wizard.prepare_existing(matching_project)
+            if state.project:
+                if state.project.refresh_input_records():
+                    state.project.save()
+                blockers = state.project.blockers()
+                if blockers:
+                    missing_paths = [
+                        path
+                        for blocker in blockers
+                        for path in blocker.get("paths", [])
+                    ]
+                    detail = f": {', '.join(missing_paths)}" if missing_paths else ""
+                    return error_response(
+                        "missing_inputs",
+                        f"Faltan archivos de entrada{detail}",
+                        409,
+                    )
             job = state.wizard.start(
                 name=name or "Jam",
                 platform=platform,
@@ -309,7 +325,16 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             project = load_project(project_path)
         if not project or not project.data.get("inputs", {}).get("master"):
             return error_response("not_found", "Master media is not registered", 404)
-        return send_file_with_range(project.data["inputs"]["master"]["path"])
+        if project.refresh_input_records():
+            project.save()
+        master = project.data["inputs"]["master"]
+        if master.get("missing") or not Path(master["path"]).exists():
+            return error_response(
+                "master_missing",
+                "El audio master ya no está disponible en disco. Vuelve a importarlo o relinkarlo.",
+                409,
+            )
+        return send_file_with_range(master["path"])
 
     @app.get("/api/v1/wizard/spherical-preview")
     def api_wizard_spherical_preview() -> Response:
