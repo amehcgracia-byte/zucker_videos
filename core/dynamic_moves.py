@@ -21,6 +21,7 @@ try:
 except ImportError:  # Allows the pure planner to be imported in isolation.
     load_cached_operator_presence = None  # type: ignore[assignment]
 
+DYNAMIC_MOVES_VERSION = 1
 MIN_DYNAMIC_SEGMENT_SEC = 6.0
 DEFAULT_DYNAMIC_RATIO = 0.25
 CURVE_SAMPLES = 9
