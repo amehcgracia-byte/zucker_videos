@@ -12,9 +12,12 @@ import socket
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from core.build_info import startup_label
+from core.ffmpeg import tool_status
 from server.api import create_app
 from server.inbox import load_global_config
 
@@ -64,6 +67,20 @@ def choose_dev_port(preferred: int = 5179) -> int:
             return find_free_port()
 
 
+def wait_for_server(url: str, timeout_seconds: float = 10.0) -> None:
+    """Wait until the local Flask server accepts requests before opening WebView."""
+    deadline = time.monotonic() + timeout_seconds
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(f"{url}/api/v1/app/config", timeout=0.5) as response:
+                if 200 <= response.status < 500:
+                    return
+        except (OSError, urllib.error.URLError) as exc:
+            last_error = exc
+        time.sleep(0.05)
+    raise RuntimeError(f"Local Zucker Editor server did not become ready: {last_error}")
+
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description=APP_NAME)
@@ -103,19 +120,27 @@ def main() -> None:
         daemon=True,
     )
     server.start()
+    wait_for_server(url)
     js_api = DesktopApi()
     logging.getLogger(__name__).info("js_api bridge attached: yes")
     window = webview.create_window(APP_NAME, url, width=1200, height=820, js_api=js_api, background_color="#ffffff")
 
     def on_loaded() -> None:
-        config = load_global_config()
-        if not config.get("ffmpeg_path") or not config.get("ffprobe_path"):
+        tools = tool_status()
+        if not tools.get("ok"):
             window.create_confirmation_dialog(
                 "ffmpeg is missing",
                 "Zucker Editor needs ffmpeg and ffprobe for media analysis.\n\nInstall them with Homebrew:\n\nbrew install ffmpeg",
             )
 
+    def on_closing() -> None:
+        state = app.config.get("ZUCKER_STATE")
+        if state:
+            state.wizard.cancel()
+            state.engine.shutdown()
+
     window.events.loaded += on_loaded
+    window.events.closing += on_closing
     webview.start()
 
 
