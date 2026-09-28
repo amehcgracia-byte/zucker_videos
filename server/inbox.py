@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,9 @@ from core.project import STAGE_NAMES, Project, file_record
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".aiff", ".aif"}
 LOGGER = logging.getLogger(__name__)
+
+_INBOX_SCAN_CACHE_TTL_SECONDS = 2.0
+_inbox_scan_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 def app_home() -> Path:
@@ -57,10 +62,23 @@ def save_global_config(config: dict[str, Any]) -> None:
 
 
 def scan_inbox(root: str | None = None) -> dict[str, Any]:
-    """Scan and classify files in the configured inbox."""
+    """Scan and classify files in the configured inbox.
+
+    The UI may ask for the Inbox status repeatedly while the Inputs tab is
+    open. Keep the result for a couple of seconds so the same recursive scan
+    is not repeated for every request, without making newly dropped files
+    feel stale.
+    """
     inbox = Path(root or load_global_config()["inbox_path"]).expanduser().resolve()
     inbox.mkdir(parents=True, exist_ok=True)
-    return classify_paths([str(inbox)], inbox_path=str(inbox))
+    cache_key = str(inbox)
+    now = time.monotonic()
+    cached = _inbox_scan_cache.get(cache_key)
+    if cached and now - cached[0] < _INBOX_SCAN_CACHE_TTL_SECONDS:
+        return copy.deepcopy(cached[1])
+    result = classify_paths([str(inbox)], inbox_path=str(inbox))
+    _inbox_scan_cache[cache_key] = (now, copy.deepcopy(result))
+    return result
 
 
 def suggest_songs_json(master_path: str | None, inbox_path: str | None = None) -> list[dict[str, Any]]:

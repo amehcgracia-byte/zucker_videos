@@ -85,8 +85,15 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.after_request
     def add_no_cache_headers(response: Response) -> Response:
-        if request.path == "/" or request.path.endswith((".html", ".css", ".js", ".png")):
+        if request.path == "/" or request.path.endswith(".html"):
             response.headers["Cache-Control"] = "no-store, max-age=0"
+        elif request.path.startswith("/vendor/") or request.path.endswith(
+            (".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".woff", ".woff2")
+        ):
+            # UI assets are content-versioned by their query string in the HTML.
+            # Cache them aggressively so reopening the desktop app does not
+            # re-download the same multi-megabyte logos and vendor bundles.
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 
     @app.errorhandler(RequestEntityTooLarge)
