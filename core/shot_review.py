@@ -389,6 +389,47 @@ def _review_candidate_pool(
     return pool, "coverage.sources+edit_plan.moments"
 
 
+def _render_status_path(root: Path) -> Path:
+    return root / "render_status.json"
+
+
+def _load_render_status(root: Path) -> dict[str, dict[str, Any]]:
+    path = _render_status_path(root)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, ValueError, TypeError):
+        LOGGER.warning("Could not read review render status %s", path, exc_info=True)
+        return {}
+
+
+def _save_render_status(root: Path, status: dict[str, dict[str, Any]]) -> None:
+    path = _render_status_path(root)
+    # Review can be opened/polled concurrently from the browser.  A fixed
+    # sibling temporary name lets one request replace the other request's
+    # temporary file before it calls replace().
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=root, prefix="render_status.", suffix=".tmp", delete=False
+    ) as handle:
+        handle.write(json.dumps(status, ensure_ascii=False))
+        temporary = Path(handle.name)
+    temporary.replace(path)
+
+
+def mark_review_render_failed(project: Project, indices: set[int], message: str) -> None:
+    """Persist a background render failure so the review UI can show it."""
+    segments = _review_segments(project)
+    signature = _review_signature(segments)
+    root = project.cache_dir / "shot_review" / signature
+    root.mkdir(parents=True, exist_ok=True)
+    status = _load_render_status(root)
+    for index in indices:
+        status[str(index)] = {"state": "failed", "error": message}
+    _save_render_status(root, status)
+
+
 def _replacement_candidates(
     pool: list[dict[str, Any]],
     segment: dict[str, Any],
