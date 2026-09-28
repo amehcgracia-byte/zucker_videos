@@ -25,14 +25,24 @@ if missing:
 PY
 
 cd "$ROOT"
+BRANCH="$(git branch --show-current 2>/dev/null || echo detached)"
+COMMIT_FULL="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+COMMIT="${COMMIT_FULL:0:12}"
+VERSIONED_DMG_PATH="$DIST/$APP_NAME-$COMMIT.dmg"
+echo "Building $APP_NAME from branch $BRANCH at commit $COMMIT_FULL"
 "$PYTHON" tools/make_icon.py
-rm -rf "$APP_BUNDLE" "$DIST/$APP_NAME" "$BUILD" "$DMG_ROOT" "$DMG_PATH" "$DMG_RW"
+rm -rf "$APP_BUNDLE" "$DIST/$APP_NAME" "$BUILD" "$DMG_ROOT" "$DMG_PATH" "$VERSIONED_DMG_PATH" "$DMG_RW"
 mkdir -p "$ROOT/build"
-COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 "$PYTHON" - <<PY
 import json
 from pathlib import Path
-Path("$BUILD_INFO").write_text(json.dumps({"version": "0.1", "git_commit": "$COMMIT"}, indent=2) + "\n", encoding="utf-8")
+Path("$BUILD_INFO").write_text(
+    json.dumps(
+        {"version": "0.1", "git_commit": "$COMMIT", "git_branch": "$BRANCH"},
+        indent=2,
+    ) + "\n",
+    encoding="utf-8",
+)
 PY
 
 "$PYTHON" -m PyInstaller \
@@ -67,6 +77,27 @@ find "$APP_BUNDLE" -type d -name tests -prune -exec rm -rf {} +
 find "$APP_BUNDLE" \( -iname '*pytest*' -o -iname '*_tests*' -o -iname '*tests*' \) -print -exec rm -rf {} +
 
 codesign --force --deep -s - "$APP_BUNDLE"
+
+BUNDLED_BUILD_INFO="$APP_BUNDLE/Contents/Resources/build_info.json"
+if [[ ! -f "$BUNDLED_BUILD_INFO" ]]; then
+  echo "Build verification failed: build_info.json is missing from the app bundle." >&2
+  exit 1
+fi
+"$PYTHON" - "$BUNDLED_BUILD_INFO" "$COMMIT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+expected = sys.argv[2]
+payload = json.loads(path.read_text(encoding="utf-8"))
+actual = str(payload.get("git_commit", ""))
+if actual != expected:
+    raise SystemExit(
+        f"Build verification failed: expected git commit {expected}, found {actual or 'missing'}."
+    )
+print(f"Verified app bundle commit: {actual}")
+PY
 
 mkdir -p "$DMG_ROOT"
 cp -R "$APP_BUNDLE" "$DMG_ROOT/"
@@ -119,7 +150,9 @@ OSA
 fi
 
 hdiutil convert "$DMG_RW" -format UDZO -ov -o "$DMG_PATH"
+cp -f "$DMG_PATH" "$VERSIONED_DMG_PATH"
 rm -f "$DMG_RW"
 
 echo "Built $APP_BUNDLE"
 echo "Built $DMG_PATH"
+echo "Built $VERSIONED_DMG_PATH"
