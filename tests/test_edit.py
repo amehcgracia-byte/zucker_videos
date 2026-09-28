@@ -514,9 +514,10 @@ def test_automatic_360_motion_never_exceeds_the_fov_fraction_budget(segment_dura
         if travel / fov >= 0.002:
             moved_at_all += 1
 
-    # Runtime v360 motion is disabled by default because sendcmd corrupts
-    # command-instants; all automatic holds remain effectively static here.
-    assert moved_at_all == 0
+    # Automatic mode now emits the enabled, bounded hold motion. Very short
+    # holds remain static by design because there is no time for a graceful move.
+    if segment_duration >= 2.0:
+        assert moved_at_all > 0
 
 
 def test_youtube_plan_keeps_recorded_360_curve_in_directed_mode():
@@ -896,6 +897,7 @@ def test_youtube_plan_360_segments_always_carry_a_shot_and_move_only_when_motion
         shot = segment.get("spherical_shot")
         assert shot, "360 segment must always carry a spherical_shot, not a frozen passthrough"
         assert all(abs(shot.get(key) or 0.0) == 0.0 for key in _DRIFT_KEYS)
+        assert shot.get("runtime_motion_enabled") is False
 
         # Motion explicitly on -> normal landmark shots get the subtle hold.
     moving_plan = _youtube_multicam_plan(coverage, beats, {"spherical_landmarks": {}, "edit": {"spherical_motion": True}})
@@ -905,6 +907,7 @@ def test_youtube_plan_360_segments_always_carry_a_shot_and_move_only_when_motion
         shot = segment.get("spherical_shot")
         assert shot
         assert all(abs(shot.get(key) or 0.0) == 0.0 for key in _DRIFT_KEYS)
+        assert shot.get("runtime_motion_enabled") is True
         assert shot.get("sweep_enabled") is False
 
 

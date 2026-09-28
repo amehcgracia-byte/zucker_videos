@@ -84,7 +84,7 @@ FIXED_CAMERA_GENTLE_ZOOM_MAX = 1.20
 MAX_CONSECUTIVE_CAMERA_SEGMENTS = 2
 # Retained as a versioned emergency switch for diagnostics; normal builds use
 # the shared gentle hold/sweep motion below.
-FORCE_STATIC_360_ISOLATION = True
+FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_SWEEP_SPEED_DEG_PER_SEC = 20.0
 SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC = 15.0
 SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 20.0
@@ -714,14 +714,16 @@ def _youtube_multicam_plan(
         )
     except (TypeError, ValueError):
         fixed_zoom_coverage_threshold = DEFAULT_FIXED_CAMERA_ZOOM_COVERAGE_THRESHOLD
-    # Static 360 holds are the safe shipped default. Motion remains an explicit
-    # project opt-in until a filter path that does not reconfigure v360 per
-    # frame is available.
-    spherical_motion = False
-    hold_motion = str(edit_settings.get("spherical_hold_motion") or "none").lower()
+    # Automatic 360 motion is enabled for new projects. Users can still turn
+    # it off explicitly, while directed mode uses the recorded camera curve.
+    spherical_motion = bool(edit_settings.get("spherical_motion", True))
+    hold_motion = str(
+        edit_settings.get("spherical_hold_motion")
+        or ("subtle" if spherical_motion else "none")
+    ).lower()
     if hold_motion not in {"none", "subtle"}:
-        hold_motion = "none"
-    spherical_sweep = False
+        hold_motion = "subtle" if spherical_motion else "none"
+    spherical_sweep = bool(edit_settings.get("spherical_sweep", False))
     sweep_speed = max(SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC, min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, float(edit_settings.get("sweep_speed_deg_per_sec", SPHERICAL_SWEEP_SPEED_DEG_PER_SEC))))
     bar_index = 0
     segment_index = 0
@@ -1111,7 +1113,7 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
         shot["pitch"] = -90.0
         shot["fov"] = max(240.0, float(shot.get("fov") or 240.0))
         shot["projection"] = "tiny_planet"
-        shot["runtime_motion_enabled"] = False
+        shot["runtime_motion_enabled"] = bool(enabled)
         # The tiny-planet spin is a deliberate signature effect, but it is
         # still held to the same fraction-of-field budget so it reads as a
         # slow rotation rather than a carousel. With motion off it holds still
@@ -1131,11 +1133,9 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
     if mode not in {"none", "subtle"}:
         mode = "subtle" if enabled else "none"
     shot["sweep_enabled"] = bool(shot.get("sweep_enabled", False)) and enabled
-    # Runtime sendcmd animation is disabled globally until the safe
-    # equirectangular reprojection path replaces FFmpeg's corrupting v360
-    # reconfiguration. Keep the authored subtle rate in the plan for future
-    # use, but make the shipped render pose static.
-    shot["runtime_motion_enabled"] = False
+    # Keep runtime motion explicit in the plan so export can distinguish a
+    # deliberate static hold from an enabled automatic or recorded movement.
+    shot["runtime_motion_enabled"] = bool(enabled)
     shot["hold_motion"] = mode
     shot["hold_motion_rate_deg_per_sec"] = SPHERICAL_HOLD_MOTION_DEG_PER_SEC if mode == "subtle" and enabled else 0.0
     shot["drift_yaw_fraction"] = 0.0

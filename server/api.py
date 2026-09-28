@@ -1810,8 +1810,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         config["desktop"] = not state.dev
         config.setdefault("camera_role_weights", {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0})
         config.setdefault("fixed_rear_motion", True)
-        config.setdefault("spherical_motion", False)
-        config.setdefault("spherical_hold_motion", "none")
+        config.setdefault("spherical_motion", True)
+        config.setdefault("spherical_hold_motion", "subtle")
         config.setdefault("spherical_mode", "automatic")
         config.setdefault("spherical_sweep", False)
         config.setdefault("sweep_speed_deg_per_sec", 20.0)

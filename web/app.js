@@ -2518,7 +2518,7 @@ async function startWizard(options = {}) {
       spherical_landmarks: sphericalLandmarksFromForm(),
       camera_role_weights: cameraRoleWeightsFromForm(),
       fixed_rear_motion: fixedRearMotionFromForm(),
-      spherical_motion: false,
+      spherical_motion: true,
       spherical_mode: "automatic",
       spherical_sweep: false,
       sweep_speed_deg_per_sec: appConfig?.sweep_speed_deg_per_sec || 60,
