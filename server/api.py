@@ -372,10 +372,29 @@ class CompositionRunner:
                     raise RuntimeError("The refreshed Reel base export is unavailable")
             original_base_path = Path(base["path"]).resolve()
             composition_cache = project.cache_dir / "composition-base.mp4"
+            composition_cache_meta = project.cache_dir / "composition-base.json"
             # Keep one clean private base so re-saving captions/flyers never
-            # compounds the previous final export.
-            if not composition_cache.is_file() or composition_cache.stat().st_size == 0:
+            # compounds the previous final export, but refresh it whenever the
+            # mounted export changes.  The old existence-only check silently
+            # composed new UI state over a stale edit/export.
+            source_stat = original_base_path.stat()
+            expected_cache_meta = {
+                "source": str(original_base_path),
+                "source_size": int(source_stat.st_size),
+                "source_mtime_ns": int(source_stat.st_mtime_ns),
+            }
+            cache_is_current = False
+            if composition_cache.is_file() and composition_cache.stat().st_size > 0 and composition_cache_meta.is_file():
+                try:
+                    cache_is_current = json.loads(composition_cache_meta.read_text(encoding="utf-8")) == expected_cache_meta
+                except (OSError, json.JSONDecodeError):
+                    cache_is_current = False
+            if not cache_is_current:
                 shutil.copy2(original_base_path, composition_cache)
+                composition_cache_meta.write_text(
+                    json.dumps(expected_cache_meta, indent=2) + "\n",
+                    encoding="utf-8",
+                )
             base_path = composition_cache
             output_stem = original_base_path.stem
             spec_path = project.folder / "overlay_spec.json"
@@ -389,8 +408,6 @@ class CompositionRunner:
             _compose_visual_overlays(base_path, spec, composed, lambda value: _set_job_progress(job, 8 + round(value * 45)))
             if job.status == "cancelled":
                 return
-            job.progress = 55
-            job.detail = "Burning captions onto the composed MP4"
             cues = tuple(
                 Cue(
                     tuple(str(line) for line in cue.get("lines", [])),
@@ -405,20 +422,35 @@ class CompositionRunner:
             style = get_style(str(track_data.get("style") or "clean_bottom"))
             header = track_data.get("header") if isinstance(track_data.get("header"), dict) else {}
             logo = _composition_logo(project, str(header.get("logo_source") or "none"))
+            letterbox = track_data.get("letterbox") if isinstance(track_data.get("letterbox"), dict) else None
             final = project.exports_dir / f"{output_stem}_composed-captions.mp4"
-            def burn_progress(seconds: float) -> None:
-                duration = _media_duration(base_path)
-                _set_job_progress(job, 55 + round(min(1.0, seconds / duration if duration else 0.0) * 40))
-            output = burn_captions(
-                composed,
-                _expand_caption_animations(track),
-                style,
-                output_path=final,
-                header=header,
-                logo_path=logo,
-                letterbox=track_data.get("letterbox") if isinstance(track_data.get("letterbox"), dict) else None,
-                progress_callback=burn_progress,
-            )
+            needs_caption_pass = bool(cues) or bool(logo) or bool(
+                header.get("title_enabled") and header.get("title")
+            ) or bool(letterbox and letterbox.get("enabled"))
+            if needs_caption_pass:
+                job.progress = 55
+                job.detail = "Burning captions and logo onto the composed MP4"
+                def burn_progress(seconds: float) -> None:
+                    duration = _media_duration(base_path)
+                    _set_job_progress(job, 55 + round(min(1.0, seconds / duration if duration else 0.0) * 40))
+                output = burn_captions(
+                    composed,
+                    _expand_caption_animations(track),
+                    style,
+                    output_path=final,
+                    header=header,
+                    logo_path=logo,
+                    letterbox=letterbox,
+                    progress_callback=burn_progress,
+                )
+            else:
+                # YouTube has no captions.  Do not run a second full video
+                # transcode just to burn an empty ASS file; copy the already
+                # composed horizontal result as the single final export.
+                job.progress = 96
+                job.detail = "Finalizing the horizontal YouTube export"
+                shutil.copy2(composed, final)
+                output = final
             if job.status == "cancelled":
                 output.unlink(missing_ok=True)
                 return

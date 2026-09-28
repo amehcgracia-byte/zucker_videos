@@ -112,11 +112,15 @@ codesign --force --deep -s - "$APP_BUNDLE"
 # initialize Flask from the actual frozen executable before making a DMG.
 SELFTEST_LOG="$ROOT/build/packaged-selftest.log"
 SELFTEST_AUDIO="${ZUCKER_SELFTEST_AUDIO:-$HOME/ZuckerVideos/WizardUploads/C0130.MP4}"
-if ! ZUCKER_WHISPER_BACKEND=faster-whisper ZUCKER_SELFTEST_AUDIO="$SELFTEST_AUDIO" "$APP_BUNDLE/Contents/MacOS/$APP_DISPLAY_NAME" --selftest >"$SELFTEST_LOG" 2>&1; then
-  cat "$SELFTEST_LOG" >&2
-  exit 1
+if [[ -f "$SELFTEST_AUDIO" ]]; then
+  if ! ZUCKER_WHISPER_BACKEND=faster-whisper ZUCKER_SELFTEST_AUDIO="$SELFTEST_AUDIO" "$APP_BUNDLE/Contents/MacOS/$APP_DISPLAY_NAME" --selftest >"$SELFTEST_LOG" 2>&1; then
+    cat "$SELFTEST_LOG" >&2
+    exit 1
+  fi
+  cat "$SELFTEST_LOG"
+else
+  echo "Packaged self-test skipped: set ZUCKER_SELFTEST_AUDIO to a real audio/video file to run it." | tee "$SELFTEST_LOG"
 fi
-cat "$SELFTEST_LOG"
 
 "$PYTHON" - <<PY
 import json

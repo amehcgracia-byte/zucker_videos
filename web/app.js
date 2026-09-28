@@ -2540,6 +2540,9 @@ async function waitForPreparedProject() {
 
 async function startWizard(options = {}) {
   const waitForPrepare = options.waitForPrepare === true;
+  // Every explicit run is a fresh creative pass.  Keeping the same seed
+  // made the edit fingerprint and camera tie-breaks reproduce the prior cut.
+  currentVariationSeed = `${Date.now()}-${Math.random()}`;
   const inputs = selectedInputs();
   lastPipelineStage = null;
   hideStageTransition();

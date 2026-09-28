@@ -163,6 +163,15 @@ class EditStage(Stage):
                 # built from a previous sync/cut pass.
                 "cut": coverage_payload,
                 "settings": project.data["settings"].get(self.name, {}),
+                # A rerun is intentionally a new creative pass.  The seed is
+                # stored by the wizard and must invalidate edit_plan.json;
+                # otherwise the engine can truthfully report a cache hit while
+                # returning the previous camera sequence.
+                "variation_seed": (
+                    project.data.get("settings", {}).get("edit", {}).get("variation_seed")
+                    or project.data.get("settings", {}).get("wizard", {}).get("variation_seed")
+                    or ""
+                ),
                 "spherical_landmarks": project.data["settings"].get("spherical_landmarks", {}),
                 "spherical_landmarks_by_source": project.data["settings"].get("spherical_landmarks_by_source", {}),
                 "camera_moves": _camera_moves_fingerprint(project),
@@ -794,6 +803,7 @@ def _youtube_multicam_plan(
             segment_start, segment_end, segment_index, spherical_landmarks, use_recorded_360, recorded_moves or [],
             forced_alternatives=forced_alternatives,
             camera_target_weights=camera_target_weights,
+            variation_seed=variation_seed,
             prefer_battery_camera=segment_end >= end - 0.001,
             preferred_camera_ids=_preferred_singing_camera_ids(
                 available, _is_singing_window(coverage, segment_start, segment_end)
@@ -1638,6 +1648,7 @@ def _choose_source_avoiding_identical_framing(
     use_recorded_360: bool,
     recorded_moves: list[dict[str, Any]],
     forced_alternatives: set[str] | None = None,
+    variation_seed: str = "",
     prefer_battery_camera: bool = False,
     preferred_camera_ids: set[str] | None = None,
     camera_target_weights: dict[str, float] | None = None,
@@ -1680,7 +1691,12 @@ def _choose_source_avoiding_identical_framing(
         director_bonus = float(src.get("director_segment_score") or 1.0) if role == "handheld" else 1.0
         battery_bonus = 1 if prefer_battery_camera and _is_battery_camera(src) else 0
         singing_bonus = 1 if _camera_id(src) in preferred_camera_ids else 0
-        return (-singing_bonus, camera_chosen_seconds / target_share, role_chosen_seconds / max(0.001, float(role_weights_copy.get(role, 0.3))), -battery_bonus, chosen_seconds / covered_seconds, usage_counts_copy.get(_source_id(src), 0), -director_bonus, -float(src.get("confidence") or 0.0), _source_id(src))
+        variation_rank = int(stable_fingerprint({
+            "variation_seed": str(variation_seed),
+            "segment": segment_index,
+            "source": _source_id(src),
+        })[:16], 16)
+        return (-singing_bonus, camera_chosen_seconds / target_share, role_chosen_seconds / max(0.001, float(role_weights_copy.get(role, 0.3))), -battery_bonus, chosen_seconds / covered_seconds, usage_counts_copy.get(_source_id(src), 0), -director_bonus, -float(src.get("confidence") or 0.0), variation_rank, _source_id(src))
 
     usable = [src for src in sources if float(role_weights_copy.get(_source_role(src), role_weights_copy.get("handheld", 0.3))) > 0.0] or list(sources)
     if forced_alternatives:

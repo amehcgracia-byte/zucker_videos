@@ -52,7 +52,7 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
         if header and header.get("title_enabled") and header.get("title"):
             title = str(header["title"]).upper().replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("\n", r"\\n")
             vf += f",drawbox=x=0.12*iw:y=40:w=0.76*iw:h=110:color=white:t=fill,drawtext=fontcolor=black:fontsize=42:text='{title}':x=(w-text_w)/2:y=70"
-        command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error"]
+        command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin"]
         if progress_callback is not None:
             command += ["-progress", "pipe:1", "-nostats"]
         command += ["-i", str(source)]
@@ -63,11 +63,29 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
             logo_width = max(40, int(width * max(0.05, min(0.9, float(overlay.get("width", 0.22))))))
             logo_x = max(0.0, min(1.0, float(overlay.get("x", 0.5))))
             logo_y = max(0.0, min(1.0, float(overlay.get("y", 0.08))))
-            command += ["-filter_complex", f"[0:v]{vf}[captioned];[1:v]format=rgba,scale={logo_width}:-1[logo];[captioned][logo]overlay=(W-w)*{logo_x:.5f}:(H-h)*{logo_y:.5f}:shortest=1[v]"]
-            command += ["-map", "[v]", "-map", "0:a?", "-shortest"]
+            # Keep the source video as the clock.  The logo input is looped,
+            # so -shortest can terminate on the wrong stream or produce a
+            # black/empty tail on some FFmpeg builds.
+            command += ["-filter_complex", f"[0:v]{vf}[captioned];[1:v]format=rgba,scale={logo_width}:-1[logo];[captioned][logo]overlay=(W-w)*{logo_x:.5f}:(H-h)*{logo_y:.5f}:eof_action=repeat:shortest=0[v]"]
+            command += ["-map", "[v]", "-map", "0:a?"]
         else:
             command += ["-vf", vf]
-        command += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy", str(destination)]
+        # Bound the output to the real source duration because the logo
+        # input is intentionally infinite.
+        try:
+            duration_probe = subprocess.run(
+                [
+                    str(Path(ffmpeg).with_name("ffprobe")) if Path(ffmpeg).parent != Path(".") else "ffprobe",
+                    "-v", "error", "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1", str(source),
+                ],
+                check=True, capture_output=True, text=True,
+            )
+            source_duration = float(duration_probe.stdout.strip() or 0.0)
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            source_duration = 0.0
+        duration_args = ["-t", f"{source_duration:.3f}"] if source_duration > 0 else []
+        command += duration_args + ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy", str(destination)]
         if progress_callback is None:
             subprocess.run(command, check=True)
         else:
