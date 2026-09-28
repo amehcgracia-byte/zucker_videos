@@ -42,9 +42,18 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
         if letterbox and letterbox.get("enabled"):
             width = int(letterbox.get("width", width))
             height = int(letterbox.get("height", height))
-        ass.write_text(render_ass(cue_track, style, width=width, height=height, header=header), encoding="utf-8")
-        escaped = str(ass).replace("\\", r"\\").replace(":", r"\:").replace("'", r"\'")
-        vf = "subtitles=filename=%s" % escaped
+        caption_enabled = bool(cue_track.cues) or bool(
+            header and header.get("title_enabled") and header.get("title")
+        ) or bool(letterbox and letterbox.get("enabled"))
+        if caption_enabled:
+            ass.write_text(render_ass(cue_track, style, width=width, height=height, header=header), encoding="utf-8")
+            escaped = str(ass).replace("\\", r"\\").replace(":", r"\:").replace("'", r"\'")
+            vf = "subtitles=filename=%s" % escaped
+        else:
+            # A YouTube logo-only composition must not pass through an empty
+            # ASS filter; some FFmpeg builds turn that no-op subtitle graph
+            # into a black video.
+            vf = "null"
         if letterbox and letterbox.get("enabled"):
             width, height = int(letterbox.get("width", 1080)), int(letterbox.get("height", 1920))
             sigma = max(1, float(letterbox.get("blur", 18)))
