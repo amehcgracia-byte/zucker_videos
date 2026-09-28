@@ -1576,9 +1576,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.post("/api/v1/wizard/projects/new")
     def api_wizard_project_new() -> Response:
+        if not state.wizard.reset():
+            return error_response(
+                "wizard_busy",
+                "The previous wizard job is still cancelling; wait until it stops before starting a new project.",
+                409,
+            )
         state.project = None
         state.composition.reset()
-        state.wizard.reset()
         config = load_global_config()
         if config.pop("last_project_path", None) is not None:
             save_global_config(config)
@@ -1586,17 +1591,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.post("/api/v1/wizard/reset")
     def api_wizard_reset() -> Response:
-        state.wizard.reset()
+        if not state.wizard.reset():
+            return error_response(
+                "wizard_busy",
+                "The previous wizard job is still cancelling; wait until it stops before resetting.",
+                409,
+            )
         return jsonify({"ok": True})
 
     @app.post("/api/v1/wizard/cancel")
     def api_wizard_cancel() -> Response:
         if state.composition.cancel():
-            return jsonify({"ok": True})
+            return jsonify({"ok": True, "status": "cancelling"})
         cancelled = state.wizard.cancel()
         if not cancelled:
             return error_response("not_running", "No job is currently running", 409)
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "status": state.wizard.status().get("status")})
 
     @app.get("/api/v1/wizard/report")
     def api_wizard_report() -> Response:

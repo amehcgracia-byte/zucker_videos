@@ -60,12 +60,16 @@ class WizardJob:
     input_warnings: list[str] = field(default_factory=list)
     paper_edit_available: bool = False
     project_lock: ProjectPipelineLock | None = field(default=None, repr=False)
+    cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
+    cancel_requested_at: float | None = None
 
 
 def serialize_wizard_job(job: WizardJob) -> dict[str, Any]:
     """Return only JSON-safe wizard state for API responses."""
     snapshot = dict(job.__dict__)
+    snapshot.pop("cancel_event", None)
     snapshot["project_lock"] = bool(job.project_lock)
+    snapshot["cancel_requested"] = bool(job.cancel_requested_at)
     return snapshot
 
 
@@ -94,20 +98,25 @@ class WizardRunner:
     _job: WizardJob | None = None
     _thread: threading.Thread | None = None
     _prepared_project: Project | None = None
-    _cancel_event: threading.Event = field(default_factory=threading.Event)
     _finish_requested: bool = False
 
     def cancel(self) -> bool:
-        """Request that the currently running job stop as soon as possible.
+        """Request cancellation for the current job without losing the signal.
 
-        Cooperative: the running stage notices this the next time it reports
-        progress (see ``_run_stage``) and unwinds via ``WizardCancelled``,
-        which also kills any in-flight ffmpeg subprocess immediately.
+        The event belongs to this job, so a reset or a later job cannot clear
+        the cancellation request while the worker is still unwinding.
         """
         with self._lock:
-            if not self._job or self._job.status != "running":
+            job = self._job
+            if not job or job.status not in {"running", "cancelling"}:
                 return False
-            self._cancel_event.set()
+            job.cancel_event.set()
+            job.cancel_requested_at = time.time()
+            if job.status == "running":
+                job.status = "cancelling"
+                job.message = "Cancelling…"
+                job.detail = "Stopping the current stage…"
+            LOGGER.info("Wizard cancellation requested project=%s stage=%s", job.project_path, job.stage)
             return True
 
     def _mark_cancelled(self, job: WizardJob) -> None:
@@ -119,13 +128,14 @@ class WizardRunner:
     def prepare(self, *, name: str, master_path: str, songs_path: str | None, video_paths: list[str], platform: str = "youtube") -> WizardJob:
         """Create/register a project and run ingest + sync while the user chooses an edit type."""
         with self._lock:
+            if self._thread and self._thread.is_alive():
+                raise RuntimeError("A previous wizard job is still stopping")
             if self._job and self._job.status == "running":
                 raise RuntimeError("A video is already being processed")
             job = WizardJob(id="current", message=t("listening"))
             self._job = job
             self._prepared_project = None
             self._finish_requested = False
-            self._cancel_event.clear()
             thread = threading.Thread(
                 target=self._prepare_project,
                 kwargs={"job": job, "name": name, "master_path": master_path, "songs_path": songs_path, "video_paths": video_paths, "platform": platform},
@@ -147,12 +157,17 @@ class WizardRunner:
                 # project; otherwise the desktop UI gets a misleading 500.
                 if same_project_path(self._job.project_path, str(project.folder)):
                     return self._job
-                self._cancel_event.set()
+                self._job.cancel_event.set()
+                self._job.cancel_requested_at = time.time()
+                self._job.status = "cancelling"
+                self._job.message = "Cancelling…"
                 previous_thread = self._thread
         if previous_thread and previous_thread.is_alive():
             previous_thread.join(timeout=10.0)
+        if previous_thread and previous_thread.is_alive():
+            raise RuntimeError("The previous wizard job is still cancelling; wait a few seconds and try again")
         with self._lock:
-            if self._job and self._job.status == "running":
+            if self._job and self._job.status == "cancelling":
                 self._job.status = "cancelled"
                 self._job.message = t("cancelled")
                 self._job.error = None
@@ -162,7 +177,6 @@ class WizardRunner:
             self._job = job
             self._prepared_project = None
             self._finish_requested = False
-            self._cancel_event.clear()
             thread = threading.Thread(
                 target=self._prepare_existing_project,
                 kwargs={"job": job, "project": project, "platform": platform or str((project.data.get("settings", {}).get("wizard") or {}).get("platform") or "youtube")},
@@ -222,6 +236,8 @@ class WizardRunner:
     ) -> WizardJob:
         """Create/register a project and run the simplified render chain."""
         with self._lock:
+            if self._thread and self._thread.is_alive() and self._job and self._job.status != "running":
+                raise RuntimeError("A previous wizard job is still stopping")
             if self._job and self._job.status == "running":
                 if self._finish_requested or same_project_path(self._job.project_path, str(self._prepared_project.folder) if self._prepared_project else None):
                     return self._job
@@ -266,7 +282,6 @@ class WizardRunner:
                 return job
             job = WizardJob(id="current")
             self._job = job
-            self._cancel_event.clear()
             self._finish_requested = False
             project = self._prepared_project
             target = self._finish if project else self._run
@@ -277,6 +292,7 @@ class WizardRunner:
                 "song_choice": song_choice,
                 "audio_trim": audio_trim,
                 "spherical_landmarks": spherical_landmarks,
+                "spherical_landmark_profiles": spherical_landmark_profiles,
                 "spherical_source_path": spherical_source_path,
                 "camera_role_weights": camera_role_weights,
                 "fixed_rear_motion": fixed_rear_motion,
@@ -314,6 +330,8 @@ class WizardRunner:
     def start_existing(self, project: Project, **options: Any) -> WizardJob:
         """Start the complete pipeline again for an opened project."""
         with self._lock:
+            if self._thread and self._thread.is_alive():
+                raise RuntimeError("A previous wizard job is still stopping")
             if self._job and self._job.status == "running":
                 return self._job
             job = WizardJob(id="current", message=t("listening"))
@@ -323,7 +341,6 @@ class WizardRunner:
             self._job = job
             self._prepared_project = None
             self._finish_requested = False
-            self._cancel_event.clear()
             thread = threading.Thread(
                 target=self._run_existing_from_scratch,
                 kwargs={"job": job, "project": project, "options": options},
@@ -380,7 +397,6 @@ class WizardRunner:
             if self._thread and self._thread.is_alive():
                 raise RuntimeError("A video is already being processed")
             job = self._job
-            self._cancel_event.clear()
             thread = threading.Thread(target=self._render_review_job, args=(job, project), daemon=True, name="zucker-review-render")
             self._thread = thread
             thread.start()
@@ -445,7 +461,6 @@ class WizardRunner:
             job.message = "Rendering approved Backstage paper edit"
             job.detail = f"{len(segments)} approved cuts"
             job.paper_edit_available = False
-            self._cancel_event.clear()
             thread = threading.Thread(target=self._render_paper_edit_job, args=(job, project), daemon=True, name="zucker-paper-edit-render")
             self._thread = thread
             thread.start()
@@ -504,26 +519,41 @@ class WizardRunner:
             job.technical_details = traceback.format_exc()
             job.message = t("cannot_finish")
 
-    def reset(self) -> None:
-        """Forget the process-local wizard state without deleting project files."""
+    def reset(self) -> bool:
+        """Forget wizard state only after the worker has actually stopped.
+
+        Reset used to release the project lock and clear the cancellation event
+        while the daemon thread was still rendering. That made Start again
+        revive the old worker and corrupt the runner state.
+        """
         with self._lock:
+            thread = self._thread
+            if thread and thread.is_alive():
+                if self._job:
+                    self._job.cancel_event.set()
+                    self._job.cancel_requested_at = time.time()
+                    self._job.status = "cancelling"
+                    self._job.message = "Cancelling…"
+                    self._job.detail = "Waiting for the current stage to stop…"
+                return False
             if self._job:
                 _release_job_project_lock(self._job)
             self._job = None
             self._thread = None
             self._prepared_project = None
-            self._cancel_event.clear()
+            return True
 
     def rescue(self, project: Project, *, clip_id: str, offset_sec: float) -> WizardJob:
         """Apply a manual sync override and rerender cut/edit/export for the wizard."""
         with self._lock:
+            if self._thread and self._thread.is_alive():
+                raise RuntimeError("A previous wizard job is still stopping")
             if self._job and self._job.status == "running":
                 raise RuntimeError("A video is already being processed")
             job = WizardJob(id="current", message=t("building_edit"))
             _attach_project(job, project)
             self._job = job
             self._prepared_project = None
-            self._cancel_event.clear()
             thread = threading.Thread(
                 target=self._rescue_and_rerender,
                 kwargs={"job": job, "project": project, "clip_id": clip_id, "offset_sec": offset_sec},
@@ -545,7 +575,6 @@ class WizardRunner:
             _attach_project(job, project)
             self._job = job
             self._prepared_project = None
-            self._cancel_event.clear()
             thread = threading.Thread(
                 target=self._rescue_and_rerender_ranges,
                 kwargs={"job": job, "project": project, "clip_id": clip_id, "offset_ranges": offset_ranges},
@@ -1055,7 +1084,7 @@ class WizardRunner:
 
         def progress(percent: int, detail: str) -> None:
             nonlocal last_logged_percent, last_logged_at, segment_total
-            if self._cancel_event.is_set():
+            if job.cancel_event.is_set():
                 raise WizardCancelled()
             safe_percent = max(0, min(100, int(percent)))
             segment_match = re.search(r"Rendering segment (\d+)/(\d+):\s*(.*)$", str(detail or ""))
@@ -1167,6 +1196,7 @@ def wizard_report(status: dict[str, Any]) -> str:
     lines.append(f"status: {status.get('status')}")
     lines.append(f"message: {status.get('message')}")
     lines.append(f"error: {status.get('error')}")
+    lines.append(f"cancel_requested: {status.get('cancel_requested', False)}")
     if project_path:
         project = Project(Path(project_path), {})
         project_json = Path(project_path) / "project.json"

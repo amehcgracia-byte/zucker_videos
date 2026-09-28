@@ -1747,7 +1747,19 @@ async function openProject(path) {
 }
 
 async function newProject() {
-  if (latestStatus?.status === "running" && !confirm("A job is still running for the current project. Start a new project view anyway?")) return;
+  if (latestStatus?.status === "running" || latestStatus?.status === "cancelling") {
+    if (!confirm("A job is still running for the current project. Cancel it and start a new project?")) return;
+    try {
+      if (latestStatus.status === "running") await api("/wizard/cancel", { method: "POST" });
+      if (!await waitForWizardStop()) {
+        showToast("The previous export is still stopping. Please wait before starting a new project.", true);
+        return;
+      }
+    } catch (error) {
+      showToast(error.message, true);
+      return;
+    }
+  }
   stopStatusPolling();
   activeProjectId = null;
   await api("/wizard/projects/new", { method: "POST", body: JSON.stringify({}) });
@@ -2585,6 +2597,18 @@ async function startWizard(options = {}) {
   await pollStatus(statusPollGeneration);
 }
 
+async function waitForWizardStop(timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  ensureStatusPolling();
+  while (Date.now() < deadline) {
+    await pollStatus(statusPollGeneration);
+    const status = latestStatus?.status;
+    if (status !== "running" && status !== "cancelling") return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return false;
+}
+
 async function cancelWizard() {
   if (!confirm("Stop this export? Progress so far will be lost.")) return;
   const button = document.querySelector("#cancelWizard");
@@ -2594,10 +2618,12 @@ async function cancelWizard() {
   }
   try {
     await api("/wizard/cancel", { method: "POST" });
+    const stopped = await waitForWizardStop();
+    if (!stopped) showToast("The export is still stopping. Please wait before starting again.", true);
   } catch (error) {
-    showToast(error.message, true);
+    if (latestStatus?.status !== "cancelling") showToast(error.message, true);
   } finally {
-    if (button) {
+    if (button && latestStatus?.status !== "cancelling") {
       button.disabled = false;
       button.textContent = "Cancel";
     }
@@ -2754,7 +2780,12 @@ function renderWizardStatus(status) {
   const progress = Math.max(progressFloor, reportedProgress);
   const progressBox = document.querySelector("#progressBox");
   const cancelButton = document.querySelector("#cancelWizard");
-  if (cancelButton) cancelButton.hidden = status.status !== "running";
+  if (cancelButton) {
+    const cancellable = status.status === "running" || status.status === "cancelling";
+    cancelButton.hidden = !cancellable;
+    cancelButton.disabled = status.status === "cancelling";
+    cancelButton.textContent = status.status === "cancelling" ? "Cancelling…" : "Cancel";
+  }
   const reviewBox = document.querySelector("#reviewBox");
   const platform = status.result?.platform || status.platform || latestResult?.platform || selectedPlatform || "";
   const stage = status.stage || "";
@@ -2787,9 +2818,9 @@ function renderWizardStatus(status) {
     }
     return;
   }
-  if (status.status === "running") {
+  if (status.status === "running" || status.status === "cancelling") {
     setStep(3);
-    if (stage && stage !== lastPipelineStage) stopAllPreviewAudio();
+    if (status.status === "running" && stage && stage !== lastPipelineStage) stopAllPreviewAudio();
     if (stage === "cut" && lastPipelineStage !== "cut") {
       if (platform === "youtube") showYouTubeSyncToCut();
       else if (platform === "reel") showReelSyncToCut();
@@ -2835,7 +2866,7 @@ function renderWizardStatus(status) {
     setStep(4);
     return;
   }
-  if (status.status === "running" || status.status === "failed" || status.status === "done") {
+  if (status.status === "running" || status.status === "cancelling" || status.status === "failed" || status.status === "done") {
     if (progressBox) progressBox.hidden = false;
     if (reviewBox) reviewBox.hidden = true;
     document.querySelector("#paperEditBox")?.setAttribute("hidden", "");
@@ -2850,7 +2881,9 @@ function renderWizardStatus(status) {
   document.querySelector("#elapsedTime").textContent = `${S.elapsed}: ${formatElapsed(elapsedSeconds())}`;
   document.querySelector("#etaTime").textContent = `${S.eta}: ${formatEta(etaSeconds(progress, status))}`;
   updateStageChecks(progress, status);
-  if (status.status === "running") {
+  if (status.status === "cancelling") {
+    document.querySelector("#progressTitle").textContent = "Cancelling export";
+  } else if (status.status === "running") {
     document.querySelector("#progressTitle").textContent = "Creating your video";
   }
   if (status.status === "failed") {
@@ -2917,7 +2950,7 @@ function renderWizardStatus(status) {
 
 function renderStatusStrip(status, progress) {
   const strip = document.querySelector("#statusStrip");
-  if (status.status !== "running") {
+  if (status.status !== "running" && status.status !== "cancelling") {
     strip.hidden = true;
     return;
   }
