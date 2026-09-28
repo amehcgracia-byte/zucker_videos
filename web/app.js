@@ -1185,6 +1185,12 @@ async function saveSphericalSetup(shot = null) {
   const result = await api("/settings/spherical-landmarks", { method: "POST", body: JSON.stringify({ spherical_landmarks: incoming, spherical_source_path: selectedSphericalSourcePath() }) });
   lastSphericalSetup = normalizeSphericalSetup(result.spherical_landmarks || incoming);
   appConfig.spherical_landmarks = lastSphericalSetup;
+  sphericalProjectSettings = sphericalProjectSettings || { settings: {} };
+  sphericalProjectSettings.settings = sphericalProjectSettings.settings || {};
+  sphericalProjectSettings.settings.spherical_landmarks = result.spherical_landmarks || incoming;
+  sphericalProjectSettings.settings.spherical_landmarks_by_source = result.spherical_landmarks_by_source
+    || sphericalProjectSettings.settings.spherical_landmarks_by_source
+    || {};
   applySphericalSetup(lastSphericalSetup);
   showToast(shot ? `Saved 360 shot: ${LANDMARK_LABELS[shot] || shot}` : "360 shot angles saved");
 }
@@ -2552,6 +2558,7 @@ async function startWizard(options = {}) {
       trim_start_sec: timeToSeconds(document.querySelector("#trimStart").value),
       trim_end_sec: timeToSeconds(document.querySelector("#trimEnd").value),
       spherical_landmarks: sphericalLandmarksFromForm(),
+      spherical_landmarks_by_source: sphericalProjectSettings?.settings?.spherical_landmarks_by_source || {},
       camera_role_weights: cameraRoleWeightsFromForm(),
       fixed_rear_motion: fixedRearMotionFromForm(),
       spherical_motion: true,

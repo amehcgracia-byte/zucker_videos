@@ -199,7 +199,8 @@ class WizardRunner:
         platform: str,
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
-        spherical_landmarks: dict[str, float] | None,
+        spherical_landmarks: dict[str, Any] | None,
+        spherical_landmark_profiles: dict[str, Any] | None,
         spherical_source_path: str | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
@@ -237,6 +238,7 @@ class WizardRunner:
                         "song_choice": song_choice,
                         "audio_trim": audio_trim,
                         "spherical_landmarks": spherical_landmarks,
+                        "spherical_landmark_profiles": spherical_landmark_profiles,
                         "spherical_source_path": spherical_source_path,
                         "camera_role_weights": camera_role_weights,
                         "fixed_rear_motion": fixed_rear_motion,
@@ -562,7 +564,8 @@ class WizardRunner:
         platform: str,
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
-        spherical_landmarks: dict[str, float] | None,
+        spherical_landmarks: dict[str, Any] | None,
+        spherical_landmark_profiles: dict[str, Any] | None,
         spherical_source_path: str | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
@@ -608,7 +611,7 @@ class WizardRunner:
                 "backstage_run_id": str(time.time_ns()) if platform == "backstage" else "",
             }
             _store_audio_trim(master_path, audio_trim)
-            _store_spherical_landmarks(project, spherical_landmarks)
+            _store_spherical_landmarks(project, spherical_landmarks, spherical_landmark_profiles, spherical_source_path)
             _store_spherical_source_path(project, spherical_source_path)
             _store_camera_role_weights(project, camera_role_weights)
             _store_fixed_rear_motion(project, fixed_rear_motion)
@@ -632,6 +635,7 @@ class WizardRunner:
                 song_choice=song_choice,
                 audio_trim=audio_trim,
                 spherical_landmarks=spherical_landmarks,
+                spherical_landmark_profiles=spherical_landmark_profiles,
                 spherical_source_path=spherical_source_path,
                 camera_role_weights=camera_role_weights,
                 fixed_rear_motion=fixed_rear_motion,
@@ -742,7 +746,8 @@ class WizardRunner:
         platform: str,
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
-        spherical_landmarks: dict[str, float] | None,
+        spherical_landmarks: dict[str, Any] | None,
+        spherical_landmark_profiles: dict[str, Any] | None,
         spherical_source_path: str | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
@@ -786,7 +791,7 @@ class WizardRunner:
                 "backstage_run_id": variation_seed if platform == "backstage" else "",
             }
             _store_audio_trim(master_path, audio_trim)
-            _store_spherical_landmarks(project, spherical_landmarks)
+            _store_spherical_landmarks(project, spherical_landmarks, spherical_landmark_profiles, spherical_source_path)
             _store_spherical_source_path(project, spherical_source_path)
             _store_camera_role_weights(project, camera_role_weights)
             _store_fixed_rear_motion(project, fixed_rear_motion)
@@ -889,7 +894,8 @@ class WizardRunner:
         platform: str,
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
-        spherical_landmarks: dict[str, float] | None,
+        spherical_landmarks: dict[str, Any] | None,
+        spherical_landmark_profiles: dict[str, Any] | None,
         spherical_source_path: str | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
@@ -930,6 +936,7 @@ class WizardRunner:
             song_choice=song_choice,
             audio_trim=audio_trim,
             spherical_landmarks=spherical_landmarks,
+            spherical_landmark_profiles=spherical_landmark_profiles,
             spherical_source_path=spherical_source_path,
             camera_role_weights=camera_role_weights,
             fixed_rear_motion=fixed_rear_motion,
@@ -1235,7 +1242,13 @@ def same_project_path(left: str | None, right: str | None) -> bool:
     return str(Path(left).expanduser().resolve()) == str(Path(right).expanduser().resolve())
 
 
-def _store_spherical_landmarks(project: Project, landmarks: dict[str, float] | None) -> None:
+def _store_spherical_landmarks(
+    project: Project,
+    landmarks: dict[str, Any] | None,
+    profiles: dict[str, Any] | None = None,
+    source_path: str | None = None,
+) -> None:
+    """Persist global landmarks and every source-specific authoring profile."""
     explicit = bool(landmarks)
     config = load_global_config()
     existing = config.get("spherical_landmarks") or {}
@@ -1244,7 +1257,44 @@ def _store_spherical_landmarks(project: Project, landmarks: dict[str, float] | N
     merged = merge_spherical_landmarks(existing, landmarks or {})
     if not merged:
         return
-    project.data.setdefault("settings", {})["spherical_landmarks"] = merged
+    settings = project.data.setdefault("settings", {})
+    settings["spherical_landmarks"] = merged
+
+    combined_profiles: dict[str, dict[str, dict[str, Any]]] = {}
+    for key, raw in (settings.get("spherical_landmarks_by_source") or {}).items():
+        if isinstance(raw, dict):
+            normalized = merge_spherical_landmarks({}, raw)
+            if normalized:
+                combined_profiles[str(key)] = normalized
+    for key, raw in (profiles or {}).items():
+        if not isinstance(raw, dict):
+            continue
+        normalized = merge_spherical_landmarks({}, raw)
+        if not normalized:
+            continue
+        raw_key = str(key).strip()
+        if not raw_key:
+            continue
+        combined_profiles[raw_key] = normalized
+        try:
+            combined_profiles[str(Path(raw_key).expanduser().resolve())] = dict(normalized)
+        except (OSError, RuntimeError, ValueError):
+            pass
+
+    if source_path:
+        raw_key = str(source_path).strip()
+        source_key = str(Path(raw_key).expanduser().resolve())
+        active = (
+            combined_profiles.get(raw_key)
+            or combined_profiles.get(source_key)
+            or merge_spherical_landmarks({}, merged)
+        )
+        combined_profiles[raw_key] = dict(active)
+        combined_profiles[source_key] = dict(active)
+        settings["spherical_source_path"] = source_key
+    if combined_profiles:
+        settings["spherical_landmarks_by_source"] = combined_profiles
+
     if not explicit:
         return
     config["spherical_landmarks"] = merged

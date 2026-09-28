@@ -122,7 +122,7 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 18
+EDIT_PLAN_ALGORITHM_VERSION = 19
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
@@ -866,7 +866,13 @@ def _youtube_multicam_plan(
                 source_landmarks = migrate_spherical_landmarks(profile_raw or spherical_landmarks)
                 segment["spherical_source_path"] = source_path
                 available_shots = _available_spherical_shots(source_landmarks, spherical_sweep, sweep_speed)
-                include_planet = current_usage.get("Planeta", 0) == 0 and sum(current_usage.values()) >= 5
+                LOGGER.info(
+                    "360 framing source=%s authored=%s available=%s",
+                    Path(source_path).name,
+                    sorted(source_landmarks),
+                    [shot.get("type") for shot in available_shots],
+                )
+                include_planet = bool(edit_settings.get("include_spherical_planet", False)) and sum(current_usage.values()) >= 5
                 shot = _next_weighted_spherical_shot(
                     available_shots,
                     _spherical_type_usage(segments),

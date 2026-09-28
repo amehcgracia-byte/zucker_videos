@@ -1096,6 +1096,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         platform = str(body.get("platform") or "youtube")
         audio_trim = _audio_trim_from_body(body)
         spherical_landmarks = _spherical_landmarks_from_body(body)
+        spherical_landmark_profiles = body.get("spherical_landmarks_by_source") or {}
+        if not isinstance(spherical_landmark_profiles, dict):
+            spherical_landmark_profiles = {}
+        if not spherical_landmark_profiles and state.project is not None:
+            spherical_landmark_profiles = (
+                state.project.data.get("settings", {}).get("spherical_landmarks_by_source") or {}
+            )
         spherical_source_path = str(body.get("spherical_source_path") or "").strip()
         camera_role_weights = _camera_role_weights_from_body(body)
         fixed_rear_motion = _fixed_rear_motion_from_body(body)
@@ -1128,6 +1135,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 "song_choice": body.get("song_index", body.get("song_choice")),
                 "audio_trim": audio_trim,
                 "spherical_landmarks": spherical_landmarks,
+                "spherical_landmark_profiles": spherical_landmark_profiles,
                 "spherical_source_path": spherical_source_path,
                 "camera_role_weights": camera_role_weights,
                 "fixed_rear_motion": fixed_rear_motion,
@@ -1872,7 +1880,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         project.save()
         config["spherical_landmarks"] = landmarks
         save_global_config(config)
-        return jsonify({"spherical_landmarks": landmarks, "spherical_source_path": source_key})
+        return jsonify({
+            "spherical_landmarks": landmarks,
+            "spherical_source_path": source_key,
+            "spherical_landmarks_by_source": project_settings.get("spherical_landmarks_by_source") or {},
+        })
 
     @app.get("/api/v1/app/config")
     def api_app_config() -> Response:
