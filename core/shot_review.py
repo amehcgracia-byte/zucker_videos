@@ -51,8 +51,17 @@ def _source_for(segment: dict[str, Any]) -> str:
     return str(segment.get("proxy_path") or segment.get("clip_path") or segment.get("source_path") or "")
 
 
-def _current_spherical_landmarks(project: Project) -> dict[str, dict[str, Any]]:
-    raw = project.data.get("settings", {}).get("spherical_landmarks") or {}
+def _current_spherical_landmarks(project: Project, source_path: str | None = None) -> dict[str, dict[str, Any]]:
+    settings = project.data.get("settings", {}) or {}
+    profiles = settings.get("spherical_landmarks_by_source") or {}
+    candidates = []
+    if source_path:
+        candidates.extend([str(source_path), str(Path(source_path).expanduser().resolve())])
+    for key in candidates:
+        raw = profiles.get(key)
+        if isinstance(raw, dict) and raw:
+            return {str(name): dict(value) for name, value in raw.items() if isinstance(value, dict)}
+    raw = settings.get("spherical_landmarks") or {}
     return {str(key): dict(value) for key, value in raw.items() if isinstance(value, dict)}
 
 
@@ -65,7 +74,8 @@ def _review_segment(project: Project, segment: dict[str, Any]) -> dict[str, Any]
     """
     shot = segment.get("spherical_shot") or {}
     shot_type = str(shot.get("shot_id") or shot.get("type") or "")
-    saved = _current_spherical_landmarks(project).get(shot_type)
+    source_path = str(segment.get("source_path") or segment.get("clip_path") or "").strip()
+    saved = _current_spherical_landmarks(project, source_path).get(shot_type)
     if not saved or not shot:
         return dict(segment)
     effective = dict(shot)

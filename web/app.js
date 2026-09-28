@@ -29,6 +29,7 @@ let activeProjectId = null;
 let statusPollGeneration = 0;
 let prepareHandoffInProgress = false;
 let appConfig = { dev: true, desktop: false };
+let sphericalProjectSettings = null;
 let progressStartedAt = null;
 let progressSamples = [];
 let progressFloor = 0;
@@ -592,7 +593,8 @@ function renderComposeOverlayLayer() {
 
 async function openCaptions() {
   setStep(5);
-  setCaptionPanelExpanded(composePlatform() === "reel", composePlatform());
+  const youtubeMode = composePlatform() === "youtube";
+  setCaptionPanelExpanded(!youtubeMode && composePlatform() === "reel", composePlatform());
   const video = document.querySelector("#composeVideo");
   if (video) {
     video.src = latestResult?.media_url ? `${latestResult.media_url}?t=${Date.now()}` : "/api/v1/wizard/result";
@@ -602,7 +604,8 @@ async function openCaptions() {
     video.onloadedmetadata = () => { const scrub = document.querySelector("#composeScrub"); if (scrub) scrub.max = String(video.duration || 1); updateComposeVideoLayout(); renderCaptionBlocks(); renderComposeOverlayLayer(); };
     video.ontimeupdate = () => { renderComposeOverlayLayer(); updateComposeTimelinePlayhead(); };
   }
-  migrateTextOverlaysToCaptions();
+  if (!youtubeMode) migrateTextOverlaysToCaptions();
+  else captionCues = [];
   let savedComposeStyle = null;
   if (!captionCues.length && !reelTextOverlays.length && !reelImageOverlays.length && !reelVideoOverlays.length) {
     try {
@@ -612,7 +615,7 @@ async function openCaptions() {
       reelTextOverlays = Array.isArray(overlaySpec.texts) ? overlaySpec.texts : [];
       reelImageOverlays = Array.isArray(overlaySpec.images) ? overlaySpec.images : [];
       reelVideoOverlays = Array.isArray(overlaySpec.videos) ? overlaySpec.videos : [];
-      captionCues = Array.isArray(cueTrack.cues) ? cueTrack.cues : [];
+      captionCues = youtubeMode ? [] : (Array.isArray(cueTrack.cues) ? cueTrack.cues : []);
       savedComposeStyle = cueTrack.style || null;
       const textarea = document.querySelector("#captionText");
       if (textarea) textarea.value = captionCues.map((cue) => (cue.lines || []).join("\n")).join("\n\n");
@@ -636,7 +639,7 @@ async function openCaptions() {
   if (select) select.onchange = () => document.querySelector("#captionPreview")?.setAttribute("data-style", select.value);
   if (select && !select.dataset.userChoice) select.value = savedComposeStyle || "autoread_fixed_white";
   const blocks = captionBlocksFromText();
-  if (!captionCues.length && blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
+  if (composePlatform() !== "youtube" && !captionCues.length && blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
   renderCaptionBlocks();
   renderReelOptions();
 }
@@ -665,8 +668,12 @@ function exportCaptionSrt() {
 }
 
 async function burnCaptionTrack() {
+  if (composePlatform() === "youtube") {
+    showToast("YouTube no usa captions; se conserva únicamente el flyer.", false);
+    return;
+  }
   const blocks = captionBlocksFromText();
-  if (!captionCues.length && blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
+  if (composePlatform() !== "youtube" && !captionCues.length && blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
   const style = document.querySelector("#captionStyle")?.value || "clean_bottom";
   const cues = captionCues.map((cue) => ({ ...cue, end: cue.end == null ? composeTimelineDuration() : cue.end }));
   const result = await api("/captions/burn", { method: "POST", body: JSON.stringify({ style, cues, header: { title_enabled: false, title: "", logo_source: selectedLogoSource(), logo_height: 120, logo_overlay: projectLogo.overlay || { x: .5, y: .08, width: .22 } }, letterbox: { enabled: composePlatform() === "reel", blur: 18 } }) });
@@ -675,7 +682,7 @@ async function burnCaptionTrack() {
 }
 
 async function saveComposition() {
-  const cues = captionCues.map((cue) => ({ ...cue, end: cue.end == null ? composeTimelineDuration() : cue.end }));
+  const cues = composePlatform() === "youtube" ? [] : captionCues.map((cue) => ({ ...cue, end: cue.end == null ? composeTimelineDuration() : cue.end }));
   const header = { title_enabled: false, title: "", logo_source: selectedLogoSource(), logo_overlay: projectLogo.overlay || { x: .5, y: .08, width: .22 } };
   return api("/wizard/compose", {
     method: "POST",
@@ -884,7 +891,7 @@ function weightToFrequency(weight) {
 }
 
 function selectedSphericalSourcePath() {
-  return detected.videos.find(isSphericalVideo)?.path || "";
+  return document.querySelector("#sphericalSourceSelect")?.value || detected.videos.find(isSphericalVideo)?.path || "";
 }
 
 function mergeDetected(result, source = "") {
@@ -917,11 +924,37 @@ function clearDetected() {
   inboxAnalysis = null;
 }
 
+function renderSphericalSourceOptions(project = sphericalProjectSettings) {
+  const select = document.querySelector("#sphericalSourceSelect");
+  if (!select) return;
+  const sources = detected.videos.filter(isSphericalVideo);
+  const preferred = project?.settings?.wizard?.spherical_source_path || project?.settings?.edit?.spherical_source_path || "";
+  const current = select.value || preferred || sources[0]?.path || "";
+  select.innerHTML = sources.map((item) => (
+    `<option value="${escapeHtml(item.path)}">${escapeHtml(filename(item.path))}</option>`
+  )).join("");
+  if (sources.some((item) => item.path === current)) select.value = current;
+  select.onchange = () => {
+    const source = select.value;
+    const profiles = sphericalProjectSettings?.settings?.spherical_landmarks_by_source || {};
+    const values = profiles[source] || profiles[String(source)];
+    lastSphericalSetup = normalizeSphericalSetup(values || sphericalProjectSettings?.settings?.spherical_landmarks || appConfig?.spherical_landmarks || {});
+    renderSphericalSetup();
+  };
+}
+
 function resetSphericalSetupToGlobal(project = null) {
-  const projectLandmarks = project?.settings?.spherical_landmarks;
-  const source = projectLandmarks && Object.keys(projectLandmarks).length
-    ? projectLandmarks
-    : (appConfig?.spherical_landmarks || {});
+  if (project) sphericalProjectSettings = project;
+  renderSphericalSourceOptions(project || sphericalProjectSettings);
+  const sourcePath = selectedSphericalSourcePath();
+  const profiles = (project || sphericalProjectSettings)?.settings?.spherical_landmarks_by_source || {};
+  const profile = profiles[sourcePath] || profiles[String(sourcePath)] || {};
+  const projectLandmarks = (project || sphericalProjectSettings)?.settings?.spherical_landmarks;
+  const source = Object.keys(profile).length
+    ? profile
+    : projectLandmarks && Object.keys(projectLandmarks).length
+      ? projectLandmarks
+      : (appConfig?.spherical_landmarks || {});
   lastSphericalSetup = normalizeSphericalSetup(source);
   renderSphericalSetup();
 }
@@ -998,6 +1031,7 @@ function queueSphericalSetupPreview(viewer, immediate = false) {
       pitch: String(viewer.pitch),
       fov: String(viewer.fov),
       time_sec: String(viewer.previewTime ?? 30),
+      shot: viewer.shot,
       t: String(Date.now()),
     });
     try {
@@ -1139,7 +1173,7 @@ function renderSphericalSetup() {
   const panel = document.querySelector("#sphericalSetup");
   if (!panel) return;
   panel.hidden = !hasSphericalInput();
-  if (!panel.hidden) { applySphericalSetup(lastSphericalSetup); renderSphericalSetupViewers().catch((error) => showToast(error.message, true)); }
+  if (!panel.hidden) { renderSphericalSourceOptions(); applySphericalSetup(lastSphericalSetup); renderSphericalSetupViewers().catch((error) => showToast(error.message, true)); }
 }
 
 async function saveSphericalSetup(shot = null) {
@@ -1148,7 +1182,7 @@ async function saveSphericalSetup(shot = null) {
     const group = document.querySelector(`fieldset[data-spherical-landmark="${shot}"]`);
     if (group) incoming[shot] = { ...incoming[shot], ...sphericalSetupValuesFor(group) };
   }
-  const result = await api("/settings/spherical-landmarks", { method: "POST", body: JSON.stringify({ spherical_landmarks: incoming }) });
+  const result = await api("/settings/spherical-landmarks", { method: "POST", body: JSON.stringify({ spherical_landmarks: incoming, spherical_source_path: selectedSphericalSourcePath() }) });
   lastSphericalSetup = normalizeSphericalSetup(result.spherical_landmarks || incoming);
   appConfig.spherical_landmarks = lastSphericalSetup;
   applySphericalSetup(lastSphericalSetup);
@@ -1168,6 +1202,7 @@ function recordToDetectedItem(record, kind, source = "project") {
 
 async function resumeInputsFromProject() {
   const project = await api("/project");
+  sphericalProjectSettings = project;
   currentVariationSeed = String(project.settings?.wizard?.variation_seed || currentVariationSeed);
   const savedPlatform = project.settings?.wizard?.platform;
   if (savedPlatform) choosePlatformInUi(savedPlatform);
@@ -1733,6 +1768,7 @@ async function newProject() {
   if (document.querySelector("#captionText")) document.querySelector("#captionText").value = "";
   document.querySelector("#captionLogoNone")?.click();
   clearDetected();
+  sphericalProjectSettings = null;
   resetSphericalSetupToGlobal();
   document.querySelector("#videoName").value = todayName();
   document.querySelector("#errorBox").hidden = true;

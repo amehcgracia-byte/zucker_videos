@@ -1755,9 +1755,9 @@ def _outro_master_start(segments: list[dict[str, Any]]) -> float:
 
 def _apply_saved_spherical_landmarks(project: Project, segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Make export consume the same persisted pose shown by 360 review."""
-    saved = migrate_spherical_landmarks(
-        (project.data.get("settings") or {}).get("spherical_landmarks") or {}
-    )
+    settings = project.data.get("settings") or {}
+    profiles = settings.get("spherical_landmarks_by_source") or {}
+    global_raw = settings.get("spherical_landmarks") or {}
     labels = {
         "full_stage": "Escenario completo",
         "singer": "Cantante",
@@ -1775,6 +1775,11 @@ def _apply_saved_spherical_landmarks(project: Project, segments: list[dict[str, 
         current = dict(segment)
         shot = dict(current.get("spherical_shot") or {})
         shot_type = str(shot.get("shot_id") or shot.get("type") or "").strip()
+        source_path = str(current.get("source_path") or current.get("clip_path") or "").strip()
+        profile_raw = None
+        if source_path:
+            profile_raw = profiles.get(source_path) or profiles.get(str(Path(source_path).expanduser().resolve()))
+        saved = migrate_spherical_landmarks(profile_raw or global_raw)
         authored = saved.get(shot_type)
         if authored:
             for field in ("yaw", "pitch", "fov", "weight"):

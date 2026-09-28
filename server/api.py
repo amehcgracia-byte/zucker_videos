@@ -1404,7 +1404,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 time_sec = min(time_sec, max(0.0, duration - 0.05))
         except Exception:
             pass
-        view = view_parameters(yaw, pitch, h_fov, 16.0 / 9.0)
+        shot_type = str(request.args.get("shot") or "").strip()
+        view = view_parameters(yaw, pitch, h_fov, 16.0 / 9.0, shot_type)
         ffmpeg_path = str(load_global_config().get("ffmpeg_path") or "ffmpeg")
         result = subprocess.run(
             [ffmpeg_path, "-hide_banner", "-loglevel", "error", "-ss", f"{time_sec:.3f}", "-i", str(requested),
@@ -1749,9 +1750,16 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         compose_platform = str((base_result or {}).get("platform") or wizard.get("platform") or "youtube").strip().lower()
         if compose_platform not in {"youtube", "reel", "reel_horizontal", "360", "backstage"}:
             compose_platform = "youtube"
+        if compose_platform == "youtube":
+            # YouTube is one horizontal flyer/base composition. Captions and
+            # letterbox are intentionally outside this mode's contract.
+            cues = []
+            letterbox = {"enabled": False}
+        else:
+            letterbox = body.get("letterbox") or {}
         overlay_spec = {"version": 3, "platform": compose_platform, "texts": texts, "images": images, "videos": videos}
         header = {**header, "logo_source": logo_mode, "logo_enabled": logo_mode != "none"}
-        cue_track = {"version": CAPTIONS_VERSION, "platform": compose_platform, "lang": str(body.get("lang") or "und"), "cues": cues, "style": str(body.get("style") or "karaoke_word"), "header": header, "letterbox": body.get("letterbox") or {}}
+        cue_track = {"version": CAPTIONS_VERSION, "platform": compose_platform, "lang": str(body.get("lang") or "und"), "cues": cues, "style": str(body.get("style") or "karaoke_word"), "header": header, "letterbox": letterbox}
         (project.folder / "overlay_spec.json").write_text(json.dumps(overlay_spec, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         (project.folder / "cue_track.json").write_text(json.dumps(cue_track, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         wizard["composition_platform"] = compose_platform
@@ -1817,17 +1825,24 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 raw_value = raw_landmarks.get(key)
                 if isinstance(raw_value, dict):
                     incoming[key] = {field: incoming[key][field] for field in ("yaw", "pitch", "fov", "weight") if field in raw_value}
+        source_path = str(body.get("spherical_source_path") or "").strip()
+        source_key = str(Path(source_path).expanduser().resolve()) if source_path else ""
         config = load_global_config()
         global_landmarks = config.get("spherical_landmarks") or {}
-        project_landmarks = project.data.setdefault("settings", {}).get("spherical_landmarks") or {}
+        project_settings = project.data.setdefault("settings", {})
+        project_landmarks = project_settings.get("spherical_landmarks") or {}
         landmarks = merge_spherical_landmarks(global_landmarks, project_landmarks)
         landmarks = merge_spherical_landmarks(landmarks, incoming)
-        project.data["settings"]["spherical_landmarks"] = landmarks
+        project_settings["spherical_landmarks"] = landmarks
+        if source_key:
+            profiles = project_settings.setdefault("spherical_landmarks_by_source", {})
+            profiles[source_key] = dict(landmarks)
+            project_settings["spherical_source_path"] = source_key
         project.mark_all_stale_from("edit")
         project.save()
         config["spherical_landmarks"] = landmarks
         save_global_config(config)
-        return jsonify({"spherical_landmarks": landmarks})
+        return jsonify({"spherical_landmarks": landmarks, "spherical_source_path": source_key})
 
     @app.get("/api/v1/app/config")
     def api_app_config() -> Response:

@@ -24,7 +24,7 @@ LOGGER = logging.getLogger(__name__)
 
 MIN_SEGMENT_SEC = 2.0
 MAX_SEGMENT_SEC = 6.0
-MAX_BARS_PER_SEGMENT = 2
+MAX_BARS_PER_SEGMENT = 4
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
@@ -717,6 +717,7 @@ def _youtube_multicam_plan(
     project_settings = settings or {}
     edit_settings = project_settings.get("edit") if "edit" in project_settings else project_settings
     spherical_landmarks = migrate_spherical_landmarks(project_settings.get("spherical_landmarks") or {})
+    spherical_landmark_profiles = project_settings.get("spherical_landmarks_by_source") or {}
     preferred_spherical_source = str(edit_settings.get("spherical_source_path") or (project_settings.get("wizard") or {}).get("spherical_source_path") or "").strip()
     spherical_mode = str(edit_settings.get("spherical_mode") or "automatic").lower()
     use_recorded_360 = spherical_mode == "directed"
@@ -855,7 +856,15 @@ def _youtube_multicam_plan(
                 segment["spherical_shot"] = recorded_shot_for_segment(recorded, segment_start, segment_end)
             else:
                 current_usage = _spherical_shot_usage(segments)
-                available_shots = _available_spherical_shots(spherical_landmarks, spherical_sweep, sweep_speed)
+                source_path = str(source.get("path") or source.get("source_path") or source.get("clip_path") or "").strip()
+                profile_raw = (
+                    spherical_landmark_profiles.get(source_path)
+                    or spherical_landmark_profiles.get(str(Path(source_path).expanduser().resolve()))
+                    if source_path else None
+                )
+                source_landmarks = migrate_spherical_landmarks(profile_raw or spherical_landmarks)
+                segment["spherical_source_path"] = source_path
+                available_shots = _available_spherical_shots(source_landmarks, spherical_sweep, sweep_speed)
                 include_planet = current_usage.get("Planeta", 0) == 0 and sum(current_usage.values()) >= 5
                 shot = _next_weighted_spherical_shot(
                     available_shots,
@@ -1478,22 +1487,24 @@ def _bars_for_segment(
     bar_index: int,
     energy_by_bar: list[float] | None = None,
 ) -> int:
-    current = bar_times[bar_index]
-    energy = None
+    current = float(bar_times[bar_index])
+    next_bar = float(bar_times[min(bar_index + 1, len(bar_times) - 1)])
+    bar_duration = max(0.25, next_bar - current)
+    energy = 0.5
     if energy_by_bar and 0 <= bar_index < len(energy_by_bar):
         energy = max(0.0, min(1.0, float(energy_by_bar[bar_index])))
-    # Soft passages get two bars whenever the music can support the longer
-    # phrase; energetic passages get one bar and therefore shorter cuts.
-    if energy is not None:
-        preferred = 2 if energy <= 0.30 else 1 if energy >= 0.70 else (1 if segment_index % 5 in {1, 4} else 2)
-        near_section = any(current < section <= current + MAX_SEGMENT_SEC for section in section_times)
-        if near_section and energy > 0.30:
-            return 1
-        return preferred
+    # Normal passages target 3–6 seconds. Only very high energy is allowed
+    # to approach a 2-second cut; no ordinary passage is reduced to 1 second.
+    target_seconds = 2.0 if energy >= 0.88 else 3.0 if energy >= 0.68 else 5.8 if energy <= 0.30 else 4.2
+    bars = max(1, min(MAX_BARS_PER_SEGMENT, round(target_seconds / bar_duration)))
+    if bars * bar_duration < target_seconds * 0.80:
+        bars = min(MAX_BARS_PER_SEGMENT, bars + 1)
     near_section = any(current < section <= current + MAX_SEGMENT_SEC for section in section_times)
-    if near_section or segment_index % 5 in {1, 4}:
-        return 1
-    return MAX_BARS_PER_SEGMENT
+    # Preserve a meaningful phrase boundary, but do not collapse a soft
+    # passage merely because a section marker is nearby.
+    if near_section and energy >= 0.68:
+        bars = 1 if energy >= 0.88 else max(1, min(bars, 2))
+    return bars
 
 
 def _short_form_segments_from_best_coverage(coverage: dict[str, Any]) -> list[dict[str, Any]]:
