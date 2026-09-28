@@ -88,7 +88,7 @@ REEL_BASE_LOGO_POLICY_VERSION = 1
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
 TRANSITION_PROFILES = {
-    "youtube": {"duration": 0.12, "sections_only": True},
+    "youtube": {"duration": 0.18, "sections_only": False},
     "reel": {"duration": 0.08, "sections_only": False, "every": 3},
     "reel_horizontal": {"duration": 0.08, "sections_only": False, "every": 3},
     # No crossfade between equirectangular cuts: the 360 path is a direct

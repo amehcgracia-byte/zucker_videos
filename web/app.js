@@ -224,6 +224,12 @@ async function apiForm(path, formData) {
 
 async function loadAppConfig() {
   appConfig = await api("/app/config");
+  const buildInfo = document.querySelector("#buildInfo");
+  if (buildInfo) {
+    const version = appConfig.app_version || "development";
+    const revision = appConfig.source_revision || "unbuilt";
+    buildInfo.textContent = `Zucker Editor ${version} · commit ${revision}`;
+  }
   sourceFolders = appConfig.source_folders || [];
   masterAudioExtensions = appConfig.master_audio_extensions || [".mp3"];
   renderSourceFolders();
@@ -673,7 +679,7 @@ async function saveComposition() {
   const header = { title_enabled: false, title: "", logo_source: selectedLogoSource(), logo_overlay: projectLogo.overlay || { x: .5, y: .08, width: .22 } };
   return api("/wizard/compose", {
     method: "POST",
-    body: JSON.stringify({ texts: reelTextOverlays, images: reelImageOverlays, videos: reelVideoOverlays, cues, style: document.querySelector("#captionStyle")?.value || "karaoke_word", header, letterbox: { enabled: true, blur: 18 } })
+    body: JSON.stringify({ platform: composePlatform(), texts: reelTextOverlays, images: reelImageOverlays, videos: reelVideoOverlays, cues, style: document.querySelector("#captionStyle")?.value || "karaoke_word", header, letterbox: { enabled: true, blur: 18 } })
   });
 }
 
@@ -969,7 +975,9 @@ function updateSphericalSetupViewer(viewer, values = {}) {
   if (viewer.camera && sphericalSetupThree) {
     viewer.camera.fov = verticalFovFromHorizontal(viewer.fov, viewer.camera.aspect || 16 / 9);
     viewer.camera.updateProjectionMatrix();
-    const yaw = sphericalSetupThree.MathUtils.degToRad(signedYawDelta(viewer.yaw, 0));
+    // Three renders the inside of the mirrored sphere; invert its yaw so
+    // the landmark selected here matches FFmpeg v360's positive direction.
+    const yaw = sphericalSetupThree.MathUtils.degToRad(-signedYawDelta(viewer.yaw, 0));
     const pitch = sphericalSetupThree.MathUtils.degToRad(viewer.pitch);
     viewer.camera.lookAt(new sphericalSetupThree.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch)));
   }

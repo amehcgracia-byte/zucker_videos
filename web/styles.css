@@ -1706,3 +1706,13 @@ pre {
 .compose-captions-panel .caption-row-text { width: 100%; }
 .compose-captions-panel .caption-time-fields { display: flex; flex-wrap: wrap; gap: .5rem; }
 @media (max-width: 760px) { .captions-layout { grid-template-columns: 1fr; } .caption-block { grid-template-columns: 2rem 1fr; } .caption-block small { grid-column: 2; } }
+
+
+.app-footer {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 28px 18px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: right;
+}
