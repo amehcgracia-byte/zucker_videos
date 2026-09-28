@@ -314,11 +314,21 @@ def _review_candidate_pool(
     pool: list[dict[str, Any]] = []
     seen: set[str] = set()
     master_start = float(segment.get("master_start_sec") or 0.0)
-    reviewed_path = str(segment.get("clip_path") or segment.get("source_path") or "")
+    reviewed_paths = {
+        str(segment.get(key) or "")
+        for key in ("clip_path", "source_path", "proxy_path")
+        if segment.get(key)
+    }
     spherical_poses = _spherical_review_poses(segment, segments) if segment.get("spherical_shot") else []
 
     for path, source_records in by_path.items():
+        is_spherical_review_source = platform == "youtube" and path in reviewed_paths and bool(spherical_poses)
         for source in source_records:
+            # For a spherical slot, never add a pose-less copy of the same
+            # timestamp: it would be selected as a fake alternative and keep
+            # the old framing.
+            if is_spherical_review_source:
+                continue
             candidate = dict(source)
             if platform == "youtube":
                 candidate["clip_start_sec"] = max(0.0, master_start - float(source.get("offset_sec") or 0.0))
@@ -329,7 +339,7 @@ def _review_candidate_pool(
 
         # YouTube 360 keeps exact master-time alignment while offering many
         # alternate camera framings from the same registered equirect source.
-        if platform == "youtube" and path == reviewed_path and spherical_poses:
+        if is_spherical_review_source:
             source = source_records[0]
             for pose_index, pose in enumerate(spherical_poses):
                 candidate = dict(source)
