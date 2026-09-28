@@ -1699,7 +1699,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             track = CueTrack(cues, str(body.get("lang") or "und"))
             cache = project.cache_dir / "captions" / CAPTIONS_VERSION
             cache.mkdir(parents=True, exist_ok=True)
-            destination = project.exports_dir / f"{Path(result['path']).stem}_captions.mp4"
+            destination = project.cache_dir / "captions" / f"{Path(result['path']).stem}_captions.mp4"
+            destination.parent.mkdir(parents=True, exist_ok=True)
             header = body.get("header") if isinstance(body.get("header"), dict) else None
             letterbox = body.get("letterbox") if isinstance(body.get("letterbox"), dict) else None
             ass_width, ass_height = _video_dimensions(Path(result["path"]), str(tool_status().get("ffmpeg_path") or "ffmpeg"))
@@ -1724,7 +1725,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.get("/api/v1/captions/result")
     def api_captions_result() -> Response:
         project = _require_project(state)
-        exports = sorted(project.exports_dir.glob("*_captions.mp4"), key=lambda path: path.stat().st_mtime, reverse=True)
+        exports = sorted((project.cache_dir / "captions").glob("*_captions.mp4"), key=lambda path: path.stat().st_mtime, reverse=True)
         if not exports:
             return error_response("not_found", "No captioned export yet", 404)
         return send_file_with_range(str(exports[0]))
