@@ -261,7 +261,7 @@ function setStep(number) {
 }
 
 function composePlatform() {
-  return selectedPlatform || latestResult?.platform || latestStatus?.result?.platform || "";
+  return latestResult?.platform || latestStatus?.result?.platform || latestStatus?.platform || selectedPlatform || "";
 }
 
 function setCaptionPanelExpanded(expanded, platform = composePlatform()) {
@@ -669,7 +669,7 @@ async function burnCaptionTrack() {
   if (!captionCues.length && blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
   const style = document.querySelector("#captionStyle")?.value || "clean_bottom";
   const cues = captionCues.map((cue) => ({ ...cue, end: cue.end == null ? composeTimelineDuration() : cue.end }));
-  const result = await api("/captions/burn", { method: "POST", body: JSON.stringify({ style, cues, header: { title_enabled: false, title: "", logo_source: selectedLogoSource(), logo_height: 120, logo_overlay: projectLogo.overlay || { x: .5, y: .08, width: .22 } }, letterbox: { enabled: true, blur: 18 } }) });
+  const result = await api("/captions/burn", { method: "POST", body: JSON.stringify({ style, cues, header: { title_enabled: false, title: "", logo_source: selectedLogoSource(), logo_height: 120, logo_overlay: projectLogo.overlay || { x: .5, y: .08, width: .22 } }, letterbox: { enabled: composePlatform() === "reel", blur: 18 } }) });
   const video = document.querySelector("#composeVideo"); if (video) { video.src = `${result.media_url}?t=${Date.now()}`; video.load(); }
   document.querySelector("#captionBurnStatus").textContent = `Created ${result.filename}`;
 }
@@ -679,7 +679,7 @@ async function saveComposition() {
   const header = { title_enabled: false, title: "", logo_source: selectedLogoSource(), logo_overlay: projectLogo.overlay || { x: .5, y: .08, width: .22 } };
   return api("/wizard/compose", {
     method: "POST",
-    body: JSON.stringify({ platform: composePlatform(), texts: reelTextOverlays, images: reelImageOverlays, videos: reelVideoOverlays, cues, style: document.querySelector("#captionStyle")?.value || "karaoke_word", header, letterbox: { enabled: true, blur: 18 } })
+    body: JSON.stringify({ platform: composePlatform(), texts: reelTextOverlays, images: reelImageOverlays, videos: reelVideoOverlays, cues, style: document.querySelector("#captionStyle")?.value || "karaoke_word", header, letterbox: { enabled: composePlatform() === "reel", blur: 18 } })
   });
 }
 
@@ -2520,8 +2520,9 @@ async function startWizard(options = {}) {
       fixed_rear_motion: fixedRearMotionFromForm(),
       spherical_motion: true,
       spherical_mode: "automatic",
-      spherical_sweep: false,
-      sweep_speed_deg_per_sec: appConfig?.sweep_speed_deg_per_sec || 60,
+      spherical_sweep: true,
+      sweep_speed_deg_per_sec: appConfig?.sweep_speed_deg_per_sec || 20,
+      spherical_source_path: selectedSphericalSourcePath(),
       reel_duration_sec: reelOptionsFromForm().duration,
       backstage_duration_sec: Number(document.querySelector("#backstageDuration")?.value || 180),
       reel_aspect: reelOptionsFromForm().aspect,
@@ -2710,7 +2711,7 @@ function renderWizardStatus(status) {
   const progress = Math.max(progressFloor, reportedProgress);
   const progressBox = document.querySelector("#progressBox");
   const reviewBox = document.querySelector("#reviewBox");
-  const platform = selectedPlatform || status.result?.platform || "";
+  const platform = status.result?.platform || status.platform || latestResult?.platform || selectedPlatform || "";
   const stage = status.stage || "";
   if (status.status === "waiting_choice") {
     // The strip is a live-progress affordance. A terminal sync response must

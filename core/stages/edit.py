@@ -28,7 +28,7 @@ MAX_BARS_PER_SEGMENT = 2
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
-SPHERICAL_MOTION_PLAN_VERSION = 10
+SPHERICAL_MOTION_PLAN_VERSION = 11
 # Reel has its own pacing contract.  Keep this independent from the
 # YouTube/360 segment limits so a Reel change cannot invalidate or alter their
 # edit cadence accidentally.
@@ -102,7 +102,7 @@ SPHERICAL_MAX_MOTION_FRACTION_PER_SEC = 0.06
 # Planet is a special effect, not the default visual language of a normal
 # 360 edit. Keep its optional rotation at a deliberately gentle absolute rate.
 PLANET_SPIN_DEG_PER_SEC = 5.0
-SPHERICAL_HOLD_MOTION_DEG_PER_SEC = 0.4
+SPHERICAL_HOLD_MOTION_DEG_PER_SEC = 1.2
 SPHERICAL_MIN_LANDMARK_HOLD_SEC = 6.0
 SPHERICAL_TARGET_LANDMARK_HOLD_SEC = 8.0
 SPHERICAL_MAX_LANDMARK_HOLD_SEC = 12.0
@@ -122,7 +122,7 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 17
+EDIT_PLAN_ALGORITHM_VERSION = 18
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
@@ -271,6 +271,7 @@ def _load_or_analyze_beats(project: Project, coverage: dict[str, Any], progress_
     if len(beat_times) < 2:
         beat_times = _fallback_beats(start, duration)
     bars = estimate_bar_starts(beat_times, start, duration)
+    energy_by_bar = _bar_energy_profile(y, sr, bars, start) if "y" in locals() and "sr" in locals() else []
     progress_callback(45, t("rhythm_ready"))
     return {
         "stage": "edit",
@@ -282,7 +283,31 @@ def _load_or_analyze_beats(project: Project, coverage: dict[str, Any], progress_
         "beats_sec": beat_times,
         "bars_sec": bars,
         "sections_sec": section_times,
+        "energy_by_bar": energy_by_bar,
     }
+
+
+
+def _bar_energy_profile(y: Any, sr: int, bars: list[float], start: float) -> list[float]:
+    """Return normalized RMS energy for each authored bar."""
+    try:
+        values: list[float] = []
+        for left, right in zip(bars, bars[1:]):
+            begin = max(0, int((float(left) - start) * sr))
+            end = min(len(y), int((float(right) - start) * sr))
+            chunk = y[begin:end]
+            if len(chunk) == 0:
+                values.append(0.0)
+            else:
+                values.append((sum(float(sample) * float(sample) for sample in chunk) / len(chunk)) ** 0.5)
+        if not values:
+            return []
+        low, high = min(values), max(values)
+        if high - low < 1e-9:
+            return [0.5] * len(values)
+        return [round(max(0.0, min(1.0, (value - low) / (high - low))), 4) for value in values]
+    except Exception:
+        return []
 
 
 def _detect_singing_segments(project: Project, coverage: dict[str, Any]) -> list[dict[str, Any]]:
@@ -334,7 +359,7 @@ def _beat_fingerprint(project: Project, coverage: dict[str, Any]) -> str:
         source = inputs["videos"][0]
         if (source.get("probe") or {}).get("audio_codec"):
             audio = {"path": source.get("path"), "probe": source.get("probe")}
-    return stable_fingerprint({"audio": audio, "window": coverage.get("window")})
+    return stable_fingerprint({"version": 2, "audio": audio, "window": coverage.get("window")})
 
 
 def _camera_moves_fingerprint(project: Project) -> str:
@@ -692,6 +717,7 @@ def _youtube_multicam_plan(
     project_settings = settings or {}
     edit_settings = project_settings.get("edit") if "edit" in project_settings else project_settings
     spherical_landmarks = migrate_spherical_landmarks(project_settings.get("spherical_landmarks") or {})
+    preferred_spherical_source = str(edit_settings.get("spherical_source_path") or (project_settings.get("wizard") or {}).get("spherical_source_path") or "").strip()
     spherical_mode = str(edit_settings.get("spherical_mode") or "automatic").lower()
     use_recorded_360 = spherical_mode == "directed"
     role_weights = _camera_role_weights(edit_settings)
@@ -723,12 +749,12 @@ def _youtube_multicam_plan(
     ).lower()
     if hold_motion not in {"none", "subtle"}:
         hold_motion = "subtle" if spherical_motion else "none"
-    spherical_sweep = bool(edit_settings.get("spherical_sweep", False))
+    spherical_sweep = bool(edit_settings.get("spherical_sweep", True))
     sweep_speed = max(SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC, min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, float(edit_settings.get("sweep_speed_deg_per_sec", SPHERICAL_SWEEP_SPEED_DEG_PER_SEC))))
     bar_index = 0
     segment_index = 0
     while bar_index < len(bar_times) - 1:
-        bars_per_segment = _bars_for_segment(segment_index, bar_times, section_times, bar_index)
+        bars_per_segment = _bars_for_segment(segment_index, bar_times, section_times, bar_index, beats.get("energy_by_bar"))
         max_bar_index = min(len(bar_times) - 1, bar_index + MAX_BARS_PER_SEGMENT)
         next_index = min(max_bar_index, bar_index + bars_per_segment)
         section_index = _reachable_section_index(bar_times, section_times, bar_index, next_index)
@@ -771,6 +797,19 @@ def _youtube_multicam_plan(
                 available, _is_singing_window(coverage, segment_start, segment_end)
             ),
         )
+        # Keep the same authored 360 camera as the preview/editor when it is
+        # available for this interval; otherwise the normal camera scorer applies.
+        if preferred_spherical_source:
+            preferred = next(
+                (
+                    item for item in available
+                    if _source_role(item) == "360"
+                    and str(item.get("path") or item.get("source_path") or "").strip() == preferred_spherical_source
+                ),
+                None,
+            )
+            if preferred is not None:
+                source = preferred
         is_automatic_360 = _source_role(source) == "360" and not (
             use_recorded_360 and recorded_move_covering(recorded_moves or [], segment_start, segment_end)
         )
@@ -1432,12 +1471,27 @@ def _reachable_section_index(bar_times: list[float], section_times: list[float],
     return None
 
 
-def _bars_for_segment(segment_index: int, bar_times: list[float], section_times: list[float], bar_index: int) -> int:
+def _bars_for_segment(
+    segment_index: int,
+    bar_times: list[float],
+    section_times: list[float],
+    bar_index: int,
+    energy_by_bar: list[float] | None = None,
+) -> int:
     current = bar_times[bar_index]
+    energy = None
+    if energy_by_bar and 0 <= bar_index < len(energy_by_bar):
+        energy = max(0.0, min(1.0, float(energy_by_bar[bar_index])))
+    # Soft passages get two bars whenever the music can support the longer
+    # phrase; energetic passages get one bar and therefore shorter cuts.
+    if energy is not None:
+        preferred = 2 if energy <= 0.30 else 1 if energy >= 0.70 else (1 if segment_index % 5 in {1, 4} else 2)
+        near_section = any(current < section <= current + MAX_SEGMENT_SEC for section in section_times)
+        if near_section and energy > 0.30:
+            return 1
+        return preferred
     near_section = any(current < section <= current + MAX_SEGMENT_SEC for section in section_times)
-    if near_section:
-        return 1
-    if segment_index % 5 in {1, 4}:
+    if near_section or segment_index % 5 in {1, 4}:
         return 1
     return MAX_BARS_PER_SEGMENT
 

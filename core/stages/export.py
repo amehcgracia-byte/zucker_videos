@@ -49,6 +49,7 @@ from core.stages.edit import (
     IPHONE_CROP_TOP_LIMIT,
     _valid_motion_recipe,
     load_edit_plan,
+    migrate_spherical_landmarks,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ EXPORT_SEGMENT_RECIPE_VERSION = 21
 # v17 adds byte-level and full-shot attestation to segment sidecars.  A file
 # with a copied/reused sidecar is no longer accepted if its bytes or authored
 # motion fields differ from the current render.
-SPHERICAL_MOTION_RECIPE_VERSION = 21
+SPHERICAL_MOTION_RECIPE_VERSION = 22
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_HOLD_COMMAND_COUNT = 2
@@ -290,10 +291,13 @@ class ExportStage(Stage):
     def run(self, project: Project, progress_callback: ProgressCallback) -> dict[str, Any]:
         """Render the wizard export with streamed ffmpeg progress."""
         progress_callback(5, t("preparing_export"))
+        # A fresh base export invalidates any private composition source.
+        (project.cache_dir / "composition-base.mp4").unlink(missing_ok=True)
         try:
             plan = load_edit_plan(project)
         except FileNotFoundError:
             plan = load_coverage(project)
+        plan["segments"] = _apply_saved_spherical_landmarks(project, plan.get("segments") or [])
         segments = _frame_normalized_segments(plan.get("segments") or [])
         if not segments:
             raise ValueError(t("missing_segments"))
@@ -1746,6 +1750,42 @@ def _outro_master_start(segments: list[dict[str, Any]]) -> float:
         return 0.0
     last = segments[-1]
     return max(0.0, float(last.get("master_start_sec") or 0.0) + float(last.get("duration_sec") or 0.0))
+
+
+
+def _apply_saved_spherical_landmarks(project: Project, segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Make export consume the same persisted pose shown by 360 review."""
+    saved = migrate_spherical_landmarks(
+        (project.data.get("settings") or {}).get("spherical_landmarks") or {}
+    )
+    labels = {
+        "full_stage": "Escenario completo",
+        "singer": "Cantante",
+        "drummer": "Bateria",
+        "left": "Lado izquierdo",
+        "right": "Lado derecho",
+        "audience": "Publico",
+        "audience_stage_wide": "Publico y escenario",
+        "planet": "Planeta",
+    }
+    if not saved:
+        return segments
+    result: list[dict[str, Any]] = []
+    for segment in segments:
+        current = dict(segment)
+        shot = dict(current.get("spherical_shot") or {})
+        shot_type = str(shot.get("shot_id") or shot.get("type") or "").strip()
+        authored = saved.get(shot_type)
+        if authored:
+            for field in ("yaw", "pitch", "fov", "weight"):
+                if field in authored:
+                    shot[field] = authored[field]
+            shot["type"] = shot_type
+            shot["shot_id"] = shot_type
+            shot["label"] = labels.get(shot_type, shot.get("label") or shot_type)
+            current["spherical_shot"] = shot
+        result.append(current)
+    return result
 
 
 def _target_size(platform: str) -> tuple[int, int]:

@@ -21,9 +21,9 @@ fi
 
 "$PYTHON" - <<'PY'
 import importlib.util
-missing = [name for name in ("PIL", "PyInstaller") if importlib.util.find_spec(name) is None]
+missing = [name for name in ("PIL", "PyInstaller", "faster_whisper", "ctranslate2") if importlib.util.find_spec(name) is None]
 if missing:
-    raise SystemExit("Missing build dependencies: " + ", ".join(missing) + ". Run: .venv/bin/python -m pip install -r requirements-build.txt")
+    raise SystemExit("Missing build dependencies: " + ", ".join(missing) + ". Run: .venv/bin/python -m pip install -r requirements.txt -r requirements-build.txt")
 PY
 
 cd "$ROOT"
@@ -35,7 +35,8 @@ COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 "$PYTHON" - <<PY
 import json
 from pathlib import Path
-Path("$BUILD_INFO").write_text(json.dumps({"version": "0.1", "git_commit": "$COMMIT"}, indent=2) + "\n", encoding="utf-8")
+from core.build_info import APP_VERSION
+Path("$BUILD_INFO").write_text(json.dumps({"version": APP_VERSION, "git_commit": "$COMMIT"}, indent=2) + "\n", encoding="utf-8")
 PY
 
 "$PYTHON" -m PyInstaller \
@@ -69,6 +70,7 @@ PY
   --hidden-import llvmlite \
   --hidden-import server.api \
   --hidden-import faster_whisper \
+  --collect-submodules faster_whisper \
   --hidden-import onnxruntime \
   --hidden-import tokenizers \
   --hidden-import ctranslate2 \

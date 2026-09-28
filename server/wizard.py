@@ -200,6 +200,7 @@ class WizardRunner:
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
         spherical_landmarks: dict[str, float] | None,
+        spherical_source_path: str | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
         spherical_motion: bool | None,
@@ -236,6 +237,7 @@ class WizardRunner:
                         "song_choice": song_choice,
                         "audio_trim": audio_trim,
                         "spherical_landmarks": spherical_landmarks,
+                        "spherical_source_path": spherical_source_path,
                         "camera_role_weights": camera_role_weights,
                         "fixed_rear_motion": fixed_rear_motion,
                         "spherical_motion": spherical_motion,
@@ -273,6 +275,7 @@ class WizardRunner:
                 "song_choice": song_choice,
                 "audio_trim": audio_trim,
                 "spherical_landmarks": spherical_landmarks,
+                "spherical_source_path": spherical_source_path,
                 "camera_role_weights": camera_role_weights,
                 "fixed_rear_motion": fixed_rear_motion,
                 "spherical_motion": spherical_motion,
@@ -560,6 +563,7 @@ class WizardRunner:
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
         spherical_landmarks: dict[str, float] | None,
+        spherical_source_path: str | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
         spherical_motion: bool | None,
@@ -605,6 +609,7 @@ class WizardRunner:
             }
             _store_audio_trim(master_path, audio_trim)
             _store_spherical_landmarks(project, spherical_landmarks)
+            _store_spherical_source_path(project, spherical_source_path)
             _store_camera_role_weights(project, camera_role_weights)
             _store_fixed_rear_motion(project, fixed_rear_motion)
             _store_spherical_motion(project, spherical_motion)
@@ -627,6 +632,7 @@ class WizardRunner:
                 song_choice=song_choice,
                 audio_trim=audio_trim,
                 spherical_landmarks=spherical_landmarks,
+                spherical_source_path=spherical_source_path,
                 camera_role_weights=camera_role_weights,
                 fixed_rear_motion=fixed_rear_motion,
                 spherical_motion=spherical_motion,
@@ -737,6 +743,7 @@ class WizardRunner:
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
         spherical_landmarks: dict[str, float] | None,
+        spherical_source_path: str | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
         spherical_motion: bool | None,
@@ -780,6 +787,7 @@ class WizardRunner:
             }
             _store_audio_trim(master_path, audio_trim)
             _store_spherical_landmarks(project, spherical_landmarks)
+            _store_spherical_source_path(project, spherical_source_path)
             _store_camera_role_weights(project, camera_role_weights)
             _store_fixed_rear_motion(project, fixed_rear_motion)
             _store_spherical_motion(project, spherical_motion)
@@ -882,6 +890,7 @@ class WizardRunner:
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
         spherical_landmarks: dict[str, float] | None,
+        spherical_source_path: str | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
         spherical_motion: bool | None,
@@ -921,6 +930,7 @@ class WizardRunner:
             song_choice=song_choice,
             audio_trim=audio_trim,
             spherical_landmarks=spherical_landmarks,
+            spherical_source_path=spherical_source_path,
             camera_role_weights=camera_role_weights,
             fixed_rear_motion=fixed_rear_motion,
             spherical_motion=spherical_motion,
@@ -1238,6 +1248,19 @@ def _store_spherical_landmarks(project: Project, landmarks: dict[str, float] | N
     if not explicit:
         return
     config["spherical_landmarks"] = merged
+    save_global_config(config)
+
+
+def _store_spherical_source_path(project: Project, source_path: str | None) -> None:
+    """Persist the exact 360 source used to author the saved landmarks."""
+    if source_path is None:
+        return
+    value = str(source_path or "").strip()
+    edit = project.data.setdefault("settings", {}).setdefault("edit", {})
+    edit["spherical_source_path"] = value
+    project.data.setdefault("settings", {}).setdefault("wizard", {})["spherical_source_path"] = value
+    config = load_global_config()
+    config["spherical_source_path"] = value
     save_global_config(config)
 
 

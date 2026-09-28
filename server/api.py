@@ -370,7 +370,14 @@ class CompositionRunner:
                 base = _export_result(project)
                 if not base:
                     raise RuntimeError("The refreshed Reel base export is unavailable")
-            base_path = Path(base["path"]).resolve()
+            original_base_path = Path(base["path"]).resolve()
+            composition_cache = project.cache_dir / "composition-base.mp4"
+            # Keep one clean private base so re-saving captions/flyers never
+            # compounds the previous final export.
+            if not composition_cache.is_file() or composition_cache.stat().st_size == 0:
+                shutil.copy2(original_base_path, composition_cache)
+            base_path = composition_cache
+            output_stem = original_base_path.stem
             spec_path = project.folder / "overlay_spec.json"
             track_path = project.folder / "cue_track.json"
             spec = json.loads(spec_path.read_text(encoding="utf-8")) if spec_path.is_file() else {"images": [], "videos": []}
@@ -378,7 +385,7 @@ class CompositionRunner:
             LOGGER.info("Composition source base=%s overlay_spec=%s cue_track=%s", base_path, spec_path, track_path)
             job.progress = 8
             job.detail = "Applying current image and video overlays"
-            composed = project.exports_dir / f"{base_path.stem}_overlay-composed.mp4"
+            composed = project.cache_dir / f"{output_stem}_overlay-composed.mp4"
             _compose_visual_overlays(base_path, spec, composed, lambda value: _set_job_progress(job, 8 + round(value * 45)))
             if job.status == "cancelled":
                 return
@@ -398,7 +405,7 @@ class CompositionRunner:
             style = get_style(str(track_data.get("style") or "clean_bottom"))
             header = track_data.get("header") if isinstance(track_data.get("header"), dict) else {}
             logo = _composition_logo(project, str(header.get("logo_source") or "none"))
-            final = project.exports_dir / f"{base_path.stem}_composed-captions.mp4"
+            final = project.exports_dir / f"{output_stem}_composed-captions.mp4"
             def burn_progress(seconds: float) -> None:
                 duration = _media_duration(base_path)
                 _set_job_progress(job, 55 + round(min(1.0, seconds / duration if duration else 0.0) * 40))
@@ -420,9 +427,23 @@ class CompositionRunner:
             job.message = "Result ready"
             job.detail = "Overlays and captions were rendered from the saved project state"
             job.result = {**base, "path": str(output), "filename": output.name, "media_url": "/api/v1/wizard/result"}
+            manifest_path = ((project.data.get("stages") or {}).get("export") or {}).get("outputs", {}).get("export_manifest")
+            if manifest_path:
+                try:
+                    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+                    exports = manifest.get("exports") or []
+                    if exports:
+                        exports[0]["path"] = str(output)
+                        exports[0]["filename"] = output.name
+                        manifest["exports"] = exports
+                        Path(manifest_path).write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                except (OSError, json.JSONDecodeError):
+                    LOGGER.warning("Could not update export manifest to the composed result", exc_info=True)
+            original_base_path.unlink(missing_ok=True)
+            composed.unlink(missing_ok=True)
             project.data.setdefault("settings", {}).setdefault("wizard", {})["last_composed_result"] = str(output)
             project.save()
-            LOGGER.info("Composition complete base=%s overlays=%s final=%s", base_path, composed, output)
+            LOGGER.info("Composition complete base=%s overlays=%s final=%s", original_base_path, composed, output)
         except Exception as exc:
             if job.status == "cancelled":
                 return
@@ -526,7 +547,7 @@ def _compose_visual_overlays(source: Path, spec: dict[str, Any], destination: Pa
     with TemporaryDirectory(prefix="zucker-compose-") as tmp:
         tmp_dir = Path(tmp)
         inputs: list[str] = ["-i", str(source)]
-        filters = ["[0:v]setpts=PTS-STARTPTS[base]"]
+        filters = ["[0:v]setpts=PTS-STARTPTS,fps=30[base]"]
         current = "base"
         for index, raw in enumerate(images):
             canvas = tmp_dir / f"image-{index}.png"
@@ -535,8 +556,8 @@ def _compose_visual_overlays(source: Path, spec: dict[str, Any], destination: Pa
             start = max(0.0, float(raw.get("start_sec") or 0.0))
             end = min(duration, start + max(0.1, float(raw.get("duration_sec") or 3.0)))
             next_label = f"ov{index}"
-            filters.append(f"[{index + 1}:v]format=rgba[{next_label}src]")
-            filters.append(f"[{current}][{next_label}src]overlay=0:0:enable='between(t,{start:.3f},{end:.3f})':eof_action=pass[v{index}]")
+            filters.append(f"[{index + 1}:v]format=rgba,setpts=PTS-STARTPTS,fps=30[{next_label}src]")
+            filters.append(f"[{current}][{next_label}src]overlay=0:0:enable='between(t,{start:.3f},{end:.3f})':eof_action=repeat:shortest=0[v{index}]")
             current = f"v{index}"
             progress_callback((index + 1) / max(1, len(images) + len(videos)))
         for offset, raw in enumerate(videos, start=len(images)):
@@ -547,7 +568,7 @@ def _compose_visual_overlays(source: Path, spec: dict[str, Any], destination: Pa
             x = max(0, int(float(raw.get("x") or 0.5) * width - scale / 2))
             y = max(0, int(float(raw.get("y") or 0.5) * height - scale / 2))
             filters.append(f"[{offset + 1}:v]format=rgba,scale={scale}:-2,colorchannelmixer=aa={max(0.0, min(1.0, float(raw.get('opacity') or 1.0))):.3f}[vid{offset}]")
-            filters.append(f"[{current}][vid{offset}]overlay={x}:{y}:enable='between(t,{start:.3f},{end:.3f})':eof_action=pass[v{offset}]")
+            filters.append(f"[{current}][vid{offset}]overlay={x}:{y}:enable='between(t,{start:.3f},{end:.3f})':eof_action=repeat:shortest=0[v{offset}]")
             current = f"v{offset}"
             progress_callback((offset + 1) / max(1, len(images) + len(videos)))
         command = [str(tool_status().get("ffmpeg_path") or "ffmpeg"), "-y", "-hide_banner", "-loglevel", "error", *inputs, "-filter_complex", ";".join(filters), "-map", f"[{current}]", "-map", "0:a?", "-t", f"{duration:.3f}", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy", str(destination)]
@@ -1073,6 +1094,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         platform = str(body.get("platform") or "youtube")
         audio_trim = _audio_trim_from_body(body)
         spherical_landmarks = _spherical_landmarks_from_body(body)
+        spherical_source_path = str(body.get("spherical_source_path") or "").strip()
         camera_role_weights = _camera_role_weights_from_body(body)
         fixed_rear_motion = _fixed_rear_motion_from_body(body)
         spherical_motion = _spherical_motion_from_body(body)
@@ -1104,6 +1126,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 "song_choice": body.get("song_index", body.get("song_choice")),
                 "audio_trim": audio_trim,
                 "spherical_landmarks": spherical_landmarks,
+                "spherical_source_path": spherical_source_path,
                 "camera_role_weights": camera_role_weights,
                 "fixed_rear_motion": fixed_rear_motion,
                 "spherical_motion": spherical_motion,
@@ -1717,7 +1740,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if logo_mode not in {"custom", "default", "none"}:
             logo_mode = "none"
         wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
-        compose_platform = str(body.get("platform") or wizard.get("platform") or "youtube").strip().lower()
+        # The mounted export is authoritative. Caption UI state must never
+        # turn a YouTube result into a vertical Reel composition.
+        base_result = _export_result(project)
+        compose_platform = str((base_result or {}).get("platform") or wizard.get("platform") or "youtube").strip().lower()
         if compose_platform not in {"youtube", "reel", "reel_horizontal", "360", "backstage"}:
             compose_platform = "youtube"
         overlay_spec = {"version": 3, "platform": compose_platform, "texts": texts, "images": images, "videos": videos}
