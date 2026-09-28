@@ -187,14 +187,16 @@ def _render_flat_video_transitions(
         start = end
     current, current_duration = chunks[0]
     fade_duration = max(0.001, float(fade_duration))
+    recipe = TRANSITION_LIBRARY.get(transition_type, TRANSITION_LIBRARY["crossfade"])
     for index, (next_label, next_duration) in enumerate(chunks[1:], start=1):
         out = f"xf{index}"
         offset = max(0.0, current_duration - fade_duration)
-        expr = recipe["expr"]
-        if recipe["xfade"] == "custom":
+        xfade_name = str(recipe["xfade"])
+        if xfade_name == "custom":
+            expr = str(recipe.get("expr") or "")
             transition = f"transition=custom:duration={fade_duration:.3f}:offset={offset:.3f}:expr='{expr}'"
         else:
-            transition = f"transition={recipe["xfade"]}:duration={fade_duration:.3f}:offset={offset:.3f}"
+            transition = f"transition={xfade_name}:duration={fade_duration:.3f}:offset={offset:.3f}"
         filters.append(f"[{current}][{next_label}]xfade={transition}[{out}]")
         current = out
         current_duration += next_duration - fade_duration
