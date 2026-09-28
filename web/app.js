@@ -2746,6 +2746,8 @@ function renderWizardStatus(status) {
   const reportedProgress = Math.max(0, Math.min(100, Number(status.progress || 0)));
   const progress = Math.max(progressFloor, reportedProgress);
   const progressBox = document.querySelector("#progressBox");
+  const cancelButton = document.querySelector("#cancelWizard");
+  if (cancelButton) cancelButton.hidden = status.status !== "running";
   const reviewBox = document.querySelector("#reviewBox");
   const platform = status.result?.platform || status.platform || latestResult?.platform || selectedPlatform || "";
   const stage = status.stage || "";

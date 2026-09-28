@@ -1406,10 +1406,35 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             pass
         shot_type = str(request.args.get("shot") or "").strip()
         view = view_parameters(yaw, pitch, h_fov, 16.0 / 9.0, shot_type)
+        projection = "equirect"
+        insv_fov = 190.0
+        for record in project.data.get("inputs", {}).get("videos", []):
+            record_paths = {
+                str(Path(str(record.get("path") or "")).expanduser().resolve()),
+                str(Path(record_media_path(record)).expanduser().resolve()),
+            }
+            if str(requested) not in record_paths:
+                continue
+            probe = record.get("probe") or {}
+            normalized = record.get("normalized") or {}
+            projection = str(record.get("projection") or probe.get("projection") or normalized.get("projection") or "equirect").lower()
+            try:
+                insv_fov = float(
+                    record.get("insv_fov")
+                    or probe.get("insv_fov")
+                    or normalized.get("insv_fov")
+                    or 190.0
+                )
+            except (TypeError, ValueError):
+                insv_fov = 190.0
+            break
+        projection_prefix = ""
+        if projection == "raw_insv":
+            projection_prefix = f"v360=input=dfisheye:output=e:ih_fov={insv_fov:.3f}:iv_fov={insv_fov:.3f}:interp=lanczos,"
         ffmpeg_path = str(load_global_config().get("ffmpeg_path") or "ffmpeg")
         result = subprocess.run(
             [ffmpeg_path, "-hide_banner", "-loglevel", "error", "-ss", f"{time_sec:.3f}", "-i", str(requested),
-             "-vf", f"v360=input=equirect:output={view['projection']}:yaw={float(view['yaw']):.3f}:pitch={float(view['pitch']):.3f}:h_fov={float(view['h_fov']):.3f}:v_fov={float(view['v_fov']):.3f},scale=640:360",
+             "-vf", f"{projection_prefix}v360=input=equirect:output={view['projection']}:yaw={float(view['yaw']):.3f}:pitch={float(view['pitch']):.3f}:h_fov={float(view['h_fov']):.3f}:v_fov={float(view['v_fov']):.3f},scale=640:360",
              "-frames:v", "1", "-f", "mjpeg", "pipe:1"],
             capture_output=True, check=False, timeout=30,
         )
@@ -1837,6 +1862,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if source_key:
             profiles = project_settings.setdefault("spherical_landmarks_by_source", {})
             profiles[source_key] = dict(landmarks)
+            # Keep the original UI path as an alias as well. The desktop
+            # picker can return a symlink/bookmark spelling while edit/export
+            # resolve it to the canonical filesystem path.
+            if source_path != source_key:
+                profiles[source_path] = dict(landmarks)
             project_settings["spherical_source_path"] = source_key
         project.mark_all_stale_from("edit")
         project.save()
