@@ -401,11 +401,22 @@ class CompositionRunner:
             track_path = project.folder / "cue_track.json"
             spec = json.loads(spec_path.read_text(encoding="utf-8")) if spec_path.is_file() else {"images": [], "videos": []}
             track_data = json.loads(track_path.read_text(encoding="utf-8")) if track_path.is_file() else {"cues": [], "style": "clean_bottom"}
-            LOGGER.info("Composition source base=%s overlay_spec=%s cue_track=%s", base_path, spec_path, track_path)
+            header = track_data.get("header") if isinstance(track_data.get("header"), dict) else {}
+            logo = _composition_logo(project, str(header.get("logo_source") or "none"))
+            logo_overlay = header.get("logo_overlay") if isinstance(header.get("logo_overlay"), dict) else {}
+            LOGGER.info("Composition source base=%s overlay_spec=%s cue_track=%s logo=%s", base_path, spec_path, track_path, logo)
             job.progress = 8
-            job.detail = "Applying current image and video overlays"
+            job.message = "Composing overlays and captions"
+            job.detail = "Rendering flyer, video overlays and logo"
             composed = project.cache_dir / f"{output_stem}_overlay-composed.mp4"
-            _compose_visual_overlays(base_path, spec, composed, lambda value: _set_job_progress(job, 8 + round(value * 45)))
+            def overlay_progress(value: float) -> None:
+                percent = max(0, min(100, round(float(value) * 100)))
+                job.detail = f"Rendering visual overlays — {percent}%"
+                _set_job_progress(job, 8 + round(float(value) * 45))
+            _compose_visual_overlays(
+                base_path, spec, composed, overlay_progress,
+                logo_path=logo, logo_overlay=logo_overlay,
+            )
             if job.status == "cancelled":
                 return
             cues = tuple(
@@ -420,18 +431,19 @@ class CompositionRunner:
             )
             track = CueTrack(cues, str(track_data.get("lang") or "und"))
             style = get_style(str(track_data.get("style") or "clean_bottom"))
-            header = track_data.get("header") if isinstance(track_data.get("header"), dict) else {}
-            logo = _composition_logo(project, str(header.get("logo_source") or "none"))
             letterbox = track_data.get("letterbox") if isinstance(track_data.get("letterbox"), dict) else None
             final = project.exports_dir / f"{output_stem}_composed-captions.mp4"
-            needs_caption_pass = bool(cues) or bool(logo) or bool(
+            needs_caption_pass = bool(cues) or bool(
                 header.get("title_enabled") and header.get("title")
             ) or bool(letterbox and letterbox.get("enabled"))
             if needs_caption_pass:
                 job.progress = 55
                 job.detail = "Burning captions and logo onto the composed MP4"
+                composition_duration = _media_duration(composed)
                 def burn_progress(seconds: float) -> None:
-                    duration = _media_duration(base_path)
+                    duration = composition_duration
+                    percent = round(min(1.0, seconds / duration if duration else 0.0) * 100)
+                    job.detail = f"Rendering captions — {percent}%"
                     _set_job_progress(job, 55 + round(min(1.0, seconds / duration if duration else 0.0) * 40))
                 output = burn_captions(
                     composed,
@@ -439,7 +451,8 @@ class CompositionRunner:
                     style,
                     output_path=final,
                     header=header,
-                    logo_path=logo,
+                    # Flyer and logo are already in the first composition pass.
+                    logo_path=None,
                     letterbox=letterbox,
                     progress_callback=burn_progress,
                 )
@@ -449,7 +462,7 @@ class CompositionRunner:
                 # composed horizontal result as the single final export.
                 job.progress = 96
                 job.detail = "Finalizing the horizontal YouTube export"
-                shutil.copy2(composed, final)
+                _remux_shortest(composed, final)
                 output = final
             if job.status == "cancelled":
                 output.unlink(missing_ok=True)
@@ -495,11 +508,23 @@ def _set_job_progress(job: CompositionJob, progress: int) -> None:
 def _media_duration(path: Path) -> float:
     try:
         probe = ffprobe(str(path))
-        return float((probe.get("format") or {}).get("duration") or 0.0)
+        video = next((stream for stream in probe.get("streams", []) if stream.get("codec_type") == "video"), {})
+        return float(video.get("duration") or (probe.get("format") or {}).get("duration") or 0.0)
     except Exception:
         return 0.0
 
 
+def _remux_shortest(source: Path, destination: Path) -> Path:
+    """Mux the final result to the shortest real audio/video timeline."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
+    command = [
+        ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-i", str(source), "-map", "0:v:0", "-map", "0:a:0?",
+        "-c", "copy", "-avoid_negative_ts", "make_zero", "-shortest", str(destination),
+    ]
+    subprocess.run(command, check=True)
+    return destination
 def _composition_logo(project: Project, mode: str) -> Path | None:
     wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
     if mode == "custom":
@@ -565,19 +590,32 @@ def _image_overlay_canvas(path: Path, raw: dict[str, Any], width: int, height: i
     canvas.save(output, "PNG")
 
 
-def _compose_visual_overlays(source: Path, spec: dict[str, Any], destination: Path, progress_callback) -> Path:
-    """Render saved image/video overlays onto one full-length base export."""
+def _compose_visual_overlays(
+    source: Path,
+    spec: dict[str, Any],
+    destination: Path,
+    progress_callback,
+    *,
+    logo_path: Path | None = None,
+    logo_overlay: dict[str, Any] | None = None,
+) -> Path:
+    """Render saved overlays and logo onto one full-length base export."""
     from tempfile import TemporaryDirectory
+
     probe = ffprobe(str(source))
     video_stream = next((stream for stream in probe.get("streams", []) if stream.get("codec_type") == "video"), {})
-    width, height = int(video_stream.get("width") or 1080), int(video_stream.get("height") or 1920)
+    width = int(video_stream.get("width") or 1080)
+    height = int(video_stream.get("height") or 1920)
+    duration = max(0.1, float(video_stream.get("duration") or (probe.get("format") or {}).get("duration") or 0.0))
     images = [item for item in spec.get("images") or [] if isinstance(item, dict) and Path(str(item.get("path") or "")).is_file()]
     videos = [item for item in spec.get("videos") or [] if isinstance(item, dict) and Path(str(item.get("path") or "")).is_file()]
-    if not images and not videos:
-        shutil.copy2(source, destination)
+    valid_logo = Path(str(logo_path)).resolve() if logo_path and Path(str(logo_path)).is_file() else None
+    overlay_count = len(images) + len(videos) + (1 if valid_logo else 0)
+    if overlay_count == 0:
+        _remux_shortest(source, destination)
         progress_callback(1.0)
         return destination
-    duration = float((probe.get("format") or {}).get("duration") or 0.0)
+
     with TemporaryDirectory(prefix="zucker-compose-") as tmp:
         tmp_dir = Path(tmp)
         inputs: list[str] = ["-i", str(source)]
@@ -589,11 +627,11 @@ def _compose_visual_overlays(source: Path, spec: dict[str, Any], destination: Pa
             inputs += ["-loop", "1", "-i", str(canvas)]
             start = max(0.0, float(raw.get("start_sec") or 0.0))
             end = min(duration, start + max(0.1, float(raw.get("duration_sec") or 3.0)))
-            next_label = f"ov{index}"
-            filters.append(f"[{index + 1}:v]format=rgba,setpts=PTS-STARTPTS,fps=30[{next_label}src]")
-            filters.append(f"[{current}][{next_label}src]overlay=0:0:enable='between(t,{start:.3f},{end:.3f})':eof_action=repeat:shortest=0[v{index}]")
-            current = f"v{index}"
-            progress_callback((index + 1) / max(1, len(images) + len(videos)))
+            label = f"image_{index}"
+            filters.append(f"[{index + 1}:v]format=rgba,setpts=PTS-STARTPTS,fps=30[{label}_src]")
+            filters.append(f"[{current}][{label}_src]overlay=0:0:enable='between(t,{start:.3f},{end:.3f})':eof_action=repeat:shortest=0[{label}_out]")
+            current = f"{label}_out"
+
         for offset, raw in enumerate(videos, start=len(images)):
             inputs += ["-stream_loop", "-1", "-i", str(Path(str(raw["path"])).resolve())]
             start = max(0.0, float(raw.get("start_sec") or 0.0))
@@ -601,14 +639,46 @@ def _compose_visual_overlays(source: Path, spec: dict[str, Any], destination: Pa
             scale = max(2, int(width * max(0.02, min(1.0, float(raw.get("width") or 0.35)))))
             x = max(0, int(float(raw.get("x") or 0.5) * width - scale / 2))
             y = max(0, int(float(raw.get("y") or 0.5) * height - scale / 2))
-            filters.append(f"[{offset + 1}:v]format=rgba,scale={scale}:-2,colorchannelmixer=aa={max(0.0, min(1.0, float(raw.get('opacity') or 1.0))):.3f}[vid{offset}]")
-            filters.append(f"[{current}][vid{offset}]overlay={x}:{y}:enable='between(t,{start:.3f},{end:.3f})':eof_action=repeat:shortest=0[v{offset}]")
-            current = f"v{offset}"
-            progress_callback((offset + 1) / max(1, len(images) + len(videos)))
-        command = [str(tool_status().get("ffmpeg_path") or "ffmpeg"), "-y", "-hide_banner", "-loglevel", "error", *inputs, "-filter_complex", ";".join(filters), "-map", f"[{current}]", "-map", "0:a?", "-t", f"{duration:.3f}", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy", str(destination)]
-        subprocess.run(command, check=True)
-    return destination
+            label = f"video_{offset}"
+            filters.append(f"[{offset + 1}:v]format=rgba,scale={scale}:-2,colorchannelmixer=aa={max(0.0, min(1.0, float(raw.get('opacity') or 1.0))):.3f}[{label}]")
+            filters.append(f"[{current}][{label}]overlay={x}:{y}:enable='between(t,{start:.3f},{end:.3f})':eof_action=repeat:shortest=0[{label}_out]")
+            current = f"{label}_out"
 
+        if valid_logo:
+            logo_index = 1 + len(images) + len(videos)
+            inputs += ["-loop", "1", "-i", str(valid_logo)]
+            overlay = logo_overlay or {}
+            logo_width = max(40, int(width * max(0.05, min(0.9, float(overlay.get("width", 0.22))))))
+            logo_x = max(0.0, min(1.0, float(overlay.get("x", 0.5))))
+            logo_y = max(0.0, min(1.0, float(overlay.get("y", 0.08))))
+            filters.append(f"[{logo_index}:v]format=rgba,scale={logo_width}:-1[composition_logo]")
+            filters.append(f"[{current}][composition_logo]overlay=(W-w)*{logo_x:.5f}:(H-h)*{logo_y:.5f}:eof_action=repeat:shortest=0[with_logo]")
+            current = "with_logo"
+
+        ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
+        command = [
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:1",
+            *inputs, "-filter_complex", ";".join(filters),
+            "-map", f"[{current}]", "-map", "0:a?", "-t", f"{duration:.3f}",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy",
+            "-avoid_negative_ts", "make_zero", "-shortest", str(destination),
+        ]
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        assert process.stdout is not None
+        progress_callback(0.0)
+        for line in process.stdout:
+            if line.startswith("out_time_ms="):
+                try:
+                    value = float(line.split("=", 1)[1]) / 1_000_000.0
+                    progress_callback(min(1.0, max(0.0, value / duration)))
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
+        stderr = process.stderr.read() if process.stderr is not None else ""
+        return_code = process.wait()
+        if return_code:
+            raise subprocess.CalledProcessError(return_code, command, stderr=stderr)
+        progress_callback(1.0)
+    return destination
 
 def _expand_caption_animations(track: CueTrack) -> CueTrack:
     """Encode per-cue slide/scale motion as short ASS cue segments.

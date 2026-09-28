@@ -210,6 +210,20 @@
             <input id="backstageMessage4" type="text" maxlength="180" placeholder="Mensaje 4" />
           </div>
         </details>
+        <details id="transitionOptions" class="reel-options">
+          <summary>Transition library</summary>
+          <div class="reel-option-grid">
+            <label>Cut transition
+              <select id="transitionStyle">
+                <option value="crossfade">Fundido cruzado</option>
+                <option value="additive">Fundido aditivo</option>
+                <option value="stretch">Estiro</option>
+                <option value="blurry">Blurry</option>
+              </select>
+            </label>
+          </div>
+          <p class="field-help">Applied only where the selected mode allows transitions; 360 remains projection-safe.</p>
+        </details>
         <div id="cameraMix" class="camera-mix">
           <div class="setup-heading">
             <h2>Camera Mix</h2>

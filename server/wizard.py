@@ -21,7 +21,7 @@ from core.stages.backstage import BackstageAnalysisStage, BackstageEditStage, Ba
 from core.stages.base import artifact_path, write_artifact_json
 from core.stages.cut import CutStage
 from core.stages.edit import EditStage
-from core.stages.export import ExportStage
+from core.stages.export import ExportStage, TRANSITION_LIBRARY
 from core.stages.ingest import IngestStage
 from core.stages.sync import SyncStage, load_song_boundaries, set_manual_override, set_manual_override_ranges
 from core.shot_review import review_items
@@ -230,6 +230,7 @@ class WizardRunner:
         reel_text_overlays: list[dict[str, Any]] | None,
         reel_image_overlays: list[dict[str, Any]] | None,
         backstage_messages: list[str] | None,
+        transition_type: str | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -270,6 +271,7 @@ class WizardRunner:
                         "reel_text_overlays": reel_text_overlays,
                         "reel_image_overlays": reel_image_overlays,
                         "backstage_messages": backstage_messages,
+                        "transition_type": transition_type,
                         "master_path": master_path,
                         "songs_path": songs_path,
                         "video_paths": video_paths,
@@ -308,6 +310,7 @@ class WizardRunner:
                 "reel_text_overlays": reel_text_overlays,
                 "reel_image_overlays": reel_image_overlays,
                 "backstage_messages": backstage_messages,
+                "transition_type": transition_type,
                 "master_path": master_path,
                 "songs_path": songs_path,
                 "video_paths": video_paths,
@@ -610,6 +613,7 @@ class WizardRunner:
         reel_text_overlays: list[dict[str, Any]] | None,
         reel_image_overlays: list[dict[str, Any]] | None,
         backstage_messages: list[str] | None,
+        transition_type: str | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -647,6 +651,7 @@ class WizardRunner:
             _store_spherical_motion(project, spherical_motion)
             _store_spherical_mode(project, spherical_mode)
             _store_spherical_sweep(project, spherical_sweep, sweep_speed_deg_per_sec)
+            _store_transition_type(project, platform, transition_type)
             project.save()
 
             self._run_stage(job, project, IngestStage(), 0, 15 if platform == "360" else 22, t("listening"))
@@ -792,6 +797,7 @@ class WizardRunner:
         reel_text_overlays: list[dict[str, Any]] | None,
         reel_image_overlays: list[dict[str, Any]] | None,
         backstage_messages: list[str] | None,
+        transition_type: str | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -827,6 +833,7 @@ class WizardRunner:
             _store_spherical_motion(project, spherical_motion)
             _store_spherical_mode(project, spherical_mode)
             _store_spherical_sweep(project, spherical_sweep, sweep_speed_deg_per_sec)
+            _store_transition_type(project, platform, transition_type)
             project.save()
             job.started_at = time.time()
             cut_start, cut_end, edit_start, edit_end = ((30, 35, 35, 40) if platform == "360" else (48, 58, 58, 70))
@@ -940,6 +947,7 @@ class WizardRunner:
         reel_text_overlays: list[dict[str, Any]] | None,
         reel_image_overlays: list[dict[str, Any]] | None,
         backstage_messages: list[str] | None,
+        transition_type: str | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -981,6 +989,7 @@ class WizardRunner:
             reel_text_overlays=reel_text_overlays,
             reel_image_overlays=reel_image_overlays,
             backstage_messages=backstage_messages,
+            transition_type=transition_type,
             master_path=master_path,
             songs_path=songs_path,
             video_paths=video_paths,
@@ -1270,6 +1279,15 @@ def same_project_path(left: str | None, right: str | None) -> bool:
     if not left or not right:
         return False
     return str(Path(left).expanduser().resolve()) == str(Path(right).expanduser().resolve())
+
+
+def _store_transition_type(project: Project, platform: str, transition_type: str | None) -> None:
+    """Persist the selected transition preset for this mode."""
+    value = str(transition_type or "crossfade").strip().lower()
+    if value not in TRANSITION_LIBRARY:
+        value = "crossfade"
+    transitions = project.data.setdefault("settings", {}).setdefault("export", {}).setdefault("transitions", {})
+    transitions.setdefault(str(platform or "youtube"), {})["type"] = value
 
 
 def _store_spherical_landmarks(

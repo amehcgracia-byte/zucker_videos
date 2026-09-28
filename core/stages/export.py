@@ -88,14 +88,22 @@ REEL_LETTERBOX_BLUR_SIGMA = 18.0
 REEL_BASE_LOGO_POLICY_VERSION = 1
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
-TRANSITION_PROFILE_VERSION = 2
+TRANSITION_PROFILE_VERSION = 3
+# Public transition library. Each preset maps to a filter available in the
+# packaged FFmpeg build.
+TRANSITION_LIBRARY = {
+    "crossfade": {"label": "Fundido cruzado", "xfade": "fade"},
+    "additive": {"label": "Fundido aditivo", "xfade": "custom", "expr": "clip(A+B*P,0,1)"},
+    "stretch": {"label": "Estiro", "xfade": "squeezeh"},
+    "blurry": {"label": "Blurry", "xfade": "hblur"},
+}
 TRANSITION_PROFILES = {
-    "youtube": {"duration": 0.18, "sections_only": False},
-    "reel": {"duration": 0.08, "sections_only": False, "every": 3},
-    "reel_horizontal": {"duration": 0.08, "sections_only": False, "every": 3},
-    # No crossfade between equirectangular cuts: the 360 path is a direct
+    "youtube": {"duration": 0.18, "sections_only": False, "type": "crossfade"},
+    "reel": {"duration": 0.08, "sections_only": False, "every": 3, "type": "crossfade"},
+    "reel_horizontal": {"duration": 0.08, "sections_only": False, "every": 3, "type": "crossfade"},
+    # No transition between equirectangular cuts: the 360 path is a direct
     # projection-safe passthrough. Its logo clips already fade from/to black.
-    "360": {"duration": 0.0, "sections_only": True},
+    "360": {"duration": 0.0, "sections_only": True, "type": "crossfade"},
 }
 
 
@@ -106,6 +114,10 @@ def _transition_profile(project: Project, platform: str) -> dict[str, Any]:
     if isinstance(configured, dict):
         profile.update(configured)
     profile["duration"] = max(0.0, float(profile.get("duration") or 0.0))
+    transition_type = str(profile.get("type") or "crossfade").strip().lower()
+    if transition_type not in TRANSITION_LIBRARY:
+        transition_type = "crossfade"
+    profile["type"] = transition_type
     return profile
 
 
@@ -137,6 +149,7 @@ def _transition_boundaries(segments: list[dict[str, Any]], profile: dict[str, An
 def _render_flat_video_transitions(
     paths: list[Path], durations: list[float], boundaries: list[int], output_path: Path,
     video_bitrate: int, progress_callback: ProgressCallback, fade_duration: float,
+    transition_type: str = "crossfade",
 ) -> Path:
     """Encode selected flat-video xfade joins, leaving the other cuts hard."""
     if not boundaries:
@@ -177,7 +190,12 @@ def _render_flat_video_transitions(
     for index, (next_label, next_duration) in enumerate(chunks[1:], start=1):
         out = f"xf{index}"
         offset = max(0.0, current_duration - fade_duration)
-        filters.append(f"[{current}][{next_label}]xfade=transition=fade:duration={fade_duration:.3f}:offset={offset:.3f}[{out}]")
+        expr = recipe["expr"]
+        if recipe["xfade"] == "custom":
+            transition = f"transition=custom:duration={fade_duration:.3f}:offset={offset:.3f}:expr='{expr}'"
+        else:
+            transition = f"transition={recipe["xfade"]}:duration={fade_duration:.3f}:offset={offset:.3f}"
+        filters.append(f"[{current}][{next_label}]xfade={transition}[{out}]")
         current = out
         current_duration += next_duration - fade_duration
     filters.append(f"[{current}]format=yuv420p[vout]")
@@ -693,6 +711,7 @@ def _render_plan(
                 body_paths, body_durations, boundaries, transitioned_body, video_bitrate,
                 lambda percent, detail: progress_callback(82 + int(percent * 2 / 100), detail),
                 float(transition_profile["duration"]),
+                str(transition_profile.get("type") or "crossfade"),
             )
             segment_paths.append(transitioned_body)
         else:

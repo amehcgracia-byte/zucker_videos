@@ -85,7 +85,8 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
             duration_probe = subprocess.run(
                 [
                     str(Path(ffmpeg).with_name("ffprobe")) if Path(ffmpeg).parent != Path(".") else "ffprobe",
-                    "-v", "error", "-show_entries", "format=duration",
+                    "-v", "error", "-select_streams", "v:0",
+                    "-show_entries", "stream=duration",
                     "-of", "default=noprint_wrappers=1:nokey=1", str(source),
                 ],
                 check=True, capture_output=True, text=True,
@@ -94,7 +95,7 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
         except (OSError, subprocess.CalledProcessError, ValueError):
             source_duration = 0.0
         duration_args = ["-t", f"{source_duration:.3f}"] if source_duration > 0 else []
-        command += duration_args + ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy", str(destination)]
+        command += duration_args + ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy", "-shortest", str(destination)]
         if progress_callback is None:
             subprocess.run(command, check=True)
         else:

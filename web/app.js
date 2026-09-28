@@ -2589,6 +2589,7 @@ async function startWizard(options = {}) {
       reel_text_overlays: reelOptionsFromForm().texts,
       reel_image_overlays: reelOptionsFromForm().images,
       backstage_messages: backstageMessagesFromForm(),
+      transition_type: document.querySelector("#transitionStyle")?.value || "crossfade",
       master: inputs.master,
       songs: inputs.songs,
       videos: inputs.videos,
