@@ -439,7 +439,9 @@ class CompositionRunner:
                         Path(manifest_path).write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
                 except (OSError, json.JSONDecodeError):
                     LOGGER.warning("Could not update export manifest to the composed result", exc_info=True)
-            original_base_path.unlink(missing_ok=True)
+            for candidate in project.exports_dir.glob("*.mp4"):
+                if candidate.resolve() != output.resolve():
+                    candidate.unlink(missing_ok=True)
             composed.unlink(missing_ok=True)
             project.data.setdefault("settings", {}).setdefault("wizard", {})["last_composed_result"] = str(output)
             project.save()
