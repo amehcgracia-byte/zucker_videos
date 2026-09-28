@@ -126,9 +126,11 @@ EDIT_PLAN_ALGORITHM_VERSION = 16
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
-    "singer": 0.60,
-    "full_stage": 0.10,
-    "audience": 0.10,
+    # Keep all authored 360 landmarks in rotation. The old 60/10/10 split
+    # starved the other views and made plans repeat the same few frames.
+    "singer": 0.30,
+    "full_stage": 0.15,
+    "audience": 0.15,
 }
 
 
@@ -695,6 +697,12 @@ def _youtube_multicam_plan(
     role_weights = _camera_role_weights(edit_settings)
     camera_target_weights = _camera_target_weights(sources, role_weights, edit_settings)
     spherical_target_weights = _spherical_target_weights(edit_settings)
+    variation_seed = str(
+        edit_settings.get("variation_seed")
+        or project_settings.get("variation_seed")
+        or (project_settings.get("wizard") or {}).get("variation_seed")
+        or ""
+    )
     fixed_rear_motion = bool(edit_settings.get("fixed_rear_motion", True))
     try:
         fixed_zoom_coverage_threshold = max(
@@ -816,6 +824,7 @@ def _youtube_multicam_plan(
                     previous_yaw=previous_spherical_yaw,
                     previous_type=previous_spherical_type,
                     recent_types=recent_spherical_types,
+                    selection_seed=f"{variation_seed}:{segment_index}",
                 )
                 # Always attach a shot with motion, even with no configured landmarks
                 # (shot=None) — a 360 segment must never fall back to a frozen,
@@ -1157,6 +1166,7 @@ def _next_weighted_spherical_shot(
     previous_yaw: float | None = None,
     previous_type: str | None = None,
     recent_types: list[str] | None = None,
+    selection_seed: str | None = None,
 ) -> dict[str, Any] | None:
     candidates = [
         shot
@@ -1181,7 +1191,7 @@ def _next_weighted_spherical_shot(
     target_weights = target_weights or {str(shot.get("type")): float(shot.get("weight") or 1.0) for shot in candidates}
     total_target = sum(max(0.0, float(target_weights.get(str(shot.get("type")), 0.0))) for shot in candidates) or 1.0
 
-    def score(shot: dict[str, Any]) -> tuple[float, float, float, str]:
+    def score(shot: dict[str, Any]) -> tuple[float, float, float, str, str]:
         shot_type = str(shot.get("type") or "")
         weight = max(0.001, float(target_weights.get(shot_type, 0.0)) / total_target)
         # Deficit from the configured weighted rotation is primary. A shot
@@ -1198,7 +1208,8 @@ def _next_weighted_spherical_shot(
             weighted_deficit += 0.01 * (4 - recent_types[-3:].index(shot_type))
         # Yaw is only a soft tiebreaker. It can make equal-priority choices
         # gentler, but can never starve a configured landmark.
-        return (weighted_deficit, distance(shot), usage.get(shot_type, 0), shot_type)
+        seed_rank = stable_fingerprint({"seed": str(selection_seed or ""), "shot_type": shot_type})[:16]
+        return (weighted_deficit, distance(shot), usage.get(shot_type, 0), seed_rank, shot_type)
 
     return dict(min(candidates, key=score))
 

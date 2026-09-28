@@ -24,6 +24,7 @@ from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
 from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.messages import t
 from core.project import Project, ProjectError, create_project, load_project
+from core.build_info import build_info
 from core.spherical_view import MAX_SPHERICAL_FOV
 from core.media_validation import record_media_path
 from core.normalization import cache_status, cleanup_unreferenced_cache, global_cache_root, migrate_project_normalization_cache
@@ -1713,14 +1714,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         logo_mode = str(header.get("logo_source") or "none")
         if logo_mode not in {"custom", "default", "none"}:
             logo_mode = "none"
-        overlay_spec = {"version": 2, "texts": texts, "images": images, "videos": videos}
+        wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
+        compose_platform = str(body.get("platform") or wizard.get("platform") or "youtube").strip().lower()
+        if compose_platform not in {"youtube", "reel", "reel_horizontal", "360", "backstage"}:
+            compose_platform = "youtube"
+        overlay_spec = {"version": 3, "platform": compose_platform, "texts": texts, "images": images, "videos": videos}
         header = {**header, "logo_source": logo_mode, "logo_enabled": logo_mode != "none"}
-        cue_track = {"version": CAPTIONS_VERSION, "lang": str(body.get("lang") or "und"), "cues": cues, "style": str(body.get("style") or "karaoke_word"), "header": header, "letterbox": body.get("letterbox") or {}}
+        cue_track = {"version": CAPTIONS_VERSION, "platform": compose_platform, "lang": str(body.get("lang") or "und"), "cues": cues, "style": str(body.get("style") or "karaoke_word"), "header": header, "letterbox": body.get("letterbox") or {}}
         (project.folder / "overlay_spec.json").write_text(json.dumps(overlay_spec, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         (project.folder / "cue_track.json").write_text(json.dumps(cue_track, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
-        wizard["reel_text_overlays"], wizard["reel_image_overlays"], wizard["reel_video_overlays"] = texts, images, videos
-        wizard["reel_logo_mode"] = logo_mode
+        wizard["composition_platform"] = compose_platform
+        wizard["composition_text_overlays"] = texts
+        wizard["composition_image_overlays"] = images
+        wizard["composition_video_overlays"] = videos
+        if compose_platform in {"reel", "reel_horizontal"}:
+            wizard["reel_text_overlays"], wizard["reel_image_overlays"], wizard["reel_video_overlays"] = texts, images, videos
+            wizard["reel_logo_mode"] = logo_mode
         logo_overlay = header.get("logo_overlay") if isinstance(header.get("logo_overlay"), dict) else None
         if logo_overlay is not None:
             wizard["reel_logo_overlay"] = {
@@ -1792,6 +1801,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.get("/api/v1/app/config")
     def api_app_config() -> Response:
         config = load_global_config()
+        info = build_info()
+        config["app_version"] = info["version"]
+        config["source_revision"] = info["git_commit"]
         config["dev"] = state.dev
         config["desktop"] = not state.dev
         config.setdefault("camera_role_weights", {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0})

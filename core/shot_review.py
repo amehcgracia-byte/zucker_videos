@@ -173,19 +173,28 @@ def _thumbnail_filter(segment: dict[str, Any], color_profile: dict[str, Any] | N
     )
 
 
-def _candidate_key(candidate: dict[str, Any]) -> str:
-    """Return the stable identity used by a slot's replacement history.
+def _spherical_pose_suffix(candidate: dict[str, Any]) -> str:
+    """Make different 360 framings distinct review candidates."""
+    shot = candidate.get("spherical_shot") or {}
+    if not isinstance(shot, dict) or not shot:
+        return ""
+    try:
+        yaw = float(shot.get("yaw") or 0.0) % 360.0
+        pitch = float(shot.get("pitch") or 0.0)
+        fov = float(shot.get("fov") or 95.0)
+    except (TypeError, ValueError):
+        return ""
+    return f"|yaw={yaw:.3f}|pitch={pitch:.3f}|fov={fov:.3f}"
 
-    A source can contribute more than one usable moment, so the path alone is
-    not enough to identify a candidate.  Keep the format human-readable for
-    backwards compatibility with the existing review_attempts data.
-    """
+
+def _candidate_key(candidate: dict[str, Any]) -> str:
+    """Return a stable identity for a source moment and its 360 framing."""
     path = candidate.get("path") or candidate.get("clip_path") or candidate.get("source_path") or ""
     try:
         start = float(candidate.get("clip_start_sec", candidate.get("offset_sec", 0)) or 0.0)
     except (TypeError, ValueError):
         start = 0.0
-    return f"{path}|{start:.6f}"
+    return f"{path}|{start:.6f}{_spherical_pose_suffix(candidate)}"
 
 
 def _candidate_keys(candidate: dict[str, Any]) -> set[str]:
@@ -197,6 +206,7 @@ def _candidate_keys(candidate: dict[str, Any]) -> set[str]:
         candidate.get("clip_offset_sec"),
     }
     keys = set()
+    pose_suffix = _spherical_pose_suffix(candidate)
     for raw_start in starts:
         if raw_start is None:
             continue
@@ -204,7 +214,10 @@ def _candidate_keys(candidate: dict[str, Any]) -> set[str]:
             value = float(raw_start)
         except (TypeError, ValueError):
             continue
-        keys.update({f"{path}|{value}", f"{path}|{value:.6f}"})
+        keys.update({
+            f"{path}|{value}{pose_suffix}",
+            f"{path}|{value:.6f}{pose_suffix}",
+        })
     return keys or {_candidate_key(candidate)}
 
 
@@ -231,19 +244,65 @@ def _candidate_covers_slot(candidate: dict[str, Any], segment: dict[str, Any], p
     return coverage_start <= master_start + 0.001 and coverage_end >= master_start + duration - 0.001
 
 
+def _spherical_review_poses(segment: dict[str, Any], segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return authored landmark poses plus varied zoom/reframe alternatives."""
+    current = dict(segment.get("spherical_shot") or {})
+    if not current:
+        return []
+    source_path = str(segment.get("clip_path") or segment.get("source_path") or "")
+    poses: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(raw: dict[str, Any]) -> None:
+        try:
+            yaw = float(raw.get("yaw") or 0.0) % 360.0
+            pitch = max(-85.0, min(85.0, float(raw.get("pitch") or 0.0)))
+            fov = max(30.0, min(150.0, float(raw.get("fov") or 95.0)))
+        except (TypeError, ValueError):
+            return
+        pose = dict(raw)
+        pose["yaw"], pose["pitch"], pose["fov"] = round(yaw, 3), round(pitch, 3), round(fov, 3)
+        key = _spherical_pose_suffix({"spherical_shot": pose})
+        if key in seen:
+            return
+        seen.add(key)
+        poses.append(pose)
+
+    add(current)
+    for planned in segments:
+        planned_path = str(planned.get("clip_path") or planned.get("source_path") or "")
+        if planned_path == source_path:
+            add(dict(planned.get("spherical_shot") or {}))
+
+    # These are different views of the same equirectangular frame at the
+    # exact synced moment, not unrelated source frames.
+    base_yaw = float(current.get("yaw") or 0.0)
+    base_pitch = float(current.get("pitch") or 0.0)
+    for index, (yaw_delta, pitch_delta, fov) in enumerate((
+        (-150, 0, 78), (-120, 8, 95), (-90, -8, 112), (-60, 0, 86),
+        (-30, 8, 125), (30, -8, 78), (60, 0, 105), (90, 8, 135),
+        (120, -8, 88), (150, 0, 118), (180, 8, 95), (15, 0, 145),
+    )):
+        variant = dict(current)
+        variant.update({
+            "type": f"review_variant_{index + 1:02d}",
+            "shot_id": f"review_variant_{index + 1:02d}",
+            "label": "Encuadre alternativo",
+            "yaw": (base_yaw + yaw_delta) % 360.0,
+            "pitch": base_pitch + pitch_delta,
+            "fov": fov,
+        })
+        add(variant)
+    return poses
+
+
 def _review_candidate_pool(
     coverage: dict[str, Any],
     segments: list[dict[str, Any]],
     segment: dict[str, Any],
     platform: str,
 ) -> tuple[list[dict[str, Any]], str]:
-    """Build real per-slot alternatives from source moments, not camera totals.
-
-    ``coverage.sources`` describes one record per camera and is sufficient for
-    coverage validation, but it is not a shot-review pool. The edit plan
-    already contains usable moments from every camera; retain those moments,
-    enrich them with sync metadata, and filter them against the rejected slot.
-    """
+    """Build per-slot alternatives from source moments and 360 poses."""
     sources = list(coverage.get("sources") or [])
     if not sources:
         sources = list(coverage.get("segments") or [])
@@ -255,8 +314,21 @@ def _review_candidate_pool(
     pool: list[dict[str, Any]] = []
     seen: set[str] = set()
     master_start = float(segment.get("master_start_sec") or 0.0)
+    reviewed_paths = {
+        str(segment.get(key) or "")
+        for key in ("clip_path", "source_path", "proxy_path")
+        if segment.get(key)
+    }
+    spherical_poses = _spherical_review_poses(segment, segments) if segment.get("spherical_shot") else []
+
     for path, source_records in by_path.items():
+        is_spherical_review_source = platform == "youtube" and path in reviewed_paths and bool(spherical_poses)
         for source in source_records:
+            # For a spherical slot, never add a pose-less copy of the same
+            # timestamp: it would be selected as a fake alternative and keep
+            # the old framing.
+            if is_spherical_review_source:
+                continue
             candidate = dict(source)
             if platform == "youtube":
                 candidate["clip_start_sec"] = max(0.0, master_start - float(source.get("offset_sec") or 0.0))
@@ -264,12 +336,24 @@ def _review_candidate_pool(
             if key not in seen:
                 pool.append(candidate)
                 seen.add(key)
+
+        # YouTube 360 keeps exact master-time alignment while offering many
+        # alternate camera framings from the same registered equirect source.
+        if is_spherical_review_source:
+            source = source_records[0]
+            for pose_index, pose in enumerate(spherical_poses):
+                candidate = dict(source)
+                candidate["clip_start_sec"] = max(0.0, master_start - float(source.get("offset_sec") or 0.0))
+                candidate["projection"] = segment.get("projection") or candidate.get("projection") or "equirect"
+                candidate["spherical_shot"] = dict(pose)
+                candidate["review_candidate_index"] = pose_index
+                key = _candidate_key(candidate)
+                if key not in seen:
+                    pool.append(candidate)
+                    seen.add(key)
+
         # A Reel has no sync constraint, so each source can provide several
-        # genuinely different moments for the same review slot.  Keep the
-        # explicit source records above for backwards compatibility, then add
-        # six deterministic positions spread across the usable source
-        # duration: the current frame plus five possible replacements. The
-        # per-slot exclusion history prevents repeats.
+        # genuinely different moments for the same review slot.
         if platform == "reel":
             source = source_records[0]
             try:
@@ -293,7 +377,6 @@ def _review_candidate_pool(
         if source is None:
             continue
         candidate = dict(source)
-        # Preserve the actual reviewed moment and its framing recipe.
         for key in ("clip_start_sec", "motion", "spherical_shot", "projection", "shot_quality_score", "motion_score"):
             if planned.get(key) is not None:
                 candidate[key] = planned[key]
@@ -304,47 +387,6 @@ def _review_candidate_pool(
             pool.append(candidate)
             seen.add(key)
     return pool, "coverage.sources+edit_plan.moments"
-
-
-def _render_status_path(root: Path) -> Path:
-    return root / "render_status.json"
-
-
-def _load_render_status(root: Path) -> dict[str, dict[str, Any]]:
-    path = _render_status_path(root)
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        return payload if isinstance(payload, dict) else {}
-    except (OSError, ValueError, TypeError):
-        LOGGER.warning("Could not read review render status %s", path, exc_info=True)
-        return {}
-
-
-def _save_render_status(root: Path, status: dict[str, dict[str, Any]]) -> None:
-    path = _render_status_path(root)
-    # Review can be opened/polled concurrently from the browser.  A fixed
-    # sibling temporary name lets one request replace the other request's
-    # temporary file before it calls replace().
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=root, prefix="render_status.", suffix=".tmp", delete=False
-    ) as handle:
-        handle.write(json.dumps(status, ensure_ascii=False))
-        temporary = Path(handle.name)
-    temporary.replace(path)
-
-
-def mark_review_render_failed(project: Project, indices: set[int], message: str) -> None:
-    """Persist a background render failure so the review UI can show it."""
-    segments = _review_segments(project)
-    signature = _review_signature(segments)
-    root = project.cache_dir / "shot_review" / signature
-    root.mkdir(parents=True, exist_ok=True)
-    status = _load_render_status(root)
-    for index in indices:
-        status[str(index)] = {"state": "failed", "error": message}
-    _save_render_status(root, status)
 
 
 def _replacement_candidates(
@@ -496,7 +538,15 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
                 "reason": reason, "pool_origin": pool_origin, **counts,
             })
             continue
-        _score, candidate, key = sorted(candidates, key=lambda item: -item[0])[0]
+        ordered_candidates = sorted(candidates, key=lambda item: (-item[0], item[2]))
+        # Rotate deterministic alternatives instead of returning the same
+        # highest-scoring frame on every click.
+        variation_seed = str(wizard.get("variation_seed") or "")
+        rotation_digest = hashlib.sha256(
+            f"{variation_seed}|{slot}|{len(tried)}".encode("utf-8")
+        ).hexdigest()
+        choice_index = int(rotation_digest[:12], 16) % len(ordered_candidates)
+        _score, candidate, key = ordered_candidates[choice_index]
         LOGGER.info(
             "Review replace slot=%s current=%s candidate=%s source=%s clip_start=%s master_start=%s",
             index,
