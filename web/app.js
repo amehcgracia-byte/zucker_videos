@@ -1033,7 +1033,7 @@ function queueSphericalSetupPreview(viewer, immediate = false) {
 function updateSphericalSetupViewer(viewer, values = {}) {
   viewer.yaw = normalizeYaw(values.yaw ?? viewer.yaw ?? 0) ?? 0;
   viewer.pitch = clamp(Number(values.pitch ?? viewer.pitch ?? 0), -85, 85);
-  viewer.fov = clamp(Number(values.fov ?? viewer.fov ?? 95), MIN_SHOT_FOV, 150);
+  viewer.fov = clamp(Number(values.fov ?? viewer.fov ?? 95), MIN_SHOT_FOV, MAX_SHOT_FOV);
   const group = document.querySelector('fieldset[data-spherical-landmark="' + viewer.shot + '"]');
   if (group) {
     for (const [field, value] of [["yaw", viewer.yaw], ["pitch", viewer.pitch], ["fov", viewer.fov]]) {
@@ -1075,7 +1075,7 @@ function wireSphericalSetupViewer(viewer) {
   viewer.canvas.addEventListener("pointercancel", stop);
   viewer.canvas.addEventListener("wheel", (event) => {
     event.preventDefault();
-    viewer.fov = clamp(viewer.fov + (event.deltaY > 0 ? 3 : -3), MIN_SHOT_FOV, 150);
+    viewer.fov = clamp(viewer.fov + (event.deltaY > 0 ? 3 : -3), MIN_SHOT_FOV, MAX_SHOT_FOV);
     updateSphericalSetupViewer(viewer, viewer);
     queueSphericalSetupPreview(viewer, true);
   }, { passive: false });

@@ -1369,7 +1369,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         try:
             yaw = float(request.args.get("yaw", 0.0))
             pitch = max(-89.0, min(89.0, float(request.args.get("pitch", 0.0))))
-            h_fov = max(30.0, min(150.0, float(request.args.get("fov", 95.0))))
+            h_fov = max(30.0, min(MAX_SPHERICAL_FOV, float(request.args.get("fov", 95.0))))
             time_sec = max(0.0, float(request.args.get("time_sec", 30.0)))
         except (TypeError, ValueError):
             return error_response("bad_request", "Invalid spherical preview parameters", 400)
