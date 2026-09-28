@@ -260,22 +260,26 @@
           <p id="stageTransitionDetail"></p>
         </div>
         <div id="progressBox" class="progress-box">
-          <img
-            id="progressLoadingGif"
-            class="progress-loading-gif"
-            src="/zucker_loading_fast_interleaved_sequence.gif?v=loading-gif-1"
-            alt=""
-            aria-hidden="true"
-          />
-          <div class="progress-track"><div id="progressBar"></div></div>
-          <div class="progress-main">
-            <strong id="progressMessage">Working...</strong>
-            <span id="progressPercent">0%</span>
-          </div>
-          <span id="progressDetail"></span>
-          <div class="progress-meta">
-            <span id="elapsedTime">Elapsed: 0 min</span>
-            <span id="etaTime">ETA: estimating…</span>
+          <div class="progress-loading-stage">
+            <img
+              id="progressLoadingGif"
+              class="progress-loading-gif"
+              src="/zucker_loading_fast_interleaved_sequence.gif?v=loading-gif-2"
+              alt=""
+              aria-hidden="true"
+            />
+            <div class="progress-loading-overlay">
+              <div class="progress-track"><div id="progressBar"></div></div>
+              <div class="progress-main">
+                <strong id="progressMessage">Working...</strong>
+                <span id="progressPercent">0%</span>
+              </div>
+              <span id="progressDetail"></span>
+              <div class="progress-meta">
+                <span id="elapsedTime">Elapsed: 0 min</span>
+                <span id="etaTime">ETA: estimating…</span>
+              </div>
+            </div>
           </div>
           <div class="stage-checks">
             <span data-stage="ingest">Prepare</span>

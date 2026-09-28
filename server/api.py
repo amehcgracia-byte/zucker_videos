@@ -25,7 +25,7 @@ from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.messages import t
 from core.project import Project, ProjectError, create_project, load_project
 from core.build_info import build_info
-from core.spherical_view import MAX_SPHERICAL_FOV
+from core.spherical_view import MAX_SPHERICAL_FOV, view_parameters
 from core.media_validation import record_media_path
 from core.normalization import cache_status, cleanup_unreferenced_cache, global_cache_root, migrate_project_normalization_cache
 from core.stages.sync import clear_manual_override, cleanup_closed_sync_diagnostics, generate_preview, generate_thumbnail, invalidate_stale_sync_artifact, set_manual_anchor, set_manual_override, set_manual_override_ranges
@@ -1358,7 +1358,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.get("/api/v1/wizard/spherical-preview")
     def api_wizard_spherical_preview() -> Response:
-        """Render one real equirectangular frame at an authored landmark pose."""
+        """Render the exact 360 preview projection used by review/export."""
         project = _require_project(state)
         requested = Path(str(request.args.get("source") or "")).expanduser().resolve()
         allowed = set()
@@ -1368,20 +1368,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("not_found", "360 source is not registered in this project", 404)
         try:
             yaw = float(request.args.get("yaw", 0.0))
-            yaw = ((yaw + 180.0) % 360.0) - 180.0
             pitch = max(-89.0, min(89.0, float(request.args.get("pitch", 0.0))))
             h_fov = max(30.0, min(150.0, float(request.args.get("fov", 95.0))))
+            time_sec = max(0.0, float(request.args.get("time_sec", 30.0)))
         except (TypeError, ValueError):
-            return error_response("bad_request", "Invalid spherical preview angles", 400)
-        aspect = 16.0 / 9.0
-        v_fov = 2.0 * math.degrees(math.atan(math.tan(math.radians(h_fov / 2.0)) / aspect))
+            return error_response("bad_request", "Invalid spherical preview parameters", 400)
+        try:
+            duration = float(ffprobe(str(requested)).get("format", {}).get("duration") or 0.0)
+            if duration > 0.0:
+                time_sec = min(time_sec, max(0.0, duration - 0.05))
+        except Exception:
+            pass
+        view = view_parameters(yaw, pitch, h_fov, 16.0 / 9.0)
         ffmpeg_path = str(load_global_config().get("ffmpeg_path") or "ffmpeg")
         result = subprocess.run(
-            # The first seconds of the real Insta360 exports are often dark
-            # while the camera is being positioned. Use a representative
-            # mid-clip frame so the editor's previews are actually useful.
-            [ffmpeg_path, "-hide_banner", "-loglevel", "error", "-ss", "30", "-i", str(requested),
-             "-vf", f"v360=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f},scale=640:360",
+            [ffmpeg_path, "-hide_banner", "-loglevel", "error", "-ss", f"{time_sec:.3f}", "-i", str(requested),
+             "-vf", f"v360=input=equirect:output={view['projection']}:yaw={float(view['yaw']):.3f}:pitch={float(view['pitch']):.3f}:h_fov={float(view['h_fov']):.3f}:v_fov={float(view['v_fov']):.3f},scale=640:360",
              "-frames:v", "1", "-f", "mjpeg", "pipe:1"],
             capture_output=True, check=False, timeout=30,
         )

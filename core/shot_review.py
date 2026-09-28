@@ -296,6 +296,28 @@ def _spherical_review_poses(segment: dict[str, Any], segments: list[dict[str, An
     return poses
 
 
+def _source_record_for_slot(
+    source_records: list[dict[str, Any]],
+    master_start: float,
+    duration: float,
+) -> dict[str, Any] | None:
+    master_end = master_start + max(0.1, duration)
+    ranked: list[tuple[int, float, dict[str, Any]]] = []
+    for source in source_records:
+        try:
+            offset = float(source.get("offset_sec") or 0.0)
+            source_end = offset + max(0.0, float(source.get("duration_sec") or 0.0))
+        except (TypeError, ValueError):
+            continue
+        covers = offset <= master_start + 0.001 and source_end >= master_end - 0.001
+        overlap = max(0.0, min(source_end, master_end) - max(offset, master_start))
+        ranked.append((1 if covers else 0, overlap, source))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return ranked[0][2]
+
+
 def _review_candidate_pool(
     coverage: dict[str, Any],
     segments: list[dict[str, Any]],
@@ -340,7 +362,11 @@ def _review_candidate_pool(
         # YouTube 360 keeps exact master-time alignment while offering many
         # alternate camera framings from the same registered equirect source.
         if is_spherical_review_source:
-            source = source_records[0]
+            source = _source_record_for_slot(
+                source_records,
+                master_start,
+                float(segment.get("duration_sec") or 0.1),
+            ) or source_records[0]
             for pose_index, pose in enumerate(spherical_poses):
                 candidate = dict(source)
                 candidate["clip_start_sec"] = max(0.0, master_start - float(source.get("offset_sec") or 0.0))
@@ -562,8 +588,11 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         segment = segments[index]
         slot = str(index)
         tried = set(exclusions.setdefault(slot, []))
-        # Migrate projects created before review_exclusions existed.
-        tried.update(attempts.setdefault(slot, []))
+        # JSON object keys are strings after a reopen. Read both the current
+        # in-memory integer form and the persisted string form.
+        slot_key = str(slot)
+        tried.update(attempts.get(slot_key) or attempts.get(slot) or [])
+        tried.update(exclusions.get(slot_key) or exclusions.get(slot) or [])
         tried.update(_candidate_keys(segment))
         pool, pool_origin = _review_candidate_pool(coverage, segments, segment, platform)
         candidates, counts = _replacement_candidates(pool, segment, tried, platform)
@@ -632,9 +661,11 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         if candidate.get("spherical_shot"):
             new_segment["spherical_shot"] = candidate["spherical_shot"]
         tried.add(key)
-        exclusions[slot] = sorted(tried)
+        exclusions[slot_key] = sorted(tried)
+        exclusions.pop(slot, None)
         # Keep the legacy field populated for readers of older project data.
-        attempts[slot] = sorted(tried)
+        attempts[slot_key] = sorted(tried)
+        attempts.pop(slot, None)
         segments[index] = new_segment
         unavailable.discard(index)
         replaced.append(index)

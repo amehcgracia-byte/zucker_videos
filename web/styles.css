@@ -1716,3 +1716,73 @@ pre {
   font-size: 11px;
   text-align: right;
 }
+
+
+/* Loading scene: the animation is the main canvas and progress is readable on top. */
+.progress-loading-stage {
+  position: relative;
+  width: min(100%, 1040px);
+  min-height: min(66vh, 640px);
+  margin: 0 auto;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  border-radius: 28px;
+  background: #101817;
+  box-shadow: 0 24px 70px rgba(16, 35, 27, .22);
+}
+.progress-loading-stage .progress-loading-gif {
+  width: 100%;
+  max-width: none;
+  max-height: min(66vh, 640px);
+  height: auto;
+  margin: 0;
+  border-radius: 28px;
+  object-fit: contain;
+}
+.progress-loading-overlay {
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 2;
+  display: grid;
+  gap: 10px;
+  padding: clamp(18px, 3vw, 34px);
+  color: #fff;
+  background: linear-gradient(180deg, transparent 0%, rgba(8, 18, 17, .28) 18%, rgba(8, 18, 17, .88) 100%);
+  text-shadow: 0 2px 4px rgba(0, 0, 0, .8);
+}
+.progress-loading-overlay .progress-track {
+  background: rgba(255, 255, 255, .24);
+  box-shadow: 0 1px 8px rgba(0, 0, 0, .35);
+}
+.progress-loading-overlay #progressBar {
+  background: linear-gradient(90deg, #b6f58c, #4ade80);
+}
+.progress-loading-overlay #progressMessage,
+.progress-loading-overlay #progressPercent,
+.progress-loading-overlay #progressDetail,
+.progress-loading-overlay .progress-meta {
+  color: #fff;
+}
+.progress-loading-overlay #progressMessage {
+  font-size: clamp(1.08rem, 2.4vw, 1.65rem);
+}
+.progress-loading-overlay #progressDetail {
+  color: rgba(255, 255, 255, .88);
+}
+.progress-loading-overlay .progress-meta {
+  color: rgba(255, 255, 255, .76);
+}
+@media (max-width: 700px) {
+  .progress-loading-stage {
+    min-height: min(62vh, 520px);
+    border-radius: 20px;
+  }
+  .progress-loading-stage .progress-loading-gif {
+    max-height: min(62vh, 520px);
+    border-radius: 20px;
+  }
+  .progress-loading-overlay {
+    padding: 16px;
+  }
+}
