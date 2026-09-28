@@ -164,6 +164,7 @@ class EditStage(Stage):
                 "cut": coverage_payload,
                 "settings": project.data["settings"].get(self.name, {}),
                 "spherical_landmarks": project.data["settings"].get("spherical_landmarks", {}),
+                "spherical_landmarks_by_source": project.data["settings"].get("spherical_landmarks_by_source", {}),
                 "camera_moves": _camera_moves_fingerprint(project),
                 "shot_quality_version": SHOT_QUALITY_VERSION,
                 "director_score_threshold": DIRECTOR_SCORE_THRESHOLD,
