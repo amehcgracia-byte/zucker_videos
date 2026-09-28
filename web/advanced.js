@@ -702,7 +702,7 @@ setInterval(async () => {
   if (document.querySelector("#inputs").classList.contains("active")) {
     await scanInbox().catch(() => {});
   }
-}, 4000);
+}, 7000);
 
-setInterval(refreshStatus, 1000);
+setInterval(refreshStatus, 2000);
 boot().catch(showError);

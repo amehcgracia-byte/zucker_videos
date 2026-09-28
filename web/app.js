@@ -1009,7 +1009,7 @@ async function setupDirector() {
   const gl = canvas.getContext("webgl2");
   if (!gl) throw new Error("WebGL2 is not available in this webview");
   director.gl = gl;
-  const [THREE, media] = await Promise.all([import("/vendor/three.module.min.js"), loadDirectorMedia()]);
+  const [THREE, media] = await Promise.all([import("/vendor/three.module.min.js?v=editor-ui-5"), loadDirectorMedia()]);
   director.media = media;
   director.three = THREE;
   video.src = `${media.video_url}?t=${Date.now()}`;
@@ -1177,7 +1177,7 @@ async function setupResult360Viewer(videoUrl) {
   const gl = canvas.getContext("webgl2");
   if (!gl) throw new Error("WebGL2 is not available in this webview");
   result360.gl = gl;
-  const THREE = await import("/vendor/three.module.min.js");
+  const THREE = await import("/vendor/three.module.min.js?v=editor-ui-5");
   result360.three = THREE;
   result360.renderer = new THREE.WebGLRenderer({ canvas, context: gl, antialias: true });
   result360.scene = new THREE.Scene();
@@ -1775,14 +1775,26 @@ function secondsToTime(seconds) {
 }
 
 function ensureStatusPolling() {
-  if (!pollTimer) {
-    pollTimer = setInterval(() => {
-      pollStatus().catch((error) => {
-        logFrontendError(`pollStatus failed: ${error.message}`, error.stack || "");
-        showToast(`${S.statusUpdateFailed}: ${error.message}`, true);
-      });
-    }, 1000);
-  }
+  if (pollTimer) return;
+  const poll = async () => {
+    pollTimer = null;
+    // A hidden WebView cannot show progress, so do not spend CPU/network on
+    // status updates until the window is visible again.
+    if (document.visibilityState !== "visible") {
+      pollTimer = setTimeout(poll, 4000);
+      return;
+    }
+    try {
+      await pollStatus();
+    } catch (error) {
+      logFrontendError(`pollStatus failed: ${error.message}`, error.stack || "");
+      showToast(`${S.statusUpdateFailed}: ${error.message}`, true);
+    }
+    if (latestStatus?.status === "running") {
+      pollTimer = setTimeout(poll, 2000);
+    }
+  };
+  poll();
 }
 
 async function pollStatus() {
