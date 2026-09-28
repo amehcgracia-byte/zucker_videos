@@ -122,7 +122,7 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 16
+EDIT_PLAN_ALGORITHM_VERSION = 17
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {

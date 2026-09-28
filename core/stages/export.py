@@ -87,6 +87,7 @@ REEL_LETTERBOX_BLUR_SIGMA = 18.0
 REEL_BASE_LOGO_POLICY_VERSION = 1
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
+TRANSITION_PROFILE_VERSION = 2
 TRANSITION_PROFILES = {
     "youtube": {"duration": 0.18, "sections_only": False},
     "reel": {"duration": 0.08, "sections_only": False, "every": 3},
@@ -278,6 +279,7 @@ class ExportStage(Stage):
                 "edit": project.data["stages"]["edit"].get("fingerprint"),
                 "wizard": project.data["settings"].get("wizard", {}),
                 "settings": project.data["settings"].get(self.name, {}),
+                "transition_profile_version": TRANSITION_PROFILE_VERSION,
             }
         )
 
