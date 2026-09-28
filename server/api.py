@@ -1218,6 +1218,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         reel_cuts_per_source = _reel_cuts_per_source_from_body(body)
         reel_text_overlays = _reel_text_overlays_from_body(body)
         reel_image_overlays = _reel_image_overlays_from_body(body)
+        transition_type = str(body.get("transition_type") or "crossfade").strip().lower()
+        if transition_type not in {"crossfade", "additive", "stretch", "blurry"}:
+            return error_response("bad_request", "transition_type must be crossfade, additive, stretch, or blurry", 400)
         backstage_messages = body.get("backstage_messages") or []
         if not isinstance(backstage_messages, list) or not all(isinstance(value, str) for value in backstage_messages):
             return error_response("bad_request", "backstage_messages must be a list of strings", 400)
@@ -1253,6 +1256,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 "reel_text_overlays": reel_text_overlays,
                 "reel_image_overlays": reel_image_overlays,
                 "backstage_messages": backstage_messages,
+                "transition_type": transition_type,
                 "master_path": master,
                 "songs_path": songs,
                 "video_paths": videos,
