@@ -1009,7 +1009,7 @@ async function setupDirector() {
   const gl = canvas.getContext("webgl2");
   if (!gl) throw new Error("WebGL2 is not available in this webview");
   director.gl = gl;
-  const [THREE, media] = await Promise.all([import("/vendor/three.module.min.js?v=editor-ui-5"), loadDirectorMedia()]);
+  const [THREE, media] = await Promise.all([import("/vendor/three.module.min.js?v=editor-ui-6"), loadDirectorMedia()]);
   director.media = media;
   director.three = THREE;
   video.src = `${media.video_url}?t=${Date.now()}`;
@@ -1177,7 +1177,7 @@ async function setupResult360Viewer(videoUrl) {
   const gl = canvas.getContext("webgl2");
   if (!gl) throw new Error("WebGL2 is not available in this webview");
   result360.gl = gl;
-  const THREE = await import("/vendor/three.module.min.js?v=editor-ui-5");
+  const THREE = await import("/vendor/three.module.min.js?v=editor-ui-6");
   result360.three = THREE;
   result360.renderer = new THREE.WebGLRenderer({ canvas, context: gl, antialias: true });
   result360.scene = new THREE.Scene();
