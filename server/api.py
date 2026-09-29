@@ -817,28 +817,47 @@ def _compose_visual_overlays(
             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy",
             "-avoid_negative_ts", "make_zero", "-shortest", str(destination),
         ]
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+        # Merge FFmpeg diagnostics into the progress stream. Reading stdout and
+        # stderr independently can deadlock when one pipe fills during a long
+        # H.264 composition, leaving the UI on the last reported percentage.
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
         if process_callback:
             process_callback(process)
-        assert process.stdout is not None
-        progress_callback(0.0)
-        last_progress = 0.0
-        for line in process.stdout:
-            if line.startswith(("out_time_ms=", "out_time_us=")):
+        diagnostics: list[str] = []
+        try:
+            assert process.stdout is not None
+            progress_callback(0.0)
+            last_progress = 0.0
+            for raw_line in process.stdout:
+                line = raw_line.strip()
+                if line.startswith(("out_time_ms=", "out_time_us=")):
+                    try:
+                        raw_value = float(line.split("=", 1)[1])
+                        value = raw_value / 1_000_000.0
+                        last_progress = min(1.0, max(last_progress, value / duration))
+                        progress_callback(last_progress)
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        pass
+                elif line:
+                    diagnostics.append(line)
+            return_code = process.wait()
+            if return_code:
+                raise subprocess.CalledProcessError(
+                    return_code,
+                    command,
+                    stderr="\n".join(diagnostics[-20:]),
+                )
+            progress_callback(1.0)
+        finally:
+            if process.poll() is None:
+                process.terminate()
                 try:
-                    raw_value = float(line.split("=", 1)[1])
-                    value = raw_value / 1_000_000.0
-                    last_progress = min(1.0, max(last_progress, value / duration))
-                    progress_callback(last_progress)
-                except (TypeError, ValueError, ZeroDivisionError):
-                    pass
-        stderr = process.stderr.read() if process.stderr is not None else ""
-        return_code = process.wait()
-        if process_callback:
-            process_callback(None)
-        if return_code:
-            raise subprocess.CalledProcessError(return_code, command, stderr=stderr)
-        progress_callback(1.0)
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            if process_callback:
+                process_callback(None)
     return destination
 
 def _expand_caption_animations(track: CueTrack) -> CueTrack:
