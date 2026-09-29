@@ -2909,7 +2909,16 @@ function renderWizardStatus(status) {
   }
   if (status.status === "done") {
     stopStatusPolling();
-    latestResult = status.result;
+    latestResult = status.result || {};
+    if (!latestResult.filename || !latestResult.media_url) {
+      document.querySelector("#errorText").textContent = "The final render finished, but its result metadata was missing.";
+      document.querySelector("#resultTitle").textContent = "Render finished with incomplete result";
+      document.querySelector("#errorBox").hidden = false;
+      document.querySelector("#resultBox").hidden = true;
+      refreshProgressReport().catch((error) => logFrontendError(`progress report failed: ${error.message}`, error.stack || ""));
+      setStep(6);
+      return;
+    }
     document.querySelector("#progressTitle").textContent = S.doneTitle;
     document.querySelector("#resultTitle").textContent = S.doneTitle;
     document.querySelector("#resultFilename").textContent = latestResult.filename;
