@@ -24,7 +24,7 @@ LOGGER = logging.getLogger(__name__)
 
 MIN_SEGMENT_SEC = 2.0
 MAX_SEGMENT_SEC = 6.0
-MAX_BARS_PER_SEGMENT = 4
+MAX_BARS_PER_SEGMENT = 12
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
@@ -769,7 +769,15 @@ def _youtube_multicam_plan(
         max_bar_index = min(len(bar_times) - 1, bar_index + MAX_BARS_PER_SEGMENT)
         next_index = min(max_bar_index, bar_index + bars_per_segment)
         section_index = _reachable_section_index(bar_times, section_times, bar_index, next_index)
-        if section_index is not None:
+        energy_profile = beats.get("energy_by_bar") or []
+        try:
+            energy_here = max(0.0, min(1.0, float(energy_profile[bar_index])))
+        except (IndexError, TypeError, ValueError):
+            energy_here = 0.5
+        # A section marker is a useful boundary at high intensity, but it must
+        # not turn a calm phrase into a chain of 1–2 second cuts. In quiet or
+        # medium passages the duration policy remains authoritative.
+        if section_index is not None and energy_here >= 0.78:
             next_index = min(section_index, max_bar_index)
         while next_index > bar_index + 1 and bar_times[next_index] - bar_times[bar_index] > MAX_SEGMENT_SEC:
             next_index -= 1
@@ -1522,17 +1530,18 @@ def _bars_for_segment(
     energy = 0.5
     if energy_by_bar and 0 <= bar_index < len(energy_by_bar):
         energy = max(0.0, min(1.0, float(energy_by_bar[bar_index])))
-    # Normal passages target 3–6 seconds. Only very high energy is allowed
-    # to approach a 2-second cut; no ordinary passage is reduced to 1 second.
-    target_seconds = 2.0 if energy >= 0.88 else 3.0 if energy >= 0.68 else 5.8 if energy <= 0.30 else 4.2
+    # Long holds are the default: roughly 5–6 seconds in low and medium
+    # energy. Only the strongest passages may drop to 2–3 seconds; one-second
+    # cuts are never authored by this policy.
+    target_seconds = 2.0 if energy >= 0.92 else 3.0 if energy >= 0.78 else 5.8
     bars = max(1, min(MAX_BARS_PER_SEGMENT, round(target_seconds / bar_duration)))
-    if bars * bar_duration < target_seconds * 0.80:
+    if bars * bar_duration < target_seconds * 0.85:
         bars = min(MAX_BARS_PER_SEGMENT, bars + 1)
     near_section = any(current < section <= current + MAX_SEGMENT_SEC for section in section_times)
-    # Preserve a meaningful phrase boundary, but do not collapse a soft
-    # passage merely because a section marker is nearby.
-    if near_section and energy >= 0.68:
-        bars = 1 if energy >= 0.88 else max(1, min(bars, 2))
+    # High-energy section changes may shorten the hold, but never below the
+    # global two-second floor enforced by the timeline builder.
+    if near_section and energy >= 0.92:
+        bars = max(1, min(bars, round(2.0 / bar_duration)))
     return bars
 
 
