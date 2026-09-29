@@ -7,9 +7,9 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from core.project import create_project
-from core.stages.edit import _available_spherical_shots, _bars_for_segment
+from core.stages.edit import _available_spherical_shots, _bars_for_segment, _gentle_fixed_camera_motion
 from core.shot_review import _review_candidate_pool, _spherical_review_poses
-from core.stages.export import _apply_saved_spherical_landmarks
+from core.stages.export import _apply_saved_spherical_landmarks, _motion_filter
 from server.api import _compose_visual_overlays, _validate_composition_output
 
 
@@ -102,3 +102,27 @@ def test_edit_cadence_uses_long_holds_until_music_is_very_intense() -> None:
     assert _bars_for_segment(0, bars, [], 0, [0.15]) == 6
     assert _bars_for_segment(0, bars, [], 0, [0.80]) == 3
     assert _bars_for_segment(0, bars, [], 0, [0.99]) == 2
+
+
+
+def test_360_review_reserve_stays_near_authored_landmark() -> None:
+    segment = {
+        "clip_path": "/tmp/camera-360.mp4",
+        "source_path": "/tmp/camera-360.mp4",
+        "camera_id": "360-camera",
+        "spherical_shot": {"type": "drummer", "shot_id": "drummer", "yaw": 240.0, "pitch": 0.0, "fov": 95.0},
+    }
+    poses = _spherical_review_poses(segment, [segment])
+    assert len(poses) >= 20
+    for pose in poses:
+        yaw = float(pose["yaw"])
+        distance = abs((yaw - 240.0 + 180.0) % 360.0 - 180.0)
+        assert distance <= 40.001
+
+
+def test_gentle_fixed_camera_motion_reaches_endpoint() -> None:
+    motion = _gentle_fixed_camera_motion(0)
+    rendered = _motion_filter({"motion": motion}, "youtube", 5.5)
+    assert motion["speed_factor"] == 1.0
+    assert motion["zoom_start"] != motion["zoom_end"]
+    assert rendered and "eval=frame" in rendered
