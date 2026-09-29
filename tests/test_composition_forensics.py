@@ -7,6 +7,8 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from core.project import create_project
+from core.stages.edit import _available_spherical_shots
+from core.shot_review import _review_candidate_pool, _spherical_review_poses
 from core.stages.export import _apply_saved_spherical_landmarks
 from server.api import _compose_visual_overlays, _validate_composition_output
 
@@ -59,3 +61,36 @@ def test_saved_360_profile_roundtrip_uses_original_source_over_proxy(tmp_path: P
         "type": "singer", "label": "Cantante", "weight": 1.0,
     }
 
+
+
+
+def test_incomplete_360_profile_restores_authored_landmarks() -> None:
+    landmarks = {
+        "full_stage": {"yaw": 10.0, "pitch": 0.0, "fov": 110.0, "weight": 0.0},
+        "singer": {"yaw": 120.0, "pitch": 0.0, "fov": 95.0, "weight": 0.0},
+        "drummer": {"yaw": 240.0, "pitch": 0.0, "fov": 95.0, "weight": 5.0},
+    }
+    shots = _available_spherical_shots(landmarks)
+    assert {shot["type"] for shot in shots} == {"full_stage", "singer", "drummer"}
+
+
+def test_360_review_pool_has_twenty_reserve_views_across_proxy_aliases(tmp_path: Path) -> None:
+    source = tmp_path / "camera-360.mp4"
+    proxy = tmp_path / "proxy-camera-360.mp4"
+    segment = {
+        "clip_path": str(proxy),
+        "source_path": str(source),
+        "camera_id": "360-camera",
+        "master_start_sec": 2.0,
+        "duration_sec": 3.0,
+        "spherical_shot": {"type": "drummer", "shot_id": "drummer", "label": "Bateria", "yaw": 240.0, "pitch": 0.0, "fov": 95.0},
+    }
+    coverage = {
+        "platform": "youtube",
+        "sources": [{"path": str(proxy), "source_path": str(source), "camera_id": "360-camera", "offset_sec": 0.0, "duration_sec": 20.0}],
+    }
+    poses = _spherical_review_poses(segment, [segment])
+    pool, _origin = _review_candidate_pool(coverage, [segment], segment, "youtube")
+    assert len(poses) >= 20
+    assert len(pool) >= 20
+    assert len({round(float(item["spherical_shot"]["yaw"]), 3) for item in pool}) >= 20
