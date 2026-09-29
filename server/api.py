@@ -470,6 +470,7 @@ class CompositionRunner:
                     logo_path=None,
                     letterbox=letterbox,
                     progress_callback=burn_progress,
+                    process_callback=register_overlay_process,
                 )
             else:
                 # YouTube has no captions.  Do not run a second full video
