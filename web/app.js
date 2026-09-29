@@ -2952,7 +2952,7 @@ function renderWizardStatus(status) {
   }
   if (status.status === "cancelled") {
     stopStatusPolling();
-    document.querySelector("#errorText").textContent = "Export cancelled.";
+    document.querySelector("#errorText").textContent = status.stage === "compose" ? "Final video composition cancelled." : "Export cancelled.";
     document.querySelector("#resultTitle").textContent = "Cancelled";
     document.querySelector("#errorBox").hidden = false;
     document.querySelector("#resultBox").hidden = true;
