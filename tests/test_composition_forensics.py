@@ -149,3 +149,14 @@ def test_caption_burn_reports_process_lifecycle(tmp_path: Path) -> None:
     )
     assert output.is_file()
     assert events == ["started", "finished"]
+
+
+
+def test_malformed_composition_is_rejected_without_raising(tmp_path: Path) -> None:
+    base = tmp_path / "valid-base.mp4"
+    corrupt = tmp_path / "corrupt.mp4"
+    _video(base)
+    corrupt.write_bytes(b"not an mp4")
+    validation = _validate_composition_output(base, corrupt, {"images": [], "videos": []})
+    assert validation["ok"] is False
+    assert "probe_failed" in validation["reason"]
