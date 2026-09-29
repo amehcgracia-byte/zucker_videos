@@ -742,7 +742,7 @@ def _validate_composition_output(base: Path, output: Path, spec: dict[str, Any])
             "base_duration": base_duration,
             "streams": [{"index": item.get("index"), "type": item.get("codec_type"), "codec": item.get("codec_name"), "width": item.get("width"), "height": item.get("height"), "duration": item.get("duration")} for item in streams],
         }
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+    except (FFmpegError, OSError, ValueError, KeyError, TypeError) as exc:
         return {"ok": False, "reason": f"composition_validation:probe_failed:{exc}", "duration": 0.0}
 
 
