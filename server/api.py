@@ -409,17 +409,27 @@ class CompositionRunner:
             LOGGER.info("Composition source base=%s overlay_spec=%s cue_track=%s logo=%s", base_path, spec_path, track_path, logo)
             job.progress = 8
             job.message = "Rendering final video"
-            job.detail = "Overlay pass: flyer, video overlays and logo"
+            job.detail = f"Overlay pass: {len(spec.get('images') or [])} flyer(s), {len(spec.get('videos') or [])} video overlay(s), logo={'yes' if logo else 'no'}"
             composed = project.cache_dir / f"{output_stem}_overlay-composed.mp4"
             _composition_event(project, job, "composition_input", input_path=base_path, output_path=composed, duration=_media_duration(base_path), reason="clean_base_selected")
             def overlay_progress(value: float) -> None:
                 percent = max(0, min(100, round(float(value) * 100)))
                 job.detail = f"Overlay pass (flyer/logo): {percent}%"
-                _set_job_progress(job, 8 + round(float(value) * 45))
+                _set_job_progress(job, 10 + round(float(value) * 45))
+            def register_overlay_process(process: subprocess.Popen | None) -> None:
+                with self._lock:
+                    self._process = process
+                    cancelled = job.status == "cancelled"
+                if process is not None and cancelled and process.poll() is None:
+                    process.terminate()
+
             _compose_visual_overlays(
                 base_path, spec, composed, overlay_progress,
                 logo_path=logo, logo_overlay=logo_overlay,
+                process_callback=register_overlay_process,
             )
+            with self._lock:
+                self._process = None
             _composition_event(project, job, "composition_filter", input_path=base_path, output_path=composed, duration=_media_duration(composed), reason="finite_overlay_eof_pass", extra={"image_count": len(spec.get("images") or []), "video_count": len(spec.get("videos") or []), "logo": bool(logo)})
             if job.status == "cancelled":
                 return
@@ -732,6 +742,7 @@ def _compose_visual_overlays(
     *,
     logo_path: Path | None = None,
     logo_overlay: dict[str, Any] | None = None,
+    process_callback=None,
 ) -> Path:
     """Render saved overlays and logo onto one full-length base export."""
     from tempfile import TemporaryDirectory
@@ -741,8 +752,17 @@ def _compose_visual_overlays(
     width = int(video_stream.get("width") or 1080)
     height = int(video_stream.get("height") or 1920)
     duration = max(0.1, float(video_stream.get("duration") or (probe.get("format") or {}).get("duration") or 0.0))
-    images = [item for item in spec.get("images") or [] if isinstance(item, dict) and Path(str(item.get("path") or "")).is_file()]
-    videos = [item for item in spec.get("videos") or [] if isinstance(item, dict) and Path(str(item.get("path") or "")).is_file()]
+    requested_images = [item for item in spec.get("images") or [] if isinstance(item, dict)]
+    requested_videos = [item for item in spec.get("videos") or [] if isinstance(item, dict)]
+    missing_overlays = [
+        str(item.get("path") or "")
+        for item in (*requested_images, *requested_videos)
+        if not Path(str(item.get("path") or "")).is_file()
+    ]
+    if missing_overlays:
+        raise RuntimeError("composition_overlay_source_missing: " + ", ".join(missing_overlays[:5]))
+    images = requested_images
+    videos = requested_videos
     valid_logo = Path(str(logo_path)).resolve() if logo_path and Path(str(logo_path)).is_file() else None
     overlay_count = len(images) + len(videos) + (1 if valid_logo else 0)
     if overlay_count == 0:
@@ -791,24 +811,31 @@ def _compose_visual_overlays(
 
         ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
         command = [
-            ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:1",
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-stats_period", "0.5", "-progress", "pipe:1",
             *inputs, "-filter_complex", ";".join(filters),
             "-map", f"[{current}]", "-map", "0:a?", "-t", f"{duration:.3f}",
             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy",
             "-avoid_negative_ts", "make_zero", "-shortest", str(destination),
         ]
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+        if process_callback:
+            process_callback(process)
         assert process.stdout is not None
         progress_callback(0.0)
+        last_progress = 0.0
         for line in process.stdout:
-            if line.startswith("out_time_ms="):
+            if line.startswith(("out_time_ms=", "out_time_us=")):
                 try:
-                    value = float(line.split("=", 1)[1]) / 1_000_000.0
-                    progress_callback(min(1.0, max(0.0, value / duration)))
+                    raw_value = float(line.split("=", 1)[1])
+                    value = raw_value / 1_000_000.0
+                    last_progress = min(1.0, max(last_progress, value / duration))
+                    progress_callback(last_progress)
                 except (TypeError, ValueError, ZeroDivisionError):
                     pass
         stderr = process.stderr.read() if process.stderr is not None else ""
         return_code = process.wait()
+        if process_callback:
+            process_callback(None)
         if return_code:
             raise subprocess.CalledProcessError(return_code, command, stderr=stderr)
         progress_callback(1.0)
