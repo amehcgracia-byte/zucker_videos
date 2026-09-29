@@ -122,7 +122,7 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 21
+EDIT_PLAN_ALGORITHM_VERSION = 22
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
@@ -1126,6 +1126,11 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_ena
     shots: list[dict[str, Any]] = []
     prepared: list[tuple[str, str, float, dict[str, Any], float]] = []
     for shot_type in SPHERICAL_SHOT_ORDER:
+        # Automatic editing should stay on the stage. A public-only landmark
+        # is retained in project settings for manual review, but is never
+        # offered as an automatic replacement candidate.
+        if shot_type == "audience":
+            continue
         key, label, default_fov = SPHERICAL_LANDMARKS[shot_type]
         data = landmarks.get(shot_type)
         if data is None and shot_type == "full_stage":
@@ -2302,7 +2307,7 @@ def _gentle_fixed_camera_motion(index: int) -> dict[str, Any]:
         "type": "ken_burns",
         "movement": "zoom_in_center" if zoom_in else "zoom_out_center",
         "speed": "very_slow",
-        "speed_factor": MOTION_SPEEDS[0][1],
+        "speed_factor": 1.0,
         "lock_target": False,
         "centered": True,
         "target_x": 0.5,
