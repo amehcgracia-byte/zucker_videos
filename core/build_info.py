@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-APP_VERSION = "2.1.9"
+APP_VERSION = "2.1.10"
 
 
 def build_info() -> dict[str, str]:
