@@ -255,19 +255,25 @@ def _candidate_covers_slot(candidate: dict[str, Any], segment: dict[str, Any], p
 
 
 def _spherical_review_poses(segment: dict[str, Any], segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return authored landmark poses plus varied zoom/reframe alternatives."""
+    """Return authored landmark poses plus conservative local alternatives.
+
+    A review reserve must remain near a saved landmark. Large synthetic yaw
+    jumps made it easy to replace a valid performer shot with an empty corner
+    or the audience while still satisfying the old "20 candidates" count.
+    """
     current = dict(segment.get("spherical_shot") or {})
     if not current:
         return []
-    source_path = str(segment.get("clip_path") or segment.get("source_path") or "")
     poses: list[dict[str, Any]] = []
     seen: set[str] = set()
 
     def add(raw: dict[str, Any]) -> None:
+        if not raw:
+            return
         try:
             yaw = float(raw.get("yaw") or 0.0) % 360.0
-            pitch = max(-85.0, min(85.0, float(raw.get("pitch") or 0.0)))
-            fov = max(30.0, min(150.0, float(raw.get("fov") or 95.0)))
+            pitch = max(-35.0, min(35.0, float(raw.get("pitch") or 0.0)))
+            fov = max(50.0, min(140.0, float(raw.get("fov") or 95.0)))
         except (TypeError, ValueError):
             return
         pose = dict(raw)
@@ -278,40 +284,56 @@ def _spherical_review_poses(segment: dict[str, Any], segments: list[dict[str, An
         seen.add(key)
         poses.append(pose)
 
+    # Authored poses are always first. They are the source of truth for the
+    # landmark labels and therefore must survive even when the edit plan is
+    # stale or a proxy path was used by coverage.
+    anchors: list[dict[str, Any]] = []
     add(current)
+    anchors.append(current)
+    reviewed_identity = {
+        "clip_path": segment.get("clip_path"),
+        "source_path": segment.get("source_path"),
+        "proxy_path": segment.get("proxy_path"),
+        "camera_id": segment.get("camera_id"),
+    }
     for planned in segments:
-        planned_path = str(planned.get("clip_path") or planned.get("source_path") or "")
-        if planned_path == source_path:
-            add(dict(planned.get("spherical_shot") or {}))
+        planned_shot = dict(planned.get("spherical_shot") or {})
+        if not planned_shot:
+            continue
+        planned_identity = {
+            "clip_path": planned.get("clip_path"),
+            "source_path": planned.get("source_path"),
+            "proxy_path": planned.get("proxy_path"),
+            "camera_id": planned.get("camera_id"),
+        }
+        if _same_source_identity(reviewed_identity, planned_identity):
+            anchors.append(planned_shot)
+            add(planned_shot)
 
-    # These are different views of the same equirectangular frame at the
-    # exact synced moment, not unrelated source frames.
-    base_yaw = float(current.get("yaw") or 0.0)
-    base_pitch = float(current.get("pitch") or 0.0)
-    # Keep a real reserve for the review UI. These are distinct views of
-    # the same equirectangular frame, so replacing a card cannot silently
-    # return the same battery-facing proxy again. The authored pose is added
-    # above; these 24 deterministic variants guarantee at least 20 reserves.
-    for index, (yaw_delta, pitch_delta, fov) in enumerate((
-        (-165, -6, 78), (-150, 0, 88), (-135, 6, 98), (-120, -8, 108),
-        (-105, 4, 118), (-90, 0, 128), (-75, -6, 138), (-60, 8, 82),
-        (-45, -4, 92), (-30, 6, 104), (-15, 0, 116), (15, 0, 126),
-        (30, -6, 136), (45, 8, 80), (60, -4, 90), (75, 6, 100),
-        (90, 0, 110), (105, -8, 120), (120, 4, 130), (135, -6, 140),
-        (150, 8, 84), (165, -4, 96), (180, 0, 112), (30, 8, 146),
-    )):
-        variant = dict(current)
-        variant.update({
-            "type": f"review_variant_{index + 1:02d}",
-            "shot_id": f"review_variant_{index + 1:02d}",
-            "label": "Encuadre alternativo",
-            "yaw": (base_yaw + yaw_delta) % 360.0,
-            "pitch": base_pitch + pitch_delta,
-            "fov": fov,
-        })
-        add(variant)
+    # Eight local yaw choices × three small framing choices gives 24 reserve
+    # candidates per authored landmark without ever jumping to another side
+    # of the panorama. If the project has singer/drummer/stage landmarks,
+    # each remains a nearby, semantically useful alternative.
+    yaw_offsets = (-40, -30, -20, -10, 10, 20, 30, 40)
+    framing = ((-3.0, -8.0), (0.0, 0.0), (3.0, 8.0))
+    for anchor_index, anchor in enumerate(anchors):
+        base_yaw = float(anchor.get("yaw") or 0.0)
+        base_pitch = float(anchor.get("pitch") or 0.0)
+        base_fov = float(anchor.get("fov") or 95.0)
+        for variant_index, (yaw_delta, (pitch_delta, fov_delta)) in enumerate(
+            ((yaw_delta, option) for yaw_delta in yaw_offsets for option in framing)
+        ):
+            variant = dict(anchor)
+            variant.update({
+                "type": f"review_local_{anchor_index + 1:02d}_{variant_index + 1:02d}",
+                "shot_id": f"review_local_{anchor_index + 1:02d}_{variant_index + 1:02d}",
+                "label": "Encuadre alternativo cercano",
+                "yaw": (base_yaw + yaw_delta) % 360.0,
+                "pitch": base_pitch + pitch_delta,
+                "fov": base_fov + fov_delta,
+            })
+            add(variant)
     return poses
-
 
 def _source_record_for_slot(
     source_records: list[dict[str, Any]],
