@@ -201,43 +201,9 @@ class AutoReadRunner:
         self._job: AutoReadJob | None = None
         self._thread: threading.Thread | None = None
 
-    def status(self, project: Project | None = None) -> dict[str, Any] | None:
+    def status(self) -> dict[str, Any] | None:
         with self._lock:
-            job = self._job
-            if job and project and job.status == "running" and job.output_path:
-                candidate = Path(job.output_path)
-                try:
-                    ready_on_disk = (
-                        candidate.is_file()
-                        and candidate.stat().st_size > 0
-                        and candidate.stat().st_mtime >= job.started_at - 1.0
-                        and time.time() - candidate.stat().st_mtime >= 1.0
-                    )
-                except OSError:
-                    ready_on_disk = False
-                if ready_on_disk:
-                    base = _composition_base_result(project)
-                    spec_path = project.folder / "overlay_spec.json"
-                    try:
-                        spec = json.loads(spec_path.read_text(encoding="utf-8")) if spec_path.is_file() else {"images": [], "videos": []}
-                    except (OSError, json.JSONDecodeError):
-                        spec = {"images": [], "videos": []}
-                    validation = _validate_composition_output(Path(str(base.get("path") or "")), candidate, spec) if base else {"ok": False}
-                    if validation.get("ok"):
-                        if self._process and self._process.poll() is None:
-                            self._process.terminate()
-                        job.progress = 100
-                        job.status = "done"
-                        job.message = "Final video ready"
-                        job.detail = "Recovered validated final export from disk"
-                        job.result = {
-                            **(base or {}),
-                            "path": str(candidate),
-                            "filename": candidate.name,
-                            "media_url": "/api/v1/wizard/result",
-                        }
-                        LOGGER.warning("Recovered composition completion from disk path=%s", candidate)
-            return job.snapshot() if job else None
+            return self._job.snapshot() if self._job else None
 
     def start(self, project: Project, requested_model: str | None = None) -> AutoReadJob:
         with self._lock:
@@ -335,9 +301,53 @@ class CompositionRunner:
         self._thread: threading.Thread | None = None
         self._process: subprocess.Popen | None = None
 
-    def status(self) -> dict[str, Any] | None:
+    def status(self, project: Project | None = None) -> dict[str, Any] | None:
         with self._lock:
-            return self._job.snapshot() if self._job else None
+            job = self._job
+            if job and project and job.status == "running" and job.output_path:
+                candidate = Path(job.output_path)
+                try:
+                    ready_on_disk = (
+                        candidate.is_file()
+                        and candidate.stat().st_size > 0
+                        and candidate.stat().st_mtime >= job.started_at - 1.0
+                        and time.time() - candidate.stat().st_mtime >= 1.0
+                    )
+                except OSError:
+                    ready_on_disk = False
+                if ready_on_disk:
+                    try:
+                        base = _composition_base_result(project)
+                        spec_path = project.folder / "overlay_spec.json"
+                        spec = (
+                            json.loads(spec_path.read_text(encoding="utf-8"))
+                            if spec_path.is_file()
+                            else {"images": [], "videos": []}
+                        )
+                        validation = (
+                            _validate_composition_output(Path(str(base.get("path") or "")), candidate, spec)
+                            if base
+                            else {"ok": False}
+                        )
+                        if validation.get("ok"):
+                            if self._process and self._process.poll() is None:
+                                self._process.terminate()
+                            job.progress = 100
+                            job.status = "done"
+                            job.message = "Final video ready"
+                            job.detail = "Recovered validated final export from disk"
+                            job.result = {
+                                **(base or {}),
+                                "path": str(candidate),
+                                "filename": candidate.name,
+                                "media_url": "/api/v1/wizard/result",
+                            }
+                            LOGGER.warning("Recovered composition completion from disk path=%s", candidate)
+                    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+                        # Status polling must remain healthy while a partially
+                        # written output is being probed.
+                        LOGGER.debug("Composition recovery check deferred: %s", exc)
+            return job.snapshot() if job else None
 
     def reset(self) -> None:
         with self._lock:
