@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import tempfile
+import threading
+import uuid
 from pathlib import Path
 
 from .model import CueTrack, Style
@@ -36,6 +40,7 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
     if destination == source:
         raise ValueError("caption burn must not overwrite the source video")
     destination.parent.mkdir(parents=True, exist_ok=True)
+    pending = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.part")
     with tempfile.TemporaryDirectory(prefix="captions-") as directory:
         ass = Path(directory) / "captions.ass"
         width, height = _video_dimensions(source, ffmpeg)
@@ -96,37 +101,84 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
             source_duration = 0.0
         duration_args = ["-t", f"{source_duration:.3f}"] if source_duration > 0 else []
         command += duration_args + ["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "copy", "-shortest", str(destination)]
-        if progress_callback is None:
-            subprocess.run(command, check=True)
-        else:
-            # Read one combined pipe. Separate stdout/stderr reads can
-            # deadlock while FFmpeg burns a long caption track.
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-            if process_callback:
-                process_callback(process)
-            diagnostics: list[str] = []
-            try:
-                assert process.stdout is not None
-                for raw_line in process.stdout:
-                    line = raw_line.strip()
-                    if line.startswith(("out_time_ms=", "out_time_us=")):
-                        try:
-                            progress_callback(float(line.split("=", 1)[1]) / 1_000_000.0)
-                        except (TypeError, ValueError):
-                            pass
-                    elif line:
-                        diagnostics.append(line)
-                return_code = process.wait()
-                if return_code:
-                    raise subprocess.CalledProcessError(return_code, command, stderr="\n".join(diagnostics[-20:]))
-            finally:
-                if process.poll() is None:
-                    process.terminate()
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait()
+        command[-1] = str(pending)
+        try:
+            if progress_callback is None:
+                subprocess.run(command, check=True)
+            else:
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    start_new_session=(os.name == "posix"),
+                )
                 if process_callback:
-                    process_callback(None)
+                    process_callback(process)
+                diagnostics: list[str] = []
+                timed_out = threading.Event()
+                watchdog_stop = threading.Event()
+
+                def terminate_process(timeout: float = 5.0) -> None:
+                    if process.poll() is not None:
+                        return
+                    try:
+                        if os.name == "posix":
+                            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                        else:
+                            process.terminate()
+                    except (OSError, ProcessLookupError):
+                        pass
+                    try:
+                        process.wait(timeout=timeout)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            if os.name == "posix":
+                                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                            else:
+                                process.kill()
+                        except (OSError, ProcessLookupError):
+                            pass
+                        try:
+                            process.wait(timeout=timeout)
+                        except subprocess.TimeoutExpired:
+                            pass
+
+                def watchdog() -> None:
+                    if not watchdog_stop.wait(30 * 60):
+                        timed_out.set()
+                        terminate_process()
+
+                watchdog_thread = threading.Thread(target=watchdog, daemon=True, name="zucker-captions-watchdog")
+                watchdog_thread.start()
+                try:
+                    assert process.stdout is not None
+                    for raw_line in process.stdout:
+                        line = raw_line.strip()
+                        if line.startswith(("out_time_ms=", "out_time_us=")):
+                            try:
+                                progress_callback(float(line.split("=", 1)[1]) / 1_000_000.0)
+                            except (TypeError, ValueError):
+                                pass
+                        elif line:
+                            diagnostics.append(line)
+                    return_code = process.wait()
+                    if timed_out.is_set():
+                        raise TimeoutError("ffmpeg captions timed out after 1800s")
+                    if return_code:
+                        raise subprocess.CalledProcessError(
+                            return_code,
+                            command,
+                            stderr="\n".join(diagnostics[-20:]),
+                        )
+                finally:
+                    watchdog_stop.set()
+                    if process.poll() is None:
+                        terminate_process()
+                    if process_callback:
+                        process_callback(None)
+            pending.replace(destination)
+        finally:
+            pending.unlink(missing_ok=True)
     return destination

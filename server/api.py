@@ -7,6 +7,8 @@ import hashlib
 import io
 import logging
 import math
+import os
+import signal
 import sys
 import threading
 import shutil
@@ -60,6 +62,37 @@ from captions.sources import from_lrc, from_lyrics, from_srt, to_srt
 from captions.styles import CAPTIONS_VERSION, get_style, list_styles
 
 LOGGER = logging.getLogger(__name__)
+
+FFMPEG_TIMEOUT_SECONDS = 30 * 60
+
+
+def _terminate_ffmpeg_process(process: subprocess.Popen | None, timeout: float = 5.0) -> None:
+    """Terminate ffmpeg and its process group without leaving an orphan."""
+    if process is None or process.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        else:
+            process.terminate()
+    except (OSError, ProcessLookupError):
+        pass
+    try:
+        process.wait(timeout=timeout)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        if os.name == "posix":
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        else:
+            process.kill()
+    except (OSError, ProcessLookupError):
+        pass
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def _single_video_has_audio(video_paths: list[str]) -> bool:
@@ -327,11 +360,11 @@ class CompositionRunner:
                         validation = (
                             _validate_composition_output(Path(str(base.get("path") or "")), candidate, spec)
                             if base
-                            else {"ok": False}
+                            else {"ok": False, "reason": "composition_validation:no_clean_base"}
                         )
+                        process_alive = bool(self._process and self._process.poll() is None)
+                        worker_alive = bool(self._thread and self._thread.is_alive())
                         if validation.get("ok"):
-                            if self._process and self._process.poll() is None:
-                                self._process.terminate()
                             job.progress = 100
                             job.status = "done"
                             job.message = "Final video ready"
@@ -343,10 +376,21 @@ class CompositionRunner:
                                 "media_url": "/api/v1/wizard/result",
                             }
                             LOGGER.warning("Recovered composition completion from disk path=%s", candidate)
-                    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
-                        # Status polling must remain healthy while a partially
-                        # written output is being probed.
-                        LOGGER.debug("Composition recovery check deferred: %s", exc)
+                        elif not process_alive and not worker_alive:
+                            job.status = "failed"
+                            job.error = str(validation.get("reason") or "composition output is invalid")
+                            job.detail = "The composition stopped without a valid final export"
+                            LOGGER.error("Composition recovery rejected path=%s reason=%s", candidate, job.error)
+                    except Exception as exc:
+                        # Polling must never turn an incomplete MP4 into HTTP 500.
+                        process_alive = bool(self._process and self._process.poll() is None)
+                        worker_alive = bool(self._thread and self._thread.is_alive())
+                        if not process_alive and not worker_alive:
+                            job.status = "failed"
+                            job.error = f"composition recovery failed: {exc}"
+                            job.detail = "The composition stopped before producing a valid final export"
+                        else:
+                            LOGGER.debug("Composition recovery check deferred: %s", exc)
             return job.snapshot() if job else None
 
     def reset(self) -> None:
@@ -364,9 +408,8 @@ class CompositionRunner:
             job.status = "cancelled"
             job.message = "Composition cancelled"
             job.detail = "The active FFmpeg process was stopped"
-            if process and process.poll() is None:
-                process.terminate()
-            return True
+        _terminate_ffmpeg_process(process)
+        return True
 
     def start(self, project: Project) -> CompositionJob:
         with self._lock:
@@ -573,6 +616,12 @@ class CompositionRunner:
             job.status = "failed"
             job.error = str(exc)
             job.detail = "The final composition failed"
+        finally:
+            with self._lock:
+                process = self._process
+                self._process = None
+            if process and process.poll() is None:
+                _terminate_ffmpeg_process(process)
 
 
 def _set_job_progress(job: CompositionJob, progress: int) -> None:
@@ -612,7 +661,7 @@ def _composition_base_result(project: Project) -> dict[str, Any] | None:
     if cache.is_file() and cache.stat().st_size > 0 and meta.is_file():
         try:
             record = json.loads(meta.read_text(encoding="utf-8"))
-            if int(record.get("source_size") or 0) == cache.stat().st_size or cache.stat().st_size > 1_000_000:
+            if int(record.get("source_size") or 0) == cache.stat().st_size:
                 return {**(manifest_result or {}), "path": str(cache), "filename": cache.name}
         except (OSError, ValueError, json.JSONDecodeError):
             pass
@@ -706,17 +755,44 @@ def _media_duration(path: Path) -> float:
         return 0.0
 
 
-def _remux_shortest(source: Path, destination: Path) -> Path:
-    """Mux the final result to the shortest real audio/video timeline."""
+def _remux_shortest(source: Path, destination: Path, process_callback=None) -> Path:
+    """Mux the result through a temporary file and publish it atomically."""
     destination.parent.mkdir(parents=True, exist_ok=True)
+    pending = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.part")
     ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
     command = [
         ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
         "-i", str(source), "-map", "0:v:0", "-map", "0:a:0?",
-        "-c", "copy", "-avoid_negative_ts", "make_zero", "-shortest", str(destination),
+        "-c", "copy", "-avoid_negative_ts", "make_zero", "-shortest", str(pending),
     ]
-    subprocess.run(command, check=True)
-    return destination
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=(os.name == "posix"),
+    )
+    if process_callback:
+        process_callback(process)
+    try:
+        output, _ = process.communicate(timeout=FFMPEG_TIMEOUT_SECONDS)
+        if process.returncode:
+            raise subprocess.CalledProcessError(
+                process.returncode, command, stderr=(output or "")[-4000:],
+            )
+        pending.replace(destination)
+        return destination
+    except subprocess.TimeoutExpired as exc:
+        _terminate_ffmpeg_process(process)
+        raise TimeoutError(f"ffmpeg remux timed out after {FFMPEG_TIMEOUT_SECONDS}s") from exc
+    finally:
+        if process.poll() is None:
+            _terminate_ffmpeg_process(process)
+        if process_callback:
+            process_callback(None)
+        pending.unlink(missing_ok=True)
+
+
 def _composition_logo(project: Project, mode: str) -> Path | None:
     wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
     if mode == "custom":
@@ -814,7 +890,7 @@ def _compose_visual_overlays(
     valid_logo = Path(str(logo_path)).resolve() if logo_path and Path(str(logo_path)).is_file() else None
     overlay_count = len(images) + len(videos) + (1 if valid_logo else 0)
     if overlay_count == 0:
-        _remux_shortest(source, destination)
+        _remux_shortest(source, destination, process_callback=process_callback)
         progress_callback(1.0)
         return destination
 
@@ -868,10 +944,29 @@ def _compose_visual_overlays(
         # Merge FFmpeg diagnostics into the progress stream. Reading stdout and
         # stderr independently can deadlock when one pipe fills during a long
         # H.264 composition, leaving the UI on the last reported percentage.
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        pending_destination = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.part")
+        command[-1] = str(pending_destination)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            start_new_session=(os.name == "posix"),
+        )
         if process_callback:
             process_callback(process)
         diagnostics: list[str] = []
+        timed_out = threading.Event()
+        watchdog_stop = threading.Event()
+
+        def watchdog() -> None:
+            if not watchdog_stop.wait(FFMPEG_TIMEOUT_SECONDS):
+                timed_out.set()
+                _terminate_ffmpeg_process(process)
+
+        watchdog_thread = threading.Thread(target=watchdog, daemon=True, name="zucker-ffmpeg-watchdog")
+        watchdog_thread.start()
         try:
             assert process.stdout is not None
             progress_callback(0.0)
@@ -889,23 +984,23 @@ def _compose_visual_overlays(
                 elif line:
                     diagnostics.append(line)
             return_code = process.wait()
+            if timed_out.is_set():
+                raise TimeoutError(f"ffmpeg overlay timed out after {FFMPEG_TIMEOUT_SECONDS}s")
             if return_code:
                 raise subprocess.CalledProcessError(
                     return_code,
                     command,
                     stderr="\n".join(diagnostics[-20:]),
                 )
+            pending_destination.replace(destination)
             progress_callback(1.0)
         finally:
+            watchdog_stop.set()
             if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
+                _terminate_ffmpeg_process(process)
             if process_callback:
                 process_callback(None)
+            pending_destination.unlink(missing_ok=True)
     return destination
 
 def _expand_caption_animations(track: CueTrack) -> CueTrack:
