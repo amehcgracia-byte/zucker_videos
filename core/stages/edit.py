@@ -70,7 +70,7 @@ MOTION_SPEEDS = (("very_slow", 0.50), ("slow", 0.72), ("fast", 1.0))
 IPHONE_CROP_TOP_LIMIT = 0.80
 # Bump this whenever the YouTube camera-choice invariant changes so an older
 # cached edit plan cannot keep producing the previous camera runs.
-YOUTUBE_CAMERA_SELECTION_VERSION = 15
+YOUTUBE_CAMERA_SELECTION_VERSION = 16
 # Legacy diagnostic threshold retained in project settings/manifests. The
 # production policy now stops close-up filler as soon as one alternative
 # physical camera covers the same synced window.
@@ -122,7 +122,7 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 19
+EDIT_PLAN_ALGORITHM_VERSION = 20
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
@@ -1116,6 +1116,7 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, floa
 
 def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_enabled: bool = False, sweep_speed: float = SPHERICAL_SWEEP_SPEED_DEG_PER_SEC) -> list[dict[str, Any]]:
     shots: list[dict[str, Any]] = []
+    prepared: list[tuple[str, str, float, dict[str, Any], float]] = []
     for shot_type in SPHERICAL_SHOT_ORDER:
         key, label, default_fov = SPHERICAL_LANDMARKS[shot_type]
         data = landmarks.get(shot_type)
@@ -1127,8 +1128,19 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_ena
         if yaw is None:
             continue
         weight = max(0.0, _landmark_weight(data, "weight", 1.0))
-        if weight <= 0.0:
+        prepared.append((shot_type, label, default_fov, data, weight))
+    positive_count = sum(1 for _shot_type, _label, _default_fov, _data, weight in prepared if weight > 0.0)
+    # Older projects could save one edited landmark with weight=5 and every
+    # other saved yaw with weight=0. That made the whole 360 plan become
+    # "Bateria" forever. Treat a single-positive profile as incomplete and
+    # keep every authored yaw in rotation; an intentionally weighted profile
+    # with two or more positive landmarks still keeps its explicit weights.
+    recover_legacy_profile = len(prepared) >= 2 and positive_count <= 1
+    for shot_type, label, default_fov, data, weight in prepared:
+        if weight <= 0.0 and not recover_legacy_profile:
             continue
+        if recover_legacy_profile and weight <= 0.0:
+            weight = 1.0
         shot = {
             "type": shot_type,
             "shot_id": shot_type,
