@@ -122,7 +122,7 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 22
+EDIT_PLAN_ALGORITHM_VERSION = 23
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
@@ -777,7 +777,7 @@ def _youtube_multicam_plan(
         # A section marker is a useful boundary at high intensity, but it must
         # not turn a calm phrase into a chain of 1–2 second cuts. In quiet or
         # medium passages the duration policy remains authoritative.
-        if section_index is not None and energy_here >= 0.78:
+        if section_index is not None and energy_here >= 0.86:
             next_index = min(section_index, max_bar_index)
         while next_index > bar_index + 1 and bar_times[next_index] - bar_times[bar_index] > MAX_SEGMENT_SEC:
             next_index -= 1
@@ -1538,7 +1538,7 @@ def _bars_for_segment(
     # Long holds are the default: roughly 5–6 seconds in low and medium
     # energy. Only the strongest passages may drop to 2–3 seconds; one-second
     # cuts are never authored by this policy.
-    target_seconds = 2.0 if energy >= 0.92 else 3.0 if energy >= 0.78 else 5.8
+    target_seconds = 2.0 if energy >= 0.92 else 3.0 if energy >= 0.86 else 6.0
     bars = max(1, min(MAX_BARS_PER_SEGMENT, round(target_seconds / bar_duration)))
     if bars * bar_duration < target_seconds * 0.85:
         bars = min(MAX_BARS_PER_SEGMENT, bars + 1)
