@@ -7,7 +7,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from core.project import create_project
-from core.stages.edit import _available_spherical_shots
+from core.stages.edit import _available_spherical_shots, _bars_for_segment
 from core.shot_review import _review_candidate_pool, _spherical_review_poses
 from core.stages.export import _apply_saved_spherical_landmarks
 from server.api import _compose_visual_overlays, _validate_composition_output
@@ -94,3 +94,11 @@ def test_360_review_pool_has_twenty_reserve_views_across_proxy_aliases(tmp_path:
     assert len(poses) >= 20
     assert len(pool) >= 20
     assert len({round(float(item["spherical_shot"]["yaw"]), 3) for item in pool}) >= 20
+
+
+
+def test_edit_cadence_uses_long_holds_until_music_is_very_intense() -> None:
+    bars = [float(index) for index in range(20)]
+    assert _bars_for_segment(0, bars, [], 0, [0.15]) == 6
+    assert _bars_for_segment(0, bars, [], 0, [0.80]) == 3
+    assert _bars_for_segment(0, bars, [], 0, [0.99]) == 2
