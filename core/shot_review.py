@@ -288,10 +288,17 @@ def _spherical_review_poses(segment: dict[str, Any], segments: list[dict[str, An
     # exact synced moment, not unrelated source frames.
     base_yaw = float(current.get("yaw") or 0.0)
     base_pitch = float(current.get("pitch") or 0.0)
+    # Keep a real reserve for the review UI. These are distinct views of
+    # the same equirectangular frame, so replacing a card cannot silently
+    # return the same battery-facing proxy again. The authored pose is added
+    # above; these 24 deterministic variants guarantee at least 20 reserves.
     for index, (yaw_delta, pitch_delta, fov) in enumerate((
-        (-150, 0, 78), (-120, 8, 95), (-90, -8, 112), (-60, 0, 86),
-        (-30, 8, 125), (30, -8, 78), (60, 0, 105), (90, 8, 135),
-        (120, -8, 88), (150, 0, 118), (180, 8, 95), (15, 0, 145),
+        (-165, -6, 78), (-150, 0, 88), (-135, 6, 98), (-120, -8, 108),
+        (-105, 4, 118), (-90, 0, 128), (-75, -6, 138), (-60, 8, 82),
+        (-45, -4, 92), (-30, 6, 104), (-15, 0, 116), (15, 0, 126),
+        (30, -6, 136), (45, 8, 80), (60, -4, 90), (75, 6, 100),
+        (90, 0, 110), (105, -8, 120), (120, 4, 130), (135, -6, 140),
+        (150, 8, 84), (165, -4, 96), (180, 0, 112), (30, 8, 146),
     )):
         variant = dict(current)
         variant.update({
@@ -328,6 +335,34 @@ def _source_record_for_slot(
     return ranked[0][2]
 
 
+def _path_aliases(raw: Any) -> set[str]:
+    """Return stable path spellings used by coverage and the edit plan."""
+    value = str(raw or "").strip()
+    if not value:
+        return set()
+    path = Path(value).expanduser()
+    aliases = {value, str(path)}
+    try:
+        aliases.add(str(path.resolve()))
+    except OSError:
+        pass
+    return aliases
+
+
+def _same_source_identity(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Match a camera even when coverage uses its proxy path."""
+    left_paths = set()
+    right_paths = set()
+    for key in ("path", "clip_path", "source_path", "proxy_path"):
+        left_paths.update(_path_aliases(left.get(key)))
+        right_paths.update(_path_aliases(right.get(key)))
+    if left_paths & right_paths:
+        return True
+    left_camera = str(left.get("camera_id") or _camera_id(left) or "").strip()
+    right_camera = str(right.get("camera_id") or _camera_id(right) or "").strip()
+    return bool(left_camera and right_camera and left_camera == right_camera)
+
+
 def _review_candidate_pool(
     coverage: dict[str, Any],
     segments: list[dict[str, Any]],
@@ -353,8 +388,17 @@ def _review_candidate_pool(
     }
     spherical_poses = _spherical_review_poses(segment, segments) if segment.get("spherical_shot") else []
 
+    reviewed_identity = {
+        "clip_path": segment.get("clip_path"),
+        "source_path": segment.get("source_path"),
+        "proxy_path": segment.get("proxy_path"),
+        "camera_id": segment.get("camera_id"),
+    }
+    reviewed_aliases = set().union(*(_path_aliases(value) for value in reviewed_paths)) if reviewed_paths else set()
     for path, source_records in by_path.items():
-        is_spherical_review_source = platform == "youtube" and path in reviewed_paths and bool(spherical_poses)
+        source_identity_match = any(_same_source_identity(source, reviewed_identity) for source in source_records)
+        source_path_match = bool(_path_aliases(path) & reviewed_aliases)
+        is_spherical_review_source = platform == "youtube" and bool(spherical_poses) and (source_identity_match or source_path_match)
         for source in source_records:
             # For a spherical slot, never add a pose-less copy of the same
             # timestamp: it would be selected as a fake alternative and keep
@@ -408,8 +452,10 @@ def _review_candidate_pool(
                     pool.append(candidate)
                     seen.add(key)
     for planned in segments:
-        path = str(planned.get("clip_path") or planned.get("proxy_path") or planned.get("source_path") or "")
-        source = (by_path.get(path) or [None])[0]
+        source = next(
+            (record for records in by_path.values() for record in records if _same_source_identity(record, planned)),
+            None,
+        )
         if source is None:
             continue
         candidate = dict(source)
@@ -507,6 +553,12 @@ def review_items(
     root.mkdir(parents=True, exist_ok=True)
     render_status = _load_render_status(root)
     unavailable = {int(value) for value in project.data.get("settings", {}).get("wizard", {}).get("review_unavailable", [])}
+    try:
+        coverage = load_coverage(project)
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        coverage = {}
+    wizard = project.data.get("settings", {}).get("wizard", {}) or {}
+    platform = str(coverage.get("platform") or wizard.get("platform") or "generic")
     items: list[dict[str, Any]] = []
     ffmpeg = locate_executable("ffmpeg") or "ffmpeg"
     # Color normalization is calculated once for the complete plan, never per
@@ -562,15 +614,32 @@ def review_items(
         # the registered source filename.  Otherwise Review shots displays a
         # cache hash (and hides which camera supplied the shot).
         display_source = str(segment.get("filename") or Path(source).name or "Unknown source")
+        pool, pool_origin = _review_candidate_pool(coverage, segments, segment, platform)
+        current_keys = _candidate_keys(segment)
+        candidate_count = sum(
+            1
+            for candidate in pool
+            if _candidate_covers_slot(candidate, segment, platform)
+            and not (_candidate_keys(candidate) & current_keys)
+        )
+        shot_pose = {
+            key: shot.get(key)
+            for key in ("type", "shot_id", "yaw", "pitch", "fov")
+            if shot and shot.get(key) is not None
+        }
         items.append({
             "index": index,
             "thumbnail": f"/api/v1/wizard/review/thumbnail/{signature}/{output.name}" if output.name and output.exists() else None,
             "thumbnail_status": thumbnail_state,
             "thumbnail_error": thumbnail_error,
             "source": display_source,
+            "camera_id": segment.get("camera_id") or _camera_id(segment),
             "duration_sec": round(duration, 3),
             "master_start_sec": float(segment.get("master_start_sec") or 0.0),
             "landmark": shot.get("label") if shot else None,
+            "pose": shot_pose,
+            "candidate_count": candidate_count,
+            "candidate_pool_origin": pool_origin,
             "keep": True,
             "no_alternative": index in unavailable,
         })
