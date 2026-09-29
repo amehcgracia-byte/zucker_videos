@@ -509,7 +509,7 @@ class CompositionRunner:
                     self._process = process
                     cancelled = job.status == "cancelled"
                 if process is not None and cancelled and process.poll() is None:
-                    process.terminate()
+                    _terminate_ffmpeg_process(process)
 
             _compose_visual_overlays(
                 base_path, spec, composed, overlay_progress,
@@ -569,7 +569,7 @@ class CompositionRunner:
                 job.progress = 96
                 job.message = "Rendering final video"
                 job.detail = "Finalizing the horizontal YouTube export"
-                _remux_shortest(composed, final)
+                _remux_shortest(composed, final, process_callback=register_overlay_process)
                 output = final
             if job.status == "cancelled":
                 output.unlink(missing_ok=True)
