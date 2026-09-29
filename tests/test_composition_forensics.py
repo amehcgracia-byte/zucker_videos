@@ -6,6 +6,10 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
+from captions.burn import burn
+from captions.model import Cue, CueTrack
+from captions.styles import get_style
+
 from core.project import create_project
 from core.stages.edit import _available_spherical_shots, _bars_for_segment, _gentle_fixed_camera_motion
 from core.shot_review import _review_candidate_pool, _spherical_review_poses
@@ -127,3 +131,21 @@ def test_gentle_fixed_camera_motion_reaches_endpoint() -> None:
     assert motion["speed_factor"] == 1.0
     assert motion["zoom_start"] != motion["zoom_end"]
     assert rendered and "eval=frame" in rendered
+
+
+
+def test_caption_burn_reports_process_lifecycle(tmp_path: Path) -> None:
+    source = tmp_path / "caption-source.mp4"
+    output = tmp_path / "caption-output.mp4"
+    _video(source)
+    events: list[str] = []
+    burn(
+        source,
+        CueTrack((Cue(("TEST CAPTION",), 0.0, 1.0),)),
+        get_style("clean_bottom"),
+        output_path=output,
+        progress_callback=lambda _seconds: None,
+        process_callback=lambda process: events.append("started" if process is not None else "finished"),
+    )
+    assert output.is_file()
+    assert events == ["started", "finished"]
