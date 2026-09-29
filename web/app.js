@@ -2018,12 +2018,20 @@ function renderShotReview(items) {
       : `<span class="review-thumb-placeholder ${item.thumbnail_status === "failed" ? "failed" : "pending"}">${item.thumbnail_status === "failed" ? "Render failed" : "Generating…"}</span>`;
     const error = item.thumbnail_status === "failed" && item.thumbnail_error
       ? `<em class="review-thumb-error">${escapeHtml(item.thumbnail_error)}</em>` : "";
+    const pose = item.pose || {};
+    const poseText = item.landmark
+      ? `yaw ${Number(pose.yaw ?? 0).toFixed(1)}° · pitch ${Number(pose.pitch ?? 0).toFixed(1)}° · FOV ${Number(pose.fov ?? 0).toFixed(1)}°`
+      : "";
+    const reserve = Number(item.candidate_count);
+    const reserveText = Number.isFinite(reserve) ? `${reserve} frames alternativos disponibles` : "";
     return `<article class="review-card ${item.keep ? "keep" : "reject"}" data-review-index="${item.index}">
     <button class="review-thumb-button" data-review-thumb="${item.index}">${thumb}</button>
     <button type="button" class="review-other-frame" data-review-replace="${item.index}">Otro frame</button>
     <label class="review-keep"><input type="checkbox" data-review-keep="${item.index}" ${item.keep ? "checked" : ""}/> Keep</label>
-    <strong>#${item.index + 1} · ${escapeHtml(item.source)}</strong>
+    <strong>#${item.index + 1} · ${escapeHtml(item.source)}${item.camera_id ? ` · cámara ${escapeHtml(item.camera_id)}` : ""}</strong>
     <span>${Number(item.duration_sec).toFixed(1)}s${item.landmark ? ` · ${escapeHtml(item.landmark)} frame` : ""}</span>
+    ${poseText ? `<small class="review-pose">${poseText}</small>` : ""}
+    ${reserveText ? `<small class="review-candidates">${reserveText}</small>` : ""}
     ${error}
     ${item.no_alternative ? '<em>No alternative coverage available</em>' : ""}
   </article>`;
@@ -2886,9 +2894,9 @@ function renderWizardStatus(status) {
   document.querySelector("#etaTime").textContent = `${S.eta}: ${formatEta(etaSeconds(progress, status))}`;
   updateStageChecks(progress, status);
   if (status.status === "cancelling") {
-    document.querySelector("#progressTitle").textContent = "Cancelling export";
+    document.querySelector("#progressTitle").textContent = stage === "compose" ? "Cancelling final video" : "Cancelling export";
   } else if (status.status === "running") {
-    document.querySelector("#progressTitle").textContent = "Creating your video";
+    document.querySelector("#progressTitle").textContent = stage === "compose" ? "Rendering final video" : "Creating your video";
   }
   if (status.status === "failed") {
     stopStatusPolling();
@@ -3621,7 +3629,7 @@ document.addEventListener("click", (event) => {
     progressFloor = 0;
     progressStartedAt = Date.now();
     progressSamples = [];
-    document.querySelector("#progressTitle").textContent = "Rendering your final composition";
+    document.querySelector("#progressTitle").textContent = "Rendering final video";
     setStep(3);
     ensureStatusPolling();
   }).catch((error) => showToast(error.message, true));
