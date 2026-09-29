@@ -77,8 +77,8 @@ class CompositionJob:
     id: str
     status: str = "running"
     progress: int = 0
-    message: str = "Composing overlays and captions"
-    detail: str = "Preparing the final composition"
+    message: str = "Rendering final video"
+    detail: str = "Preparing the final video render"
     stage: str = "compose"
     error: str | None = None
     result: dict[str, Any] | None = None
@@ -358,8 +358,9 @@ class CompositionRunner:
                 })
                 project.save()
                 try:
-                    job.progress = 2
-                    job.detail = "Refreshing the Reel base without saved overlays"
+                            job.progress = 2
+                    job.message = "Rendering final video"
+                    job.detail = "Preparing a clean Reel base before the final render"
                     ExportStage().run(
                         project,
                         lambda percent, detail: _set_job_progress(job, 2 + round(min(1.0, float(percent) / 100.0) * 6)),
@@ -407,13 +408,13 @@ class CompositionRunner:
             logo_overlay = header.get("logo_overlay") if isinstance(header.get("logo_overlay"), dict) else {}
             LOGGER.info("Composition source base=%s overlay_spec=%s cue_track=%s logo=%s", base_path, spec_path, track_path, logo)
             job.progress = 8
-            job.message = "Composing overlays and captions"
-            job.detail = "Rendering flyer, video overlays and logo"
+            job.message = "Rendering final video"
+            job.detail = "Overlay pass: flyer, video overlays and logo"
             composed = project.cache_dir / f"{output_stem}_overlay-composed.mp4"
             _composition_event(project, job, "composition_input", input_path=base_path, output_path=composed, duration=_media_duration(base_path), reason="clean_base_selected")
             def overlay_progress(value: float) -> None:
                 percent = max(0, min(100, round(float(value) * 100)))
-                job.detail = f"Rendering visual overlays — {percent}%"
+                job.detail = f"Overlay pass (flyer/logo): {percent}%"
                 _set_job_progress(job, 8 + round(float(value) * 45))
             _compose_visual_overlays(
                 base_path, spec, composed, overlay_progress,
@@ -441,12 +442,13 @@ class CompositionRunner:
             ) or bool(letterbox and letterbox.get("enabled"))
             if needs_caption_pass:
                 job.progress = 55
-                job.detail = "Burning captions and logo onto the composed MP4"
+                job.message = "Rendering final video"
+                job.detail = "Caption pass: burning captions onto the rendered video"
                 composition_duration = _media_duration(composed)
                 def burn_progress(seconds: float) -> None:
                     duration = composition_duration
                     percent = round(min(1.0, seconds / duration if duration else 0.0) * 100)
-                    job.detail = f"Rendering captions — {percent}%"
+                    job.detail = f"Caption pass: {percent}%"
                     _set_job_progress(job, 55 + round(min(1.0, seconds / duration if duration else 0.0) * 40))
                 output = burn_captions(
                     composed,
@@ -464,6 +466,7 @@ class CompositionRunner:
                 # transcode just to burn an empty ASS file; copy the already
                 # composed horizontal result as the single final export.
                 job.progress = 96
+                job.message = "Rendering final video"
                 job.detail = "Finalizing the horizontal YouTube export"
                 _remux_shortest(composed, final)
                 output = final
@@ -483,8 +486,8 @@ class CompositionRunner:
             _composition_event(project, job, "composition_output", input_path=base_path, output_path=output, duration=validation.get("duration"), reason="validated_before_publish")
             job.progress = 100
             job.status = "done"
-            job.message = "Result ready"
-            job.detail = "Overlays and captions were rendered from the saved project state"
+            job.message = "Final video ready"
+            job.detail = "Validated final export published from the saved project state"
             job.result = {**base, "path": str(output), "filename": output.name, "media_url": "/api/v1/wizard/result"}
             manifest_path = ((project.data.get("stages") or {}).get("export") or {}).get("outputs", {}).get("export_manifest")
             if manifest_path:
@@ -1754,7 +1757,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 # persisted state instead; the browser also validates the id.
                 return jsonify(_project_wizard_status(requested_project))
         composition_status = state.composition.status()
-        if composition_status and composition_status.get("status") in {"running", "failed"}:
+        if composition_status and composition_status.get("status") in {"running", "cancelling", "cancelled", "failed"}:
             return jsonify(composition_status)
         if composition_status and composition_status.get("status") == "done":
             return jsonify(composition_status)
@@ -1847,7 +1850,19 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.get("/api/v1/wizard/report")
     def api_wizard_report() -> Response:
-        return Response(wizard_report(state.wizard.status()), mimetype="text/plain")
+        wizard_status = state.wizard.status()
+        composition_status = state.composition.status()
+        active_composition = composition_status and composition_status.get("status") in {
+            "running", "cancelling", "cancelled", "failed", "done"
+        }
+        report_status = composition_status if active_composition else wizard_status
+        report = wizard_report(report_status)
+        if active_composition:
+            report += "\n--- wizard export status ---\n"
+            report += f"status: {wizard_status.get('status')}\n"
+            report += f"message: {wizard_status.get('message')}\n"
+            report += f"error: {wizard_status.get('error')}\n"
+        return Response(report, mimetype="text/plain")
 
     @app.post("/api/v1/wizard/rescue")
     def api_wizard_rescue() -> Response:
