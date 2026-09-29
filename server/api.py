@@ -335,7 +335,7 @@ class CompositionRunner:
 
     def _run(self, job: CompositionJob, project: Project) -> None:
         try:
-            base = _export_result(project)
+            base = _composition_base_result(project)
             if not base:
                 raise RuntimeError("No base export is available for composition")
             if str(base.get("platform") or "") == "reel":
@@ -395,6 +395,7 @@ class CompositionRunner:
                     json.dumps(expected_cache_meta, indent=2) + "\n",
                     encoding="utf-8",
                 )
+            _composition_event(project, job, "cache_miss" if not cache_is_current else "cache_hit", input_path=original_base_path, output_path=composition_cache, duration=None, reason="composition_base_provenance")
             base_path = composition_cache
             output_stem = original_base_path.stem
             spec_path = project.folder / "overlay_spec.json"
@@ -409,6 +410,7 @@ class CompositionRunner:
             job.message = "Composing overlays and captions"
             job.detail = "Rendering flyer, video overlays and logo"
             composed = project.cache_dir / f"{output_stem}_overlay-composed.mp4"
+            _composition_event(project, job, "composition_input", input_path=base_path, output_path=composed, duration=_media_duration(base_path), reason="clean_base_selected")
             def overlay_progress(value: float) -> None:
                 percent = max(0, min(100, round(float(value) * 100)))
                 job.detail = f"Rendering visual overlays — {percent}%"
@@ -417,6 +419,7 @@ class CompositionRunner:
                 base_path, spec, composed, overlay_progress,
                 logo_path=logo, logo_overlay=logo_overlay,
             )
+            _composition_event(project, job, "composition_filter", input_path=base_path, output_path=composed, duration=_media_duration(composed), reason="finite_overlay_eof_pass", extra={"image_count": len(spec.get("images") or []), "video_count": len(spec.get("videos") or []), "logo": bool(logo)})
             if job.status == "cancelled":
                 return
             cues = tuple(
@@ -467,6 +470,17 @@ class CompositionRunner:
             if job.status == "cancelled":
                 output.unlink(missing_ok=True)
                 return
+            validation = _validate_composition_output(base_path, output, spec)
+            _composition_event(project, job, "composition_validation", input_path=base_path, output_path=output, duration=validation.get("duration"), reason=validation.get("reason"), extra=validation)
+            if not validation["ok"]:
+                output.unlink(missing_ok=True)
+                composed.unlink(missing_ok=True)
+                job.status = "failed"
+                job.error = validation["reason"]
+                job.detail = "Final composition rejected; clean base export preserved"
+                _composition_event(project, job, "composition_output_rejected", input_path=base_path, output_path=output, duration=validation.get("duration"), reason=validation.get("reason"), extra=validation)
+                return
+            _composition_event(project, job, "composition_output", input_path=base_path, output_path=output, duration=validation.get("duration"), reason="validated_before_publish")
             job.progress = 100
             job.status = "done"
             job.message = "Result ready"
@@ -503,6 +517,123 @@ class CompositionRunner:
 def _set_job_progress(job: CompositionJob, progress: int) -> None:
     if job.status == "running":
         job.progress = max(job.progress, min(98, int(progress)))
+
+
+def _composition_event(project: Project, job: CompositionJob, event: str, *, input_path: Path | None = None,
+                       output_path: Path | None = None, duration: float | None = None,
+                       reason: str | None = None, extra: dict[str, Any] | None = None) -> None:
+    """Write unambiguous, machine-readable composition evidence."""
+    payload = {
+        "event": event,
+        "project_path": str(project.folder),
+        "job_id": job.id,
+        "git_commit": build_info().get("git_commit"),
+        "input_path": str(input_path) if input_path else None,
+        "output_path": str(output_path) if output_path else None,
+        "duration": duration,
+        "camera": None,
+        "timestamp": time.time(),
+        "selection_reason": reason,
+    }
+    if extra:
+        payload.update(extra)
+    log_path = project.cache_dir / "logs" / "composition.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _composition_base_result(project: Project) -> dict[str, Any] | None:
+    """Return the clean export, never the last composed result."""
+    manifest_result = _export_result(project)
+    cache = project.cache_dir / "composition-base.mp4"
+    meta = project.cache_dir / "composition-base.json"
+    if cache.is_file() and cache.stat().st_size > 0 and meta.is_file():
+        try:
+            record = json.loads(meta.read_text(encoding="utf-8"))
+            if int(record.get("source_size") or 0) == cache.stat().st_size or cache.stat().st_size > 1_000_000:
+                return {**(manifest_result or {}), "path": str(cache), "filename": cache.name}
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    result = manifest_result
+    if not result:
+        return None
+    path = Path(str(result.get("path") or ""))
+    if "_composed" in path.stem or "_overlay-composed" in path.stem or "_captions" in path.stem:
+        candidates = sorted(project.exports_dir.glob("*.mp4"), key=lambda item: item.stat().st_mtime, reverse=True)
+        path = next((item for item in candidates if "_composed" not in item.stem and "_overlay-composed" not in item.stem and "_captions" not in item.stem and item.stat().st_size > 0), Path())
+        if not path:
+            return None
+    return {**result, "path": str(path), "filename": path.name}
+
+
+def _spherical_event(project: Project, event: str, *, input_path: Path | None = None,
+                     output_path: Path | None = None, camera: str | None = None,
+                     reason: str | None = None, extra: dict[str, Any] | None = None) -> None:
+    payload = {
+        "event": event,
+        "project_path": str(project.folder),
+        "job_id": f"spherical-{uuid.uuid4().hex[:10]}",
+        "git_commit": build_info().get("git_commit"),
+        "input_path": str(input_path) if input_path else None,
+        "output_path": str(output_path) if output_path else None,
+        "duration": None,
+        "camera": camera,
+        "timestamp": time.time(),
+        "selection_reason": reason,
+    }
+    if extra:
+        payload.update(extra)
+    log_path = project.cache_dir / "logs" / "spherical.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _validate_composition_output(base: Path, output: Path, spec: dict[str, Any]) -> dict[str, Any]:
+    """Reject black, truncated, malformed, or stream-mismatched results."""
+    try:
+        base_probe = ffprobe(str(base))
+        probe = ffprobe(str(output))
+        streams = probe.get("streams") or []
+        video = next((item for item in streams if item.get("codec_type") == "video"), None)
+        audio = next((item for item in streams if item.get("codec_type") == "audio"), None)
+        base_video = next((item for item in (base_probe.get("streams") or []) if item.get("codec_type") == "video"), None)
+        duration = float((probe.get("format") or {}).get("duration") or 0.0)
+        base_duration = float((base_probe.get("format") or {}).get("duration") or 0.0)
+        if not video or not base_video:
+            return {"ok": False, "reason": "composition_validation:no_video_stream", "duration": duration}
+        if len(streams) > 2 or not audio:
+            return {"ok": False, "reason": "composition_validation:expected_one_video_and_one_audio_stream", "duration": duration}
+        if duration < base_duration - 0.5 or abs(float(video.get("duration") or duration) - base_duration) > 0.75:
+            return {"ok": False, "reason": "composition_validation:duration_mismatch", "duration": duration, "base_duration": base_duration}
+        if int(video.get("width") or 0) != int(base_video.get("width") or 0) or int(video.get("height") or 0) != int(base_video.get("height") or 0):
+            return {"ok": False, "reason": "composition_validation:resolution_mismatch", "duration": duration}
+        # A single representative sample after every overlay interval catches
+        # the full-canvas opaque flyer failure without trusting job status.
+        overlay_end = max(
+            [0.0]
+            + [max(0.0, float(item.get("start_sec") or 0.0)) + max(0.1, float(item.get("duration_sec") or 3.0)) for kind in ("images", "videos") for item in (spec.get(kind) or []) if isinstance(item, dict)]
+        )
+        # The first/last frames may intentionally be black intro/outro cards.
+        # The decisive sample is just after the last configured overlay.
+        samples = [min(base_duration - 0.05, overlay_end + 0.5)]
+        if overlay_end + 0.5 >= base_duration:
+            samples = [min(base_duration - 0.05, base_duration / 2.0)]
+        for timestamp in sorted(set(round(max(0.0, value), 3) for value in samples)):
+            command = [str(tool_status().get("ffmpeg_path") or "ffmpeg"), "-hide_banner", "-loglevel", "error", "-ss", str(timestamp), "-i", str(output), "-frames:v", "1", "-vf", "scale=1:1,format=gray", "-f", "rawvideo", "-"]
+            result = subprocess.run(command, capture_output=True, check=False)
+            if not result.stdout or max(result.stdout) <= 1:
+                return {"ok": False, "reason": f"composition_validation:black_frame_at_{timestamp:.3f}", "duration": duration, "timestamp": timestamp}
+        return {
+            "ok": True,
+            "reason": "composition_validation:passed",
+            "duration": duration,
+            "base_duration": base_duration,
+            "streams": [{"index": item.get("index"), "type": item.get("codec_type"), "codec": item.get("codec_name"), "width": item.get("width"), "height": item.get("height"), "duration": item.get("duration")} for item in streams],
+        }
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return {"ok": False, "reason": f"composition_validation:probe_failed:{exc}", "duration": 0.0}
 
 
 def _media_duration(path: Path) -> float:
@@ -628,8 +759,8 @@ def _compose_visual_overlays(
             start = max(0.0, float(raw.get("start_sec") or 0.0))
             end = min(duration, start + max(0.1, float(raw.get("duration_sec") or 3.0)))
             label = f"image_{index}"
-            filters.append(f"[{index + 1}:v]format=rgba,setpts=PTS-STARTPTS,fps=30[{label}_src]")
-            filters.append(f"[{current}][{label}_src]overlay=0:0:enable='between(t,{start:.3f},{end:.3f})':eof_action=repeat:shortest=0[{label}_out]")
+            filters.append(f"[{index + 1}:v]format=rgba,setpts=PTS-STARTPTS,fps=30,trim=duration={max(0.1, end - start):.3f},setpts=PTS-STARTPTS+{start:.3f}/TB[{label}_src]")
+            filters.append(f"[{current}][{label}_src]overlay=0:0:eof_action=pass:repeatlast=0:shortest=0[{label}_out]")
             current = f"{label}_out"
 
         for offset, raw in enumerate(videos, start=len(images)):
@@ -640,8 +771,8 @@ def _compose_visual_overlays(
             x = max(0, int(float(raw.get("x") or 0.5) * width - scale / 2))
             y = max(0, int(float(raw.get("y") or 0.5) * height - scale / 2))
             label = f"video_{offset}"
-            filters.append(f"[{offset + 1}:v]format=rgba,scale={scale}:-2,colorchannelmixer=aa={max(0.0, min(1.0, float(raw.get('opacity') or 1.0))):.3f}[{label}]")
-            filters.append(f"[{current}][{label}]overlay={x}:{y}:enable='between(t,{start:.3f},{end:.3f})':eof_action=repeat:shortest=0[{label}_out]")
+            filters.append(f"[{offset + 1}:v]format=rgba,scale={scale}:-2,colorchannelmixer=aa={max(0.0, min(1.0, float(raw.get('opacity') or 1.0))):.3f},trim=duration={max(0.1, end - start):.3f},setpts=PTS-STARTPTS+{start:.3f}/TB[{label}]")
+            filters.append(f"[{current}][{label}]overlay={x}:{y}:eof_action=pass:repeatlast=0:shortest=0[{label}_out]")
             current = f"{label}_out"
 
         if valid_logo:
@@ -651,8 +782,8 @@ def _compose_visual_overlays(
             logo_width = max(40, int(width * max(0.05, min(0.9, float(overlay.get("width", 0.22))))))
             logo_x = max(0.0, min(1.0, float(overlay.get("x", 0.5))))
             logo_y = max(0.0, min(1.0, float(overlay.get("y", 0.08))))
-            filters.append(f"[{logo_index}:v]format=rgba,scale={logo_width}:-1[composition_logo]")
-            filters.append(f"[{current}][composition_logo]overlay=(W-w)*{logo_x:.5f}:(H-h)*{logo_y:.5f}:eof_action=repeat:shortest=0[with_logo]")
+            filters.append(f"[{logo_index}:v]format=rgba,scale={logo_width}:-1,trim=duration={duration:.3f},setpts=PTS-STARTPTS[composition_logo]")
+            filters.append(f"[{current}][composition_logo]overlay=(W-w)*{logo_x:.5f}:(H-h)*{logo_y:.5f}:eof_action=pass:repeatlast=0:shortest=0[with_logo]")
             current = "with_logo"
 
         ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
@@ -1996,6 +2127,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         project.save()
         config["spherical_landmarks"] = landmarks
         save_global_config(config)
+        _spherical_event(
+            project,
+            "spherical_preview_saved",
+            input_path=Path(source_path).resolve() if source_path else None,
+            camera=Path(source_path).stem if source_path else None,
+            reason="explicit_save_endpoint",
+            extra={"landmarks": landmarks, "source_path": source_key},
+        )
         return jsonify({
             "spherical_landmarks": landmarks,
             "spherical_source_path": source_key,

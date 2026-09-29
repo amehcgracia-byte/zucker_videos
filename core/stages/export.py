@@ -1801,7 +1801,11 @@ def _apply_saved_spherical_landmarks(project: Project, segments: list[dict[str, 
         current = dict(segment)
         shot = dict(current.get("spherical_shot") or {})
         shot_type = str(shot.get("shot_id") or shot.get("type") or "").strip()
-        source_path = str(current.get("spherical_source_path") or current.get("source_path") or current.get("clip_path") or "").strip()
+        # Authoring profiles are keyed by the registered/original source path.
+        # Render segments also carry a proxy path in spherical_source_path;
+        # preferring that proxy silently fell back to the global profile and
+        # made preview and export disagree for source-specific landmarks.
+        source_path = str(current.get("source_path") or current.get("spherical_source_path") or current.get("clip_path") or "").strip()
         profile_raw = None
         if source_path:
             profile_raw = profiles.get(source_path) or profiles.get(str(Path(source_path).expanduser().resolve()))
