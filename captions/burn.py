@@ -30,7 +30,7 @@ def _video_dimensions(video_path: Path, ffmpeg: str) -> tuple[int, int]:
     return 1920, 1080
 
 
-def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_path: str | Path | None = None, ffmpeg: str = "ffmpeg", header: dict | None = None, logo_path: str | Path | None = None, letterbox: dict | None = None, progress_callback=None) -> Path:
+def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_path: str | Path | None = None, ffmpeg: str = "ffmpeg", header: dict | None = None, logo_path: str | Path | None = None, letterbox: dict | None = None, progress_callback=None, process_callback=None) -> Path:
     source = Path(video_path).resolve()
     destination = Path(output_path).resolve() if output_path else source.with_name(f"{source.stem}_captions.mp4")
     if destination == source:
@@ -99,16 +99,34 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
         if progress_callback is None:
             subprocess.run(command, check=True)
         else:
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            assert process.stdout is not None
-            for line in process.stdout:
-                if line.startswith("out_time_ms="):
+            # Read one combined pipe. Separate stdout/stderr reads can
+            # deadlock while FFmpeg burns a long caption track.
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            if process_callback:
+                process_callback(process)
+            diagnostics: list[str] = []
+            try:
+                assert process.stdout is not None
+                for raw_line in process.stdout:
+                    line = raw_line.strip()
+                    if line.startswith(("out_time_ms=", "out_time_us=")):
+                        try:
+                            progress_callback(float(line.split("=", 1)[1]) / 1_000_000.0)
+                        except (TypeError, ValueError):
+                            pass
+                    elif line:
+                        diagnostics.append(line)
+                return_code = process.wait()
+                if return_code:
+                    raise subprocess.CalledProcessError(return_code, command, stderr="\n".join(diagnostics[-20:]))
+            finally:
+                if process.poll() is None:
+                    process.terminate()
                     try:
-                        progress_callback(float(line.split("=", 1)[1]) / 1_000_000.0)
-                    except (TypeError, ValueError):
-                        pass
-            stderr = process.stderr.read() if process.stderr is not None else ""
-            return_code = process.wait()
-            if return_code:
-                raise subprocess.CalledProcessError(return_code, command, stderr=stderr)
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                if process_callback:
+                    process_callback(None)
     return destination
