@@ -358,7 +358,7 @@ class CompositionRunner:
                 })
                 project.save()
                 try:
-                            job.progress = 2
+                    job.progress = 2
                     job.message = "Rendering final video"
                     job.detail = "Preparing a clean Reel base before the final render"
                     ExportStage().run(
