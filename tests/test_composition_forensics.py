@@ -100,7 +100,8 @@ def test_360_review_pool_has_twenty_reserve_views_across_proxy_aliases(tmp_path:
 def test_edit_cadence_uses_long_holds_until_music_is_very_intense() -> None:
     bars = [float(index) for index in range(20)]
     assert _bars_for_segment(0, bars, [], 0, [0.15]) == 6
-    assert _bars_for_segment(0, bars, [], 0, [0.80]) == 3
+    assert _bars_for_segment(0, bars, [], 0, [0.80]) == 6
+    assert _bars_for_segment(0, bars, [], 0, [0.90]) == 3
     assert _bars_for_segment(0, bars, [], 0, [0.99]) == 2
 
 
