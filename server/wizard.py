@@ -1219,7 +1219,14 @@ def wizard_report(status: dict[str, Any]) -> str:
                 lines.append(f"- {name}: {stage.get('status')} {stage.get('error') or ''}".rstrip())
         log_dir = Path(project_path) / "cache" / "logs"
         lines.append("last log lines:")
-        lines.extend(_combined_log_tail(log_dir, 160))
+        lines.extend(_combined_log_tail(log_dir, 120))
+        # Keep post-export composition and 360 evidence visible even when a
+        # large segment render fills the combined log tail.
+        for log_name in ("composition.log", "spherical.log"):
+            log_path = log_dir / log_name
+            if log_path.is_file():
+                lines.append(f"--- {log_name} tail ---")
+                lines.extend(_tail_lines(log_path, 40))
     technical = status.get("technical_details")
     if technical:
         lines.append("--- technical_details ---")
