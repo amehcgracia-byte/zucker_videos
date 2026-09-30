@@ -12,6 +12,19 @@ STEREOGRAPHIC_FOV_THRESHOLD = 170.0
 PERSPECTIVE_FOV_MAX = 165.0
 NORMAL_FOV_MIN = 82.0
 NORMAL_FOV_MAX = MAX_SPHERICAL_FOV
+# Ordinary shots are authored in the same safe pitch range exposed by the
+# 360 viewer. Keeping this in the shared module prevents stale saved poses from
+# rendering a different vertical framing in preview and export.
+NORMAL_PITCH_MIN = -25.0
+NORMAL_PITCH_MAX = 25.0
+
+
+def effective_pitch(pitch: float, shot_type: str = "") -> float:
+    """Return the canonical vertical angle for preview, review and export."""
+    value = float(pitch)
+    if str(shot_type or "") == "planet":
+        return max(-90.0, min(90.0, value))
+    return max(NORMAL_PITCH_MIN, min(NORMAL_PITCH_MAX, value))
 
 
 def signed_yaw(value: float) -> float:
@@ -55,7 +68,7 @@ def view_parameters(yaw: float, pitch: float, fov: float, aspect_ratio: float, s
         projection = "flat"
     return {
         "yaw": signed_yaw(yaw),
-        "pitch": float(pitch),
+        "pitch": effective_pitch(pitch, shot_type),
         "h_fov": horizontal,
         "v_fov": vertical,
         "projection": projection,

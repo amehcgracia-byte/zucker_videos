@@ -27,7 +27,7 @@ from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.messages import t
 from core.project import Project, ProjectError, create_project, load_project
 from core.build_info import build_info
-from core.spherical_view import MAX_SPHERICAL_FOV, view_parameters
+from core.spherical_view import MAX_SPHERICAL_FOV, effective_pitch, view_parameters
 from core.media_validation import record_media_path
 from core.normalization import cache_status, cleanup_unreferenced_cache, global_cache_root, migrate_project_normalization_cache
 from core.stages.sync import clear_manual_override, cleanup_closed_sync_diagnostics, generate_preview, generate_thumbnail, invalidate_stale_sync_artifact, set_manual_anchor, set_manual_override, set_manual_override_ranges
@@ -1851,9 +1851,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             allowed.update({Path(str(record.get("path") or "")).resolve(), Path(record_media_path(record)).resolve()})
         if requested not in allowed or not requested.is_file():
             return error_response("not_found", "360 source is not registered in this project", 404)
+        shot_type = str(request.args.get("shot") or "").strip()
         try:
             yaw = float(request.args.get("yaw", 0.0))
-            pitch = max(-89.0, min(89.0, float(request.args.get("pitch", 0.0))))
+            # Use the same canonical pitch as export/review. The former ±89°
+            # preview-only clamp allowed a saved pose to look correct in the
+            # editor and shift to a different performer in the final MP4.
+            pitch = effective_pitch(float(request.args.get("pitch", 0.0)), shot_type)
             h_fov = max(30.0, min(MAX_SPHERICAL_FOV, float(request.args.get("fov", 95.0))))
             time_sec = max(0.0, float(request.args.get("time_sec", 30.0)))
         except (TypeError, ValueError):
@@ -1864,7 +1868,6 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 time_sec = min(time_sec, max(0.0, duration - 0.05))
         except Exception:
             pass
-        shot_type = str(request.args.get("shot") or "").strip()
         view = view_parameters(yaw, pitch, h_fov, 16.0 / 9.0, shot_type)
         projection = "equirect"
         insv_fov = 190.0

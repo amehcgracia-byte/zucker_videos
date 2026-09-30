@@ -12,7 +12,7 @@ from typing import Any
 
 from core.project import Project
 from core.ffmpeg import locate_executable
-from core.spherical_view import view_parameters
+from core.spherical_view import effective_fov, effective_pitch, view_parameters
 from core.stages.base import artifact_path
 from core.stages.cut import load_coverage
 from core.stages.edit import IPHONE_CROP_TOP_LIMIT, SPHERICAL_NORMAL_FOV_MIN, _camera_id
@@ -83,6 +83,9 @@ def _review_segment(project: Project, segment: dict[str, Any]) -> dict[str, Any]
     for field in ("yaw", "pitch", "fov", "weight"):
         if field in saved:
             effective[field] = saved[field]
+    # Review cards must use the same canonical pose that preview/export use.
+    effective["pitch"] = effective_pitch(effective.get("pitch", 0.0), shot_type)
+    effective["fov"] = effective_fov(effective.get("fov", 95.0), shot_type)
     effective["type"] = shot_type
     effective["shot_id"] = shot_type
     effective["label"] = _REVIEW_SHOT_LABELS.get(shot_type, shot.get("label") or shot_type)
@@ -297,8 +300,9 @@ def _spherical_review_poses(segment: dict[str, Any], segments: list[dict[str, An
             return
         try:
             yaw = float(raw.get("yaw") or 0.0) % 360.0
-            pitch = max(-18.0, min(18.0, float(raw.get("pitch") or 0.0)))
-            fov = max(SPHERICAL_NORMAL_FOV_MIN, min(140.0, float(raw.get("fov") or 95.0)))
+            pose_type = str(raw.get("shot_id") or raw.get("type") or current.get("type") or "")
+            pitch = effective_pitch(float(raw.get("pitch") or 0.0), pose_type)
+            fov = effective_fov(float(raw.get("fov") or 95.0), pose_type)
         except (TypeError, ValueError):
             return
         pose = dict(raw)
