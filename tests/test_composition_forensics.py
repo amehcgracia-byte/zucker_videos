@@ -189,3 +189,16 @@ def test_youtube_longform_policy_has_no_caption_or_flyer_pass() -> None:
     app = Path("web/app.js").read_text(encoding="utf-8")
     assert "function youtubeSkipsComposition" in app
     assert "youtubeSkipsComposition(latestResult.platform || status.platform)" in app
+
+
+def test_normal_spherical_views_never_auto_switch_to_stereographic():
+    from core.spherical_view import view_parameters
+    assert view_parameters(0, 0, 220, 16 / 9, "full_stage")["projection"] == "flat"
+    assert view_parameters(0, 0, 220, 16 / 9, "planet")["projection"] == "sg"
+
+
+def test_gentle_fixed_camera_motion_applies_subject_target():
+    from core.stages.edit import _gentle_fixed_camera_motion
+    motion = _gentle_fixed_camera_motion(0, 0.25, 0.50)
+    assert motion["zoom_end"] > motion["zoom_start"]
+    assert motion["pan_x_end"] < 0.5
