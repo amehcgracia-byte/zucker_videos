@@ -487,9 +487,21 @@ class CompositionRunner:
             _composition_event(project, job, "cache_miss" if not cache_is_current else "cache_hit", input_path=original_base_path, output_path=composition_cache, duration=None, reason="composition_base_provenance")
             base_path = composition_cache
             output_stem = original_base_path.stem
+            render_platform = str(
+                base.get("platform")
+                or project.data.get("settings", {}).get("wizard", {}).get("platform")
+                or ""
+            ).strip().lower()
+            youtube_longform = render_platform in {"youtube", "youtube_longform", "youtube_horizontal"}
             spec_path = project.folder / "overlay_spec.json"
             track_path = project.folder / "cue_track.json"
             spec = json.loads(spec_path.read_text(encoding="utf-8")) if spec_path.is_file() else {"images": [], "videos": []}
+            if youtube_longform:
+                # Long-form YouTube is deliberately a clean horizontal export:
+                # no flyer/image overlays and no caption/letterbox pass. Keep
+                # the saved caption state intact so TikTok/backstage can use it
+                # later, but never let it change the YouTube render.
+                spec = {"images": [], "videos": []}
             track_data = json.loads(track_path.read_text(encoding="utf-8")) if track_path.is_file() else {"cues": [], "style": "clean_bottom"}
             header = track_data.get("header") if isinstance(track_data.get("header"), dict) else {}
             logo = _composition_logo(project, str(header.get("logo_source") or "none"))
@@ -534,12 +546,18 @@ class CompositionRunner:
             track = CueTrack(cues, str(track_data.get("lang") or "und"))
             style = get_style(str(track_data.get("style") or "clean_bottom"))
             letterbox = track_data.get("letterbox") if isinstance(track_data.get("letterbox"), dict) else None
-            final = project.exports_dir / f"{output_stem}_composed-captions.mp4"
+            final = project.exports_dir / (
+                f"{output_stem}_composed.mp4"
+                if youtube_longform
+                else f"{output_stem}_composed-captions.mp4"
+            )
             with self._lock:
                 job.output_path = str(final)
-            needs_caption_pass = bool(cues) or bool(
-                header.get("title_enabled") and header.get("title")
-            ) or bool(letterbox and letterbox.get("enabled"))
+            needs_caption_pass = (not youtube_longform) and (
+                bool(cues)
+                or bool(header.get("title_enabled") and header.get("title"))
+                or bool(letterbox and letterbox.get("enabled"))
+            )
             if needs_caption_pass:
                 job.progress = 55
                 job.message = "Rendering final video"
