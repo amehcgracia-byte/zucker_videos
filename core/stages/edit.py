@@ -2351,26 +2351,26 @@ def _gentle_fixed_camera_motion(
     target_x: float = 0.5,
     target_y: float = 0.5,
 ) -> dict[str, Any]:
-    """One slow, tracked move from a wide frame to a gentle crop.
+    """One centred, barely perceptible move from/to the full frame.
 
-    The old centred recipe looked alive but ignored the detected musician.
-    Keep the move subtle when another camera covers the interval, while still
-    locking the crop to the tracked subject.
+    When another camera covers the interval, the crop stays deliberately
+    centred so a weak detector cannot force a subject into a corner. The
+    tracked target is retained in the recipe for auditability and is used by
+    the stronger low-coverage recipe below.
     """
     zoom = round(1.0 + FIXED_CAMERA_GENTLE_ZOOM_FRACTION, 3)
-    zoom_start = 1.01 if index % 2 == 0 else zoom
-    zoom_end = zoom if index % 2 == 0 else 1.01
+    zoom_in = index % 2 == 0
     return {
         "type": "ken_burns",
-        "movement": "zoom_in_center" if index % 2 == 0 else "zoom_out_center",
+        "movement": "zoom_in_center" if zoom_in else "zoom_out_center",
         "speed": "very_slow",
         "speed_factor": 1.0,
-        "lock_target": True,
-        "centered": False,
+        "lock_target": False,
+        "centered": True,
         "target_x": max(0.25, min(0.75, float(target_x))),
         "target_y": max(0.35, min(0.65, float(target_y))),
-        "zoom_start": zoom_start,
-        "zoom_end": zoom_end,
+        "zoom_start": 1.0 if zoom_in else zoom,
+        "zoom_end": zoom if zoom_in else 1.0,
         "pan_x_start": 0.5,
         "pan_x_end": 0.5,
         "pan_y_start": 0.5,
