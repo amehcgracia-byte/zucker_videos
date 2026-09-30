@@ -110,7 +110,7 @@ def test_360_review_pool_has_twenty_reserve_views_across_proxy_aliases(tmp_path:
 def test_edit_cadence_uses_long_holds_until_music_is_very_intense() -> None:
     bars = [float(index) for index in range(20)]
     assert _bars_for_segment(0, bars, [], 0, [0.15]) == 7
-    assert _bars_for_segment(0, bars, [], 0, [0.80]) == 7
+    assert _bars_for_segment(0, bars, [], 0, [0.80]) == 4
     assert _bars_for_segment(0, bars, [], 0, [0.90]) == 3
     assert _bars_for_segment(0, bars, [], 0, [0.99]) == 2
 
@@ -205,12 +205,13 @@ def test_gentle_fixed_camera_motion_applies_subject_target():
 
 
 def test_transition_defaults_cover_each_join_and_respect_none():
-    from core.stages.export import _transition_boundaries, _transition_types_for_boundaries
+    from core.stages.export import TRANSITION_PROFILES, _transition_boundaries, _transition_types_for_boundaries
     segments = [{}, {}, {}]
     profile = {"duration": 0.55, "every": 1, "type": "auto", "sections_only": False}
     boundaries = _transition_boundaries(segments, profile)
     assert boundaries == [0, 1]
     assert _transition_types_for_boundaries(segments, boundaries, profile) == ["crossfade", "fadeblack"]
+    assert TRANSITION_PROFILES["youtube"]["duration"] >= 1.0
     segments[0]["transition_type"] = "none"
     assert _transition_boundaries(segments, profile) == [1]
 
@@ -220,3 +221,24 @@ def test_transition_api_accepts_native_auto_mode():
     allowed = {"auto", "none"} | set(TRANSITION_LIBRARY)
     assert "auto" in allowed
     assert "crossfade" in allowed
+
+
+def test_safe_360_framing_limits_zoom_and_pitch():
+    from core.spherical_view import NORMAL_FOV_MIN, view_parameters
+    from core.stages.edit import _available_spherical_shots
+
+    shots = _available_spherical_shots({
+        "singer": {"yaw": 120.0, "pitch": 60.0, "fov": 20.0, "weight": 1.0},
+    })
+    assert shots[0]["pitch"] == 18.0
+    assert shots[0]["fov"] >= NORMAL_FOV_MIN
+    assert view_parameters(0, 0, 20, 16 / 9, "singer")["h_fov"] >= NORMAL_FOV_MIN
+
+
+def test_nikon_is_the_preferred_color_camera_kind():
+    from core.stages.export import _color_camera_kind, _color_reference_record
+
+    nikon = {"filename": "NIKON_D850_001.MOV"}
+    iphone = {"filename": "IMG_4098.MOV"}
+    assert _color_camera_kind(nikon) == "nikon"
+    assert _color_reference_record([iphone, nikon]) is nikon
