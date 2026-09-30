@@ -16,6 +16,7 @@ from core.spherical_view import view_parameters
 from core.stages.base import artifact_path
 from core.stages.cut import load_coverage
 from core.stages.edit import IPHONE_CROP_TOP_LIMIT, _camera_id
+from core.reel_framing import subject_box_for_window
 
 
 LOGGER = logging.getLogger(__name__)
@@ -229,6 +230,30 @@ def _candidate_keys(candidate: dict[str, Any]) -> set[str]:
             f"{path}|{value:.6f}{pose_suffix}",
         })
     return keys or {_candidate_key(candidate)}
+
+
+def _candidate_has_subject(candidate: dict[str, Any], segment: dict[str, Any]) -> bool:
+    """Reject known empty/corner flat frames from the replacement reserve."""
+    projection = str(candidate.get("projection") or segment.get("projection") or "").lower()
+    if projection in {"equirect", "raw_insv"} or candidate.get("spherical_shot"):
+        return True
+    profile = candidate.get("reel_framing") or segment.get("reel_framing")
+    if not profile:
+        return True
+    try:
+        start = float(candidate.get("clip_start_sec") or 0.0)
+        duration = max(0.1, float(segment.get("duration_sec") or 0.1))
+        box = subject_box_for_window(profile, start, duration)
+    except (TypeError, ValueError):
+        return False
+    if not box:
+        return False
+    width = max(0.0, float(box.get("x2") or 0.0) - float(box.get("x1") or 0.0))
+    height = max(0.0, float(box.get("y2") or 0.0) - float(box.get("y1") or 0.0))
+    area = width * height
+    center_x = (float(box.get("x1") or 0.0) + float(box.get("x2") or 0.0)) / 2.0
+    center_y = (float(box.get("y1") or 0.0) + float(box.get("y2") or 0.0)) / 2.0
+    return area >= 0.01 and 0.08 <= center_x <= 0.92 and 0.10 <= center_y <= 0.90
 
 
 def _candidate_covers_slot(candidate: dict[str, Any], segment: dict[str, Any], platform: str) -> bool:
@@ -555,6 +580,8 @@ def _replacement_candidates(
         if not _candidate_covers_slot(candidate, segment, platform):
             continue
         counts["covers_slot"] += 1
+        if not _candidate_has_subject(candidate, segment):
+            continue
         if _candidate_keys(candidate) & tried:
             continue
         counts["unused"] += 1
@@ -642,6 +669,7 @@ def review_items(
             1
             for candidate in pool
             if _candidate_covers_slot(candidate, segment, platform)
+            and _candidate_has_subject(candidate, segment)
             and not (_candidate_keys(candidate) & current_keys)
         )
         shot_pose = {
@@ -662,10 +690,34 @@ def review_items(
             "pose": shot_pose,
             "candidate_count": candidate_count,
             "candidate_pool_origin": pool_origin,
+            "transition_type": str(segment.get("transition_type") or "auto"),
+            "subject_safe": _candidate_has_subject(segment, segment),
             "keep": True,
             "no_alternative": index in unavailable,
         })
     return items
+
+
+def set_review_transition_types(project: Project, transitions: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
+    """Persist the outgoing transition selected on each review card."""
+    plan = _plan(project)
+    segments = list(plan.get("segments") or [])
+    values = transitions if isinstance(transitions, dict) else {str(i): value for i, value in enumerate(transitions or [])}
+    from core.stages.export import TRANSITION_LIBRARY
+    allowed = {"auto", "none", *TRANSITION_LIBRARY.keys()}
+    for index, segment in enumerate(segments):
+        raw = values.get(str(index), values.get(index)) if isinstance(values, dict) else None
+        if raw is None:
+            continue
+        value = str(raw or "auto").strip().lower()
+        segment["transition_type"] = value if value in allowed else "auto"
+    plan["segments"] = segments
+    artifact_path(project, "edit_plan.json").write_text(
+        json.dumps(plan, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    project.mark_all_stale_from("export")
+    project.save()
+    return plan
 
 
 def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
