@@ -161,10 +161,13 @@ def _transition_boundaries(segments: list[dict[str, Any]], profile: dict[str, An
 
 
 def _transition_types_for_boundaries(segments: list[dict[str, Any]], boundaries: list[int], profile: dict[str, Any]) -> list[str]:
-    return [
-        str(segments[index].get("transition_type") or profile.get("type") or "auto").strip().lower()
-        for index in boundaries
-    ]
+    result: list[str] = []
+    for join_index, index in enumerate(boundaries):
+        selected = str(segments[index].get("transition_type") or profile.get("type") or "auto").strip().lower()
+        if selected == "auto":
+            selected = AUTO_TRANSITION_TYPES[join_index % len(AUTO_TRANSITION_TYPES)]
+        result.append(selected)
+    return result
 
 
 def _render_flat_video_transitions(
