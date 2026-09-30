@@ -70,7 +70,7 @@ MOTION_SPEEDS = (("very_slow", 0.50), ("slow", 0.72), ("fast", 1.0))
 IPHONE_CROP_TOP_LIMIT = 0.80
 # Bump this whenever the YouTube camera-choice invariant changes so an older
 # cached edit plan cannot keep producing the previous camera runs.
-YOUTUBE_CAMERA_SELECTION_VERSION = 18
+YOUTUBE_CAMERA_SELECTION_VERSION = 19
 # Legacy diagnostic threshold retained in project settings/manifests. The
 # production policy now stops close-up filler as soon as one alternative
 # physical camera covers the same synced window.
@@ -122,7 +122,7 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 24
+EDIT_PLAN_ALGORITHM_VERSION = 25
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
@@ -550,8 +550,8 @@ def _reel_promo_plan(
                 "type": "promo_360", "label": "360 promo", "yaw": 0.0, "pitch": 0.0, "fov": 95.0, "weight": 1.0,
             }
             segment["spherical_shot"] = _spherical_motion_profile(shot, index, enabled=False, hold_motion="none")
-        elif role == "fixed_rear" and bool(wizard.get("fixed_rear_motion", True)):
-            target_x, target_y = _reel_target_for_source(source, clip_start, seg_duration)
+        elif _flat_camera_motion_enabled(source) and bool(wizard.get("fixed_rear_motion", True)):
+            target_x, target_y = _tracked_flat_target(source, clip_start, seg_duration, {})
             segment["motion"] = _ken_burns_motion(
                 fixed_index,
                 target_x,
@@ -560,6 +560,11 @@ def _reel_promo_plan(
                 force_full_zoom=(fixed_index % 2 == 0),
                 force_close=(fixed_index % 2 == 1),
             )
+            segment["camera_motion_target"] = {
+                "x": round(target_x, 4),
+                "y": round(target_y, 4),
+                "tracking": True,
+            }
             fixed_index += 1
         elif role == "handheld":
             target_x, target_y = _reel_target_for_source(source, clip_start, seg_duration)
@@ -905,18 +910,27 @@ def _youtube_multicam_plan(
                 # (shot=None) — a 360 segment must never fall back to a frozen,
                 # motionless equirect passthrough.
                 segment["spherical_shot"] = _spherical_motion_profile(shot or {}, segment_index, enabled=spherical_motion, hold_motion=hold_motion)
-        elif fixed_rear_motion and _source_role(source) == "fixed_rear":
-            # Every fixed-camera cut receives a crop motion. The source role,
-            # not the filename, is authoritative: files such as ZZ24.7 .mov
-            # are fixed cameras even when they are not named "iPhone".
-            target_x, target_y = _visible_iphone_target(source, float(segment.get("clip_start_sec") or 0.0), segment_end - segment_start, operator_samples_cache)
+        elif fixed_rear_motion and _flat_camera_motion_enabled(source):
+            # Flat phone/static cameras receive an authored crop move whose
+            # target comes from the tracked subject box when one exists. This
+            # keeps the crop on musicians instead of drifting to feet, lamps,
+            # corners, or a generic inherited centre.
+            target_x, target_y = _tracked_flat_target(
+                source,
+                float(segment.get("clip_start_sec") or 0.0),
+                segment_end - segment_start,
+                operator_samples_cache,
+            )
+            segment["camera_motion_target"] = {
+                "x": round(target_x, 4),
+                "y": round(target_y, 4),
+                "tracking": True,
+            }
             if alternative_camera_ids:
-                # One valid alternative is enough to stop treating the fixed
-                # camera as a gap filler. The old threshold compared against
-                # two, so a fixed camera plus one other source still got the
-                # aggressive 3x recipe.
-                segment["motion"] = _gentle_fixed_camera_motion(fixed_rear_motion_index)
-                segment["fixed_camera_zoom_policy"] = "gentle_center_motion_sufficient_coverage"
+                # With another camera available, keep the move subtle but
+                # still animate the flat source so it is never frozen.
+                segment["motion"] = _gentle_fixed_camera_motion(fixed_rear_motion_index, target_x, target_y)
+                segment["fixed_camera_zoom_policy"] = "gentle_tracked_motion_sufficient_coverage"
             else:
                 segment["motion"] = _ken_burns_motion(
                     fixed_rear_motion_index,
@@ -926,7 +940,7 @@ def _youtube_multicam_plan(
                     force_full_zoom=(fixed_rear_motion_index % 2 == 0),
                     force_close=(fixed_rear_motion_index % 2 == 1),
                 )
-                segment["fixed_camera_zoom_policy"] = "close_up_motion_low_coverage"
+                segment["fixed_camera_zoom_policy"] = "tracked_close_up_motion_low_coverage"
             fixed_rear_motion_index += 1
         _apply_operator_avoidance(segment, source, operator_samples_cache)
         previous_framing = _framing_descriptor(source, segment)
@@ -1890,18 +1904,57 @@ def _camera_target_weights(sources: list[dict[str, Any]], role_weights: dict[str
 
 
 def _source_role(source: dict[str, Any]) -> str:
-    projection = str(source.get("projection") or "").lower()
-    if projection in {"equirect", "raw_insv"} or source.get("raw_360") is True:
-        return "360"
+    """Classify a source without letting a phone filename become a 360 camera.
+
+    Explicit authoring metadata wins. Projection is only an inferred 360
+    signal, so a source explicitly marked as an iPhone/static phone remains a
+    flat camera even when an ingest/proxy layer attached a 360-like extension.
+    """
     explicit_role = str(source.get("camera_role") or "").strip().lower()
     if explicit_role in {"360", "fixed_rear", "handheld"}:
         return explicit_role
+    if source.get("raw_360") is True:
+        return "360"
     if source.get("is_static_camera") is True or source.get("static_camera") is True:
         return "fixed_rear"
     camera_type = str(source.get("camera_type") or source.get("device_type") or "").lower()
     if camera_type in {"iphone", "phone", "mobile", "smartphone", "static"}:
         return "fixed_rear"
+    projection = str(source.get("projection") or "").lower()
+    if projection in {"equirect", "raw_insv"}:
+        return "360"
     return "handheld"
+
+
+def _flat_camera_motion_enabled(source: dict[str, Any]) -> bool:
+    """Return whether a source is eligible for 2D crop/pan motion."""
+    if _source_role(source) == "360":
+        return False
+    if _source_role(source) == "fixed_rear":
+        return True
+    if source.get("is_static_camera") is True or source.get("static_camera") is True:
+        return True
+    camera_type = str(source.get("camera_type") or source.get("device_type") or "").lower()
+    if camera_type in {"iphone", "phone", "mobile", "smartphone", "static"}:
+        return True
+    value = str(source.get("filename") or source.get("path") or source.get("source_path") or "").lower()
+    return any(token in value for token in ("iphone", "img_", "phone", "mobile"))
+
+
+def _tracked_flat_target(
+    source: dict[str, Any],
+    clip_start_sec: float,
+    duration_sec: float,
+    samples_cache: dict[str, list[dict[str, Any]]],
+) -> tuple[float, float]:
+    """Choose a musician-safe target for a flat camera motion recipe."""
+    profile = source.get("reel_framing") or {}
+    box = subject_box_for_window(profile, clip_start_sec, duration_sec) if profile else None
+    if box:
+        center_x = max(0.25, min(0.75, (float(box["x1"]) + float(box["x2"])) / 2.0))
+        center_y = max(0.35, min(0.65, (float(box["y1"]) + float(box["y2"])) / 2.0))
+        return center_x, center_y
+    return _visible_iphone_target(source, clip_start_sec, duration_sec, samples_cache)
 
 
 def _camera_distribution(selection_stats: list[dict[str, Any]], target_weights: dict[str, float] | None = None) -> list[dict[str, Any]]:
@@ -2293,27 +2346,31 @@ def _full_frame_static_motion() -> dict[str, Any]:
     }
 
 
-def _gentle_fixed_camera_motion(index: int) -> dict[str, Any]:
-    """One centred, barely perceptible move from/to the full frame.
+def _gentle_fixed_camera_motion(
+    index: int,
+    target_x: float = 0.5,
+    target_y: float = 0.5,
+) -> dict[str, Any]:
+    """One slow, tracked move from a wide frame to a gentle crop.
 
-    This is deliberately not built from ``_ken_burns_motion``. That helper's
-    historical ``force_full_zoom`` recipe starts around 3x, which was the
-    source of the apparent double/aggressive zoom in otherwise well-covered
-    YouTube cuts.
+    The old centred recipe looked alive but ignored the detected musician.
+    Keep the move subtle when another camera covers the interval, while still
+    locking the crop to the tracked subject.
     """
     zoom = round(1.0 + FIXED_CAMERA_GENTLE_ZOOM_FRACTION, 3)
-    zoom_in = index % 2 == 0
+    zoom_start = 1.01 if index % 2 == 0 else zoom
+    zoom_end = zoom if index % 2 == 0 else 1.01
     return {
         "type": "ken_burns",
-        "movement": "zoom_in_center" if zoom_in else "zoom_out_center",
+        "movement": "zoom_in_center" if index % 2 == 0 else "zoom_out_center",
         "speed": "very_slow",
         "speed_factor": 1.0,
-        "lock_target": False,
-        "centered": True,
-        "target_x": 0.5,
-        "target_y": 0.5,
-        "zoom_start": 1.0 if zoom_in else zoom,
-        "zoom_end": zoom if zoom_in else 1.0,
+        "lock_target": True,
+        "centered": False,
+        "target_x": max(0.25, min(0.75, float(target_x))),
+        "target_y": max(0.35, min(0.65, float(target_y))),
+        "zoom_start": zoom_start,
+        "zoom_end": zoom_end,
         "pan_x_start": 0.5,
         "pan_x_end": 0.5,
         "pan_y_start": 0.5,

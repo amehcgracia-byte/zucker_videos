@@ -1290,8 +1290,8 @@ def same_project_path(left: str | None, right: str | None) -> bool:
 
 def _store_transition_type(project: Project, platform: str, transition_type: str | None) -> None:
     """Persist the selected transition preset for this mode."""
-    value = str(transition_type or "crossfade").strip().lower()
-    if value not in TRANSITION_LIBRARY:
+    value = str(transition_type or "auto").strip().lower()
+    if value != "auto" and value not in TRANSITION_LIBRARY:
         value = "crossfade"
     transitions = project.data.setdefault("settings", {}).setdefault("export", {}).setdefault("transitions", {})
     transitions.setdefault(str(platform or "youtube"), {})["type"] = value
