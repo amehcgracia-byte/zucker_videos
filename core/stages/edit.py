@@ -22,8 +22,8 @@ from core.stages.cut import _clip_master_ranges, load_coverage
 
 LOGGER = logging.getLogger(__name__)
 
-MIN_SEGMENT_SEC = 2.0
-MAX_SEGMENT_SEC = 6.0
+MIN_SEGMENT_SEC = 3.0
+MAX_SEGMENT_SEC = 7.0
 MAX_BARS_PER_SEGMENT = 12
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
@@ -70,7 +70,7 @@ MOTION_SPEEDS = (("very_slow", 0.50), ("slow", 0.72), ("fast", 1.0))
 IPHONE_CROP_TOP_LIMIT = 0.80
 # Bump this whenever the YouTube camera-choice invariant changes so an older
 # cached edit plan cannot keep producing the previous camera runs.
-YOUTUBE_CAMERA_SELECTION_VERSION = 17
+YOUTUBE_CAMERA_SELECTION_VERSION = 18
 # Legacy diagnostic threshold retained in project settings/manifests. The
 # production policy now stops close-up filler as soon as one alternative
 # physical camera covers the same synced window.
@@ -122,7 +122,7 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 23
+EDIT_PLAN_ALGORITHM_VERSION = 24
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
@@ -1535,10 +1535,10 @@ def _bars_for_segment(
     energy = 0.5
     if energy_by_bar and 0 <= bar_index < len(energy_by_bar):
         energy = max(0.0, min(1.0, float(energy_by_bar[bar_index])))
-    # Long holds are the default: roughly 5–6 seconds in low and medium
-    # energy. Only the strongest passages may drop to 2–3 seconds; one-second
-    # cuts are never authored by this policy.
-    target_seconds = 2.0 if energy >= 0.92 else 3.0 if energy >= 0.86 else 6.0
+    # Long holds are the default: roughly 6–7 seconds in low and medium
+    # energy. Strong passages may drop to 3 seconds, and only the most extreme
+    # peaks may use 2 seconds. One-second cuts are never authored by this policy.
+    target_seconds = 2.0 if energy >= 0.92 else 3.0 if energy >= 0.86 else 7.0
     bars = max(1, min(MAX_BARS_PER_SEGMENT, round(target_seconds / bar_duration)))
     if bars * bar_duration < target_seconds * 0.85:
         bars = min(MAX_BARS_PER_SEGMENT, bars + 1)

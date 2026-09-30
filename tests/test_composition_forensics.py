@@ -103,8 +103,8 @@ def test_360_review_pool_has_twenty_reserve_views_across_proxy_aliases(tmp_path:
 
 def test_edit_cadence_uses_long_holds_until_music_is_very_intense() -> None:
     bars = [float(index) for index in range(20)]
-    assert _bars_for_segment(0, bars, [], 0, [0.15]) == 6
-    assert _bars_for_segment(0, bars, [], 0, [0.80]) == 6
+    assert _bars_for_segment(0, bars, [], 0, [0.15]) == 7
+    assert _bars_for_segment(0, bars, [], 0, [0.80]) == 7
     assert _bars_for_segment(0, bars, [], 0, [0.90]) == 3
     assert _bars_for_segment(0, bars, [], 0, [0.99]) == 2
 
@@ -160,3 +160,12 @@ def test_malformed_composition_is_rejected_without_raising(tmp_path: Path) -> No
     validation = _validate_composition_output(base, corrupt, {"images": [], "videos": []})
     assert validation["ok"] is False
     assert "probe_failed" in validation["reason"]
+
+
+
+def test_youtube_longform_policy_has_no_caption_or_flyer_pass() -> None:
+    # This is an architectural contract test marker: the API must gate both
+    # saved overlay specs and caption burning when the render platform is YouTube.
+    api = Path("server/api.py").read_text(encoding="utf-8")
+    assert "youtube_longform = render_platform in" in api
+    assert "needs_caption_pass = (not youtube_longform)" in api
