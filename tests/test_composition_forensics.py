@@ -202,3 +202,14 @@ def test_gentle_fixed_camera_motion_applies_subject_target():
     motion = _gentle_fixed_camera_motion(0, 0.25, 0.50)
     assert motion["zoom_end"] > motion["zoom_start"]
     assert motion["pan_x_end"] < 0.5
+
+
+def test_transition_defaults_cover_each_join_and_respect_none():
+    from core.stages.export import _transition_boundaries, _transition_types_for_boundaries
+    segments = [{}, {}, {}]
+    profile = {"duration": 0.55, "every": 1, "type": "auto", "sections_only": False}
+    boundaries = _transition_boundaries(segments, profile)
+    assert boundaries == [0, 1]
+    assert _transition_types_for_boundaries(segments, boundaries, profile) == ["crossfade", "fadeblack"]
+    segments[0]["transition_type"] = "none"
+    assert _transition_boundaries(segments, profile) == [1]
