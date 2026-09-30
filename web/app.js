@@ -871,8 +871,8 @@ const REFERENCE_FOV_DEG = 100;
 // stereographic projection; the live WebGL viewers clamp their own perspective
 // camera to <180° internally (verticalFovFromHorizontal), so this only widens
 // what can be authored, not what a rectilinear camera is asked to render.
-const MIN_SHOT_FOV = 30;
-const MAX_SHOT_FOV = 300;
+const MIN_SHOT_FOV = 82;
+const MAX_SHOT_FOV = 165;
 
 function dragSensitivityScale(currentFov) {
   const fov = Number(currentFov) || REFERENCE_FOV_DEG;
@@ -1074,7 +1074,7 @@ function queueSphericalSetupPreview(viewer, immediate = false) {
 
 function updateSphericalSetupViewer(viewer, values = {}) {
   viewer.yaw = normalizeYaw(values.yaw ?? viewer.yaw ?? 0) ?? 0;
-  viewer.pitch = clamp(Number(values.pitch ?? viewer.pitch ?? 0), -85, 85);
+  viewer.pitch = clamp(Number(values.pitch ?? viewer.pitch ?? 0), -25, 25);
   viewer.fov = clamp(Number(values.fov ?? viewer.fov ?? 95), MIN_SHOT_FOV, MAX_SHOT_FOV);
   const group = document.querySelector('fieldset[data-spherical-landmark="' + viewer.shot + '"]');
   if (group) {
@@ -1104,7 +1104,7 @@ function wireSphericalSetupViewer(viewer) {
     const dy = event.clientY - viewer.dragY;
     viewer.dragX = event.clientX; viewer.dragY = event.clientY;
     viewer.yaw = normalizeYaw(viewer.yaw - dx * YAW_DEG_PER_PX * dragSensitivityScale(viewer.fov)) ?? 0;
-    viewer.pitch = clamp(viewer.pitch + dy * PITCH_DEG_PER_PX * dragSensitivityScale(viewer.fov), -85, 85);
+    viewer.pitch = clamp(viewer.pitch + dy * PITCH_DEG_PER_PX * dragSensitivityScale(viewer.fov), -25, 25);
     updateSphericalSetupViewer(viewer, viewer);
   });
   const stop = (event) => {
@@ -2346,7 +2346,7 @@ function applyFixedRearMotion(enabled) {
 }
 
 function verticalFovFromHorizontal(horizontalFov, aspect) {
-  const horizontal = clamp(Number(horizontalFov) || 100, 1, 179);
+  const horizontal = clamp(Number(horizontalFov) || 100, 82, 165);
   return (2 * Math.atan(Math.tan((horizontal * Math.PI) / 360) / Math.max(0.1, aspect)) * 180) / Math.PI;
 }
 
@@ -2455,7 +2455,7 @@ function wireResult360Events(canvas) {
     result360.dragY = event.clientY;
     const sensitivity = dragSensitivityScale(result360.fov);
     result360.yaw = normalizeYaw(result360.yaw - dx * YAW_DEG_PER_PX * sensitivity) ?? 0;
-    result360.pitch = clamp(result360.pitch + dy * PITCH_DEG_PER_PX * sensitivity, -85, 85);
+    result360.pitch = clamp(result360.pitch + dy * PITCH_DEG_PER_PX * sensitivity, -25, 25);
     updateResult360Camera();
   });
   const stopDrag = (event) => {
@@ -2495,7 +2495,7 @@ function updateResult360Camera() {
   result360.camera.fov = verticalFovFromHorizontal(result360.fov, aspect);
   result360.camera.updateProjectionMatrix();
   const yaw = THREE.MathUtils.degToRad(signedYawDelta(result360.yaw, 0));
-  const pitch = THREE.MathUtils.degToRad(clamp(result360.pitch, -85, 85));
+  const pitch = THREE.MathUtils.degToRad(clamp(result360.pitch, -25, 25));
   const target = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
   result360.camera.lookAt(target);
   document.querySelector("#result360Hud").textContent = `Yaw ${formatCanonicalNumber(result360.yaw)}° · Pitch ${formatCanonicalNumber(result360.pitch)}°`;

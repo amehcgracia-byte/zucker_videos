@@ -22,13 +22,13 @@ from core.stages.cut import _clip_master_ranges, load_coverage
 
 LOGGER = logging.getLogger(__name__)
 
-MIN_SEGMENT_SEC = 3.0
+MIN_SEGMENT_SEC = 2.0
 MAX_SEGMENT_SEC = 7.0
 MAX_BARS_PER_SEGMENT = 12
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
-SPHERICAL_MOTION_PLAN_VERSION = 11
+SPHERICAL_MOTION_PLAN_VERSION = 12
 # Reel has its own pacing contract.  Keep this independent from the
 # YouTube/360 segment limits so a Reel change cannot invalidate or alter their
 # edit cadence accidentally.
@@ -70,7 +70,7 @@ MOTION_SPEEDS = (("very_slow", 0.50), ("slow", 0.72), ("fast", 1.0))
 IPHONE_CROP_TOP_LIMIT = 0.80
 # Bump this whenever the YouTube camera-choice invariant changes so an older
 # cached edit plan cannot keep producing the previous camera runs.
-YOUTUBE_CAMERA_SELECTION_VERSION = 20
+YOUTUBE_CAMERA_SELECTION_VERSION = 21
 # Legacy diagnostic threshold retained in project settings/manifests. The
 # production policy now stops close-up filler as soon as one alternative
 # physical camera covers the same synced window.
@@ -102,15 +102,15 @@ SPHERICAL_MAX_MOTION_FRACTION_PER_SEC = 0.06
 # Planet is a special effect, not the default visual language of a normal
 # 360 edit. Keep its optional rotation at a deliberately gentle absolute rate.
 PLANET_SPIN_DEG_PER_SEC = 5.0
-SPHERICAL_HOLD_MOTION_DEG_PER_SEC = 1.2
+SPHERICAL_HOLD_MOTION_DEG_PER_SEC = 2.0
 SPHERICAL_MIN_LANDMARK_HOLD_SEC = 6.0
 SPHERICAL_TARGET_LANDMARK_HOLD_SEC = 8.0
 SPHERICAL_MAX_LANDMARK_HOLD_SEC = 12.0
 SPHERICAL_DEFAULT_FOV = 95.0
 SPHERICAL_WIDE_FOV = 120.0
 SPHERICAL_AUDIENCE_STAGE_FOV = 125.0
-SPHERICAL_NORMAL_FOV_MIN = 70.0
-SPHERICAL_NORMAL_FOV_MAX = 300.0
+SPHERICAL_NORMAL_FOV_MIN = 82.0
+SPHERICAL_NORMAL_FOV_MAX = 165.0
 SPHERICAL_SHOT_ORDER = ("full_stage", "singer", "drummer", "left", "right", "audience", "audience_stage_wide", "planet")
 SPHERICAL_LANDMARKS = {
     "singer": ("singer_yaw", "Cantante", SPHERICAL_DEFAULT_FOV),
@@ -122,15 +122,18 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 25
+EDIT_PLAN_ALGORITHM_VERSION = 26
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
-    # Keep all authored 360 landmarks in rotation. The old 60/10/10 split
-    # starved the other views and made plans repeat the same few frames.
-    "singer": 0.30,
-    "full_stage": 0.15,
-    "audience": 0.15,
+    # Keep every authored stage landmark in rotation, with a small singer
+    # preference. Audience-only views are never automatic editorial targets.
+    "singer": 0.24,
+    "full_stage": 0.16,
+    "drummer": 0.16,
+    "left": 0.16,
+    "right": 0.16,
+    "audience_stage_wide": 0.12,
 }
 
 
@@ -1173,7 +1176,9 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_ena
             "shot_id": shot_type,
             "label": label,
             "yaw": yaw,
-            "pitch": _landmark_weight(data, "pitch", 0.0),
+            # Keep automatic framing on the stage plane; extreme pitch angles
+            # are the source of empty corners, feet and ceiling shots.
+            "pitch": max(-18.0, min(18.0, _landmark_weight(data, "pitch", 0.0))),
             "fov": _landmark_weight(data, "fov", default_fov),
             "weight": weight,
             "sweep_enabled": bool(sweep_enabled),
@@ -1257,8 +1262,7 @@ def _plan_spherical_fov(shot: dict[str, Any]) -> float:
         fov = SPHERICAL_DEFAULT_FOV
     if shot_type == "planet":
         return max(220.0, min(300.0, fov))
-    if shot_type == "recorded_move":
-        return max(1.0, min(300.0, fov))
+    # Recorded and automatic views share the same anti-pixelation guard.
     return max(SPHERICAL_NORMAL_FOV_MIN, min(SPHERICAL_NORMAL_FOV_MAX, fov))
 
 
@@ -1549,10 +1553,10 @@ def _bars_for_segment(
     energy = 0.5
     if energy_by_bar and 0 <= bar_index < len(energy_by_bar):
         energy = max(0.0, min(1.0, float(energy_by_bar[bar_index])))
-    # Long holds are the default: roughly 6–7 seconds in low and medium
-    # energy. Strong passages may drop to 3 seconds, and only the most extreme
-    # peaks may use 2 seconds. One-second cuts are never authored by this policy.
-    target_seconds = 2.0 if energy >= 0.92 else 3.0 if energy >= 0.86 else 7.0
+    # Long holds are the default: roughly 5–6 seconds in low energy.
+    # Intense passages use 3–4 seconds, with only the strongest peaks at 2 s.
+    # The global timeline floor prevents one-second cuts.
+    target_seconds = 2.0 if energy >= 0.92 else 3.0 if energy >= 0.82 else 4.0 if energy >= 0.70 else 6.0
     bars = max(1, min(MAX_BARS_PER_SEGMENT, round(target_seconds / bar_duration)))
     if bars * bar_duration < target_seconds * 0.85:
         bars = min(MAX_BARS_PER_SEGMENT, bars + 1)
@@ -1669,7 +1673,8 @@ def _choose_source(
         )
         covered_seconds = max(1.0, float((selection_stats.get(_source_id(source)) or {}).get("covered_seconds") or 0.0))
         director_bonus = float(source.get("director_segment_score") or 1.0) if role == "handheld" else 1.0
-        return (role_chosen_seconds / target_share, chosen_seconds / covered_seconds, usage_counts.get(_source_id(source), 0), -director_bonus, -float(source.get("confidence") or 0.0), _source_id(source))
+        camera_balance = role_chosen_seconds / target_share - _camera_preference_score(source)
+        return (camera_balance, chosen_seconds / covered_seconds, usage_counts.get(_source_id(source), 0), -director_bonus, -float(source.get("confidence") or 0.0), _source_id(source))
 
     return sorted(candidates, key=score)[0]
 
@@ -1736,7 +1741,8 @@ def _choose_source_avoiding_identical_framing(
             "segment": segment_index,
             "source": _source_id(src),
         })[:16], 16)
-        return (-singing_bonus, camera_chosen_seconds / target_share, role_chosen_seconds / max(0.001, float(role_weights_copy.get(role, 0.3))), -battery_bonus, chosen_seconds / covered_seconds, usage_counts_copy.get(_source_id(src), 0), -director_bonus, -float(src.get("confidence") or 0.0), variation_rank, _source_id(src))
+        camera_balance = camera_chosen_seconds / target_share - _camera_preference_score(src)
+        return (-singing_bonus, camera_balance, role_chosen_seconds / max(0.001, float(role_weights_copy.get(role, 0.3))), -battery_bonus, chosen_seconds / covered_seconds, usage_counts_copy.get(_source_id(src), 0), -director_bonus, -float(src.get("confidence") or 0.0), variation_rank, _source_id(src))
 
     usable = [src for src in sources if float(role_weights_copy.get(_source_role(src), role_weights_copy.get("handheld", 0.3))) > 0.0] or list(sources)
     if forced_alternatives:
@@ -2001,7 +2007,14 @@ def _is_singing_window(coverage: dict[str, Any], start: float, end: float) -> bo
 def _preferred_singing_camera_ids(sources: list[dict[str, Any]], singing: bool) -> set[str]:
     if not singing:
         return set()
-    sony = {_camera_id(source) for source in sources if _source_role(source) == "handheld" and "sony" in str(source.get("filename") or source.get("path") or "").lower()}
+    text_for = lambda source: " ".join(
+        str(source.get(key) or "")
+        for key in ("camera_id", "camera_name", "camera", "camera_label", "filename", "path", "source_path")
+    ).lower()
+    nikon = {_camera_id(source) for source in sources if _source_role(source) == "handheld" and "nikon" in text_for(source)}
+    if nikon:
+        return nikon
+    sony = {_camera_id(source) for source in sources if _source_role(source) == "handheld" and "sony" in text_for(source)}
     if sony:
         return sony
     return {_camera_id(source) for source in sources if _source_role(source) == "360"}
@@ -2601,6 +2614,19 @@ def _camera_id(source: dict[str, Any]) -> str:
         if marker in stem:
             return marker
     return stem or _source_id(source).lower()
+
+
+def _camera_preference_score(source: dict[str, Any]) -> float:
+    """Return a small deterministic bonus for the preferred physical camera."""
+    text = " ".join(
+        str(source.get(key) or "")
+        for key in ("camera_id", "camera_name", "camera", "camera_label", "filename", "path", "source_path")
+    ).lower()
+    if "nikon" in text:
+        return 0.20
+    if "sony" in text:
+        return 0.05
+    return 0.0
 
 
 def _selection_stats_template(sources: list[dict[str, Any]], window_start: float, window_end: float) -> dict[str, dict[str, Any]]:

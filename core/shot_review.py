@@ -15,7 +15,7 @@ from core.ffmpeg import locate_executable
 from core.spherical_view import view_parameters
 from core.stages.base import artifact_path
 from core.stages.cut import load_coverage
-from core.stages.edit import IPHONE_CROP_TOP_LIMIT, _camera_id
+from core.stages.edit import IPHONE_CROP_TOP_LIMIT, SPHERICAL_NORMAL_FOV_MIN, _camera_id
 from core.reel_framing import subject_box_for_window
 
 
@@ -297,8 +297,8 @@ def _spherical_review_poses(segment: dict[str, Any], segments: list[dict[str, An
             return
         try:
             yaw = float(raw.get("yaw") or 0.0) % 360.0
-            pitch = max(-35.0, min(35.0, float(raw.get("pitch") or 0.0)))
-            fov = max(50.0, min(140.0, float(raw.get("fov") or 95.0)))
+            pitch = max(-18.0, min(18.0, float(raw.get("pitch") or 0.0)))
+            fov = max(SPHERICAL_NORMAL_FOV_MIN, min(140.0, float(raw.get("fov") or 95.0)))
         except (TypeError, ValueError):
             return
         pose = dict(raw)

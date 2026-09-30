@@ -21,7 +21,7 @@ DMG_ROOT="$ROOT/build/dmg"
 DMG_RW="$ROOT/build/${APP_DISPLAY_NAME}.tmp.dmg"
 BUILD_INFO="$ROOT/build/build_info.json"
 DMG_PATH="$DIST/${APP_DISPLAY_NAME}.dmg"
-APP_BUNDLE="$RELEASE/$APP_DISPLAY_NAME.app"
+APP_BUNDLE="$RELEASE/$APP_NAME.app"
 
 if [[ ! -x "$PYTHON" ]]; then
   echo "Python not found at $PYTHON. Create the venv and install requirements first." >&2
@@ -50,7 +50,7 @@ PY
 "$PYTHON" -m PyInstaller \
   --noconfirm \
   --windowed \
-  --name "$APP_DISPLAY_NAME" \
+  --name "$APP_NAME" \
   --icon "$ROOT/assets/icon.icns" \
   --distpath "$PYI_DIST" \
   --workpath "$BUILD" \
@@ -93,7 +93,7 @@ PY
   "$ROOT/app.py"
 
 rm -rf "$APP_BUNDLE"
-cp -R "$PYI_DIST/$APP_DISPLAY_NAME.app" "$APP_BUNDLE"
+cp -R "$PYI_DIST/$APP_NAME.app" "$APP_BUNDLE"
 rm -rf "$PYI_DIST" "$DIST/$APP_NAME"
 find "$APP_BUNDLE" -type d -name tests -prune -exec rm -rf {} +
 # Do not match arbitrary names containing "tests": NumPy legitimately ships
@@ -113,7 +113,7 @@ codesign --force --deep -s - "$APP_BUNDLE"
 SELFTEST_LOG="$ROOT/build/packaged-selftest.log"
 SELFTEST_AUDIO="${ZUCKER_SELFTEST_AUDIO:-$HOME/ZuckerVideos/WizardUploads/C0130.MP4}"
 if [[ -f "$SELFTEST_AUDIO" ]]; then
-  if ! ZUCKER_WHISPER_BACKEND=faster-whisper ZUCKER_SELFTEST_AUDIO="$SELFTEST_AUDIO" "$APP_BUNDLE/Contents/MacOS/$APP_DISPLAY_NAME" --selftest >"$SELFTEST_LOG" 2>&1; then
+  if ! ZUCKER_WHISPER_BACKEND=faster-whisper ZUCKER_SELFTEST_AUDIO="$SELFTEST_AUDIO" "$APP_BUNDLE/Contents/MacOS/$APP_NAME" --selftest >"$SELFTEST_LOG" 2>&1; then
     cat "$SELFTEST_LOG" >&2
     exit 1
   fi
@@ -173,7 +173,7 @@ tell application "Finder"
     set arrangement of theViewOptions to not arranged
     set icon size of theViewOptions to 104
     set background picture of theViewOptions to file ".background:background.png"
-    set position of item "$APP_DISPLAY_NAME.app" of container window to {170, 205}
+    set position of item "$APP_NAME.app" of container window to {170, 205}
     set position of item "Applications" of container window to {470, 205}
     close
     open

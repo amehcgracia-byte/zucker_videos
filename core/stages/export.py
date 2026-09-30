@@ -70,16 +70,16 @@ EXPORT_SEGMENT_RECIPE_VERSION = 21
 # v17 adds byte-level and full-shot attestation to segment sidecars.  A file
 # with a copied/reused sidecar is no longer accepted if its bytes or authored
 # motion fields differ from the current render.
-SPHERICAL_MOTION_RECIPE_VERSION = 22
+SPHERICAL_MOTION_RECIPE_VERSION = 23
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_HOLD_COMMAND_COUNT = 2
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
 SPHERICAL_NORMAL_FOV_MIN = NORMAL_FOV_MIN
 SPHERICAL_NORMAL_FOV_MAX = NORMAL_FOV_MAX
-SPHERICAL_MAX_HOLD_YAW_DEG = 10.0
+SPHERICAL_MAX_HOLD_YAW_DEG = 16.0
 INTRO_DURATION = 10.0
-COLOR_PROFILE_VERSION = 4
+COLOR_PROFILE_VERSION = 5
 REEL_LETTERBOX_CACHE_VERSION = 2
 REEL_LETTERBOX_BLUR_SIGMA = 18.0
 # Reel logos are composed after the base export by Overlay & Captions. Keep
@@ -88,7 +88,7 @@ REEL_LETTERBOX_BLUR_SIGMA = 18.0
 REEL_BASE_LOGO_POLICY_VERSION = 1
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
-TRANSITION_PROFILE_VERSION = 5
+TRANSITION_PROFILE_VERSION = 6
 # Public transition library. Each preset maps to a filter available in the
 # packaged FFmpeg build.
 TRANSITION_LIBRARY = {
@@ -108,10 +108,11 @@ TRANSITION_LIBRARY = {
 }
 AUTO_TRANSITION_TYPES = ("crossfade", "fadeblack", "wipeleft", "slideright")
 TRANSITION_PROFILES = {
-    # Visible long-form joins; each join is clamped to its neighbouring takes.
-    "youtube": {"duration": 0.55, "sections_only": False, "every": 1, "type": "auto"},
-    "reel": {"duration": 0.30, "sections_only": False, "every": 2, "type": "auto"},
-    "reel_horizontal": {"duration": 0.30, "sections_only": False, "every": 2, "type": "auto"},
+    # Transitions must be visible in the finished edit. The renderer skips a
+    # join rather than silently shortening an applied transition below 1 s.
+    "youtube": {"duration": 1.0, "sections_only": False, "every": 1, "type": "auto"},
+    "reel": {"duration": 1.0, "sections_only": False, "every": 2, "type": "auto"},
+    "reel_horizontal": {"duration": 1.0, "sections_only": False, "every": 2, "type": "auto"},
     # No transition between equirectangular cuts: the 360 path is a direct
     # projection-safe passthrough. Its logo clips already fade from/to black.
     "360": {"duration": 0.0, "sections_only": True, "type": "crossfade"},
@@ -124,7 +125,8 @@ def _transition_profile(project: Project, platform: str) -> dict[str, Any]:
     configured = (((project.data.get("settings") or {}).get("export") or {}).get("transitions") or {}).get(platform)
     if isinstance(configured, dict):
         profile.update(configured)
-    profile["duration"] = max(0.0, float(profile.get("duration") or 0.0))
+    minimum_duration = 1.0 if platform in {"youtube", "reel", "reel_horizontal"} and str(profile.get("type") or "auto").lower() != "none" else 0.0
+    profile["duration"] = max(minimum_duration, float(profile.get("duration") or 0.0))
     transition_type = str(profile.get("type") or "auto").strip().lower()
     if transition_type not in {"auto", "none"} and transition_type not in TRANSITION_LIBRARY:
         transition_type = "auto"
@@ -220,12 +222,19 @@ def _render_flat_video_transitions(
     for index, (next_label, next_duration) in enumerate(chunks[1:], start=1):
         out = f"xf{index}"
         # xfade requires a duration shorter than both neighbouring chunks.
-        join_duration = min(fade_duration, current_duration * 0.45, next_duration * 0.45)
-        join_duration = max(0.001, join_duration)
-        offset = max(0.0, current_duration - join_duration)
+        join_duration = min(max(1.0, float(fade_duration)), current_duration * 0.45, next_duration * 0.45)
         selected_type = transition_types[(index - 1) % len(transition_types)]
         recipe = TRANSITION_LIBRARY.get(selected_type, TRANSITION_LIBRARY["crossfade"])
         xfade_name = str(recipe["xfade"])
+        if join_duration < 1.0:
+            # A 1 s transition cannot fit between two very short takes without
+            # consuming most of either shot. Keep the cut hard instead of
+            # emitting an imperceptible sub-second transition.
+            filters.append(f"[{current}][{next_label}]concat=n=2:v=1:a=0[{out}]")
+            current = out
+            current_duration += next_duration
+            continue
+        offset = max(0.0, current_duration - join_duration)
         if xfade_name == "none":
             filters.append(f"[{current}][{next_label}]concat=n=2:v=1:a=0[{out}]")
         elif xfade_name == "custom":
@@ -4596,7 +4605,7 @@ def _concat_file_line(path: Path) -> str:
     return "file '{}'\n".format(path.as_posix().replace("'", "'\\''"))
 
 
-COLOR_REFERENCE_PRIORITY = ("sony", "360", "iphone")
+COLOR_REFERENCE_PRIORITY = ("nikon", "360", "sony", "iphone")
 
 
 def _color_camera_kind(record: dict[str, Any]) -> str:
@@ -4605,6 +4614,8 @@ def _color_camera_kind(record: dict[str, Any]) -> str:
         "camera_id", "camera_name", "camera", "camera_label", "filename", "path", "source_path"
     )).lower()
     projection = str(record.get("projection") or (record.get("probe") or {}).get("projection") or "").lower()
+    if "nikon" in text:
+        return "nikon"
     if "sony" in text:
         return "sony"
     if projection in {"equirect", "raw_insv"} or "360" in text or "insv" in text:
@@ -4614,13 +4625,38 @@ def _color_camera_kind(record: dict[str, Any]) -> str:
     return "other"
 
 
-def _color_reference_record(records: list[dict[str, Any]]) -> dict[str, Any] | None:
-    present = {kind: record for record in records if (kind := _color_camera_kind(record)) != "other"}
+def _color_reference_record(
+    records: list[dict[str, Any]],
+    measured_records: list[tuple[dict[str, Any], dict[str, Any]]] | None = None,
+) -> dict[str, Any] | None:
+    """Choose the brightest usable camera, with Nikon as the tie-break priority."""
+    priority = {kind: index for index, kind in enumerate(COLOR_REFERENCE_PRIORITY)}
+    if measured_records:
+        candidates = []
+        for record, profile in measured_records:
+            kind = _color_camera_kind(record)
+            if kind == "other" or profile.get("luma") is None:
+                continue
+            candidates.append((record, profile, kind))
+        safe = [
+            item for item in candidates
+            if float(item[1].get("white_clip_ratio") or 0.0) <= 0.05
+            and float(item[1].get("black_clip_ratio") or 0.0) <= 0.05
+        ]
+        pool = safe or candidates
+        if pool:
+            return max(
+                pool,
+                key=lambda item: (
+                    float(item[1].get("luma") or 0.0),
+                    -priority.get(item[2], 99),
+                ),
+            )[0]
+    present = {_color_camera_kind(record): record for record in records if _color_camera_kind(record) != "other"}
     for kind in COLOR_REFERENCE_PRIORITY:
         if kind in present:
             return present[kind]
     return records[0] if records else None
-
 
 def _color_profile_artifact(project: Project) -> Path:
     return project.cache_dir / "color_profiles.json"
@@ -4659,20 +4695,28 @@ def _color_profiles_for_segments(project: Project, segments: list[dict[str, Any]
     valid = [profile for profile in measured.values() if profile.get("luma") is not None]
     if not valid:
         return {path: {} for path in measured}
-    ref_record = _color_reference_record([record for record, _ in by_clip.values()])
+    measured_records = [(record, measured[clip_path]) for clip_path, (record, _source_path) in by_clip.items() if clip_path in measured]
+    ref_record = _color_reference_record([record for record, _ in by_clip.values()], measured_records)
     ref_kind = _color_camera_kind(ref_record or {})
-    ref_profile = next((profile for profile in valid if profile.get("camera_kind") == ref_kind), valid[0])
+    ref_profile = next(
+        (profile for record, profile in measured_records if record is ref_record),
+        valid[0],
+    )
+    reference_for_matching = dict(ref_profile)
+    # Lift all cameras slightly while matching to the brightest usable source.
+    reference_for_matching["luma"] = min(235.0, float(ref_profile.get("luma") or 128.0) + 6.0)
     if float(ref_profile.get("white_clip_ratio") or 0) > 0.05 or float(ref_profile.get("black_clip_ratio") or 0) > 0.05 or not 35 <= float(ref_profile.get("luma") or 0) <= 220:
         warnings.append(
             f"La cámara de referencia de color ({ref_profile.get('camera_id')}) presenta exposición potencialmente defectuosa; se usa por prioridad fija ({ref_kind}), sin sustituirla automáticamente."
         )
     corrected: dict[str, dict[str, Any]] = {}
     for path, profile in measured.items():
-        corrected[path] = color_correction_for_profile(profile, ref_profile)
+        corrected[path] = color_correction_for_profile(profile, reference_for_matching)
     artifact = {
         "version": COLOR_PROFILE_VERSION,
         "reference_priority": list(COLOR_REFERENCE_PRIORITY),
         "reference_camera": ref_profile.get("camera_id"),
+        "reference_brightness_lift": 6.0,
         "profiles": {path: profile for path, profile in measured.items()},
         "corrections": corrected,
     }
