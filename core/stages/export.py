@@ -71,10 +71,10 @@ EXPORT_SEGMENT_RECIPE_VERSION = 21
 # v17 adds byte-level and full-shot attestation to segment sidecars.  A file
 # with a copied/reused sidecar is no longer accepted if its bytes or authored
 # motion fields differ from the current render.
-SPHERICAL_MOTION_RECIPE_VERSION = 24
+SPHERICAL_MOTION_RECIPE_VERSION = 25
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
-SPHERICAL_HOLD_COMMAND_COUNT = 2
+SPHERICAL_HOLD_COMMAND_COUNT = 8
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
 SPHERICAL_NORMAL_FOV_MIN = NORMAL_FOV_MIN
 SPHERICAL_NORMAL_FOV_MAX = NORMAL_FOV_MAX
@@ -2869,65 +2869,67 @@ def _v360_sendcmd_filter(shot: dict[str, Any] | None, duration: float | None, co
 
 
 def _v360_motion_commands(shot: dict[str, Any], duration: float, aspect_ratio: float = 16.0 / 9.0) -> list[str]:
+    """Emit a continuous, per-frame v360 motion track.
+
+    sendcmd is event based by default: two timestamped commands only set
+    the pose at the interval boundaries and do not interpolate between them.
+    Use the documented [expr] event on piecewise intervals instead, so the
+    command is evaluated for every decoded frame and v360 receives a smooth
+    yaw/pitch/FOV value throughout the shot.
+    """
     if not _shot_requires_runtime_motion(shot):
         return []
     if FORCE_STATIC_360_ISOLATION:
         yaw, pitch, fov = _static_360_pose(shot)
         h_fov, v_fov = _paired_motion_fov(shot, fov, aspect_ratio)
         return [
-            f"0.000000 {SPHERE_V360_LABEL} yaw {yaw:.6f};\n",
-            f"0.000000 {SPHERE_V360_LABEL} pitch {pitch:.6f};\n",
-            f"0.000000 {SPHERE_V360_LABEL} h_fov {h_fov:.6f};\n",
-            f"0.000000 {SPHERE_V360_LABEL} v_fov {v_fov:.6f};\n",
+            f"0.000000 [expr] {SPHERE_V360_LABEL} yaw {yaw:.6f};\n",
+            f"0.000000 [expr] {SPHERE_V360_LABEL} pitch {pitch:.6f};\n",
+            f"0.000000 [expr] {SPHERE_V360_LABEL} h_fov {h_fov:.6f};\n",
+            f"0.000000 [expr] {SPHERE_V360_LABEL} v_fov {v_fov:.6f};\n",
         ]
-    commands: list[str] = []
-    # A recorded-move curve can hold thousands of samples and is sampled once per frame.
-    # Pre-normalise it a single time and interpolate with a bisect lookup so sendcmd
-    # generation is O(frames * log N) instead of O(frames * N); the previous per-frame
-    # re-normalisation made long 360 exports take minutes just to emit the command file.
+
+    duration = max(0.001, float(duration))
     curve_sampler = _recorded_curve_sampler(shot)
-    # Keep the command count deliberately small for FFmpeg stability, but
-    # include the endpoint. The previous midpoint-only schedule made the
-    # second half of every automatic 360 hold static and often looked like no
-    # movement at all.
-    event_count = max(2, int(SPHERICAL_HOLD_COMMAND_COUNT))
-    if shot.get("type") in {"planet", "recorded_move"}:
-        event_times = [0.0, duration]
+    if curve_sampler is not None:
+        curve = limit_yaw_velocity(shot.get("curve") or [])
+        event_times = {0.0, round(duration, 6)}
+        for sample in curve:
+            try:
+                event_times.add(round(max(0.0, min(duration, float(sample["t"]))), 6))
+            except (KeyError, TypeError, ValueError):
+                continue
+        times = sorted(event_times)
     else:
-        event_times = [0.0, duration]
-        if event_count > 2:
-            event_times = [duration * index / (event_count - 1) for index in range(event_count)]
-    for t in event_times:
+        event_count = max(4, int(SPHERICAL_HOLD_COMMAND_COUNT))
+        times = [round(duration * index / (event_count - 1), 6) for index in range(event_count)]
+
+    commands: list[str] = []
+    for start, end in zip(times, times[1:]):
+        if end <= start:
+            continue
         if curve_sampler is not None:
-            yaw, pitch, fov = curve_sampler(max(0.0, min(duration, t)))
-            yaw = _signed_yaw(yaw)
+            start_yaw, start_pitch, start_fov = curve_sampler(start)
+            end_yaw, end_pitch, end_fov = curve_sampler(end)
         else:
-            yaw, pitch, fov = _v360_motion_at(shot, duration, t)
-        h_fov, v_fov = _paired_motion_fov(shot, fov, aspect_ratio)
-        commands.append(f"{t:.6f} {SPHERE_V360_LABEL} yaw {yaw:.6f};\n")
-        commands.append(f"{t:.6f} {SPHERE_V360_LABEL} pitch {pitch:.6f};\n")
-        commands.append(f"{t:.6f} {SPHERE_V360_LABEL} h_fov {h_fov:.6f};\n")
-        commands.append(f"{t:.6f} {SPHERE_V360_LABEL} v_fov {v_fov:.6f};\n")
-    if shot.get("type") != "recorded_move":
-        first_yaw = _v360_motion_at(shot, duration, 0.0)[0]
-        next_yaw = _v360_motion_at(shot, duration, min(duration / 2.0, duration))[0]
-        last_yaw = _v360_motion_at(shot, duration, duration)[0]
-        configured_rate = float(shot.get("hold_motion_rate_deg_per_sec") or 0.0)
-        LOGGER.info(
-            "360 motion emit path=%s shot=%s duration=%.3f fps=%.3f hold=%s "
-            "configured_deg_per_sec=%.6f yaw_start=%.6f yaw_step=%.6f yaw_end=%.6f",
-            __name__,
-            shot.get("label") or shot.get("type") or "360",
-            duration,
-            TARGET_EXPORT_FPS,
-            shot.get("hold_motion") or "none",
-            configured_rate,
-            _shortest_yaw_delta(first_yaw, next_yaw),
-            _shortest_yaw_delta(first_yaw, last_yaw),
+            start_yaw, start_pitch, start_fov = _v360_motion_at(shot, duration, start)
+            end_yaw, end_pitch, end_fov = _v360_motion_at(shot, duration, end)
+        start_h_fov, start_v_fov = _paired_motion_fov(shot, start_fov, aspect_ratio)
+        end_h_fov, end_v_fov = _paired_motion_fov(shot, end_fov, aspect_ratio)
+        yaw_delta = _shortest_yaw_delta(start_yaw, end_yaw)
+        interval = f"{start:.6f}-{end:.6f}"
+        expressions = (
+            ("yaw", float(_signed_yaw(start_yaw)), yaw_delta),
+            ("pitch", float(start_pitch), float(end_pitch) - float(start_pitch)),
+            ("h_fov", float(start_h_fov), float(end_h_fov) - float(start_h_fov)),
+            ("v_fov", float(start_v_fov), float(end_v_fov) - float(start_v_fov)),
         )
+        for option, initial, delta in expressions:
+            commands.append(
+                f"{interval} [expr] {SPHERE_V360_LABEL} {option} "
+                f"{initial:.6f}+({delta:.6f})*TI;\n"
+            )
     return commands
-
-
 def _shot_requires_runtime_motion(shot: dict[str, Any] | None) -> bool:
     """Whether this shot needs the unsafe runtime v360 command path.
 
@@ -3647,7 +3649,7 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "hold_step_policy": "deg_per_sec_times_elapsed_seconds_v1",
         "hold_motion_rate_deg_per_sec": 0.01,
         "hold_motion_default": "subtle",
-        "sendcmd_event_policy": "two_absolute_poses_start_midpoint_v1",
+        "sendcmd_event_policy": "per_frame_expr_piecewise_v2",
         "landmark_hold_min_sec": 6.0,
         "landmark_hold_target_sec": 8.0,
         "landmark_hold_max_sec": 12.0,

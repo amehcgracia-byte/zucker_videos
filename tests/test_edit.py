@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from core.stages.edit import IPHONE_CROP_TOP_LIMIT, MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, MOTION_CATALOG, REEL_MAX_CUT_SEC, REEL_MIN_CUT_SEC, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _available_spherical_shots, _ken_burns_motion, _motion_active_axes, _spherical_motion_profile, _youtube_multicam_plan, _reel_promo_plan, _framing_nearly_identical, _valid_motion_recipe, _sony_non_music_filler, _choose_source_avoiding_identical_framing, validate_plan_camera_source_consistency, _visible_iphone_target
+from core.stages.edit import IPHONE_CROP_TOP_LIMIT, MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, MOTION_CATALOG, REEL_MAX_CUT_SEC, REEL_MIN_CUT_SEC, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _available_spherical_shots, _ken_burns_motion, _motion_active_axes, _spherical_motion_profile, _youtube_multicam_plan, _bars_for_segment, _music_pacing_target_seconds, _music_pacing_band, _reel_promo_plan, _framing_nearly_identical, _valid_motion_recipe, _sony_non_music_filler, _choose_source_avoiding_identical_framing, validate_plan_camera_source_consistency, _visible_iphone_target
 from core.stages.cut import _pick_energetic_window, _segment_for_360, _select_360_clip, _tighten_window_to_video_coverage
 from core.stages.edit import _covering_sources, _segment_from_source
 
@@ -992,3 +992,20 @@ def test_sony_gap_fill_never_repeats_a_frame_within_180_seconds():
         for right_time, right_key in selected[left_index + 1:]:
             if left_key == right_key:
                 assert right_time - left_time >= 180.0
+
+
+def test_long_form_music_pacing_contract_never_creates_one_second_cuts():
+    bar_times = [0.0, 2.0, 4.0, 6.0, 8.0]
+    expected_targets = [(0.20, 6.0), (0.70, 4.0), (0.84, 3.0), (0.95, 2.0)]
+    for energy, target in expected_targets:
+        assert _music_pacing_target_seconds(energy) == target
+        bars = _bars_for_segment(0, bar_times, [], 0, [energy])
+        duration = bars * (bar_times[1] - bar_times[0])
+        assert 2.0 <= duration <= 6.0
+        assert duration >= 2.0
+
+
+def test_music_pacing_band_is_explainable():
+    assert [_music_pacing_band(value) for value in (0.2, 0.7, 0.84, 0.95)] == [
+        "low", "rising", "high", "peak"
+    ]
