@@ -197,7 +197,6 @@ def _render_flat_video_transitions(
         start = end
     current, current_duration = chunks[0]
     fade_duration = max(0.001, float(fade_duration))
-    recipe = TRANSITION_LIBRARY.get(transition_type, TRANSITION_LIBRARY["crossfade"])
     if isinstance(transition_type, str) and transition_type == "auto":
         transition_types = list(AUTO_TRANSITION_TYPES)
     elif isinstance(transition_type, (list, tuple)):
