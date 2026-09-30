@@ -27,7 +27,7 @@ from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.messages import t
 from core.project import Project, ProjectError, create_project, load_project
 from core.build_info import build_info
-from core.spherical_view import MAX_SPHERICAL_FOV, effective_pitch, view_parameters
+from core.spherical_view import MAX_SPHERICAL_FOV, effective_fov, effective_pitch, view_parameters
 from core.media_validation import record_media_path
 from core.normalization import cache_status, cleanup_unreferenced_cache, global_cache_root, migrate_project_normalization_cache
 from core.stages.sync import clear_manual_override, cleanup_closed_sync_diagnostics, generate_preview, generate_thumbnail, invalidate_stale_sync_artifact, set_manual_anchor, set_manual_override, set_manual_override_ranges
@@ -2343,6 +2343,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         project_landmarks = project_settings.get("spherical_landmarks") or {}
         landmarks = merge_spherical_landmarks(global_landmarks, project_landmarks)
         landmarks = merge_spherical_landmarks(landmarks, incoming)
+        # Re-sanitize the merged profile too: old project/global values may
+        # contain pre-2.1.19 pitch/FOV values even when the incoming edit is
+        # only a partial landmark update.
+        landmarks = _sanitize_spherical_landmarks(landmarks)
         project_settings["spherical_landmarks"] = landmarks
         if source_key:
             profiles = project_settings.setdefault("spherical_landmarks_by_source", {})
@@ -3033,8 +3037,10 @@ def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, float]]:
         yaw = _optional_degrees(source.get("yaw"))
         if yaw is None:
             continue
-        pitch = _optional_float_setting(source.get("pitch"), 0.0)
-        fov = max(1.0, min(MAX_SPHERICAL_FOV, _optional_float_setting(source.get("fov"), float(meta["fov"]))))
+        # Persist the same canonical pose used by preview/review/export.
+        # Saving raw pitch/FOV here was the remaining preview-to-MP4 drift.
+        pitch = effective_pitch(_optional_float_setting(source.get("pitch"), 0.0), key)
+        fov = effective_fov(_optional_float_setting(source.get("fov"), float(meta["fov"])), key)
         weight = max(0.0, _optional_float_setting(source.get("weight"), 1.0))
         landmarks[key] = {"yaw": yaw, "pitch": pitch, "fov": fov, "weight": weight}
     return landmarks
