@@ -2456,9 +2456,11 @@ def _ken_burns_motion(
     close_zoom = rng.uniform(1.18, 1.42)
     tight_zoom = rng.uniform(1.08, 1.24)
     if kind == "full_static":
-        zoom_start = zoom_end = 3.0
+        # A static hold must preserve the full useful stage, not a hidden 3x
+        # crop that can show only feet, speakers or an empty corner.
+        zoom_start = zoom_end = 1.0
         pan_x_start = pan_x_end = 0.5
-        pan_y_start = pan_y_end = _minimum_pan_y_for_top_edge(zoom_start)
+        pan_y_start = pan_y_end = 0.5
     elif kind == "full_zoom_in" and force_full_zoom:
         # “Full” means the widest permitted action frame. A literal 1.0x
         # frame necessarily includes the ceiling, so start at a lower crop
