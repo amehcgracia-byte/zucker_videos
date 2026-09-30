@@ -33,6 +33,7 @@ from core.spherical_view import (
     NORMAL_FOV_MIN,
     STEREOGRAPHIC_FOV_THRESHOLD,
     effective_fov,
+    effective_pitch,
     paired_flat_fov,
     signed_yaw,
     view_parameters,
@@ -88,7 +89,7 @@ REEL_LETTERBOX_BLUR_SIGMA = 18.0
 REEL_BASE_LOGO_POLICY_VERSION = 1
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
-TRANSITION_PROFILE_VERSION = 6
+TRANSITION_PROFILE_VERSION = 7
 # Public transition library. Each preset maps to a filter available in the
 # packaged FFmpeg build.
 TRANSITION_LIBRARY = {
@@ -108,14 +109,14 @@ TRANSITION_LIBRARY = {
 }
 AUTO_TRANSITION_TYPES = ("crossfade", "fadeblack", "wipeleft", "slideright")
 TRANSITION_PROFILES = {
-    # Transitions must be visible in the finished edit. The renderer skips a
-    # join rather than silently shortening an applied transition below 1 s.
-    "youtube": {"duration": 1.0, "sections_only": False, "every": 1, "type": "auto"},
-    "reel": {"duration": 1.0, "sections_only": False, "every": 2, "type": "auto"},
-    "reel_horizontal": {"duration": 1.0, "sections_only": False, "every": 2, "type": "auto"},
-    # No transition between equirectangular cuts: the 360 path is a direct
-    # projection-safe passthrough. Its logo clips already fade from/to black.
-    "360": {"duration": 0.0, "sections_only": True, "type": "crossfade"},
+    # Automatic transitions are disabled for now: the current presets are not
+    # visually reliable enough for the editor's default output. A user-selected
+    # library transition still works through the per-segment transition_type.
+    "youtube": {"duration": 1.0, "sections_only": False, "every": 1, "type": "none"},
+    "reel": {"duration": 1.0, "sections_only": False, "every": 2, "type": "none"},
+    "reel_horizontal": {"duration": 1.0, "sections_only": False, "every": 2, "type": "none"},
+    # 360 remains a direct projection-safe passthrough.
+    "360": {"duration": 0.0, "sections_only": True, "type": "none"},
 }
 
 
@@ -147,8 +148,11 @@ def _transition_boundaries(segments: list[dict[str, Any]], profile: dict[str, An
         right_group = segments[index + 1].get("single_source_continuous_group")
         if left_group and left_group == right_group:
             continue
-        selected = str(segments[index].get("transition_type") or profile.get("type") or "auto").strip().lower()
-        if selected == "none":
+        explicit = segments[index].get("transition_type")
+        selected = str(explicit if explicit is not None else profile.get("type") or "none").strip().lower()
+        # "auto" is a legacy/cache value, not an instruction to render a
+        # transition. Only an explicit library choice should create an xfade.
+        if selected in {"none", "auto"}:
             continue
         if profile.get("sections_only"):
             left = segments[index].get("section") or segments[index].get("section_id")
@@ -165,7 +169,8 @@ def _transition_boundaries(segments: list[dict[str, Any]], profile: dict[str, An
 def _transition_types_for_boundaries(segments: list[dict[str, Any]], boundaries: list[int], profile: dict[str, Any]) -> list[str]:
     result: list[str] = []
     for join_index, index in enumerate(boundaries):
-        selected = str(segments[index].get("transition_type") or profile.get("type") or "auto").strip().lower()
+        explicit = segments[index].get("transition_type")
+        selected = str(explicit if explicit is not None else profile.get("type") or "none").strip().lower()
         if selected == "auto":
             selected = AUTO_TRANSITION_TYPES[join_index % len(AUTO_TRANSITION_TYPES)]
         result.append(selected)
@@ -1861,6 +1866,12 @@ def _apply_saved_spherical_landmarks(project: Project, segments: list[dict[str, 
             for field in ("yaw", "pitch", "fov", "weight"):
                 if field in authored:
                     shot[field] = authored[field]
+            # Canonicalize persisted poses at the export boundary as well as
+            # in preview. This repairs stale values saved by older builds and
+            # guarantees that a labeled landmark cannot render with a
+            # different vertical framing.
+            shot["pitch"] = effective_pitch(shot.get("pitch", 0.0), shot_type)
+            shot["fov"] = effective_fov(shot.get("fov", 95.0), shot_type)
             shot["type"] = shot_type
             shot["shot_id"] = shot_type
             shot["label"] = labels.get(shot_type, shot.get("label") or shot_type)
