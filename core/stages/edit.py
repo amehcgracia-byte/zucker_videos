@@ -23,12 +23,12 @@ from core.stages.cut import _clip_master_ranges, load_coverage
 LOGGER = logging.getLogger(__name__)
 
 MIN_SEGMENT_SEC = 2.0
-MAX_SEGMENT_SEC = 7.0
+MAX_SEGMENT_SEC = 6.0
 MAX_BARS_PER_SEGMENT = 12
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
-SPHERICAL_MOTION_PLAN_VERSION = 13
+SPHERICAL_MOTION_PLAN_VERSION = 14
 # Reel has its own pacing contract.  Keep this independent from the
 # YouTube/360 segment limits so a Reel change cannot invalidate or alter their
 # edit cadence accidentally.
@@ -122,7 +122,7 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 26
+EDIT_PLAN_ALGORITHM_VERSION = 27
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
@@ -795,6 +795,13 @@ def _youtube_multicam_plan(
         segment_end = min(end, float(bar_times[next_index]))
         if segment_end <= segment_start:
             break
+        # Persist the music decision beside every shot so the edit is
+        # explainable and downstream render/audit code cannot silently discard
+        # the pacing choice that produced this cut.
+        segment_music_target = _music_pacing_target_seconds(energy_here)
+        segment["music_energy"] = round(energy_here, 4)
+        segment["music_pacing_band"] = _music_pacing_band(energy_here)
+        segment["music_pacing_target_sec"] = segment_music_target
         available = _quality_filtered_sources(_covering_sources(sources, segment_start, segment_end, platform=platform), segment_start, segment_end, selection_stats)
         if not available:
             gaps.append({"start_sec": round(segment_start, 3), "end_sec": round(segment_end, 3)})
@@ -1549,6 +1556,29 @@ def _reachable_section_index(bar_times: list[float], section_times: list[float],
     return None
 
 
+def _music_pacing_target_seconds(energy: float) -> float:
+    """Return the long-form shot target implied by measured music energy."""
+    value = max(0.0, min(1.0, float(energy)))
+    if value >= 0.92:
+        return 2.0
+    if value >= 0.82:
+        return 3.0
+    if value >= 0.70:
+        return 4.0
+    return 6.0
+
+
+def _music_pacing_band(energy: float) -> str:
+    value = max(0.0, min(1.0, float(energy)))
+    if value >= 0.92:
+        return "peak"
+    if value >= 0.82:
+        return "high"
+    if value >= 0.70:
+        return "rising"
+    return "low"
+
+
 def _bars_for_segment(
     segment_index: int,
     bar_times: list[float],
@@ -1562,10 +1592,11 @@ def _bars_for_segment(
     energy = 0.5
     if energy_by_bar and 0 <= bar_index < len(energy_by_bar):
         energy = max(0.0, min(1.0, float(energy_by_bar[bar_index])))
-    # Long holds are the default: roughly 5–6 seconds in low energy.
-    # Intense passages use 3–4 seconds, with only the strongest peaks at 2 s.
+    # Musical pacing contract for long-form edits:
+    # quiet phrases breathe for 5–6 seconds; rising energy moves to 4 seconds;
+    # high energy moves to 3 seconds; only a clear peak may reach 2 seconds.
     # The global timeline floor prevents one-second cuts.
-    target_seconds = 2.0 if energy >= 0.92 else 3.0 if energy >= 0.82 else 4.0 if energy >= 0.70 else 6.0
+    target_seconds = _music_pacing_target_seconds(energy)
     bars = max(1, min(MAX_BARS_PER_SEGMENT, round(target_seconds / bar_duration)))
     if bars * bar_duration < target_seconds * 0.85:
         bars = min(MAX_BARS_PER_SEGMENT, bars + 1)
