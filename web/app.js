@@ -2008,6 +2008,28 @@ function addFlyerReference(path, url) {
   renderReelOptions();
 }
 
+function reviewTransitionOptions(selected) {
+  const value = String(selected || "auto").toLowerCase();
+  const options = [
+    ["auto", "Automática (nativa)"],
+    ["none", "Sin transición"],
+    ["crossfade", "Fundido cruzado"],
+    ["fadeblack", "Fundido a negro"],
+    ["fadewhite", "Fundido a blanco"],
+    ["wipeleft", "Barrido izquierda"],
+    ["wiperight", "Barrido derecha"],
+    ["slideright", "Deslizamiento"],
+    ["dissolve", "Disolución"],
+    ["distance", "Distancia"],
+    ["additive", "Fundido aditivo"],
+    ["stretch", "Estiro"],
+    ["blurry", "Blurry"],
+  ];
+  return options.map(([key, label]) =>
+    "<option value=\"" + key + "\" " + (key === value ? "selected" : "") + ">" + label + "</option>"
+  ).join("");
+}
+
 function renderShotReview(items) {
   const previous = new Map(shotReviewItems.map((item) => [Number(item.index), item]));
   shotReviewItems = (items || []).map((item) => {
@@ -2044,6 +2066,9 @@ function renderShotReview(items) {
     <span>${Number(item.duration_sec).toFixed(1)}s${item.landmark ? ` · ${escapeHtml(item.landmark)} frame` : ""}</span>
     ${poseText ? `<small class="review-pose">${poseText}</small>` : ""}
     ${reserveText ? `<small class="review-candidates">${reserveText}</small>` : ""}
+    <label class="review-transition">Transición hacia la siguiente toma
+      <select data-review-transition="${item.index}">${reviewTransitionOptions(item.transition_type)}</select>
+    </label>
     ${error}
     ${item.no_alternative ? '<em>No alternative coverage available</em>' : ""}
   </article>`;
@@ -2613,7 +2638,7 @@ async function startWizard(options = {}) {
       reel_text_overlays: reelOptionsFromForm().texts,
       reel_image_overlays: reelOptionsFromForm().images,
       backstage_messages: backstageMessagesFromForm(),
-      transition_type: document.querySelector("#transitionStyle")?.value || "crossfade",
+      transition_type: "auto",
       master: inputs.master,
       songs: inputs.songs,
       videos: inputs.videos,
@@ -3313,7 +3338,7 @@ document.addEventListener("click", (event) => {
   }
   if (target.id === "renderReviewed") {
     if (shotReviewItems.some((item) => !item.keep)) { showToast("Replace or re-approve rejected shots before rendering", true); return; }
-    api("/wizard/review/render", { method: "POST" }).then((started) => { activeProjectId = projectIdFromStatus(started) || activeProjectId; document.querySelector("#reviewBox").hidden = true; document.querySelector("#progressBox").hidden = false; setStep(3); ensureStatusPolling(); return pollStatus(statusPollGeneration); }).catch((error) => showToast(error.message, true));
+    api("/wizard/review/render", { method: "POST", body: JSON.stringify({ transitions: Object.fromEntries(shotReviewItems.map((item) => [String(item.index), item.transition_type || "auto"])) }) }).then((started) => { activeProjectId = projectIdFromStatus(started) || activeProjectId; document.querySelector("#reviewBox").hidden = true; document.querySelector("#progressBox").hidden = false; setStep(3); ensureStatusPolling(); return pollStatus(statusPollGeneration); }).catch((error) => showToast(error.message, true));
   }
   if (target.id === "approvePaperEdit") {
     const rejected = Array.from(document.querySelectorAll("[data-paper-reject]:checked"))
@@ -3687,6 +3712,11 @@ document.addEventListener("change", (event) => {
     api("/wizard/paper-edit/text", { method: "POST", body: JSON.stringify({ id: target.dataset.paperSubtitle, text: target.value }) })
       .then((paper) => { renderPaperEdit(paper); })
       .catch((error) => showToast(error.message, true));
+  }
+  if (target instanceof HTMLSelectElement && target.dataset.reviewTransition != null) {
+    const item = shotReviewItems.find((entry) => Number(entry.index) === Number(target.dataset.reviewTransition));
+    if (item) item.transition_type = target.value;
+    return;
   }
   if (target instanceof HTMLSelectElement && target.dataset.paperMark) {
     api("/wizard/paper-edit/mark", { method: "POST", body: JSON.stringify({ id: target.dataset.paperMark, mark: target.value }) })
