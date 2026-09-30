@@ -10,7 +10,7 @@ STEREOGRAPHIC_FOV_THRESHOLD = 170.0
 # Keep ordinary shots perspective-safe; only the explicit Planet shot is
 # allowed to use stereographic projection.
 PERSPECTIVE_FOV_MAX = 165.0
-NORMAL_FOV_MIN = 1.0
+NORMAL_FOV_MIN = 82.0
 NORMAL_FOV_MAX = MAX_SPHERICAL_FOV
 
 
