@@ -795,13 +795,6 @@ def _youtube_multicam_plan(
         segment_end = min(end, float(bar_times[next_index]))
         if segment_end <= segment_start:
             break
-        # Persist the music decision beside every shot so the edit is
-        # explainable and downstream render/audit code cannot silently discard
-        # the pacing choice that produced this cut.
-        segment_music_target = _music_pacing_target_seconds(energy_here)
-        segment["music_energy"] = round(energy_here, 4)
-        segment["music_pacing_band"] = _music_pacing_band(energy_here)
-        segment["music_pacing_target_sec"] = segment_music_target
         available = _quality_filtered_sources(_covering_sources(sources, segment_start, segment_end, platform=platform), segment_start, segment_end, selection_stats)
         if not available:
             gaps.append({"start_sec": round(segment_start, 3), "end_sec": round(segment_end, 3)})
@@ -865,6 +858,13 @@ def _youtube_multicam_plan(
         chosen_stats["chosen_segments"] += 1
         chosen_stats["chosen_seconds"] += segment_end - segment_start
         segment = _segment_from_source(source, segment_start, segment_end, window.get("title") or t("full_video"), platform=platform)
+        # Persist the music decision beside every shot so the edit is
+        # explainable and downstream render/audit code cannot silently discard
+        # the pacing choice that produced this cut.
+        segment_music_target = _music_pacing_target_seconds(energy_here)
+        segment["music_energy"] = round(energy_here, 4)
+        segment["music_pacing_band"] = _music_pacing_band(energy_here)
+        segment["music_pacing_target_sec"] = segment_music_target
         segment["camera_id"] = selected_camera
         segment["singing_detected"] = _is_singing_window(coverage, segment_start, segment_end)
         segment["available_camera_ids"] = sorted(available_camera_ids)
