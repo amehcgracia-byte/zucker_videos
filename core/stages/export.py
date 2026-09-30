@@ -2883,10 +2883,10 @@ def _v360_motion_commands(shot: dict[str, Any], duration: float, aspect_ratio: f
         yaw, pitch, fov = _static_360_pose(shot)
         h_fov, v_fov = _paired_motion_fov(shot, fov, aspect_ratio)
         return [
-            f"0.000000 [expr] {SPHERE_V360_LABEL} yaw {yaw:.6f};\\n",
-            f"0.000000 [expr] {SPHERE_V360_LABEL} pitch {pitch:.6f};\\n",
-            f"0.000000 [expr] {SPHERE_V360_LABEL} h_fov {h_fov:.6f};\\n",
-            f"0.000000 [expr] {SPHERE_V360_LABEL} v_fov {v_fov:.6f};\\n",
+            f"0.000000 [expr] {SPHERE_V360_LABEL} yaw {yaw:.6f};\n",
+            f"0.000000 [expr] {SPHERE_V360_LABEL} pitch {pitch:.6f};\n",
+            f"0.000000 [expr] {SPHERE_V360_LABEL} h_fov {h_fov:.6f};\n",
+            f"0.000000 [expr] {SPHERE_V360_LABEL} v_fov {v_fov:.6f};\n",
         ]
 
     duration = max(0.001, float(duration))
@@ -2927,7 +2927,7 @@ def _v360_motion_commands(shot: dict[str, Any], duration: float, aspect_ratio: f
         for option, initial, delta in expressions:
             commands.append(
                 f"{interval} [expr] {SPHERE_V360_LABEL} {option} "
-                f"{initial:.6f}+({delta:.6f})*TI;\\n"
+                f"{initial:.6f}+({delta:.6f})*TI;\n"
             )
     return commands
 def _shot_requires_runtime_motion(shot: dict[str, Any] | None) -> bool:
