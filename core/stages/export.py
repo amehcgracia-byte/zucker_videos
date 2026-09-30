@@ -88,7 +88,7 @@ REEL_LETTERBOX_BLUR_SIGMA = 18.0
 REEL_BASE_LOGO_POLICY_VERSION = 1
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
-TRANSITION_PROFILE_VERSION = 4
+TRANSITION_PROFILE_VERSION = 5
 # Public transition library. Each preset maps to a filter available in the
 # packaged FFmpeg build.
 TRANSITION_LIBRARY = {
@@ -106,11 +106,12 @@ TRANSITION_LIBRARY = {
     "stretch": {"label": "Estiro", "xfade": "squeezeh"},
     "blurry": {"label": "Blurry", "xfade": "hblur"},
 }
-AUTO_TRANSITION_TYPES = ("crossfade", "fadeblack", "wipeleft", "dissolve", "slideright", "distance")
+AUTO_TRANSITION_TYPES = ("crossfade", "fadeblack", "wipeleft", "slideright")
 TRANSITION_PROFILES = {
-    "youtube": {"duration": 0.18, "sections_only": False, "type": "auto"},
-    "reel": {"duration": 0.08, "sections_only": False, "every": 3, "type": "auto"},
-    "reel_horizontal": {"duration": 0.08, "sections_only": False, "every": 3, "type": "auto"},
+    # Visible long-form joins; each join is clamped to its neighbouring takes.
+    "youtube": {"duration": 0.55, "sections_only": False, "every": 1, "type": "auto"},
+    "reel": {"duration": 0.30, "sections_only": False, "every": 2, "type": "auto"},
+    "reel_horizontal": {"duration": 0.30, "sections_only": False, "every": 2, "type": "auto"},
     # No transition between equirectangular cuts: the 360 path is a direct
     # projection-safe passthrough. Its logo clips already fade from/to black.
     "360": {"duration": 0.0, "sections_only": True, "type": "crossfade"},
@@ -125,14 +126,14 @@ def _transition_profile(project: Project, platform: str) -> dict[str, Any]:
         profile.update(configured)
     profile["duration"] = max(0.0, float(profile.get("duration") or 0.0))
     transition_type = str(profile.get("type") or "auto").strip().lower()
-    if transition_type != "auto" and transition_type not in TRANSITION_LIBRARY:
-        transition_type = "crossfade"
+    if transition_type not in {"auto", "none"} and transition_type not in TRANSITION_LIBRARY:
+        transition_type = "auto"
     profile["type"] = transition_type
     return profile
 
 
 def _transition_boundaries(segments: list[dict[str, Any]], profile: dict[str, Any]) -> list[int]:
-    """Indices after which a flat-video crossfade is allowed."""
+    """Return outgoing joins, respecting each review card selection."""
     if len(segments) < 2 or float(profile.get("duration") or 0.0) <= 0:
         return []
     boundaries: list[int] = []
@@ -144,6 +145,9 @@ def _transition_boundaries(segments: list[dict[str, Any]], profile: dict[str, An
         right_group = segments[index + 1].get("single_source_continuous_group")
         if left_group and left_group == right_group:
             continue
+        selected = str(segments[index].get("transition_type") or profile.get("type") or "auto").strip().lower()
+        if selected == "none":
+            continue
         if profile.get("sections_only"):
             left = segments[index].get("section") or segments[index].get("section_id")
             right = segments[index + 1].get("section") or segments[index + 1].get("section_id")
@@ -151,9 +155,19 @@ def _transition_boundaries(segments: list[dict[str, Any]], profile: dict[str, An
                 boundaries.append(index)
         else:
             every = max(1, int(profile.get("every") or 1))
-            if (index + 1) % every == 0:
+            if (index + 1) % every == 0 or segments[index].get("transition_type") is not None:
                 boundaries.append(index)
     return boundaries
+
+
+def _transition_types_for_boundaries(segments: list[dict[str, Any]], boundaries: list[int], profile: dict[str, Any]) -> list[str]:
+    result: list[str] = []
+    for join_index, index in enumerate(boundaries):
+        selected = str(segments[index].get("transition_type") or profile.get("type") or "auto").strip().lower()
+        if selected == "auto":
+            selected = AUTO_TRANSITION_TYPES[join_index % len(AUTO_TRANSITION_TYPES)]
+        result.append(selected)
+    return result
 
 
 def _render_flat_video_transitions(
@@ -205,18 +219,24 @@ def _render_flat_video_transitions(
         transition_types = [str(transition_type)]
     for index, (next_label, next_duration) in enumerate(chunks[1:], start=1):
         out = f"xf{index}"
-        offset = max(0.0, current_duration - fade_duration)
+        # xfade requires a duration shorter than both neighbouring chunks.
+        join_duration = min(fade_duration, current_duration * 0.45, next_duration * 0.45)
+        join_duration = max(0.001, join_duration)
+        offset = max(0.0, current_duration - join_duration)
         selected_type = transition_types[(index - 1) % len(transition_types)]
         recipe = TRANSITION_LIBRARY.get(selected_type, TRANSITION_LIBRARY["crossfade"])
         xfade_name = str(recipe["xfade"])
-        if xfade_name == "custom":
+        if xfade_name == "none":
+            filters.append(f"[{current}][{next_label}]concat=n=2:v=1:a=0[{out}]")
+        elif xfade_name == "custom":
             expr = str(recipe.get("expr") or "")
-            transition = f"transition=custom:duration={fade_duration:.3f}:offset={offset:.3f}:expr='{expr}'"
+            transition = f"transition=custom:duration={join_duration:.3f}:offset={offset:.3f}:expr='{expr}'"
+            filters.append(f"[{current}][{next_label}]xfade={transition}[{out}]")
         else:
-            transition = f"transition={xfade_name}:duration={fade_duration:.3f}:offset={offset:.3f}"
-        filters.append(f"[{current}][{next_label}]xfade={transition}[{out}]")
+            transition = f"transition={xfade_name}:duration={join_duration:.3f}:offset={offset:.3f}"
+            filters.append(f"[{current}][{next_label}]xfade={transition}[{out}]")
         current = out
-        current_duration += next_duration - fade_duration
+        current_duration += next_duration - join_duration
     filters.append(f"[{current}]format=yuv420p[vout]")
     command = [str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error", "-nostdin", *inputs,
                "-filter_complex", ";".join(filters), "-map", "[vout]", "-an", "-c:v", "libx264",
@@ -730,7 +750,7 @@ def _render_plan(
                 body_paths, body_durations, boundaries, transitioned_body, video_bitrate,
                 lambda percent, detail: progress_callback(82 + int(percent * 2 / 100), detail),
                 float(transition_profile["duration"]),
-                transition_profile.get("type") or "auto",
+                _transition_types_for_boundaries(render_segments, boundaries, transition_profile),
             )
             segment_paths.append(transitioned_body)
         else:
@@ -3189,21 +3209,8 @@ def _shot_peak_fov(shot: dict[str, Any] | None) -> float:
 
 
 def _use_stereographic(shot: dict[str, Any] | None) -> bool:
-    """Decide flat vs stereographic ONCE per segment, from the shot alone.
-
-    Deliberately independent of the instantaneous per-frame FOV. The output
-    projection is baked into the filtergraph when the segment is built, while
-    h_fov/v_fov are driven per frame through sendcmd -- so if the two disagreed
-    about which projection is in play they would pair the vertical field by
-    different rules mid-shot. A shot sitting near the threshold with a little
-    fov drift did exactly that: v_fov jumped ~162 deg to 120 deg partway
-    through, a visible pop in an otherwise still hold. Keying off the widest
-    field the shot ever reaches keeps one projection for the whole segment.
-    """
-    shot_type = str((shot or {}).get("type") or "")
-    if shot_type == "planet":
-        return True
-    return _shot_peak_fov(shot) > STEREOGRAPHIC_FOV_THRESHOLD
+    """Use stereographic only for the explicit tiny-planet shot."""
+    return str((shot or {}).get("type") or "") == "planet"
 
 
 def _effective_flat_fov(shot: dict[str, Any] | None) -> float:

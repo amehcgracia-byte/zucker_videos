@@ -1786,3 +1786,14 @@ pre {
     padding: 16px;
   }
 }
+
+.review-transition {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 0.55rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.review-transition select {
+  min-width: 12rem;
+}

@@ -70,7 +70,7 @@ MOTION_SPEEDS = (("very_slow", 0.50), ("slow", 0.72), ("fast", 1.0))
 IPHONE_CROP_TOP_LIMIT = 0.80
 # Bump this whenever the YouTube camera-choice invariant changes so an older
 # cached edit plan cannot keep producing the previous camera runs.
-YOUTUBE_CAMERA_SELECTION_VERSION = 19
+YOUTUBE_CAMERA_SELECTION_VERSION = 20
 # Legacy diagnostic threshold retained in project settings/manifests. The
 # production policy now stops close-up filler as soon as one alternative
 # physical camera covers the same synced window.
@@ -1857,6 +1857,8 @@ def _segment_from_source(
         # later plan transformation from carrying a camera label over to a
         # different source.
         "camera_id": _camera_id(source),
+        "reel_framing": source.get("reel_framing"),
+        "director_quality": source.get("director_quality"),
     }
 
 
@@ -2367,16 +2369,17 @@ def _gentle_fixed_camera_motion(
         "speed_factor": 1.0,
         "lock_target": False,
         "centered": True,
+        "targeted": True,
         "target_x": max(0.25, min(0.75, float(target_x))),
         "target_y": max(0.35, min(0.65, float(target_y))),
         "zoom_start": 1.0 if zoom_in else zoom,
         "zoom_end": zoom if zoom_in else 1.0,
-        "pan_x_start": 0.5,
-        "pan_x_end": 0.5,
-        "pan_y_start": 0.5,
-        "pan_y_end": 0.5,
-        "pan_x": 0.5,
-        "pan_y": 0.5,
+        "pan_x_start": 0.5 if zoom_in else _pan_for_target(zoom, target_x),
+        "pan_x_end": _pan_for_target(zoom, target_x) if zoom_in else 0.5,
+        "pan_y_start": 0.5 if zoom_in else _pan_for_target(zoom, target_y),
+        "pan_y_end": _pan_for_target(zoom, target_y) if zoom_in else 0.5,
+        "pan_x": 0.5 if zoom_in else _pan_for_target(zoom, target_x),
+        "pan_y": 0.5 if zoom_in else _pan_for_target(zoom, target_y),
         "top_edge_limit": IPHONE_CROP_TOP_LIMIT,
         "vertical_motion": "static",
         "zoom_path_fraction": FIXED_CAMERA_GENTLE_ZOOM_FRACTION,
@@ -2502,7 +2505,7 @@ def _motion_active_axes(motion: dict[str, Any]) -> list[str]:
         axes.append("zoom")
     # These pan values are derived crop coordinates that keep the selected
     # subject locked while zooming; they are not a second authored movement.
-    if motion.get("lock_target") and "zoom" in axes:
+    if (motion.get("lock_target") or motion.get("targeted")) and "zoom" in axes:
         return axes
     if float(motion.get("pan_x_start", motion.get("pan_x", 0.5))) != float(motion.get("pan_x_end", motion.get("pan_x", 0.5))):
         axes.append("pan_x")

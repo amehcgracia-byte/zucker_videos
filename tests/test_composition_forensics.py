@@ -189,3 +189,27 @@ def test_youtube_longform_policy_has_no_caption_or_flyer_pass() -> None:
     app = Path("web/app.js").read_text(encoding="utf-8")
     assert "function youtubeSkipsComposition" in app
     assert "youtubeSkipsComposition(latestResult.platform || status.platform)" in app
+
+
+def test_normal_spherical_views_never_auto_switch_to_stereographic():
+    from core.spherical_view import view_parameters
+    assert view_parameters(0, 0, 220, 16 / 9, "full_stage")["projection"] == "flat"
+    assert view_parameters(0, 0, 220, 16 / 9, "planet")["projection"] == "sg"
+
+
+def test_gentle_fixed_camera_motion_applies_subject_target():
+    from core.stages.edit import _gentle_fixed_camera_motion
+    motion = _gentle_fixed_camera_motion(0, 0.25, 0.50)
+    assert motion["zoom_end"] > motion["zoom_start"]
+    assert motion["pan_x_end"] < 0.5
+
+
+def test_transition_defaults_cover_each_join_and_respect_none():
+    from core.stages.export import _transition_boundaries, _transition_types_for_boundaries
+    segments = [{}, {}, {}]
+    profile = {"duration": 0.55, "every": 1, "type": "auto", "sections_only": False}
+    boundaries = _transition_boundaries(segments, profile)
+    assert boundaries == [0, 1]
+    assert _transition_types_for_boundaries(segments, boundaries, profile) == ["crossfade", "fadeblack"]
+    segments[0]["transition_type"] = "none"
+    assert _transition_boundaries(segments, profile) == [1]

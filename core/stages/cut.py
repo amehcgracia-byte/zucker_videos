@@ -403,7 +403,7 @@ def _selectable_synced_clips(project: Project, sync_map: dict[str, Any], *, allo
                 str(diagnostic.get("filename") or ""),
                 record,
             )
-            for key in ("camera_id", "camera_name", "camera_type", "device_type", "is_static_camera", "static_camera"):
+            for key in ("camera_id", "camera_name", "camera_type", "device_type", "is_static_camera", "static_camera", "reel_framing", "director_quality"):
                 if key in record:
                     selected_clip[key] = record[key]
         selected.append(selected_clip)

@@ -31,7 +31,7 @@ from core.spherical_view import MAX_SPHERICAL_FOV, view_parameters
 from core.media_validation import record_media_path
 from core.normalization import cache_status, cleanup_unreferenced_cache, global_cache_root, migrate_project_normalization_cache
 from core.stages.sync import clear_manual_override, cleanup_closed_sync_diagnostics, generate_preview, generate_thumbnail, invalidate_stale_sync_artifact, set_manual_anchor, set_manual_override, set_manual_override_ranges
-from core.shot_review import mark_review_render_failed, replace_slots, review_items
+from core.shot_review import mark_review_render_failed, replace_slots, review_items, set_review_transition_types
 from core.backstage_feedback import record_feedback
 from core.stages.backstage import update_backstage_cue_text
 from core.backstage_transcription import transcribe_sources
@@ -1792,6 +1792,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_wizard_review_render() -> Response:
         try:
             state.project = state.project or _active_wizard_project(state)
+            body = _json_body()
+            if body.get("transitions") is not None:
+                set_review_transition_types(state.project, body.get("transitions"))
             job = state.wizard.render_review(state.project)
             return jsonify(serialize_wizard_job(job)), 202
         except (RuntimeError, ValueError) as exc:

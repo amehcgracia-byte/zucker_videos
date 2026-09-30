@@ -6,6 +6,10 @@ import math
 
 MAX_SPHERICAL_FOV = 300.0
 STEREOGRAPHIC_FOV_THRESHOLD = 170.0
+# Rectilinear projection becomes visibly distorted as it approaches 180 degrees.
+# Keep ordinary shots perspective-safe; only the explicit Planet shot is
+# allowed to use stereographic projection.
+PERSPECTIVE_FOV_MAX = 165.0
 NORMAL_FOV_MIN = 1.0
 NORMAL_FOV_MAX = MAX_SPHERICAL_FOV
 
@@ -29,15 +33,15 @@ def effective_fov(fov: float, shot_type: str = "") -> float:
     if shot_type == "planet":
         return max(220.0, min(MAX_SPHERICAL_FOV, value))
     if shot_type == "recorded_move":
-        return max(1.0, min(MAX_SPHERICAL_FOV, value))
-    return max(NORMAL_FOV_MIN, min(NORMAL_FOV_MAX, value))
+        return max(NORMAL_FOV_MIN, min(PERSPECTIVE_FOV_MAX, value))
+    return max(NORMAL_FOV_MIN, min(PERSPECTIVE_FOV_MAX, value))
 
 
 def view_parameters(yaw: float, pitch: float, fov: float, aspect_ratio: float, shot_type: str = "", projection_hint: str | None = None) -> dict[str, float | str]:
     """Return exactly the projection and v360 fields used by both paths."""
     shot_type = str(shot_type or "")
     horizontal = effective_fov(fov, shot_type)
-    stereographic = shot_type == "planet" or horizontal > STEREOGRAPHIC_FOV_THRESHOLD
+    stereographic = shot_type == "planet"
     if projection_hint in {"flat", "sg"}:
         stereographic = projection_hint == "sg"
     if stereographic:
