@@ -71,7 +71,7 @@ EXPORT_SEGMENT_RECIPE_VERSION = 21
 # v17 adds byte-level and full-shot attestation to segment sidecars.  A file
 # with a copied/reused sidecar is no longer accepted if its bytes or authored
 # motion fields differ from the current render.
-SPHERICAL_MOTION_RECIPE_VERSION = 23
+SPHERICAL_MOTION_RECIPE_VERSION = 24
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_HOLD_COMMAND_COUNT = 2
