@@ -247,6 +247,54 @@ def test_safe_360_framing_limits_zoom_and_pitch():
     assert view_parameters(0, 0, 20, 16 / 9, "singer")["h_fov"] >= NORMAL_FOV_MIN
 
 
+def test_saved_360_landmarks_are_canonicalized_before_persistence():
+    from server.api import _sanitize_spherical_landmarks
+
+    result = _sanitize_spherical_landmarks({
+        "drummer": {"yaw": 297.542, "pitch": -40.0, "fov": 20.0, "weight": 5.0},
+    })
+    assert result["drummer"]["pitch"] == -25.0
+    assert result["drummer"]["fov"] == 82.0
+
+
+def test_360_motion_commands_reach_the_end_of_the_shot():
+    from core.stages.export import _v360_motion_commands
+
+    commands = _v360_motion_commands({
+        "type": "drummer",
+        "yaw": 120.0,
+        "pitch": 0.0,
+        "fov": 95.0,
+        "runtime_motion_enabled": True,
+        "hold_motion_rate_deg_per_sec": 2.0,
+    }, 6.0)
+    yaw_commands = [line for line in commands if " yaw " in line]
+    assert len(yaw_commands) == 2
+    assert yaw_commands[0].startswith("0.000000 ")
+    assert yaw_commands[-1].startswith("6.000000 ")
+    assert yaw_commands[0] != yaw_commands[-1]
+
+
+def test_fixed_camera_motion_varies_by_project_seed_without_extreme_zoom():
+    from core.stages.edit import _ken_burns_motion
+
+    first = _ken_burns_motion(0, 0.5, 0.5, allow_static=False, variation_seed="project-a")
+    second = _ken_burns_motion(0, 0.5, 0.5, allow_static=False, variation_seed="project-b")
+    assert first != second
+    assert max(float(first["zoom_start"]), float(first["zoom_end"])) <= 1.42
+    assert max(float(second["zoom_start"]), float(second["zoom_end"])) <= 1.42
+
+
+def test_automatic_360_shots_exclude_public_only_landmarks():
+    from core.stages.edit import _available_spherical_shots
+
+    shots = _available_spherical_shots({
+        "audience_stage_wide": {"yaw": 260.0, "pitch": 0.0, "fov": 125.0, "weight": 1.0},
+        "drummer": {"yaw": 298.0, "pitch": 0.0, "fov": 95.0, "weight": 1.0},
+    })
+    assert "audience_stage_wide" not in {shot["type"] for shot in shots}
+
+
 def test_nikon_is_the_preferred_color_camera_kind():
     from core.stages.export import _color_camera_kind, _color_reference_record
 

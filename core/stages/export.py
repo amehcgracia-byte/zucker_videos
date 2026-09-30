@@ -71,7 +71,7 @@ EXPORT_SEGMENT_RECIPE_VERSION = 21
 # v17 adds byte-level and full-shot attestation to segment sidecars.  A file
 # with a copied/reused sidecar is no longer accepted if its bytes or authored
 # motion fields differ from the current render.
-SPHERICAL_MOTION_RECIPE_VERSION = 23
+SPHERICAL_MOTION_RECIPE_VERSION = 24
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_HOLD_COMMAND_COUNT = 2
@@ -2886,14 +2886,15 @@ def _v360_motion_commands(shot: dict[str, Any], duration: float, aspect_ratio: f
     # generation is O(frames * log N) instead of O(frames * N); the previous per-frame
     # re-normalisation made long 360 exports take minutes just to emit the command file.
     curve_sampler = _recorded_curve_sampler(shot)
-    # FFmpeg reconfigures v360 at every sendcmd event and corrupts the event
-    # frame on the shipped build. Keep the experiment to the minimum: opening
-    # pose plus one midpoint pose. Static holds return above and emit none.
+    # Keep the command count deliberately small for FFmpeg stability, but
+    # include the endpoint. The previous midpoint-only schedule made the
+    # second half of every automatic 360 hold static and often looked like no
+    # movement at all.
     event_count = max(2, int(SPHERICAL_HOLD_COMMAND_COUNT))
     if shot.get("type") in {"planet", "recorded_move"}:
         event_times = [0.0, duration]
     else:
-        event_times = [0.0, duration / 2.0]
+        event_times = [0.0, duration]
         if event_count > 2:
             event_times = [duration * index / (event_count - 1) for index in range(event_count)]
     for t in event_times:

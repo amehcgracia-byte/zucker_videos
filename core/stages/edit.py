@@ -28,7 +28,7 @@ MAX_BARS_PER_SEGMENT = 12
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
-SPHERICAL_MOTION_PLAN_VERSION = 12
+SPHERICAL_MOTION_PLAN_VERSION = 13
 # Reel has its own pacing contract.  Keep this independent from the
 # YouTube/360 segment limits so a Reel change cannot invalidate or alter their
 # edit cadence accidentally.
@@ -932,7 +932,12 @@ def _youtube_multicam_plan(
             if alternative_camera_ids:
                 # With another camera available, keep the move subtle but
                 # still animate the flat source so it is never frozen.
-                segment["motion"] = _gentle_fixed_camera_motion(fixed_rear_motion_index, target_x, target_y)
+                segment["motion"] = _gentle_fixed_camera_motion(
+                    fixed_rear_motion_index,
+                    target_x,
+                    target_y,
+                    variation_seed=variation_seed,
+                )
                 segment["fixed_camera_zoom_policy"] = "gentle_tracked_motion_sufficient_coverage"
             else:
                 segment["motion"] = _ken_burns_motion(
@@ -942,6 +947,7 @@ def _youtube_multicam_plan(
                     allow_static=False,
                     force_full_zoom=(fixed_rear_motion_index % 2 == 0),
                     force_close=(fixed_rear_motion_index % 2 == 1),
+                    variation_seed=variation_seed,
                 )
                 segment["fixed_camera_zoom_policy"] = "tracked_close_up_motion_low_coverage"
             fixed_rear_motion_index += 1
@@ -1146,7 +1152,10 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_ena
         # Automatic editing should stay on the stage. A public-only landmark
         # is retained in project settings for manual review, but is never
         # offered as an automatic replacement candidate.
-        if shot_type == "audience":
+        if shot_type in {"audience", "audience_stage_wide"}:
+            # Public-only landmarks are valid for manual review but are not
+            # automatic editorial shots: every automatic 360 frame must retain
+            # a stage/performer subject.
             continue
         key, label, default_fov = SPHERICAL_LANDMARKS[shot_type]
         data = landmarks.get(shot_type)
@@ -2365,6 +2374,8 @@ def _gentle_fixed_camera_motion(
     index: int,
     target_x: float = 0.5,
     target_y: float = 0.5,
+    *,
+    variation_seed: str = "",
 ) -> dict[str, Any]:
     """One centred, barely perceptible move from/to the full frame.
 
@@ -2373,8 +2384,17 @@ def _gentle_fixed_camera_motion(
     tracked target is retained in the recipe for auditability and is used by
     the stronger low-coverage recipe below.
     """
-    zoom = round(1.0 + FIXED_CAMERA_GENTLE_ZOOM_FRACTION, 3)
-    zoom_in = index % 2 == 0
+    rng = random.Random(stable_fingerprint({
+        "fixed_camera_motion": index,
+        "variation_seed": str(variation_seed or ""),
+    }))
+    zoom_fraction = (
+        rng.uniform(0.08, 0.18)
+        if variation_seed
+        else FIXED_CAMERA_GENTLE_ZOOM_FRACTION
+    )
+    zoom = round(1.0 + zoom_fraction, 3)
+    zoom_in = rng.choice((True, False)) if variation_seed else index % 2 == 0
     return {
         "type": "ken_burns",
         "movement": "zoom_in_center" if zoom_in else "zoom_out_center",
@@ -2407,8 +2427,12 @@ def _ken_burns_motion(
     allow_static: bool = True,
     force_full_zoom: bool = False,
     force_close: bool = False,
+    variation_seed: str = "",
 ) -> dict[str, Any]:
-    rng = random.Random(stable_fingerprint({"fixed_camera_motion": index}))
+    rng = random.Random(stable_fingerprint({
+        "fixed_camera_motion": index,
+        "variation_seed": str(variation_seed or ""),
+    }))
     # Close-up range for the wide iPhone stage.  The catalog is explicit: a
     # segment gets one movement recipe, never an accidental combination.
     kind = "full_zoom_in" if force_full_zoom else rng.choices(MOTION_CATALOG, weights=[MOTION_WEIGHTS[kind] for kind in MOTION_CATALOG], k=1)[0]
@@ -2418,23 +2442,31 @@ def _ken_burns_motion(
         # Defensive guard for old/randomized recipes: static fixed-camera
         # framing is no longer an allowed output.
         kind = "full_zoom_in"
-    speed_name, speed_factor = MOTION_SPEEDS[index % len(MOTION_SPEEDS)]
+    speed_name, speed_factor = (
+        rng.choice(MOTION_SPEEDS)
+        if variation_seed
+        else MOTION_SPEEDS[index % len(MOTION_SPEEDS)]
+    )
     if force_full_zoom:
         speed_name, speed_factor = "very_slow", MOTION_SPEEDS[0][1]
     target_x = max(0.05, min(0.95, float(target_x)))
     target_y = max(0.05, min(0.95, float(target_y)))
-    close_zoom = rng.uniform(3.2, 3.6)
-    tight_zoom = rng.uniform(3.0, 3.2)
+    # Keep automatic crops subject-safe. The old 3x zoom range made a
+    # tracked musician disappear into feet, speakers or stage corners.
+    close_zoom = rng.uniform(1.18, 1.42)
+    tight_zoom = rng.uniform(1.08, 1.24)
     if kind == "full_static":
-        zoom_start = zoom_end = 3.0
+        # A static hold must preserve the full useful stage, not a hidden 3x
+        # crop that can show only feet, speakers or an empty corner.
+        zoom_start = zoom_end = 1.0
         pan_x_start = pan_x_end = 0.5
-        pan_y_start = pan_y_end = _minimum_pan_y_for_top_edge(zoom_start)
+        pan_y_start = pan_y_end = 0.5
     elif kind == "full_zoom_in" and force_full_zoom:
         # “Full” means the widest permitted action frame. A literal 1.0x
         # frame necessarily includes the ceiling, so start at a lower crop
         # that respects the hard top-edge boundary.
         target_x = target_y = 0.65
-        zoom_start, zoom_end = 3.0, 3.4
+        zoom_start, zoom_end = 1.08, 1.22
         pan_x_start = pan_x_end = 0.5
         pan_y_start = _minimum_pan_y_for_top_edge(zoom_start)
         pan_y_end = _minimum_pan_y_for_top_edge(zoom_end)
