@@ -213,3 +213,10 @@ def test_transition_defaults_cover_each_join_and_respect_none():
     assert _transition_types_for_boundaries(segments, boundaries, profile) == ["crossfade", "fadeblack"]
     segments[0]["transition_type"] = "none"
     assert _transition_boundaries(segments, profile) == [1]
+
+def test_transition_api_accepts_native_auto_mode():
+    from server.api import TRANSITION_LIBRARY
+
+    allowed = {"auto", "none"} | set(TRANSITION_LIBRARY)
+    assert "auto" in allowed
+    assert "crossfade" in allowed

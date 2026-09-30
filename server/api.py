@@ -32,6 +32,7 @@ from core.media_validation import record_media_path
 from core.normalization import cache_status, cleanup_unreferenced_cache, global_cache_root, migrate_project_normalization_cache
 from core.stages.sync import clear_manual_override, cleanup_closed_sync_diagnostics, generate_preview, generate_thumbnail, invalidate_stale_sync_artifact, set_manual_anchor, set_manual_override, set_manual_override_ranges
 from core.shot_review import mark_review_render_failed, replace_slots, review_items, set_review_transition_types
+from core.stages.export import TRANSITION_LIBRARY
 from core.backstage_feedback import record_feedback
 from core.stages.backstage import update_backstage_cue_text
 from core.backstage_transcription import transcribe_sources
@@ -1559,9 +1560,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         reel_cuts_per_source = _reel_cuts_per_source_from_body(body)
         reel_text_overlays = _reel_text_overlays_from_body(body)
         reel_image_overlays = _reel_image_overlays_from_body(body)
-        transition_type = str(body.get("transition_type") or "crossfade").strip().lower()
-        if transition_type not in {"crossfade", "additive", "stretch", "blurry"}:
-            return error_response("bad_request", "transition_type must be crossfade, additive, stretch, or blurry", 400)
+        transition_type = str(body.get("transition_type") or "auto").strip().lower()
+        allowed_transition_types = {"auto", "none"} | set(TRANSITION_LIBRARY)
+        if transition_type not in allowed_transition_types:
+            return error_response("bad_request", "transition_type is not a supported native transition", 400)
         backstage_messages = body.get("backstage_messages") or []
         if not isinstance(backstage_messages, list) or not all(isinstance(value, str) for value in backstage_messages):
             return error_response("bad_request", "backstage_messages must be a list of strings", 400)

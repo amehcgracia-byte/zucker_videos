@@ -1180,7 +1180,9 @@ function sphericalLandmarksFromForm() {
 function renderSphericalSetup() {
   const panel = document.querySelector("#sphericalSetup");
   if (!panel) return;
-  panel.hidden = !hasSphericalInput();
+  const sphericalMode = ["youtube", "360"].includes(String(selectedPlatform || "").toLowerCase());
+
+  panel.hidden = !hasSphericalInput() || !sphericalMode;
   if (!panel.hidden) { renderSphericalSourceOptions(); applySphericalSetup(lastSphericalSetup); renderSphericalSetupViewers().catch((error) => showToast(error.message, true)); }
 }
 
@@ -2191,6 +2193,8 @@ function applyEditTypeMode() {
     backstageOptions.open = selectedPlatform === "backstage";
   }
   if (trimBox) trimBox.hidden = selectedPlatform === "backstage";
+
+  renderSphericalSetup();
   const composeNav = document.querySelector('[data-step-nav="5"]');
   if (composeNav) composeNav.hidden = youtubeDirectResult;
   if (youtubeDirectResult && currentStep === 5) setStep(3);
@@ -2672,17 +2676,35 @@ async function cancelWizard() {
   try {
     await api("/wizard/cancel", { method: "POST" });
     const stopped = await waitForWizardStop();
-    if (!stopped) showToast("The export is still stopping. Please wait before starting again.", true);
+    if (!stopped) {
+      showToast("The export is still stopping. Please wait before starting again.", true);
+      return;
+    }
+    const deadline = Date.now() + 10000;
+    let reset = false;
+    while (Date.now() < deadline) {
+      try {
+        await api("/wizard/reset", { method: "POST" });
+        reset = true;
+        break;
+      } catch (_error) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+    if (!reset) {
+      showToast("The export was cancelled, but the worker is still stopping.", true);
+      return;
+    }
+    await newProject();
   } catch (error) {
     if (latestStatus?.status !== "cancelling") showToast(error.message, true);
   } finally {
-    if (button && latestStatus?.status !== "cancelling") {
+    if (button) {
       button.disabled = false;
       button.textContent = "Cancel";
     }
   }
 }
-
 function timeToSeconds(value) {
   const text = String(value || "").trim();
   if (!text) return null;
@@ -3634,10 +3656,14 @@ document.addEventListener("click", (event) => {
     document.querySelector("#resultBox").hidden = true;
     document.querySelector("#progressTitle").textContent = "Creating your video";
     setStep(3);
-    api("/wizard/reset")
-      .catch(() => {})
-      .then(() => startWizard({ waitForPrepare: false }))
-      .catch((error) => showToast(error.message, true));
+    (async () => {
+      try {
+        await api("/wizard/reset");
+        await startWizard({ waitForPrepare: false });
+      } catch (error) {
+        showToast(error.message, true);
+      }
+    })();
   }
   if (target.id === "again") {
     currentVariationSeed = `${Date.now()}-${Math.random()}`;
