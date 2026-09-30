@@ -67,7 +67,7 @@ def test_saved_360_profile_roundtrip_uses_original_source_over_proxy(tmp_path: P
     }]
     result = _apply_saved_spherical_landmarks(project, segments)
     assert result[0]["spherical_shot"] == {
-        "shot_id": "singer", "yaw": 123.0, "pitch": -12.0, "fov": 71.0,
+        "shot_id": "singer", "yaw": 123.0, "pitch": -12.0, "fov": 82.0,
         "type": "singer", "label": "Cantante", "weight": 1.0,
     }
 
@@ -204,16 +204,18 @@ def test_gentle_fixed_camera_motion_applies_subject_target():
     assert motion["pan_x_end"] < 0.5
 
 
-def test_transition_defaults_cover_each_join_and_respect_none():
+def test_transition_defaults_are_off_but_explicit_choices_remain_supported():
     from core.stages.export import TRANSITION_PROFILES, _transition_boundaries, _transition_types_for_boundaries
     segments = [{}, {}, {}]
-    profile = {"duration": 0.55, "every": 1, "type": "auto", "sections_only": False}
+    profile = TRANSITION_PROFILES["youtube"]
+    assert profile["type"] == "none"
+    assert _transition_boundaries(segments, profile) == []
+    segments[0]["transition_type"] = "auto"
+    assert _transition_boundaries(segments, profile) == []
+    segments[0]["transition_type"] = "crossfade"
     boundaries = _transition_boundaries(segments, profile)
-    assert boundaries == [0, 1]
-    assert _transition_types_for_boundaries(segments, boundaries, profile) == ["crossfade", "fadeblack"]
-    assert TRANSITION_PROFILES["youtube"]["duration"] >= 1.0
-    segments[0]["transition_type"] = "none"
-    assert _transition_boundaries(segments, profile) == [1]
+    assert boundaries == [0]
+    assert _transition_types_for_boundaries(segments, boundaries, profile) == ["crossfade"]
 
 def test_transition_api_accepts_native_auto_mode():
     from server.api import TRANSITION_LIBRARY
@@ -221,6 +223,16 @@ def test_transition_api_accepts_native_auto_mode():
     allowed = {"auto", "none"} | set(TRANSITION_LIBRARY)
     assert "auto" in allowed
     assert "crossfade" in allowed
+
+
+def test_preview_and_export_share_canonical_360_pose():
+    from core.spherical_view import effective_pitch, view_parameters
+
+    authored = view_parameters(123.0, 80.0, 20.0, 16 / 9, "drummer")
+    exported = view_parameters(123.0, effective_pitch(80.0, "drummer"), 20.0, 16 / 9, "drummer")
+    assert authored == exported
+    assert authored["pitch"] == 25.0
+    assert authored["h_fov"] == 82.0
 
 
 def test_safe_360_framing_limits_zoom_and_pitch():
