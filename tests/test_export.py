@@ -856,6 +856,33 @@ def test_hold_rate_is_converted_from_degrees_per_second_to_total_travel():
     assert end - start == pytest.approx(degrees_per_second_to_step(0.4, duration))
     assert end - start < 10.0
 
+@pytest.mark.parametrize(
+    ("shot", "expected_travel"),
+    [
+        (
+            {
+                "type": "planet",
+                "yaw": 10.0,
+                "pitch": -90.0,
+                "fov": 240.0,
+                "spin_deg_per_sec": 5.0,
+            },
+            5.0 * 8.9,
+        ),
+        (
+            {
+                "type": "audience",
+                "yaw": 120.0,
+                "pitch": -12.0,
+                "fov": 100.0,
+                "sweep_enabled": True,
+                "sweep_speed_deg_per_sec": 20.0,
+                "previous_shot": {"type": "left", "yaw": 30.0},
+            },
+            90.0,
+        ),
+    ],
+)
 def test_sendcmd_rate_fields_are_seconds_not_frames(shot, expected_travel):
     commands = _v360_motion_commands(shot, 8.9)
     assert commands
