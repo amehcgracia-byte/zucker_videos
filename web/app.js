@@ -1495,6 +1495,25 @@ function selectedInputs() {
   };
 }
 
+async function registerInputsBeforePreview(inputs) {
+  // A new project only has the files in the browser's detection state. Register
+  // them before rendering 360 previews: the preview API intentionally serves
+  // only sources already present in project.json.
+  await api("/inputs/videos", {
+    method: "POST",
+    body: JSON.stringify({ paths: inputs.videos, append: false }),
+  });
+  if (inputs.master || inputs.songs) {
+    await api("/inputs/master", {
+      method: "POST",
+      body: JSON.stringify({ master: inputs.master, songs: inputs.songs }),
+    });
+  }
+  // Reload the canonical project records so projection/raw_360 metadata from
+  // the classifier is available to the source picker and preview endpoint.
+  await resumeInputsFromProject();
+}
+
 function formatDuration(seconds) {
   const total = Math.max(0, Math.round(Number(seconds) || 0));
   const minutes = Math.floor(total / 60);
@@ -1905,6 +1924,12 @@ async function prepareStep2() {
     return false;
   }
   setStep(2);
+  try {
+    await registerInputsBeforePreview(inputs);
+  } catch (error) {
+    showToast(error.message || "Could not register the selected videos", true);
+    return false;
+  }
   const trimSource = canUseVideoAudio ? detected.videos[0].path : inputs.master;
   if (trimSource) setupTrimControls(trimSource);
   applyEditTypeMode();
