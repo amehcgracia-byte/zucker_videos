@@ -11,7 +11,13 @@ from captions.model import Cue, CueTrack
 from captions.styles import get_style
 
 from core.project import create_project
-from core.stages.edit import _available_spherical_shots, _bars_for_segment, _gentle_fixed_camera_motion
+from core.stages.edit import (
+    _available_spherical_shots,
+    _bars_for_segment,
+    _flat_camera_motion_enabled,
+    _gentle_fixed_camera_motion,
+    _source_role,
+)
 from core.shot_review import _review_candidate_pool, _spherical_review_poses
 from core.stages.export import _apply_saved_spherical_landmarks, _motion_filter
 from server.api import _compose_visual_overlays, _validate_composition_output
@@ -125,6 +131,17 @@ def test_360_review_reserve_stays_near_authored_landmark() -> None:
         assert distance <= 40.001
 
 
+def test_phone_metadata_wins_over_inferred_projection() -> None:
+    assert _source_role({"camera_type": "iphone", "projection": "equirect"}) == "fixed_rear"
+    assert _source_role({"raw_360": True, "camera_type": "iphone"}) == "360"
+
+
+def test_flat_phone_sources_are_motion_eligible() -> None:
+    assert _flat_camera_motion_enabled({"camera_type": "iphone"})
+    assert _flat_camera_motion_enabled({"filename": "IMG_4098.MOV"})
+    assert not _flat_camera_motion_enabled({"projection": "equirect"})
+
+
 def test_gentle_fixed_camera_motion_reaches_endpoint() -> None:
     motion = _gentle_fixed_camera_motion(0)
     rendered = _motion_filter({"motion": motion}, "youtube", 5.5)
@@ -169,3 +186,6 @@ def test_youtube_longform_policy_has_no_caption_or_flyer_pass() -> None:
     api = Path("server/api.py").read_text(encoding="utf-8")
     assert "youtube_longform = render_platform in" in api
     assert "needs_caption_pass = (not youtube_longform)" in api
+    app = Path("web/app.js").read_text(encoding="utf-8")
+    assert "function youtubeSkipsComposition" in app
+    assert "youtubeSkipsComposition(latestResult.platform || status.platform)" in app

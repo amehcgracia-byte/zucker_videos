@@ -265,6 +265,10 @@ function composePlatform() {
   return latestResult?.platform || latestStatus?.result?.platform || latestStatus?.platform || selectedPlatform || "";
 }
 
+function youtubeSkipsComposition(platform = composePlatform()) {
+  return String(platform || "").toLowerCase() === "youtube";
+}
+
 function setCaptionPanelExpanded(expanded, platform = composePlatform()) {
   const body = document.querySelector("#captionPanelBody");
   const button = document.querySelector("#captionDisclosure");
@@ -592,6 +596,10 @@ function renderComposeOverlayLayer() {
 }
 
 async function openCaptions() {
+  if (youtubeSkipsComposition()) {
+    setStep(6);
+    return;
+  }
   setStep(5);
   const youtubeMode = composePlatform() === "youtube";
   setCaptionPanelExpanded(!youtubeMode && composePlatform() === "reel", composePlatform());
@@ -1734,8 +1742,12 @@ async function openProject(path) {
     document.querySelector("#paperEditBox")?.removeAttribute("hidden");
     openPaperEdit().catch((error) => showToast(error.message, true));
   } else if (status.status === "done") {
-    setStep(5);
-    openCaptions().catch((error) => showToast(error.message, true));
+    if (youtubeSkipsComposition(status.result?.platform || status.platform)) {
+      setStep(6);
+    } else {
+      setStep(5);
+      openCaptions().catch((error) => showToast(error.message, true));
+    }
   } else if (status.status === "failed") {
     setStep(6);
   } else if (status.status === "waiting_choice") {
@@ -2136,6 +2148,7 @@ async function openPaperEdit() {
 
 function applyEditTypeMode() {
   const passthrough360 = selectedPlatform === "360";
+  const youtubeDirectResult = selectedPlatform === "youtube";
   const cameraMix = document.querySelector("#cameraMix");
   const songPicker = document.querySelector("#songPicker");
   const reelOptions = document.querySelector("#reelOptions");
@@ -2153,6 +2166,9 @@ function applyEditTypeMode() {
     backstageOptions.open = selectedPlatform === "backstage";
   }
   if (trimBox) trimBox.hidden = selectedPlatform === "backstage";
+  const composeNav = document.querySelector('[data-step-nav="5"]');
+  if (composeNav) composeNav.hidden = youtubeDirectResult;
+  if (youtubeDirectResult && currentStep === 5) setStep(3);
 }
 
 function renderReelOptions() {
@@ -2951,7 +2967,7 @@ function renderWizardStatus(status) {
     }
     document.querySelector("#errorBox").hidden = true;
     document.querySelector("#resultBox").hidden = false;
-    if (status.stage === "compose") {
+    if (status.stage === "compose" || youtubeSkipsComposition(latestResult.platform || status.platform)) {
       setStep(6);
       return;
     }
@@ -3632,7 +3648,7 @@ document.addEventListener("click", (event) => {
     const wrap = document.querySelector(".compose-player-wrap");
     setComposePlayerExpanded(!wrap?.classList.contains("is-expanded"));
   }
-  if (target.id === "composeContinue") saveComposition().then(() => {
+  if (target.id === "composeContinue" && !youtubeSkipsComposition()) saveComposition().then(() => {
     document.querySelector("#resultBox").hidden = true;
     document.querySelector("#errorBox").hidden = true;
     progressFloor = 0;
@@ -4088,8 +4104,12 @@ async function boot() {
     document.querySelector("#paperEditBox")?.removeAttribute("hidden");
     openPaperEdit().catch((error) => showToast(error.message, true));
   } else if (status.status === "done") {
-    setStep(5);
-    openCaptions().catch((error) => showToast(error.message, true));
+    if (youtubeSkipsComposition(status.result?.platform || status.platform)) {
+      setStep(6);
+    } else {
+      setStep(5);
+      openCaptions().catch((error) => showToast(error.message, true));
+    }
   } else if (status.status === "failed") {
     setStep(6);
   }

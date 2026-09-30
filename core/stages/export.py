@@ -88,19 +88,29 @@ REEL_LETTERBOX_BLUR_SIGMA = 18.0
 REEL_BASE_LOGO_POLICY_VERSION = 1
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
-TRANSITION_PROFILE_VERSION = 3
+TRANSITION_PROFILE_VERSION = 4
 # Public transition library. Each preset maps to a filter available in the
 # packaged FFmpeg build.
 TRANSITION_LIBRARY = {
     "crossfade": {"label": "Fundido cruzado", "xfade": "fade"},
+    "fadeblack": {"label": "Fundido a negro", "xfade": "fadeblack"},
+    "fadewhite": {"label": "Fundido a blanco", "xfade": "fadewhite"},
+    "wipeleft": {"label": "Barrido izquierda", "xfade": "wipeleft"},
+    "wiperight": {"label": "Barrido derecha", "xfade": "wiperight"},
+    "slideright": {"label": "Deslizamiento", "xfade": "slideright"},
+    "dissolve": {"label": "Disolución", "xfade": "dissolve"},
+    "distance": {"label": "Distancia", "xfade": "distance"},
+    # Retained as explicit choices for users who want the original named
+    # treatments; automatic mode uses only the native xfade transitions above.
     "additive": {"label": "Fundido aditivo", "xfade": "custom", "expr": "clip(A+B*P,0,1)"},
     "stretch": {"label": "Estiro", "xfade": "squeezeh"},
     "blurry": {"label": "Blurry", "xfade": "hblur"},
 }
+AUTO_TRANSITION_TYPES = ("crossfade", "fadeblack", "wipeleft", "dissolve", "slideright", "distance")
 TRANSITION_PROFILES = {
-    "youtube": {"duration": 0.18, "sections_only": False, "type": "crossfade"},
-    "reel": {"duration": 0.08, "sections_only": False, "every": 3, "type": "crossfade"},
-    "reel_horizontal": {"duration": 0.08, "sections_only": False, "every": 3, "type": "crossfade"},
+    "youtube": {"duration": 0.18, "sections_only": False, "type": "auto"},
+    "reel": {"duration": 0.08, "sections_only": False, "every": 3, "type": "auto"},
+    "reel_horizontal": {"duration": 0.08, "sections_only": False, "every": 3, "type": "auto"},
     # No transition between equirectangular cuts: the 360 path is a direct
     # projection-safe passthrough. Its logo clips already fade from/to black.
     "360": {"duration": 0.0, "sections_only": True, "type": "crossfade"},
@@ -114,8 +124,8 @@ def _transition_profile(project: Project, platform: str) -> dict[str, Any]:
     if isinstance(configured, dict):
         profile.update(configured)
     profile["duration"] = max(0.0, float(profile.get("duration") or 0.0))
-    transition_type = str(profile.get("type") or "crossfade").strip().lower()
-    if transition_type not in TRANSITION_LIBRARY:
+    transition_type = str(profile.get("type") or "auto").strip().lower()
+    if transition_type != "auto" and transition_type not in TRANSITION_LIBRARY:
         transition_type = "crossfade"
     profile["type"] = transition_type
     return profile
@@ -149,7 +159,7 @@ def _transition_boundaries(segments: list[dict[str, Any]], profile: dict[str, An
 def _render_flat_video_transitions(
     paths: list[Path], durations: list[float], boundaries: list[int], output_path: Path,
     video_bitrate: int, progress_callback: ProgressCallback, fade_duration: float,
-    transition_type: str = "crossfade",
+    transition_type: str | list[str] = "crossfade",
 ) -> Path:
     """Encode selected flat-video xfade joins, leaving the other cuts hard."""
     if not boundaries:
@@ -188,9 +198,17 @@ def _render_flat_video_transitions(
     current, current_duration = chunks[0]
     fade_duration = max(0.001, float(fade_duration))
     recipe = TRANSITION_LIBRARY.get(transition_type, TRANSITION_LIBRARY["crossfade"])
+    if isinstance(transition_type, str) and transition_type == "auto":
+        transition_types = list(AUTO_TRANSITION_TYPES)
+    elif isinstance(transition_type, (list, tuple)):
+        transition_types = [str(item) for item in transition_type if str(item) in TRANSITION_LIBRARY] or ["crossfade"]
+    else:
+        transition_types = [str(transition_type)]
     for index, (next_label, next_duration) in enumerate(chunks[1:], start=1):
         out = f"xf{index}"
         offset = max(0.0, current_duration - fade_duration)
+        selected_type = transition_types[(index - 1) % len(transition_types)]
+        recipe = TRANSITION_LIBRARY.get(selected_type, TRANSITION_LIBRARY["crossfade"])
         xfade_name = str(recipe["xfade"])
         if xfade_name == "custom":
             expr = str(recipe.get("expr") or "")
@@ -713,7 +731,7 @@ def _render_plan(
                 body_paths, body_durations, boundaries, transitioned_body, video_bitrate,
                 lambda percent, detail: progress_callback(82 + int(percent * 2 / 100), detail),
                 float(transition_profile["duration"]),
-                str(transition_profile.get("type") or "crossfade"),
+                transition_profile.get("type") or "auto",
             )
             segment_paths.append(transitioned_body)
         else:
