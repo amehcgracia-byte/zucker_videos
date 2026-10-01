@@ -3197,7 +3197,7 @@ function renderStatusStrip(status, progress) {
   }
   strip.hidden = false;
   const detail = currentSubtask(status) || status.message || S.working;
-  document.querySelector("#statusStripText").textContent = `${detail} · ${Math.round(progress)}% · ${formatEta(etaSeconds(progress, status))}`;
+  document.querySelector("#statusStripText").textContent = `${detail} · ${Math.round(progress)}% · ${formatElapsed(elapsedSeconds())} · ${formatEta(etaSeconds(progress, status))}`;
 }
 
 function currentSubtask(status) {
