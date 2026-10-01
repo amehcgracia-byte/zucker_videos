@@ -65,6 +65,7 @@ PY
   --add-data "/System/Library/Fonts/Supplemental/Arial.ttf:assets/fonts" \
   --add-data "/System/Library/Fonts/Supplemental/BigCaslon.ttf:assets/fonts" \
   --add-data "$BUILD_INFO:." \
+  --add-data "$ROOT/README_APP.md:." \
   --collect-data faster_whisper \
   --collect-data whisper \
   --collect-data onnxruntime \
