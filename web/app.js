@@ -1198,8 +1198,10 @@ function resizeSphericalSetupViewer(viewer) {
 }
 
 function wireSphericalSetupViewer(viewer) {
-  if (viewer.canvas.dataset.wired) return;
-  viewer.canvas.dataset.wired = "1";
+  if (viewer.wired) return;
+  viewer.wired = true;
+  viewer.abortController = new AbortController();
+  const listenerOptions = { signal: viewer.abortController.signal };
   viewer.canvas.addEventListener("pointerdown", (event) => {
     event.preventDefault();
     viewer.dragging = true;
@@ -1207,7 +1209,7 @@ function wireSphericalSetupViewer(viewer) {
     viewer.dragY = event.clientY;
     viewer.canvas.setPointerCapture?.(event.pointerId);
     viewer.canvas.classList.add("dragging");
-  });
+  }, listenerOptions);
   viewer.canvas.addEventListener("pointermove", (event) => {
     if (!viewer.dragging) return;
     event.preventDefault();
@@ -1218,22 +1220,22 @@ function wireSphericalSetupViewer(viewer) {
     viewer.yaw = normalizeYaw(viewer.yaw - dx * YAW_DEG_PER_PX * dragSensitivityScale(viewer.fov)) ?? 0;
     viewer.pitch = clamp(viewer.pitch + dy * PITCH_DEG_PER_PX * dragSensitivityScale(viewer.fov), -25, 25);
     updateSphericalSetupViewer(viewer, viewer);
-  });
+  }, listenerOptions);
   const stop = (event) => {
     viewer.dragging = false;
     viewer.canvas.classList.remove("dragging");
     if (event?.pointerId != null) viewer.canvas.releasePointerCapture?.(event.pointerId);
     if (!viewer.renderer) queueSphericalSetupPreview(viewer, true);
   };
-  viewer.canvas.addEventListener("pointerup", stop);
-  viewer.canvas.addEventListener("pointercancel", stop);
+  viewer.canvas.addEventListener("pointerup", stop, listenerOptions);
+  viewer.canvas.addEventListener("pointercancel", stop, listenerOptions);
   viewer.canvas.addEventListener("wheel", (event) => {
     event.preventDefault();
     const fovMin = viewer.projection_preset === "dewarp" ? 70 : MIN_SHOT_FOV;
     const fovMax = viewer.projection_preset === "dewarp" ? 100 : MAX_SHOT_FOV;
     viewer.fov = clamp(viewer.fov + (event.deltaY > 0 ? 3 : -3), fovMin, fovMax);
     updateSphericalSetupViewer(viewer, viewer);
-  }, { passive: false });
+  }, { passive: false, signal: viewer.abortController.signal });
 }
 
 
@@ -1293,6 +1295,7 @@ async function createSphericalSetupViewer(shot, canvas) {
 
 function disposeSphericalSetupViewer(viewer) {
   if (!viewer) return;
+  viewer.abortController?.abort();
   if (viewer.previewTimer) clearTimeout(viewer.previewTimer);
   viewer.texture?.dispose?.();
   viewer.sphere?.geometry?.dispose?.();
