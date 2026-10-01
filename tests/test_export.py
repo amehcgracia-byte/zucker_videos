@@ -2067,3 +2067,22 @@ def test_export_filter_preserves_authored_360_roll_and_dewarp_fov():
     assert "roll=7.500" in graph
     assert "h_fov=100.000" in graph
     assert "output=flat" in graph
+
+
+
+def test_negative_hold_rate_is_rendered_as_a_real_in_shot_move():
+    from core.stages.export import _v360_motion_at, _v360_motion_commands
+
+    shot = {
+        "type": "singer",
+        "yaw": 17.0,
+        "pitch": -12.0,
+        "fov": 95.0,
+        "sweep_enabled": False,
+        "hold_motion": "subtle",
+        "hold_motion_rate_deg_per_sec": -0.8,
+    }
+    start = _v360_motion_at(shot, 6.0, 0.0)[0]
+    end = _v360_motion_at(shot, 6.0, 6.0)[0]
+    assert end - start == pytest.approx(-4.8)
+    assert _v360_motion_commands(shot, 6.0)
