@@ -3043,7 +3043,7 @@ def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, Any]]:
         "audience_stage_wide": {"legacy": "audience_stage_wide_yaw", "fov": 125.0},
         "planet": {"legacy": "planet_yaw", "fov": 150.0},
     }
-    landmarks: dict[str, dict[str, float]] = {}
+    landmarks: dict[str, dict[str, Any]] = {}
     for key, meta in defaults.items():
         source = raw.get(key)
         if source is None and meta["legacy"] in raw:
