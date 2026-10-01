@@ -643,7 +643,7 @@ def test_spherical_render_parts_do_not_add_static_drift():
 def test_spherical_pan_steps_keep_angle_increments_small():
     segments = [
         {"clip_path": "/tmp/360.mp4", "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 3, "spherical_shot": {"type": "singer", "label": "Cantante", "yaw": 20, "pitch": 0, "fov": 80}},
-        {"clip_path": "/tmp/360.mp4", "clip_start_sec": 3, "master_start_sec": 3, "duration_sec": 3, "spherical_shot": {"type": "left", "label": "Lado izquierdo", "yaw": 100, "pitch": 0, "fov": 80, "transition_sec": 0.45}},
+        {"clip_path": "/tmp/360.mp4", "clip_start_sec": 3, "master_start_sec": 3, "duration_sec": 3, "spherical_shot": {"type": "left", "label": "Lado izquierdo", "yaw": 100, "pitch": 0, "fov": 80, "transition_sec": 0.45, "sweep_enabled": True, "intershot_sweep": True}},
     ]
 
     parts = _expand_spherical_render_segments(segments)
@@ -770,7 +770,7 @@ def test_returning_to_360_keeps_previous_spherical_view_across_other_camera_cut(
     segments = [
         {"duration_sec": 3, "spherical_shot": {"type": "left", "yaw": 16, "pitch": -16, "fov": 100}},
         {"duration_sec": 3},
-        {"duration_sec": 3, "spherical_shot": {"type": "audience", "yaw": 175, "pitch": -12, "fov": 111, "sweep_speed_deg_per_sec": 30}},
+        {"duration_sec": 3, "spherical_shot": {"type": "audience", "yaw": 175, "pitch": -12, "fov": 111, "sweep_speed_deg_per_sec": 30, "sweep_enabled": True, "intershot_sweep": True}},
     ]
 
     rendered = _continuous_spherical_render_segments(segments)
