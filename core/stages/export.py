@@ -1607,9 +1607,15 @@ def _continuous_spherical_render_segments(segments: list[dict[str, Any]]) -> lis
             and previous_shot
             and abs(_shortest_yaw_delta(_shot_yaw(previous_shot), _shot_yaw(shot))) > 1e-6
         )
-        if shot and previous_shot and yaw_changed and shot.get("type") != "recorded_move" and bool(shot.get("sweep_enabled", False))
-            and bool(shot.get("intershot_sweep", False)):
-        shot = {**shot, "previous_shot": previous_shot}
+        if (
+            shot
+            and previous_shot
+            and yaw_changed
+            and shot.get("type") != "recorded_move"
+            and bool(shot.get("sweep_enabled", False))
+            and bool(shot.get("intershot_sweep", False))
+        ):
+            shot = {**shot, "previous_shot": previous_shot}
             output.append({**segment, "spherical_shot": shot})
         else:
             output.append(segment)
