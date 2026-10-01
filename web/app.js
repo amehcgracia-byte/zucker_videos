@@ -1534,39 +1534,11 @@ function renderChips() {
 }
 
 function renderSingleVideoChoice() {
+  // A single source is valid for every mode, including 360. The edit type is
+  // chosen in Step 2; this panel must never force a one-video project into
+  // Reel or Backstage before the user can select 360.
   const panel = document.querySelector("#singleVideoChoice");
-  if (!panel) return;
-  const singleSource = detected.videos.length === 1;
-  panel.hidden = !singleSource;
-  if (!singleSource) return;
-  // Keep Backstage as the safe default for a video-only drop, but make the
-  // destination explicit so Confirm and continue always has a real mode.
-  if (!['backstage', 'reel'].includes(selectedPlatform)) selectedPlatform = "backstage";
-  const videoHasAudio = Boolean(detected.videos[0]?.probe?.audio_codec || detected.videos[0]?.audio_codec);
-  if (videoHasAudio && !["video", "master"].includes(selectedReelAudioSource)) {
-    selectedReelAudioSource = detected.master.length ? "master" : "video";
-  }
-  const audioChoice = document.querySelector("#singleReelAudioChoice");
-  if (audioChoice) {
-    audioChoice.hidden = selectedPlatform !== "reel" || !videoHasAudio;
-    audioChoice.querySelectorAll("[data-reel-audio-source]").forEach((button) => {
-      if (button.dataset.reelAudioSource === "master") {
-        button.hidden = !detected.master.length;
-      }
-      button.classList.toggle("selected", button.dataset.reelAudioSource === selectedReelAudioSource);
-    });
-  }
-  panel.querySelectorAll("[data-single-platform]").forEach((card) => {
-    card.classList.toggle("selected", card.dataset.singlePlatform === selectedPlatform);
-  });
-  const hint = document.querySelector("#singleVideoChoiceHint");
-  if (hint) {
-    hint.textContent = selectedPlatform === "reel" && !videoHasAudio && !detected.master.length
-      ? "This video has no audio. Add a master audio file or choose Backstage."
-      : selectedPlatform === "reel" && selectedReelAudioSource === "video"
-        ? "Reel will use the selected video's own audio; trim start/end applies to both tracks."
-        : "Select one destination, then confirm to continue.";
-  }
+  if (panel) panel.hidden = true;
 }
 
 function renderRaw360Callout() {
@@ -2075,13 +2047,12 @@ async function prepareStep2() {
     return false;
   }
   if (!selectedPlatform) {
-    selectedPlatform = inputs.master ? "reel" : "backstage";
-    renderSingleVideoChoice();
+    selectedPlatform = hasSphericalInput() ? "360" : (inputs.master ? "reel" : "backstage");
   }
   const singleVideoHasAudio = detected.videos.length === 1 && Boolean(detected.videos[0]?.probe?.audio_codec || detected.videos[0]?.audio_codec);
-  const canUseVideoAudio = selectedPlatform === "reel" && selectedReelAudioSource === "video" && singleVideoHasAudio;
-  if (!inputs.master && selectedPlatform !== "backstage" && !canUseVideoAudio) {
-    showToast("Reel needs a master audio file. Add one above or choose Backstage.", true);
+  const canUseVideoAudio = ["reel", "360"].includes(selectedPlatform) && selectedReelAudioSource === "video" && singleVideoHasAudio;
+  if (!inputs.master && !["backstage", "360"].includes(selectedPlatform) && !canUseVideoAudio) {
+    showToast("This mode needs a master audio file or audio embedded in the selected video.", true);
     return false;
   }
   setStep(2);
