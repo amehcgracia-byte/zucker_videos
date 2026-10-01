@@ -1228,7 +1228,7 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
     Director take or from deliberately switching this on.
 
     Normal landmark shots have optional near-static hold motion. ``none``
-    locks the view; ``subtle`` adds at most 0.01 degrees/second of yaw drift.
+    locks the view; ``subtle`` adds a gentle, deterministic yaw drift capped at 1 degree/second.
     The project-level toggle remains backward-compatible.
 
     Magnitudes are stored as a FRACTION OF THE SHOT'S VISIBLE FIELD, not as
