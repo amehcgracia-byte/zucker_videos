@@ -111,6 +111,9 @@ let result360 = {
 };
 const sphericalSetupViewers = new Map();
 let sphericalSetupThree = null;
+let sphericalSetupThreePromise = null;
+const sphericalSetupFrameCache = new Map();
+let sphericalSetupAnimation = null;
 
 const LANDMARK_LABELS = {
   full_stage: "Full stage",
@@ -1018,6 +1021,7 @@ function syncSphericalSetupState(group) {
   if (viewer) updateSphericalSetupViewer(viewer, lastSphericalSetup[shot]);
 }
 
+
 function drawSphericalPreview(viewer, image) {
   const width = Math.max(240, viewer.canvas.clientWidth || 640);
   const height = Math.max(135, viewer.canvas.clientHeight || Math.round(width * 9 / 16));
@@ -1033,8 +1037,72 @@ function drawSphericalPreview(viewer, image) {
   context.drawImage(image, 0, 0, width, height);
 }
 
+async function loadSphericalSetupThree() {
+  if (sphericalSetupThree) return sphericalSetupThree;
+  if (!sphericalSetupThreePromise) sphericalSetupThreePromise = import("/vendor/three.module.min.js");
+  sphericalSetupThree = await sphericalSetupThreePromise;
+  return sphericalSetupThree;
+}
+
+function sphericalSetupFrameFor(source) {
+  const key = String(source || "");
+  if (!key) return Promise.reject(new Error("360 source is missing"));
+  if (sphericalSetupFrameCache.has(key)) return sphericalSetupFrameCache.get(key);
+  const promise = fetch("/api/v1/wizard/spherical-source-frame?" + new URLSearchParams({ source: key }))
+    .then((response) => {
+      if (!response.ok) throw new Error("Could not load the equirectangular 360 frame");
+      return response.blob();
+    })
+    .then((blob) => new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      const image = new Image();
+      image.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(image);
+      };
+      image.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("Could not decode the equirectangular 360 frame"));
+      };
+      image.src = url;
+    }))
+    .catch((error) => {
+      sphericalSetupFrameCache.delete(key);
+      throw error;
+    });
+  sphericalSetupFrameCache.set(key, promise);
+  return promise;
+}
+
+function startSphericalSetupAnimation() {
+  if (sphericalSetupAnimation) return;
+  const render = () => {
+    sphericalSetupAnimation = requestAnimationFrame(render);
+    for (const viewer of sphericalSetupViewers.values()) {
+      if (!viewer.renderer || !viewer.camera || !viewer.scene) continue;
+      const width = Math.max(240, viewer.canvas.clientWidth || 640);
+      const height = Math.max(135, viewer.canvas.clientHeight || Math.round(width * 9 / 16));
+      if (viewer.renderWidth !== width || viewer.renderHeight !== height) {
+        viewer.renderWidth = width;
+        viewer.renderHeight = height;
+        viewer.renderer.setPixelRatio(Math.min(2, Math.max(1, window.devicePixelRatio || 1)));
+        viewer.renderer.setSize(width, height, false);
+        viewer.camera.aspect = width / height;
+        updateSphericalSetupCamera(viewer);
+      }
+      viewer.renderer.render(viewer.scene, viewer.camera);
+    }
+  };
+  render();
+}
+
+function stopSphericalSetupAnimation() {
+  if (sphericalSetupAnimation) cancelAnimationFrame(sphericalSetupAnimation);
+  sphericalSetupAnimation = null;
+}
+
 function queueSphericalSetupPreview(viewer, immediate = false) {
-  if (!viewer?.context || !viewer.source) return;
+  if (!viewer?.context || !viewer.source || viewer.renderer) return;
   if (viewer.previewTimer) clearTimeout(viewer.previewTimer);
   const load = async () => {
     const requestId = ++viewer.previewRequest;
@@ -1080,6 +1148,24 @@ function queueSphericalSetupPreview(viewer, immediate = false) {
   else viewer.previewTimer = window.setTimeout(load, 140);
 }
 
+function updateSphericalSetupCamera(viewer) {
+  if (!viewer?.camera || !sphericalSetupThree) return;
+  const THREE = sphericalSetupThree;
+  const aspect = Math.max(0.1, viewer.camera.aspect || 16 / 9);
+  viewer.camera.fov = verticalFovFromHorizontal(viewer.fov, aspect);
+  viewer.camera.updateProjectionMatrix();
+  const yaw = THREE.MathUtils.degToRad(signedYawDelta(viewer.yaw, 0));
+  const pitch = THREE.MathUtils.degToRad(clamp(viewer.pitch, -25, 25));
+  const roll = THREE.MathUtils.degToRad(clamp(viewer.roll, -45, 45));
+  const target = new THREE.Vector3(
+    Math.sin(yaw) * Math.cos(pitch),
+    Math.sin(pitch),
+    -Math.cos(yaw) * Math.cos(pitch)
+  );
+  viewer.camera.up.set(Math.sin(roll), Math.cos(roll), 0);
+  viewer.camera.lookAt(target);
+}
+
 function updateSphericalSetupViewer(viewer, values = {}) {
   viewer.yaw = normalizeYaw(values.yaw ?? viewer.yaw ?? 0) ?? 0;
   viewer.pitch = clamp(Number(values.pitch ?? viewer.pitch ?? 0), -45, 45);
@@ -1096,26 +1182,39 @@ function updateSphericalSetupViewer(viewer, values = {}) {
       if (input && document.activeElement !== input) input.value = field === "projection_preset" ? String(value) : formatCanonicalNumber(value);
     }
   }
-  queueSphericalSetupPreview(viewer);
+  if (viewer.renderer) updateSphericalSetupCamera(viewer);
+  else queueSphericalSetupPreview(viewer);
 }
 
 function resizeSphericalSetupViewer(viewer) {
-  if (!viewer?.context) return;
-  queueSphericalSetupPreview(viewer, true);
+  if (!viewer) return;
+  if (viewer.renderer) {
+    viewer.renderWidth = 0;
+    viewer.renderHeight = 0;
+    startSphericalSetupAnimation();
+  } else {
+    queueSphericalSetupPreview(viewer, true);
+  }
 }
 
 function wireSphericalSetupViewer(viewer) {
   if (viewer.canvas.dataset.wired) return;
   viewer.canvas.dataset.wired = "1";
   viewer.canvas.addEventListener("pointerdown", (event) => {
-    viewer.dragging = true; viewer.dragX = event.clientX; viewer.dragY = event.clientY;
-    viewer.canvas.setPointerCapture?.(event.pointerId); viewer.canvas.classList.add("dragging");
+    event.preventDefault();
+    viewer.dragging = true;
+    viewer.dragX = event.clientX;
+    viewer.dragY = event.clientY;
+    viewer.canvas.setPointerCapture?.(event.pointerId);
+    viewer.canvas.classList.add("dragging");
   });
   viewer.canvas.addEventListener("pointermove", (event) => {
     if (!viewer.dragging) return;
+    event.preventDefault();
     const dx = event.clientX - viewer.dragX;
     const dy = event.clientY - viewer.dragY;
-    viewer.dragX = event.clientX; viewer.dragY = event.clientY;
+    viewer.dragX = event.clientX;
+    viewer.dragY = event.clientY;
     viewer.yaw = normalizeYaw(viewer.yaw - dx * YAW_DEG_PER_PX * dragSensitivityScale(viewer.fov)) ?? 0;
     viewer.pitch = clamp(viewer.pitch + dy * PITCH_DEG_PER_PX * dragSensitivityScale(viewer.fov), -25, 25);
     updateSphericalSetupViewer(viewer, viewer);
@@ -1124,7 +1223,7 @@ function wireSphericalSetupViewer(viewer) {
     viewer.dragging = false;
     viewer.canvas.classList.remove("dragging");
     if (event?.pointerId != null) viewer.canvas.releasePointerCapture?.(event.pointerId);
-    queueSphericalSetupPreview(viewer, true);
+    if (!viewer.renderer) queueSphericalSetupPreview(viewer, true);
   };
   viewer.canvas.addEventListener("pointerup", stop);
   viewer.canvas.addEventListener("pointercancel", stop);
@@ -1134,19 +1233,22 @@ function wireSphericalSetupViewer(viewer) {
     const fovMax = viewer.projection_preset === "dewarp" ? 100 : MAX_SHOT_FOV;
     viewer.fov = clamp(viewer.fov + (event.deltaY > 0 ? 3 : -3), fovMin, fovMax);
     updateSphericalSetupViewer(viewer, viewer);
-    queueSphericalSetupPreview(viewer, true);
   }, { passive: false });
 }
 
+
 async function createSphericalSetupViewer(shot, canvas) {
   if (!canvas || !selectedSphericalSourcePath()) return;
-  const context = canvas.getContext("2d");
-  if (!context) throw new Error("2D canvas is not available for the 360 shot selector");
   const viewer = {
     shot,
     source: selectedSphericalSourcePath(),
     canvas,
-    context,
+    context: null,
+    renderer: null,
+    scene: null,
+    camera: null,
+    sphere: null,
+    texture: null,
     yaw: 0,
     pitch: 0,
     roll: 0,
@@ -1155,31 +1257,70 @@ async function createSphericalSetupViewer(shot, canvas) {
     projection_control: 0,
     previewTime: 30,
     dragging: false,
+    dragX: 0,
+    dragY: 0,
     previewTimer: null,
     previewRequest: 0,
   };
   sphericalSetupViewers.set(shot, viewer);
   wireSphericalSetupViewer(viewer);
+  try {
+    const THREE = await loadSphericalSetupThree();
+    const image = await sphericalSetupFrameFor(viewer.source);
+    const gl = canvas.getContext("webgl2", { antialias: true, preserveDrawingBuffer: false });
+    if (!gl) throw new Error("WebGL2 is not available in this webview");
+    viewer.renderer = new THREE.WebGLRenderer({ canvas, context: gl, antialias: true });
+    viewer.renderer.setClearColor(0x101817, 1);
+    viewer.scene = new THREE.Scene();
+    viewer.camera = new THREE.PerspectiveCamera(50, 16 / 9, 0.1, 1100);
+    const geometry = new THREE.SphereGeometry(500, 96, 64);
+    geometry.scale(-1, 1, 1);
+    viewer.texture = new THREE.Texture(image);
+    viewer.texture.colorSpace = THREE.SRGBColorSpace;
+    viewer.texture.needsUpdate = true;
+    viewer.sphere = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ map: viewer.texture }));
+    viewer.scene.add(viewer.sphere);
+    startSphericalSetupAnimation();
+  } catch (error) {
+    viewer.renderer = null;
+    viewer.context = canvas.getContext("2d");
+    if (!viewer.context) throw error;
+    queueSphericalSetupPreview(viewer, true);
+  }
   resizeSphericalSetupViewer(viewer);
   updateSphericalSetupViewer(viewer, lastSphericalSetup[shot] || {});
 }
+
+function disposeSphericalSetupViewer(viewer) {
+  if (!viewer) return;
+  if (viewer.previewTimer) clearTimeout(viewer.previewTimer);
+  viewer.texture?.dispose?.();
+  viewer.sphere?.geometry?.dispose?.();
+  viewer.sphere?.material?.dispose?.();
+  viewer.renderer?.dispose?.();
+}
+
 async function renderSphericalSetupViewers() {
   if (!hasSphericalInput()) {
+    for (const viewer of sphericalSetupViewers.values()) disposeSphericalSetupViewer(viewer);
     sphericalSetupViewers.clear();
+    stopSphericalSetupAnimation();
     return;
   }
   const source = selectedSphericalSourcePath();
+  const pending = [];
   for (const group of document.querySelectorAll("fieldset[data-spherical-landmark]")) {
     const shot = group.dataset.sphericalLandmark;
     const existing = sphericalSetupViewers.get(shot);
     if (existing && existing.source !== source) {
-      if (existing.animation) cancelAnimationFrame(existing.animation);
-      existing.texture?.dispose?.();
-      existing.renderer?.dispose?.();
+      disposeSphericalSetupViewer(existing);
       sphericalSetupViewers.delete(shot);
     }
-    if (!sphericalSetupViewers.has(shot)) await createSphericalSetupViewer(shot, group.querySelector("[data-spherical-canvas]"));
+    if (!sphericalSetupViewers.has(shot)) {
+      pending.push(createSphericalSetupViewer(shot, group.querySelector("[data-spherical-canvas]")));
+    }
   }
+  await Promise.all(pending);
 }
 
 function sphericalLandmarksFromForm() {
