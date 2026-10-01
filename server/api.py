@@ -2405,7 +2405,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         config.setdefault("spherical_hold_motion", "subtle")
         config.setdefault("spherical_mode", "automatic")
         config.setdefault("spherical_sweep", False)
-        config.setdefault("sweep_speed_deg_per_sec", 20.0)
+        config.setdefault("sweep_speed_deg_per_sec", 5.0)
         config.setdefault("audio_trim_by_master", {})
         config.setdefault("master_audio_extensions", [".mp3"])
         config.setdefault("personal_logo_path", "")
@@ -3016,7 +3016,7 @@ def _spherical_sweep_from_body(body: dict[str, Any]) -> bool | None:
 def _sweep_speed_from_body(body: dict[str, Any]) -> float | None:
     if "sweep_speed_deg_per_sec" not in body:
         return None
-    return max(15.0, min(20.0, _optional_float_setting(body.get("sweep_speed_deg_per_sec"), 20.0)))
+    return max(3.0, min(8.0, _optional_float_setting(body.get("sweep_speed_deg_per_sec"), 5.0)))
 
 
 def _sanitize_camera_role_weights(raw: Any) -> dict[str, float]:

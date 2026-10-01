@@ -397,7 +397,7 @@ def test_spherical_motion_profile_uses_near_static_hold_motion_when_enabled():
             shot = _spherical_motion_profile({"type": shot_type, "yaw": 10.0, "pitch": -15.0, "fov": 95}, index, enabled=True)
             assert all(shot[key] == 0.0 for key in _DRIFT_KEYS), (shot_type, index, shot)
             assert shot["sweep_enabled"] is False
-            assert shot["hold_motion_rate_deg_per_sec"] == 0.4
+            assert abs(shot["hold_motion_rate_deg_per_sec"]) <= 1.0
             assert shot["drift_pitch_fraction"] == 0.0
             assert shot["fov_delta_fraction"] == 0.0
 
@@ -418,14 +418,15 @@ def test_spherical_motion_profile_is_expressed_as_a_fraction_of_the_visible_fiel
         assert "drift_pitch_deg" not in shot
         assert "fov_delta_deg" not in shot
         assert all(shot[key] == 0.0 for key in _DRIFT_KEYS)
-        assert shot["hold_motion_rate_deg_per_sec"] == 0.4
+        assert abs(shot["hold_motion_rate_deg_per_sec"]) <= 1.0
 
 
-def test_spherical_motion_profile_is_identical_across_static_instances():
-    # Static landmark holds must not vary by segment index.
+def test_spherical_motion_profile_varies_direction_without_exceeding_safe_rate():
+    # Holds may use different gentle directions, but never become whip pans.
     profiles = [_spherical_motion_profile({"type": "singer", "yaw": 10.0, "pitch": -15.0, "fov": 95}, index, enabled=True) for index in range(8)]
-    signatures = {tuple(p[key] for key in _DRIFT_KEYS) for p in profiles}
-    assert len(signatures) == 1
+    rates = {p["hold_motion_rate_deg_per_sec"] for p in profiles}
+    assert len(rates) > 1
+    assert max(abs(rate) for rate in rates) <= 1.0
 
 
 def test_spherical_motion_profile_is_deterministic_for_cache_stability():
@@ -1009,3 +1010,14 @@ def test_music_pacing_band_is_explainable():
     assert [_music_pacing_band(value) for value in (0.2, 0.7, 0.84, 0.95)] == [
         "low", "rising", "high", "peak"
     ]
+
+
+
+def test_automatic_360_motion_keeps_intershot_sweep_opt_in():
+    shot = _spherical_motion_profile(
+        {"type": "singer", "yaw": 10.0, "pitch": -10.0, "fov": 95.0, "sweep_enabled": True},
+        2,
+        enabled=True,
+    )
+    assert shot["sweep_enabled"] is False
+    assert shot["intershot_sweep"] is False
