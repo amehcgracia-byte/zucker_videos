@@ -116,8 +116,11 @@ class IngestStage(Stage):
                 if record not in raw_records:
                     record["normalized"] = {"path": record["path"], "kind": "original"}
             if raw_records:
+                progress_callback(25, "360 raw source detected — converting to equirectangular video")
                 ensure_normalized_space(project, raw_records)
                 prepare_videos(project, raw_records, progress_callback)
+            else:
+                progress_callback(25, "360 equirectangular source ready — no proxy conversion needed")
         else:
             ensure_normalized_space(project, valid_records)
             prepare_videos(project, valid_records, progress_callback)
