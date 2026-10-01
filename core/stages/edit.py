@@ -29,7 +29,7 @@ MAX_BARS_PER_SEGMENT = 12
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
-SPHERICAL_MOTION_PLAN_VERSION = 15
+SPHERICAL_MOTION_PLAN_VERSION = 16
 # Reel has its own pacing contract.  Keep this independent from the
 # YouTube/360 segment limits so a Reel change cannot invalidate or alter their
 # edit cadence accidentally.
@@ -86,9 +86,9 @@ MAX_CONSECUTIVE_CAMERA_SEGMENTS = 2
 # Retained as a versioned emergency switch for diagnostics; normal builds use
 # the shared gentle hold/sweep motion below.
 FORCE_STATIC_360_ISOLATION = False
-SPHERICAL_SWEEP_SPEED_DEG_PER_SEC = 20.0
-SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC = 15.0
-SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 20.0
+SPHERICAL_SWEEP_SPEED_DEG_PER_SEC = 5.0
+SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC = 3.0
+SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 8.0
 # Automatic 360 motion budget, expressed as a fraction of the shot's visible
 # field (h_fov) rather than in absolute degrees -- see
 # _spherical_motion_profile for why absolute degrees was the bug. The target
@@ -103,7 +103,7 @@ SPHERICAL_MAX_MOTION_FRACTION_PER_SEC = 0.06
 # Planet is a special effect, not the default visual language of a normal
 # 360 edit. Keep its optional rotation at a deliberately gentle absolute rate.
 PLANET_SPIN_DEG_PER_SEC = 5.0
-SPHERICAL_HOLD_MOTION_DEG_PER_SEC = 2.0
+SPHERICAL_HOLD_MOTION_RATES_DEG_PER_SEC = (-0.8, 0.0, 0.6, 1.0, -0.5, 0.8)
 SPHERICAL_MIN_LANDMARK_HOLD_SEC = 6.0
 SPHERICAL_TARGET_LANDMARK_HOLD_SEC = 8.0
 SPHERICAL_MAX_LANDMARK_HOLD_SEC = 12.0
@@ -769,7 +769,7 @@ def _youtube_multicam_plan(
     ).lower()
     if hold_motion not in {"none", "subtle"}:
         hold_motion = "subtle" if spherical_motion else "none"
-    spherical_sweep = bool(edit_settings.get("spherical_sweep", True))
+    spherical_sweep = bool(edit_settings.get("spherical_sweep", False))
     sweep_speed = max(SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC, min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, float(edit_settings.get("sweep_speed_deg_per_sec", SPHERICAL_SWEEP_SPEED_DEG_PER_SEC))))
     bar_index = 0
     segment_index = 0
@@ -1206,6 +1206,10 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabl
             "projection_control": effective_projection_control(data.get("projection_control")),
             "weight": weight,
             "sweep_enabled": bool(sweep_enabled),
+            # Inter-shot sweeps are an explicit opt-in. They are not the default
+            # camera language because a 100°+ jump between landmarks looks like
+            # a whip-pan even when each individual landmark is correct.
+            "intershot_sweep": bool(sweep_enabled),
             "sweep_speed_deg_per_sec": max(SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC, min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, float(sweep_speed))) if sweep_enabled else 0.0,
         }
         shot["fov"] = _plan_spherical_fov(shot)
@@ -1265,12 +1269,14 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
     mode = str(hold_motion or ("subtle" if enabled else "none")).lower()
     if mode not in {"none", "subtle"}:
         mode = "subtle" if enabled else "none"
-    shot["sweep_enabled"] = bool(shot.get("sweep_enabled", False)) and enabled
+    shot["intershot_sweep"] = bool(shot.get("intershot_sweep", False)) and enabled
+    shot["sweep_enabled"] = bool(shot.get("sweep_enabled", False)) and shot["intershot_sweep"]
     # Keep runtime motion explicit in the plan so export can distinguish a
     # deliberate static hold from an enabled automatic or recorded movement.
     shot["runtime_motion_enabled"] = bool(enabled)
     shot["hold_motion"] = mode
-    shot["hold_motion_rate_deg_per_sec"] = SPHERICAL_HOLD_MOTION_DEG_PER_SEC if mode == "subtle" and enabled else 0.0
+    rates = SPHERICAL_HOLD_MOTION_RATES_DEG_PER_SEC
+    shot["hold_motion_rate_deg_per_sec"] = rates[int(index) % len(rates)] if mode == "subtle" and enabled else 0.0
     shot["drift_yaw_fraction"] = 0.0
     shot["drift_pitch_fraction"] = 0.0
     shot["fov_delta_fraction"] = 0.0
