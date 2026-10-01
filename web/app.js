@@ -979,7 +979,10 @@ function normalizeSphericalSetup(raw = {}) {
     if (!source || source.yaw == null) continue;
     result[key] = {
       yaw: Number(source.yaw), pitch: Number(source.pitch ?? 0),
-      fov: Number(source.fov ?? defaults[key]), weight: Number(source.weight ?? 1),
+      fov: Number(source.fov ?? defaults[key]), roll: Number(source.roll ?? 0),
+      projection_preset: String(source.projection_preset ?? "linear"),
+      projection_control: Number(source.projection_control ?? 0),
+      weight: Number(source.weight ?? 1),
     };
   }
   return result;
@@ -1038,6 +1041,9 @@ function queueSphericalSetupPreview(viewer, immediate = false) {
       yaw: String(viewer.yaw),
       pitch: String(viewer.pitch),
       fov: String(viewer.fov),
+      roll: String(viewer.roll ?? 0),
+      projection_preset: String(viewer.projection_preset ?? "linear"),
+      projection_control: String(viewer.projection_control ?? 0),
       time_sec: String(viewer.previewTime ?? 30),
       shot: viewer.shot,
       t: String(Date.now()),
@@ -1074,11 +1080,16 @@ function queueSphericalSetupPreview(viewer, immediate = false) {
 
 function updateSphericalSetupViewer(viewer, values = {}) {
   viewer.yaw = normalizeYaw(values.yaw ?? viewer.yaw ?? 0) ?? 0;
-  viewer.pitch = clamp(Number(values.pitch ?? viewer.pitch ?? 0), -25, 25);
-  viewer.fov = clamp(Number(values.fov ?? viewer.fov ?? 95), MIN_SHOT_FOV, MAX_SHOT_FOV);
+  viewer.pitch = clamp(Number(values.pitch ?? viewer.pitch ?? 0), -45, 45);
+  viewer.roll = clamp(Number(values.roll ?? viewer.roll ?? 0), -45, 45);
+  viewer.projection_preset = String(values.projection_preset ?? viewer.projection_preset ?? "linear");
+  viewer.projection_control = clamp(Number(values.projection_control ?? viewer.projection_control ?? 0), 0, 1);
+  const fovMin = viewer.projection_preset === "dewarp" ? 70 : MIN_SHOT_FOV;
+  const fovMax = viewer.projection_preset === "dewarp" ? 100 : MAX_SHOT_FOV;
+  viewer.fov = clamp(Number(values.fov ?? viewer.fov ?? 95), fovMin, fovMax);
   const group = document.querySelector('fieldset[data-spherical-landmark="' + viewer.shot + '"]');
   if (group) {
-    for (const [field, value] of [["yaw", viewer.yaw], ["pitch", viewer.pitch], ["fov", viewer.fov]]) {
+    for (const [field, value] of [["yaw", viewer.yaw], ["pitch", viewer.pitch], ["fov", viewer.fov], ["roll", viewer.roll], ["projection_preset", viewer.projection_preset], ["projection_control", viewer.projection_control]]) {
       const input = group.querySelector('[data-field="' + field + '"]');
       if (input && document.activeElement !== input) input.value = formatCanonicalNumber(value);
     }
@@ -1117,7 +1128,9 @@ function wireSphericalSetupViewer(viewer) {
   viewer.canvas.addEventListener("pointercancel", stop);
   viewer.canvas.addEventListener("wheel", (event) => {
     event.preventDefault();
-    viewer.fov = clamp(viewer.fov + (event.deltaY > 0 ? 3 : -3), MIN_SHOT_FOV, MAX_SHOT_FOV);
+    const fovMin = viewer.projection_preset === "dewarp" ? 70 : MIN_SHOT_FOV;
+    const fovMax = viewer.projection_preset === "dewarp" ? 100 : MAX_SHOT_FOV;
+    viewer.fov = clamp(viewer.fov + (event.deltaY > 0 ? 3 : -3), fovMin, fovMax);
     updateSphericalSetupViewer(viewer, viewer);
     queueSphericalSetupPreview(viewer, true);
   }, { passive: false });
@@ -1134,7 +1147,10 @@ async function createSphericalSetupViewer(shot, canvas) {
     context,
     yaw: 0,
     pitch: 0,
+    roll: 0,
     fov: 95,
+    projection_preset: "linear",
+    projection_control: 0,
     previewTime: 30,
     dragging: false,
     previewTimer: null,
@@ -1168,10 +1184,12 @@ function sphericalLandmarksFromForm() {
   const values = {};
   document.querySelectorAll("fieldset[data-spherical-landmark]").forEach((group) => {
     const valuesForShot = {};
-    for (const field of ["yaw", "pitch", "fov", "weight"]) {
+    for (const field of ["yaw", "pitch", "fov", "roll", "projection_control", "weight"]) {
       const value = Number(group.querySelector(`[data-field="${field}"]`)?.value);
       if (Number.isFinite(value)) valuesForShot[field] = value;
     }
+    const projectionPreset = group.querySelector('[data-field="projection_preset"]')?.value;
+    if (projectionPreset) valuesForShot.projection_preset = projectionPreset;
     if (Number.isFinite(valuesForShot.yaw)) values[group.dataset.sphericalLandmark] = valuesForShot;
   });
   return values;
