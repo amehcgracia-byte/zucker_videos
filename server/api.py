@@ -1982,17 +1982,18 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not master and platform != "backstage" and not (platform in {"reel", "360"} and _single_video_has_audio(videos)):
             return error_response("missing_master", t("missing_master"), 400)
         try:
-            matching_project = state.project if _can_reuse_prepared_project(state.project, master, songs, videos) else find_project_by_inputs(master, songs, videos)
-            if matching_project and _project_can_skip_prepare(matching_project):
-                state.project = matching_project
-                job = state.wizard.adopt_prepared_project(state.project)
-                LOGGER.info("Reused prepared wizard project %s instead of creating a new project", state.project.folder)
-                return jsonify(serialize_wizard_job(job)), 202
-            if matching_project:
-                state.project = matching_project
-                job = state.wizard.prepare_existing(matching_project, platform=platform)
-                LOGGER.info("Reused existing wizard project %s instead of creating a new project", matching_project.folder)
-                return jsonify(serialize_wizard_job(job)), 202
+            # Every new Step 1 submission is a new run. Matching inputs against
+            # an older .zuckervid project was convenient for development, but
+            # it made the app silently reuse stale frames, camera choices and
+            # stage outputs. Reopening an old project is now explicit through
+            # /wizard/projects/open only.
+            composition_status = state.composition.status(state.project) or {}
+            if composition_status.get("status") in {"running", "cancelling"}:
+                return error_response("wizard_busy", "A previous final render is still stopping; wait until it finishes before starting a new project.", 409)
+            if not state.wizard.reset():
+                return error_response("wizard_busy", "The previous wizard job is still cancelling; wait until it stops before starting a new project.", 409)
+            state.composition.reset()
+            state.project = None
             job = state.wizard.prepare(name=name or "Jam", master_path=master, songs_path=songs, video_paths=videos, platform=platform)
             return jsonify(serialize_wizard_job(job)), 202
         except RuntimeError as exc:
