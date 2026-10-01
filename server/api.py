@@ -38,6 +38,7 @@ from core.spherical_view import (
 )
 from core.media_validation import record_media_path
 from core.normalization import cache_status, cleanup_unreferenced_cache, global_cache_root, migrate_project_normalization_cache
+from core.retention import build_storage_report, cleanup_plan
 from core.stages.sync import clear_manual_override, cleanup_closed_sync_diagnostics, generate_preview, generate_thumbnail, invalidate_stale_sync_artifact, set_manual_anchor, set_manual_override, set_manual_override_ranges
 from core.shot_review import mark_review_render_failed, replace_slots, review_items, set_review_transition_types
 from core.stages.export import TRANSITION_LIBRARY
@@ -2442,6 +2443,17 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.get("/api/v1/cache/status")
     def api_cache_status() -> Response:
         return jsonify(cache_status())
+
+    @app.get("/api/v1/maintenance/storage")
+    def api_storage_maintenance_report() -> Response:
+        """Return a read-only storage inventory and protected cleanup plan."""
+        report = build_storage_report()
+        protected = [str(state.project.folder)] if state.project else []
+        return jsonify({
+            "report": report,
+            "cleanup_plan": cleanup_plan(report, protected_paths=protected),
+            "protected_paths": protected,
+        })
 
     @app.post("/api/v1/cache/free")
     def api_cache_free() -> Response:
