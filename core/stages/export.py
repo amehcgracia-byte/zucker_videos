@@ -2889,7 +2889,6 @@ def _v360_motion_commands(shot: dict[str, Any], duration: float, aspect_ratio: f
             f"0.000000 [expr] {SPHERE_V360_LABEL} pitch {pitch:.6f};\n",
             f"0.000000 [expr] {SPHERE_V360_LABEL} h_fov {h_fov:.6f};\n",
             f"0.000000 [expr] {SPHERE_V360_LABEL} v_fov {v_fov:.6f};\n",
-            f"0.000000 [expr] {SPHERE_V360_LABEL} roll {_shot_roll(shot):.6f};\n",
         ]
 
     duration = max(0.001, float(duration))
@@ -2924,7 +2923,6 @@ def _v360_motion_commands(shot: dict[str, Any], duration: float, aspect_ratio: f
         expressions = (
             ("yaw", float(_signed_yaw(start_yaw)), yaw_delta),
             ("pitch", float(start_pitch), float(end_pitch) - float(start_pitch)),
-            ("roll", _shot_roll(shot), 0.0),
             ("h_fov", float(start_h_fov), float(end_h_fov) - float(start_h_fov)),
             ("v_fov", float(start_v_fov), float(end_v_fov) - float(start_v_fov)),
         )
