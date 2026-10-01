@@ -27,7 +27,15 @@ from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.messages import t
 from core.project import Project, ProjectError, create_project, load_project
 from core.build_info import build_info
-from core.spherical_view import MAX_SPHERICAL_FOV, effective_fov, effective_pitch, view_parameters
+from core.spherical_view import (
+    MAX_SPHERICAL_FOV,
+    effective_fov,
+    effective_pitch,
+    effective_projection_control,
+    effective_roll,
+    normalize_projection_preset,
+    view_parameters,
+)
 from core.media_validation import record_media_path
 from core.normalization import cache_status, cleanup_unreferenced_cache, global_cache_root, migrate_project_normalization_cache
 from core.stages.sync import clear_manual_override, cleanup_closed_sync_diagnostics, generate_preview, generate_thumbnail, invalidate_stale_sync_artifact, set_manual_anchor, set_manual_override, set_manual_override_ranges
@@ -1858,6 +1866,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             # preview-only clamp allowed a saved pose to look correct in the
             # editor and shift to a different performer in the final MP4.
             pitch = effective_pitch(float(request.args.get("pitch", 0.0)), shot_type)
+            projection_preset = normalize_projection_preset(request.args.get("projection_preset"), shot_type)
+            roll = effective_roll(float(request.args.get("roll", 0.0)), shot_type)
+            projection_control = effective_projection_control(request.args.get("projection_control"))
             h_fov = max(30.0, min(MAX_SPHERICAL_FOV, float(request.args.get("fov", 95.0))))
             time_sec = max(0.0, float(request.args.get("time_sec", 30.0)))
         except (TypeError, ValueError):
@@ -1868,7 +1879,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 time_sec = min(time_sec, max(0.0, duration - 0.05))
         except Exception:
             pass
-        view = view_parameters(yaw, pitch, h_fov, 16.0 / 9.0, shot_type)
+        view = view_parameters(
+            yaw, pitch, h_fov, 16.0 / 9.0, shot_type,
+            projection_preset=projection_preset,
+            roll=roll,
+            projection_control=projection_control,
+        )
         projection = "equirect"
         insv_fov = 190.0
         for record in project.data.get("inputs", {}).get("videos", []):
@@ -1897,7 +1913,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         ffmpeg_path = str(load_global_config().get("ffmpeg_path") or "ffmpeg")
         result = subprocess.run(
             [ffmpeg_path, "-hide_banner", "-loglevel", "error", "-ss", f"{time_sec:.3f}", "-i", str(requested),
-             "-vf", f"{projection_prefix}v360=input=equirect:output={view['projection']}:yaw={float(view['yaw']):.3f}:pitch={float(view['pitch']):.3f}:h_fov={float(view['h_fov']):.3f}:v_fov={float(view['v_fov']):.3f},scale=640:360",
+             "-vf", f"{projection_prefix}v360=input=equirect:output={view['projection']}:yaw={float(view['yaw']):.3f}:pitch={float(view['pitch']):.3f}:roll={float(view['roll']):.3f}:h_fov={float(view['h_fov']):.3f}:v_fov={float(view['v_fov']):.3f},scale=640:360",
              "-frames:v", "1", "-f", "mjpeg", "pipe:1"],
             capture_output=True, check=False, timeout=30,
         )
@@ -2334,7 +2350,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             for key in list(incoming):
                 raw_value = raw_landmarks.get(key)
                 if isinstance(raw_value, dict):
-                    incoming[key] = {field: incoming[key][field] for field in ("yaw", "pitch", "fov", "weight") if field in raw_value}
+                    incoming[key] = {field: incoming[key][field] for field in ("yaw", "pitch", "fov", "roll", "projection_preset", "projection_control", "weight") if field in raw_value}
         source_path = str(body.get("spherical_source_path") or "").strip()
         source_key = str(Path(source_path).expanduser().resolve()) if source_path else ""
         config = load_global_config()
@@ -3014,7 +3030,7 @@ def _sanitize_camera_role_weights(raw: Any) -> dict[str, float]:
     return weights
 
 
-def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, float]]:
+def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(raw, dict):
         return {}
     defaults = {
@@ -3039,10 +3055,21 @@ def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, float]]:
             continue
         # Persist the same canonical pose used by preview/review/export.
         # Saving raw pitch/FOV here was the remaining preview-to-MP4 drift.
+        projection_preset = normalize_projection_preset(source.get("projection_preset"), key)
         pitch = effective_pitch(_optional_float_setting(source.get("pitch"), 0.0), key)
-        fov = effective_fov(_optional_float_setting(source.get("fov"), float(meta["fov"])), key)
+        fov = effective_fov(_optional_float_setting(source.get("fov"), float(meta["fov"])), key, projection_preset)
+        roll = effective_roll(_optional_float_setting(source.get("roll"), 0.0), key)
+        projection_control = effective_projection_control(source.get("projection_control"))
         weight = max(0.0, _optional_float_setting(source.get("weight"), 1.0))
-        landmarks[key] = {"yaw": yaw, "pitch": pitch, "fov": fov, "weight": weight}
+        landmarks[key] = {
+            "yaw": yaw,
+            "pitch": pitch,
+            "fov": fov,
+            "roll": roll,
+            "projection_preset": projection_preset,
+            "projection_control": projection_control,
+            "weight": weight,
+        }
     return landmarks
 
 
