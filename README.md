@@ -4,6 +4,13 @@ Simple three-step app for turning Zucker Mixer audio plus raw camera clips into 
 
 The user-facing UI is English-only in this build. User strings are centralized in `core/messages.py` for backend/status text and `web/strings.js` for frontend dynamic text.
 
+## Current product rules
+
+- **YouTube** is horizontal 16:9 and skips captions and flyer composition.
+- **Reel**, **Backstage**, and **360** remain separate modes; 360 may run with one equirectangular video carrying its own audio.
+- A new wizard submission always starts a new `.zuckervid` project. Opening an old project is explicit; matching file paths never select one automatically.
+- 360 preview controls and final rendering must preserve the selected yaw/pitch/roll/FOV relationship and use smooth, bounded motion.
+
 ## Uso
 
 1. **Drop everything**
@@ -13,9 +20,10 @@ The user-facing UI is English-only in this build. User strings are centralized i
    - You can continue once there is at least one video and one master audio. Without `songs.json`, Zucker Editor makes one continuous video.
 
 2. **Choose edit type**
-   - `YouTube`: full-length 16:9 edit.
-   - `Instagram`: vertical 9:16 short, about 45 seconds.
-   - `TikTok`: vertical 9:16 short, about 20 seconds.
+   - `YouTube`: full-length horizontal 16:9 edit, without captions or flyer composition.
+   - `Reel`: vertical 9:16 short for Instagram/TikTok.
+   - `Backstage`: documentary edit with its own review/caption flow.
+   - `360`: equirectangular source workflow, including the single-video-plus-embedded-audio case.
    - If `songs.json` has multiple songs, choose the song. YouTube also allows `All`.
 
 3. **Wait for the result**
@@ -359,6 +367,19 @@ Errors use:
 ```
 
 Media endpoints support HTTP `Range` requests and return `206 Partial Content` with `Content-Range`, which is required for browser seeking.
+
+## Storage cleanup and project isolation
+
+The app never treats original media, registered inputs, or valid exports as disposable cache. The read-only storage inventory is available at `GET /api/v1/maintenance/storage`. The explicit CLI audit/cleanup is:
+
+```bash
+.venv/bin/python tools/cleanup_storage.py report
+.venv/bin/python tools/cleanup_storage.py clean
+```
+
+Cleanup only proposes recoverable generated leftovers: stale temp files in generated folders, old verification projects, excess backups, historical exports beyond the current result plus two previous families, and unreferenced global cache entries. The CLI asks for `CLEANUP` and moves planned items to the system Trash. Do not run it during an active render.
+
+A fresh wizard run does not search for a project with matching input paths. Use the project shelf and **Open** when you intentionally want to resume an existing project.
 
 ## Tests
 
