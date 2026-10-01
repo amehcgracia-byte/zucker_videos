@@ -73,7 +73,7 @@ EXPORT_SEGMENT_RECIPE_VERSION = 21
 # v17 adds byte-level and full-shot attestation to segment sidecars.  A file
 # with a copied/reused sidecar is no longer accepted if its bytes or authored
 # motion fields differ from the current render.
-SPHERICAL_MOTION_RECIPE_VERSION = 26
+SPHERICAL_MOTION_RECIPE_VERSION = 27
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_HOLD_COMMAND_COUNT = 8
@@ -1607,8 +1607,9 @@ def _continuous_spherical_render_segments(segments: list[dict[str, Any]]) -> lis
             and previous_shot
             and abs(_shortest_yaw_delta(_shot_yaw(previous_shot), _shot_yaw(shot))) > 1e-6
         )
-        if shot and previous_shot and yaw_changed and shot.get("type") != "recorded_move" and bool(shot.get("sweep_enabled", False)):
-            shot = {**shot, "previous_shot": previous_shot}
+        if shot and previous_shot and yaw_changed and shot.get("type") != "recorded_move" and bool(shot.get("sweep_enabled", False))
+            and bool(shot.get("intershot_sweep", False)):
+        shot = {**shot, "previous_shot": previous_shot}
             output.append({**segment, "spherical_shot": shot})
         else:
             output.append(segment)
@@ -3063,7 +3064,7 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
     if previous:
         previous_yaw = _shot_yaw(previous)
         distance = abs(_shortest_yaw_delta(previous_yaw, target_yaw))
-        if not bool(shot.get("sweep_enabled", False)):
+        if not bool(shot.get("sweep_enabled", False)) or not bool(shot.get("intershot_sweep", False)):
             requested = 0.0
         else:
             # Normal case: duration is distance / requested angular speed.
@@ -3658,10 +3659,10 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "sweep_speed_default": SPHERICAL_SWEEP_SPEED_DEG_PER_SEC,
         "sweep_speed_min": SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC,
         "sweep_speed_max": SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC,
-        "transition_policy": "shortest_yaw_delta_at_angular_speed_v3_cross_cut_returns",
-        "axis_policy": "yaw_only_sweep_and_yaw_hold_v2",
+        "transition_policy": "intershot_sweep_explicit_opt_in_shortest_yaw_delta_v4",
+        "axis_policy": "yaw_only_in_shot_hold_no_automatic_cross_landmark_sweep_v3",
         "hold_step_policy": "deg_per_sec_times_elapsed_seconds_v1",
-        "hold_motion_rate_deg_per_sec": 0.01,
+        "hold_motion_rate_deg_per_sec": (-0.8, 0.0, 0.6, 1.0, -0.5, 0.8),
         "hold_motion_default": "subtle",
         "sendcmd_event_policy": "per_frame_expr_piecewise_v2",
         "landmark_hold_min_sec": 6.0,
