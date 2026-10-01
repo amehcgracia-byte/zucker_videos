@@ -1010,3 +1010,14 @@ def test_music_pacing_band_is_explainable():
     assert [_music_pacing_band(value) for value in (0.2, 0.7, 0.84, 0.95)] == [
         "low", "rising", "high", "peak"
     ]
+
+
+
+def test_automatic_360_motion_keeps_intershot_sweep_opt_in():
+    shot = _spherical_motion_profile(
+        {"type": "singer", "yaw": 10.0, "pitch": -10.0, "fov": 95.0, "sweep_enabled": True},
+        2,
+        enabled=True,
+    )
+    assert shot["sweep_enabled"] is False
+    assert shot["intershot_sweep"] is False
