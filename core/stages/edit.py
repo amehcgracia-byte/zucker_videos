@@ -15,6 +15,7 @@ from core.operator_avoidance import OPERATOR_AVOIDANCE_VERSION, avoidance_for_se
 from core.reel_framing import REEL_FRAMING_VERSION, subject_box_for_window
 from core.non_music import NON_MUSIC_VERSION, analyze_non_music_sources
 from core.project import Project
+from core.spherical_view import effective_fov, effective_pitch, effective_projection_control, effective_roll, normalize_projection_preset
 from core.shot_quality import DIRECTOR_SCORE_THRESHOLD, SHOT_QUALITY_VERSION, analyze_handheld_director_quality, director_quality_for_segment
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.cut import _clip_master_ranges, load_coverage
@@ -28,7 +29,7 @@ MAX_BARS_PER_SEGMENT = 12
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
-SPHERICAL_MOTION_PLAN_VERSION = 14
+SPHERICAL_MOTION_PLAN_VERSION = 15
 # Reel has its own pacing contract.  Keep this independent from the
 # YouTube/360 segment limits so a Reel change cannot invalidate or alter their
 # edit cadence accidentally.
@@ -1129,11 +1130,11 @@ def build_spherical_shot_segments(
     return output
 
 
-def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, float]]:
+def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Normalize legacy yaw-only landmark settings to the current per-shot schema."""
     if not isinstance(raw, dict):
         return {}
-    migrated: dict[str, dict[str, float]] = {}
+    migrated: dict[str, dict[str, Any]] = {}
     for shot_type, (legacy_key, _label, default_fov) in SPHERICAL_LANDMARKS.items():
         source = raw.get(shot_type)
         if source is None and legacy_key in raw:
@@ -1143,16 +1144,20 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, floa
         yaw = _landmark_yaw(source.get("yaw"), None)
         if yaw is None:
             continue
+        projection_preset = normalize_projection_preset(source.get("projection_preset"), shot_type)
         migrated[shot_type] = {
             "yaw": yaw,
-            "pitch": _landmark_weight(source, "pitch", 0.0),
-            "fov": _landmark_weight(source, "fov", default_fov),
+            "pitch": effective_pitch(_landmark_weight(source, "pitch", 0.0), shot_type),
+            "fov": effective_fov(_landmark_weight(source, "fov", default_fov), shot_type, projection_preset),
+            "roll": effective_roll(_landmark_weight(source, "roll", 0.0), shot_type),
+            "projection_preset": projection_preset,
+            "projection_control": effective_projection_control(source.get("projection_control")),
             "weight": max(0.0, _landmark_weight(source, "weight", 1.0)),
         }
     return migrated
 
 
-def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_enabled: bool = False, sweep_speed: float = SPHERICAL_SWEEP_SPEED_DEG_PER_SEC) -> list[dict[str, Any]]:
+def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabled: bool = False, sweep_speed: float = SPHERICAL_SWEEP_SPEED_DEG_PER_SEC) -> list[dict[str, Any]]:
     shots: list[dict[str, Any]] = []
     prepared: list[tuple[str, str, float, dict[str, Any], float]] = []
     for shot_type in SPHERICAL_SHOT_ORDER:
@@ -1167,7 +1172,7 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_ena
         key, label, default_fov = SPHERICAL_LANDMARKS[shot_type]
         data = landmarks.get(shot_type)
         if data is None and shot_type == "full_stage":
-            data = {"yaw": 0.0, "pitch": 0.0, "fov": default_fov, "weight": 1.0}
+            data = {"yaw": 0.0, "pitch": 0.0, "fov": default_fov, "roll": 0.0, "projection_preset": "linear", "projection_control": 0.0, "weight": 1.0}
         if not data:
             continue
         yaw = _landmark_yaw(data.get("yaw"), None)
@@ -1196,6 +1201,9 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_ena
             # are the source of empty corners, feet and ceiling shots.
             "pitch": max(-18.0, min(18.0, _landmark_weight(data, "pitch", 0.0))),
             "fov": _landmark_weight(data, "fov", default_fov),
+            "roll": effective_roll(_landmark_weight(data, "roll", 0.0), shot_type),
+            "projection_preset": normalize_projection_preset(data.get("projection_preset"), shot_type),
+            "projection_control": effective_projection_control(data.get("projection_control")),
             "weight": weight,
             "sweep_enabled": bool(sweep_enabled),
             "sweep_speed_deg_per_sec": max(SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC, min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, float(sweep_speed))) if sweep_enabled else 0.0,
@@ -1276,10 +1284,8 @@ def _plan_spherical_fov(shot: dict[str, Any]) -> float:
         fov = float(shot.get("fov") or SPHERICAL_DEFAULT_FOV)
     except (TypeError, ValueError):
         fov = SPHERICAL_DEFAULT_FOV
-    if shot_type == "planet":
-        return max(220.0, min(300.0, fov))
-    # Recorded and automatic views share the same anti-pixelation guard.
-    return max(SPHERICAL_NORMAL_FOV_MIN, min(SPHERICAL_NORMAL_FOV_MAX, fov))
+    projection_preset = normalize_projection_preset(shot.get("projection_preset"), shot_type)
+    return effective_fov(fov, shot_type, projection_preset)
 
 
 def _next_weighted_spherical_shot(

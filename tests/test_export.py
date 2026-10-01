@@ -2047,3 +2047,23 @@ def test_reel_image_overlay_effects_are_rasterized(tmp_path: Path) -> None:
     center = rendered.getpixel((540, 960))
     assert center[1] > 200 and center[0] < 80 and center[2] < 80
     assert any(pixel[3] > 0 for pixel in rendered.crop((530, 950, 560, 980)).getdata())
+
+
+
+def test_export_filter_preserves_authored_360_roll_and_dewarp_fov():
+    from core.stages.export import _export_source_filter
+
+    graph = _export_source_filter(
+        {"projection": "equirect"},
+        {
+            "type": "singer",
+            "yaw": 171.2,
+            "pitch": -36.5,
+            "fov": 150.0,
+            "roll": 7.5,
+            "projection_preset": "dewarp",
+        },
+    )
+    assert "roll=7.500" in graph
+    assert "h_fov=100.000" in graph
+    assert "output=flat" in graph

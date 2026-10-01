@@ -34,6 +34,8 @@ from core.spherical_view import (
     STEREOGRAPHIC_FOV_THRESHOLD,
     effective_fov,
     effective_pitch,
+    effective_roll,
+    normalize_projection_preset,
     paired_flat_fov,
     signed_yaw,
     view_parameters,
@@ -71,7 +73,7 @@ EXPORT_SEGMENT_RECIPE_VERSION = 21
 # v17 adds byte-level and full-shot attestation to segment sidecars.  A file
 # with a copied/reused sidecar is no longer accepted if its bytes or authored
 # motion fields differ from the current render.
-SPHERICAL_MOTION_RECIPE_VERSION = 25
+SPHERICAL_MOTION_RECIPE_VERSION = 26
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_HOLD_COMMAND_COUNT = 8
@@ -3155,6 +3157,9 @@ def _export_source_filter(probe: dict[str, Any], shot: dict[str, Any] | None = N
         _shot_float(shot, "fov", 100.0),
         16.0 / 9.0,
         str((shot or {}).get("type") or ""),
+        projection_preset=(shot or {}).get("projection_preset"),
+        roll=_shot_roll(shot),
+        projection_control=(shot or {}).get("projection_control"),
     )
     yaw = float(view["yaw"])
     pitch = float(view["pitch"])
@@ -3169,9 +3174,9 @@ def _export_source_filter(probe: dict[str, Any], shot: dict[str, Any] | None = N
     output_projection = str(view["projection"])
     if probe.get("projection") == "raw_insv":
         insv_fov = int(probe.get("insv_fov") or 190)
-        spatial = f"v360=input=dfisheye:output=e:ih_fov={insv_fov}:iv_fov={insv_fov}:interp=lanczos,{command_prefix}{SPHERE_V360_LABEL}=input=equirect:output={output_projection}:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:w=1920:h=1080:interp=lanczos"
+        spatial = f"v360=input=dfisheye:output=e:ih_fov={insv_fov}:iv_fov={insv_fov}:interp=lanczos,{command_prefix}{SPHERE_V360_LABEL}=input=equirect:output={output_projection}:yaw={yaw:.3f}:pitch={pitch:.3f}:roll={float(view['roll']):.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:w=1920:h=1080:interp=lanczos"
     elif probe.get("projection") == "equirect":
-        spatial = f"{command_prefix}{SPHERE_V360_LABEL}=input=equirect:output={output_projection}:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:w=1920:h=1080:interp=lanczos"
+        spatial = f"{command_prefix}{SPHERE_V360_LABEL}=input=equirect:output={output_projection}:yaw={yaw:.3f}:pitch={pitch:.3f}:roll={float(view['roll']):.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:w=1920:h=1080:interp=lanczos"
     elif probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
         spatial = f"{SDR_TONEMAP_FILTER},scale=trunc(iw/2)*2:trunc(ih/2)*2"
     else:
@@ -3237,7 +3242,9 @@ def _use_stereographic(shot: dict[str, Any] | None) -> bool:
 
 
 def _effective_flat_fov(shot: dict[str, Any] | None) -> float:
-    return effective_fov(_shot_float(shot, "fov", 100.0), str((shot or {}).get("type") or ""))
+    shot_type = str((shot or {}).get("type") or "")
+    preset = normalize_projection_preset((shot or {}).get("projection_preset"), shot_type)
+    return effective_fov(_shot_float(shot, "fov", 100.0), shot_type, preset)
 
 
 def _paired_motion_fov(shot: dict[str, Any] | None, fov: float, aspect_ratio: float) -> tuple[float, float]:
@@ -3248,6 +3255,8 @@ def _paired_motion_fov(shot: dict[str, Any] | None, fov: float, aspect_ratio: fl
         aspect_ratio,
         str((shot or {}).get("type") or ""),
         projection_hint="sg" if _use_stereographic(shot) else "flat",
+        projection_preset=(shot or {}).get("projection_preset"),
+        projection_control=(shot or {}).get("projection_control"),
     )
     return float(params["h_fov"]), float(params["v_fov"])
 
@@ -3268,6 +3277,11 @@ def _shot_yaw(shot: dict[str, Any] | None) -> float:
     if yaw > 180.0:
         yaw -= 360.0
     return yaw
+
+
+def _shot_roll(shot: dict[str, Any] | None) -> float:
+    shot_type = str((shot or {}).get("type") or "")
+    return effective_roll(_shot_float(shot, "roll", 0.0), shot_type)
 
 
 def _spherical_shot_usage(segments: list[dict[str, Any]]) -> dict[str, int]:
