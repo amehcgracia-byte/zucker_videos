@@ -12,7 +12,14 @@ from typing import Any
 
 from core.project import Project
 from core.ffmpeg import locate_executable
-from core.spherical_view import effective_fov, effective_pitch, view_parameters
+from core.spherical_view import (
+    effective_fov,
+    effective_pitch,
+    effective_projection_control,
+    effective_roll,
+    normalize_projection_preset,
+    view_parameters,
+)
 from core.stages.base import artifact_path
 from core.stages.cut import load_coverage
 from core.stages.edit import IPHONE_CROP_TOP_LIMIT, SPHERICAL_NORMAL_FOV_MIN, _camera_id
@@ -80,12 +87,15 @@ def _review_segment(project: Project, segment: dict[str, Any]) -> dict[str, Any]
     if not saved or not shot:
         return dict(segment)
     effective = dict(shot)
-    for field in ("yaw", "pitch", "fov", "weight"):
+    for field in ("yaw", "pitch", "fov", "roll", "projection_preset", "projection_control", "weight"):
         if field in saved:
             effective[field] = saved[field]
     # Review cards must use the same canonical pose that preview/export use.
+    effective["projection_preset"] = normalize_projection_preset(effective.get("projection_preset"), shot_type)
     effective["pitch"] = effective_pitch(effective.get("pitch", 0.0), shot_type)
-    effective["fov"] = effective_fov(effective.get("fov", 95.0), shot_type)
+    effective["fov"] = effective_fov(effective.get("fov", 95.0), shot_type, effective["projection_preset"])
+    effective["roll"] = effective_roll(effective.get("roll", 0.0), shot_type)
+    effective["projection_control"] = effective_projection_control(effective.get("projection_control"))
     effective["type"] = shot_type
     effective["shot_id"] = shot_type
     effective["label"] = _REVIEW_SHOT_LABELS.get(shot_type, shot.get("label") or shot_type)
@@ -100,7 +110,7 @@ def _review_segments(project: Project) -> list[dict[str, Any]]:
 
 def _review_pose_for_cache(segment: dict[str, Any]) -> dict[str, Any]:
     shot = segment.get("spherical_shot") or {}
-    pose = {key: shot.get(key) for key in ("type", "shot_id", "pitch", "fov")}
+    pose = {key: shot.get(key) for key in ("type", "shot_id", "pitch", "fov", "roll", "projection_preset", "projection_control")}
     try:
         pose["yaw"] = float(shot.get("yaw") or 0.0) % 360.0
     except (TypeError, ValueError):
@@ -173,6 +183,9 @@ def _thumbnail_filter(segment: dict[str, Any], color_profile: dict[str, Any] | N
         float(shot.get("fov") or 95.0),
         16.0 / 9.0,
         str(shot.get("type") or ""),
+        projection_preset=shot.get("projection_preset"),
+        roll=float(shot.get("roll") or 0.0),
+        projection_control=shot.get("projection_control"),
     )
     if projection == "raw_insv":
         insv_fov = float(segment.get("insv_fov") or 190.0)
@@ -182,6 +195,7 @@ def _thumbnail_filter(segment: dict[str, Any], color_profile: dict[str, Any] | N
     return (
         f"{correction}{prefix}v360=input=equirect:output={view['projection']}:"
         f"yaw={float(view['yaw']):.3f}:pitch={float(view['pitch']):.3f}:"
+        f"roll={float(view['roll']):.3f}:"
         f"h_fov={float(view['h_fov']):.3f}:v_fov={float(view['v_fov']):.3f}:"
         "w=360:h=202:interp=lanczos,format=yuvj420p"
     )
@@ -198,7 +212,12 @@ def _spherical_pose_suffix(candidate: dict[str, Any]) -> str:
         fov = float(shot.get("fov") or 95.0)
     except (TypeError, ValueError):
         return ""
-    return f"|yaw={yaw:.3f}|pitch={pitch:.3f}|fov={fov:.3f}"
+    return (
+        f"|yaw={yaw:.3f}|pitch={pitch:.3f}|fov={fov:.3f}"
+        f"|roll={float(shot.get('roll') or 0.0):.3f}"
+        f"|projection={normalize_projection_preset(shot.get('projection_preset'), str(shot.get('type') or ''))}"
+        f"|projection_control={float(shot.get('projection_control') or 0.0):.3f}"
+    )
 
 
 def _candidate_key(candidate: dict[str, Any]) -> str:
@@ -302,11 +321,16 @@ def _spherical_review_poses(segment: dict[str, Any], segments: list[dict[str, An
             yaw = float(raw.get("yaw") or 0.0) % 360.0
             pose_type = str(raw.get("shot_id") or raw.get("type") or current.get("type") or "")
             pitch = effective_pitch(float(raw.get("pitch") or 0.0), pose_type)
-            fov = effective_fov(float(raw.get("fov") or 95.0), pose_type)
+            projection_preset = normalize_projection_preset(raw.get("projection_preset"), pose_type)
+            fov = effective_fov(float(raw.get("fov") or 95.0), pose_type, projection_preset)
+            roll = effective_roll(float(raw.get("roll") or 0.0), pose_type)
         except (TypeError, ValueError):
             return
         pose = dict(raw)
         pose["yaw"], pose["pitch"], pose["fov"] = round(yaw, 3), round(pitch, 3), round(fov, 3)
+        pose["roll"] = round(roll, 3)
+        pose["projection_preset"] = projection_preset
+        pose["projection_control"] = effective_projection_control(raw.get("projection_control"))
         key = _spherical_pose_suffix({"spherical_shot": pose})
         if key in seen:
             return
