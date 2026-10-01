@@ -90,6 +90,20 @@ def is_single_source_reel(project: Project) -> bool:
     return bool(segments) and all(segment.get("single_source_continuous") for segment in segments)
 
 
+def _platform_needs_sync(platform: str, project: Project | None = None, master_path: str | None = None) -> bool:
+    """Return whether the selected mode has a separate master to synchronize."""
+    if platform in {"reel", "backstage"}:
+        return False
+    if platform != "360":
+        return True
+    if str(master_path or "").strip():
+        return True
+    if project is not None:
+        master = (project.data.get("inputs") or {}).get("master") or {}
+        return bool(str(master.get("path") or "").strip())
+    return False
+
+
 @dataclass
 class WizardRunner:
     """Runs one wizard render job at a time."""
@@ -368,7 +382,7 @@ class WizardRunner:
             )
             project.save()
             self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
-            if platform not in {"reel", "backstage"}:
+            if _platform_needs_sync(platform, project=project, master_path=options.get("master_path")):
                 self._run_stage(job, project, SyncStage(), 22, 48, t("syncing_audio"))
             else:
                 job.progress = 22
@@ -657,7 +671,7 @@ class WizardRunner:
             self._run_stage(job, project, IngestStage(), 0, 15 if platform == "360" else 22, t("listening"))
             sync_start = 15 if platform == "360" else 22
             sync_end = 30 if platform == "360" else 48
-            if platform not in {"reel", "backstage"}:
+            if _platform_needs_sync(platform, project=project, master_path=master_path):
                 self._run_stage(job, project, SyncStage(), sync_start, sync_end, t("syncing_audio"))
             else:
                 job.progress = 22
@@ -711,7 +725,7 @@ class WizardRunner:
             job.input_warnings = list(project.data.get("inputs", {}).get("warnings") or [])
             _write_stage_log(project, "wizard", f"Master audio selected: {Path(master_path).name}")
             self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
-            if platform not in {"reel", "backstage"}:
+            if _platform_needs_sync(platform, project=project, master_path=master_path):
                 self._run_stage(job, project, SyncStage(), 22, 48, t("syncing_audio"))
             else:
                 job.progress = 22
@@ -749,7 +763,7 @@ class WizardRunner:
                 _write_stage_log(project, "wizard", "REUSING completed ingest; no re-ingest required")
             else:
                 self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
-            if platform not in {"reel", "backstage"}:
+            if _platform_needs_sync(platform, project=project):
                 self._run_stage(job, project, SyncStage(), 22, 48, t("syncing_audio"))
             else:
                 job.progress = 22
@@ -952,7 +966,7 @@ class WizardRunner:
         songs_path: str | None,
         video_paths: list[str],
     ) -> None:
-        job.message = t("waiting_for_sync") if platform not in {"reel", "backstage"} else ("Finding Backstage moments" if platform == "backstage" else t("building_coverage"))
+        job.message = t("waiting_for_sync") if _platform_needs_sync(platform, master_path=master_path) else ("Finding Backstage moments" if platform == "backstage" else ("Preparing 360 source" if platform == "360" else t("building_coverage")))
         if prepare_thread:
             prepare_thread.join()
         if job.status in {"failed", "cancelled"}:
