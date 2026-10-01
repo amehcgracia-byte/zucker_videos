@@ -1581,8 +1581,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("bad_request", "platform must be youtube, reel, instagram, tiktok, 360, or backstage", 400)
         if not isinstance(videos, list) or not all(isinstance(path, str) for path in videos) or not videos:
             return error_response("missing_video", t("missing_video"), 400)
-        embedded_reel_audio = platform == "reel" and _single_video_has_audio(videos)
-        if not master and platform != "backstage" and not embedded_reel_audio:
+        embedded_source_audio = platform in {"reel", "360"} and _single_video_has_audio(videos)
+        if not master and platform != "backstage" and not embedded_source_audio:
             return error_response("missing_master", t("missing_master"), 400)
         try:
             options = {
@@ -1979,7 +1979,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         videos = body.get("videos") or []
         if not isinstance(videos, list) or not all(isinstance(path, str) for path in videos) or not videos:
             return error_response("missing_video", t("missing_video"), 400)
-        if not master and platform != "backstage" and not (platform == "reel" and _single_video_has_audio(videos)):
+        if not master and platform != "backstage" and not (platform in {"reel", "360"} and _single_video_has_audio(videos)):
             return error_response("missing_master", t("missing_master"), 400)
         try:
             matching_project = state.project if _can_reuse_prepared_project(state.project, master, songs, videos) else find_project_by_inputs(master, songs, videos)
