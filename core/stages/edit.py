@@ -1157,7 +1157,7 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, Any]
     return migrated
 
 
-def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_enabled: bool = False, sweep_speed: float = SPHERICAL_SWEEP_SPEED_DEG_PER_SEC) -> list[dict[str, Any]]:
+def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabled: bool = False, sweep_speed: float = SPHERICAL_SWEEP_SPEED_DEG_PER_SEC) -> list[dict[str, Any]]:
     shots: list[dict[str, Any]] = []
     prepared: list[tuple[str, str, float, dict[str, Any], float]] = []
     for shot_type in SPHERICAL_SHOT_ORDER:
