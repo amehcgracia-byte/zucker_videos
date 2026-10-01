@@ -1613,7 +1613,7 @@ def _continuous_spherical_render_segments(segments: list[dict[str, Any]]) -> lis
             and yaw_changed
             and shot.get("type") != "recorded_move"
             and bool(shot.get("sweep_enabled", False))
-            and bool(shot.get("intershot_sweep", False))
+            and bool(shot.get("intershot_sweep", shot.get("sweep_enabled", False)))
         ):
             shot = {**shot, "previous_shot": previous_shot}
             output.append({**segment, "spherical_shot": shot})
@@ -3070,7 +3070,7 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
     if previous:
         previous_yaw = _shot_yaw(previous)
         distance = abs(_shortest_yaw_delta(previous_yaw, target_yaw))
-        if not bool(shot.get("sweep_enabled", False)) or not bool(shot.get("intershot_sweep", False)):
+        if not bool(shot.get("sweep_enabled", False)) or not bool(shot.get("intershot_sweep", shot.get("sweep_enabled", False))):
             requested = 0.0
         else:
             # Normal case: duration is distance / requested angular speed.
