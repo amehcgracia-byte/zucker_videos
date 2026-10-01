@@ -1641,7 +1641,7 @@ def _spherical_segment_parts(segment: dict[str, Any], previous_shot: dict[str, A
     current = 0.0
     start_yaw = _shot_float(previous_shot, "yaw", _shot_float(shot, "yaw", 0.0))
     target_yaw = _shot_float(shot, "yaw", 0.0)
-    if previous_shot and previous_shot.get("type") != shot.get("type") and duration >= 2.0 and bool(shot.get("sweep_enabled", False)):
+    if previous_shot and previous_shot.get("type") != shot.get("type") and duration >= 2.0 and bool(shot.get("sweep_enabled", False)) and bool(shot.get("intershot_sweep", shot.get("sweep_enabled", False))):
         distance = abs(_shortest_yaw_delta(start_yaw, target_yaw))
         speed = max(_sweep_speed(shot), min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, distance / max(duration, 0.001)))
         full_pan_duration = distance / speed if speed > 0 else 0.0
