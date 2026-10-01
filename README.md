@@ -377,7 +377,7 @@ The app never treats original media, registered inputs, or valid exports as disp
 .venv/bin/python tools/cleanup_storage.py clean
 ```
 
-Cleanup only proposes recoverable generated leftovers: stale temp files in generated folders, old verification projects, excess backups, historical exports beyond the current result plus two previous families, and unreferenced global cache entries. The CLI asks for `CLEANUP` and moves planned items to the system Trash. Do not run it during an active render.
+Cleanup only proposes recoverable generated leftovers: stale temp files in generated folders, old verification projects, excess backups, and historical exports beyond the current result plus two previous families. Global cache pruning remains a separate explicit cache operation. The CLI asks for `CLEANUP` and moves planned items to the system Trash. Do not run it during an active render.
 
 A fresh wizard run does not search for a project with matching input paths. Use the project shelf and **Open** when you intentionally want to resume an existing project.
 
