@@ -33,6 +33,8 @@ def print_report(report: dict) -> None:
             for model in item["models"]: print(f"    {gib(model['bytes'])} {model['name']}")
         if name == "verification_temp":
             for temp in item["files"]: print(f"    candidate: {gib(temp['bytes'])} {temp['path']}")
+        if name == "orphan_temporary":
+            for temp in item["files"]: print(f"    candidate: {gib(temp['bytes'])} {temp['path']}")
 
 
 def main() -> int:
