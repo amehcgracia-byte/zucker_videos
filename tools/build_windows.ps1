@@ -29,6 +29,7 @@ $common = @(
   "--add-data", "$Root\assets\parchment_full.png;assets",
   "--add-data", "$Root\core\vendor;core/vendor",
   "--add-data", "$BuildInfo;.",
+  "--add-data", "$Root\README_APP.md;.",
   "--collect-data", "faster_whisper", "--collect-data", "whisper",
   "--collect-data", "onnxruntime", "--collect-data", "tokenizers",
   "--hidden-import", "server.api", "--hidden-import", "faster_whisper",
