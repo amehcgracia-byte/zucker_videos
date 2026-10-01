@@ -2953,7 +2953,7 @@ def _shot_requires_runtime_motion(shot: dict[str, Any] | None) -> bool:
         return bool(shot.get("curve"))
     if shot.get("type") == "planet":
         return float(shot.get("spin_deg_per_sec") or 0.0) > 0.0
-    if float(shot.get("hold_motion_rate_deg_per_sec") or 0.0) > 0.0:
+    if abs(float(shot.get("hold_motion_rate_deg_per_sec") or 0.0)) > 0.0:
         return True
     previous = shot.get("previous_shot") if isinstance(shot.get("previous_shot"), dict) else None
     if previous and bool(shot.get("sweep_enabled", False)):
