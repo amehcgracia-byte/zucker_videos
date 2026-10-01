@@ -1,6 +1,6 @@
 # Zucker Editor — guía incluida en la aplicación
 
-Versión: consulta **About** o el archivo `build_info.json` que acompaña al paquete.
+La versión aparece en el nombre del DMG y en `build_info.json`, dentro del paquete.
 
 Zucker Editor convierte audio de una sesión y grabaciones de cámara en un vídeo editado. El flujo normal es:
 
