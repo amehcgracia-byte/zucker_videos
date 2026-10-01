@@ -1002,10 +1002,12 @@ function applySphericalSetup(values = {}) {
 
 function sphericalSetupValuesFor(group) {
   const values = {};
-  for (const field of ["yaw", "pitch", "fov", "weight"]) {
+  for (const field of ["yaw", "pitch", "fov", "roll", "projection_control", "weight"]) {
     const value = Number(group.querySelector(`[data-field="${field}"]`)?.value);
     if (Number.isFinite(value)) values[field] = value;
   }
+  const projectionPreset = group.querySelector('[data-field="projection_preset"]')?.value;
+  if (projectionPreset) values.projection_preset = projectionPreset;
   return values;
 }
 
@@ -1091,7 +1093,7 @@ function updateSphericalSetupViewer(viewer, values = {}) {
   if (group) {
     for (const [field, value] of [["yaw", viewer.yaw], ["pitch", viewer.pitch], ["fov", viewer.fov], ["roll", viewer.roll], ["projection_preset", viewer.projection_preset], ["projection_control", viewer.projection_control]]) {
       const input = group.querySelector('[data-field="' + field + '"]');
-      if (input && document.activeElement !== input) input.value = formatCanonicalNumber(value);
+      if (input && document.activeElement !== input) input.value = field === "projection_preset" ? String(value) : formatCanonicalNumber(value);
     }
   }
   queueSphericalSetupPreview(viewer);
