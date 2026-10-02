@@ -73,9 +73,17 @@ EXPORT_SEGMENT_RECIPE_VERSION = 21
 # v17 adds byte-level and full-shot attestation to segment sidecars.  A file
 # with a copied/reused sidecar is no longer accepted if its bytes or authored
 # motion fields differ from the current render.
-SPHERICAL_MOTION_RECIPE_VERSION = 27
+SPHERICAL_MOTION_RECIPE_VERSION = 28
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
+# Runtime sendcmd reconfiguration of v360 can produce mixed frames on FFmpeg
+# builds used by the packaged app. Keep final export projection-safe until a
+# frame-segmented motion renderer is validated independently.
+SPHERICAL_EXPORT_MOTION_MODE = "static"
+SPHERICAL_EXPORT_PROXY_VERSION = 1
+SPHERICAL_EXPORT_PROXY_WIDTH = 2560
+SPHERICAL_EXPORT_PROXY_HEIGHT = 1280
+_SPHERICAL_EXPORT_PROXY_LOCK = threading.RLock()
 SPHERICAL_HOLD_COMMAND_COUNT = 8
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
 SPHERICAL_NORMAL_FOV_MIN = NORMAL_FOV_MIN
@@ -1936,6 +1944,100 @@ def _target_size(platform: str) -> tuple[int, int]:
     return 1920, 1080
 
 
+
+def _spherical_export_source_info(
+    project: Project,
+    source_info: dict[str, Any],
+    segment: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """Resolve one reusable equirectangular source for a 360 export segment.
+
+    The original 5K/6K camera file is still the source of truth, but decoding
+    it independently for every short export segment is prohibitively slow.
+    This cache is equirectangular (never a flat viewpoint), so the authored
+    yaw/pitch/FOV contract remains valid for the final render.
+    """
+    probe = source_info.get("probe") or {}
+    projection = str(probe.get("projection") or segment.get("projection") or "").lower()
+    if projection not in {"equirect", "raw_insv"}:
+        return source_info, False
+    source_path = Path(str(source_info.get("source_path") or "")).expanduser()
+    if not source_path.is_file():
+        return source_info, False
+    try:
+        stat = source_path.stat()
+    except OSError:
+        return source_info, False
+    try:
+        insv_fov = float(probe.get("insv_fov") or segment.get("insv_fov") or 190.0)
+    except (TypeError, ValueError):
+        insv_fov = 190.0
+    key = hashlib.sha256(
+        (
+            f"{source_path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}|"
+            f"{projection}|{insv_fov:.3f}|{SPHERICAL_EXPORT_PROXY_VERSION}|"
+            f"{SPHERICAL_EXPORT_PROXY_WIDTH}x{SPHERICAL_EXPORT_PROXY_HEIGHT}"
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    target = project.cache_dir / "spherical_export" / f"equirect-{key}.mp4"
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    with _SPHERICAL_EXPORT_PROXY_LOCK:
+        if not target.exists() or target.stat().st_size <= 0:
+            ffmpeg = _ffmpeg_path()
+            temporary = target.with_suffix(".tmp.mp4")
+            source_filter = ""
+            if projection == "raw_insv":
+                source_filter = (
+                    f"v360=input=dfisheye:output=e:"
+                    f"ih_fov={insv_fov:.3f}:iv_fov={insv_fov:.3f}:interp=lanczos,"
+                )
+            filter_graph = (
+                f"{source_filter}scale={SPHERICAL_EXPORT_PROXY_WIDTH}:{SPHERICAL_EXPORT_PROXY_HEIGHT}:"
+                "force_original_aspect_ratio=decrease,"
+                f"pad={SPHERICAL_EXPORT_PROXY_WIDTH}:{SPHERICAL_EXPORT_PROXY_HEIGHT}:(ow-iw)/2:(oh-ih)/2,"
+                "format=yuv420p"
+            )
+            command = [
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
+                "-i", str(source_path), "-map", "0:v:0", "-an", "-sn", "-dn",
+                "-vf", filter_graph,
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+                "-pix_fmt", "yuv420p", str(temporary),
+            ]
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, check=False)
+                if result.returncode != 0 or not temporary.exists() or temporary.stat().st_size <= 0:
+                    detail = (result.stderr or "").strip() or "Could not create the spherical export proxy"
+                    LOGGER.warning("360 export proxy failed for %s: %s", source_path, detail)
+                    temporary.unlink(missing_ok=True)
+                    return source_info, False
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    proxy_probe = dict(probe)
+    proxy_probe.update(
+        {
+            "projection": "equirect",
+            "width": SPHERICAL_EXPORT_PROXY_WIDTH,
+            "height": SPHERICAL_EXPORT_PROXY_HEIGHT,
+            "video_codec": "h264",
+            "codec_name": "h264",
+            "pix_fmt": "yuv420p",
+            "bit_depth": 8,
+            "hdr": False,
+            "cfr": True,
+        }
+    )
+    resolved = dict(source_info)
+    resolved["source_path"] = str(target)
+    resolved["proxy_path"] = str(target)
+    resolved["probe"] = proxy_probe
+    resolved["paired_path"] = None
+    return resolved, True
+
+
 def _render_segment(
     project: Project,
     segment: dict[str, Any],
@@ -1957,9 +2059,27 @@ def _render_segment(
     ffmpeg = _ffmpeg_path()
     duration = max(0.1, float(segment["duration_sec"]))
     frame_count = _segment_frame_count(segment)
-    source = _segment_source_info(project, segment)
-    reel_letterbox_filter = _reel_letterbox_filter(project, segment, platform)
-    mix_horizontal = platform == "reel" and segment.get("reel_mix_treatment") == "horizontal"
+    base_source = _segment_source_info(project, segment)
+    render_segment = dict(segment)
+    spherical_shot = _spherical_shot(segment)
+    if spherical_shot and SPHERICAL_EXPORT_MOTION_MODE == "static":
+        # Do not send runtime commands into v360. A static authored view is
+        # preferable to a corrupted frame containing two simultaneous views.
+        safe_shot = dict(spherical_shot)
+        safe_shot["runtime_motion_enabled"] = False
+        render_segment["spherical_shot"] = safe_shot
+    source, using_spherical_proxy = _spherical_export_source_info(project, base_source, segment)
+    if using_spherical_proxy:
+        render_segment["source_path"] = source["source_path"]
+        render_segment["clip_path"] = source["source_path"]
+        render_segment["projection"] = "equirect"
+    if spherical_shot and SPHERICAL_EXPORT_MOTION_MODE == "static":
+        LOGGER.info("360 export safety mode=static source=%s", base_source.get("source_path"))
+        if warnings is not None:
+            warnings.append("360 motion safety mode: exported viewpoint is static to prevent mixed frames")
+    reel_letterbox_filter = _reel_letterbox_filter(project, render_segment, platform)
+    mix_horizontal = platform == "reel" and render_segment.get("reel_mix_treatment") == "horizontal"
+    rendered_from = "spherical_export_proxy" if using_spherical_proxy else "original"
     # Reel's user-selectable logo is applied exactly once by the post-export
     # Overlay & Captions composition. The historical export watermark belongs
     # to the older base-export path and must not be baked into Reel footage;
@@ -1977,7 +2097,7 @@ def _render_segment(
             ffmpeg,
             proxy_path,
             master_path,
-            segment,
+            render_segment,
             output_path,
             platform,
             video_bitrate,
@@ -1995,16 +2115,16 @@ def _render_segment(
             reel_letterbox_filter=reel_letterbox_filter,
             source_filter=_export_source_filter(
                 source.get("probe") or {},
-                _spherical_shot(segment),
+                _spherical_shot(render_segment),
                 duration=duration,
                 command_path=output_path.with_suffix(".sendcmd.txt"),
-            ) if _spherical_shot(segment) else None,
+            ) if _spherical_shot(render_segment) else None,
         )
     sendcmd_path = output_path.with_suffix(".sendcmd.txt")
     segment_probe = source.get("probe") or {}
-    _warn_if_spherical_framing_was_dropped(segment, segment_probe, warnings)
-    source_filter = _export_source_filter(segment_probe, _spherical_shot(segment), duration=duration, command_path=sendcmd_path)
-    reel_overlay_items = _reel_overlay_items(segment, overlay_config or {}, platform, output_path.parent)
+    _warn_if_spherical_framing_was_dropped(render_segment, segment_probe, warnings)
+    source_filter = _export_source_filter(segment_probe, _spherical_shot(render_segment), duration=duration, command_path=sendcmd_path)
+    reel_overlay_items = _reel_overlay_items(render_segment, overlay_config or {}, platform, output_path.parent)
     filter_complex = _segment_filtergraph(
         platform,
         duration,
@@ -2017,16 +2137,16 @@ def _render_segment(
         intro_logo=intro_logo,
         outro_logo=outro_logo,
         source_filter=source_filter,
-        motion_filter=None if mix_horizontal else _motion_filter(segment, platform, duration),
+        motion_filter=None if mix_horizontal else _motion_filter(render_segment, platform, duration),
         frame_count=frame_count,
-        segment=segment,
+        segment=render_segment,
         reel_overlay_items=reel_overlay_items,
         reel_letterbox_filter=reel_letterbox_filter,
     )
     command_base = _segment_video_command_base(
         ffmpeg,
         source["source_path"],
-        segment,
+        render_segment,
         duration,
     )
     if watermark:
@@ -2069,7 +2189,7 @@ def _render_segment(
         if command_recorder is not None:
             command_recorder.append(command)
         _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
-        return "original"
+        return rendered_from
     except FFmpegError as exc:
         if output_path.exists():
             output_path.unlink()
@@ -2080,7 +2200,7 @@ def _render_segment(
             if command_recorder is not None:
                 command_recorder.append(command)
             _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
-            return "original"
+            return rendered_from
         except FFmpegError as fallback_exc:
             if output_path.exists():
                 output_path.unlink()
@@ -2116,6 +2236,15 @@ def _render_segment(
                     command_path=output_path.with_suffix(".sendcmd.txt"),
                 ) if _spherical_shot(segment) else None,
             )
+
+
+
+def _segment_requires_motion_verification(segment: dict[str, Any]) -> bool:
+    """Return whether pixel motion is expected from this rendered segment."""
+    return not (
+        _spherical_shot(segment)
+        and SPHERICAL_EXPORT_MOTION_MODE == "static"
+    )
 
 
 def _render_segment_job(
@@ -2212,7 +2341,7 @@ def _render_segment_job(
         # Replaying the expensive frame probes for an already-attested cache
         # entry made every subsequent export needlessly slow.
         _verify_segment_frame_duration(segment_path, _segment_frame_count(segment), label)
-        if verify_motion:
+        if verify_motion and _segment_requires_motion_verification(segment):
             command_line = _verify_or_rebuild_segment(
                 project, segment, master_path, segment_path,
                 temp_dir / f"segment-{index:04d}.mp4", platform, video_bitrate,
@@ -3733,6 +3862,8 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "automatic_yaw_drift_fraction": SPHERICAL_PRIMARY_DRIFT_FRACTION,
         "automatic_motion_fraction_per_sec": SPHERICAL_MAX_MOTION_FRACTION_PER_SEC,
         "v360_target": SPHERE_V360_LABEL,
+        "export_motion_mode": SPHERICAL_EXPORT_MOTION_MODE,
+        "export_proxy_version": SPHERICAL_EXPORT_PROXY_VERSION,
         "target_fps": TARGET_EXPORT_FPS,
     }
 
