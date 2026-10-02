@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import logging
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,7 @@ from core.stages.edit import IPHONE_CROP_TOP_LIMIT, _camera_id
 
 
 LOGGER = logging.getLogger(__name__)
+_RENDER_STATUS_LOCK = threading.RLock()
 
 _REVIEW_SHOT_LABELS = {
     "singer": "Cantante",
@@ -324,7 +327,7 @@ def _load_render_status(root: Path) -> dict[str, dict[str, Any]]:
 
 def _save_render_status(root: Path, status: dict[str, dict[str, Any]]) -> None:
     path = _render_status_path(root)
-    # Review can be opened/polled concurrently from the browser.  A fixed
+    # Review can be opened/polled concurrently from the browser. A fixed
     # sibling temporary name lets one request replace the other request's
     # temporary file before it calls replace().
     with tempfile.NamedTemporaryFile(
@@ -335,16 +338,25 @@ def _save_render_status(root: Path, status: dict[str, dict[str, Any]]) -> None:
     temporary.replace(path)
 
 
+def _set_render_status(root: Path, index: int, payload: dict[str, Any]) -> None:
+    """Merge one worker's state without losing another worker's update."""
+    with _RENDER_STATUS_LOCK:
+        status = _load_render_status(root)
+        status[str(index)] = payload
+        _save_render_status(root, status)
+
+
 def mark_review_render_failed(project: Project, indices: set[int], message: str) -> None:
     """Persist a background render failure so the review UI can show it."""
     segments = _review_segments(project)
     signature = _review_signature(segments)
     root = project.cache_dir / "shot_review" / signature
     root.mkdir(parents=True, exist_ok=True)
-    status = _load_render_status(root)
-    for index in indices:
-        status[str(index)] = {"state": "failed", "error": message}
-    _save_render_status(root, status)
+    with _RENDER_STATUS_LOCK:
+        status = _load_render_status(root)
+        for index in indices:
+            status[str(index)] = {"state": "failed", "error": message}
+        _save_render_status(root, status)
 
 
 def _replacement_candidates(
@@ -380,6 +392,7 @@ def review_items(
     *,
     render_missing: bool = True,
     render_indices: set[int] | None = None,
+    apply_color_profile: bool = False,
 ) -> list[dict[str, Any]]:
     """Return review items, optionally rendering only selected missing thumbnails."""
     segments = _review_segments(project)
@@ -390,13 +403,14 @@ def review_items(
     unavailable = {int(value) for value in project.data.get("settings", {}).get("wizard", {}).get("review_unavailable", [])}
     items: list[dict[str, Any]] = []
     ffmpeg = locate_executable("ffmpeg") or "ffmpeg"
-    # Color normalization is calculated once for the complete plan, never per
-    # thumbnail/segment.  It is the same profile map used by final export.
-    from core.stages.export import _color_profiles_for_segments
-    # A status-only review request must be cheap.  It is used while a
-    # replacement thumbnail is rendering and must not launch/inspect the
-    # complete 65-shot plan just to report missing URLs.
-    color_profiles = _color_profiles_for_segments(project, segments, []) if render_missing else {}
+    # Keep the default review path cheap: color profiling belongs to final
+    # export and is optional for a thumbnail. A status-only request must not
+    # launch/inspect the complete plan just to report missing URLs.
+    if render_missing and apply_color_profile:
+        from core.stages.export import _color_profiles_for_segments
+        color_profiles = _color_profiles_for_segments(project, segments, [])
+    else:
+        color_profiles = {}
     for index, segment in enumerate(segments):
         source = _source_for(segment)
         duration = max(0.1, float(segment.get("duration_sec") or 0.1))
@@ -411,26 +425,23 @@ def review_items(
         thumbnail_error = None
         thumbnail_state = "ready" if output.exists() else "missing"
         if not output.exists() and source and should_render:
-            render_status[str(index)] = {"state": "rendering"}
-            _save_render_status(root, render_status)
+            _set_render_status(root, index, {"state": "rendering"})
             command = [
                 ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", f"{timestamp:.3f}",
                 "-i", source, "-frames:v", "1", "-vf", _thumbnail_filter(segment, color_profiles.get(str(segment.get("clip_path")), {})),
                 "-q:v", "5", "-y", str(output),
             ]
             try:
-                completed = subprocess.run(command, check=True, capture_output=True, text=True)
+                subprocess.run(command, check=True, capture_output=True, text=True)
                 if not output.exists():
                     raise ThumbnailRenderError("FFmpeg completed without producing a JPEG")
-                render_status[str(index)] = {"state": "ready"}
-                _save_render_status(root, render_status)
+                _set_render_status(root, index, {"state": "ready"})
                 thumbnail_state = "ready"
             except (OSError, subprocess.CalledProcessError, ThumbnailRenderError) as exc:
                 output.unlink(missing_ok=True)
                 detail = getattr(exc, "stderr", None) or str(exc)
                 thumbnail_error = detail.strip() or "FFmpeg failed to render the thumbnail"
-                render_status[str(index)] = {"state": "failed", "error": thumbnail_error}
-                _save_render_status(root, render_status)
+                _set_render_status(root, index, {"state": "failed", "error": thumbnail_error})
                 if isinstance(exc, ThumbnailRenderError):
                     raise
                 raise ThumbnailRenderError(thumbnail_error) from exc
@@ -456,6 +467,31 @@ def review_items(
             "no_alternative": index in unavailable,
         })
     return items
+
+
+def render_review_thumbnails(project: Project, indices: set[int], max_workers: int = 2) -> None:
+    """Render selected review thumbnails in parallel without blocking HTTP."""
+    selected = sorted({int(index) for index in indices})
+    if not selected:
+        return
+    workers = max(1, min(int(max_workers), len(selected)))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="review-thumb") as pool:
+        futures = {
+            pool.submit(
+                review_items,
+                project,
+                render_indices={index},
+                apply_color_profile=False,
+            ): index
+            for index in selected
+        }
+        for future in as_completed(futures):
+            index = futures[future]
+            try:
+                future.result()
+            except Exception as exc:
+                LOGGER.exception("Review thumbnail render failed for index %s", index)
+                mark_review_render_failed(project, {index}, str(exc))
 
 
 def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:

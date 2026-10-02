@@ -1950,20 +1950,31 @@ function refreshShotReviewAfterReplace(attempt = 0) {
   }, delay);
 }
 
+function refreshShotReviewAfterInitialLoad(attempt = 0) {
+  const delay = Math.min(3000, 400 + attempt * 250);
+  setTimeout(() => {
+    api("/wizard/review?render=0")
+      .then((result) => {
+        const items = result.items || [];
+        renderShotReview(items);
+        const pending = items.some((item) => ["missing", "rendering", "generating"].includes(item.thumbnail_status) && !item.thumbnail_error);
+        if (pending) refreshShotReviewAfterInitialLoad(attempt + 1);
+      })
+      .catch((error) => {
+        logFrontendError(`review thumbnail poll failed: ${error.message}`, error.stack || "");
+        refreshShotReviewAfterInitialLoad(attempt + 1);
+      });
+  }, delay);
+}
+
 async function openShotReview() {
   const result = await api("/wizard/review");
   renderShotReview(result.items || []);
-  // The server has rendered the JPEGs by this point, but the browser can
-  // still be decoding them when the review transition is shown. Wait for the
-  // actual <img> elements before revealing Frames.
-  const images = Array.from(document.querySelectorAll("#reviewGrid img.review-thumb"));
-  await Promise.all(images.map((image) => {
-    if (image.complete) return Promise.resolve();
-    return new Promise((resolve) => {
-      image.addEventListener("load", resolve, { once: true });
-      image.addEventListener("error", resolve, { once: true });
-    });
-  }));
+  const pending = (result.items || []).some((item) =>
+    ["missing", "rendering", "generating"].includes(item.thumbnail_status) && !item.thumbnail_error
+  );
+  if (pending) refreshShotReviewAfterInitialLoad();
+  // Do not wait for the background 360 decodes before showing the Review UI.
   return result;
 }
 

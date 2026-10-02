@@ -28,7 +28,13 @@ from core.spherical_view import MAX_SPHERICAL_FOV, spherical_view_filter
 from core.media_validation import record_media_path
 from core.normalization import cache_status, cleanup_unreferenced_cache, global_cache_root, migrate_project_normalization_cache
 from core.stages.sync import clear_manual_override, cleanup_closed_sync_diagnostics, generate_preview, generate_thumbnail, invalidate_stale_sync_artifact, set_manual_anchor, set_manual_override, set_manual_override_ranges
-from core.shot_review import mark_review_render_failed, replace_slots, review_items
+from core.shot_review import (
+    _review_segments,
+    _review_signature,
+    render_review_thumbnails,
+    replace_slots,
+    review_items,
+)
 from core.backstage_feedback import record_feedback
 from core.stages.backstage import update_backstage_cue_text
 from core.backstage_transcription import transcribe_sources
@@ -59,6 +65,33 @@ from captions.sources import from_lrc, from_lyrics, from_srt, to_srt
 from captions.styles import CAPTIONS_VERSION, get_style, list_styles
 
 LOGGER = logging.getLogger(__name__)
+_REVIEW_RENDER_LOCK = threading.Lock()
+_REVIEW_RENDERING_KEYS: set[str] = set()
+
+
+def _queue_review_thumbnail_render(project: Project, indices: set[int]) -> None:
+    """Queue review thumbnails and return before FFmpeg work starts."""
+    if not indices:
+        return
+    signature = _review_signature(_review_segments(project))
+    key = f"{project.folder}:{signature}"
+    with _REVIEW_RENDER_LOCK:
+        if key in _REVIEW_RENDERING_KEYS:
+            return
+        _REVIEW_RENDERING_KEYS.add(key)
+
+    def worker() -> None:
+        try:
+            render_review_thumbnails(project, indices, max_workers=2)
+        finally:
+            with _REVIEW_RENDER_LOCK:
+                _REVIEW_RENDERING_KEYS.discard(key)
+
+    threading.Thread(
+        target=worker,
+        name="review-thumbnail-batch",
+        daemon=True,
+    ).start()
 
 
 def _single_video_has_audio(video_paths: list[str]) -> bool:
@@ -1153,8 +1186,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not project:
             return error_response("not_ready", "The edit plan is not ready yet", 409)
         try:
+            # Never hold the HTTP request open while decoding every original
+            # 360 source. Return placeholders immediately and let the browser
+            # poll the render-status file as each thumbnail becomes ready.
             render_missing = request.args.get("render", "1") != "0"
-            return jsonify({"items": review_items(project, render_missing=render_missing), "platform": project.data.get("settings", {}).get("wizard", {}).get("platform")})
+            items = review_items(project, render_missing=False)
+            if render_missing:
+                pending = {
+                    int(item["index"])
+                    for item in items
+                    if item.get("thumbnail_status") == "missing"
+                }
+                _queue_review_thumbnail_render(project, pending)
+            return jsonify({
+                "items": items,
+                "platform": project.data.get("settings", {}).get("wizard", {}).get("platform"),
+            })
         except Exception as exc:
             LOGGER.exception("Review items failed for %s", project.folder)
             return error_response("review_render_failed", str(exc) or "Review thumbnail render failed", 500)
@@ -1291,11 +1338,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             replaced = {int(value) for value in result.get("replaced", [])}
             if replaced:
                 def render_replaced_thumbnails() -> None:
-                    try:
-                        review_items(project, render_indices=replaced)
-                    except Exception as exc:
-                        LOGGER.exception("Review thumbnail render failed for %s", project.folder)
-                        mark_review_render_failed(project, replaced, str(exc))
+                    render_review_thumbnails(project, replaced, max_workers=2)
 
                 threading.Thread(
                     target=render_replaced_thumbnails,
