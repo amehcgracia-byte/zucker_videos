@@ -647,6 +647,14 @@ def _segment_worker_count(project: Project, segment_count: int) -> int:
     return max(1, min(workers, segment_count or 1))
 
 
+def _append_export_log(project: Project, message: str) -> None:
+    """Append a compact timing line to the report-visible export log."""
+    log_dir = project.cache_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    with (log_dir / "export.log").open("a", encoding="utf-8") as handle:
+        handle.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}\\n")
+
+
 def _render_plan(
     project: Project,
     segments: list[dict[str, Any]],
@@ -712,6 +720,11 @@ def _render_plan(
             phase_times["intro_sec"] = round(time.perf_counter() - phase_started, 3)
         render_segments = _continuous_spherical_render_segments(segments)
         segment_workers = _segment_worker_count(project, len(render_segments))
+        _append_export_log(
+            project,
+            f"PLAN segments={len(render_segments)} workers={segment_workers} "
+            f"verify_motion={verify_motion} platform={platform} bitrate={video_bitrate}",
+        )
         render_started = time.perf_counter()
         render_stats: list[dict[str, Any]] = []
         progress_lock = threading.Lock()
@@ -728,15 +741,37 @@ def _render_plan(
                 futures[future] = (index, segment)
             results = []
             for future in as_completed(futures):
+                index, completed_segment = futures[future]
                 try:
-                    results.append(future.result())
+                    result = future.result()
+                    results.append(result)
+                    _append_export_log(
+                        project,
+                        f"SEGMENT {index}/{len(render_segments)} complete "
+                        f"cache={bool(result.get('cached'))} "
+                        f"rendered_from={result.get('rendered_from')} "
+                        f"ffmpeg_sec={result.get('ffmpeg_sec', 0)} "
+                        f"verify_sec={result.get('verify_sec', 0)} "
+                        f"total_sec={result.get('total_sec', 0)}",
+                    )
                 except BaseException as exc:
-                    index, failed_segment = futures[future]
+                    failed_segment = completed_segment
                     source_path = _segment_source_info(project, failed_segment).get("source_path") or failed_segment.get("source_path") or failed_segment.get("clip_path") or "unknown source"
+                    _append_export_log(
+                        project,
+                        f"SEGMENT {index}/{len(render_segments)} FAILED source={Path(str(source_path)).name} error={type(exc).__name__}: {exc}",
+                    )
                     if isinstance(exc, SegmentRenderError):
                         raise
                     raise SegmentRenderError(index, str(source_path), exc, required_space) from exc
         results.sort(key=lambda item: int(item["index"]))
+        segment_render_wall_sec = time.perf_counter() - render_started
+        cache_hits = sum(1 for item in results if item.get("cached"))
+        _append_export_log(
+            project,
+            f"PHASE segment_render complete={len(results)}/{len(render_segments)} "
+            f"cache_hits={cache_hits} wall_sec={segment_render_wall_sec:.3f}",
+        )
         expected_indices = list(range(1, len(render_segments) + 1))
         actual_indices = [int(item["index"]) for item in results]
         if actual_indices != expected_indices:
@@ -879,7 +914,7 @@ def _render_plan(
             "segment_count": len(render_segments),
             "segment_workers": segment_workers,
             "stream_copy_count": sum(1 for item in render_stats if item.get("rendered_from") == "stream_copy"),
-            "wall_sec": round(time.perf_counter() - render_started, 3),
+            "wall_sec": round(segment_render_wall_sec, 3),
             "total_wall_sec": round(time.perf_counter() - export_started, 3),
             "phases": phase_times,
             "segments": sorted(render_stats, key=lambda item: item["index"]),
@@ -2172,17 +2207,21 @@ def _render_segment_job(
             local_warnings.append(f"Used proxy fallback for {label}")
     ffmpeg_sec = time.perf_counter() - ffmpeg_started
     verify_started = time.perf_counter()
-    _verify_segment_frame_duration(segment_path, _segment_frame_count(segment), label)
-    if verify_motion:
-        command_line = _verify_or_rebuild_segment(
-            project, segment, master_path, segment_path,
-            temp_dir / f"segment-{index:04d}.mp4", platform, video_bitrate,
-            overlay_config, color_profile, segment_progress,
-            intro_fade, outro_fade, False, False, local_warnings,
-            command_line, segment_duration, label,
-            command_recorder=commands,
-        )
-    _write_segment_cache_stamp(segment_path, segment)
+    if not cached:
+        # A fresh segment is verified before it enters the reusable cache.
+        # Replaying the expensive frame probes for an already-attested cache
+        # entry made every subsequent export needlessly slow.
+        _verify_segment_frame_duration(segment_path, _segment_frame_count(segment), label)
+        if verify_motion:
+            command_line = _verify_or_rebuild_segment(
+                project, segment, master_path, segment_path,
+                temp_dir / f"segment-{index:04d}.mp4", platform, video_bitrate,
+                overlay_config, color_profile, segment_progress,
+                intro_fade, outro_fade, False, False, local_warnings,
+                command_line, segment_duration, label,
+                command_recorder=commands,
+            )
+        _write_segment_cache_stamp(segment_path, segment)
     _require_segment_cache_stamp(segment_path, segment)
     # The global cache is the reusable store; concat receives a per-export
     # copy so two timeline entries can never alias the same pathname, even if
@@ -3591,13 +3630,19 @@ def _segment_cache_stamp_path(segment_path: Path) -> Path:
 
 
 def _segment_cache_stamp_payload(segment: dict[str, Any]) -> dict[str, Any]:
+    """Describe the explicit render recipe that produced a cached segment.
+
+    The Git commit is intentionally not part of this attestation. Build,
+    progress-bar, logging, and other non-pixel fixes must be able to reuse
+    valid rendered segments. Pixel-affecting changes must bump one of the
+    explicit recipe versions above.
+    """
     recipe = _spherical_motion_cache_recipe()
     return {
         "schema": 1,
         "export_segment_recipe": EXPORT_SEGMENT_RECIPE_VERSION,
         "spherical_motion_recipe_version": SPHERICAL_MOTION_RECIPE_VERSION,
         "spherical_motion_recipe_hash": stable_fingerprint(recipe),
-        "git_commit": build_info().get("git_commit", "unknown"),
         "spherical_identity": _spherical_cache_identity(segment),
         "spherical_shot_fingerprint": stable_fingerprint(_spherical_shot(segment) or {}),
     }
