@@ -105,6 +105,19 @@ def _platform_needs_sync(platform: str, project: Project | None = None, master_p
 
 
 @dataclass
+def _aggregate_segment_progress(progress_by_index: dict[int, float], total: int) -> tuple[int, int]:
+    """Return aggregate percentage and completed count for parallel segment work."""
+    total = max(1, int(total))
+    bounded = {
+        int(index): max(0.0, min(1.0, float(value)))
+        for index, value in progress_by_index.items()
+    }
+    units = sum(bounded.values())
+    completed = sum(1 for value in bounded.values() if value >= 0.999)
+    percent = int(round(100.0 * units / total))
+    return max(0, min(100, percent)), completed
+
+
 class WizardRunner:
     """Runs one wizard render job at a time."""
 
@@ -1103,6 +1116,7 @@ class WizardRunner:
         last_logged_percent = -1
         last_logged_at = 0.0
         completed_segments: set[int] = set()
+        segment_progress: dict[int, float] = {}
         segment_total: int | None = None
 
         def progress(percent: int, detail: str) -> None:
@@ -1114,14 +1128,30 @@ class WizardRunner:
             if segment_match:
                 segment_index = int(segment_match.group(1))
                 segment_total = int(segment_match.group(2))
-                if segment_match.group(3).strip().lower() == "complete":
+                segment_detail = segment_match.group(3).strip()
+                if segment_detail.lower() == "complete":
+                    local_fraction = 1.0
+                else:
+                    local_match = re.search(r"(\d+)%\s*$", segment_detail)
+                    local_fraction = (int(local_match.group(1)) / 100.0) if local_match else 0.0
+                segment_progress[segment_index] = max(
+                    segment_progress.get(segment_index, 0.0),
+                    local_fraction,
+                )
+                if local_fraction >= 0.999:
                     completed_segments.add(segment_index)
-                if completed_segments and segment_total:
-                    # Worker-local progress is deliberately not surfaced as a
-                    # step counter: parallel workers report out of order. The
-                    # label and the stage progress use completed work only.
-                    safe_percent = max(safe_percent, int(100 * len(completed_segments) / segment_total))
-                    detail = f"Rendering segments ({len(completed_segments)} of {segment_total} complete)"
+                aggregate_percent, completed_count = _aggregate_segment_progress(
+                    segment_progress,
+                    segment_total,
+                )
+                # Parallel workers report out of order. Aggregate their
+                # known progress instead of using the current worker's local
+                # percentage, which previously made the global bar stall.
+                safe_percent = max(safe_percent, aggregate_percent)
+                detail = (
+                    f"Rendering segments ({completed_count} of {segment_total} complete; "
+                    f"current {segment_index}: {round(local_fraction * 100)}%)"
+                )
             candidate = start + int((end - start) * safe_percent / 100)
             job.progress = max(job.progress, candidate)
             if job.progress >= end and segment_total and len(completed_segments) < segment_total:
@@ -1129,9 +1159,9 @@ class WizardRunner:
                 job.progress = min(job.progress, end - 1)
             job.detail = detail
             now = time.monotonic()
-            if percent != last_logged_percent or now - last_logged_at >= 5:
-                _write_stage_log(project, stage.name, f"{percent}% {detail}")
-                last_logged_percent = percent
+            if candidate != last_logged_percent or now - last_logged_at >= 5:
+                _write_stage_log(project, stage.name, f"{candidate}% {detail}")
+                last_logged_percent = candidate
                 last_logged_at = now
 
         try:
