@@ -104,7 +104,6 @@ def _platform_needs_sync(platform: str, project: Project | None = None, master_p
     return False
 
 
-@dataclass
 def _aggregate_segment_progress(progress_by_index: dict[int, float], total: int) -> tuple[int, int]:
     """Return aggregate percentage and completed count for parallel segment work."""
     total = max(1, int(total))
@@ -118,6 +117,7 @@ def _aggregate_segment_progress(progress_by_index: dict[int, float], total: int)
     return max(0, min(100, percent)), completed
 
 
+@dataclass
 class WizardRunner:
     """Runs one wizard render job at a time."""
 
@@ -1147,7 +1147,10 @@ class WizardRunner:
                 # Parallel workers report out of order. Aggregate their
                 # known progress instead of using the current worker's local
                 # percentage, which previously made the global bar stall.
-                safe_percent = max(safe_percent, aggregate_percent)
+                # This is the global fraction of all segments. Do not use
+                # the worker's local/export-position percentage here: segment
+                # 128/128 must not make the whole job look 80% complete.
+                safe_percent = aggregate_percent
                 detail = (
                     f"Rendering segments ({completed_count} of {segment_total} complete; "
                     f"current {segment_index}: {round(local_fraction * 100)}%)"
