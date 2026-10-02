@@ -35,7 +35,7 @@ COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 "$PYTHON" - <<PY
 import json
 from pathlib import Path
-Path("$BUILD_INFO").write_text(json.dumps({"version": "0.1", "git_commit": "$COMMIT"}, indent=2) + "\n", encoding="utf-8")
+Path("$BUILD_INFO").write_text(json.dumps({"version": "2.1.31", "git_commit": "$COMMIT"}, indent=2) + "\n", encoding="utf-8")
 PY
 
 "$PYTHON" -m PyInstaller \

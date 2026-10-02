@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import random
+import re
 from pathlib import Path
 from typing import Any
 
@@ -68,9 +69,9 @@ MOTION_WEIGHTS = {
 # authored speed, and a new very-slow option keeps close-ups composed.
 MOTION_SPEEDS = (("very_slow", 0.50), ("slow", 0.72), ("fast", 1.0))
 IPHONE_CROP_TOP_LIMIT = 0.80
-# Bump this whenever the YouTube camera-choice invariant changes so an older
-# cached edit plan cannot keep producing the previous camera runs.
-YOUTUBE_CAMERA_SELECTION_VERSION = 15
+# Bump this whenever the YouTube camera-choice or framing invariant changes so
+# an older cached edit plan cannot keep producing the previous camera runs.
+YOUTUBE_CAMERA_SELECTION_VERSION = 16
 # Legacy diagnostic threshold retained in project settings/manifests. The
 # production policy now stops close-up filler as soon as one alternative
 # physical camera covers the same synced window.
@@ -81,6 +82,14 @@ DEFAULT_FIXED_CAMERA_ZOOM_COVERAGE_THRESHOLD = 2
 FIXED_CAMERA_GENTLE_ZOOM_FRACTION = 0.15
 FIXED_CAMERA_GENTLE_ZOOM_MIN = 1.10
 FIXED_CAMERA_GENTLE_ZOOM_MAX = 1.20
+# Automatic fixed-camera framing must stay recognisable: the wide source is a
+# safety camera, not a licence to manufacture a 3x close-up of a corner. These
+# bounds are also mirrored by the renderer as a last line of defence for stale
+# plans.
+FIXED_CAMERA_SAFE_ZOOM_MIN = 1.04
+FIXED_CAMERA_SAFE_ZOOM_MAX = 1.38
+FIXED_CAMERA_SAFE_TARGET_X = (0.25, 0.75)
+FIXED_CAMERA_SAFE_TARGET_Y = (0.35, 0.65)
 MAX_CONSECUTIVE_CAMERA_SEGMENTS = 2
 # Retained as a versioned emergency switch for diagnostics; normal builds use
 # the shared gentle hold/sweep motion below.
@@ -122,7 +131,7 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 16
+EDIT_PLAN_ALGORITHM_VERSION = 17
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
@@ -756,6 +765,8 @@ def _youtube_multicam_plan(
             segment_start, segment_end, segment_index, spherical_landmarks, use_recorded_360, recorded_moves or [],
             forced_alternatives=forced_alternatives,
             camera_target_weights=camera_target_weights,
+            allocation_window_seconds=max(1.0, end - start),
+            allocation_segment_seconds=max(1.0 / EDIT_FPS, segment_end - segment_start),
             prefer_battery_camera=segment_end >= end - 0.001,
             preferred_camera_ids=_preferred_singing_camera_ids(
                 available, _is_singing_window(coverage, segment_start, segment_end)
@@ -831,8 +842,8 @@ def _youtube_multicam_plan(
                 # camera as a gap filler. The old threshold compared against
                 # two, so a fixed camera plus one other source still got the
                 # aggressive 3x recipe.
-                segment["motion"] = _gentle_fixed_camera_motion(fixed_rear_motion_index)
-                segment["fixed_camera_zoom_policy"] = "gentle_center_motion_sufficient_coverage"
+                segment["motion"] = _gentle_fixed_camera_motion(fixed_rear_motion_index, target_x, target_y)
+                segment["fixed_camera_zoom_policy"] = "gentle_subject_motion_sufficient_coverage"
             else:
                 segment["motion"] = _ken_burns_motion(
                     fixed_rear_motion_index,
@@ -842,7 +853,7 @@ def _youtube_multicam_plan(
                     force_full_zoom=(fixed_rear_motion_index % 2 == 0),
                     force_close=(fixed_rear_motion_index % 2 == 1),
                 )
-                segment["fixed_camera_zoom_policy"] = "close_up_motion_low_coverage"
+                segment["fixed_camera_zoom_policy"] = "safe_subject_motion_low_coverage"
             fixed_rear_motion_index += 1
         _apply_operator_avoidance(segment, source, operator_samples_cache)
         previous_framing = _framing_descriptor(source, segment)
@@ -1558,6 +1569,8 @@ def _choose_source_avoiding_identical_framing(
     prefer_battery_camera: bool = False,
     preferred_camera_ids: set[str] | None = None,
     camera_target_weights: dict[str, float] | None = None,
+    allocation_window_seconds: float | None = None,
+    allocation_segment_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Pick the best source while avoiding consecutive near-identical framing (Issue C).
 
@@ -1576,6 +1589,8 @@ def _choose_source_avoiding_identical_framing(
     role_weights_copy = dict(role_weights)
     preferred_camera_ids = preferred_camera_ids or set()
     camera_target_weights = camera_target_weights or {}
+    allocation_window_seconds = max(1.0, float(allocation_window_seconds or 1.0))
+    allocation_segment_seconds = max(1.0 / EDIT_FPS, float(allocation_segment_seconds or 1.0 / EDIT_FPS))
     role_source_ids = {_source_id(source): _source_role(source) for source in sources}
     ranked: list[dict[str, Any]] = []
     # Produce a sorted list by calling _choose_source iteratively isn't clean; instead
@@ -1597,9 +1612,29 @@ def _choose_source_avoiding_identical_framing(
         director_bonus = float(src.get("director_segment_score") or 1.0) if role == "handheld" else 1.0
         battery_bonus = 1 if prefer_battery_camera and _is_battery_camera(src) else 0
         singing_bonus = 1 if _camera_id(src) in preferred_camera_ids else 0
-        return (-singing_bonus, camera_chosen_seconds / target_share, role_chosen_seconds / max(0.001, float(role_weights_copy.get(role, 0.3))), -battery_bonus, chosen_seconds / covered_seconds, usage_counts_copy.get(_source_id(src), 0), -director_bonus, -float(src.get("confidence") or 0.0), _source_id(src))
+        # Compare the projected camera share with the configured quota before
+        # applying editorial tie-breakers. The previous score only compared
+        # accumulated seconds, so a long 360 hold could overshoot its quota
+        # and the next short cuts had no way to compensate cleanly.
+        projected_share = (camera_chosen_seconds + allocation_segment_seconds) / allocation_window_seconds
+        quota_ratio = projected_share / target_share
+        return (
+            quota_ratio,
+            -singing_bonus,
+            role_chosen_seconds / max(0.001, float(role_weights_copy.get(role, 0.3))),
+            -battery_bonus,
+            chosen_seconds / covered_seconds,
+            usage_counts_copy.get(_source_id(src), 0),
+            -director_bonus,
+            -float(src.get("confidence") or 0.0),
+            _source_id(src),
+        )
 
-    usable = [src for src in sources if float(role_weights_copy.get(_source_role(src), role_weights_copy.get("handheld", 0.3))) > 0.0] or list(sources)
+    usable = [
+        src for src in sources
+        if float(role_weights_copy.get(_source_role(src), role_weights_copy.get("handheld", 0.3))) > 0.0
+        and float(camera_target_weights.get(_camera_id(src), 1.0)) > 0.0
+    ] or list(sources)
     if forced_alternatives:
         hard_alternatives = [src for src in usable if _camera_id(src) in forced_alternatives]
     else:
@@ -1792,6 +1827,11 @@ def _camera_distribution(selection_stats: list[dict[str, Any]], target_weights: 
             "configured_percent": round(float((target_weights or {}).get(camera_id, entry.get("configured_weight", 0.0))) * 100.0, 2),
             "chosen_seconds": round(float(entry["chosen_seconds"]), 3),
             "actual_percent": round(float(entry["chosen_seconds"]) / total * 100.0, 2),
+            "quota_gap_percent": round(
+                float(entry["chosen_seconds"]) / total * 100.0
+                - float((target_weights or {}).get(camera_id, entry.get("configured_weight", 0.0))) * 100.0,
+                2,
+            ),
         }
         for camera_id, entry in grouped.items()
     ]
@@ -1819,12 +1859,26 @@ def _is_singing_window(coverage: dict[str, Any], start: float, end: float) -> bo
 
 
 def _preferred_singing_camera_ids(sources: list[dict[str, Any]], singing: bool) -> set[str]:
+    # Nikon is the reference image camera in this production: make it a
+    # stable quality tie-breaker for every section, while the musical
+    # preference still gives Sony/360 a small boost when the singer is active.
+    nikon = {_camera_id(source) for source in sources if _is_nikon_source(source)}
+    if nikon:
+        return nikon
     if not singing:
         return set()
     sony = {_camera_id(source) for source in sources if _source_role(source) == "handheld" and "sony" in str(source.get("filename") or source.get("path") or "").lower()}
     if sony:
         return sony
     return {_camera_id(source) for source in sources if _source_role(source) == "360"}
+
+
+def _is_nikon_source(source: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(source.get(key) or "")
+        for key in ("camera_id", "camera_name", "camera_model", "camera_make", "make", "model", "manufacturer", "filename", "path", "source_path")
+    ).lower()
+    return "nikon" in text
 
 
 def _reel_target_for_source(source: dict[str, Any], clip_start_sec: float, duration_sec: float) -> tuple[float, float]:
@@ -1901,7 +1955,10 @@ def _visible_iphone_target(
         # A real detected subject is still selected below, but its target is
         # kept inside the useful central composition envelope so the crop
         # cannot spend a shot on lamps or the poorly placed lower edge.
-        return max(0.25, min(0.75, float(x))), max(0.35, min(0.65, float(y)))
+        return (
+            max(FIXED_CAMERA_SAFE_TARGET_X[0], min(FIXED_CAMERA_SAFE_TARGET_X[1], float(x))),
+            max(FIXED_CAMERA_SAFE_TARGET_Y[0], min(FIXED_CAMERA_SAFE_TARGET_Y[1], float(y))),
+        )
 
     window = [
         sample for sample in samples_cache[path]
@@ -2168,8 +2225,8 @@ def _full_frame_static_motion() -> dict[str, Any]:
     }
 
 
-def _gentle_fixed_camera_motion(index: int) -> dict[str, Any]:
-    """One centred, barely perceptible move from/to the full frame.
+def _gentle_fixed_camera_motion(index: int, target_x: float = 0.5, target_y: float = 0.5) -> dict[str, Any]:
+    """One barely perceptible subject-anchored move from/to the full frame.
 
     This is deliberately not built from ``_ken_burns_motion``. That helper's
     historical ``force_full_zoom`` recipe starts around 3x, which was the
@@ -2183,10 +2240,10 @@ def _gentle_fixed_camera_motion(index: int) -> dict[str, Any]:
         "movement": "zoom_in_center" if zoom_in else "zoom_out_center",
         "speed": "very_slow",
         "speed_factor": MOTION_SPEEDS[0][1],
-        "lock_target": False,
-        "centered": True,
-        "target_x": 0.5,
-        "target_y": 0.5,
+        "lock_target": True,
+        "centered": False,
+        "target_x": round(max(FIXED_CAMERA_SAFE_TARGET_X[0], min(FIXED_CAMERA_SAFE_TARGET_X[1], float(target_x))), 4),
+        "target_y": round(max(FIXED_CAMERA_SAFE_TARGET_Y[0], min(FIXED_CAMERA_SAFE_TARGET_Y[1], float(target_y))), 4),
         "zoom_start": 1.0 if zoom_in else zoom,
         "zoom_end": zoom if zoom_in else 1.0,
         "pan_x_start": 0.5,
@@ -2197,6 +2254,7 @@ def _gentle_fixed_camera_motion(index: int) -> dict[str, Any]:
         "pan_y": 0.5,
         "top_edge_limit": IPHONE_CROP_TOP_LIMIT,
         "vertical_motion": "static",
+        "enforce_top_edge": False,
         "zoom_path_fraction": FIXED_CAMERA_GENTLE_ZOOM_FRACTION,
     }
 
@@ -2211,8 +2269,10 @@ def _ken_burns_motion(
     force_close: bool = False,
 ) -> dict[str, Any]:
     rng = random.Random(stable_fingerprint({"fixed_camera_motion": index}))
-    # Close-up range for the wide iPhone stage.  The catalog is explicit: a
-    # segment gets one movement recipe, never an accidental combination.
+    # The catalog is explicit: a segment gets one movement recipe, never an
+    # accidental combination.  All recipes share the same conservative
+    # framing envelope; randomisation changes the direction and endpoint, not
+    # whether the shot lands on a speaker, feet, or an empty corner.
     kind = "full_zoom_in" if force_full_zoom else rng.choices(MOTION_CATALOG, weights=[MOTION_WEIGHTS[kind] for kind in MOTION_CATALOG], k=1)[0]
     if force_close and kind in {"full_static", "full_zoom_in"}:
         kind = "zoom_in_center"
@@ -2223,75 +2283,52 @@ def _ken_burns_motion(
     speed_name, speed_factor = MOTION_SPEEDS[index % len(MOTION_SPEEDS)]
     if force_full_zoom:
         speed_name, speed_factor = "very_slow", MOTION_SPEEDS[0][1]
-    target_x = max(0.05, min(0.95, float(target_x)))
-    target_y = max(0.05, min(0.95, float(target_y)))
-    close_zoom = rng.uniform(3.2, 3.6)
-    tight_zoom = rng.uniform(3.0, 3.2)
+    target_x = max(FIXED_CAMERA_SAFE_TARGET_X[0], min(FIXED_CAMERA_SAFE_TARGET_X[1], float(target_x)))
+    target_y = max(FIXED_CAMERA_SAFE_TARGET_Y[0], min(FIXED_CAMERA_SAFE_TARGET_Y[1], float(target_y)))
+    close_zoom = rng.uniform(1.18, FIXED_CAMERA_SAFE_ZOOM_MAX)
+    tight_zoom = rng.uniform(FIXED_CAMERA_SAFE_ZOOM_MIN, 1.16)
     if kind == "full_static":
-        zoom_start = zoom_end = 3.0
+        zoom_start = zoom_end = 1.0
         pan_x_start = pan_x_end = 0.5
-        pan_y_start = pan_y_end = _minimum_pan_y_for_top_edge(zoom_start)
+        pan_y_start = pan_y_end = 0.5
     elif kind == "full_zoom_in" and force_full_zoom:
-        # “Full” means the widest permitted action frame. A literal 1.0x
-        # frame necessarily includes the ceiling, so start at a lower crop
-        # that respects the hard top-edge boundary.
-        target_x = target_y = 0.65
-        zoom_start, zoom_end = 3.0, 3.4
+        # “Full” means a restrained move from the whole frame toward the
+        # detected subject, never the historical 3x close-up.
+        zoom_start, zoom_end = 1.0, round(rng.uniform(1.16, 1.28), 3)
         pan_x_start = pan_x_end = 0.5
-        pan_y_start = _minimum_pan_y_for_top_edge(zoom_start)
-        pan_y_end = _minimum_pan_y_for_top_edge(zoom_end)
+        pan_y_start = pan_y_end = 0.5
     elif kind in {"zoom_in", "zoom_in_center", "full_zoom_in"} and not force_full_zoom:
-        min_zoom = max(_minimum_zoom_for_target(target_x), _minimum_zoom_for_target(target_y))
-        tight_zoom = max(tight_zoom, min_zoom)
         zoom_start, zoom_end = tight_zoom, close_zoom
         pan_x_start, pan_x_end = _pan_for_target(zoom_start, target_x), _pan_for_target(zoom_end, target_x)
         pan_y_start, pan_y_end = _pan_for_target(zoom_start, target_y), _pan_for_target(zoom_end, target_y)
     elif kind in {"zoom_out", "zoom_out_center"}:
-        min_zoom = max(_minimum_zoom_for_target(target_x), _minimum_zoom_for_target(target_y))
-        tight_zoom = max(tight_zoom, min_zoom)
         zoom_start, zoom_end = close_zoom, tight_zoom
         pan_x_start, pan_x_end = _pan_for_target(zoom_start, target_x), _pan_for_target(zoom_end, target_x)
         pan_y_start, pan_y_end = _pan_for_target(zoom_start, target_y), _pan_for_target(zoom_end, target_y)
     elif kind.startswith("pan_"):
-        zoom_start = zoom_end = close_zoom
+        zoom_start = zoom_end = round(rng.uniform(1.10, 1.22), 3)
+        # Pan only a small distance around the detected subject. The old
+        # 0.22/0.78 endpoints traversed most of the frame and routinely ended
+        # on empty stage edges.
+        x_center = 0.5 + (target_x - 0.5) * 0.45
+        y_center = 0.5 + (target_y - 0.5) * 0.35
+        x_span = 0.08
+        y_span = 0.06
         if kind in {"pan_down_center", "pan_up_center"}:
             pan_x_start = pan_x_end = 0.5
-            pan_y_start, pan_y_end = ((0.22, 0.78) if kind == "pan_down_center" else (0.78, 0.22))
+            pan_y_start, pan_y_end = ((y_center - y_span, y_center + y_span) if kind == "pan_down_center" else (y_center + y_span, y_center - y_span))
         else:
-            pan_x_start, pan_x_end = (0.22, 0.78) if "right" in kind else (0.78, 0.22)
-            pan_y_start = pan_y_end = 0.5
+            pan_x_start, pan_x_end = ((x_center - x_span, x_center + x_span) if "right" in kind else (x_center + x_span, x_center - x_span))
+            pan_y_start = pan_y_end = y_center
     else:
-        zoom_start = zoom_end = close_zoom
+        zoom_start = zoom_end = 1.12
         pan_x_start = pan_y_start = 0.5
-        pan_x_end = 0.82 if "right" in kind else 0.18
-        pan_y_end = 0.78 if "bottom" in kind else 0.22
-    pan_y_start = _clamp_pan_y_for_top_edge(pan_y_start, zoom_start)
-    pan_y_end = _clamp_pan_y_for_top_edge(pan_y_end, zoom_end)
-    # A hard top-edge cap can collapse the old 0.22/0.78 pan endpoints into
-    # the same legal value. Preserve the authored direction with a shorter
-    # legal travel instead of silently turning a pan into a static shot.
-    if kind == "pan_down_center" and pan_y_end <= pan_y_start:
-        pan_y_start = _minimum_pan_y_for_top_edge(zoom_start)
-        pan_y_end = min(1.0, pan_y_start + 0.12)
-    elif kind == "pan_up_center" and pan_y_start <= pan_y_end:
-        pan_y_start = min(1.0, _minimum_pan_y_for_top_edge(zoom_start) + 0.12)
-        pan_y_end = _minimum_pan_y_for_top_edge(zoom_end)
-    elif kind.startswith("pan_") and kind not in {"pan_down_center", "pan_up_center"}:
-        if "bottom" in kind and pan_y_end <= pan_y_start:
-            pan_y_start = _minimum_pan_y_for_top_edge(zoom_start)
-            pan_y_end = min(1.0, pan_y_start + 0.12)
-        elif "top" in kind and pan_y_start <= pan_y_end:
-            pan_y_start = min(1.0, _minimum_pan_y_for_top_edge(zoom_start) + 0.12)
-            pan_y_end = _minimum_pan_y_for_top_edge(zoom_end)
-    # Vertical direction is an authored invariant, not an accidental result
-    # of target-lock math. Production defaults travel down; the only upward
-    # recipes start at the bottom edge and travel back up.
-    vertical_motion = "up" if kind == "pan_up_center" or (kind.startswith("pan_") and "top" in kind) else "down"
-    if kind not in {"full_static"} and vertical_motion == "down" and pan_y_end < pan_y_start:
-        pan_y_end = min(1.0, pan_y_start + 0.12)
-    if vertical_motion == "up":
-        pan_y_start = max(pan_y_start, min(1.0, _minimum_pan_y_for_top_edge(zoom_start) + 0.12))
-        pan_y_end = min(pan_y_end, _minimum_pan_y_for_top_edge(zoom_end))
+        pan_x_end = pan_y_end = 0.5
+    pan_x_start = max(0.25, min(0.75, pan_x_start))
+    pan_x_end = max(0.25, min(0.75, pan_x_end))
+    pan_y_start = max(0.35, min(0.65, pan_y_start))
+    pan_y_end = max(0.35, min(0.65, pan_y_end))
+    vertical_motion = "up" if kind == "pan_up_center" else "down"
     return {
         "type": "ken_burns",
         "movement": kind,
@@ -2310,6 +2347,10 @@ def _ken_burns_motion(
         "pan_y": round(pan_y_start, 3),
         "top_edge_limit": IPHONE_CROP_TOP_LIMIT,
         "vertical_motion": vertical_motion,
+        # The generated recipe already stays in a safe vertical envelope. Do
+        # not apply the legacy top-edge guard at low zoom: that guard was
+        # designed for 3x crops and moves a 1.1x crop toward the floor.
+        "enforce_top_edge": False,
     }
 
 
@@ -2398,24 +2439,58 @@ def _camera_id(source: dict[str, Any]) -> str:
 
     A camera can produce several files (for example Sony C0064 and C0065), so
     source_path is deliberately not sufficient for the YouTube run limit.
-    Ingest metadata wins; otherwise use the meaningful source directory and
-    finally the filename stem for synthetic/test paths.
+    Ingest metadata wins.  The old fallback used the immediate parent folder
+    too eagerly; a shared ``Edited``/session folder then collapsed every
+    physical camera into one bucket, making both quotas and run limits false.
+    Use a camera-family filename hint when the directory is a known media
+    container, while retaining a meaningful camera-specific directory for
+    projects that are actually organised by camera.
     """
     for key in ("camera_id", "camera_name", "camera", "camera_label"):
         value = source.get(key)
         if value:
             return str(value).strip().lower()
+    for key in ("camera_model", "camera_make", "make", "model", "manufacturer"):
+        value = source.get(key)
+        if value:
+            return _camera_family(str(value))
     path_value = source.get("source_path") or source.get("original_path") or source.get("path") or source.get("filename")
     path = Path(str(path_value))
-    generic = {"", "tmp", "cache", "proxies", "uploads", "wizarduploads", "video", "videos", "raw"}
+    role = _source_role(source)
+    generic = {
+        "", "tmp", "cache", "proxies", "uploads", "wizarduploads", "video", "videos", "raw",
+        "edited", "edit", "audio", "refine", "sessions", "session", "projects", "project",
+    }
     parent = path.parent.name.strip().lower()
     if parent not in generic:
         return parent
-    stem = path.stem.lower()
-    for marker in ("insta360", "360", "iphone", "sony", "gopro"):
-        if marker in stem:
-            return marker
-    return stem or _source_id(source).lower()
+    family = _camera_family(path.stem)
+    if family:
+        return family
+    if role == "360":
+        return "360"
+    return path.stem.lower() or _source_id(source).lower()
+
+
+def _camera_family(value: str) -> str:
+    """Return a conservative camera-family key from a model or filename.
+
+    This is intentionally a grouping hint, not a device classifier. Explicit
+    ingest metadata always wins. The prefix fallback groups common numbered
+    camera files (``C0185``/``C0186``, ``IMG_0043``/``IMG_0044``) without
+    treating a shared session directory as a camera.
+    """
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    for marker in ("nikon", "sony", "canon", "gopro", "dji", "iphone", "pixel", "samsung", "galaxy", "insta360"):
+        if marker in text:
+            return "iphone" if marker in {"iphone", "pixel", "samsung", "galaxy"} else marker
+    stem = Path(text).stem
+    match = re.match(r"^([a-z]{1,8})(?:[_-]?(?:\d|\d{2,}))", stem)
+    if match:
+        return match.group(1)
+    return ""
 
 
 def _selection_stats_template(sources: list[dict[str, Any]], window_start: float, window_end: float) -> dict[str, dict[str, Any]]:
