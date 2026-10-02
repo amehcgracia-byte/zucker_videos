@@ -12,7 +12,7 @@ from typing import Any
 
 from core.project import Project
 from core.ffmpeg import locate_executable
-from core.spherical_view import view_parameters
+from core.spherical_view import spherical_view_filter
 from core.stages.base import artifact_path
 from core.stages.cut import load_coverage
 from core.stages.edit import IPHONE_CROP_TOP_LIMIT, _camera_id
@@ -86,12 +86,16 @@ def _review_segments(project: Project) -> list[dict[str, Any]]:
 
 def _review_pose_for_cache(segment: dict[str, Any]) -> dict[str, Any]:
     shot = segment.get("spherical_shot") or {}
-    pose = {key: shot.get(key) for key in ("type", "shot_id", "pitch", "fov")}
+    pose = {
+        key: shot.get(key)
+        for key in ("type", "shot_id", "pitch", "fov", "projection", "insv_fov")
+    }
     try:
         pose["yaw"] = float(shot.get("yaw") or 0.0) % 360.0
     except (TypeError, ValueError):
         pose["yaw"] = 0.0
     pose["motion"] = segment.get("motion") or {}
+    pose["source_projection"] = segment.get("projection")
     return pose
 
 
@@ -150,27 +154,23 @@ def _thumbnail_filter(segment: dict[str, Any], color_profile: dict[str, Any] | N
             except (TypeError, ValueError):
                 pass
         return f"{correction}scale=360:-2:force_original_aspect_ratio=decrease"
-    projection = str(segment.get("projection") or "equirect")
+    projection = str(segment.get("projection") or "").lower()
+    source_path = str(segment.get("source_path") or segment.get("clip_path") or "")
+    if projection not in {"equirect", "raw_insv"}:
+        projection = "raw_insv" if Path(source_path).suffix.lower() in {".insv", ".insp"} else "equirect"
     if projection not in {"equirect", "raw_insv"}:
         return f"{correction}scale=360:-2:force_original_aspect_ratio=decrease"
-    view = view_parameters(
+    view_filter = spherical_view_filter(
+        projection,
         float(shot.get("yaw") or 0.0),
         float(shot.get("pitch") or 0.0),
         float(shot.get("fov") or 95.0),
-        16.0 / 9.0,
         str(shot.get("type") or ""),
+        insv_fov=float(segment.get("insv_fov") or 190.0),
+        width=360,
+        height=202,
     )
-    if projection == "raw_insv":
-        insv_fov = float(segment.get("insv_fov") or 190.0)
-        prefix = f"v360=input=dfisheye:output=e:ih_fov={insv_fov:.3f}:iv_fov={insv_fov:.3f}:interp=lanczos,"
-    else:
-        prefix = ""
-    return (
-        f"{correction}{prefix}v360=input=equirect:output={view['projection']}:"
-        f"yaw={float(view['yaw']):.3f}:pitch={float(view['pitch']):.3f}:"
-        f"h_fov={float(view['h_fov']):.3f}:v_fov={float(view['v_fov']):.3f}:"
-        "w=360:h=202:interp=lanczos,format=yuvj420p"
-    )
+    return f"{correction}{view_filter},format=yuvj420p"
 
 
 def _candidate_key(candidate: dict[str, Any]) -> str:

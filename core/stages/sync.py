@@ -20,6 +20,7 @@ from core.media_validation import record_is_usable_camera_video, record_media_pa
 from core.messages import t
 from core.normalization import global_cache_root, global_clip_audio_path, global_clip_envelope_path, global_thumbnail_path, source_cache_key
 from core.project import Project, atomic_write_json, load_project
+from core.spherical_view import spherical_view_filter
 from core.stages.base import ProgressCallback, Stage, artifact_path, file_signature, stable_fingerprint, write_artifact_json
 
 SYNC_SAMPLE_RATE = 22050
@@ -1166,12 +1167,75 @@ def generate_preview(project: Project, clip_id: str) -> Path:
     return preview_path
 
 
-def generate_thumbnail(project: Project, clip_id: str) -> Path:
-    """Generate or return a cached midpoint thumbnail for a clip."""
+def _spherical_thumbnail_spec(
+    project: Project,
+    record: dict[str, Any],
+    shot: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any]] | None:
+    """Return the original source and effective saved pose for a 360 thumbnail."""
+    probe = record.get("probe") or {}
+    projection = str(record.get("projection") or probe.get("projection") or "").lower()
+    if projection not in {"equirect", "raw_insv"}:
+        return None
+    landmarks = ((project.data.get("settings") or {}).get("spherical_landmarks") or {})
+    requested = dict(shot or {})
+    shot_id = str(requested.get("shot_id") or requested.get("type") or "")
+    saved = dict(landmarks.get(shot_id) or {}) if shot_id else {}
+    if not requested and not saved:
+        saved = dict(landmarks.get("full_stage") or {})
+        shot_id = "full_stage"
+    effective = {**saved, **requested}
+    effective.setdefault("type", shot_id)
+    effective.setdefault("shot_id", shot_id)
+    effective.setdefault("yaw", 0.0)
+    effective.setdefault("pitch", 0.0)
+    effective.setdefault("fov", 95.0)
+    effective["projection"] = projection
+    effective["insv_fov"] = float(
+        probe.get("insv_fov")
+        or ((project.data.get("settings") or {}).get("ingest") or {}).get("insv_fov")
+        or 190.0
+    )
+    return str(record.get("path") or ""), effective
+
+
+def generate_thumbnail(
+    project: Project,
+    clip_id: str,
+    spherical_shot: dict[str, Any] | None = None,
+) -> Path:
+    """Generate a cached clip/shot thumbnail without flattening 360 media first."""
     record = record_for_clip_id(project, clip_id)
-    media_path = record_media_path(record)
-    signature = file_signature(media_path)
-    thumb_path = global_thumbnail_path(cache_key(record), signature)
+    spherical = _spherical_thumbnail_spec(project, record, spherical_shot)
+    if spherical:
+        media_path, pose = spherical
+        signature = file_signature(media_path)
+        pose_key = stable_fingerprint({
+            "projection": pose.get("projection"),
+            "yaw": float(pose.get("yaw") or 0.0) % 360.0,
+            "pitch": float(pose.get("pitch") or 0.0),
+            "fov": float(pose.get("fov") or 95.0),
+            "shot_id": pose.get("shot_id") or pose.get("type"),
+            "insv_fov": pose.get("insv_fov"),
+        })[:16]
+        thumb_path = global_thumbnail_path(cache_key(record), signature)
+        thumb_path = thumb_path.with_name(f"{thumb_path.stem}-{pose_key}.jpg")
+        view_filter = spherical_view_filter(
+            str(pose["projection"]),
+            float(pose["yaw"]),
+            float(pose["pitch"]),
+            float(pose["fov"]),
+            str(pose.get("type") or ""),
+            insv_fov=float(pose.get("insv_fov") or 190.0),
+            width=360,
+            height=202,
+        )
+        filter_graph = f"{view_filter},format=yuvj420p"
+    else:
+        media_path = record_media_path(record)
+        signature = file_signature(media_path)
+        thumb_path = global_thumbnail_path(cache_key(record), signature)
+        filter_graph = None
     thumb_path.parent.mkdir(parents=True, exist_ok=True)
     if thumb_path.exists():
         return thumb_path
@@ -1187,10 +1251,10 @@ def generate_thumbnail(project: Project, clip_id: str) -> Path:
         media_path,
         "-frames:v",
         "1",
-        "-q:v",
-        "4",
-        str(tmp_path),
     ]
+    if filter_graph:
+        command += ["-vf", filter_graph]
+    command += ["-q:v", "4", str(tmp_path)]
     run_ffmpeg(command)
     os.replace(tmp_path, thumb_path)
     return thumb_path

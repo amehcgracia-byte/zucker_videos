@@ -24,7 +24,7 @@ from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
 from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.messages import t
 from core.project import Project, ProjectError, create_project, load_project
-from core.spherical_view import MAX_SPHERICAL_FOV
+from core.spherical_view import MAX_SPHERICAL_FOV, spherical_view_filter
 from core.media_validation import record_media_path
 from core.normalization import cache_status, cleanup_unreferenced_cache, global_cache_root, migrate_project_normalization_cache
 from core.stages.sync import clear_manual_override, cleanup_closed_sync_diagnostics, generate_preview, generate_thumbnail, invalidate_stale_sync_artifact, set_manual_anchor, set_manual_override, set_manual_override_ranges
@@ -1366,21 +1366,47 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if requested not in allowed or not requested.is_file():
             return error_response("not_found", "360 source is not registered in this project", 404)
         try:
-            yaw = float(request.args.get("yaw", 0.0))
-            yaw = ((yaw + 180.0) % 360.0) - 180.0
+            yaw = ((float(request.args.get("yaw", 0.0)) + 180.0) % 360.0) - 180.0
             pitch = max(-89.0, min(89.0, float(request.args.get("pitch", 0.0))))
-            h_fov = max(30.0, min(150.0, float(request.args.get("fov", 95.0))))
+            fov = max(30.0, min(MAX_SPHERICAL_FOV, float(request.args.get("fov", 95.0))))
         except (TypeError, ValueError):
             return error_response("bad_request", "Invalid spherical preview angles", 400)
-        aspect = 16.0 / 9.0
-        v_fov = 2.0 * math.degrees(math.atan(math.tan(math.radians(h_fov / 2.0)) / aspect))
+        record = next(
+            (
+                candidate for candidate in project.data.get("inputs", {}).get("videos", [])
+                if requested in {
+                    Path(str(candidate.get("path") or "")).expanduser().resolve(),
+                    Path(record_media_path(candidate)).expanduser().resolve(),
+                }
+            ),
+            None,
+        )
+        if not record:
+            return error_response("not_found", "360 source is not registered in this project", 404)
+        probe = record.get("probe") or {}
+        projection = str(record.get("projection") or probe.get("projection") or "").lower()
+        if projection not in {"equirect", "raw_insv"}:
+            return error_response("bad_request", "Registered source is not equirectangular 360 media", 400)
+        requested = Path(str(record.get("path") or requested)).expanduser().resolve()
+        shot_type = str(request.args.get("shot_id") or request.args.get("type") or "")
+        filter_graph = spherical_view_filter(
+            projection,
+            yaw,
+            pitch,
+            fov,
+            shot_type,
+            insv_fov=float(probe.get("insv_fov") or 190.0),
+            width=640,
+            height=360,
+        )
+        timestamp = max(0.0, float(request.args.get("time", 30.0) or 30.0))
         ffmpeg_path = str(load_global_config().get("ffmpeg_path") or "ffmpeg")
         result = subprocess.run(
             # The first seconds of the real Insta360 exports are often dark
             # while the camera is being positioned. Use a representative
             # mid-clip frame so the editor's previews are actually useful.
-            [ffmpeg_path, "-hide_banner", "-loglevel", "error", "-ss", "30", "-i", str(requested),
-             "-vf", f"v360=input=equirect:output=flat:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f},scale=640:360",
+            [ffmpeg_path, "-hide_banner", "-loglevel", "error", "-ss", f"{timestamp:.3f}", "-i", str(requested),
+             "-vf", filter_graph,
              "-frames:v", "1", "-f", "mjpeg", "pipe:1"],
             capture_output=True, check=False, timeout=30,
         )
@@ -1923,9 +1949,17 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_sync_thumbnail(clip_id: str) -> Response:
         project = _require_project(state)
         try:
-            return send_file_with_range(str(generate_thumbnail(project, clip_id)))
-        except KeyError as exc:
-            return error_response("not_found", str(exc), 404)
+            shot: dict[str, Any] = {}
+            for key in ("shot_id", "type", "yaw", "pitch", "fov"):
+                if request.args.get(key) is not None:
+                    shot[key] = request.args.get(key)
+            for key in ("yaw", "pitch", "fov"):
+                if key in shot:
+                    shot[key] = float(shot[key])
+            return send_file_with_range(str(generate_thumbnail(project, clip_id, shot or None)))
+        except (KeyError, ValueError) as exc:
+            is_missing = isinstance(exc, KeyError)
+            return error_response("not_found" if is_missing else "bad_request", str(exc), 404 if is_missing else 400)
         except RuntimeError as exc:
             return error_response("ffmpeg_error", str(exc), 500)
 

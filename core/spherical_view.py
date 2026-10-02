@@ -56,3 +56,41 @@ def view_parameters(yaw: float, pitch: float, fov: float, aspect_ratio: float, s
         "v_fov": vertical,
         "projection": projection,
     }
+
+
+def spherical_view_filter(
+    projection: str,
+    yaw: float,
+    pitch: float,
+    fov: float,
+    shot_type: str = "",
+    *,
+    insv_fov: float = 190.0,
+    aspect_ratio: float = 16.0 / 9.0,
+    width: int = 360,
+    height: int = 202,
+) -> str:
+    """Build the canonical per-shot v360 filter used by views and audits.
+
+    The analysis proxy deliberately remains a fixed flat view. Any authored
+    view of a spherical shot must call this helper with the saved pose so the
+    thumbnail, interactive preview and export agree on yaw/pitch/FOV and on
+    the flat-vs-stereographic projection choice.
+    """
+    source_projection = str(projection or "").lower()
+    view = view_parameters(yaw, pitch, fov, aspect_ratio, shot_type)
+    if source_projection == "raw_insv":
+        prefix = (
+            f"v360=input=dfisheye:output=e:ih_fov={float(insv_fov):.3f}:"
+            f"iv_fov={float(insv_fov):.3f}:interp=lanczos,"
+        )
+    elif source_projection == "equirect":
+        prefix = ""
+    else:
+        raise ValueError(f"Unsupported spherical source projection: {projection!r}")
+    return (
+        f"{prefix}v360=input=equirect:output={view['projection']}:"
+        f"yaw={float(view['yaw']):.3f}:pitch={float(view['pitch']):.3f}:"
+        f"h_fov={float(view['h_fov']):.3f}:v_fov={float(view['v_fov']):.3f}:"
+        f"w={int(width)}:h={int(height)}:interp=lanczos"
+    )
