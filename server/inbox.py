@@ -143,6 +143,17 @@ def master_filter_message(folder_name: str | None = None) -> str:
     return prefix + "masters are expected as .mp3"
 
 
+def _cached_classification_entries() -> dict[str, dict[str, Any]]:
+    """Return stat-keyed classifications so Inbox refreshes avoid repeat ffprobe calls."""
+    path = inbox_analysis_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+    entries = payload.get("entries") or {}
+    return entries if isinstance(entries, dict) else {}
+
+
 def classify_source_folders(folders: list[Path]) -> dict[str, Any]:
     """Classify all configured roots recursively and group results by root."""
     result: dict[str, Any] = {
@@ -153,6 +164,7 @@ def classify_source_folders(folders: list[Path]) -> dict[str, Any]:
     allowed_master_extensions = set(configured_master_audio_extensions())
     result["master_audio_extensions"] = sorted(allowed_master_extensions)
     seen: set[Path] = set()
+    cached_entries = _cached_classification_entries()
     for folder in folders:
         resolved = folder.expanduser().resolve()
         available = resolved.is_dir()
@@ -174,7 +186,15 @@ def classify_source_folders(folders: list[Path]) -> dict[str, Any]:
             if suffix not in VIDEO_EXTENSIONS and suffix not in AUDIO_EXTENSIONS and suffix != ".json":
                 continue
             try:
-                item = classify_file(child)
+                cached = None
+                try:
+                    cached = cached_entries.get(_analysis_key(child))
+                except OSError:
+                    cached = None
+                if isinstance(cached, dict) and str(cached.get("path") or "") == str(child):
+                    item = dict(cached)
+                else:
+                    item = classify_file(child)
                 if item.get("kind") == "master" and child.suffix.lower() not in allowed_master_extensions:
                     item = {**item, "kind": "ignored", "note": "Audio stem excluded: only configured mix formats are masters", "checked": False}
             except OSError:

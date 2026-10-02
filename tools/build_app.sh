@@ -4,14 +4,23 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${PYTHON:-"$ROOT/.venv/bin/python"}"
 APP_NAME="Zucker Editor"
+
+cd "$ROOT"
+VERSION="$("$PYTHON" -c 'from core.build_info import APP_VERSION; print(APP_VERSION)')"
+if [[ -z "$VERSION" || "$VERSION" == "unknown" ]]; then
+  echo "Could not determine APP_VERSION from core/build_info.py." >&2
+  exit 1
+fi
+APP_DISPLAY_NAME="$APP_NAME $VERSION"
+
 DIST="$ROOT/dist"
 BUILD="$ROOT/build/pyinstaller"
 PYI_DIST="$ROOT/build/pyinstaller-dist"
 RELEASE="$ROOT/build/release"
 DMG_ROOT="$ROOT/build/dmg"
-DMG_RW="$ROOT/build/Zucker Editor.tmp.dmg"
+DMG_RW="$ROOT/build/${APP_DISPLAY_NAME}.tmp.dmg"
 BUILD_INFO="$ROOT/build/build_info.json"
-DMG_PATH="$DIST/Zucker Editor.dmg"
+DMG_PATH="$DIST/${APP_DISPLAY_NAME}.dmg"
 APP_BUNDLE="$RELEASE/$APP_NAME.app"
 
 if [[ ! -x "$PYTHON" ]]; then
@@ -21,21 +30,21 @@ fi
 
 "$PYTHON" - <<'PY'
 import importlib.util
-missing = [name for name in ("PIL", "PyInstaller") if importlib.util.find_spec(name) is None]
+missing = [name for name in ("PIL", "PyInstaller", "faster_whisper", "ctranslate2") if importlib.util.find_spec(name) is None]
 if missing:
-    raise SystemExit("Missing build dependencies: " + ", ".join(missing) + ". Run: .venv/bin/python -m pip install -r requirements-build.txt")
+    raise SystemExit("Missing build dependencies: " + ", ".join(missing) + ". Run: .venv/bin/python -m pip install -r requirements.txt -r requirements-build.txt")
 PY
 
-cd "$ROOT"
 "$PYTHON" tools/make_icon.py
-rm -rf "$APP_BUNDLE" "$PYI_DIST" "$DIST/$APP_NAME" "$BUILD" "$DMG_ROOT" "$DMG_PATH" "$DMG_RW"
+rm -rf "$APP_BUNDLE" "$PYI_DIST" "$DIST/$APP_NAME" "$DIST/$APP_DISPLAY_NAME" "$BUILD" "$DMG_ROOT" "$DMG_PATH" "$DMG_RW"
 mkdir -p "$DIST" "$RELEASE"
 mkdir -p "$ROOT/build"
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 "$PYTHON" - <<PY
 import json
 from pathlib import Path
-Path("$BUILD_INFO").write_text(json.dumps({"version": "0.1", "git_commit": "$COMMIT"}, indent=2) + "\n", encoding="utf-8")
+from core.build_info import APP_VERSION
+Path("$BUILD_INFO").write_text(json.dumps({"version": APP_VERSION, "git_commit": "$COMMIT"}, indent=2) + "\n", encoding="utf-8")
 PY
 
 "$PYTHON" -m PyInstaller \
@@ -56,6 +65,7 @@ PY
   --add-data "/System/Library/Fonts/Supplemental/Arial.ttf:assets/fonts" \
   --add-data "/System/Library/Fonts/Supplemental/BigCaslon.ttf:assets/fonts" \
   --add-data "$BUILD_INFO:." \
+  --add-data "$ROOT/README_APP.md:." \
   --collect-data faster_whisper \
   --collect-data whisper \
   --collect-data onnxruntime \
@@ -69,6 +79,7 @@ PY
   --hidden-import llvmlite \
   --hidden-import server.api \
   --hidden-import faster_whisper \
+  --collect-submodules faster_whisper \
   --hidden-import onnxruntime \
   --hidden-import tokenizers \
   --hidden-import ctranslate2 \
@@ -90,28 +101,43 @@ find "$APP_BUNDLE" -type d -name tests -prune -exec rm -rf {} +
 # binaries such as numpy/core/_multiarray_tests.cpython-311-darwin.so.
 find "$APP_BUNDLE" \( -iname '*pytest*' -o -iname 'test_*.py' \) -print -exec rm -rf {} +
 
+PLIST="$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $VERSION" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $VERSION" "$PLIST"
+
 codesign --force --deep -s - "$APP_BUNDLE"
 
 # A successful PyInstaller invocation is not enough: import the app and
 # initialize Flask from the actual frozen executable before making a DMG.
 SELFTEST_LOG="$ROOT/build/packaged-selftest.log"
 SELFTEST_AUDIO="${ZUCKER_SELFTEST_AUDIO:-$HOME/ZuckerVideos/WizardUploads/C0130.MP4}"
-if ! ZUCKER_WHISPER_BACKEND=faster-whisper ZUCKER_SELFTEST_AUDIO="$SELFTEST_AUDIO" "$APP_BUNDLE/Contents/MacOS/$APP_NAME" --selftest >"$SELFTEST_LOG" 2>&1; then
-  cat "$SELFTEST_LOG" >&2
-  exit 1
+if [[ -f "$SELFTEST_AUDIO" ]]; then
+  if ! ZUCKER_WHISPER_BACKEND=faster-whisper ZUCKER_SELFTEST_AUDIO="$SELFTEST_AUDIO" "$APP_BUNDLE/Contents/MacOS/$APP_NAME" --selftest >"$SELFTEST_LOG" 2>&1; then
+    cat "$SELFTEST_LOG" >&2
+    exit 1
+  fi
+  cat "$SELFTEST_LOG"
+else
+  echo "Packaged self-test skipped: set ZUCKER_SELFTEST_AUDIO to a real audio/video file to run it." | tee "$SELFTEST_LOG"
 fi
-cat "$SELFTEST_LOG"
 
 "$PYTHON" - <<PY
 import json
 from pathlib import Path
 
 bundle_info = Path("$APP_BUNDLE/Contents/Resources/build_info.json")
-actual = json.loads(bundle_info.read_text(encoding="utf-8"))["git_commit"]
-expected = "$COMMIT"
-if actual != expected:
-    raise SystemExit(f"Packaged build_info commit {actual!r} does not match HEAD {expected!r}")
-print(f"Verified packaged build_info git_commit={actual}")
+payload = json.loads(bundle_info.read_text(encoding="utf-8"))
+actual_version = payload["version"]
+actual_commit = payload["git_commit"]
+expected_version = "$VERSION"
+expected_commit = "$COMMIT"
+if actual_version != expected_version:
+    raise SystemExit(f"Packaged build_info version {actual_version!r} does not match APP_VERSION {expected_version!r}")
+if actual_commit != expected_commit:
+    raise SystemExit(f"Packaged build_info commit {actual_commit!r} does not match HEAD {expected_commit!r}")
+print(f"Verified packaged build_info version={actual_version} git_commit={actual_commit}")
 PY
 
 mkdir -p "$DMG_ROOT"
@@ -121,7 +147,7 @@ cp "$ROOT/assets/icon.icns" "$DMG_ROOT/.VolumeIcon.icns"
 mkdir -p "$DMG_ROOT/.background"
 cp "$ROOT/build/dmg_background.png" "$DMG_ROOT/.background/background.png"
 hdiutil create \
-  -volname "$APP_NAME" \
+  -volname "$APP_DISPLAY_NAME" \
   -srcfolder "$DMG_ROOT" \
   -ov \
   -fs HFS+ \
@@ -138,7 +164,7 @@ if [[ -n "$DEVICE" && -d "$VOLUME" ]]; then
   fi
   osascript <<OSA || true
 tell application "Finder"
-  tell disk "$APP_NAME"
+  tell disk "$APP_DISPLAY_NAME"
     open
     set current view of container window to icon view
     set toolbar visible of container window to false
@@ -170,9 +196,9 @@ rm -f "$DMG_RW"
 # dist/ is the hand-off folder. Keep only the installer there so the
 # PyInstaller app bundle and its terminal launcher cannot be mistaken for the
 # thing Chema should install.
-rm -rf "$APP_BUNDLE" "$DIST/$APP_NAME" "$PYI_DIST"
+rm -rf "$APP_BUNDLE" "$DIST/$APP_NAME" "$DIST/$APP_DISPLAY_NAME" "$PYI_DIST"
 find "$DIST" -mindepth 1 -maxdepth 1 ! -name "$(basename "$DMG_PATH")" -exec rm -rf {} +
 
-echo "Built $DMG_PATH"
+echo "Built version $VERSION: $DMG_PATH"
 echo "Installer hand-off directory contains:"
 find "$DIST" -maxdepth 1 -type f -print

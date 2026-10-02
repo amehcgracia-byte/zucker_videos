@@ -63,3 +63,18 @@ def test_app_backups_keep_two_newest(tmp_path):
     assert str(root / "AppBackups" / "backup-0.json") not in candidates
     assert str(root / "AppBackups" / "backup-1.json") not in candidates
     assert str(root / "AppBackups" / "backup-2.json") in candidates
+
+
+def test_cleanup_lists_stale_generated_temps_but_protects_active_project(tmp_path):
+    now = 1_800_000_000.0
+    root = tmp_path / "ZuckerVideos"
+    active = root / "Projects" / "Active.zuckervid"
+    other = root / "Projects" / "Old.zuckervid"
+    active_tmp = active / "cache" / ".project.json.deadbeef.tmp"
+    other_tmp = other / "cache" / ".project.json.cafebabe.tmp"
+    _touch(active_tmp, 7, now - 2 * 86400)
+    _touch(other_tmp, 11, now - 2 * 86400)
+    report = build_storage_report(root=root, repo_root=tmp_path / "repo", huggingface_root=tmp_path / "hf", now=now)
+    candidates = {item["path"] for item in cleanup_plan(report, protected_paths=[active])}
+    assert str(active_tmp) not in candidates
+    assert str(other_tmp) in candidates

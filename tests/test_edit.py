@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from core.stages.edit import IPHONE_CROP_TOP_LIMIT, MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, MOTION_CATALOG, REEL_MAX_CUT_SEC, REEL_MIN_CUT_SEC, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _available_spherical_shots, _ken_burns_motion, _motion_active_axes, _spherical_motion_profile, _youtube_multicam_plan, _reel_promo_plan, _framing_nearly_identical, _valid_motion_recipe, _sony_non_music_filler, _choose_source_avoiding_identical_framing, validate_plan_camera_source_consistency, _visible_iphone_target
+from core.stages.edit import IPHONE_CROP_TOP_LIMIT, MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, MOTION_CATALOG, REEL_MAX_CUT_SEC, REEL_MIN_CUT_SEC, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _available_spherical_shots, _ken_burns_motion, _motion_active_axes, _spherical_motion_profile, _youtube_multicam_plan, _bars_for_segment, _music_pacing_target_seconds, _music_pacing_band, _reel_promo_plan, _framing_nearly_identical, _valid_motion_recipe, _sony_non_music_filler, _choose_source_avoiding_identical_framing, validate_plan_camera_source_consistency, _visible_iphone_target
 from core.stages.cut import _pick_energetic_window, _segment_for_360, _select_360_clip, _tighten_window_to_video_coverage
 from core.stages.edit import _covering_sources, _segment_from_source
 
@@ -397,7 +397,7 @@ def test_spherical_motion_profile_uses_near_static_hold_motion_when_enabled():
             shot = _spherical_motion_profile({"type": shot_type, "yaw": 10.0, "pitch": -15.0, "fov": 95}, index, enabled=True)
             assert all(shot[key] == 0.0 for key in _DRIFT_KEYS), (shot_type, index, shot)
             assert shot["sweep_enabled"] is False
-            assert shot["hold_motion_rate_deg_per_sec"] == 0.4
+            assert abs(shot["hold_motion_rate_deg_per_sec"]) <= 1.0
             assert shot["drift_pitch_fraction"] == 0.0
             assert shot["fov_delta_fraction"] == 0.0
 
@@ -418,14 +418,15 @@ def test_spherical_motion_profile_is_expressed_as_a_fraction_of_the_visible_fiel
         assert "drift_pitch_deg" not in shot
         assert "fov_delta_deg" not in shot
         assert all(shot[key] == 0.0 for key in _DRIFT_KEYS)
-        assert shot["hold_motion_rate_deg_per_sec"] == 0.4
+        assert abs(shot["hold_motion_rate_deg_per_sec"]) <= 1.0
 
 
-def test_spherical_motion_profile_is_identical_across_static_instances():
-    # Static landmark holds must not vary by segment index.
+def test_spherical_motion_profile_varies_direction_without_exceeding_safe_rate():
+    # Holds may use different gentle directions, but never become whip pans.
     profiles = [_spherical_motion_profile({"type": "singer", "yaw": 10.0, "pitch": -15.0, "fov": 95}, index, enabled=True) for index in range(8)]
-    signatures = {tuple(p[key] for key in _DRIFT_KEYS) for p in profiles}
-    assert len(signatures) == 1
+    rates = {p["hold_motion_rate_deg_per_sec"] for p in profiles}
+    assert len(rates) > 1
+    assert max(abs(rate) for rate in rates) <= 1.0
 
 
 def test_spherical_motion_profile_is_deterministic_for_cache_stability():
@@ -514,9 +515,10 @@ def test_automatic_360_motion_never_exceeds_the_fov_fraction_budget(segment_dura
         if travel / fov >= 0.002:
             moved_at_all += 1
 
-    # Runtime v360 motion is disabled by default because sendcmd corrupts
-    # command-instants; all automatic holds remain effectively static here.
-    assert moved_at_all == 0
+    # Automatic mode now emits the enabled, bounded hold motion. Very short
+    # holds remain static by design because there is no time for a graceful move.
+    if segment_duration >= 2.0:
+        assert moved_at_all > 0
 
 
 def test_youtube_plan_keeps_recorded_360_curve_in_directed_mode():
@@ -896,6 +898,7 @@ def test_youtube_plan_360_segments_always_carry_a_shot_and_move_only_when_motion
         shot = segment.get("spherical_shot")
         assert shot, "360 segment must always carry a spherical_shot, not a frozen passthrough"
         assert all(abs(shot.get(key) or 0.0) == 0.0 for key in _DRIFT_KEYS)
+        assert shot.get("runtime_motion_enabled") is False
 
         # Motion explicitly on -> normal landmark shots get the subtle hold.
     moving_plan = _youtube_multicam_plan(coverage, beats, {"spherical_landmarks": {}, "edit": {"spherical_motion": True}})
@@ -905,6 +908,7 @@ def test_youtube_plan_360_segments_always_carry_a_shot_and_move_only_when_motion
         shot = segment.get("spherical_shot")
         assert shot
         assert all(abs(shot.get(key) or 0.0) == 0.0 for key in _DRIFT_KEYS)
+        assert shot.get("runtime_motion_enabled") is True
         assert shot.get("sweep_enabled") is False
 
 
@@ -989,3 +993,31 @@ def test_sony_gap_fill_never_repeats_a_frame_within_180_seconds():
         for right_time, right_key in selected[left_index + 1:]:
             if left_key == right_key:
                 assert right_time - left_time >= 180.0
+
+
+def test_long_form_music_pacing_contract_never_creates_one_second_cuts():
+    bar_times = [0.0, 2.0, 4.0, 6.0, 8.0]
+    expected_targets = [(0.20, 6.0), (0.70, 4.0), (0.84, 3.0), (0.95, 2.0)]
+    for energy, target in expected_targets:
+        assert _music_pacing_target_seconds(energy) == target
+        bars = _bars_for_segment(0, bar_times, [], 0, [energy])
+        duration = bars * (bar_times[1] - bar_times[0])
+        assert 2.0 <= duration <= 6.0
+        assert duration >= 2.0
+
+
+def test_music_pacing_band_is_explainable():
+    assert [_music_pacing_band(value) for value in (0.2, 0.7, 0.84, 0.95)] == [
+        "low", "rising", "high", "peak"
+    ]
+
+
+
+def test_automatic_360_motion_keeps_intershot_sweep_opt_in():
+    shot = _spherical_motion_profile(
+        {"type": "singer", "yaw": 10.0, "pitch": -10.0, "fov": 95.0, "sweep_enabled": True},
+        2,
+        enabled=True,
+    )
+    assert shot["sweep_enabled"] is False
+    assert shot["intershot_sweep"] is False

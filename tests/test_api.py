@@ -334,6 +334,26 @@ def test_reel_single_video_embedded_audio_can_start_without_master(tmp_path, mon
     assert response.status_code == 202
 
 
+
+def test_360_single_video_embedded_audio_can_start_without_master(tmp_path, monkeypatch):
+    import server.api as api_module
+
+    video = tmp_path / "360.mp4"
+    video.write_bytes(b"video")
+    monkeypatch.setattr(api_module, "_single_video_has_audio", lambda paths: True)
+    monkeypatch.setattr(
+        "server.wizard.WizardRunner.start",
+        lambda self, **kwargs: WizardJob(id="360-embedded-audio"),
+    )
+
+    response = create_app().test_client().post(
+        "/api/v1/wizard/start",
+        json={"name": "360 embedded", "platform": "360", "master": "", "videos": [str(video)]},
+    )
+
+    assert response.status_code == 202
+
+
 def test_reel_single_video_without_audio_still_requires_master(tmp_path, monkeypatch):
     import server.api as api_module
 
