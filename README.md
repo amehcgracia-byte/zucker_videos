@@ -112,6 +112,13 @@ Ingest proxies:
 - The generic sync preview remains an analysis preview unless a shot pose is explicitly requested; it does not change the proxy used for audio/sync analysis. Final export renders only the used segments lazily from the original camera files and caches rendered segments globally under `~/ZuckerVideos/Cache/segments/`.
 - To audit a real project end to end, run `python -m tools.audit_360_projection "/Users/macbookair/ZuckerVideos/Projects/Chrome Midnight.zuckervid"`. It prints the fixed proxy parameters, renders the singer/stage/audience thumbnails, compares their pixels, verifies pose-cache invalidation, and prints the saved-vs-thumbnail-vs-export angle table.
 
+YouTube camera allocation and framing:
+
+- The edit plan allocates the configured camera percentages against physical camera identities, not the shared `Edited` or session directory. Explicit ingest camera IDs win; otherwise common filename families (`C0185`, `IMG_0043`, and `VID_...`) are kept in separate, stable buckets.
+- `edit_plan.json` records `camera_target_weights`, `camera_distribution.actual_percent`, and `quota_gap_percent`, so the requested mix can be audited after every run.
+- Fixed/phone-camera Ken Burns moves are subject-anchored and deliberately limited to a maximum `1.38x` zoom with a central composition envelope. Legacy 3x corner/feet recipes are invalidated by the YouTube selection and edit-plan versions and clamped again by the exporter.
+- Nikon sources receive a quality tie-breaker, but never override an explicitly zero-weight camera or the configured quota.
+
 Native Pickers:
 
 - Desktop mode exposes pywebview bridge methods for `Choose master...`, `Choose songs.json...`, `Add videos...`, `Add video folder...`, and `Reveal in Finder`.
