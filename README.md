@@ -110,6 +110,7 @@ Ingest proxies:
 - Final export renders the used segments from the original camera files with the same `view_parameters` contract. Therefore a review/selector/preview frame and its export use the same signed yaw, pitch, horizontal/vertical FOV pair, and flat-vs-stereographic projection. Option (a) costs one v360 decode per requested view, but avoids storing a second large equirectangular proxy; the decoded JPEG/preview is cached by pose.
 - Already-compliant originals skip proxy transcoding. The predicate is: H.264, constant frame rate, SDR 8-bit or lower, no rotation metadata, not equirectangular, and no larger than 1920x1080.
 - The generic sync preview remains an analysis preview unless a shot pose is explicitly requested; it does not change the proxy used for audio/sync analysis. Final export renders only the used segments lazily from the original camera files and caches rendered segments globally under `~/ZuckerVideos/Cache/segments/`.
+- To audit a real project end to end, run `python -m tools.audit_360_projection "/Users/macbookair/ZuckerVideos/Projects/Chrome Midnight.zuckervid"`. It prints the fixed proxy parameters, renders the singer/stage/audience thumbnails, compares their pixels, verifies pose-cache invalidation, and prints the saved-vs-thumbnail-vs-export angle table.
 
 Native Pickers:
 
