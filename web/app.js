@@ -3013,6 +3013,13 @@ function renderWizardStatus(status) {
   }
   const reportedProgress = Math.max(0, Math.min(100, Number(status.progress || 0)));
   const progress = Math.max(progressFloor, reportedProgress);
+  const progressBar = document.querySelector("#progressBar");
+  if (progressBar) {
+    progressBar.classList.toggle(
+      "is-active",
+      status.status === "running" || status.status === "cancelling",
+    );
+  }
   const progressBox = document.querySelector("#progressBox");
   const cancelButton = document.querySelector("#cancelWizard");
   if (cancelButton) {
@@ -3043,7 +3050,7 @@ function renderWizardStatus(status) {
       if (progressBox) progressBox.hidden = true;
       stopStatusPolling();
       resetProgressTiming();
-      document.querySelector("#progressBar").style.width = "0%";
+      if (progressBar) progressBar.style.width = "0%";
       document.querySelector("#progressPercent").textContent = "0%";
       document.querySelector("#progressMessage").textContent = status.message || "Ready to edit";
       document.querySelector("#progressDetail").textContent = status.detail || "Choose an edit type";
@@ -3109,7 +3116,7 @@ function renderWizardStatus(status) {
   progressFloor = progress;
   updateTiming(status, progress);
   renderStatusStrip(status, progress);
-  document.querySelector("#progressBar").style.width = `${progress}%`;
+  if (progressBar) progressBar.style.width = `${progress}%`;
   document.querySelector("#progressPercent").textContent = `${Math.round(progress)}%`;
   document.querySelector("#progressMessage").textContent = playfulProgressMessage(status.message) || S.working;
   document.querySelector("#progressDetail").textContent = status.detail || currentSubtask(status) || S.nextStep;
