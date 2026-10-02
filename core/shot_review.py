@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import logging
+import os
 import subprocess
 import tempfile
 import threading
@@ -22,6 +23,10 @@ from core.stages.edit import IPHONE_CROP_TOP_LIMIT, _camera_id
 
 LOGGER = logging.getLogger(__name__)
 _RENDER_STATUS_LOCK = threading.RLock()
+_SPHERICAL_PROXY_LOCK = threading.RLock()
+SPHERICAL_ANALYSIS_PROXY_VERSION = 1
+SPHERICAL_ANALYSIS_WIDTH = 960
+SPHERICAL_ANALYSIS_HEIGHT = 480
 
 _REVIEW_SHOT_LABELS = {
     "singer": "Cantante",
@@ -85,6 +90,69 @@ def _review_segment(project: Project, segment: dict[str, Any]) -> dict[str, Any]
 
 def _review_segments(project: Project) -> list[dict[str, Any]]:
     return [_review_segment(project, segment) for segment in (_plan(project).get("segments") or [])]
+
+
+
+def _spherical_analysis_source(project: Project, segment: dict[str, Any]) -> str:
+    """Return a cached low-resolution equirectangular source for one 360 clip.
+
+    Decoding a 5K/6K original once per thumbnail is the dominant Review cost.
+    This proxy preserves the sphere (it is deliberately *not* flat), so each
+    thumbnail still applies its own authored yaw/pitch/FOV. Export continues
+    to read the original camera file.
+    """
+    source = _source_for(segment)
+    projection = str(segment.get("projection") or "").lower()
+    source_suffix = Path(source).suffix.lower()
+    if projection not in {"equirect", "raw_insv"}:
+        projection = "raw_insv" if source_suffix in {".insv", ".insp"} else "equirect"
+    if not source or projection not in {"equirect", "raw_insv"}:
+        return source
+    source_path = Path(source).expanduser()
+    try:
+        stat = source_path.stat()
+    except OSError:
+        return source
+    insv_fov = float(segment.get("insv_fov") or 190.0)
+    key = hashlib.sha256(
+        f"{source_path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}|{projection}|{insv_fov:.3f}|{SPHERICAL_ANALYSIS_PROXY_VERSION}"
+        .encode("utf-8")
+    ).hexdigest()[:24]
+    target = project.cache_dir / "spherical_analysis" / f"equirect-{key}.mp4"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with _SPHERICAL_PROXY_LOCK:
+        if target.exists() and target.stat().st_size > 0:
+            return str(target)
+        ffmpeg = locate_executable("ffmpeg") or "ffmpeg"
+        tmp = target.with_suffix(".tmp.mp4")
+        if projection == "raw_insv":
+            source_filter = (
+                f"v360=input=dfisheye:output=e:ih_fov={insv_fov:.3f}:iv_fov={insv_fov:.3f}:interp=lanczos,"
+            )
+        else:
+            source_filter = ""
+        filter_graph = (
+            f"{source_filter}scale={SPHERICAL_ANALYSIS_WIDTH}:{SPHERICAL_ANALYSIS_HEIGHT}:"
+            "force_original_aspect_ratio=decrease,"
+            f"pad={SPHERICAL_ANALYSIS_WIDTH}:{SPHERICAL_ANALYSIS_HEIGHT}:(ow-iw)/2:(oh-ih)/2,"
+            "format=yuv420p"
+        )
+        command = [
+            str(ffmpeg), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+            "-i", str(source_path), "-map", "0:v:0", "-an",
+            "-vf", filter_graph,
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
+            "-pix_fmt", "yuv420p", str(tmp),
+        ]
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, check=False)
+            if result.returncode != 0 or not tmp.exists() or tmp.stat().st_size <= 0:
+                detail = result.stderr.strip() or "Could not create the 360 analysis proxy"
+                raise ThumbnailRenderError(detail)
+            os.replace(tmp, target)
+        finally:
+            tmp.unlink(missing_ok=True)
+    return str(target)
 
 
 def _review_pose_for_cache(segment: dict[str, Any]) -> dict[str, Any]:
@@ -424,11 +492,22 @@ def review_items(
         should_render = render_missing and (render_indices is None or index in render_indices)
         thumbnail_error = None
         thumbnail_state = "ready" if output.exists() else "missing"
+        render_source = source
+        render_segment = dict(segment)
+        if should_render and segment.get("spherical_shot"):
+            render_source = _spherical_analysis_source(project, segment)
+            if render_source != source:
+                # The cached analysis source is equirectangular even when the
+                # original was raw INSV; never apply the dfisheye step twice.
+                render_segment["source_path"] = render_source
+                render_segment["clip_path"] = render_source
+                render_segment["projection"] = "equirect"
         if not output.exists() and source and should_render:
             _set_render_status(root, index, {"state": "rendering"})
             command = [
                 ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", f"{timestamp:.3f}",
-                "-i", source, "-frames:v", "1", "-vf", _thumbnail_filter(segment, color_profiles.get(str(segment.get("clip_path")), {})),
+                "-i", render_source, "-frames:v", "1", "-threads", "1",
+                "-vf", _thumbnail_filter(render_segment, color_profiles.get(str(segment.get("clip_path")), {})),
                 "-q:v", "5", "-y", str(output),
             ]
             try:
