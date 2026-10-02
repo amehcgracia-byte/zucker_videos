@@ -1061,10 +1061,34 @@ button:disabled {
 }
 
 #progressBar {
+  position: relative;
   height: 100%;
   width: 0;
+  overflow: hidden;
   background: linear-gradient(90deg, var(--green-700), var(--green-500));
   transition: width 420ms cubic-bezier(.22,.61,.36,1);
+}
+
+#progressBar.is-active::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 -35%;
+  width: 35%;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.42), transparent);
+  animation: progress-bar-sweep 1.35s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes progress-bar-sweep {
+  from { transform: translateX(0); }
+  to { transform: translateX(390%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #progressBar.is-active::after {
+    animation: none;
+    left: 50%;
+  }
 }
 
 .progress-main,
