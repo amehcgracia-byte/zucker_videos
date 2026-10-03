@@ -97,3 +97,18 @@ def test_legacy_phone_roles_receive_motion_without_changing_quotas():
     assert plan['camera_distribution'][0]['role'] == 'handheld'
     moves = [segment['motion']['movement'] for segment in plan['segments']]
     assert all(a != b for a,b in zip(moves,moves[1:]))
+
+
+def test_explicit_review_transition_survives_clean_cut_defaults(tmp_path):
+    import json
+    from core.project import create_project
+    from core.stages.base import artifact_path
+    from core.stages.export import _transition_profile, _transition_boundaries
+    project = create_project("Manual transition", str(tmp_path / "Manual.zuckervid"))
+    segments = [{"duration_sec": 4.0, "transition_type": "crossfade"}, {"duration_sec": 4.0}]
+    artifact_path(project, "edit_plan.json").write_text(json.dumps({"segments": segments}))
+    profile = _transition_profile(project, "youtube")
+    assert _transition_boundaries(segments, profile) == [0]
+    segments[0]["transition_type"] = "auto"
+    artifact_path(project, "edit_plan.json").write_text(json.dumps({"segments": segments}))
+    assert _transition_boundaries(segments, _transition_profile(project, "youtube")) == []

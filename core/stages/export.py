@@ -137,6 +137,17 @@ def _transition_profile(project: Project, platform: str) -> dict[str, Any]:
         profile.update(configured)
     # Legacy saved defaults must not silently enable transitions.
     profile["duration"] = max(0.0, float(profile.get("duration") or 0.0)) if profile.get("enabled") is True else 0.0
+    # Choosing a library transition on a review card is an explicit opt-in.
+    # Preserve that control while old/default auto profiles remain clean cuts.
+    try:
+        explicit_per_segment = any(
+            str(segment.get("transition_type") or "").lower() in TRANSITION_LIBRARY
+            for segment in load_edit_plan(project).get("segments", [])
+        )
+    except FileNotFoundError:
+        explicit_per_segment = False
+    if explicit_per_segment:
+        profile["duration"] = max(1.0, float(profile.get("duration") or 0.0))
     transition_type = str(profile.get("type") or "auto").strip().lower()
     if transition_type not in {"auto", "none"} and transition_type not in TRANSITION_LIBRARY:
         transition_type = "auto"
@@ -162,6 +173,9 @@ def _transition_boundaries(segments: list[dict[str, Any]], profile: dict[str, An
         # "auto" is a legacy/cache value, not an instruction to render a
         # transition. Only an explicit library choice should create an xfade.
         if selected in {"none", "auto"}:
+            continue
+        if str(explicit or "").lower() in TRANSITION_LIBRARY:
+            boundaries.append(index)
             continue
         if profile.get("sections_only"):
             left = segments[index].get("section") or segments[index].get("section_id")
