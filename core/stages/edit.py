@@ -959,8 +959,14 @@ def _youtube_multicam_plan(
                 if fresh_shots:
                     available_shots = fresh_shots
                 # Balanced musicians, rather than the old 60% singer prior.
+                sphere_index = sum(1 for item in segments if item.get("spherical_shot"))
+                wide_shots = [pose for pose in available_shots if pose.get("type") == "full_stage"
+                              and "full_stage" in source_landmarks]
+                scheduled_wide = bool(wide_shots and sphere_index % 5 == 4)
                 musician_shots = [pose for pose in available_shots if _editorial_subject({}, pose)]
-                if musician_shots:
+                if scheduled_wide:
+                    available_shots = wide_shots
+                elif musician_shots:
                     least_seconds = min(subject_seconds.get(_editorial_subject({}, pose), 0.0) for pose in musician_shots)
                     balanced = [pose for pose in musician_shots
                                 if subject_seconds.get(_editorial_subject({}, pose), 0.0) <= least_seconds + .001]

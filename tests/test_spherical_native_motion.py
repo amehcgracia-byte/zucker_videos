@@ -111,3 +111,19 @@ def test_export_overlays_saved_wide_projection_and_horizon_without_flat_clamping
     assert corrected['projection_preset'] == 'megaview'
     graph = _export_source_filter(dict(projection='equirect'),corrected,duration=4)
     assert 'output=sg' in graph and 'h_fov=160.000' in graph and 'roll=11.000' in graph
+
+
+def test_authored_wide_views_return_between_portraits_without_default_audience_views():
+    source = dict(path='/tmp/sphere.mp4',camera_role='360',projection='equirect',duration_sec=90)
+    landmarks = {kind:dict(yaw=yaw,weight=1,fov=65) for kind,yaw in
+                 [('singer',175),('pianist',255),('drummer',125),('right',225)]}
+    landmarks['full_stage'] = dict(yaw=195,weight=1,fov=160,projection_preset='megaview')
+    coverage = dict(platform='youtube',window=dict(duration_sec=90),sources=[source])
+    beats = dict(bars_sec=list(range(0,91,3)))
+    plan = _youtube_multicam_plan(coverage,beats,dict(spherical_landmarks=landmarks))
+    assert plan['segments'][0]['spherical_shot']['type'] == 'singer'
+    assert plan['segments'][4]['spherical_shot']['type'] == 'full_stage'
+    assert plan['segments'][4]['spherical_shot']['fov'] == 160
+    del landmarks['full_stage']
+    plan = _youtube_multicam_plan(coverage,beats,dict(spherical_landmarks=landmarks))
+    assert all(s['spherical_shot']['type'] != 'full_stage' for s in plan['segments'])
