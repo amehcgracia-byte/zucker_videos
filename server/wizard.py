@@ -1151,6 +1151,7 @@ class WizardRunner:
                 job.tasks[measured_task["id"]] = dict(measured_task)
             segment_match = re.search(r"Rendering segment (\d+)/(\d+):\s*(.*)$", str(detail or ""))
             if segment_match:
+                job.tasks.pop("stage", None)
                 segment_index = int(segment_match.group(1))
                 segment_total = int(segment_match.group(2))
                 segment_detail = segment_match.group(3).strip()

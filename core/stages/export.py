@@ -2326,6 +2326,9 @@ def _render_segment_job(
     base_percent = 10 + int(70 * (index - 1) / max(1, render_count))
 
     def segment_progress(local_percent: int, detail: str) -> None:
+        if not isinstance(detail, ProgressDetail):
+            camera_name = str(segment.get("filename") or Path(str(segment.get("source_path") or segment.get("clip_path") or "")).name)
+            detail = re.sub(r"^equirect-[^\s]+", camera_name, str(detail))
         percent = base_percent + int((70 / max(1, render_count)) * local_percent / 100)
         with progress_lock:
             message = f"Rendering segment {index}/{render_count}: {detail}"

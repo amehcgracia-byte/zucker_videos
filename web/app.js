@@ -3172,7 +3172,8 @@ function renderWizardStatus(status) {
       row.className = "progress-task";
       const label = document.createElement("span");
       const percent = Math.max(0, Math.min(100, Number(task.percent || 0)));
-      label.textContent = `${task.label}: ${task.percent == null ? "Percentage pending" : `${percent}%`} — ${task.detail || ""}`;
+      const detail = String(task.detail || "").replace(/\s*[—–]\s*\d+%\s*$/, "");
+      label.textContent = `${task.label}: ${task.percent == null ? "Percentage pending" : `${percent}%`} — ${detail}`;
       const bar = document.createElement("progress");
       bar.max = 100;
       bar.value = percent;
