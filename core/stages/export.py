@@ -26,6 +26,7 @@ from core.messages import t
 from core.media_validation import record_is_usable_camera_video, record_media_path
 from core.normalization import EVEN_SDR_FILTER, NORMALIZATION_VERSION, SDR_TONEMAP_FILTER, ensure_global_cache_dirs, global_cache_root, global_segment_path, source_cache_key
 from core.project import Project, atomic_write_json
+from core.spherical_motion import RECIPE_VERSION as NATIVE_SPHERICAL_RECIPE_VERSION, run_reprojected_command
 from core.spherical_metadata import SphericalMetadataError, inject_spherical_metadata
 from core.spherical_view import (
     MAX_SPHERICAL_FOV,
@@ -70,17 +71,17 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # against the filter's instance name ("v360@sphere"), NOT the bare "@id" suffix.
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
-EXPORT_SEGMENT_RECIPE_VERSION = 23
+EXPORT_SEGMENT_RECIPE_VERSION = 24
 # v17 adds byte-level and full-shot attestation to segment sidecars.  A file
 # with a copied/reused sidecar is no longer accepted if its bytes or authored
 # motion fields differ from the current render.
-SPHERICAL_MOTION_RECIPE_VERSION = 28
+SPHERICAL_MOTION_RECIPE_VERSION = 29
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
 # Runtime sendcmd reconfiguration of v360 can produce mixed frames on FFmpeg
-# builds used by the packaged app. Keep final export projection-safe until a
-# frame-segmented motion renderer is validated independently.
-SPHERICAL_EXPORT_MOTION_MODE = "static"
+# builds used by the packaged app. Native remapping projects each complete
+# frame before encoding; static v360 remains available for deliberate holds.
+SPHERICAL_EXPORT_MOTION_MODE = "native_remap"
 SPHERICAL_EXPORT_PROXY_VERSION = 1
 SPHERICAL_EXPORT_PROXY_WIDTH = 2560
 SPHERICAL_EXPORT_PROXY_HEIGHT = 1280
@@ -2125,7 +2126,17 @@ def _render_segment(
         safe_shot = dict(spherical_shot)
         safe_shot["runtime_motion_enabled"] = False
         render_segment["spherical_shot"] = safe_shot
-    source, using_spherical_proxy = _spherical_export_source_info(project, base_source, segment, progress_callback)
+    original_probe = base_source.get("probe") or {}
+    original_motion = bool(spherical_shot and SPHERICAL_EXPORT_MOTION_MODE == "native_remap"
+        and spherical_shot.get("runtime_motion_enabled", True)
+        and (spherical_shot.get("movement") or _shot_requires_runtime_motion(spherical_shot))
+        and original_probe.get("projection") == "equirect"
+        and not original_probe.get("hdr") and int(original_probe.get("bit_depth") or 8) <= 8)
+    if original_motion:
+        # Portraits retain the camera's pixels instead of magnifying the 2K cache.
+        source, using_spherical_proxy = base_source, False
+    else:
+        source, using_spherical_proxy = _spherical_export_source_info(project, base_source, segment, progress_callback)
     if using_spherical_proxy:
         render_segment["source_path"] = source["source_path"]
         render_segment["clip_path"] = source["source_path"]
@@ -2172,7 +2183,7 @@ def _render_segment(
             reel_letterbox_filter=reel_letterbox_filter,
             source_filter=_export_source_filter(
                 source.get("probe") or {},
-                _spherical_shot(render_segment),
+                dict(_spherical_shot(render_segment), runtime_motion_enabled=False),
                 duration=duration,
                 command_path=output_path.with_suffix(".sendcmd.txt"),
             ) if _spherical_shot(render_segment) else None,
@@ -2180,7 +2191,13 @@ def _render_segment(
     sendcmd_path = output_path.with_suffix(".sendcmd.txt")
     segment_probe = source.get("probe") or {}
     _warn_if_spherical_framing_was_dropped(render_segment, segment_probe, warnings)
-    source_filter = _export_source_filter(segment_probe, _spherical_shot(render_segment), duration=duration, command_path=sendcmd_path)
+    native_motion = bool(spherical_shot and segment_probe.get("projection") == "equirect"
+                         and spherical_shot.get("runtime_motion_enabled", True)
+                         and (spherical_shot.get("movement") or _shot_requires_runtime_motion(spherical_shot)))
+    static_shot = dict(spherical_shot or {})
+    static_shot["runtime_motion_enabled"] = False
+    source_filter = EVEN_SDR_FILTER if native_motion else _export_source_filter(
+        segment_probe, static_shot if spherical_shot else None, duration=duration, command_path=sendcmd_path)
     reel_overlay_items = _reel_overlay_items(render_segment, overlay_config or {}, platform, output_path.parent)
     filter_complex = _segment_filtergraph(
         platform,
@@ -2206,6 +2223,9 @@ def _render_segment(
         render_segment,
         duration,
     )
+    if native_motion:
+        command_base = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
+                        "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", "1920x1080", "-r", "30", "-i", "pipe:0"]
     if watermark:
         command_base.extend(["-loop", "1", "-i", str(watermark)])
     for item in reel_overlay_items:
@@ -2240,13 +2260,23 @@ def _render_segment(
             "-filter_threads", "1", "-filter_complex_threads", "1",
         ]
     command_base.extend(SDR_OUTPUT_ARGS)
+    def render(command: list[str]) -> None:
+        if native_motion:
+            sampler = (lambda seconds: _v360_motion_at(spherical_shot, duration, seconds)) if spherical_shot.get("type") in {"recorded_move", "planet"} or not spherical_shot.get("movement") else None
+            run_reprojected_command(command, str(source["source_path"]),
+                (int(segment_probe["width"]), int(segment_probe["height"])),
+                float(segment["clip_start_sec"]), frame_count, spherical_shot, progress_callback,
+                pose_sampler=sampler)
+        else:
+            _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
+
     hardware = _video_encode_args("h264_videotoolbox", video_bitrate)
     software = _video_encode_args("libx264", video_bitrate)
     try:
         command = command_base + hardware + [str(output_path)]
         if command_recorder is not None:
             command_recorder.append(command)
-        _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
+        render(command)
         return rendered_from
     except FFmpegError as exc:
         if output_path.exists():
@@ -2257,13 +2287,13 @@ def _render_segment(
             command = command_base + software + [str(output_path)]
             if command_recorder is not None:
                 command_recorder.append(command)
-            _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
+            render(command)
             return rendered_from
         except FFmpegError as fallback_exc:
             if output_path.exists():
                 output_path.unlink()
             proxy_path = source.get("proxy_path")
-            if not proxy_path or proxy_path == source["source_path"]:
+            if native_motion or not proxy_path or proxy_path == source["source_path"]:
                 raise FFmpegError(f"{fallback_exc}\nFallback after h264_videotoolbox failed with: {exc}") from fallback_exc
             if warnings is not None:
                 warnings.append(f"Original render failed for {Path(str(source['source_path'])).name}; using proxy fallback")
@@ -2289,7 +2319,7 @@ def _render_segment(
                 reel_letterbox_filter=reel_letterbox_filter,
                 source_filter=_export_source_filter(
                     source.get("probe") or {},
-                    _spherical_shot(segment),
+                    dict(_spherical_shot(segment), runtime_motion_enabled=False),
                     duration=duration,
                     command_path=output_path.with_suffix(".sendcmd.txt"),
                 ) if _spherical_shot(segment) else None,
@@ -3492,8 +3522,10 @@ def _shot_peak_fov(shot: dict[str, Any] | None) -> float:
 
 
 def _use_stereographic(shot: dict[str, Any] | None) -> bool:
-    """Use stereographic only for the explicit tiny-planet shot."""
-    return str((shot or {}).get("type") or "") == "planet"
+    """Match the canonical projection for wide presets and Tiny Planet."""
+    shot_type = str((shot or {}).get("type") or "")
+    preset = normalize_projection_preset((shot or {}).get("projection_preset"), shot_type)
+    return shot_type == "planet" or preset in {"tiny_planet", "megaview", "ultrawide", "crystal_ball"}
 
 
 def _effective_flat_fov(shot: dict[str, Any] | None) -> float:
@@ -3940,7 +3972,7 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "sweep_speed_min": SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC,
         "sweep_speed_max": SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC,
         "transition_policy": "intershot_sweep_explicit_opt_in_shortest_yaw_delta_v4",
-        "axis_policy": "yaw_only_in_shot_hold_no_automatic_cross_landmark_sweep_v3",
+        "axis_policy": "atomic_frame_remap_pose_and_zoom_v1",
         "hold_step_policy": "deg_per_sec_times_elapsed_seconds_v1",
         "hold_motion_rate_deg_per_sec": (-0.8, 0.0, 0.6, 1.0, -0.5, 0.8),
         "hold_motion_default": "subtle",
@@ -3956,7 +3988,9 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "normal_fov_max": SPHERICAL_NORMAL_FOV_MAX,
         "max_hold_yaw_deg": SPHERICAL_MAX_HOLD_YAW_DEG,
         "planet_spin_deg_per_sec": PLANET_SPIN_DEG_PER_SEC,
-        "shared_view_parameters_version": 1,
+        "shared_view_parameters_version": 2,
+        "native_source_policy": "original_sdr_equirect_pixel_detail_v1",
+        "native_motion_library_version": NATIVE_SPHERICAL_RECIPE_VERSION,
         "cache_view_identity_version": 1,
         "operator_avoidance_360": "disabled_for_preview_render_coordinate_parity",
         "automatic_yaw_drift_fraction": SPHERICAL_PRIMARY_DRIFT_FRACTION,

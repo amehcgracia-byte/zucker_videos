@@ -842,7 +842,7 @@ def _youtube_multicam_plan(
             if _source_role(candidate) == "360":
                 path = str(candidate.get("source_path") or candidate.get("path") or "")
                 landmarks = migrate_spherical_landmarks(spherical_landmark_profiles.get(path) or spherical_landmarks)
-                poses = _available_spherical_shots(landmarks, spherical_sweep, sweep_speed)
+                poses = _available_spherical_shots(landmarks, spherical_sweep, sweep_speed, balanced_performers=not use_recorded_360)
                 if not poses or any(not _editorial_subject({}, pose) or _editorial_subject({}, pose) not in recent_subjects[-4:] for pose in poses):
                     editorial_available.append(candidate)
             elif not subject or subject not in recent_subjects[-4:]:
@@ -947,7 +947,7 @@ def _youtube_multicam_plan(
                 )
                 source_landmarks = migrate_spherical_landmarks(profile_raw or spherical_landmarks)
                 segment["spherical_source_path"] = source_path
-                available_shots = _available_spherical_shots(source_landmarks, spherical_sweep, sweep_speed)
+                available_shots = _available_spherical_shots(source_landmarks, spherical_sweep, sweep_speed, balanced_performers=not use_recorded_360)
                 LOGGER.info(
                     "360 framing source=%s authored=%s available=%s",
                     Path(source_path).name,
@@ -966,6 +966,10 @@ def _youtube_multicam_plan(
                                 if subject_seconds.get(_editorial_subject({}, pose), 0.0) <= least_seconds + .001]
                     if balanced:
                         available_shots = balanced
+                if not any(item.get("spherical_shot") for item in segments):
+                    opening_singer = [pose for pose in available_shots if _editorial_subject({}, pose) == "singer"]
+                    if opening_singer:
+                        available_shots = opening_singer
                 balanced_targets = {str(pose.get("type")): 1.0 for pose in available_shots}
                 include_planet = bool(edit_settings.get("include_spherical_planet", False)) and sum(current_usage.values()) >= 5
                 shot = _next_weighted_spherical_shot(
@@ -981,7 +985,7 @@ def _youtube_multicam_plan(
                 # Always attach a shot with motion, even with no configured landmarks
                 # (shot=None) — a 360 segment must never fall back to a frozen,
                 # motionless equirect passthrough.
-                segment["spherical_shot"] = _spherical_motion_profile(shot or {}, segment_index, enabled=spherical_motion, hold_motion=hold_motion)
+                segment["spherical_shot"] = _spherical_motion_profile(shot or {}, sum(1 for item in segments if item.get("spherical_shot")), enabled=spherical_motion, hold_motion=hold_motion)
         elif fixed_rear_motion and _flat_motion_camera(source):
             # Every fixed-camera cut receives a crop motion. The source role,
             # not the filename, is authoritative: files such as ZZ24.7 .mov
@@ -1210,7 +1214,7 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, Any]
     return migrated
 
 
-def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabled: bool = False, sweep_speed: float = SPHERICAL_SWEEP_SPEED_DEG_PER_SEC) -> list[dict[str, Any]]:
+def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabled: bool = False, sweep_speed: float = SPHERICAL_SWEEP_SPEED_DEG_PER_SEC, *, balanced_performers: bool = False) -> list[dict[str, Any]]:
     shots: list[dict[str, Any]] = []
     prepared: list[tuple[str, str, float, dict[str, Any], float]] = []
     for shot_type in SPHERICAL_SHOT_ORDER:
@@ -1244,6 +1248,8 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabl
         yaw = _landmark_yaw(data.get("yaw"), None)
         if yaw is None:
             continue
+        if balanced_performers and shot_type not in {"full_stage", "planet"}:
+            weight = 1.0
         if weight <= 0.0 and not recover_legacy_profile:
             continue
         if recover_legacy_profile and weight <= 0.0:
@@ -1277,7 +1283,7 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabl
 
 
 def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = False, hold_motion: str | None = None) -> dict[str, Any]:
-    """Attach subtle, randomized-but-reproducible movement to a 360 landmark shot.
+    """Attach bounded, reproducible movement to an authored 360 landmark shot.
 
     Automatic motion is OPT-IN (``enabled``, default False). Unpredictable
     movement is worse than none: with the toggle off a landmark shot renders as
@@ -1332,6 +1338,9 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
     # deliberate static hold from an enabled automatic or recorded movement.
     shot["runtime_motion_enabled"] = bool(enabled)
     shot["hold_motion"] = mode
+    if enabled and mode == "subtle":
+        from core.spherical_motion import MOVEMENTS
+        shot["movement"] = MOVEMENTS[int(index) % len(MOVEMENTS)]
     rates = SPHERICAL_HOLD_MOTION_RATES_DEG_PER_SEC
     shot["hold_motion_rate_deg_per_sec"] = rates[int(index) % len(rates)] if mode == "subtle" and enabled else 0.0
     shot["drift_yaw_fraction"] = 0.0
@@ -2029,7 +2038,17 @@ def _camera_target_weights(sources: list[dict[str, Any]], role_weights: dict[str
         same_role = sum(1 for item in cameras.values() if item == role)
         targets[camera_id] = float(role_weights.get(role, 0.0)) / max(1, same_role)
     total = sum(targets.values()) or 1.0
-    return {camera_id: value / total for camera_id, value in targets.items()}
+    normalized = {camera_id: value / total for camera_id, value in targets.items()}
+    # Dedicated percussion inputs share 8% when other cameras cover the song.
+    # The cross-camera subject cooldown still applies to 360 drummer poses.
+    drums = {_camera_id(source) for source in sources
+             if _source_role(source) != "360" and _editorial_subject(source) == "drummer"}
+    drum_total = sum(normalized.get(camera, 0) for camera in drums)
+    other_total = sum(value for camera, value in normalized.items() if camera not in drums)
+    if drum_total > .08 and other_total > 0:
+        normalized = {camera: value * (.08 / drum_total if camera in drums else .92 / other_total)
+                      for camera, value in normalized.items()}
+    return normalized
 
 
 def _editorial_subject(source: dict[str, Any], shot: dict[str, Any] | None = None) -> str:

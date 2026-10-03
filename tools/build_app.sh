@@ -178,6 +178,7 @@ if [[ -n "$DEVICE" && -d "$VOLUME" ]]; then
   if command -v SetFile >/dev/null 2>&1; then
     SetFile -a C "$VOLUME" || true
   fi
+  if [[ "${ZUCKER_SKIP_FINDER_LAYOUT:-0}" != "1" ]]; then
   osascript <<OSA || true
 tell application "Finder"
   tell disk "$APP_DISPLAY_NAME"
@@ -200,6 +201,7 @@ tell application "Finder"
   end tell
 end tell
 OSA
+  fi
   cp "$ROOT/assets/icon.icns" "$VOLUME/.VolumeIcon.icns"
   SetFile -a C "$VOLUME" || true
   sync

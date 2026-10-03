@@ -1149,31 +1149,36 @@ function queueSphericalSetupPreview(viewer, immediate = false) {
 }
 
 function updateSphericalSetupCamera(viewer) {
-  if (!viewer?.camera || !sphericalSetupThree) return;
-  const THREE = sphericalSetupThree;
+  const uniforms = viewer?.sphere?.material?.uniforms;
+  if (!uniforms || !sphericalSetupThree) return;
+  const radians = Math.PI / 180;
   const aspect = Math.max(0.1, viewer.camera.aspect || 16 / 9);
-  viewer.camera.fov = verticalFovFromHorizontal(viewer.fov, aspect);
-  viewer.camera.updateProjectionMatrix();
-  const yaw = THREE.MathUtils.degToRad(signedYawDelta(viewer.yaw, 0));
-  const pitch = THREE.MathUtils.degToRad(clamp(viewer.pitch, -25, 25));
-  const roll = THREE.MathUtils.degToRad(clamp(viewer.roll, -45, 45));
-  const target = new THREE.Vector3(
-    Math.sin(yaw) * Math.cos(pitch),
-    Math.sin(pitch),
-    -Math.cos(yaw) * Math.cos(pitch)
-  );
-  viewer.camera.up.set(Math.sin(roll), Math.cos(roll), 0);
-  viewer.camera.lookAt(target);
+  const planet = viewer.shot === "planet" || viewer.projection_preset === "tiny_planet";
+  const curved = planet || ["megaview", "ultrawide", "crystal_ball"].includes(viewer.projection_preset);
+  const horizontal = viewer.fov * radians;
+  const vertical = planet ? clamp(viewer.fov / aspect, 160, 260) * radians
+    : (curved ? 4 * Math.atan(Math.tan(horizontal / 4) / aspect)
+      : 2 * Math.atan(Math.tan(horizontal / 2) / aspect));
+  uniforms.angles.value.set(viewer.yaw * radians, viewer.pitch * radians, viewer.roll * radians);
+  uniforms.field.value.set(horizontal, vertical);
+  uniforms.curved.value = curved ? 1 : 0;
+}
+
+function sphericalSetupFovBounds(viewer) {
+  if (viewer.shot === "planet" || viewer.projection_preset === "tiny_planet") return [220, 300];
+  if (viewer.projection_preset === "dewarp") return [70, 100];
+  if (["megaview", "ultrawide", "crystal_ball"].includes(viewer.projection_preset)) return [30, 170];
+  return [30, 110];
 }
 
 function updateSphericalSetupViewer(viewer, values = {}) {
   viewer.yaw = normalizeYaw(values.yaw ?? viewer.yaw ?? 0) ?? 0;
-  viewer.pitch = clamp(Number(values.pitch ?? viewer.pitch ?? 0), -45, 45);
+  const pitchLimit = viewer.shot === "planet" ? 90 : 45;
+  viewer.pitch = clamp(Number(values.pitch ?? viewer.pitch ?? 0), -pitchLimit, pitchLimit);
   viewer.roll = clamp(Number(values.roll ?? viewer.roll ?? 0), -45, 45);
   viewer.projection_preset = String(values.projection_preset ?? viewer.projection_preset ?? "linear");
   viewer.projection_control = clamp(Number(values.projection_control ?? viewer.projection_control ?? 0), 0, 1);
-  const fovMin = viewer.projection_preset === "dewarp" ? 70 : MIN_SHOT_FOV;
-  const fovMax = viewer.projection_preset === "dewarp" ? 100 : MAX_SHOT_FOV;
+  const [fovMin, fovMax] = sphericalSetupFovBounds(viewer);
   viewer.fov = clamp(Number(values.fov ?? viewer.fov ?? 95), fovMin, fovMax);
   const group = document.querySelector('fieldset[data-spherical-landmark="' + viewer.shot + '"]');
   if (group) {
@@ -1218,7 +1223,7 @@ function wireSphericalSetupViewer(viewer) {
     viewer.dragX = event.clientX;
     viewer.dragY = event.clientY;
     viewer.yaw = normalizeYaw(viewer.yaw - dx * YAW_DEG_PER_PX * dragSensitivityScale(viewer.fov)) ?? 0;
-    viewer.pitch = clamp(viewer.pitch + dy * PITCH_DEG_PER_PX * dragSensitivityScale(viewer.fov), -25, 25);
+    viewer.pitch = clamp(viewer.pitch + dy * PITCH_DEG_PER_PX * dragSensitivityScale(viewer.fov), -45, 45);
     updateSphericalSetupViewer(viewer, viewer);
   }, listenerOptions);
   const stop = (event) => {
@@ -1231,8 +1236,7 @@ function wireSphericalSetupViewer(viewer) {
   viewer.canvas.addEventListener("pointercancel", stop, listenerOptions);
   viewer.canvas.addEventListener("wheel", (event) => {
     event.preventDefault();
-    const fovMin = viewer.projection_preset === "dewarp" ? 70 : MIN_SHOT_FOV;
-    const fovMax = viewer.projection_preset === "dewarp" ? 100 : MAX_SHOT_FOV;
+    const [fovMin, fovMax] = sphericalSetupFovBounds(viewer);
     viewer.fov = clamp(viewer.fov + (event.deltaY > 0 ? 3 : -3), fovMin, fovMax);
     updateSphericalSetupViewer(viewer, viewer);
   }, { passive: false, signal: viewer.abortController.signal });
@@ -1274,13 +1278,42 @@ async function createSphericalSetupViewer(shot, canvas) {
     viewer.renderer = new THREE.WebGLRenderer({ canvas, context: gl, antialias: true });
     viewer.renderer.setClearColor(0x101817, 1);
     viewer.scene = new THREE.Scene();
-    viewer.camera = new THREE.PerspectiveCamera(50, 16 / 9, 0.1, 1100);
-    const geometry = new THREE.SphereGeometry(500, 96, 64);
-    geometry.scale(-1, 1, 1);
+    viewer.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 2);
+    viewer.camera.position.z = 1;
+    viewer.camera.aspect = 16 / 9;
     viewer.texture = new THREE.Texture(image);
     viewer.texture.colorSpace = THREE.SRGBColorSpace;
+    viewer.texture.wrapS = THREE.RepeatWrapping;
     viewer.texture.needsUpdate = true;
-    viewer.sphere = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ map: viewer.texture }));
+    // Sample the equirectangular frame with the same ray convention as export.
+    const material = new THREE.ShaderMaterial({
+      uniforms: { sourceFrame: { value: viewer.texture }, angles: { value: new THREE.Vector3() },
+        field: { value: new THREE.Vector2() }, curved: { value: 0 } },
+      vertexShader: `varying vec2 imageUv;
+        void main() { imageUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+      fragmentShader: `uniform sampler2D sourceFrame;
+        uniform vec3 angles; uniform vec2 field; uniform float curved; varying vec2 imageUv;
+        void main() {
+          vec2 screen = (imageUv - 0.5) * 2.0; screen.y = -screen.y;
+          vec3 ray;
+          if (curved > 0.5) {
+            vec2 plane = screen * tan(field / 4.0);
+            float square = dot(plane, plane);
+            ray = vec3(2.0 * plane, 1.0 - square) / (1.0 + square);
+          } else { ray = normalize(vec3(screen * tan(field / 2.0), 1.0)); }
+          float cy = cos(angles.x), sy = sin(angles.x);
+          float cp = cos(angles.y), sp = sin(angles.y);
+          float cr = cos(angles.z), sr = sin(angles.z);
+          ray.xy = vec2(cr * ray.x - sr * ray.y, sr * ray.x + cr * ray.y);
+          ray.yz = vec2(cp * ray.y - sp * ray.z, sp * ray.y + cp * ray.z);
+          ray.xz = vec2(cy * ray.x + sy * ray.z, -sy * ray.x + cy * ray.z);
+          vec2 sourceUv = vec2(atan(ray.x, ray.z) / 6.28318530718 + 0.5,
+            0.5 - asin(clamp(ray.y, -1.0, 1.0)) / 3.14159265359);
+          gl_FragColor = texture2D(sourceFrame, sourceUv);
+          #include <colorspace_fragment>
+        }`,
+    });
+    viewer.sphere = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
     viewer.scene.add(viewer.sphere);
     startSphericalSetupAnimation();
   } catch (error) {
