@@ -1235,7 +1235,7 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabl
             continue
         key, label, default_fov = SPHERICAL_LANDMARKS[shot_type]
         data = landmarks.get(shot_type)
-        if data is None and shot_type == "full_stage":
+        if data is None and shot_type == "full_stage" and not balanced_performers:
             data = {"yaw": 0.0, "pitch": 0.0, "fov": default_fov, "roll": 0.0, "projection_preset": "linear", "projection_control": 0.0, "weight": 1.0}
         if not data or data.get("enabled") is False:
             continue
