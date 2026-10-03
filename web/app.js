@@ -1415,6 +1415,7 @@ async function resumeInputsFromProject() {
     savedAudioTrim[inputs.master.path] = project.settings.wizard.audio_trim;
     trimDefaultsAppliedFor = "";
   }
+  if (inputs.master?.path) setupTrimControls(inputs.master.path);
   resetSphericalSetupToGlobal(project);
   if (project.settings?.edit?.camera_role_weights) {
     cameraRoleWeights = normalizeCameraRoleWeights(project.settings.edit.camera_role_weights);
