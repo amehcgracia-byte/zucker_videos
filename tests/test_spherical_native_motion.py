@@ -49,3 +49,51 @@ def test_automatic_plan_restores_zero_weight_performers_and_opens_on_singer():
     subjects = [segment['editorial_subject'] for segment in segments]
     for index,subject in enumerate(subjects): assert subject not in subjects[max(0,index-4):index]
     assert len({segment['spherical_shot'].get('movement') for segment in segments}) == 8
+
+
+def test_review_uses_original_source_profile_instead_of_proxy_fallback(tmp_path):
+    from core.project import Project
+    from core.shot_review import _review_segment, _review_signature
+    profile = dict(singer=dict(yaw=165,pitch=-10,fov=60))
+    project = Project(tmp_path, dict(settings=dict(spherical_landmarks_by_source={"/original/sphere.mp4": profile},
+                                                 spherical_landmarks=dict(singer=dict(yaw=113,pitch=0,fov=82)))))
+    segment = dict(source_path="/original/sphere.mp4", spherical_source_path="/cache/sphere.mp4",
+                   spherical_shot=dict(type="singer", yaw=113,pitch=0,fov=82))
+    first = _review_segment(project, segment)
+    assert first["spherical_shot"]["yaw"] == 165
+    profile["singer"]["yaw"] = 190
+    second = _review_segment(project, segment)
+    assert second["spherical_shot"]["yaw"] == 190
+    assert _review_signature([first]) != _review_signature([second])
+
+
+def test_explicitly_disabled_and_audience_views_stay_out_of_automatic_rotation():
+    landmarks = dict(singer=dict(yaw=165,weight=1),drummer=dict(yaw=125,weight=5),
+                     pianist=dict(yaw=245,weight=0,enabled=False),right=dict(yaw=220,subject="audience",weight=1))
+    shots = _available_spherical_shots(landmarks, balanced_performers=True)
+    assert not {"pianist","right"} & {shot["type"] for shot in shots}
+    from server.api import _sanitize_spherical_landmarks
+    saved = _sanitize_spherical_landmarks(landmarks)
+    assert saved["pianist"]["enabled"] is False
+    assert saved["right"]["subject"] == "audience"
+
+
+def test_save_angles_preserves_authored_subject_and_explicit_exclusion(tmp_path, monkeypatch):
+    from core.project import create_project
+    from server.api import create_app
+    project = create_project('Angles', str(tmp_path / 'Angles.zuckervid'))
+    app = create_app(str(project.folder), dev=True)
+    monkeypatch.setattr('server.api.load_global_config', lambda: {})
+    monkeypatch.setattr('server.api.save_global_config', lambda config: None)
+    client = app.test_client()
+    first = client.post('/api/v1/settings/spherical-landmarks', json=dict(
+        spherical_source_path='/original/sphere.mp4',
+        spherical_landmarks=dict(left=dict(yaw=185,subject='left',enabled=False))))
+    assert first.status_code == 200
+    saved = first.get_json()['spherical_landmarks']['left']
+    assert saved['subject'] == 'left' and saved['enabled'] is False
+    second = client.post('/api/v1/settings/spherical-landmarks', json=dict(
+        spherical_source_path='/original/sphere.mp4',spherical_landmarks=dict(left=dict(yaw=190))))
+    assert second.status_code == 200
+    saved = second.get_json()['spherical_landmarks']['left']
+    assert saved['subject'] == 'left' and saved['enabled'] is False

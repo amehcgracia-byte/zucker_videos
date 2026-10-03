@@ -1210,6 +1210,7 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, Any]
             "projection_control": effective_projection_control(source.get("projection_control")),
             "weight": max(0.0, _landmark_weight(source, "weight", 1.0)),
             "subject": str(source.get("subject") or shot_type),
+            "enabled": source.get("enabled", True) is not False,
         }
     return migrated
 
@@ -1230,7 +1231,9 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabl
         data = landmarks.get(shot_type)
         if data is None and shot_type == "full_stage":
             data = {"yaw": 0.0, "pitch": 0.0, "fov": default_fov, "roll": 0.0, "projection_preset": "linear", "projection_control": 0.0, "weight": 1.0}
-        if not data:
+        if not data or data.get("enabled") is False:
+            continue
+        if balanced_performers and str(data.get("subject") or shot_type) == "audience":
             continue
         yaw = _landmark_yaw(data.get("yaw"), None)
         if yaw is None:

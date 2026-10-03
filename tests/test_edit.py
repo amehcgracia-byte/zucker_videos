@@ -71,8 +71,8 @@ def test_generated_landmark_plan_preserves_configured_zoom_and_planet_range():
         migrate_spherical_landmarks(
             {
                 "singer": {"yaw": 10, "fov": 74},
-                "left": {"yaw": 20, "fov": 111.4, "weight": 1.0},
-                "full_stage": {"yaw": 30, "fov": 120},
+                "left": {"yaw": 20, "fov": 111.4, "weight": 1.0, "projection_preset": "ultrawide"},
+                "full_stage": {"yaw": 30, "fov": 120, "projection_preset": "megaview"},
                 "planet": {"yaw": 40, "fov": 280},
             }
         ),
@@ -756,7 +756,7 @@ def test_spherical_weights_exclude_zero_and_bias_frequency():
     assert types.count("singer") > types.count("left")
 
 
-def test_real_like_right_side_zero_weight_never_appears_in_youtube_plan():
+def test_explicitly_disabled_right_side_never_appears_in_youtube_plan():
     coverage = {
         "platform": "youtube",
         "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 24.0},
@@ -767,7 +767,7 @@ def test_real_like_right_side_zero_weight_never_appears_in_youtube_plan():
         "full_stage": {"yaw": 11.5, "pitch": -34.3, "fov": 110.0, "weight": 50.0},
         "singer": {"yaw": 336.8, "pitch": -28.8, "fov": 74.8, "weight": 10.0},
         "left": {"yaw": 47.6, "pitch": -15.9, "fov": 74.8, "weight": 30.0},
-        "right": {"yaw": 322.1, "pitch": -15.0, "fov": 74.8, "weight": 0.0},
+        "right": {"yaw": 322.1, "pitch": -15.0, "fov": 74.8, "weight": 0.0, "enabled": False},
     }
 
     plan = _youtube_multicam_plan(coverage, beats, {"spherical_landmarks": landmarks})

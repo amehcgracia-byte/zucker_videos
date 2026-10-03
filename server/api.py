@@ -2455,7 +2455,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             for key in list(incoming):
                 raw_value = raw_landmarks.get(key)
                 if isinstance(raw_value, dict):
-                    incoming[key] = {field: incoming[key][field] for field in ("yaw", "pitch", "fov", "roll", "projection_preset", "projection_control", "weight") if field in raw_value}
+                    incoming[key] = {field: incoming[key][field] for field in ("yaw", "pitch", "fov", "roll", "projection_preset", "projection_control", "weight", "subject", "enabled") if field in raw_value}
         source_path = str(body.get("spherical_source_path") or "").strip()
         source_key = str(Path(source_path).expanduser().resolve()) if source_path else ""
         config = load_global_config()
@@ -3195,6 +3195,7 @@ def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, Any]]:
             "projection_control": projection_control,
             "weight": weight,
             "subject": str(source.get("subject") or key),
+            "enabled": source.get("enabled", True) is not False,
         }
     return landmarks
 

@@ -984,6 +984,7 @@ function normalizeSphericalSetup(raw = {}) {
       projection_control: Number(source.projection_control ?? 0),
       weight: Number(source.weight ?? 1),
       subject: String(source.subject ?? key),
+      enabled: source.enabled !== false,
     };
   }
   return result;
@@ -994,7 +995,8 @@ function applySphericalSetup(values = {}) {
   document.querySelectorAll("fieldset[data-spherical-landmark]").forEach((group) => {
     const data = normalized[group.dataset.sphericalLandmark] || {};
     group.querySelectorAll("[data-field]").forEach((input) => {
-      if (data[input.dataset.field] != null) input.value = String(data[input.dataset.field]);
+      if (input.type === "checkbox") input.checked = data.enabled !== false;
+      else if (data[input.dataset.field] != null) input.value = String(data[input.dataset.field]);
     });
     const viewer = sphericalSetupViewers.get(group.dataset.sphericalLandmark);
     if (viewer && data.yaw != null) updateSphericalSetupViewer(viewer, data);
@@ -1007,6 +1009,8 @@ function sphericalSetupValuesFor(group) {
     const value = Number(group.querySelector(`[data-field="${field}"]`)?.value);
     if (Number.isFinite(value)) values[field] = value;
   }
+  const enabled = group.querySelector('[data-field="enabled"]');
+  if (enabled) values.enabled = enabled.checked;
   const subject = group.querySelector('[data-field="subject"]')?.value;
   if (subject) values.subject = subject;
   const projectionPreset = group.querySelector('[data-field="projection_preset"]')?.value;
@@ -1367,6 +1371,8 @@ function sphericalLandmarksFromForm() {
       const value = Number(group.querySelector(`[data-field="${field}"]`)?.value);
       if (Number.isFinite(value)) valuesForShot[field] = value;
     }
+    const enabled = group.querySelector('[data-field="enabled"]');
+    if (enabled) valuesForShot.enabled = enabled.checked;
     const subject = group.querySelector('[data-field="subject"]')?.value;
     if (subject) valuesForShot.subject = subject;
     const projectionPreset = group.querySelector('[data-field="projection_preset"]')?.value;
