@@ -1131,6 +1131,7 @@ class WizardRunner:
         job.stage = stage.name
         job.stage_progress = 0
         job.tasks = {}
+        stage_started = time.perf_counter()
         _write_stage_log(project, stage.name, f"START {stage.name}: {message}")
         stage_state = project.data["stages"][stage.name]
         stage_state.update({"status": "running", "error": None})
@@ -1213,14 +1214,16 @@ class WizardRunner:
         try:
             outputs = stage.run(project, progress)
         except BaseException as exc:
+            stage_state["elapsed_seconds"] = round(time.perf_counter() - stage_started, 3)
             stage_state.update({"status": "failed", "error": f"{type(exc).__name__}: {exc}"})
             project.save()
             raise
         stage_state.update({"status": "done", "outputs": outputs, "error": None, "fingerprint": stage.inputs_fingerprint(project)})
+        stage_state["elapsed_seconds"] = round(time.perf_counter() - stage_started, 3)
         project.save()
         job.progress = max(job.progress, end)
         job.stage_progress = 100
-        _write_stage_log(project, stage.name, f"DONE {stage.name}: {outputs}")
+        _write_stage_log(project, stage.name, f"DONE {stage.name} in {stage_state['elapsed_seconds']} s: {outputs}")
         return outputs
 
 
@@ -1308,6 +1311,8 @@ def wizard_report(status: dict[str, Any]) -> str:
             lines.append("stage statuses:")
             for name, stage in (data.get("stages") or {}).items():
                 lines.append(f"- {name}: {stage.get('status')} {stage.get('error') or ''}".rstrip())
+                if stage.get("elapsed_seconds") is not None:
+                    lines.append(f"  measured duration: {stage['elapsed_seconds']} s")
         log_dir = Path(project_path) / "cache" / "logs"
         lines.append("last log lines:")
         lines.extend(_combined_log_tail(log_dir, 120))

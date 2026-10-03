@@ -44,3 +44,26 @@ def test_segment_phase_leaves_progress_for_join_audio_and_validation(tmp_path):
     assert [snapshot['progress'] for snapshot in snapshots] == [83.5, 83.5, 94, 97]
     assert snapshots[2]['stage_progress'] == 80
     assert job.progress == 100
+
+
+def test_stage_records_measured_duration_on_completion_and_failure(tmp_path):
+    import pytest
+    from core.project import create_project
+    from server.wizard import WizardRunner, WizardJob
+    project = create_project('Timing', str(tmp_path / 'timing.zuckervid'))
+    class TimedStage:
+        name = 'cut'
+        def inputs_fingerprint(self, project):
+            return 'timing'
+        def run(self, project, callback):
+            return {}
+    runner = WizardRunner()
+    runner._run_stage(WizardJob(id='timing'), project, TimedStage(), 0, 100, 'Cutting')
+    assert project.data['stages']['cut']['elapsed_seconds'] >= 0
+    class FailedStage(TimedStage):
+        def run(self, project, callback):
+            raise RuntimeError('failed')
+    with pytest.raises(RuntimeError):
+        runner._run_stage(WizardJob(id='failure'), project, FailedStage(), 0, 100, 'Cutting')
+    assert project.data['stages']['cut']['status'] == 'failed'
+    assert project.data['stages']['cut']['elapsed_seconds'] >= 0

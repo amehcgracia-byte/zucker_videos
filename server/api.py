@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, Response, jsonify, request, send_file, send_from_directory
+from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
@@ -1160,8 +1160,16 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     if dev:
         _enable_cors(app)
 
+    @app.before_request
+    def start_request_timing() -> None:
+        g.request_started = time.perf_counter()
+
     @app.after_request
     def add_no_cache_headers(response: Response) -> Response:
+        elapsed_ms = (time.perf_counter() - g.request_started) * 1000
+        response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.1f}"
+        if elapsed_ms >= 2000 and request.path.startswith("/api/"):
+            LOGGER.warning("Slow request %s %s: %.1f ms (HTTP %s)", request.method, request.path, elapsed_ms, response.status_code)
         if request.path == "/" or request.path.endswith((".html", ".css", ".js", ".png")):
             response.headers["Cache-Control"] = "no-store, max-age=0"
         return response

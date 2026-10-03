@@ -213,7 +213,7 @@ function todayName() {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(`/api/v1${path}`, {
+  const response = await window.UiFeedback.request(`/api/v1${path}`, {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
@@ -223,7 +223,7 @@ async function api(path, options = {}) {
 }
 
 async function apiForm(path, formData) {
-  const response = await fetch(`/api/v1${path}`, { method: "POST", body: formData });
+  const response = await window.UiFeedback.request(`/api/v1${path}`, { method: "POST", body: formData });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error?.message || S.error || "Error");
   return data;
@@ -252,13 +252,7 @@ async function loadAppConfig() {
 }
 
 function showToast(message, isError = false) {
-  const toast = document.querySelector("#toast");
-  toast.textContent = message;
-  toast.classList.toggle("error", isError);
-  toast.hidden = false;
-  setTimeout(() => {
-    toast.hidden = true;
-  }, 4500);
+  window.UiFeedback.message(message, isError);
 }
 
 function setStep(number) {
@@ -1054,7 +1048,7 @@ function sphericalSetupFrameFor(source) {
   const key = String(source || "");
   if (!key) return Promise.reject(new Error("360 source is missing"));
   if (sphericalSetupFrameCache.has(key)) return sphericalSetupFrameCache.get(key);
-  const promise = fetch("/api/v1/wizard/spherical-source-frame?" + new URLSearchParams({ source: key }))
+  const promise = window.UiFeedback.request("/api/v1/wizard/spherical-source-frame?" + new URLSearchParams({ source: key }))
     .then((response) => {
       if (!response.ok) throw new Error("Could not load the equirectangular 360 frame");
       return response.blob();
@@ -1125,7 +1119,7 @@ function queueSphericalSetupPreview(viewer, immediate = false) {
       t: String(Date.now()),
     });
     try {
-      const response = await fetch("/api/v1/wizard/spherical-preview?" + query.toString());
+      const response = await window.UiFeedback.request("/api/v1/wizard/spherical-preview?" + query.toString());
       if (!response.ok) throw new Error("Could not render the 360 preview");
       const blob = await response.blob();
       if (requestId !== viewer.previewRequest) return;
@@ -1935,7 +1929,7 @@ async function openProject(path) {
 
 async function newProject() {
   if (latestStatus?.status === "running" || latestStatus?.status === "cancelling") {
-    if (!confirm("A job is still running for the current project. Cancel it and start a new project?")) return;
+    if (!await window.UiFeedback.confirm("A job is still running for the current project. Cancel it and start a new project?")) return;
     try {
       if (latestStatus.status === "running") await api("/wizard/cancel", { method: "POST" });
       if (!await waitForWizardStop()) {
@@ -1986,8 +1980,9 @@ async function newProject() {
 }
 
 async function deleteProject(path, name, hasExport) {
-  if (!confirm(`Delete "${name || "this project"}"? This removes the project folder. Global cache stays untouched.`)) return;
-  const keepExports = hasExport && confirm("This project has exports. Move them to ~/ZuckerVideos/Exports before deleting?");
+  if (!await window.UiFeedback.confirm(`Delete "${name || "this project"}"? This removes the project folder. Global cache stays untouched.`)) return;
+  const keepExports = hasExport ? await window.UiFeedback.confirm("This project has exports. Move them to ~/ZuckerVideos/Exports before deleting?", { alternateLabel: "Delete exports too" }) : false;
+  if (keepExports === null) return;
   await api("/wizard/projects/delete", { method: "POST", body: JSON.stringify({ path, keep_exports: Boolean(keepExports) }) });
   showToast(S.projectDeleted || "Project deleted");
   await loadProjects();
@@ -2110,7 +2105,7 @@ async function loadFlyerLibrary() {
 }
 
 async function deleteFlyerFromLibrary(name) {
-  if (!name || !confirm(`Delete ${name} from the flyer library?`)) return;
+  if (!name || !await window.UiFeedback.confirm(`Delete ${name} from the flyer library?`)) return;
   const result = await api(`/wizard/flyers/${encodeURIComponent(name)}`, { method: "DELETE" });
   if (result.retained) showToast("Flyer removed from the library; it is still used by a project.");
   else showToast("Flyer deleted from the library.");
@@ -2857,7 +2852,7 @@ async function waitForWizardStop(timeoutMs = 15000) {
 }
 
 async function cancelWizard() {
-  if (!confirm("Stop this export? Progress so far will be lost.")) return;
+  if (!await window.UiFeedback.confirm("Stop this export? Progress so far will be lost.")) return;
   const button = document.querySelector("#cancelWizard");
   if (button) {
     button.disabled = true;
@@ -3503,7 +3498,7 @@ async function openLogs() {
 }
 
 async function copyReport() {
-  const response = await fetch("/api/v1/wizard/report");
+  const response = await window.UiFeedback.request("/api/v1/wizard/report");
   const text = await response.text();
   await navigator.clipboard.writeText(text);
   showToast(S.reportCopied);
@@ -3511,7 +3506,7 @@ async function copyReport() {
 
 async function refreshProgressReport() {
   lastProgressReportAt = Date.now();
-  const response = await fetch("/api/v1/wizard/report");
+  const response = await window.UiFeedback.request("/api/v1/wizard/report");
   const text = await response.text();
   const report = document.querySelector("#progressReport");
   if (!report) return;
@@ -3547,7 +3542,7 @@ document.addEventListener("drop", (event) => {
 
 document.addEventListener("click", (event) => {
   const rawTarget = event.target;
-  const target = rawTarget instanceof HTMLElement ? rawTarget.closest("button, [data-remove-kind], [data-open-project], [data-delete-project], [data-rescue], [data-rescan-folder], [data-remove-folder]") || rawTarget : rawTarget;
+  const target = rawTarget instanceof Element ? rawTarget.closest("button, [data-remove-kind], [data-open-project], [data-delete-project], [data-rescue], [data-rescan-folder], [data-remove-folder]") || rawTarget : rawTarget;
   if (!(target instanceof HTMLElement)) return;
   const singlePlatform = target.closest("[data-single-platform]");
   if (singlePlatform instanceof HTMLElement) {
@@ -3987,8 +3982,11 @@ document.addEventListener("keydown", (event) => {
       setComposePlayerExpanded(false);
       event.preventDefault();
     }
-    const modal = document.querySelector("#reviewLargeModal");
-    if (modal && !modal.hidden) modal.hidden = true;
+    for (const selector of ["#reviewLargeModal", "#flyerPreviewModal", "#rescuePanel"]) {
+      const panel = document.querySelector(selector);
+      if (panel && !panel.hidden) panel.hidden = true;
+    }
+    document.querySelector("#rescuePreview")?.pause();
   }
   if (event.key === "Enter" && event.target instanceof HTMLElement && event.target.dataset.captionText != null) {
     event.preventDefault();
@@ -4370,14 +4368,13 @@ document.querySelector("#videoName").value = todayName();
 async function boot() {
   injectIcons();
   auditBackdropRuntime();
-  await loadAppConfig();
+  loadProjects().catch(error => showToast(error.message, true));
+  const [, status] = await Promise.all([loadAppConfig(), api("/wizard/status")]);
   restoreSelectedPlatform();
-  const status = await api("/wizard/status");
   activeProjectId = projectIdFromStatus(status);
   if (["running", "waiting_choice", "waiting_paper_edit", "done", "failed"].includes(status.status)) {
     await resumeInputsFromProject().catch(() => {});
   }
-  await loadProjects().catch(() => {});
   renderWizardStatus(status);
   if (status.status === "running") {
     setStep(3);
@@ -4401,3 +4398,8 @@ async function boot() {
 }
 
 boot().catch((error) => showToast(error.message, true));
+
+document.querySelector("#closeRescue")?.addEventListener("click", () => {
+  document.querySelector("#rescuePanel").hidden = true;
+  document.querySelector("#rescuePreview")?.pause();
+});
