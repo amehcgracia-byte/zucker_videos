@@ -1965,7 +1965,7 @@ def _apply_saved_spherical_landmarks(project: Project, segments: list[dict[str, 
         saved = migrate_spherical_landmarks(profile_raw or global_raw)
         authored = saved.get(shot_type)
         if authored:
-            for field in ("yaw", "pitch", "fov", "weight"):
+            for field in ("yaw", "pitch", "fov", "roll", "projection_preset", "projection_control", "weight", "subject"):
                 if field in authored:
                     shot[field] = authored[field]
             # Canonicalize persisted poses at the export boundary as well as
@@ -1973,7 +1973,9 @@ def _apply_saved_spherical_landmarks(project: Project, segments: list[dict[str, 
             # guarantees that a labeled landmark cannot render with a
             # different vertical framing.
             shot["pitch"] = effective_pitch(shot.get("pitch", 0.0), shot_type)
-            shot["fov"] = effective_fov(shot.get("fov", 95.0), shot_type)
+            shot["projection_preset"] = normalize_projection_preset(shot.get("projection_preset"), shot_type)
+            shot["roll"] = effective_roll(shot.get("roll", 0.0), shot_type)
+            shot["fov"] = effective_fov(shot.get("fov", 95.0), shot_type, shot["projection_preset"])
             shot["type"] = shot_type
             shot["shot_id"] = shot_type
             shot["label"] = labels.get(shot_type, shot.get("label") or shot_type)

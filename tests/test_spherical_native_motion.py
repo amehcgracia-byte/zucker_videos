@@ -97,3 +97,17 @@ def test_save_angles_preserves_authored_subject_and_explicit_exclusion(tmp_path,
     assert second.status_code == 200
     saved = second.get_json()['spherical_landmarks']['left']
     assert saved['subject'] == 'left' and saved['enabled'] is False
+
+
+def test_export_overlays_saved_wide_projection_and_horizon_without_flat_clamping(tmp_path):
+    from core.project import Project
+    from core.stages.export import _apply_saved_spherical_landmarks, _export_source_filter
+    profile = dict(full_stage=dict(yaw=190,pitch=-15,fov=160,roll=11,projection_preset='megaview'))
+    project = Project(tmp_path,dict(settings=dict(spherical_landmarks_by_source={'/original/sphere.mp4':profile})))
+    stale = dict(source_path='/original/sphere.mp4',spherical_source_path='/cache/sphere.mp4',
+                 spherical_shot=dict(type='full_stage',yaw=100,pitch=0,fov=110,roll=0,projection_preset='linear'))
+    corrected = _apply_saved_spherical_landmarks(project,[stale])[0]['spherical_shot']
+    assert corrected['fov'] == 160 and corrected['roll'] == 11
+    assert corrected['projection_preset'] == 'megaview'
+    graph = _export_source_filter(dict(projection='equirect'),corrected,duration=4)
+    assert 'output=sg' in graph and 'h_fov=160.000' in graph and 'roll=11.000' in graph
