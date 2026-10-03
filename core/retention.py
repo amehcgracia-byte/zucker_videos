@@ -21,6 +21,8 @@ AUTO_PROJECT_MARKERS = (
 AUTO_PROJECT_MAX_AGE_DAYS = 3
 BACKUP_KEEP_COUNT = 2
 PROJECT_EXPORT_HISTORY_COUNT = 2
+TEMP_SUFFIXES = (".tmp", ".part", ".pending")
+TEMP_MIN_AGE_SECONDS = 24 * 60 * 60
 EXPORT_SUFFIXES = ("_composed-captions", "_overlay-composed")
 
 
@@ -94,6 +96,41 @@ def _verification_temp_files(root: Path) -> list[Path]:
     return sorted(files)
 
 
+def _generated_temp_files(root: Path, now: float) -> list[Path]:
+    """Find stale generated temp files without walking user media or exports."""
+    folders = [
+        root / "Cache",
+        root / "logs",
+        root / "AppBackups",
+        root / "Verification",
+        root / "VerificationTemp",
+        root / ".verification",
+    ]
+    projects_root = root / "Projects"
+    if projects_root.exists():
+        for project in projects_root.glob("*.zuckervid"):
+            folders.extend(project / name for name in ("cache", "artifacts", "logs", "shot_review"))
+    cutoff = now - TEMP_MIN_AGE_SECONDS
+    found: set[Path] = set()
+    for folder in folders:
+        if not folder.is_dir():
+            continue
+        try:
+            paths = folder.rglob("*")
+        except OSError:
+            continue
+        for path in paths:
+            try:
+                if not path.is_file() or path.stat().st_mtime > cutoff:
+                    continue
+            except OSError:
+                continue
+            lower_name = path.name.lower()
+            if lower_name.endswith(TEMP_SUFFIXES) or (lower_name.startswith(".") and ".tmp" in lower_name):
+                found.add(path.resolve())
+    return sorted(found)
+
+
 def project_export_inventory(project: Path) -> dict[str, Any]:
     folder = project / "exports"
     files = [path for path in folder.iterdir() if path.is_file() and path.suffix.lower() == ".mp4"] if folder.exists() else []
@@ -141,6 +178,7 @@ def build_storage_report(
     hub = huggingface_root / "hub"
     for model in sorted(hub.glob("models--*")) if hub.exists() else []:
         hf_models.append({"path": str(model), "name": model.name, "bytes": _size(model), "recoverability": "regenerable/downloadable"})
+    temporary_files = _generated_temp_files(root, now)
     return {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "root": {"path": str(root), "bytes": _size(root), "recoverability": "user data / imprescindible"},
@@ -153,31 +191,57 @@ def build_storage_report(
             "repo_dist": {"path": str(repo_root / "dist"), "bytes": _size(repo_root / "dist"), "recoverability": "regenerable; DMG handoff"},
             "huggingface": {"path": str(huggingface_root), "bytes": _size(huggingface_root), "models": hf_models, "recoverability": "regenerable/downloadable"},
             "verification_temp": {"path": str(root), "bytes": sum(_size(path) for path in _verification_temp_files(root)), "files": [{"path": str(path), "bytes": _size(path), "mtime": _iso_mtime(path)} for path in _verification_temp_files(root)], "recoverability": "regenerable temporary verification output"},
+            "orphan_temporary": {"path": str(root), "bytes": sum(_size(path) for path in temporary_files), "files": [{"path": str(path), "bytes": _size(path), "mtime": _iso_mtime(path)} for path in temporary_files], "recoverability": "regenerable; only stale generated temp files"},
         },
     }
 
 
-def cleanup_plan(report: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return only safe, recoverable candidates for the manual cleanup."""
+def _is_protected(path: str | Path, protected_paths: list[str | Path] | None) -> bool:
+    candidate = Path(path).expanduser().resolve()
+    for raw in protected_paths or []:
+        protected = Path(raw).expanduser().resolve()
+        if candidate == protected:
+            return True
+        try:
+            candidate.relative_to(protected)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def cleanup_plan(report: dict[str, Any], *, protected_paths: list[str | Path] | None = None) -> list[dict[str, Any]]:
+    """Return safe, recoverable candidates, excluding protected active paths."""
     candidates: list[dict[str, Any]] = []
+
+    def add(path: str, size: int, reason: str) -> None:
+        if not _is_protected(path, protected_paths):
+            candidates.append({"path": path, "bytes": size, "reason": reason})
+
     backups = report["categories"]["app_backups"]["copies"]
     for item in backups[BACKUP_KEEP_COUNT:]:
-        candidates.append({"path": item["path"], "bytes": item["bytes"], "reason": "AppBackups beyond newest two"})
+        add(item["path"], item["bytes"], "AppBackups beyond newest two")
     for project in report["categories"]["projects"]["items"]:
         if project["expired_verification"]:
-            candidates.append({"path": project["path"], "bytes": project["bytes"], "reason": "verification project older than three days"})
+            add(project["path"], project["bytes"], "verification project older than three days")
             continue
         for path in project["exports"]["old_candidates"]:
-            candidate = Path(path)
-            candidates.append({"path": path, "bytes": _size(candidate), "reason": "project export older than current plus two previous"})
+            add(path, _size(Path(path)), "project export older than current plus two previous")
     for item in report["categories"].get("verification_temp", {}).get("files", []):
-        candidates.append({"path": item["path"], "bytes": item["bytes"], "reason": "temporary verification output"})
+        add(item["path"], item["bytes"], "temporary verification output")
+    for item in report["categories"].get("orphan_temporary", {}).get("files", []):
+        add(item["path"], item["bytes"], "stale generated temporary file")
     return candidates
 
 
-def execute_cleanup(report: dict[str, Any], *, trash_root: Path | None = None) -> dict[str, Any]:
+def execute_cleanup(
+    report: dict[str, Any],
+    *,
+    trash_root: Path | None = None,
+    protected_paths: list[str | Path] | None = None,
+):
     """Move the planned candidates to Trash and return before/after totals."""
-    candidates = cleanup_plan(report)
+    candidates = cleanup_plan(report, protected_paths=protected_paths)
     moved = []
     for item in candidates:
         destination = move_to_trash(Path(item["path"]), trash_root=trash_root)
@@ -187,10 +251,10 @@ def execute_cleanup(report: dict[str, Any], *, trash_root: Path | None = None) -
     return {"before_bytes": report["root"]["bytes"], "after_bytes": after["root"]["bytes"], "freed_bytes": sum(item["bytes"] for item in moved), "moved": moved, "report_after": after}
 
 
-def cleanup_automatic_retention() -> dict[str, Any]:
-    """Apply the safe retention rules during normal cache maintenance."""
+def cleanup_automatic_retention(protected_paths: list[str | Path] | None = None) -> dict[str, Any]:
+    """Apply safe retention rules during normal cache maintenance."""
     report = build_storage_report()
-    if not cleanup_plan(report):
+    if not cleanup_plan(report, protected_paths=protected_paths):
         return {"moved": [], "freed_bytes": 0}
-    result = execute_cleanup(report)
+    result = execute_cleanup(report, protected_paths=protected_paths)
     return {"moved": result["moved"], "freed_bytes": result["freed_bytes"]}

@@ -29,6 +29,7 @@ let activeProjectId = null;
 let statusPollGeneration = 0;
 let prepareHandoffInProgress = false;
 let appConfig = { dev: true, desktop: false };
+let sphericalProjectSettings = null;
 let progressStartedAt = null;
 let progressSamples = [];
 let progressFloor = 0;
@@ -110,6 +111,9 @@ let result360 = {
 };
 const sphericalSetupViewers = new Map();
 let sphericalSetupThree = null;
+let sphericalSetupThreePromise = null;
+const sphericalSetupFrameCache = new Map();
+let sphericalSetupAnimation = null;
 
 const LANDMARK_LABELS = {
   full_stage: "Full stage",
@@ -224,6 +228,12 @@ async function apiForm(path, formData) {
 
 async function loadAppConfig() {
   appConfig = await api("/app/config");
+  const buildInfo = document.querySelector("#buildInfo");
+  if (buildInfo) {
+    const version = appConfig.app_version || "development";
+    const revision = appConfig.source_revision || "unbuilt";
+    buildInfo.textContent = `Zucker Editor ${version} · commit ${revision}`;
+  }
   sourceFolders = appConfig.source_folders || [];
   masterAudioExtensions = appConfig.master_audio_extensions || [".mp3"];
   renderSourceFolders();
@@ -255,7 +265,11 @@ function setStep(number) {
 }
 
 function composePlatform() {
-  return selectedPlatform || latestResult?.platform || latestStatus?.result?.platform || "";
+  return latestResult?.platform || latestStatus?.result?.platform || latestStatus?.platform || selectedPlatform || "";
+}
+
+function youtubeSkipsComposition(platform = composePlatform()) {
+  return String(platform || "").toLowerCase() === "youtube";
 }
 
 function setCaptionPanelExpanded(expanded, platform = composePlatform()) {
@@ -585,8 +599,13 @@ function renderComposeOverlayLayer() {
 }
 
 async function openCaptions() {
+  if (youtubeSkipsComposition()) {
+    setStep(6);
+    return;
+  }
   setStep(5);
-  setCaptionPanelExpanded(composePlatform() === "reel", composePlatform());
+  const youtubeMode = composePlatform() === "youtube";
+  setCaptionPanelExpanded(!youtubeMode && composePlatform() === "reel", composePlatform());
   const video = document.querySelector("#composeVideo");
   if (video) {
     video.src = latestResult?.media_url ? `${latestResult.media_url}?t=${Date.now()}` : "/api/v1/wizard/result";
@@ -596,7 +615,8 @@ async function openCaptions() {
     video.onloadedmetadata = () => { const scrub = document.querySelector("#composeScrub"); if (scrub) scrub.max = String(video.duration || 1); updateComposeVideoLayout(); renderCaptionBlocks(); renderComposeOverlayLayer(); };
     video.ontimeupdate = () => { renderComposeOverlayLayer(); updateComposeTimelinePlayhead(); };
   }
-  migrateTextOverlaysToCaptions();
+  if (!youtubeMode) migrateTextOverlaysToCaptions();
+  else captionCues = [];
   let savedComposeStyle = null;
   if (!captionCues.length && !reelTextOverlays.length && !reelImageOverlays.length && !reelVideoOverlays.length) {
     try {
@@ -606,7 +626,7 @@ async function openCaptions() {
       reelTextOverlays = Array.isArray(overlaySpec.texts) ? overlaySpec.texts : [];
       reelImageOverlays = Array.isArray(overlaySpec.images) ? overlaySpec.images : [];
       reelVideoOverlays = Array.isArray(overlaySpec.videos) ? overlaySpec.videos : [];
-      captionCues = Array.isArray(cueTrack.cues) ? cueTrack.cues : [];
+      captionCues = youtubeMode ? [] : (Array.isArray(cueTrack.cues) ? cueTrack.cues : []);
       savedComposeStyle = cueTrack.style || null;
       const textarea = document.querySelector("#captionText");
       if (textarea) textarea.value = captionCues.map((cue) => (cue.lines || []).join("\n")).join("\n\n");
@@ -630,7 +650,7 @@ async function openCaptions() {
   if (select) select.onchange = () => document.querySelector("#captionPreview")?.setAttribute("data-style", select.value);
   if (select && !select.dataset.userChoice) select.value = savedComposeStyle || "autoread_fixed_white";
   const blocks = captionBlocksFromText();
-  if (!captionCues.length && blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
+  if (composePlatform() !== "youtube" && !captionCues.length && blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
   renderCaptionBlocks();
   renderReelOptions();
 }
@@ -659,21 +679,25 @@ function exportCaptionSrt() {
 }
 
 async function burnCaptionTrack() {
+  if (composePlatform() === "youtube") {
+    showToast("YouTube no usa captions; se conserva únicamente el flyer.", false);
+    return;
+  }
   const blocks = captionBlocksFromText();
-  if (!captionCues.length && blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
+  if (composePlatform() !== "youtube" && !captionCues.length && blocks.length) captionCues = blocks.map((text, index) => ({ lines: text.split(/\r?\n/), start: index * 4, end: index * 4 + 4 }));
   const style = document.querySelector("#captionStyle")?.value || "clean_bottom";
   const cues = captionCues.map((cue) => ({ ...cue, end: cue.end == null ? composeTimelineDuration() : cue.end }));
-  const result = await api("/captions/burn", { method: "POST", body: JSON.stringify({ style, cues, header: { title_enabled: false, title: "", logo_source: selectedLogoSource(), logo_height: 120, logo_overlay: projectLogo.overlay || { x: .5, y: .08, width: .22 } }, letterbox: { enabled: true, blur: 18 } }) });
+  const result = await api("/captions/burn", { method: "POST", body: JSON.stringify({ style, cues, header: { title_enabled: false, title: "", logo_source: selectedLogoSource(), logo_height: 120, logo_overlay: projectLogo.overlay || { x: .5, y: .08, width: .22 } }, letterbox: { enabled: composePlatform() === "reel", blur: 18 } }) });
   const video = document.querySelector("#composeVideo"); if (video) { video.src = `${result.media_url}?t=${Date.now()}`; video.load(); }
   document.querySelector("#captionBurnStatus").textContent = `Created ${result.filename}`;
 }
 
 async function saveComposition() {
-  const cues = captionCues.map((cue) => ({ ...cue, end: cue.end == null ? composeTimelineDuration() : cue.end }));
+  const cues = composePlatform() === "youtube" ? [] : captionCues.map((cue) => ({ ...cue, end: cue.end == null ? composeTimelineDuration() : cue.end }));
   const header = { title_enabled: false, title: "", logo_source: selectedLogoSource(), logo_overlay: projectLogo.overlay || { x: .5, y: .08, width: .22 } };
   return api("/wizard/compose", {
     method: "POST",
-    body: JSON.stringify({ texts: reelTextOverlays, images: reelImageOverlays, videos: reelVideoOverlays, cues, style: document.querySelector("#captionStyle")?.value || "karaoke_word", header, letterbox: { enabled: true, blur: 18 } })
+    body: JSON.stringify({ platform: composePlatform(), texts: reelTextOverlays, images: reelImageOverlays, videos: reelVideoOverlays, cues, style: document.querySelector("#captionStyle")?.value || "karaoke_word", header, letterbox: { enabled: composePlatform() === "reel", blur: 18 } })
   });
 }
 
@@ -850,8 +874,8 @@ const REFERENCE_FOV_DEG = 100;
 // stereographic projection; the live WebGL viewers clamp their own perspective
 // camera to <180° internally (verticalFovFromHorizontal), so this only widens
 // what can be authored, not what a rectilinear camera is asked to render.
-const MIN_SHOT_FOV = 30;
-const MAX_SHOT_FOV = 300;
+const MIN_SHOT_FOV = 82;
+const MAX_SHOT_FOV = 165;
 
 function dragSensitivityScale(currentFov) {
   const fov = Number(currentFov) || REFERENCE_FOV_DEG;
@@ -878,7 +902,7 @@ function weightToFrequency(weight) {
 }
 
 function selectedSphericalSourcePath() {
-  return detected.videos.find(isSphericalVideo)?.path || "";
+  return document.querySelector("#sphericalSourceSelect")?.value || detected.videos.find(isSphericalVideo)?.path || "";
 }
 
 function mergeDetected(result, source = "") {
@@ -911,8 +935,38 @@ function clearDetected() {
   inboxAnalysis = null;
 }
 
-function resetSphericalSetupToGlobal() {
-  lastSphericalSetup = normalizeSphericalSetup(appConfig?.spherical_landmarks || {});
+function renderSphericalSourceOptions(project = sphericalProjectSettings) {
+  const select = document.querySelector("#sphericalSourceSelect");
+  if (!select) return;
+  const sources = detected.videos.filter(isSphericalVideo);
+  const preferred = project?.settings?.wizard?.spherical_source_path || project?.settings?.edit?.spherical_source_path || "";
+  const current = select.value || preferred || sources[0]?.path || "";
+  select.innerHTML = sources.map((item) => (
+    `<option value="${escapeHtml(item.path)}">${escapeHtml(filename(item.path))}</option>`
+  )).join("");
+  if (sources.some((item) => item.path === current)) select.value = current;
+  select.onchange = () => {
+    const source = select.value;
+    const profiles = sphericalProjectSettings?.settings?.spherical_landmarks_by_source || {};
+    const values = profiles[source] || profiles[String(source)];
+    lastSphericalSetup = normalizeSphericalSetup(values || sphericalProjectSettings?.settings?.spherical_landmarks || appConfig?.spherical_landmarks || {});
+    renderSphericalSetup();
+  };
+}
+
+function resetSphericalSetupToGlobal(project = null) {
+  if (project) sphericalProjectSettings = project;
+  renderSphericalSourceOptions(project || sphericalProjectSettings);
+  const sourcePath = selectedSphericalSourcePath();
+  const profiles = (project || sphericalProjectSettings)?.settings?.spherical_landmarks_by_source || {};
+  const profile = profiles[sourcePath] || profiles[String(sourcePath)] || {};
+  const projectLandmarks = (project || sphericalProjectSettings)?.settings?.spherical_landmarks;
+  const source = Object.keys(profile).length
+    ? profile
+    : projectLandmarks && Object.keys(projectLandmarks).length
+      ? projectLandmarks
+      : (appConfig?.spherical_landmarks || {});
+  lastSphericalSetup = normalizeSphericalSetup(source);
   renderSphericalSetup();
 }
 
@@ -928,7 +982,10 @@ function normalizeSphericalSetup(raw = {}) {
     if (!source || source.yaw == null) continue;
     result[key] = {
       yaw: Number(source.yaw), pitch: Number(source.pitch ?? 0),
-      fov: Number(source.fov ?? defaults[key]), weight: Number(source.weight ?? 1),
+      fov: Number(source.fov ?? defaults[key]), roll: Number(source.roll ?? 0),
+      projection_preset: String(source.projection_preset ?? "linear"),
+      projection_control: Number(source.projection_control ?? 0),
+      weight: Number(source.weight ?? 1),
     };
   }
   return result;
@@ -948,10 +1005,12 @@ function applySphericalSetup(values = {}) {
 
 function sphericalSetupValuesFor(group) {
   const values = {};
-  for (const field of ["yaw", "pitch", "fov", "weight"]) {
+  for (const field of ["yaw", "pitch", "fov", "roll", "projection_control", "weight"]) {
     const value = Number(group.querySelector(`[data-field="${field}"]`)?.value);
     if (Number.isFinite(value)) values[field] = value;
   }
+  const projectionPreset = group.querySelector('[data-field="projection_preset"]')?.value;
+  if (projectionPreset) values.projection_preset = projectionPreset;
   return values;
 }
 
@@ -962,112 +1021,321 @@ function syncSphericalSetupState(group) {
   if (viewer) updateSphericalSetupViewer(viewer, lastSphericalSetup[shot]);
 }
 
+
+function drawSphericalPreview(viewer, image) {
+  const width = Math.max(240, viewer.canvas.clientWidth || 640);
+  const height = Math.max(135, viewer.canvas.clientHeight || Math.round(width * 9 / 16));
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  viewer.canvas.width = Math.round(width * dpr);
+  viewer.canvas.height = Math.round(height * dpr);
+  const context = viewer.context || viewer.canvas.getContext("2d");
+  viewer.context = context;
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  context.clearRect(0, 0, width, height);
+  context.fillStyle = "#101817";
+  context.fillRect(0, 0, width, height);
+  context.drawImage(image, 0, 0, width, height);
+}
+
+async function loadSphericalSetupThree() {
+  if (sphericalSetupThree) return sphericalSetupThree;
+  if (!sphericalSetupThreePromise) sphericalSetupThreePromise = import("/vendor/three.module.min.js");
+  sphericalSetupThree = await sphericalSetupThreePromise;
+  return sphericalSetupThree;
+}
+
+function sphericalSetupFrameFor(source) {
+  const key = String(source || "");
+  if (!key) return Promise.reject(new Error("360 source is missing"));
+  if (sphericalSetupFrameCache.has(key)) return sphericalSetupFrameCache.get(key);
+  const promise = fetch("/api/v1/wizard/spherical-source-frame?" + new URLSearchParams({ source: key }))
+    .then((response) => {
+      if (!response.ok) throw new Error("Could not load the equirectangular 360 frame");
+      return response.blob();
+    })
+    .then((blob) => new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      const image = new Image();
+      image.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(image);
+      };
+      image.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("Could not decode the equirectangular 360 frame"));
+      };
+      image.src = url;
+    }))
+    .catch((error) => {
+      sphericalSetupFrameCache.delete(key);
+      throw error;
+    });
+  sphericalSetupFrameCache.set(key, promise);
+  return promise;
+}
+
+function startSphericalSetupAnimation() {
+  if (sphericalSetupAnimation) return;
+  const render = () => {
+    sphericalSetupAnimation = requestAnimationFrame(render);
+    for (const viewer of sphericalSetupViewers.values()) {
+      if (!viewer.renderer || !viewer.camera || !viewer.scene) continue;
+      const width = Math.max(240, viewer.canvas.clientWidth || 640);
+      const height = Math.max(135, viewer.canvas.clientHeight || Math.round(width * 9 / 16));
+      if (viewer.renderWidth !== width || viewer.renderHeight !== height) {
+        viewer.renderWidth = width;
+        viewer.renderHeight = height;
+        viewer.renderer.setPixelRatio(Math.min(2, Math.max(1, window.devicePixelRatio || 1)));
+        viewer.renderer.setSize(width, height, false);
+        viewer.camera.aspect = width / height;
+        updateSphericalSetupCamera(viewer);
+      }
+      viewer.renderer.render(viewer.scene, viewer.camera);
+    }
+  };
+  render();
+}
+
+function stopSphericalSetupAnimation() {
+  if (sphericalSetupAnimation) cancelAnimationFrame(sphericalSetupAnimation);
+  sphericalSetupAnimation = null;
+}
+
+function queueSphericalSetupPreview(viewer, immediate = false) {
+  if (!viewer?.context || !viewer.source || viewer.renderer) return;
+  if (viewer.previewTimer) clearTimeout(viewer.previewTimer);
+  const load = async () => {
+    const requestId = ++viewer.previewRequest;
+    const query = new URLSearchParams({
+      source: viewer.source,
+      yaw: String(viewer.yaw),
+      pitch: String(viewer.pitch),
+      fov: String(viewer.fov),
+      roll: String(viewer.roll ?? 0),
+      projection_preset: String(viewer.projection_preset ?? "linear"),
+      projection_control: String(viewer.projection_control ?? 0),
+      time_sec: String(viewer.previewTime ?? 30),
+      shot: viewer.shot,
+      t: String(Date.now()),
+    });
+    try {
+      const response = await fetch("/api/v1/wizard/spherical-preview?" + query.toString());
+      if (!response.ok) throw new Error("Could not render the 360 preview");
+      const blob = await response.blob();
+      if (requestId !== viewer.previewRequest) return;
+      const url = URL.createObjectURL(blob);
+      const image = new Image();
+      image.onload = () => {
+        if (requestId === viewer.previewRequest) drawSphericalPreview(viewer, image);
+        URL.revokeObjectURL(url);
+      };
+      image.onerror = () => URL.revokeObjectURL(url);
+      image.src = url;
+    } catch (error) {
+      if (requestId === viewer.previewRequest) {
+        const context = viewer.context;
+        const width = viewer.canvas.clientWidth || 640;
+        const height = viewer.canvas.clientHeight || 360;
+        context.fillStyle = "#101817";
+        context.fillRect(0, 0, width, height);
+        context.fillStyle = "#d8e7ec";
+        context.font = "14px system-ui";
+        context.fillText("360 preview unavailable", 16, 28);
+      }
+    }
+  };
+  if (immediate) load();
+  else viewer.previewTimer = window.setTimeout(load, 140);
+}
+
+function updateSphericalSetupCamera(viewer) {
+  if (!viewer?.camera || !sphericalSetupThree) return;
+  const THREE = sphericalSetupThree;
+  const aspect = Math.max(0.1, viewer.camera.aspect || 16 / 9);
+  viewer.camera.fov = verticalFovFromHorizontal(viewer.fov, aspect);
+  viewer.camera.updateProjectionMatrix();
+  const yaw = THREE.MathUtils.degToRad(signedYawDelta(viewer.yaw, 0));
+  const pitch = THREE.MathUtils.degToRad(clamp(viewer.pitch, -25, 25));
+  const roll = THREE.MathUtils.degToRad(clamp(viewer.roll, -45, 45));
+  const target = new THREE.Vector3(
+    Math.sin(yaw) * Math.cos(pitch),
+    Math.sin(pitch),
+    -Math.cos(yaw) * Math.cos(pitch)
+  );
+  viewer.camera.up.set(Math.sin(roll), Math.cos(roll), 0);
+  viewer.camera.lookAt(target);
+}
+
 function updateSphericalSetupViewer(viewer, values = {}) {
-  viewer.yaw = Number(values.yaw ?? viewer.yaw ?? 0);
-  viewer.pitch = clamp(Number(values.pitch ?? viewer.pitch ?? 0), -85, 85);
-  viewer.fov = clamp(Number(values.fov ?? viewer.fov ?? 95), MIN_SHOT_FOV, MAX_SHOT_FOV);
-  if (viewer.camera && sphericalSetupThree) {
-    viewer.camera.fov = verticalFovFromHorizontal(viewer.fov, viewer.camera.aspect || 16 / 9);
-    viewer.camera.updateProjectionMatrix();
-    const yaw = sphericalSetupThree.MathUtils.degToRad(signedYawDelta(viewer.yaw, 0));
-    const pitch = sphericalSetupThree.MathUtils.degToRad(viewer.pitch);
-    viewer.camera.lookAt(new sphericalSetupThree.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch)));
-  }
-  const group = document.querySelector(`fieldset[data-spherical-landmark="${viewer.shot}"]`);
+  viewer.yaw = normalizeYaw(values.yaw ?? viewer.yaw ?? 0) ?? 0;
+  viewer.pitch = clamp(Number(values.pitch ?? viewer.pitch ?? 0), -45, 45);
+  viewer.roll = clamp(Number(values.roll ?? viewer.roll ?? 0), -45, 45);
+  viewer.projection_preset = String(values.projection_preset ?? viewer.projection_preset ?? "linear");
+  viewer.projection_control = clamp(Number(values.projection_control ?? viewer.projection_control ?? 0), 0, 1);
+  const fovMin = viewer.projection_preset === "dewarp" ? 70 : MIN_SHOT_FOV;
+  const fovMax = viewer.projection_preset === "dewarp" ? 100 : MAX_SHOT_FOV;
+  viewer.fov = clamp(Number(values.fov ?? viewer.fov ?? 95), fovMin, fovMax);
+  const group = document.querySelector('fieldset[data-spherical-landmark="' + viewer.shot + '"]');
   if (group) {
-    for (const [field, value] of [["yaw", viewer.yaw], ["pitch", viewer.pitch], ["fov", viewer.fov]]) {
-      const input = group.querySelector(`[data-field="${field}"]`);
-      if (input && document.activeElement !== input) input.value = formatCanonicalNumber(value);
+    for (const [field, value] of [["yaw", viewer.yaw], ["pitch", viewer.pitch], ["fov", viewer.fov], ["roll", viewer.roll], ["projection_preset", viewer.projection_preset], ["projection_control", viewer.projection_control]]) {
+      const input = group.querySelector('[data-field="' + field + '"]');
+      if (input && document.activeElement !== input) input.value = field === "projection_preset" ? String(value) : formatCanonicalNumber(value);
     }
   }
-  viewer.renderer?.render(viewer.scene, viewer.camera);
+  if (viewer.renderer) updateSphericalSetupCamera(viewer);
+  else queueSphericalSetupPreview(viewer);
 }
 
 function resizeSphericalSetupViewer(viewer) {
-  if (!viewer.renderer || !viewer.camera) return;
-  const width = Math.max(240, viewer.canvas.clientWidth || 640);
-  const height = Math.max(135, viewer.canvas.clientHeight || Math.round(width * 9 / 16));
-  viewer.renderer.setSize(width, height, false);
-  viewer.camera.aspect = width / height;
-  updateSphericalSetupViewer(viewer, viewer);
+  if (!viewer) return;
+  if (viewer.renderer) {
+    viewer.renderWidth = 0;
+    viewer.renderHeight = 0;
+    startSphericalSetupAnimation();
+  } else {
+    queueSphericalSetupPreview(viewer, true);
+  }
 }
 
 function wireSphericalSetupViewer(viewer) {
-  if (viewer.canvas.dataset.wired) return;
-  viewer.canvas.dataset.wired = "1";
+  if (viewer.wired) return;
+  viewer.wired = true;
+  viewer.abortController = new AbortController();
+  const listenerOptions = { signal: viewer.abortController.signal };
   viewer.canvas.addEventListener("pointerdown", (event) => {
-    viewer.dragging = true; viewer.dragX = event.clientX; viewer.dragY = event.clientY;
-    viewer.canvas.setPointerCapture?.(event.pointerId); viewer.canvas.classList.add("dragging");
-  });
+    event.preventDefault();
+    viewer.dragging = true;
+    viewer.dragX = event.clientX;
+    viewer.dragY = event.clientY;
+    viewer.canvas.setPointerCapture?.(event.pointerId);
+    viewer.canvas.classList.add("dragging");
+  }, listenerOptions);
   viewer.canvas.addEventListener("pointermove", (event) => {
     if (!viewer.dragging) return;
+    event.preventDefault();
     const dx = event.clientX - viewer.dragX;
     const dy = event.clientY - viewer.dragY;
-    viewer.dragX = event.clientX; viewer.dragY = event.clientY;
+    viewer.dragX = event.clientX;
+    viewer.dragY = event.clientY;
     viewer.yaw = normalizeYaw(viewer.yaw - dx * YAW_DEG_PER_PX * dragSensitivityScale(viewer.fov)) ?? 0;
-    viewer.pitch = clamp(viewer.pitch + dy * PITCH_DEG_PER_PX * dragSensitivityScale(viewer.fov), -85, 85);
+    viewer.pitch = clamp(viewer.pitch + dy * PITCH_DEG_PER_PX * dragSensitivityScale(viewer.fov), -25, 25);
     updateSphericalSetupViewer(viewer, viewer);
-  });
-  const stop = (event) => { viewer.dragging = false; viewer.canvas.classList.remove("dragging"); if (event?.pointerId != null) viewer.canvas.releasePointerCapture?.(event.pointerId); };
-  viewer.canvas.addEventListener("pointerup", stop);
-  viewer.canvas.addEventListener("pointercancel", stop);
+  }, listenerOptions);
+  const stop = (event) => {
+    viewer.dragging = false;
+    viewer.canvas.classList.remove("dragging");
+    if (event?.pointerId != null) viewer.canvas.releasePointerCapture?.(event.pointerId);
+    if (!viewer.renderer) queueSphericalSetupPreview(viewer, true);
+  };
+  viewer.canvas.addEventListener("pointerup", stop, listenerOptions);
+  viewer.canvas.addEventListener("pointercancel", stop, listenerOptions);
   viewer.canvas.addEventListener("wheel", (event) => {
     event.preventDefault();
-    viewer.fov = clamp(viewer.fov + (event.deltaY > 0 ? 3 : -3), MIN_SHOT_FOV, MAX_SHOT_FOV);
+    const fovMin = viewer.projection_preset === "dewarp" ? 70 : MIN_SHOT_FOV;
+    const fovMax = viewer.projection_preset === "dewarp" ? 100 : MAX_SHOT_FOV;
+    viewer.fov = clamp(viewer.fov + (event.deltaY > 0 ? 3 : -3), fovMin, fovMax);
     updateSphericalSetupViewer(viewer, viewer);
-  }, { passive: false });
+  }, { passive: false, signal: viewer.abortController.signal });
 }
+
 
 async function createSphericalSetupViewer(shot, canvas) {
   if (!canvas || !selectedSphericalSourcePath()) return;
-  if (!sphericalSetupThree) sphericalSetupThree = await import("/vendor/three.module.min.js");
-  const THREE = sphericalSetupThree;
-  const gl = canvas.getContext("webgl2", { antialias: true });
-  if (!gl) throw new Error("WebGL2 is not available for the 360 shot selector");
-  const renderer = new THREE.WebGLRenderer({ canvas, context: gl, antialias: true });
-  const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(50, 16 / 9, 0.1, 1100);
-  const geometry = new THREE.SphereGeometry(500, 64, 48); geometry.scale(-1, 1, 1);
-  const viewer = { shot, source: selectedSphericalSourcePath(), canvas, renderer, scene, camera, yaw: 0, pitch: 0, fov: 95, dragging: false };
-  scene.add(new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color: 0x101010 })));
-  const texture = await new THREE.TextureLoader().loadAsync(`/api/v1/wizard/spherical-source-frame?source=${encodeURIComponent(selectedSphericalSourcePath())}&t=${Date.now()}`);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  const sphere = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ map: texture }));
-  scene.clear(); scene.add(sphere); viewer.texture = texture; viewer.sphere = sphere;
+  const viewer = {
+    shot,
+    source: selectedSphericalSourcePath(),
+    canvas,
+    context: null,
+    renderer: null,
+    scene: null,
+    camera: null,
+    sphere: null,
+    texture: null,
+    yaw: 0,
+    pitch: 0,
+    roll: 0,
+    fov: 95,
+    projection_preset: "linear",
+    projection_control: 0,
+    previewTime: 30,
+    dragging: false,
+    dragX: 0,
+    dragY: 0,
+    previewTimer: null,
+    previewRequest: 0,
+  };
   sphericalSetupViewers.set(shot, viewer);
-  wireSphericalSetupViewer(viewer); resizeSphericalSetupViewer(viewer);
-  const loop = () => { if (!sphericalSetupViewers.has(shot)) return; viewer.animation = requestAnimationFrame(loop); renderer.render(scene, camera); };
-  loop();
+  wireSphericalSetupViewer(viewer);
+  try {
+    const THREE = await loadSphericalSetupThree();
+    const image = await sphericalSetupFrameFor(viewer.source);
+    const gl = canvas.getContext("webgl2", { antialias: true, preserveDrawingBuffer: false });
+    if (!gl) throw new Error("WebGL2 is not available in this webview");
+    viewer.renderer = new THREE.WebGLRenderer({ canvas, context: gl, antialias: true });
+    viewer.renderer.setClearColor(0x101817, 1);
+    viewer.scene = new THREE.Scene();
+    viewer.camera = new THREE.PerspectiveCamera(50, 16 / 9, 0.1, 1100);
+    const geometry = new THREE.SphereGeometry(500, 96, 64);
+    geometry.scale(-1, 1, 1);
+    viewer.texture = new THREE.Texture(image);
+    viewer.texture.colorSpace = THREE.SRGBColorSpace;
+    viewer.texture.needsUpdate = true;
+    viewer.sphere = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ map: viewer.texture }));
+    viewer.scene.add(viewer.sphere);
+    startSphericalSetupAnimation();
+  } catch (error) {
+    viewer.renderer = null;
+    viewer.context = canvas.getContext("2d");
+    if (!viewer.context) throw error;
+    queueSphericalSetupPreview(viewer, true);
+  }
+  resizeSphericalSetupViewer(viewer);
   updateSphericalSetupViewer(viewer, lastSphericalSetup[shot] || {});
+}
+
+function disposeSphericalSetupViewer(viewer) {
+  if (!viewer) return;
+  viewer.abortController?.abort();
+  if (viewer.previewTimer) clearTimeout(viewer.previewTimer);
+  viewer.texture?.dispose?.();
+  viewer.sphere?.geometry?.dispose?.();
+  viewer.sphere?.material?.dispose?.();
+  viewer.renderer?.dispose?.();
 }
 
 async function renderSphericalSetupViewers() {
   if (!hasSphericalInput()) {
+    for (const viewer of sphericalSetupViewers.values()) disposeSphericalSetupViewer(viewer);
     sphericalSetupViewers.clear();
+    stopSphericalSetupAnimation();
     return;
   }
   const source = selectedSphericalSourcePath();
+  const pending = [];
   for (const group of document.querySelectorAll("fieldset[data-spherical-landmark]")) {
     const shot = group.dataset.sphericalLandmark;
     const existing = sphericalSetupViewers.get(shot);
     if (existing && existing.source !== source) {
-      if (existing.animation) cancelAnimationFrame(existing.animation);
-      existing.texture?.dispose?.();
-      existing.renderer?.dispose?.();
+      disposeSphericalSetupViewer(existing);
       sphericalSetupViewers.delete(shot);
     }
-    if (!sphericalSetupViewers.has(shot)) await createSphericalSetupViewer(shot, group.querySelector("[data-spherical-canvas]"));
+    if (!sphericalSetupViewers.has(shot)) {
+      pending.push(createSphericalSetupViewer(shot, group.querySelector("[data-spherical-canvas]")));
+    }
   }
+  await Promise.all(pending);
 }
 
 function sphericalLandmarksFromForm() {
   const values = {};
   document.querySelectorAll("fieldset[data-spherical-landmark]").forEach((group) => {
     const valuesForShot = {};
-    for (const field of ["yaw", "pitch", "fov", "weight"]) {
+    for (const field of ["yaw", "pitch", "fov", "roll", "projection_control", "weight"]) {
       const value = Number(group.querySelector(`[data-field="${field}"]`)?.value);
       if (Number.isFinite(value)) valuesForShot[field] = value;
     }
+    const projectionPreset = group.querySelector('[data-field="projection_preset"]')?.value;
+    if (projectionPreset) valuesForShot.projection_preset = projectionPreset;
     if (Number.isFinite(valuesForShot.yaw)) values[group.dataset.sphericalLandmark] = valuesForShot;
   });
   return values;
@@ -1076,8 +1344,10 @@ function sphericalLandmarksFromForm() {
 function renderSphericalSetup() {
   const panel = document.querySelector("#sphericalSetup");
   if (!panel) return;
-  panel.hidden = !hasSphericalInput();
-  if (!panel.hidden) { applySphericalSetup(lastSphericalSetup); renderSphericalSetupViewers().catch((error) => showToast(error.message, true)); }
+  const sphericalMode = ["youtube", "360"].includes(String(selectedPlatform || "").toLowerCase());
+
+  panel.hidden = !hasSphericalInput() || !sphericalMode;
+  if (!panel.hidden) { renderSphericalSourceOptions(); applySphericalSetup(lastSphericalSetup); renderSphericalSetupViewers().catch((error) => showToast(error.message, true)); }
 }
 
 async function saveSphericalSetup(shot = null) {
@@ -1086,10 +1356,15 @@ async function saveSphericalSetup(shot = null) {
     const group = document.querySelector(`fieldset[data-spherical-landmark="${shot}"]`);
     if (group) incoming[shot] = { ...incoming[shot], ...sphericalSetupValuesFor(group) };
   }
-  const result = await api("/settings/spherical-landmarks", { method: "POST", body: JSON.stringify({ spherical_landmarks: incoming }) });
+  const result = await api("/settings/spherical-landmarks", { method: "POST", body: JSON.stringify({ spherical_landmarks: incoming, spherical_source_path: selectedSphericalSourcePath() }) });
   lastSphericalSetup = normalizeSphericalSetup(result.spherical_landmarks || incoming);
   appConfig.spherical_landmarks = lastSphericalSetup;
-  applySphericalSetup(lastSphericalSetup);
+  sphericalProjectSettings = sphericalProjectSettings || { settings: {} };
+  sphericalProjectSettings.settings = sphericalProjectSettings.settings || {};
+  sphericalProjectSettings.settings.spherical_landmarks = result.spherical_landmarks || incoming;
+  sphericalProjectSettings.settings.spherical_landmarks_by_source = result.spherical_landmarks_by_source
+    || sphericalProjectSettings.settings.spherical_landmarks_by_source
+    || {};
   applySphericalSetup(lastSphericalSetup);
   showToast(shot ? `Saved 360 shot: ${LANDMARK_LABELS[shot] || shot}` : "360 shot angles saved");
 }
@@ -1107,6 +1382,7 @@ function recordToDetectedItem(record, kind, source = "project") {
 
 async function resumeInputsFromProject() {
   const project = await api("/project");
+  sphericalProjectSettings = project;
   currentVariationSeed = String(project.settings?.wizard?.variation_seed || currentVariationSeed);
   const savedPlatform = project.settings?.wizard?.platform;
   if (savedPlatform) choosePlatformInUi(savedPlatform);
@@ -1136,7 +1412,7 @@ async function resumeInputsFromProject() {
     savedAudioTrim[inputs.master.path] = project.settings.wizard.audio_trim;
     trimDefaultsAppliedFor = "";
   }
-  resetSphericalSetupToGlobal();
+  resetSphericalSetupToGlobal(project);
   if (project.settings?.edit?.camera_role_weights) {
     cameraRoleWeights = normalizeCameraRoleWeights(project.settings.edit.camera_role_weights);
     applyCameraRoleWeights(cameraRoleWeights);
@@ -1261,39 +1537,11 @@ function renderChips() {
 }
 
 function renderSingleVideoChoice() {
+  // A single source is valid for every mode, including 360. The edit type is
+  // chosen in Step 2; this panel must never force a one-video project into
+  // Reel or Backstage before the user can select 360.
   const panel = document.querySelector("#singleVideoChoice");
-  if (!panel) return;
-  const singleSource = detected.videos.length === 1;
-  panel.hidden = !singleSource;
-  if (!singleSource) return;
-  // Keep Backstage as the safe default for a video-only drop, but make the
-  // destination explicit so Confirm and continue always has a real mode.
-  if (!['backstage', 'reel'].includes(selectedPlatform)) selectedPlatform = "backstage";
-  const videoHasAudio = Boolean(detected.videos[0]?.probe?.audio_codec || detected.videos[0]?.audio_codec);
-  if (videoHasAudio && !["video", "master"].includes(selectedReelAudioSource)) {
-    selectedReelAudioSource = detected.master.length ? "master" : "video";
-  }
-  const audioChoice = document.querySelector("#singleReelAudioChoice");
-  if (audioChoice) {
-    audioChoice.hidden = selectedPlatform !== "reel" || !videoHasAudio;
-    audioChoice.querySelectorAll("[data-reel-audio-source]").forEach((button) => {
-      if (button.dataset.reelAudioSource === "master") {
-        button.hidden = !detected.master.length;
-      }
-      button.classList.toggle("selected", button.dataset.reelAudioSource === selectedReelAudioSource);
-    });
-  }
-  panel.querySelectorAll("[data-single-platform]").forEach((card) => {
-    card.classList.toggle("selected", card.dataset.singlePlatform === selectedPlatform);
-  });
-  const hint = document.querySelector("#singleVideoChoiceHint");
-  if (hint) {
-    hint.textContent = selectedPlatform === "reel" && !videoHasAudio && !detected.master.length
-      ? "This video has no audio. Add a master audio file or choose Backstage."
-      : selectedPlatform === "reel" && selectedReelAudioSource === "video"
-        ? "Reel will use the selected video's own audio; trim start/end applies to both tracks."
-        : "Select one destination, then confirm to continue.";
-  }
+  if (panel) panel.hidden = true;
 }
 
 function renderRaw360Callout() {
@@ -1381,6 +1629,25 @@ function selectedInputs() {
     songs: detected.songs[0]?.path || "",
     videos: detected.videos.map((item) => item.path),
   };
+}
+
+async function registerInputsBeforePreview(inputs) {
+  // A new project only has the files in the browser's detection state. Register
+  // them before rendering 360 previews: the preview API intentionally serves
+  // only sources already present in project.json.
+  await api("/inputs/videos", {
+    method: "POST",
+    body: JSON.stringify({ paths: inputs.videos, append: false }),
+  });
+  if (inputs.master || inputs.songs) {
+    await api("/inputs/master", {
+      method: "POST",
+      body: JSON.stringify({ master: inputs.master, songs: inputs.songs }),
+    });
+  }
+  // Reload the canonical project records so projection/raw_360 metadata from
+  // the classifier is available to the source picker and preview endpoint.
+  await resumeInputsFromProject();
 }
 
 function formatDuration(seconds) {
@@ -1632,8 +1899,12 @@ async function openProject(path) {
     document.querySelector("#paperEditBox")?.removeAttribute("hidden");
     openPaperEdit().catch((error) => showToast(error.message, true));
   } else if (status.status === "done") {
-    setStep(5);
-    openCaptions().catch((error) => showToast(error.message, true));
+    if (youtubeSkipsComposition(status.result?.platform || status.platform)) {
+      setStep(6);
+    } else {
+      setStep(5);
+      openCaptions().catch((error) => showToast(error.message, true));
+    }
   } else if (status.status === "failed") {
     setStep(6);
   } else if (status.status === "waiting_choice") {
@@ -1645,7 +1916,19 @@ async function openProject(path) {
 }
 
 async function newProject() {
-  if (latestStatus?.status === "running" && !confirm("A job is still running for the current project. Start a new project view anyway?")) return;
+  if (latestStatus?.status === "running" || latestStatus?.status === "cancelling") {
+    if (!confirm("A job is still running for the current project. Cancel it and start a new project?")) return;
+    try {
+      if (latestStatus.status === "running") await api("/wizard/cancel", { method: "POST" });
+      if (!await waitForWizardStop()) {
+        showToast("The previous export is still stopping. Please wait before starting a new project.", true);
+        return;
+      }
+    } catch (error) {
+      showToast(error.message, true);
+      return;
+    }
+  }
   stopStatusPolling();
   activeProjectId = null;
   await api("/wizard/projects/new", { method: "POST", body: JSON.stringify({}) });
@@ -1672,6 +1955,7 @@ async function newProject() {
   if (document.querySelector("#captionText")) document.querySelector("#captionText").value = "";
   document.querySelector("#captionLogoNone")?.click();
   clearDetected();
+  sphericalProjectSettings = null;
   resetSphericalSetupToGlobal();
   document.querySelector("#videoName").value = todayName();
   document.querySelector("#errorBox").hidden = true;
@@ -1766,16 +2050,21 @@ async function prepareStep2() {
     return false;
   }
   if (!selectedPlatform) {
-    selectedPlatform = inputs.master ? "reel" : "backstage";
-    renderSingleVideoChoice();
+    selectedPlatform = hasSphericalInput() ? "360" : (inputs.master ? "reel" : "backstage");
   }
   const singleVideoHasAudio = detected.videos.length === 1 && Boolean(detected.videos[0]?.probe?.audio_codec || detected.videos[0]?.audio_codec);
-  const canUseVideoAudio = selectedPlatform === "reel" && selectedReelAudioSource === "video" && singleVideoHasAudio;
-  if (!inputs.master && selectedPlatform !== "backstage" && !canUseVideoAudio) {
-    showToast("Reel needs a master audio file. Add one above or choose Backstage.", true);
+  const canUseVideoAudio = ["reel", "360"].includes(selectedPlatform) && selectedReelAudioSource === "video" && singleVideoHasAudio;
+  if (!inputs.master && !["backstage", "360"].includes(selectedPlatform) && !canUseVideoAudio) {
+    showToast("This mode needs a master audio file or audio embedded in the selected video.", true);
     return false;
   }
   setStep(2);
+  try {
+    await registerInputsBeforePreview(inputs);
+  } catch (error) {
+    showToast(error.message || "Could not register the selected videos", true);
+    return false;
+  }
   const trimSource = canUseVideoAudio ? detected.videos[0].path : inputs.master;
   if (trimSource) setupTrimControls(trimSource);
   applyEditTypeMode();
@@ -1881,6 +2170,28 @@ function addFlyerReference(path, url) {
   renderReelOptions();
 }
 
+function reviewTransitionOptions(selected) {
+  const value = String(selected || "auto").toLowerCase();
+  const options = [
+    ["auto", "Automática (nativa)"],
+    ["none", "Sin transición"],
+    ["crossfade", "Fundido cruzado"],
+    ["fadeblack", "Fundido a negro"],
+    ["fadewhite", "Fundido a blanco"],
+    ["wipeleft", "Barrido izquierda"],
+    ["wiperight", "Barrido derecha"],
+    ["slideright", "Deslizamiento"],
+    ["dissolve", "Disolución"],
+    ["distance", "Distancia"],
+    ["additive", "Fundido aditivo"],
+    ["stretch", "Estiro"],
+    ["blurry", "Blurry"],
+  ];
+  return options.map(([key, label]) =>
+    "<option value=\"" + key + "\" " + (key === value ? "selected" : "") + ">" + label + "</option>"
+  ).join("");
+}
+
 function renderShotReview(items) {
   const previous = new Map(shotReviewItems.map((item) => [Number(item.index), item]));
   shotReviewItems = (items || []).map((item) => {
@@ -1903,12 +2214,23 @@ function renderShotReview(items) {
       : `<span class="review-thumb-placeholder ${item.thumbnail_status === "failed" ? "failed" : "pending"}">${item.thumbnail_status === "failed" ? "Render failed" : "Generating…"}</span>`;
     const error = item.thumbnail_status === "failed" && item.thumbnail_error
       ? `<em class="review-thumb-error">${escapeHtml(item.thumbnail_error)}</em>` : "";
+    const pose = item.pose || {};
+    const poseText = item.landmark
+      ? `yaw ${Number(pose.yaw ?? 0).toFixed(1)}° · pitch ${Number(pose.pitch ?? 0).toFixed(1)}° · FOV ${Number(pose.fov ?? 0).toFixed(1)}°`
+      : "";
+    const reserve = Number(item.candidate_count);
+    const reserveText = Number.isFinite(reserve) ? `${reserve} frames alternativos disponibles` : "";
     return `<article class="review-card ${item.keep ? "keep" : "reject"}" data-review-index="${item.index}">
     <button class="review-thumb-button" data-review-thumb="${item.index}">${thumb}</button>
     <button type="button" class="review-other-frame" data-review-replace="${item.index}">Otro frame</button>
     <label class="review-keep"><input type="checkbox" data-review-keep="${item.index}" ${item.keep ? "checked" : ""}/> Keep</label>
-    <strong>#${item.index + 1} · ${escapeHtml(item.source)}</strong>
+    <strong>#${item.index + 1} · ${escapeHtml(item.source)}${item.camera_id ? ` · cámara ${escapeHtml(item.camera_id)}` : ""}</strong>
     <span>${Number(item.duration_sec).toFixed(1)}s${item.landmark ? ` · ${escapeHtml(item.landmark)} frame` : ""}</span>
+    ${poseText ? `<small class="review-pose">${poseText}</small>` : ""}
+    ${reserveText ? `<small class="review-candidates">${reserveText}</small>` : ""}
+    <label class="review-transition">Transición hacia la siguiente toma
+      <select data-review-transition="${item.index}">${reviewTransitionOptions(item.transition_type)}</select>
+    </label>
     ${error}
     ${item.no_alternative ? '<em>No alternative coverage available</em>' : ""}
   </article>`;
@@ -2024,6 +2346,7 @@ async function openPaperEdit() {
 
 function applyEditTypeMode() {
   const passthrough360 = selectedPlatform === "360";
+  const youtubeDirectResult = selectedPlatform === "youtube";
   const cameraMix = document.querySelector("#cameraMix");
   const songPicker = document.querySelector("#songPicker");
   const reelOptions = document.querySelector("#reelOptions");
@@ -2041,6 +2364,11 @@ function applyEditTypeMode() {
     backstageOptions.open = selectedPlatform === "backstage";
   }
   if (trimBox) trimBox.hidden = selectedPlatform === "backstage";
+
+  renderSphericalSetup();
+  const composeNav = document.querySelector('[data-step-nav="5"]');
+  if (composeNav) composeNav.hidden = youtubeDirectResult;
+  if (youtubeDirectResult && currentStep === 5) setStep(3);
 }
 
 function renderReelOptions() {
@@ -2189,7 +2517,7 @@ function applyFixedRearMotion(enabled) {
 }
 
 function verticalFovFromHorizontal(horizontalFov, aspect) {
-  const horizontal = clamp(Number(horizontalFov) || 100, 1, 179);
+  const horizontal = clamp(Number(horizontalFov) || 100, 82, 165);
   return (2 * Math.atan(Math.tan((horizontal * Math.PI) / 360) / Math.max(0.1, aspect)) * 180) / Math.PI;
 }
 
@@ -2298,7 +2626,7 @@ function wireResult360Events(canvas) {
     result360.dragY = event.clientY;
     const sensitivity = dragSensitivityScale(result360.fov);
     result360.yaw = normalizeYaw(result360.yaw - dx * YAW_DEG_PER_PX * sensitivity) ?? 0;
-    result360.pitch = clamp(result360.pitch + dy * PITCH_DEG_PER_PX * sensitivity, -85, 85);
+    result360.pitch = clamp(result360.pitch + dy * PITCH_DEG_PER_PX * sensitivity, -25, 25);
     updateResult360Camera();
   });
   const stopDrag = (event) => {
@@ -2338,7 +2666,7 @@ function updateResult360Camera() {
   result360.camera.fov = verticalFovFromHorizontal(result360.fov, aspect);
   result360.camera.updateProjectionMatrix();
   const yaw = THREE.MathUtils.degToRad(signedYawDelta(result360.yaw, 0));
-  const pitch = THREE.MathUtils.degToRad(clamp(result360.pitch, -85, 85));
+  const pitch = THREE.MathUtils.degToRad(clamp(result360.pitch, -25, 25));
   const target = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
   result360.camera.lookAt(target);
   document.querySelector("#result360Hud").textContent = `Yaw ${formatCanonicalNumber(result360.yaw)}° · Pitch ${formatCanonicalNumber(result360.pitch)}°`;
@@ -2436,6 +2764,9 @@ async function waitForPreparedProject() {
 
 async function startWizard(options = {}) {
   const waitForPrepare = options.waitForPrepare === true;
+  // Every explicit run is a fresh creative pass.  Keeping the same seed
+  // made the edit fingerprint and camera tie-breaks reproduce the prior cut.
+  currentVariationSeed = `${Date.now()}-${Math.random()}`;
   const inputs = selectedInputs();
   lastPipelineStage = null;
   hideStageTransition();
@@ -2466,12 +2797,14 @@ async function startWizard(options = {}) {
       trim_start_sec: timeToSeconds(document.querySelector("#trimStart").value),
       trim_end_sec: timeToSeconds(document.querySelector("#trimEnd").value),
       spherical_landmarks: sphericalLandmarksFromForm(),
+      spherical_landmarks_by_source: sphericalProjectSettings?.settings?.spherical_landmarks_by_source || {},
       camera_role_weights: cameraRoleWeightsFromForm(),
       fixed_rear_motion: fixedRearMotionFromForm(),
-      spherical_motion: false,
+      spherical_motion: true,
       spherical_mode: "automatic",
       spherical_sweep: false,
-      sweep_speed_deg_per_sec: appConfig?.sweep_speed_deg_per_sec || 60,
+      sweep_speed_deg_per_sec: appConfig?.sweep_speed_deg_per_sec || 5,
+      spherical_source_path: selectedSphericalSourcePath(),
       reel_duration_sec: reelOptionsFromForm().duration,
       backstage_duration_sec: Number(document.querySelector("#backstageDuration")?.value || 180),
       reel_aspect: reelOptionsFromForm().aspect,
@@ -2480,6 +2813,7 @@ async function startWizard(options = {}) {
       reel_text_overlays: reelOptionsFromForm().texts,
       reel_image_overlays: reelOptionsFromForm().images,
       backstage_messages: backstageMessagesFromForm(),
+      transition_type: "auto",
       master: inputs.master,
       songs: inputs.songs,
       videos: inputs.videos,
@@ -2491,6 +2825,18 @@ async function startWizard(options = {}) {
   await pollStatus(statusPollGeneration);
 }
 
+async function waitForWizardStop(timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  ensureStatusPolling();
+  while (Date.now() < deadline) {
+    await pollStatus(statusPollGeneration);
+    const status = latestStatus?.status;
+    if (status !== "running" && status !== "cancelling") return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return false;
+}
+
 async function cancelWizard() {
   if (!confirm("Stop this export? Progress so far will be lost.")) return;
   const button = document.querySelector("#cancelWizard");
@@ -2500,8 +2846,29 @@ async function cancelWizard() {
   }
   try {
     await api("/wizard/cancel", { method: "POST" });
+    const stopped = await waitForWizardStop();
+    if (!stopped) {
+      showToast("The export is still stopping. Please wait before starting again.", true);
+      return;
+    }
+    const deadline = Date.now() + 10000;
+    let reset = false;
+    while (Date.now() < deadline) {
+      try {
+        await api("/wizard/reset", { method: "POST" });
+        reset = true;
+        break;
+      } catch (_error) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+    if (!reset) {
+      showToast("The export was cancelled, but the worker is still stopping.", true);
+      return;
+    }
+    await newProject();
   } catch (error) {
-    showToast(error.message, true);
+    if (latestStatus?.status !== "cancelling") showToast(error.message, true);
   } finally {
     if (button) {
       button.disabled = false;
@@ -2509,7 +2876,6 @@ async function cancelWizard() {
     }
   }
 }
-
 function timeToSeconds(value) {
   const text = String(value || "").trim();
   if (!text) return null;
@@ -2658,9 +3024,23 @@ function renderWizardStatus(status) {
   }
   const reportedProgress = Math.max(0, Math.min(100, Number(status.progress || 0)));
   const progress = Math.max(progressFloor, reportedProgress);
+  const progressBar = document.querySelector("#progressBar");
+  if (progressBar) {
+    progressBar.classList.toggle(
+      "is-active",
+      status.status === "running" || status.status === "cancelling",
+    );
+  }
   const progressBox = document.querySelector("#progressBox");
+  const cancelButton = document.querySelector("#cancelWizard");
+  if (cancelButton) {
+    const cancellable = status.status === "running" || status.status === "cancelling";
+    cancelButton.hidden = !cancellable;
+    cancelButton.disabled = status.status === "cancelling";
+    cancelButton.textContent = status.status === "cancelling" ? "Cancelling…" : "Cancel";
+  }
   const reviewBox = document.querySelector("#reviewBox");
-  const platform = selectedPlatform || status.result?.platform || "";
+  const platform = status.result?.platform || status.platform || latestResult?.platform || selectedPlatform || "";
   const stage = status.stage || "";
   if (status.status === "waiting_choice") {
     // The strip is a live-progress affordance. A terminal sync response must
@@ -2681,7 +3061,7 @@ function renderWizardStatus(status) {
       if (progressBox) progressBox.hidden = true;
       stopStatusPolling();
       resetProgressTiming();
-      document.querySelector("#progressBar").style.width = "0%";
+      if (progressBar) progressBar.style.width = "0%";
       document.querySelector("#progressPercent").textContent = "0%";
       document.querySelector("#progressMessage").textContent = status.message || "Ready to edit";
       document.querySelector("#progressDetail").textContent = status.detail || "Choose an edit type";
@@ -2691,9 +3071,9 @@ function renderWizardStatus(status) {
     }
     return;
   }
-  if (status.status === "running") {
+  if (status.status === "running" || status.status === "cancelling") {
     setStep(3);
-    if (stage && stage !== lastPipelineStage) stopAllPreviewAudio();
+    if (status.status === "running" && stage && stage !== lastPipelineStage) stopAllPreviewAudio();
     if (stage === "cut" && lastPipelineStage !== "cut") {
       if (platform === "youtube") showYouTubeSyncToCut();
       else if (platform === "reel") showReelSyncToCut();
@@ -2739,7 +3119,7 @@ function renderWizardStatus(status) {
     setStep(4);
     return;
   }
-  if (status.status === "running" || status.status === "failed" || status.status === "done") {
+  if (status.status === "running" || status.status === "cancelling" || status.status === "failed" || status.status === "done") {
     if (progressBox) progressBox.hidden = false;
     if (reviewBox) reviewBox.hidden = true;
     document.querySelector("#paperEditBox")?.setAttribute("hidden", "");
@@ -2747,15 +3127,17 @@ function renderWizardStatus(status) {
   progressFloor = progress;
   updateTiming(status, progress);
   renderStatusStrip(status, progress);
-  document.querySelector("#progressBar").style.width = `${progress}%`;
+  if (progressBar) progressBar.style.width = `${progress}%`;
   document.querySelector("#progressPercent").textContent = `${Math.round(progress)}%`;
   document.querySelector("#progressMessage").textContent = playfulProgressMessage(status.message) || S.working;
   document.querySelector("#progressDetail").textContent = status.detail || currentSubtask(status) || S.nextStep;
   document.querySelector("#elapsedTime").textContent = `${S.elapsed}: ${formatElapsed(elapsedSeconds())}`;
   document.querySelector("#etaTime").textContent = `${S.eta}: ${formatEta(etaSeconds(progress, status))}`;
   updateStageChecks(progress, status);
-  if (status.status === "running") {
-    document.querySelector("#progressTitle").textContent = "Creating your video";
+  if (status.status === "cancelling") {
+    document.querySelector("#progressTitle").textContent = stage === "compose" ? "Cancelling final video" : "Cancelling export";
+  } else if (status.status === "running") {
+    document.querySelector("#progressTitle").textContent = stage === "compose" ? "Rendering final video" : "Creating your video";
   }
   if (status.status === "failed") {
     stopStatusPolling();
@@ -2768,7 +3150,16 @@ function renderWizardStatus(status) {
   }
   if (status.status === "done") {
     stopStatusPolling();
-    latestResult = status.result;
+    latestResult = status.result || {};
+    if (!latestResult.filename || !latestResult.media_url) {
+      document.querySelector("#errorText").textContent = "The final render finished, but its result metadata was missing.";
+      document.querySelector("#resultTitle").textContent = "Render finished with incomplete result";
+      document.querySelector("#errorBox").hidden = false;
+      document.querySelector("#resultBox").hidden = true;
+      refreshProgressReport().catch((error) => logFrontendError(`progress report failed: ${error.message}`, error.stack || ""));
+      setStep(6);
+      return;
+    }
     document.querySelector("#progressTitle").textContent = S.doneTitle;
     document.querySelector("#resultTitle").textContent = S.doneTitle;
     document.querySelector("#resultFilename").textContent = latestResult.filename;
@@ -2801,7 +3192,7 @@ function renderWizardStatus(status) {
     }
     document.querySelector("#errorBox").hidden = true;
     document.querySelector("#resultBox").hidden = false;
-    if (status.stage === "compose") {
+    if (status.stage === "compose" || youtubeSkipsComposition(latestResult.platform || status.platform)) {
       setStep(6);
       return;
     }
@@ -2811,7 +3202,7 @@ function renderWizardStatus(status) {
   }
   if (status.status === "cancelled") {
     stopStatusPolling();
-    document.querySelector("#errorText").textContent = "Export cancelled.";
+    document.querySelector("#errorText").textContent = status.stage === "compose" ? "Final video composition cancelled." : "Export cancelled.";
     document.querySelector("#resultTitle").textContent = "Cancelled";
     document.querySelector("#errorBox").hidden = false;
     document.querySelector("#resultBox").hidden = true;
@@ -2821,13 +3212,13 @@ function renderWizardStatus(status) {
 
 function renderStatusStrip(status, progress) {
   const strip = document.querySelector("#statusStrip");
-  if (status.status !== "running") {
+  if (status.status !== "running" && status.status !== "cancelling") {
     strip.hidden = true;
     return;
   }
   strip.hidden = false;
   const detail = currentSubtask(status) || status.message || S.working;
-  document.querySelector("#statusStripText").textContent = `${detail} · ${Math.round(progress)}% · ${formatEta(etaSeconds(progress, status))}`;
+  document.querySelector("#statusStripText").textContent = `${detail} · ${Math.round(progress)}% · ${formatElapsed(elapsedSeconds())} · ${formatEta(etaSeconds(progress, status))}`;
 }
 
 function currentSubtask(status) {
@@ -3147,7 +3538,7 @@ document.addEventListener("click", (event) => {
   }
   if (target.id === "renderReviewed") {
     if (shotReviewItems.some((item) => !item.keep)) { showToast("Replace or re-approve rejected shots before rendering", true); return; }
-    api("/wizard/review/render", { method: "POST" }).then((started) => { activeProjectId = projectIdFromStatus(started) || activeProjectId; document.querySelector("#reviewBox").hidden = true; document.querySelector("#progressBox").hidden = false; setStep(3); ensureStatusPolling(); return pollStatus(statusPollGeneration); }).catch((error) => showToast(error.message, true));
+    api("/wizard/review/render", { method: "POST", body: JSON.stringify({ transitions: Object.fromEntries(shotReviewItems.map((item) => [String(item.index), item.transition_type || "auto"])) }) }).then((started) => { activeProjectId = projectIdFromStatus(started) || activeProjectId; document.querySelector("#reviewBox").hidden = true; document.querySelector("#progressBox").hidden = false; setStep(3); ensureStatusPolling(); return pollStatus(statusPollGeneration); }).catch((error) => showToast(error.message, true));
   }
   if (target.id === "approvePaperEdit") {
     const rejected = Array.from(document.querySelectorAll("[data-paper-reject]:checked"))
@@ -3443,10 +3834,14 @@ document.addEventListener("click", (event) => {
     document.querySelector("#resultBox").hidden = true;
     document.querySelector("#progressTitle").textContent = "Creating your video";
     setStep(3);
-    api("/wizard/reset")
-      .catch(() => {})
-      .then(() => startWizard({ waitForPrepare: false }))
-      .catch((error) => showToast(error.message, true));
+    (async () => {
+      try {
+        await api("/wizard/reset");
+        await startWizard({ waitForPrepare: false });
+      } catch (error) {
+        showToast(error.message, true);
+      }
+    })();
   }
   if (target.id === "again") {
     currentVariationSeed = `${Date.now()}-${Math.random()}`;
@@ -3482,13 +3877,13 @@ document.addEventListener("click", (event) => {
     const wrap = document.querySelector(".compose-player-wrap");
     setComposePlayerExpanded(!wrap?.classList.contains("is-expanded"));
   }
-  if (target.id === "composeContinue") saveComposition().then(() => {
+  if (target.id === "composeContinue" && !youtubeSkipsComposition()) saveComposition().then(() => {
     document.querySelector("#resultBox").hidden = true;
     document.querySelector("#errorBox").hidden = true;
     progressFloor = 0;
     progressStartedAt = Date.now();
     progressSamples = [];
-    document.querySelector("#progressTitle").textContent = "Rendering your final composition";
+    document.querySelector("#progressTitle").textContent = "Rendering final video";
     setStep(3);
     ensureStatusPolling();
   }).catch((error) => showToast(error.message, true));
@@ -3521,6 +3916,11 @@ document.addEventListener("change", (event) => {
     api("/wizard/paper-edit/text", { method: "POST", body: JSON.stringify({ id: target.dataset.paperSubtitle, text: target.value }) })
       .then((paper) => { renderPaperEdit(paper); })
       .catch((error) => showToast(error.message, true));
+  }
+  if (target instanceof HTMLSelectElement && target.dataset.reviewTransition != null) {
+    const item = shotReviewItems.find((entry) => Number(entry.index) === Number(target.dataset.reviewTransition));
+    if (item) item.transition_type = target.value;
+    return;
   }
   if (target instanceof HTMLSelectElement && target.dataset.paperMark) {
     api("/wizard/paper-edit/mark", { method: "POST", body: JSON.stringify({ id: target.dataset.paperMark, mark: target.value }) })
@@ -3938,8 +4338,12 @@ async function boot() {
     document.querySelector("#paperEditBox")?.removeAttribute("hidden");
     openPaperEdit().catch((error) => showToast(error.message, true));
   } else if (status.status === "done") {
-    setStep(5);
-    openCaptions().catch((error) => showToast(error.message, true));
+    if (youtubeSkipsComposition(status.result?.platform || status.platform)) {
+      setStep(6);
+    } else {
+      setStep(5);
+      openCaptions().catch((error) => showToast(error.message, true));
+    }
   } else if (status.status === "failed") {
     setStep(6);
   }

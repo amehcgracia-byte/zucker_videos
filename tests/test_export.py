@@ -643,7 +643,7 @@ def test_spherical_render_parts_do_not_add_static_drift():
 def test_spherical_pan_steps_keep_angle_increments_small():
     segments = [
         {"clip_path": "/tmp/360.mp4", "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 3, "spherical_shot": {"type": "singer", "label": "Cantante", "yaw": 20, "pitch": 0, "fov": 80}},
-        {"clip_path": "/tmp/360.mp4", "clip_start_sec": 3, "master_start_sec": 3, "duration_sec": 3, "spherical_shot": {"type": "left", "label": "Lado izquierdo", "yaw": 100, "pitch": 0, "fov": 80, "transition_sec": 0.45}},
+        {"clip_path": "/tmp/360.mp4", "clip_start_sec": 3, "master_start_sec": 3, "duration_sec": 3, "spherical_shot": {"type": "left", "label": "Lado izquierdo", "yaw": 100, "pitch": 0, "fov": 80, "transition_sec": 0.45, "sweep_enabled": True, "intershot_sweep": True}},
     ]
 
     parts = _expand_spherical_render_segments(segments)
@@ -697,11 +697,14 @@ def test_sendcmd_emits_gentle_yaw_only_pose_motion():
     samples = [_v360_motion_at(shot, 3.0, t) for t in (0.0, 1.5, 3.0)]
     commands = _v360_motion_commands(shot, 3.0)
 
-    assert len(commands) == 8
-    assert len({line.split()[0] for line in commands}) == 2
+    # Eight piecewise intervals are evaluated on every frame. This is
+    # materially different from the old two boundary events, which left the
+    # rendered v360 view frozen between timestamps.
+    assert len(commands) == 7 * 4
+    assert all("[expr]" in command for command in commands)
+    assert len({line.split()[0] for line in commands}) == 7
+    assert all("*TI;" in command for command in commands)
     assert samples[0][0] < samples[1][0] < samples[2][0]
-    assert samples[0][1:] == samples[1][1:] == samples[2][1:]
-
 
 def test_continuous_spherical_segments_keep_cut_count_flat():
     segments = [
@@ -767,7 +770,7 @@ def test_returning_to_360_keeps_previous_spherical_view_across_other_camera_cut(
     segments = [
         {"duration_sec": 3, "spherical_shot": {"type": "left", "yaw": 16, "pitch": -16, "fov": 100}},
         {"duration_sec": 3},
-        {"duration_sec": 3, "spherical_shot": {"type": "audience", "yaw": 175, "pitch": -12, "fov": 111, "sweep_speed_deg_per_sec": 30}},
+        {"duration_sec": 3, "spherical_shot": {"type": "audience", "yaw": 175, "pitch": -12, "fov": 111, "sweep_speed_deg_per_sec": 30, "sweep_enabled": True, "intershot_sweep": True}},
     ]
 
     rendered = _continuous_spherical_render_segments(segments)
@@ -845,11 +848,13 @@ def test_hold_rate_is_converted_from_degrees_per_second_to_total_travel():
     }
     duration = 8.7
     commands = _v360_motion_commands(shot, duration)
-    yaws = [float(line.split(" yaw ", 1)[1].rstrip(";\n")) for line in commands if " yaw " in line]
-    assert len({line.split()[0] for line in commands}) == 2
-    assert yaws[-1] - yaws[0] == pytest.approx(degrees_per_second_to_step(0.4, duration / 2.0), rel=0.05)
-    assert yaws[-1] - yaws[0] < 10.0
-
+    assert commands
+    assert all("[expr]" in command and "*TI;" in command for command in commands)
+    assert any(command.startswith("0.000000-") for command in commands)
+    start = _v360_motion_at(shot, duration, 0.0)[0]
+    end = _v360_motion_at(shot, duration, duration)[0]
+    assert end - start == pytest.approx(degrees_per_second_to_step(0.4, duration))
+    assert end - start < 10.0
 
 @pytest.mark.parametrize(
     ("shot", "expected_travel"),
@@ -880,13 +885,15 @@ def test_hold_rate_is_converted_from_degrees_per_second_to_total_travel():
 )
 def test_sendcmd_rate_fields_are_seconds_not_frames(shot, expected_travel):
     commands = _v360_motion_commands(shot, 8.9)
-    yaws = [float(line.split(" yaw ", 1)[1].rstrip(";\n")) for line in commands if " yaw " in line]
-    travel = abs(((yaws[-1] - yaws[0] + 180.0) % 360.0) - 180.0)
+    assert commands
+    assert all("[expr]" in command and "*TI;" in command for command in commands)
+    start = _v360_motion_at(shot, 8.9, 0.0)[0]
+    end = _v360_motion_at(shot, 8.9, 8.9)[0]
+    travel = abs(((end - start + 180.0) % 360.0) - 180.0)
     assert travel == pytest.approx(expected_travel, rel=0.10, abs=0.1)
     # A 30-fps implementation accidentally multiplying a deg/s value by the
     # number of command steps would exceed this by roughly 30x.
     assert travel < expected_travel * 1.2 + 0.2
-
 
 def test_planet_uses_stereographic_tiny_planet_projection():
     graph = _export_source_filter({"projection": "equirect"}, {"type": "planet", "yaw": 6, "pitch": -90, "fov": 260}, duration=3.0, command_path=None)
@@ -2041,3 +2048,42 @@ def test_reel_image_overlay_effects_are_rasterized(tmp_path: Path) -> None:
     center = rendered.getpixel((540, 960))
     assert center[1] > 200 and center[0] < 80 and center[2] < 80
     assert any(pixel[3] > 0 for pixel in rendered.crop((530, 950, 560, 980)).getdata())
+
+
+
+def test_export_filter_preserves_authored_360_roll_and_dewarp_fov():
+    from core.stages.export import _export_source_filter
+
+    graph = _export_source_filter(
+        {"projection": "equirect"},
+        {
+            "type": "singer",
+            "yaw": 171.2,
+            "pitch": -36.5,
+            "fov": 150.0,
+            "roll": 7.5,
+            "projection_preset": "dewarp",
+        },
+    )
+    assert "roll=7.500" in graph
+    assert "h_fov=100.000" in graph
+    assert "output=flat" in graph
+
+
+
+def test_negative_hold_rate_is_rendered_as_a_real_in_shot_move():
+    from core.stages.export import _v360_motion_at, _v360_motion_commands
+
+    shot = {
+        "type": "singer",
+        "yaw": 17.0,
+        "pitch": -12.0,
+        "fov": 95.0,
+        "sweep_enabled": False,
+        "hold_motion": "subtle",
+        "hold_motion_rate_deg_per_sec": -0.8,
+    }
+    start = _v360_motion_at(shot, 6.0, 0.0)[0]
+    end = _v360_motion_at(shot, 6.0, 6.0)[0]
+    assert end - start == pytest.approx(-4.8)
+    assert _v360_motion_commands(shot, 6.0)

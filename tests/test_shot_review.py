@@ -7,7 +7,7 @@ from pathlib import Path
 from core.project import create_project, load_project
 import pytest
 
-from core.shot_review import ThumbnailRenderError, _candidate_covers_slot, _candidate_keys, _review_segment, _review_signature, _thumbnail_filter, replace_slots, review_items
+from core.shot_review import ThumbnailRenderError, _candidate_covers_slot, _candidate_keys, _review_candidate_pool, _review_segment, _review_signature, _thumbnail_filter, replace_slots, review_items
 from core.stages.base import artifact_path
 
 
@@ -190,3 +190,20 @@ def test_youtube_replacement_keeps_high_confidence_unstable_coverage_available()
         "unstable_sync": True, "low_confidence": False,
     }
     assert _candidate_covers_slot(iphone, segment, "youtube")
+
+
+def test_spherical_review_pool_uses_slot_record_and_many_distinct_poses(tmp_path: Path) -> None:
+    clip = tmp_path / "wide.mp4"
+    segment = {
+        "clip_path": str(clip), "source_path": str(clip), "projection": "equirect",
+        "clip_start_sec": 2.0, "master_start_sec": 102.0, "duration_sec": 2.0,
+        "spherical_shot": {"type": "singer", "shot_id": "singer", "label": "Cantante", "yaw": 40.0, "pitch": 0.0, "fov": 95.0},
+    }
+    coverage = {"sources": [
+        {"path": str(clip), "offset_sec": 0.0, "duration_sec": 8.0, "filename": clip.name},
+        {"path": str(clip), "offset_sec": 100.0, "duration_sec": 8.0, "filename": clip.name},
+    ]}
+    pool, _origin = _review_candidate_pool(coverage, [segment], segment, "youtube")
+    spherical = [item for item in pool if item.get("spherical_shot")]
+    assert len(spherical) >= 12
+    assert {round(float(item["clip_start_sec"]), 3) for item in spherical} == {2.0}

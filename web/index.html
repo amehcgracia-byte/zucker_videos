@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Zucker Editor</title>
     <link rel="icon" href="/logo_editor_green.png?v=editor-ui-4" />
-    <link rel="stylesheet" href="/styles.css?v=editor-ui-4" />
+    <link rel="stylesheet" href="/styles.css?v=editor-ui-5" />
     <script src="/theme.js?v=editor-ui-4"></script>
   </head>
   <body>
@@ -210,6 +210,25 @@
             <input id="backstageMessage4" type="text" maxlength="180" placeholder="Mensaje 4" />
           </div>
         </details>
+        <div id="sphericalSetup" class="spherical-setup" hidden>
+          <div class="setup-heading">
+            <h2>360° Shot Setup</h2>
+            <button id="saveSphericalSetup" class="icon-button small" type="button">Save angles</button>
+          </div>
+          <label class="spherical-source-picker">Preview source
+            <select id="sphericalSourceSelect" aria-label="360 preview source"></select>
+          </label>
+          <p class="setup-hint">These previews are rendered from the real 360 source. Adjust yaw, pitch and FOV per shot; saved values are reused by new projects.</p>
+          <div class="spherical-fields">
+            <fieldset data-spherical-landmark="full_stage"><legend>Stage</legend><canvas data-spherical-canvas="full_stage" aria-label="Stage 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="full_stage">Save as Stage</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Roll<input data-field="roll" type="number" step="0.1" /></label><label>Projection<select data-field="projection_preset"><option value="linear">Linear</option><option value="dewarp">Dewarp</option><option value="megaview">MegaView</option><option value="ultrawide">UltraWide</option><option value="tiny_planet">Tiny Planet</option></select></label><label>Projection control<input data-field="projection_control" type="number" min="0" max="1" step="0.01" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
+            <fieldset data-spherical-landmark="singer"><legend>Singer</legend><canvas data-spherical-canvas="singer" aria-label="Singer 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="singer">Save as Singer</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Roll<input data-field="roll" type="number" step="0.1" /></label><label>Projection<select data-field="projection_preset"><option value="linear">Linear</option><option value="dewarp">Dewarp</option><option value="megaview">MegaView</option><option value="ultrawide">UltraWide</option><option value="tiny_planet">Tiny Planet</option></select></label><label>Projection control<input data-field="projection_control" type="number" min="0" max="1" step="0.01" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
+            <fieldset data-spherical-landmark="audience"><legend>Audience</legend><canvas data-spherical-canvas="audience" aria-label="Audience 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="audience">Save as Audience</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Roll<input data-field="roll" type="number" step="0.1" /></label><label>Projection<select data-field="projection_preset"><option value="linear">Linear</option><option value="dewarp">Dewarp</option><option value="megaview">MegaView</option><option value="ultrawide">UltraWide</option><option value="tiny_planet">Tiny Planet</option></select></label><label>Projection control<input data-field="projection_control" type="number" min="0" max="1" step="0.01" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
+            <fieldset data-spherical-landmark="left"><legend>Left</legend><canvas data-spherical-canvas="left" aria-label="Left 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="left">Save as Left</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Roll<input data-field="roll" type="number" step="0.1" /></label><label>Projection<select data-field="projection_preset"><option value="linear">Linear</option><option value="dewarp">Dewarp</option><option value="megaview">MegaView</option><option value="ultrawide">UltraWide</option><option value="tiny_planet">Tiny Planet</option></select></label><label>Projection control<input data-field="projection_control" type="number" min="0" max="1" step="0.01" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
+            <fieldset data-spherical-landmark="right"><legend>Right</legend><canvas data-spherical-canvas="right" aria-label="Right 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="right">Save as Right</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Roll<input data-field="roll" type="number" step="0.1" /></label><label>Projection<select data-field="projection_preset"><option value="linear">Linear</option><option value="dewarp">Dewarp</option><option value="megaview">MegaView</option><option value="ultrawide">UltraWide</option><option value="tiny_planet">Tiny Planet</option></select></label><label>Projection control<input data-field="projection_control" type="number" min="0" max="1" step="0.01" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
+            <fieldset data-spherical-landmark="audience_stage_wide"><legend>Audience + stage</legend><canvas data-spherical-canvas="audience_stage_wide" aria-label="Audience and stage 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="audience_stage_wide">Save as Audience + stage</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Roll<input data-field="roll" type="number" step="0.1" /></label><label>Projection<select data-field="projection_preset"><option value="linear">Linear</option><option value="dewarp">Dewarp</option><option value="megaview">MegaView</option><option value="ultrawide">UltraWide</option><option value="tiny_planet">Tiny Planet</option></select></label><label>Projection control<input data-field="projection_control" type="number" min="0" max="1" step="0.01" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
+            <fieldset data-spherical-landmark="planet"><legend>Planet</legend><canvas data-spherical-canvas="planet" aria-label="Planet 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="planet">Save as Planet</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Roll<input data-field="roll" type="number" step="0.1" /></label><label>Projection<select data-field="projection_preset"><option value="linear">Linear</option><option value="dewarp">Dewarp</option><option value="megaview">MegaView</option><option value="ultrawide">UltraWide</option><option value="tiny_planet">Tiny Planet</option></select></label><label>Projection control<input data-field="projection_control" type="number" min="0" max="1" step="0.01" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
+          </div>
+        </div>
         <div id="cameraMix" class="camera-mix">
           <div class="setup-heading">
             <h2>Camera Mix</h2>
@@ -230,22 +249,6 @@
             </details>
           </div>
         </div>
-        <div id="sphericalSetup" class="spherical-setup" hidden>
-          <div class="setup-heading">
-            <h2>360° Shot Setup</h2>
-            <button id="saveSphericalSetup" class="icon-button small" type="button">Save angles</button>
-          </div>
-          <p class="setup-hint">These previews are rendered from the real 360 source. Adjust yaw, pitch and FOV per shot; saved values are reused by new projects.</p>
-          <div class="spherical-fields">
-            <fieldset data-spherical-landmark="full_stage"><legend>Stage</legend><canvas data-spherical-canvas="full_stage" aria-label="Stage 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="full_stage">Save as Stage</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="singer"><legend>Singer</legend><canvas data-spherical-canvas="singer" aria-label="Singer 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="singer">Save as Singer</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="audience"><legend>Audience</legend><canvas data-spherical-canvas="audience" aria-label="Audience 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="audience">Save as Audience</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="left"><legend>Left</legend><canvas data-spherical-canvas="left" aria-label="Left 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="left">Save as Left</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="right"><legend>Right</legend><canvas data-spherical-canvas="right" aria-label="Right 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="right">Save as Right</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="audience_stage_wide"><legend>Audience + stage</legend><canvas data-spherical-canvas="audience_stage_wide" aria-label="Audience and stage 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="audience_stage_wide">Save as Audience + stage</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="planet"><legend>Planet</legend><canvas data-spherical-canvas="planet" aria-label="Planet 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="planet">Save as Planet</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
-          </div>
-        </div>
         <button id="startWizard" class="primary icon-button" data-icon="wand" disabled>Make it</button>
       </section>
 
@@ -260,15 +263,27 @@
           <p id="stageTransitionDetail"></p>
         </div>
         <div id="progressBox" class="progress-box">
-          <div class="progress-track"><div id="progressBar"></div></div>
-          <div class="progress-main">
-            <strong id="progressMessage">Working...</strong>
-            <span id="progressPercent">0%</span>
-          </div>
-          <span id="progressDetail"></span>
-          <div class="progress-meta">
-            <span id="elapsedTime">Elapsed: 0 min</span>
-            <span id="etaTime">ETA: estimating…</span>
+          <div class="progress-loading-stage">
+            <img
+              id="progressLoadingGif"
+              class="progress-loading-gif"
+              src="/zucker_loading_fast_interleaved_sequence.gif?v=loading-gif-2"
+              alt=""
+              aria-hidden="true"
+            />
+            <div class="progress-loading-overlay">
+              <div class="progress-track"><div id="progressBar"></div></div>
+              <div class="progress-main">
+                <strong id="progressMessage">Working...</strong>
+                <span id="progressPercent">0%</span>
+              </div>
+              <span id="progressDetail"></span>
+              <div class="progress-meta">
+                <span id="elapsedTime">Elapsed: 0 min</span>
+                <span id="etaTime">ETA: estimating…</span>
+              </div>
+              <button id="cancelWizard" class="icon-button danger" data-icon="close" hidden>Cancel</button>
+            </div>
           </div>
           <div class="stage-checks">
             <span data-stage="ingest">Prepare</span>
@@ -281,7 +296,6 @@
             <button id="copyProgressReport" class="icon-button small" data-icon="clipboard">Copy report</button>
             <pre id="progressReport">Loading details...</pre>
           </details>
-          <button id="cancelWizard" class="icon-button danger" data-icon="close">Cancel</button>
         </div>
       </section>
 
@@ -401,6 +415,9 @@
         </div>
       </section>
     </main>
+    <footer class="app-footer">
+      Built by JM.G (José Manuel García) · Zucker Editor build <span id="buildInfo">development build</span>
+    </footer>
     <div id="toast" class="toast" hidden></div>
     <div id="flyerPreviewModal" class="flyer-preview-modal" hidden role="dialog" aria-modal="true" aria-label="Flyer preview"><button id="closeFlyerPreview" class="flyer-preview-close" type="button" aria-label="Close">×</button><img id="flyerPreviewImage" alt="Flyer preview" /></div>
     <script src="/strings.js?v=editor-ui-4"></script>

@@ -16,9 +16,18 @@ from typing import Any
 from core.project import Project
 from core.ffmpeg import locate_executable
 from core.spherical_view import spherical_view_filter
+from core.spherical_view import (
+    effective_fov,
+    effective_pitch,
+    effective_projection_control,
+    effective_roll,
+    normalize_projection_preset,
+    view_parameters,
+)
 from core.stages.base import artifact_path
 from core.stages.cut import load_coverage
-from core.stages.edit import IPHONE_CROP_TOP_LIMIT, _camera_id
+from core.stages.edit import IPHONE_CROP_TOP_LIMIT, SPHERICAL_NORMAL_FOV_MIN, _camera_id
+from core.reel_framing import subject_box_for_window
 
 
 LOGGER = logging.getLogger(__name__)
@@ -59,8 +68,17 @@ def _source_for(segment: dict[str, Any]) -> str:
     return str(segment.get("proxy_path") or segment.get("clip_path") or segment.get("source_path") or "")
 
 
-def _current_spherical_landmarks(project: Project) -> dict[str, dict[str, Any]]:
-    raw = project.data.get("settings", {}).get("spherical_landmarks") or {}
+def _current_spherical_landmarks(project: Project, source_path: str | None = None) -> dict[str, dict[str, Any]]:
+    settings = project.data.get("settings", {}) or {}
+    profiles = settings.get("spherical_landmarks_by_source") or {}
+    candidates = []
+    if source_path:
+        candidates.extend([str(source_path), str(Path(source_path).expanduser().resolve())])
+    for key in candidates:
+        raw = profiles.get(key)
+        if isinstance(raw, dict) and raw:
+            return {str(name): dict(value) for name, value in raw.items() if isinstance(value, dict)}
+    raw = settings.get("spherical_landmarks") or {}
     return {str(key): dict(value) for key, value in raw.items() if isinstance(value, dict)}
 
 
@@ -73,13 +91,20 @@ def _review_segment(project: Project, segment: dict[str, Any]) -> dict[str, Any]
     """
     shot = segment.get("spherical_shot") or {}
     shot_type = str(shot.get("shot_id") or shot.get("type") or "")
-    saved = _current_spherical_landmarks(project).get(shot_type)
+    source_path = str(segment.get("spherical_source_path") or segment.get("source_path") or segment.get("clip_path") or "").strip()
+    saved = _current_spherical_landmarks(project, source_path).get(shot_type)
     if not saved or not shot:
         return dict(segment)
     effective = dict(shot)
-    for field in ("yaw", "pitch", "fov", "weight"):
+    for field in ("yaw", "pitch", "fov", "roll", "projection_preset", "projection_control", "weight"):
         if field in saved:
             effective[field] = saved[field]
+    # Review cards must use the same canonical pose that preview/export use.
+    effective["projection_preset"] = normalize_projection_preset(effective.get("projection_preset"), shot_type)
+    effective["pitch"] = effective_pitch(effective.get("pitch", 0.0), shot_type)
+    effective["fov"] = effective_fov(effective.get("fov", 95.0), shot_type, effective["projection_preset"])
+    effective["roll"] = effective_roll(effective.get("roll", 0.0), shot_type)
+    effective["projection_control"] = effective_projection_control(effective.get("projection_control"))
     effective["type"] = shot_type
     effective["shot_id"] = shot_type
     effective["label"] = _REVIEW_SHOT_LABELS.get(shot_type, shot.get("label") or shot_type)
@@ -157,10 +182,7 @@ def _spherical_analysis_source(project: Project, segment: dict[str, Any]) -> str
 
 def _review_pose_for_cache(segment: dict[str, Any]) -> dict[str, Any]:
     shot = segment.get("spherical_shot") or {}
-    pose = {
-        key: shot.get(key)
-        for key in ("type", "shot_id", "pitch", "fov", "projection", "insv_fov")
-    }
+    pose = {key: shot.get(key) for key in ("type", "shot_id", "pitch", "fov", "roll", "projection_preset", "projection_control", "projection", "insv_fov")}
     try:
         pose["yaw"] = float(shot.get("yaw") or 0.0) % 360.0
     except (TypeError, ValueError):
@@ -231,32 +253,57 @@ def _thumbnail_filter(segment: dict[str, Any], color_profile: dict[str, Any] | N
         projection = "raw_insv" if Path(source_path).suffix.lower() in {".insv", ".insp"} else "equirect"
     if projection not in {"equirect", "raw_insv"}:
         return f"{correction}scale=360:-2:force_original_aspect_ratio=decrease"
-    view_filter = spherical_view_filter(
-        projection,
+    view = view_parameters(
         float(shot.get("yaw") or 0.0),
         float(shot.get("pitch") or 0.0),
         float(shot.get("fov") or 95.0),
+        16.0 / 9.0,
         str(shot.get("type") or ""),
-        insv_fov=float(segment.get("insv_fov") or 190.0),
-        width=360,
-        height=202,
+        projection_preset=shot.get("projection_preset"),
+        roll=float(shot.get("roll") or 0.0),
+        projection_control=shot.get("projection_control"),
     )
-    return f"{correction}{view_filter},format=yuvj420p"
+    if projection == "raw_insv":
+        insv_fov = float(segment.get("insv_fov") or 190.0)
+        prefix = f"v360=input=dfisheye:output=e:ih_fov={insv_fov:.3f}:iv_fov={insv_fov:.3f}:interp=lanczos,"
+    else:
+        prefix = ""
+    return (
+        f"{correction}{prefix}v360=input=equirect:output={view['projection']}:"
+        f"yaw={float(view['yaw']):.3f}:pitch={float(view['pitch']):.3f}:"
+        f"roll={float(view['roll']):.3f}:"
+        f"h_fov={float(view['h_fov']):.3f}:v_fov={float(view['v_fov']):.3f}:"
+        "w=360:h=202:interp=lanczos,format=yuvj420p"
+    )
+
+
+def _spherical_pose_suffix(candidate: dict[str, Any]) -> str:
+    """Make different 360 framings distinct review candidates."""
+    shot = candidate.get("spherical_shot") or {}
+    if not isinstance(shot, dict) or not shot:
+        return ""
+    try:
+        yaw = float(shot.get("yaw") or 0.0) % 360.0
+        pitch = float(shot.get("pitch") or 0.0)
+        fov = float(shot.get("fov") or 95.0)
+    except (TypeError, ValueError):
+        return ""
+    return (
+        f"|yaw={yaw:.3f}|pitch={pitch:.3f}|fov={fov:.3f}"
+        f"|roll={float(shot.get('roll') or 0.0):.3f}"
+        f"|projection={normalize_projection_preset(shot.get('projection_preset'), str(shot.get('type') or ''))}"
+        f"|projection_control={float(shot.get('projection_control') or 0.0):.3f}"
+    )
 
 
 def _candidate_key(candidate: dict[str, Any]) -> str:
-    """Return the stable identity used by a slot's replacement history.
-
-    A source can contribute more than one usable moment, so the path alone is
-    not enough to identify a candidate.  Keep the format human-readable for
-    backwards compatibility with the existing review_attempts data.
-    """
+    """Return a stable identity for a source moment and its 360 framing."""
     path = candidate.get("path") or candidate.get("clip_path") or candidate.get("source_path") or ""
     try:
         start = float(candidate.get("clip_start_sec", candidate.get("offset_sec", 0)) or 0.0)
     except (TypeError, ValueError):
         start = 0.0
-    return f"{path}|{start:.6f}"
+    return f"{path}|{start:.6f}{_spherical_pose_suffix(candidate)}"
 
 
 def _candidate_keys(candidate: dict[str, Any]) -> set[str]:
@@ -268,6 +315,7 @@ def _candidate_keys(candidate: dict[str, Any]) -> set[str]:
         candidate.get("clip_offset_sec"),
     }
     keys = set()
+    pose_suffix = _spherical_pose_suffix(candidate)
     for raw_start in starts:
         if raw_start is None:
             continue
@@ -275,8 +323,35 @@ def _candidate_keys(candidate: dict[str, Any]) -> set[str]:
             value = float(raw_start)
         except (TypeError, ValueError):
             continue
-        keys.update({f"{path}|{value}", f"{path}|{value:.6f}"})
+        keys.update({
+            f"{path}|{value}{pose_suffix}",
+            f"{path}|{value:.6f}{pose_suffix}",
+        })
     return keys or {_candidate_key(candidate)}
+
+
+def _candidate_has_subject(candidate: dict[str, Any], segment: dict[str, Any]) -> bool:
+    """Reject known empty/corner flat frames from the replacement reserve."""
+    projection = str(candidate.get("projection") or segment.get("projection") or "").lower()
+    if projection in {"equirect", "raw_insv"} or candidate.get("spherical_shot"):
+        return True
+    profile = candidate.get("reel_framing") or segment.get("reel_framing")
+    if not profile:
+        return True
+    try:
+        start = float(candidate.get("clip_start_sec") or 0.0)
+        duration = max(0.1, float(segment.get("duration_sec") or 0.1))
+        box = subject_box_for_window(profile, start, duration)
+    except (TypeError, ValueError):
+        return False
+    if not box:
+        return False
+    width = max(0.0, float(box.get("x2") or 0.0) - float(box.get("x1") or 0.0))
+    height = max(0.0, float(box.get("y2") or 0.0) - float(box.get("y1") or 0.0))
+    area = width * height
+    center_x = (float(box.get("x1") or 0.0) + float(box.get("x2") or 0.0)) / 2.0
+    center_y = (float(box.get("y1") or 0.0) + float(box.get("y2") or 0.0)) / 2.0
+    return area >= 0.01 and 0.08 <= center_x <= 0.92 and 0.10 <= center_y <= 0.90
 
 
 def _candidate_covers_slot(candidate: dict[str, Any], segment: dict[str, Any], platform: str) -> bool:
@@ -302,19 +377,150 @@ def _candidate_covers_slot(candidate: dict[str, Any], segment: dict[str, Any], p
     return coverage_start <= master_start + 0.001 and coverage_end >= master_start + duration - 0.001
 
 
+def _spherical_review_poses(segment: dict[str, Any], segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return authored landmark poses plus conservative local alternatives.
+
+    A review reserve must remain near a saved landmark. Large synthetic yaw
+    jumps made it easy to replace a valid performer shot with an empty corner
+    or the audience while still satisfying the old "20 candidates" count.
+    """
+    current = dict(segment.get("spherical_shot") or {})
+    if not current:
+        return []
+    poses: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(raw: dict[str, Any]) -> None:
+        if not raw:
+            return
+        try:
+            yaw = float(raw.get("yaw") or 0.0) % 360.0
+            pose_type = str(raw.get("shot_id") or raw.get("type") or current.get("type") or "")
+            pitch = effective_pitch(float(raw.get("pitch") or 0.0), pose_type)
+            projection_preset = normalize_projection_preset(raw.get("projection_preset"), pose_type)
+            fov = effective_fov(float(raw.get("fov") or 95.0), pose_type, projection_preset)
+            roll = effective_roll(float(raw.get("roll") or 0.0), pose_type)
+        except (TypeError, ValueError):
+            return
+        pose = dict(raw)
+        pose["yaw"], pose["pitch"], pose["fov"] = round(yaw, 3), round(pitch, 3), round(fov, 3)
+        pose["roll"] = round(roll, 3)
+        pose["projection_preset"] = projection_preset
+        pose["projection_control"] = effective_projection_control(raw.get("projection_control"))
+        key = _spherical_pose_suffix({"spherical_shot": pose})
+        if key in seen:
+            return
+        seen.add(key)
+        poses.append(pose)
+
+    # Authored poses are always first. They are the source of truth for the
+    # landmark labels and therefore must survive even when the edit plan is
+    # stale or a proxy path was used by coverage.
+    anchors: list[dict[str, Any]] = []
+    add(current)
+    anchors.append(current)
+    reviewed_identity = {
+        "clip_path": segment.get("clip_path"),
+        "source_path": segment.get("source_path"),
+        "proxy_path": segment.get("proxy_path"),
+        "camera_id": segment.get("camera_id"),
+    }
+    for planned in segments:
+        planned_shot = dict(planned.get("spherical_shot") or {})
+        if not planned_shot:
+            continue
+        planned_identity = {
+            "clip_path": planned.get("clip_path"),
+            "source_path": planned.get("source_path"),
+            "proxy_path": planned.get("proxy_path"),
+            "camera_id": planned.get("camera_id"),
+        }
+        if _same_source_identity(reviewed_identity, planned_identity):
+            anchors.append(planned_shot)
+            add(planned_shot)
+
+    # Eight local yaw choices × three small framing choices gives 24 reserve
+    # candidates per authored landmark without ever jumping to another side
+    # of the panorama. If the project has singer/drummer/stage landmarks,
+    # each remains a nearby, semantically useful alternative.
+    yaw_offsets = (-40, -30, -20, -10, 10, 20, 30, 40)
+    framing = ((-3.0, -8.0), (0.0, 0.0), (3.0, 8.0))
+    for anchor_index, anchor in enumerate(anchors):
+        base_yaw = float(anchor.get("yaw") or 0.0)
+        base_pitch = float(anchor.get("pitch") or 0.0)
+        base_fov = float(anchor.get("fov") or 95.0)
+        for variant_index, (yaw_delta, (pitch_delta, fov_delta)) in enumerate(
+            ((yaw_delta, option) for yaw_delta in yaw_offsets for option in framing)
+        ):
+            variant = dict(anchor)
+            variant.update({
+                "type": f"review_local_{anchor_index + 1:02d}_{variant_index + 1:02d}",
+                "shot_id": f"review_local_{anchor_index + 1:02d}_{variant_index + 1:02d}",
+                "label": "Encuadre alternativo cercano",
+                "yaw": (base_yaw + yaw_delta) % 360.0,
+                "pitch": base_pitch + pitch_delta,
+                "fov": base_fov + fov_delta,
+            })
+            add(variant)
+    return poses
+
+def _source_record_for_slot(
+    source_records: list[dict[str, Any]],
+    master_start: float,
+    duration: float,
+) -> dict[str, Any] | None:
+    master_end = master_start + max(0.1, duration)
+    ranked: list[tuple[int, float, dict[str, Any]]] = []
+    for source in source_records:
+        try:
+            offset = float(source.get("offset_sec") or 0.0)
+            source_end = offset + max(0.0, float(source.get("duration_sec") or 0.0))
+        except (TypeError, ValueError):
+            continue
+        covers = offset <= master_start + 0.001 and source_end >= master_end - 0.001
+        overlap = max(0.0, min(source_end, master_end) - max(offset, master_start))
+        ranked.append((1 if covers else 0, overlap, source))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return ranked[0][2]
+
+
+def _path_aliases(raw: Any) -> set[str]:
+    """Return stable path spellings used by coverage and the edit plan."""
+    value = str(raw or "").strip()
+    if not value:
+        return set()
+    path = Path(value).expanduser()
+    aliases = {value, str(path)}
+    try:
+        aliases.add(str(path.resolve()))
+    except OSError:
+        pass
+    return aliases
+
+
+def _same_source_identity(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Match a camera even when coverage uses its proxy path."""
+    left_paths = set()
+    right_paths = set()
+    for key in ("path", "clip_path", "source_path", "proxy_path"):
+        left_paths.update(_path_aliases(left.get(key)))
+        right_paths.update(_path_aliases(right.get(key)))
+    if left_paths & right_paths:
+        return True
+    left_camera = str(left.get("camera_id") or _camera_id(left) or "").strip()
+    right_camera = str(right.get("camera_id") or _camera_id(right) or "").strip()
+    return bool(left_camera and right_camera and left_camera == right_camera)
+
+
 def _review_candidate_pool(
     coverage: dict[str, Any],
     segments: list[dict[str, Any]],
     segment: dict[str, Any],
     platform: str,
 ) -> tuple[list[dict[str, Any]], str]:
-    """Build real per-slot alternatives from source moments, not camera totals.
-
-    ``coverage.sources`` describes one record per camera and is sufficient for
-    coverage validation, but it is not a shot-review pool. The edit plan
-    already contains usable moments from every camera; retain those moments,
-    enrich them with sync metadata, and filter them against the rejected slot.
-    """
+    """Build per-slot alternatives from source moments and 360 poses."""
     sources = list(coverage.get("sources") or [])
     if not sources:
         sources = list(coverage.get("segments") or [])
@@ -326,8 +532,30 @@ def _review_candidate_pool(
     pool: list[dict[str, Any]] = []
     seen: set[str] = set()
     master_start = float(segment.get("master_start_sec") or 0.0)
+    reviewed_paths = {
+        str(segment.get(key) or "")
+        for key in ("clip_path", "source_path", "proxy_path")
+        if segment.get(key)
+    }
+    spherical_poses = _spherical_review_poses(segment, segments) if segment.get("spherical_shot") else []
+
+    reviewed_identity = {
+        "clip_path": segment.get("clip_path"),
+        "source_path": segment.get("source_path"),
+        "proxy_path": segment.get("proxy_path"),
+        "camera_id": segment.get("camera_id"),
+    }
+    reviewed_aliases = set().union(*(_path_aliases(value) for value in reviewed_paths)) if reviewed_paths else set()
     for path, source_records in by_path.items():
+        source_identity_match = any(_same_source_identity(source, reviewed_identity) for source in source_records)
+        source_path_match = bool(_path_aliases(path) & reviewed_aliases)
+        is_spherical_review_source = platform == "youtube" and bool(spherical_poses) and (source_identity_match or source_path_match)
         for source in source_records:
+            # For a spherical slot, never add a pose-less copy of the same
+            # timestamp: it would be selected as a fake alternative and keep
+            # the old framing.
+            if is_spherical_review_source:
+                continue
             candidate = dict(source)
             if platform == "youtube":
                 candidate["clip_start_sec"] = max(0.0, master_start - float(source.get("offset_sec") or 0.0))
@@ -335,12 +563,28 @@ def _review_candidate_pool(
             if key not in seen:
                 pool.append(candidate)
                 seen.add(key)
+
+        # YouTube 360 keeps exact master-time alignment while offering many
+        # alternate camera framings from the same registered equirect source.
+        if is_spherical_review_source:
+            source = _source_record_for_slot(
+                source_records,
+                master_start,
+                float(segment.get("duration_sec") or 0.1),
+            ) or source_records[0]
+            for pose_index, pose in enumerate(spherical_poses):
+                candidate = dict(source)
+                candidate["clip_start_sec"] = max(0.0, master_start - float(source.get("offset_sec") or 0.0))
+                candidate["projection"] = segment.get("projection") or candidate.get("projection") or "equirect"
+                candidate["spherical_shot"] = dict(pose)
+                candidate["review_candidate_index"] = pose_index
+                key = _candidate_key(candidate)
+                if key not in seen:
+                    pool.append(candidate)
+                    seen.add(key)
+
         # A Reel has no sync constraint, so each source can provide several
-        # genuinely different moments for the same review slot.  Keep the
-        # explicit source records above for backwards compatibility, then add
-        # six deterministic positions spread across the usable source
-        # duration: the current frame plus five possible replacements. The
-        # per-slot exclusion history prevents repeats.
+        # genuinely different moments for the same review slot.
         if platform == "reel":
             source = source_records[0]
             try:
@@ -359,12 +603,13 @@ def _review_candidate_pool(
                     pool.append(candidate)
                     seen.add(key)
     for planned in segments:
-        path = str(planned.get("clip_path") or planned.get("proxy_path") or planned.get("source_path") or "")
-        source = (by_path.get(path) or [None])[0]
+        source = next(
+            (record for records in by_path.values() for record in records if _same_source_identity(record, planned)),
+            None,
+        )
         if source is None:
             continue
         candidate = dict(source)
-        # Preserve the actual reviewed moment and its framing recipe.
         for key in ("clip_start_sec", "motion", "spherical_shot", "projection", "shot_quality_score", "motion_score"):
             if planned.get(key) is not None:
                 candidate[key] = planned[key]
@@ -448,6 +693,8 @@ def _replacement_candidates(
         if not _candidate_covers_slot(candidate, segment, platform):
             continue
         counts["covers_slot"] += 1
+        if not _candidate_has_subject(candidate, segment):
+            continue
         if _candidate_keys(candidate) & tried:
             continue
         counts["unused"] += 1
@@ -469,6 +716,12 @@ def review_items(
     root.mkdir(parents=True, exist_ok=True)
     render_status = _load_render_status(root)
     unavailable = {int(value) for value in project.data.get("settings", {}).get("wizard", {}).get("review_unavailable", [])}
+    try:
+        coverage = load_coverage(project)
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        coverage = {}
+    wizard = project.data.get("settings", {}).get("wizard", {}) or {}
+    platform = str(coverage.get("platform") or wizard.get("platform") or "generic")
     items: list[dict[str, Any]] = []
     ffmpeg = locate_executable("ffmpeg") or "ffmpeg"
     # Keep the default review path cheap: color profiling belongs to final
@@ -533,15 +786,35 @@ def review_items(
         # the registered source filename.  Otherwise Review shots displays a
         # cache hash (and hides which camera supplied the shot).
         display_source = str(segment.get("filename") or Path(source).name or "Unknown source")
+        pool, pool_origin = _review_candidate_pool(coverage, segments, segment, platform)
+        current_keys = _candidate_keys(segment)
+        candidate_count = sum(
+            1
+            for candidate in pool
+            if _candidate_covers_slot(candidate, segment, platform)
+            and _candidate_has_subject(candidate, segment)
+            and not (_candidate_keys(candidate) & current_keys)
+        )
+        shot_pose = {
+            key: shot.get(key)
+            for key in ("type", "shot_id", "yaw", "pitch", "fov")
+            if shot and shot.get(key) is not None
+        }
         items.append({
             "index": index,
             "thumbnail": f"/api/v1/wizard/review/thumbnail/{signature}/{output.name}" if output.name and output.exists() else None,
             "thumbnail_status": thumbnail_state,
             "thumbnail_error": thumbnail_error,
             "source": display_source,
+            "camera_id": segment.get("camera_id") or _camera_id(segment),
             "duration_sec": round(duration, 3),
             "master_start_sec": float(segment.get("master_start_sec") or 0.0),
             "landmark": shot.get("label") if shot else None,
+            "pose": shot_pose,
+            "candidate_count": candidate_count,
+            "candidate_pool_origin": pool_origin,
+            "transition_type": str(segment.get("transition_type") or "auto"),
+            "subject_safe": _candidate_has_subject(segment, segment),
             "keep": True,
             "no_alternative": index in unavailable,
         })
@@ -573,6 +846,28 @@ def render_review_thumbnails(project: Project, indices: set[int], max_workers: i
                 mark_review_render_failed(project, {index}, str(exc))
 
 
+def set_review_transition_types(project: Project, transitions: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
+    """Persist the outgoing transition selected on each review card."""
+    plan = _plan(project)
+    segments = list(plan.get("segments") or [])
+    values = transitions if isinstance(transitions, dict) else {str(i): value for i, value in enumerate(transitions or [])}
+    from core.stages.export import TRANSITION_LIBRARY
+    allowed = {"auto", "none", *TRANSITION_LIBRARY.keys()}
+    for index, segment in enumerate(segments):
+        raw = values.get(str(index), values.get(index)) if isinstance(values, dict) else None
+        if raw is None:
+            continue
+        value = str(raw or "auto").strip().lower()
+        segment["transition_type"] = value if value in allowed else "auto"
+    plan["segments"] = segments
+    artifact_path(project, "edit_plan.json").write_text(
+        json.dumps(plan, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    project.mark_all_stale_from("export")
+    project.save()
+    return plan
+
+
 def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
     """Replace rejected slots with unused source/moment candidates."""
     plan = _plan(project)
@@ -594,8 +889,11 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         segment = segments[index]
         slot = str(index)
         tried = set(exclusions.setdefault(slot, []))
-        # Migrate projects created before review_exclusions existed.
-        tried.update(attempts.setdefault(slot, []))
+        # JSON object keys are strings after a reopen. Read both the current
+        # in-memory integer form and the persisted string form.
+        slot_key = str(slot)
+        tried.update(attempts.get(slot_key) or attempts.get(slot) or [])
+        tried.update(exclusions.get(slot_key) or exclusions.get(slot) or [])
         tried.update(_candidate_keys(segment))
         pool, pool_origin = _review_candidate_pool(coverage, segments, segment, platform)
         candidates, counts = _replacement_candidates(pool, segment, tried, platform)
@@ -611,7 +909,15 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
                 "reason": reason, "pool_origin": pool_origin, **counts,
             })
             continue
-        _score, candidate, key = sorted(candidates, key=lambda item: -item[0])[0]
+        ordered_candidates = sorted(candidates, key=lambda item: (-item[0], item[2]))
+        # Rotate deterministic alternatives instead of returning the same
+        # highest-scoring frame on every click.
+        variation_seed = str(wizard.get("variation_seed") or "")
+        rotation_digest = hashlib.sha256(
+            f"{variation_seed}|{slot}|{len(tried)}".encode("utf-8")
+        ).hexdigest()
+        choice_index = int(rotation_digest[:12], 16) % len(ordered_candidates)
+        _score, candidate, key = ordered_candidates[choice_index]
         LOGGER.info(
             "Review replace slot=%s current=%s candidate=%s source=%s clip_start=%s master_start=%s",
             index,
@@ -656,9 +962,11 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         if candidate.get("spherical_shot"):
             new_segment["spherical_shot"] = candidate["spherical_shot"]
         tried.add(key)
-        exclusions[slot] = sorted(tried)
+        exclusions[slot_key] = sorted(tried)
+        exclusions.pop(index, None)
         # Keep the legacy field populated for readers of older project data.
-        attempts[slot] = sorted(tried)
+        attempts[slot_key] = sorted(tried)
+        attempts.pop(index, None)
         segments[index] = new_segment
         unavailable.discard(index)
         replaced.append(index)

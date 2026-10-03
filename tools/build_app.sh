@@ -4,12 +4,21 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${PYTHON:-"$ROOT/.venv/bin/python"}"
 APP_NAME="Zucker Editor"
+
+cd "$ROOT"
+VERSION="$("$PYTHON" -c 'from core.build_info import APP_VERSION; print(APP_VERSION)')"
+if [[ -z "$VERSION" || "$VERSION" == "unknown" ]]; then
+  echo "Could not determine APP_VERSION from core/build_info.py." >&2
+  exit 1
+fi
+APP_DISPLAY_NAME="$APP_NAME $VERSION"
+
 DIST="$ROOT/dist"
 BUILD="$ROOT/build/pyinstaller"
 PYI_DIST="$ROOT/build/pyinstaller-dist"
 RELEASE="$ROOT/build/release"
 DMG_ROOT="$ROOT/build/dmg"
-DMG_RW="$ROOT/build/Zucker Editor.tmp.dmg"
+DMG_RW="$ROOT/build/${APP_DISPLAY_NAME}.tmp.dmg"
 BUILD_INFO="$ROOT/build/build_info.json"
 VERSION="$(cd "$ROOT" && "$PYTHON" -c 'from core.build_info import APP_VERSION; print(APP_VERSION)')"
 APP_DISPLAY_NAME="$APP_NAME $VERSION"
@@ -23,12 +32,11 @@ fi
 
 "$PYTHON" - <<'PY'
 import importlib.util
-missing = [name for name in ("PIL", "PyInstaller") if importlib.util.find_spec(name) is None]
+missing = [name for name in ("PIL", "PyInstaller", "faster_whisper", "ctranslate2") if importlib.util.find_spec(name) is None]
 if missing:
-    raise SystemExit("Missing build dependencies: " + ", ".join(missing) + ". Run: .venv/bin/python -m pip install -r requirements-build.txt")
+    raise SystemExit("Missing build dependencies: " + ", ".join(missing) + ". Run: .venv/bin/python -m pip install -r requirements.txt -r requirements-build.txt")
 PY
 
-cd "$ROOT"
 "$PYTHON" tools/make_icon.py
 # Preserve existing user/local build products, including the hand-edited spec.
 BUILD_BACKUP="$ROOT/build/previous-$(date +%Y%m%d-%H%M%S)"
@@ -75,6 +83,7 @@ PY
   --add-data "/System/Library/Fonts/Supplemental/Arial.ttf:assets/fonts" \
   --add-data "/System/Library/Fonts/Supplemental/BigCaslon.ttf:assets/fonts" \
   --add-data "$BUILD_INFO:." \
+  --add-data "$ROOT/README_APP.md:." \
   --collect-data faster_whisper \
   --collect-data whisper \
   --collect-data onnxruntime \
@@ -88,6 +97,7 @@ PY
   --hidden-import llvmlite \
   --hidden-import server.api \
   --hidden-import faster_whisper \
+  --collect-submodules faster_whisper \
   --hidden-import onnxruntime \
   --hidden-import tokenizers \
   --hidden-import ctranslate2 \
@@ -109,17 +119,27 @@ find "$APP_BUNDLE" -type d -name tests -prune -exec rm -rf {} +
 # binaries such as numpy/core/_multiarray_tests.cpython-311-darwin.so.
 find "$APP_BUNDLE" \( -iname '*pytest*' -o -iname 'test_*.py' \) -print -exec rm -rf {} +
 
+PLIST="$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $VERSION" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $VERSION" "$PLIST"
+
 codesign --force --deep -s - "$APP_BUNDLE"
 
 # A successful PyInstaller invocation is not enough: import the app and
 # initialize Flask from the actual frozen executable before making a DMG.
 SELFTEST_LOG="$ROOT/build/packaged-selftest.log"
 SELFTEST_AUDIO="${ZUCKER_SELFTEST_AUDIO:-$HOME/ZuckerVideos/WizardUploads/C0130.MP4}"
-if ! ZUCKER_WHISPER_BACKEND=faster-whisper ZUCKER_SELFTEST_AUDIO="$SELFTEST_AUDIO" "$APP_BUNDLE/Contents/MacOS/$APP_NAME" --selftest >"$SELFTEST_LOG" 2>&1; then
-  cat "$SELFTEST_LOG" >&2
-  exit 1
+if [[ -f "$SELFTEST_AUDIO" ]]; then
+  if ! ZUCKER_WHISPER_BACKEND=faster-whisper ZUCKER_SELFTEST_AUDIO="$SELFTEST_AUDIO" "$APP_BUNDLE/Contents/MacOS/$APP_NAME" --selftest >"$SELFTEST_LOG" 2>&1; then
+    cat "$SELFTEST_LOG" >&2
+    exit 1
+  fi
+  cat "$SELFTEST_LOG"
+else
+  echo "Packaged self-test skipped: set ZUCKER_SELFTEST_AUDIO to a real audio/video file to run it." | tee "$SELFTEST_LOG"
 fi
-cat "$SELFTEST_LOG"
 
 "$PYTHON" - <<PY
 import json
@@ -196,6 +216,6 @@ if [[ -f "$BUILD_BACKUP/pyinstaller/Zucker Editor.spec" ]]; then
   cp "$BUILD_BACKUP/pyinstaller/Zucker Editor.spec" "$BUILD/Zucker Editor.spec"
 fi
 
-echo "Built $DMG_PATH"
+echo "Built version $VERSION: $DMG_PATH"
 echo "Installer hand-off directory contains:"
 find "$DIST" -maxdepth 1 -type f -print
