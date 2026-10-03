@@ -14,6 +14,15 @@ from core.project import Project, atomic_write_json
 ProgressCallback = Callable[[int, str], None]
 
 
+class ProgressDetail(str):
+    """A readable legacy message with optional measured task metadata."""
+
+    def __new__(cls, message: str, *, task_id: str, label: str, percent: int | None):
+        value = super().__new__(cls, message)
+        value.task = {"id": task_id, "label": label, "percent": percent, "detail": message}
+        return value
+
+
 class Stage(ABC):
     """Base class for pipeline stages."""
 

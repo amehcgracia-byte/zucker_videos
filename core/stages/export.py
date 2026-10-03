@@ -26,6 +26,7 @@ from core.messages import t
 from core.media_validation import record_is_usable_camera_video, record_media_path
 from core.normalization import EVEN_SDR_FILTER, NORMALIZATION_VERSION, SDR_TONEMAP_FILTER, ensure_global_cache_dirs, global_cache_root, global_segment_path, source_cache_key
 from core.project import Project, atomic_write_json
+from core.spherical_motion import RECIPE_VERSION as NATIVE_SPHERICAL_RECIPE_VERSION, run_reprojected_command
 from core.spherical_metadata import SphericalMetadataError, inject_spherical_metadata
 from core.spherical_view import (
     MAX_SPHERICAL_FOV,
@@ -33,11 +34,14 @@ from core.spherical_view import (
     NORMAL_FOV_MIN,
     STEREOGRAPHIC_FOV_THRESHOLD,
     effective_fov,
+    effective_pitch,
+    effective_roll,
+    normalize_projection_preset,
     paired_flat_fov,
     signed_yaw,
     view_parameters,
 )
-from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
+from core.stages.base import ProgressCallback, ProgressDetail, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.cut import load_coverage
 from core.stages.edit import (
     PLANET_SPIN_DEG_PER_SEC,
@@ -50,11 +54,12 @@ from core.stages.edit import (
     FIXED_CAMERA_SAFE_ZOOM_MAX,
     _valid_motion_recipe,
     load_edit_plan,
+    migrate_spherical_landmarks,
 )
 
 LOGGER = logging.getLogger(__name__)
 _LOGO_CACHE_LOCK = threading.RLock()
-LOGO_CACHE_RECIPE_VERSION = 2
+LOGO_CACHE_RECIPE_VERSION = 3
 MAX_EXPORT_BYTES = int(1.9 * 1024 * 1024 * 1024)
 AUDIO_BITRATE = 192_000
 MIN_ACCEPTABLE_VIDEO_BITRATE = 2_500_000
@@ -66,20 +71,28 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # against the filter's instance name ("v360@sphere"), NOT the bare "@id" suffix.
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
-EXPORT_SEGMENT_RECIPE_VERSION = 21
+EXPORT_SEGMENT_RECIPE_VERSION = 24
 # v17 adds byte-level and full-shot attestation to segment sidecars.  A file
 # with a copied/reused sidecar is no longer accepted if its bytes or authored
 # motion fields differ from the current render.
-SPHERICAL_MOTION_RECIPE_VERSION = 21
+SPHERICAL_MOTION_RECIPE_VERSION = 29
 # Emergency diagnostic switch; normal exports use the bounded motion path.
 FORCE_STATIC_360_ISOLATION = False
-SPHERICAL_HOLD_COMMAND_COUNT = 2
+# Runtime sendcmd reconfiguration of v360 can produce mixed frames on FFmpeg
+# builds used by the packaged app. Native remapping projects each complete
+# frame before encoding; static v360 remains available for deliberate holds.
+SPHERICAL_EXPORT_MOTION_MODE = "native_remap"
+SPHERICAL_EXPORT_PROXY_VERSION = 1
+SPHERICAL_EXPORT_PROXY_WIDTH = 2560
+SPHERICAL_EXPORT_PROXY_HEIGHT = 1280
+_SPHERICAL_EXPORT_PROXY_LOCK = threading.RLock()
+SPHERICAL_HOLD_COMMAND_COUNT = 8
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
 SPHERICAL_NORMAL_FOV_MIN = NORMAL_FOV_MIN
 SPHERICAL_NORMAL_FOV_MAX = NORMAL_FOV_MAX
-SPHERICAL_MAX_HOLD_YAW_DEG = 10.0
+SPHERICAL_MAX_HOLD_YAW_DEG = 16.0
 INTRO_DURATION = 10.0
-COLOR_PROFILE_VERSION = 4
+COLOR_PROFILE_VERSION = 5
 REEL_LETTERBOX_CACHE_VERSION = 2
 REEL_LETTERBOX_BLUR_SIGMA = 18.0
 # Reel logos are composed after the base export by Overlay & Captions. Keep
@@ -88,13 +101,32 @@ REEL_LETTERBOX_BLUR_SIGMA = 18.0
 REEL_BASE_LOGO_POLICY_VERSION = 1
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
+TRANSITION_PROFILE_VERSION = 7
+# Public transition library. Each preset maps to a filter available in the
+# packaged FFmpeg build.
+TRANSITION_LIBRARY = {
+    "crossfade": {"label": "Fundido cruzado", "xfade": "fade"},
+    "fadeblack": {"label": "Fundido a negro", "xfade": "fadeblack"},
+    "fadewhite": {"label": "Fundido a blanco", "xfade": "fadewhite"},
+    "wipeleft": {"label": "Barrido izquierda", "xfade": "wipeleft"},
+    "wiperight": {"label": "Barrido derecha", "xfade": "wiperight"},
+    "slideright": {"label": "Deslizamiento", "xfade": "slideright"},
+    "dissolve": {"label": "Disolución", "xfade": "dissolve"},
+    "distance": {"label": "Distancia", "xfade": "distance"},
+    # Retained as explicit choices for users who want the original named
+    # treatments; automatic mode uses only the native xfade transitions above.
+    "additive": {"label": "Fundido aditivo", "xfade": "custom", "expr": "clip(A+B*P,0,1)"},
+    "stretch": {"label": "Estiro", "xfade": "squeezeh"},
+    "blurry": {"label": "Blurry", "xfade": "hblur"},
+}
+AUTO_TRANSITION_TYPES = ("crossfade", "fadeblack", "wipeleft", "slideright")
 TRANSITION_PROFILES = {
-    "youtube": {"duration": 0.12, "sections_only": True},
-    "reel": {"duration": 0.08, "sections_only": False, "every": 3},
-    "reel_horizontal": {"duration": 0.08, "sections_only": False, "every": 3},
+    "youtube": {"type": "none", "duration": 0.0, "sections_only": True},
+    "reel": {"type": "none", "duration": 0.0, "sections_only": False, "every": 3},
+    "reel_horizontal": {"type": "none", "duration": 0.0, "sections_only": False, "every": 3},
     # No crossfade between equirectangular cuts: the 360 path is a direct
     # projection-safe passthrough. Its logo clips already fade from/to black.
-    "360": {"duration": 0.0, "sections_only": True},
+    "360": {"type": "none", "duration": 0.0, "sections_only": True},
 }
 
 
@@ -104,12 +136,28 @@ def _transition_profile(project: Project, platform: str) -> dict[str, Any]:
     configured = (((project.data.get("settings") or {}).get("export") or {}).get("transitions") or {}).get(platform)
     if isinstance(configured, dict):
         profile.update(configured)
-    profile["duration"] = max(0.0, float(profile.get("duration") or 0.0))
+    # Legacy saved defaults must not silently enable transitions.
+    profile["duration"] = max(0.0, float(profile.get("duration") or 0.0)) if profile.get("enabled") is True else 0.0
+    # Choosing a library transition on a review card is an explicit opt-in.
+    # Preserve that control while old/default auto profiles remain clean cuts.
+    try:
+        explicit_per_segment = any(
+            str(segment.get("transition_type") or "").lower() in TRANSITION_LIBRARY
+            for segment in load_edit_plan(project).get("segments", [])
+        )
+    except FileNotFoundError:
+        explicit_per_segment = False
+    if explicit_per_segment:
+        profile["duration"] = max(1.0, float(profile.get("duration") or 0.0))
+    transition_type = str(profile.get("type") or "auto").strip().lower()
+    if transition_type not in {"auto", "none"} and transition_type not in TRANSITION_LIBRARY:
+        transition_type = "auto"
+    profile["type"] = transition_type
     return profile
 
 
 def _transition_boundaries(segments: list[dict[str, Any]], profile: dict[str, Any]) -> list[int]:
-    """Indices after which a flat-video crossfade is allowed."""
+    """Return outgoing joins, respecting each review card selection."""
     if len(segments) < 2 or float(profile.get("duration") or 0.0) <= 0:
         return []
     boundaries: list[int] = []
@@ -121,6 +169,15 @@ def _transition_boundaries(segments: list[dict[str, Any]], profile: dict[str, An
         right_group = segments[index + 1].get("single_source_continuous_group")
         if left_group and left_group == right_group:
             continue
+        explicit = segments[index].get("transition_type")
+        selected = str(explicit if explicit is not None else profile.get("type") or "none").strip().lower()
+        # "auto" is a legacy/cache value, not an instruction to render a
+        # transition. Only an explicit library choice should create an xfade.
+        if selected in {"none", "auto"}:
+            continue
+        if str(explicit or "").lower() in TRANSITION_LIBRARY:
+            boundaries.append(index)
+            continue
         if profile.get("sections_only"):
             left = segments[index].get("section") or segments[index].get("section_id")
             right = segments[index + 1].get("section") or segments[index + 1].get("section_id")
@@ -128,14 +185,26 @@ def _transition_boundaries(segments: list[dict[str, Any]], profile: dict[str, An
                 boundaries.append(index)
         else:
             every = max(1, int(profile.get("every") or 1))
-            if (index + 1) % every == 0:
+            if (index + 1) % every == 0 or segments[index].get("transition_type") is not None:
                 boundaries.append(index)
     return boundaries
+
+
+def _transition_types_for_boundaries(segments: list[dict[str, Any]], boundaries: list[int], profile: dict[str, Any]) -> list[str]:
+    result: list[str] = []
+    for join_index, index in enumerate(boundaries):
+        explicit = segments[index].get("transition_type")
+        selected = str(explicit if explicit is not None else profile.get("type") or "none").strip().lower()
+        if selected == "auto":
+            selected = AUTO_TRANSITION_TYPES[join_index % len(AUTO_TRANSITION_TYPES)]
+        result.append(selected)
+    return result
 
 
 def _render_flat_video_transitions(
     paths: list[Path], durations: list[float], boundaries: list[int], output_path: Path,
     video_bitrate: int, progress_callback: ProgressCallback, fade_duration: float,
+    transition_type: str | list[str] = "crossfade",
 ) -> Path:
     """Encode selected flat-video xfade joins, leaving the other cuts hard."""
     if not boundaries:
@@ -173,12 +242,39 @@ def _render_flat_video_transitions(
         start = end
     current, current_duration = chunks[0]
     fade_duration = max(0.001, float(fade_duration))
+    if isinstance(transition_type, str) and transition_type == "auto":
+        transition_types = list(AUTO_TRANSITION_TYPES)
+    elif isinstance(transition_type, (list, tuple)):
+        transition_types = [str(item) for item in transition_type if str(item) in TRANSITION_LIBRARY] or ["crossfade"]
+    else:
+        transition_types = [str(transition_type)]
     for index, (next_label, next_duration) in enumerate(chunks[1:], start=1):
         out = f"xf{index}"
-        offset = max(0.0, current_duration - fade_duration)
-        filters.append(f"[{current}][{next_label}]xfade=transition=fade:duration={fade_duration:.3f}:offset={offset:.3f}[{out}]")
+        # xfade requires a duration shorter than both neighbouring chunks.
+        join_duration = min(max(1.0, float(fade_duration)), current_duration * 0.45, next_duration * 0.45)
+        selected_type = transition_types[(index - 1) % len(transition_types)]
+        recipe = TRANSITION_LIBRARY.get(selected_type, TRANSITION_LIBRARY["crossfade"])
+        xfade_name = str(recipe["xfade"])
+        if join_duration < 1.0:
+            # A 1 s transition cannot fit between two very short takes without
+            # consuming most of either shot. Keep the cut hard instead of
+            # emitting an imperceptible sub-second transition.
+            filters.append(f"[{current}][{next_label}]concat=n=2:v=1:a=0[{out}]")
+            current = out
+            current_duration += next_duration
+            continue
+        offset = max(0.0, current_duration - join_duration)
+        if xfade_name == "none":
+            filters.append(f"[{current}][{next_label}]concat=n=2:v=1:a=0[{out}]")
+        elif xfade_name == "custom":
+            expr = str(recipe.get("expr") or "")
+            transition = f"transition=custom:duration={join_duration:.3f}:offset={offset:.3f}:expr='{expr}'"
+            filters.append(f"[{current}][{next_label}]xfade={transition}[{out}]")
+        else:
+            transition = f"transition={xfade_name}:duration={join_duration:.3f}:offset={offset:.3f}"
+            filters.append(f"[{current}][{next_label}]xfade={transition}[{out}]")
         current = out
-        current_duration += next_duration - fade_duration
+        current_duration += next_duration - join_duration
     filters.append(f"[{current}]format=yuv420p[vout]")
     command = [str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error", "-nostdin", *inputs,
                "-filter_complex", ";".join(filters), "-map", "[vout]", "-an", "-c:v", "libx264",
@@ -279,6 +375,8 @@ class ExportStage(Stage):
                 "edit": project.data["stages"]["edit"].get("fingerprint"),
                 "wizard": project.data["settings"].get("wizard", {}),
                 "settings": project.data["settings"].get(self.name, {}),
+                "transition_profile_version": TRANSITION_PROFILE_VERSION,
+                "export_segment_recipe": EXPORT_SEGMENT_RECIPE_VERSION,
             }
         )
 
@@ -288,11 +386,14 @@ class ExportStage(Stage):
 
     def run(self, project: Project, progress_callback: ProgressCallback) -> dict[str, Any]:
         """Render the wizard export with streamed ffmpeg progress."""
-        progress_callback(5, t("preparing_export"))
+        progress_callback(1, t("preparing_export"))
+        # A fresh base export invalidates any private composition source.
+        (project.cache_dir / "composition-base.mp4").unlink(missing_ok=True)
         try:
             plan = load_edit_plan(project)
         except FileNotFoundError:
             plan = load_coverage(project)
+        plan["segments"] = _apply_saved_spherical_landmarks(project, plan.get("segments") or [])
         segments = _frame_normalized_segments(plan.get("segments") or [])
         if not segments:
             raise ValueError(t("missing_segments"))
@@ -569,6 +670,14 @@ def _segment_worker_count(project: Project, segment_count: int) -> int:
     return max(1, min(workers, segment_count or 1))
 
 
+def _append_export_log(project: Project, message: str) -> None:
+    """Append a compact timing line to the report-visible export log."""
+    log_dir = project.cache_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    with (log_dir / "export.log").open("a", encoding="utf-8") as handle:
+        handle.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}\\n")
+
+
 def _render_plan(
     project: Project,
     segments: list[dict[str, Any]],
@@ -598,7 +707,7 @@ def _render_plan(
     # Reel does not use the multicam colour-normalisation pass. Do not even
     # measure its sources: aside from being wasted work, that made Reel
     # exports pay the YouTube/360 colour-analysis cost before discarding it.
-    color_profiles = {} if platform in {"reel", "reel_horizontal"} else _color_profiles_for_segments(project, segments, warnings)
+    color_profiles = {} if platform in {"reel", "reel_horizontal"} else _color_profiles_for_segments(project, segments, warnings, progress_callback)
     if platform in {"reel", "reel_horizontal"}:
         # Reel overlays are composited as RGBA images below. Do not apply the
         # multicam colour-normalisation profile to them: it was the source of
@@ -633,10 +742,48 @@ def _render_plan(
             segment_paths.append(intro_path)
             phase_times["intro_sec"] = round(time.perf_counter() - phase_started, 3)
         render_segments = _continuous_spherical_render_segments(segments)
+        spherical_sources: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+        for segment in render_segments:
+            if _spherical_shot(segment):
+                info = _segment_source_info(project, segment)
+                spherical_sources.setdefault(str(info.get("source_path")), (info, segment))
+        segment_phase_start = 20 if spherical_sources else 10
+        for source_index, (info, segment) in enumerate(spherical_sources.values()):
+            def source_progress(_percent: int, detail: str) -> None:
+                local = detail.task.get("percent") if isinstance(detail, ProgressDetail) else 0
+                fraction = float(local or 0) / 100
+                overall = 10 + 10 * (source_index + fraction) / max(1, len(spherical_sources))
+                progress_callback(overall, detail)
+            _spherical_export_source_info(project, info, segment, source_progress)
+            progress_callback(10 + 10 * (source_index + 1) / len(spherical_sources),
+                              f"360 render source ready: {Path(str(info.get('source_path'))).name}")
         segment_workers = _segment_worker_count(project, len(render_segments))
+        _append_export_log(
+            project,
+            f"PLAN segments={len(render_segments)} workers={segment_workers} "
+            f"verify_motion={verify_motion} platform={platform} bitrate={video_bitrate}",
+        )
         render_started = time.perf_counter()
         render_stats: list[dict[str, Any]] = []
         progress_lock = threading.Lock()
+        worker_fractions: dict[int, float] = {}
+        def aggregate_render_progress(percent: int, detail: str) -> None:
+            match = re.search(r"Rendering segment (\d+)/(\d+):\s*(.*)$", str(detail))
+            if match:
+                worker_index = int(match.group(1))
+                message = match.group(3)
+                fraction = 0.0
+                if not isinstance(detail, ProgressDetail):
+                    local = re.search(r"(\d+)%\s*$", message)
+                    fraction = 1.0 if message.lower() == "complete" else int(local.group(1)) / 100 if local else 0.0
+                worker_fractions[worker_index] = max(worker_fractions.get(worker_index, 0.0), fraction)
+                percent = segment_phase_start + (80 - segment_phase_start) * sum(worker_fractions.values()) / max(1, len(render_segments))
+                if not isinstance(detail, ProgressDetail):
+                    detail = ProgressDetail(str(detail), task_id=f"segment-{worker_index}",
+                                            label=f"Shot {worker_index}/{len(render_segments)}",
+                                            percent=round(worker_fractions[worker_index] * 100))
+                detail.aggregate_percent = percent
+            progress_callback(percent, detail)
         futures: dict[Any, tuple[int, dict[str, Any]]] = {}
         with ThreadPoolExecutor(max_workers=segment_workers) as executor:
             for index, segment in enumerate(render_segments, start=1):
@@ -645,20 +792,42 @@ def _render_plan(
                         project, index, segment, len(render_segments), temp_dir, master_path,
                         platform, video_bitrate, segment_overlay_config,
             color_profiles.get(str(segment.get("clip_path")), {}), verify_motion,
-                        progress_callback, progress_lock,
+                        aggregate_render_progress, progress_lock,
                     )
                 futures[future] = (index, segment)
             results = []
             for future in as_completed(futures):
+                index, completed_segment = futures[future]
                 try:
-                    results.append(future.result())
+                    result = future.result()
+                    results.append(result)
+                    _append_export_log(
+                        project,
+                        f"SEGMENT {index}/{len(render_segments)} complete "
+                        f"cache={bool(result.get('cached'))} "
+                        f"rendered_from={result.get('rendered_from')} "
+                        f"ffmpeg_sec={result.get('ffmpeg_sec', 0)} "
+                        f"verify_sec={result.get('verify_sec', 0)} "
+                        f"total_sec={result.get('total_sec', 0)}",
+                    )
                 except BaseException as exc:
-                    index, failed_segment = futures[future]
+                    failed_segment = completed_segment
                     source_path = _segment_source_info(project, failed_segment).get("source_path") or failed_segment.get("source_path") or failed_segment.get("clip_path") or "unknown source"
+                    _append_export_log(
+                        project,
+                        f"SEGMENT {index}/{len(render_segments)} FAILED source={Path(str(source_path)).name} error={type(exc).__name__}: {exc}",
+                    )
                     if isinstance(exc, SegmentRenderError):
                         raise
                     raise SegmentRenderError(index, str(source_path), exc, required_space) from exc
         results.sort(key=lambda item: int(item["index"]))
+        segment_render_wall_sec = time.perf_counter() - render_started
+        cache_hits = sum(1 for item in results if item.get("cached"))
+        _append_export_log(
+            project,
+            f"PHASE segment_render complete={len(results)}/{len(render_segments)} "
+            f"cache_hits={cache_hits} wall_sec={segment_render_wall_sec:.3f}",
+        )
         expected_indices = list(range(1, len(render_segments) + 1))
         actual_indices = [int(item["index"]) for item in results]
         if actual_indices != expected_indices:
@@ -688,6 +857,7 @@ def _render_plan(
                 body_paths, body_durations, boundaries, transitioned_body, video_bitrate,
                 lambda percent, detail: progress_callback(82 + int(percent * 2 / 100), detail),
                 float(transition_profile["duration"]),
+                _transition_types_for_boundaries(render_segments, boundaries, transition_profile),
             )
             segment_paths.append(transitioned_body)
         else:
@@ -800,7 +970,7 @@ def _render_plan(
             "segment_count": len(render_segments),
             "segment_workers": segment_workers,
             "stream_copy_count": sum(1 for item in render_stats if item.get("rendered_from") == "stream_copy"),
-            "wall_sec": round(time.perf_counter() - render_started, 3),
+            "wall_sec": round(segment_render_wall_sec, 3),
             "total_wall_sec": round(time.perf_counter() - export_started, 3),
             "phases": phase_times,
             "segments": sorted(render_stats, key=lambda item: item["index"]),
@@ -1401,7 +1571,7 @@ def _render_matched_logo_clip(
     ]
     if logo:
         command.extend(["-loop", "1", "-t", f"{duration:.3f}", "-i", str(logo)])
-    filter_complex = _logo_filtergraph_matched(kind, duration, bool(logo), height, is_intro_card)
+    filter_complex = _sdr_output_graph(_logo_filtergraph_matched(kind, duration, bool(logo), height, is_intro_card))
     command.extend(
         [
             "-filter_complex",
@@ -1419,6 +1589,7 @@ def _render_matched_logo_clip(
             "+faststart",
         ]
     )
+    command.extend(SDR_OUTPUT_ARGS)
     hw_codec, sw_codec = _matching_encoders(profile["codec_name"])
     matched_options = ["-g", "1", "-bf", "0"] if profile["codec_name"] in {"hevc", "h265"} else []
     try:
@@ -1523,7 +1694,19 @@ def _continuous_spherical_render_segments(segments: list[dict[str, Any]]) -> lis
     previous_shot: dict[str, Any] | None = None
     for segment in segments:
         shot = _spherical_shot(segment)
-        if shot and previous_shot and previous_shot.get("type") != shot.get("type") and shot.get("type") != "recorded_move":
+        yaw_changed = bool(
+            shot
+            and previous_shot
+            and abs(_shortest_yaw_delta(_shot_yaw(previous_shot), _shot_yaw(shot))) > 1e-6
+        )
+        if (
+            shot
+            and previous_shot
+            and yaw_changed
+            and shot.get("type") != "recorded_move"
+            and bool(shot.get("sweep_enabled", False))
+            and bool(shot.get("intershot_sweep", shot.get("sweep_enabled", False)))
+        ):
             shot = {**shot, "previous_shot": previous_shot}
             output.append({**segment, "spherical_shot": shot})
         else:
@@ -1550,7 +1733,7 @@ def _spherical_segment_parts(segment: dict[str, Any], previous_shot: dict[str, A
     current = 0.0
     start_yaw = _shot_float(previous_shot, "yaw", _shot_float(shot, "yaw", 0.0))
     target_yaw = _shot_float(shot, "yaw", 0.0)
-    if previous_shot and previous_shot.get("type") != shot.get("type") and duration >= 2.0 and bool(shot.get("sweep_enabled", False)):
+    if previous_shot and previous_shot.get("type") != shot.get("type") and duration >= 2.0 and bool(shot.get("sweep_enabled", False)) and bool(shot.get("intershot_sweep", shot.get("sweep_enabled", False))):
         distance = abs(_shortest_yaw_delta(start_yaw, target_yaw))
         speed = max(_sweep_speed(shot), min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, distance / max(duration, 0.001)))
         full_pan_duration = distance / speed if speed > 0 else 0.0
@@ -1672,7 +1855,7 @@ def _render_logo_clip(
     if logo:
         command.extend(["-loop", "1", "-t", f"{duration:.3f}", "-i", str(logo)])
         input_count += 1
-    filter_complex = _logo_filtergraph(platform, kind, duration, bool(logo), is_intro_card)
+    filter_complex = _sdr_output_graph(_logo_filtergraph(platform, kind, duration, bool(logo), is_intro_card))
     command.extend(
         [
             "-filter_complex",
@@ -1692,6 +1875,7 @@ def _render_logo_clip(
             "+faststart",
         ]
     )
+    command.extend(SDR_OUTPUT_ARGS)
     command.extend(_video_encode_args("libx264", video_bitrate))
     command.append(str(render_path))
     try:
@@ -1747,6 +1931,59 @@ def _outro_master_start(segments: list[dict[str, Any]]) -> float:
     return max(0.0, float(last.get("master_start_sec") or 0.0) + float(last.get("duration_sec") or 0.0))
 
 
+
+def _apply_saved_spherical_landmarks(project: Project, segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Make export consume the same persisted pose shown by 360 review."""
+    settings = project.data.get("settings") or {}
+    profiles = settings.get("spherical_landmarks_by_source") or {}
+    global_raw = settings.get("spherical_landmarks") or {}
+    labels = {
+        "full_stage": "Escenario completo",
+        "singer": "Cantante",
+        "drummer": "Bateria",
+        "left": "Lado izquierdo",
+        "right": "Lado derecho",
+        "audience": "Publico",
+        "audience_stage_wide": "Publico y escenario",
+        "planet": "Planeta",
+    }
+    if not global_raw and not profiles:
+        return segments
+    result: list[dict[str, Any]] = []
+    for segment in segments:
+        current = dict(segment)
+        shot = dict(current.get("spherical_shot") or {})
+        shot_type = str(shot.get("shot_id") or shot.get("type") or "").strip()
+        # Authoring profiles are keyed by the registered/original source path.
+        # Render segments also carry a proxy path in spherical_source_path;
+        # preferring that proxy silently fell back to the global profile and
+        # made preview and export disagree for source-specific landmarks.
+        source_path = str(current.get("source_path") or current.get("spherical_source_path") or current.get("clip_path") or "").strip()
+        profile_raw = None
+        if source_path:
+            profile_raw = profiles.get(source_path) or profiles.get(str(Path(source_path).expanduser().resolve()))
+        saved = migrate_spherical_landmarks(profile_raw or global_raw)
+        authored = saved.get(shot_type)
+        if authored:
+            for field in ("yaw", "pitch", "fov", "roll", "projection_preset", "projection_control", "weight", "subject"):
+                if field in authored:
+                    shot[field] = authored[field]
+            # Canonicalize persisted poses at the export boundary as well as
+            # in preview. This repairs stale values saved by older builds and
+            # guarantees that a labeled landmark cannot render with a
+            # different vertical framing.
+            shot["pitch"] = effective_pitch(shot.get("pitch", 0.0), shot_type)
+            shot["projection_preset"] = normalize_projection_preset(shot.get("projection_preset"), shot_type)
+            shot["roll"] = effective_roll(shot.get("roll", 0.0), shot_type)
+            shot["fov"] = effective_fov(shot.get("fov", 95.0), shot_type, shot["projection_preset"])
+            shot["type"] = shot_type
+            shot["shot_id"] = shot_type
+            shot["label"] = labels.get(shot_type, shot.get("label") or shot_type)
+            current["spherical_shot"] = shot
+        result.append(current)
+    return result
+
+
 def _target_size(platform: str) -> tuple[int, int]:
     if platform in {"instagram", "tiktok"}:
         return 608, 1080
@@ -1757,6 +1994,108 @@ def _target_size(platform: str) -> tuple[int, int]:
     if platform == "360":
         return 3840, 1920
     return 1920, 1080
+
+
+
+def _spherical_export_source_info(
+    project: Project,
+    source_info: dict[str, Any],
+    segment: dict[str, Any],
+    progress_callback: ProgressCallback | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Resolve one reusable equirectangular source for a 360 export segment.
+
+    The original 5K/6K camera file is still the source of truth, but decoding
+    it independently for every short export segment is prohibitively slow.
+    This cache is equirectangular (never a flat viewpoint), so the authored
+    yaw/pitch/FOV contract remains valid for the final render.
+    """
+    probe = source_info.get("probe") or {}
+    projection = str(probe.get("projection") or segment.get("projection") or "").lower()
+    if projection not in {"equirect", "raw_insv"}:
+        return source_info, False
+    source_path = Path(str(source_info.get("source_path") or "")).expanduser()
+    if not source_path.is_file():
+        return source_info, False
+    try:
+        stat = source_path.stat()
+    except OSError:
+        return source_info, False
+    try:
+        insv_fov = float(probe.get("insv_fov") or segment.get("insv_fov") or 190.0)
+    except (TypeError, ValueError):
+        insv_fov = 190.0
+    key = hashlib.sha256(
+        (
+            f"{source_path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}|"
+            f"{projection}|{insv_fov:.3f}|{SPHERICAL_EXPORT_PROXY_VERSION}|"
+            f"{SPHERICAL_EXPORT_PROXY_WIDTH}x{SPHERICAL_EXPORT_PROXY_HEIGHT}"
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    target = project.cache_dir / "spherical_export" / f"equirect-{key}.mp4"
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    if progress_callback and not target.exists():
+        progress_callback(0, ProgressDetail(f"Preparing 360 source {source_path.name}; waiting for shared source cache",
+            task_id=f"source-{key}", label=f"Preparing 360 source {source_path.name}", percent=None))
+    with _SPHERICAL_EXPORT_PROXY_LOCK:
+        if not target.exists() or target.stat().st_size <= 0:
+            ffmpeg = _ffmpeg_path()
+            temporary = target.with_suffix(".tmp.mp4")
+            source_filter = ""
+            if projection == "raw_insv":
+                source_filter = (
+                    f"v360=input=dfisheye:output=e:"
+                    f"ih_fov={insv_fov:.3f}:iv_fov={insv_fov:.3f}:interp=lanczos,"
+                )
+            filter_graph = (
+                f"{source_filter}scale={SPHERICAL_EXPORT_PROXY_WIDTH}:{SPHERICAL_EXPORT_PROXY_HEIGHT}:"
+                "force_original_aspect_ratio=decrease,"
+                f"pad={SPHERICAL_EXPORT_PROXY_WIDTH}:{SPHERICAL_EXPORT_PROXY_HEIGHT}:(ow-iw)/2:(oh-ih)/2,"
+                "format=yuv420p"
+            )
+            command = [
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
+                "-i", str(source_path), "-map", "0:v:0", "-an", "-sn", "-dn",
+                "-vf", filter_graph,
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+                "-pix_fmt", "yuv420p", "-progress", "pipe:1", "-nostats", str(temporary),
+            ]
+            try:
+                def proxy_progress(percent: int, detail: str) -> None:
+                    if progress_callback:
+                        # Source preparation precedes rendering this shot. Keep
+                        # its fraction distinct from completion of the shot.
+                        progress_callback(0, ProgressDetail(detail, task_id=f"source-{key}",
+                            label=f"Preparing 360 source {source_path.name}", percent=percent))
+                _run_ffmpeg_progress(command, float(probe.get("duration") or 0.0),
+                                     f"Preparing 360 source {source_path.name}", proxy_progress)
+                if not temporary.exists() or temporary.stat().st_size <= 0:
+                    raise FFmpegError("Could not create the spherical export proxy")
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    proxy_probe = dict(probe)
+    proxy_probe.update(
+        {
+            "projection": "equirect",
+            "width": SPHERICAL_EXPORT_PROXY_WIDTH,
+            "height": SPHERICAL_EXPORT_PROXY_HEIGHT,
+            "video_codec": "h264",
+            "codec_name": "h264",
+            "pix_fmt": "yuv420p",
+            "bit_depth": 8,
+            "hdr": False,
+            "cfr": True,
+        }
+    )
+    resolved = dict(source_info)
+    resolved["source_path"] = str(target)
+    resolved["proxy_path"] = str(target)
+    resolved["probe"] = proxy_probe
+    resolved["paired_path"] = None
+    return resolved, True
 
 
 def _render_segment(
@@ -1780,9 +2119,37 @@ def _render_segment(
     ffmpeg = _ffmpeg_path()
     duration = max(0.1, float(segment["duration_sec"]))
     frame_count = _segment_frame_count(segment)
-    source = _segment_source_info(project, segment)
-    reel_letterbox_filter = _reel_letterbox_filter(project, segment, platform)
-    mix_horizontal = platform == "reel" and segment.get("reel_mix_treatment") == "horizontal"
+    base_source = _segment_source_info(project, segment)
+    render_segment = dict(segment)
+    spherical_shot = _spherical_shot(segment)
+    if spherical_shot and SPHERICAL_EXPORT_MOTION_MODE == "static":
+        # Do not send runtime commands into v360. A static authored view is
+        # preferable to a corrupted frame containing two simultaneous views.
+        safe_shot = dict(spherical_shot)
+        safe_shot["runtime_motion_enabled"] = False
+        render_segment["spherical_shot"] = safe_shot
+    original_probe = base_source.get("probe") or {}
+    original_motion = bool(spherical_shot and SPHERICAL_EXPORT_MOTION_MODE == "native_remap"
+        and spherical_shot.get("runtime_motion_enabled", True)
+        and (spherical_shot.get("movement") or _shot_requires_runtime_motion(spherical_shot))
+        and original_probe.get("projection") == "equirect"
+        and not original_probe.get("hdr") and int(original_probe.get("bit_depth") or 8) <= 8)
+    if original_motion:
+        # Portraits retain the camera's pixels instead of magnifying the 2K cache.
+        source, using_spherical_proxy = base_source, False
+    else:
+        source, using_spherical_proxy = _spherical_export_source_info(project, base_source, segment, progress_callback)
+    if using_spherical_proxy:
+        render_segment["source_path"] = source["source_path"]
+        render_segment["clip_path"] = source["source_path"]
+        render_segment["projection"] = "equirect"
+    if spherical_shot and SPHERICAL_EXPORT_MOTION_MODE == "static":
+        LOGGER.info("360 export safety mode=static source=%s", base_source.get("source_path"))
+        if warnings is not None:
+            warnings.append("360 motion safety mode: exported viewpoint is static to prevent mixed frames")
+    reel_letterbox_filter = _reel_letterbox_filter(project, render_segment, platform)
+    mix_horizontal = platform == "reel" and render_segment.get("reel_mix_treatment") == "horizontal"
+    rendered_from = "spherical_export_proxy" if using_spherical_proxy else "original"
     # Reel's user-selectable logo is applied exactly once by the post-export
     # Overlay & Captions composition. The historical export watermark belongs
     # to the older base-export path and must not be baked into Reel footage;
@@ -1800,7 +2167,7 @@ def _render_segment(
             ffmpeg,
             proxy_path,
             master_path,
-            segment,
+            render_segment,
             output_path,
             platform,
             video_bitrate,
@@ -1818,16 +2185,22 @@ def _render_segment(
             reel_letterbox_filter=reel_letterbox_filter,
             source_filter=_export_source_filter(
                 source.get("probe") or {},
-                _spherical_shot(segment),
+                dict(_spherical_shot(render_segment), runtime_motion_enabled=False),
                 duration=duration,
                 command_path=output_path.with_suffix(".sendcmd.txt"),
-            ) if _spherical_shot(segment) else None,
+            ) if _spherical_shot(render_segment) else None,
         )
     sendcmd_path = output_path.with_suffix(".sendcmd.txt")
     segment_probe = source.get("probe") or {}
-    _warn_if_spherical_framing_was_dropped(segment, segment_probe, warnings)
-    source_filter = _export_source_filter(segment_probe, _spherical_shot(segment), duration=duration, command_path=sendcmd_path)
-    reel_overlay_items = _reel_overlay_items(segment, overlay_config or {}, platform, output_path.parent)
+    _warn_if_spherical_framing_was_dropped(render_segment, segment_probe, warnings)
+    native_motion = bool(spherical_shot and segment_probe.get("projection") == "equirect"
+                         and spherical_shot.get("runtime_motion_enabled", True)
+                         and (spherical_shot.get("movement") or _shot_requires_runtime_motion(spherical_shot)))
+    static_shot = dict(spherical_shot or {})
+    static_shot["runtime_motion_enabled"] = False
+    source_filter = EVEN_SDR_FILTER if native_motion else _export_source_filter(
+        segment_probe, static_shot if spherical_shot else None, duration=duration, command_path=sendcmd_path)
+    reel_overlay_items = _reel_overlay_items(render_segment, overlay_config or {}, platform, output_path.parent)
     filter_complex = _segment_filtergraph(
         platform,
         duration,
@@ -1840,18 +2213,21 @@ def _render_segment(
         intro_logo=intro_logo,
         outro_logo=outro_logo,
         source_filter=source_filter,
-        motion_filter=None if mix_horizontal else _motion_filter(segment, platform, duration),
+        motion_filter=None if mix_horizontal else _motion_filter(render_segment, platform, duration),
         frame_count=frame_count,
-        segment=segment,
+        segment=render_segment,
         reel_overlay_items=reel_overlay_items,
         reel_letterbox_filter=reel_letterbox_filter,
     )
     command_base = _segment_video_command_base(
         ffmpeg,
         source["source_path"],
-        segment,
+        render_segment,
         duration,
     )
+    if native_motion:
+        command_base = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
+                        "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", "1920x1080", "-r", "30", "-i", "pipe:0"]
     if watermark:
         command_base.extend(["-loop", "1", "-i", str(watermark)])
     for item in reel_overlay_items:
@@ -1885,14 +2261,25 @@ def _render_segment(
         command_base[command_base.index("-filter_complex"):command_base.index("-filter_complex")] = [
             "-filter_threads", "1", "-filter_complex_threads", "1",
         ]
+    command_base.extend(SDR_OUTPUT_ARGS)
+    def render(command: list[str]) -> None:
+        if native_motion:
+            sampler = (lambda seconds: _v360_motion_at(spherical_shot, duration, seconds)) if spherical_shot.get("type") in {"recorded_move", "planet"} or not spherical_shot.get("movement") else None
+            run_reprojected_command(command, str(source["source_path"]),
+                (int(segment_probe["width"]), int(segment_probe["height"])),
+                float(segment["clip_start_sec"]), frame_count, spherical_shot, progress_callback,
+                pose_sampler=sampler)
+        else:
+            _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
+
     hardware = _video_encode_args("h264_videotoolbox", video_bitrate)
     software = _video_encode_args("libx264", video_bitrate)
     try:
         command = command_base + hardware + [str(output_path)]
         if command_recorder is not None:
             command_recorder.append(command)
-        _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
-        return "original"
+        render(command)
+        return rendered_from
     except FFmpegError as exc:
         if output_path.exists():
             output_path.unlink()
@@ -1902,13 +2289,13 @@ def _render_segment(
             command = command_base + software + [str(output_path)]
             if command_recorder is not None:
                 command_recorder.append(command)
-            _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
-            return "original"
+            render(command)
+            return rendered_from
         except FFmpegError as fallback_exc:
             if output_path.exists():
                 output_path.unlink()
             proxy_path = source.get("proxy_path")
-            if not proxy_path or proxy_path == source["source_path"]:
+            if native_motion or not proxy_path or proxy_path == source["source_path"]:
                 raise FFmpegError(f"{fallback_exc}\nFallback after h264_videotoolbox failed with: {exc}") from fallback_exc
             if warnings is not None:
                 warnings.append(f"Original render failed for {Path(str(source['source_path'])).name}; using proxy fallback")
@@ -1934,11 +2321,20 @@ def _render_segment(
                 reel_letterbox_filter=reel_letterbox_filter,
                 source_filter=_export_source_filter(
                     source.get("probe") or {},
-                    _spherical_shot(segment),
+                    dict(_spherical_shot(segment), runtime_motion_enabled=False),
                     duration=duration,
                     command_path=output_path.with_suffix(".sendcmd.txt"),
                 ) if _spherical_shot(segment) else None,
             )
+
+
+
+def _segment_requires_motion_verification(segment: dict[str, Any]) -> bool:
+    """Return whether pixel motion is expected from this rendered segment."""
+    return not (
+        _spherical_shot(segment)
+        and SPHERICAL_EXPORT_MOTION_MODE == "static"
+    )
 
 
 def _render_segment_job(
@@ -1962,9 +2358,16 @@ def _render_segment_job(
     base_percent = 10 + int(70 * (index - 1) / max(1, render_count))
 
     def segment_progress(local_percent: int, detail: str) -> None:
+        if not isinstance(detail, ProgressDetail):
+            camera_name = str(segment.get("filename") or Path(str(segment.get("source_path") or segment.get("clip_path") or "")).name)
+            detail = re.sub(r"^equirect-[^\s]+", camera_name, str(detail))
         percent = base_percent + int((70 / max(1, render_count)) * local_percent / 100)
         with progress_lock:
-            progress_callback(min(84, percent), f"Rendering segment {index}/{render_count}: {detail}")
+            message = f"Rendering segment {index}/{render_count}: {detail}"
+            if isinstance(detail, ProgressDetail):
+                message = ProgressDetail(message, task_id=detail.task["id"],
+                                         label=detail.task["label"], percent=detail.task["percent"])
+            progress_callback(min(84, percent), message)
 
     intro_fade = index == 1
     outro_fade = index == render_count
@@ -2030,17 +2433,21 @@ def _render_segment_job(
             local_warnings.append(f"Used proxy fallback for {label}")
     ffmpeg_sec = time.perf_counter() - ffmpeg_started
     verify_started = time.perf_counter()
-    _verify_segment_frame_duration(segment_path, _segment_frame_count(segment), label)
-    if verify_motion:
-        command_line = _verify_or_rebuild_segment(
-            project, segment, master_path, segment_path,
-            temp_dir / f"segment-{index:04d}.mp4", platform, video_bitrate,
-            overlay_config, color_profile, segment_progress,
-            intro_fade, outro_fade, False, False, local_warnings,
-            command_line, segment_duration, label,
-            command_recorder=commands,
-        )
-    _write_segment_cache_stamp(segment_path, segment)
+    if not cached:
+        # A fresh segment is verified before it enters the reusable cache.
+        # Replaying the expensive frame probes for an already-attested cache
+        # entry made every subsequent export needlessly slow.
+        _verify_segment_frame_duration(segment_path, _segment_frame_count(segment), label)
+        if verify_motion and _segment_requires_motion_verification(segment):
+            command_line = _verify_or_rebuild_segment(
+                project, segment, master_path, segment_path,
+                temp_dir / f"segment-{index:04d}.mp4", platform, video_bitrate,
+                overlay_config, color_profile, segment_progress,
+                intro_fade, outro_fade, False, False, local_warnings,
+                command_line, segment_duration, label,
+                command_recorder=commands,
+            )
+        _write_segment_cache_stamp(segment_path, segment)
     _require_segment_cache_stamp(segment_path, segment)
     # The global cache is the reusable store; concat receives a per-export
     # copy so two timeline entries can never alias the same pathname, even if
@@ -2092,6 +2499,8 @@ def _stream_copy_eligible(
     fps = float(probe.get("fps") or 0.0)
     width = int(probe.get("width") or 0)
     height = int(probe.get("height") or 0)
+    if probe.get("color_range") != "tv" or probe.get("color_space") != "bt709":
+        return False
     if codec not in {"h264", "avc1"} or not bool(probe.get("cfr", True)):
         return False
     if abs(fps - TARGET_EXPORT_FPS) > 0.01 or (width, height) != _target_size(platform):
@@ -2242,6 +2651,7 @@ def _render_proxy_segment(
             "+faststart",
         ]
     )
+    proxy_command.extend(SDR_OUTPUT_ARGS)
     command = proxy_command + _video_encode_args("libx264", video_bitrate) + [str(output_path)]
     if command_recorder is not None:
         command_recorder.append(command)
@@ -2659,10 +3069,8 @@ def _ken_burns_filter(motion: dict[str, Any], platform: str, duration: float) ->
         pan_y = 0.5
     except (TypeError, ValueError):
         return None
-    # Clamp even stale plans. The new editor recipes stay below 1.38x; the
-    # small headroom here lets an older cached recipe be rendered safely while
-    # its cache is being invalidated by the new edit-plan version.
-    safe_zoom_max = FIXED_CAMERA_SAFE_ZOOM_MAX + 0.12
+    # Clamp stale plans to the same ceiling as newly authored moves.
+    safe_zoom_max = FIXED_CAMERA_SAFE_ZOOM_MAX
     zoom_start = max(1.0, min(safe_zoom_max, zoom_start))
     zoom_end = max(1.0, min(safe_zoom_max, zoom_end))
     pan_x_start = max(0.0, min(1.0, pan_x_start))
@@ -2678,10 +3086,12 @@ def _ken_burns_filter(motion: dict[str, Any], platform: str, duration: float) ->
     # It prevents an out-of-bounds crop from wrapping/reversing into a second
     # apparent movement.
     progress = f"min(1,n/{max(1, frame_count - 1)}*{speed_factor:.6f})"
+    if motion.get("library_version"):
+        progress = f"(({progress})*({progress})*(3-2*({progress})))"
     zoom_expr = f"({zoom_start:.6f}+({zoom_end:.6f}-{zoom_start:.6f})*{progress})"
     if motion.get("lock_target"):
-        target_x = max(0.05, min(0.95, float(motion.get("target_x", 0.5))))
-        target_y = max(0.05, min(0.95, float(motion.get("target_y", 0.5))))
+        target_x = max(0.25, min(0.75, float(motion.get("target_x", 0.5))))
+        target_y = max(0.35, min(0.65, float(motion.get("target_y", 0.5))))
         pan_x_expr = f"if(gt(({zoom_expr}),1.001),min(1,max(0,(({zoom_expr})*{target_x:.6f}-0.5)/(({zoom_expr})-1))),0.5)"
         enforce_top_edge = motion.get("enforce_top_edge", True) is not False
         if enforce_top_edge and motion.get("vertical_motion") in {"down", "up"}:
@@ -2696,15 +3106,20 @@ def _ken_burns_filter(motion: dict[str, Any], platform: str, duration: float) ->
         # the top edge well below the 0.80 ceiling. Applying the historical
         # crop-space lower bound here would push a 1.15x centre crop to the
         # bottom of the frame and make the motion look like a second crop.
-        if motion.get("centered"):
+        if motion.get("centered") or motion.get("enforce_top_edge") is False:
             pan_y_expr = f"({pan_y_start:.6f}+({pan_y_end:.6f}-{pan_y_start:.6f})*{progress})"
         else:
             pan_y_expr = f"max(({IPHONE_CROP_TOP_LIMIT:.6f}+0.5/({zoom_expr})),({pan_y_start:.6f}+({pan_y_end:.6f}-{pan_y_start:.6f})*{progress}))"
-    scaled_width = f"ceil({width}*{zoom_expr}/2)*2"
-    scaled_height = f"ceil({height}*{zoom_expr}/2)*2"
+    # Keep every intermediate frame the same size. A frame-evaluated scale
+    # changes geometry continuously and reinitializes downstream filters,
+    # including fade/cadence, causing flashes at otherwise clean cuts.
+    zoom_expr = zoom_expr.replace("n/", "in/")
+    pan_x_expr = pan_x_expr.replace("n/", "in/")
+    pan_y_expr = pan_y_expr.replace("n/", "in/")
     return (
-        f"scale=w='{scaled_width}':h='{scaled_height}':eval=frame,"
-        f"crop={width}:{height}:x='(iw-{width})*{pan_x_expr}':y='(ih-{height})*{pan_y_expr}'"
+        f"scale={width * 2}:{height * 2}:flags=lanczos,"
+        f"zoompan=z='{zoom_expr}':x='(iw-iw/zoom)*{pan_x_expr}':"
+        f"y='(ih-ih/zoom)*{pan_y_expr}':d=1:s={width}x{height}:fps={TARGET_EXPORT_FPS}"
     )
 
 
@@ -2743,64 +3158,67 @@ def _v360_sendcmd_filter(shot: dict[str, Any] | None, duration: float | None, co
 
 
 def _v360_motion_commands(shot: dict[str, Any], duration: float, aspect_ratio: float = 16.0 / 9.0) -> list[str]:
+    """Emit a continuous, per-frame v360 motion track.
+
+    sendcmd is event based by default: two timestamped commands only set
+    the pose at the interval boundaries and do not interpolate between them.
+    Use the documented [expr] event on piecewise intervals instead, so the
+    command is evaluated for every decoded frame and v360 receives a smooth
+    yaw/pitch/FOV value throughout the shot.
+    """
     if not _shot_requires_runtime_motion(shot):
         return []
     if FORCE_STATIC_360_ISOLATION:
         yaw, pitch, fov = _static_360_pose(shot)
         h_fov, v_fov = _paired_motion_fov(shot, fov, aspect_ratio)
         return [
-            f"0.000000 {SPHERE_V360_LABEL} yaw {yaw:.6f};\n",
-            f"0.000000 {SPHERE_V360_LABEL} pitch {pitch:.6f};\n",
-            f"0.000000 {SPHERE_V360_LABEL} h_fov {h_fov:.6f};\n",
-            f"0.000000 {SPHERE_V360_LABEL} v_fov {v_fov:.6f};\n",
+            f"0.000000 [expr] {SPHERE_V360_LABEL} yaw {yaw:.6f};\n",
+            f"0.000000 [expr] {SPHERE_V360_LABEL} pitch {pitch:.6f};\n",
+            f"0.000000 [expr] {SPHERE_V360_LABEL} h_fov {h_fov:.6f};\n",
+            f"0.000000 [expr] {SPHERE_V360_LABEL} v_fov {v_fov:.6f};\n",
         ]
-    commands: list[str] = []
-    # A recorded-move curve can hold thousands of samples and is sampled once per frame.
-    # Pre-normalise it a single time and interpolate with a bisect lookup so sendcmd
-    # generation is O(frames * log N) instead of O(frames * N); the previous per-frame
-    # re-normalisation made long 360 exports take minutes just to emit the command file.
+
+    duration = max(0.001, float(duration))
     curve_sampler = _recorded_curve_sampler(shot)
-    # FFmpeg reconfigures v360 at every sendcmd event and corrupts the event
-    # frame on the shipped build. Keep the experiment to the minimum: opening
-    # pose plus one midpoint pose. Static holds return above and emit none.
-    event_count = max(2, int(SPHERICAL_HOLD_COMMAND_COUNT))
-    if shot.get("type") in {"planet", "recorded_move"}:
-        event_times = [0.0, duration]
+    if curve_sampler is not None:
+        curve = limit_yaw_velocity(shot.get("curve") or [])
+        event_times = {0.0, round(duration, 6)}
+        for sample in curve:
+            try:
+                event_times.add(round(max(0.0, min(duration, float(sample["t"]))), 6))
+            except (KeyError, TypeError, ValueError):
+                continue
+        times = sorted(event_times)
     else:
-        event_times = [0.0, duration / 2.0]
-        if event_count > 2:
-            event_times = [duration * index / (event_count - 1) for index in range(event_count)]
-    for t in event_times:
+        event_count = max(4, int(SPHERICAL_HOLD_COMMAND_COUNT))
+        times = [round(duration * index / (event_count - 1), 6) for index in range(event_count)]
+
+    commands: list[str] = []
+    for start, end in zip(times, times[1:]):
+        if end <= start:
+            continue
         if curve_sampler is not None:
-            yaw, pitch, fov = curve_sampler(max(0.0, min(duration, t)))
-            yaw = _signed_yaw(yaw)
+            start_yaw, start_pitch, start_fov = curve_sampler(start)
+            end_yaw, end_pitch, end_fov = curve_sampler(end)
         else:
-            yaw, pitch, fov = _v360_motion_at(shot, duration, t)
-        h_fov, v_fov = _paired_motion_fov(shot, fov, aspect_ratio)
-        commands.append(f"{t:.6f} {SPHERE_V360_LABEL} yaw {yaw:.6f};\n")
-        commands.append(f"{t:.6f} {SPHERE_V360_LABEL} pitch {pitch:.6f};\n")
-        commands.append(f"{t:.6f} {SPHERE_V360_LABEL} h_fov {h_fov:.6f};\n")
-        commands.append(f"{t:.6f} {SPHERE_V360_LABEL} v_fov {v_fov:.6f};\n")
-    if shot.get("type") != "recorded_move":
-        first_yaw = _v360_motion_at(shot, duration, 0.0)[0]
-        next_yaw = _v360_motion_at(shot, duration, min(duration / 2.0, duration))[0]
-        last_yaw = _v360_motion_at(shot, duration, duration)[0]
-        configured_rate = float(shot.get("hold_motion_rate_deg_per_sec") or 0.0)
-        LOGGER.info(
-            "360 motion emit path=%s shot=%s duration=%.3f fps=%.3f hold=%s "
-            "configured_deg_per_sec=%.6f yaw_start=%.6f yaw_step=%.6f yaw_end=%.6f",
-            __name__,
-            shot.get("label") or shot.get("type") or "360",
-            duration,
-            TARGET_EXPORT_FPS,
-            shot.get("hold_motion") or "none",
-            configured_rate,
-            _shortest_yaw_delta(first_yaw, next_yaw),
-            _shortest_yaw_delta(first_yaw, last_yaw),
+            start_yaw, start_pitch, start_fov = _v360_motion_at(shot, duration, start)
+            end_yaw, end_pitch, end_fov = _v360_motion_at(shot, duration, end)
+        start_h_fov, start_v_fov = _paired_motion_fov(shot, start_fov, aspect_ratio)
+        end_h_fov, end_v_fov = _paired_motion_fov(shot, end_fov, aspect_ratio)
+        yaw_delta = _shortest_yaw_delta(start_yaw, end_yaw)
+        interval = f"{start:.6f}-{end:.6f}"
+        expressions = (
+            ("yaw", float(_signed_yaw(start_yaw)), yaw_delta),
+            ("pitch", float(start_pitch), float(end_pitch) - float(start_pitch)),
+            ("h_fov", float(start_h_fov), float(end_h_fov) - float(start_h_fov)),
+            ("v_fov", float(start_v_fov), float(end_v_fov) - float(start_v_fov)),
         )
+        for option, initial, delta in expressions:
+            commands.append(
+                f"{interval} [expr] {SPHERE_V360_LABEL} {option} "
+                f"{initial:.6f}+({delta:.6f})*TI;\n"
+            )
     return commands
-
-
 def _shot_requires_runtime_motion(shot: dict[str, Any] | None) -> bool:
     """Whether this shot needs the unsafe runtime v360 command path.
 
@@ -2815,7 +3233,7 @@ def _shot_requires_runtime_motion(shot: dict[str, Any] | None) -> bool:
         return bool(shot.get("curve"))
     if shot.get("type") == "planet":
         return float(shot.get("spin_deg_per_sec") or 0.0) > 0.0
-    if float(shot.get("hold_motion_rate_deg_per_sec") or 0.0) > 0.0:
+    if abs(float(shot.get("hold_motion_rate_deg_per_sec") or 0.0)) > 0.0:
         return True
     previous = shot.get("previous_shot") if isinstance(shot.get("previous_shot"), dict) else None
     if previous and bool(shot.get("sweep_enabled", False)):
@@ -2932,7 +3350,7 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
     if previous:
         previous_yaw = _shot_yaw(previous)
         distance = abs(_shortest_yaw_delta(previous_yaw, target_yaw))
-        if not bool(shot.get("sweep_enabled", False)):
+        if not bool(shot.get("sweep_enabled", False)) or not bool(shot.get("intershot_sweep", shot.get("sweep_enabled", False))):
             requested = 0.0
         else:
             # Normal case: duration is distance / requested angular speed.
@@ -3026,6 +3444,9 @@ def _export_source_filter(probe: dict[str, Any], shot: dict[str, Any] | None = N
         _shot_float(shot, "fov", 100.0),
         16.0 / 9.0,
         str((shot or {}).get("type") or ""),
+        projection_preset=(shot or {}).get("projection_preset"),
+        roll=_shot_roll(shot),
+        projection_control=(shot or {}).get("projection_control"),
     )
     yaw = float(view["yaw"])
     pitch = float(view["pitch"])
@@ -3040,9 +3461,9 @@ def _export_source_filter(probe: dict[str, Any], shot: dict[str, Any] | None = N
     output_projection = str(view["projection"])
     if probe.get("projection") == "raw_insv":
         insv_fov = int(probe.get("insv_fov") or 190)
-        spatial = f"v360=input=dfisheye:output=e:ih_fov={insv_fov}:iv_fov={insv_fov}:interp=lanczos,{command_prefix}{SPHERE_V360_LABEL}=input=equirect:output={output_projection}:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:w=1920:h=1080:interp=lanczos"
+        spatial = f"v360=input=dfisheye:output=e:ih_fov={insv_fov}:iv_fov={insv_fov}:interp=lanczos,{command_prefix}{SPHERE_V360_LABEL}=input=equirect:output={output_projection}:yaw={yaw:.3f}:pitch={pitch:.3f}:roll={float(view['roll']):.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:w=1920:h=1080:interp=lanczos"
     elif probe.get("projection") == "equirect":
-        spatial = f"{command_prefix}{SPHERE_V360_LABEL}=input=equirect:output={output_projection}:yaw={yaw:.3f}:pitch={pitch:.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:w=1920:h=1080:interp=lanczos"
+        spatial = f"{command_prefix}{SPHERE_V360_LABEL}=input=equirect:output={output_projection}:yaw={yaw:.3f}:pitch={pitch:.3f}:roll={float(view['roll']):.3f}:h_fov={h_fov:.3f}:v_fov={v_fov:.3f}:w=1920:h=1080:interp=lanczos"
     elif probe.get("hdr") or int(probe.get("bit_depth") or 8) > 8:
         spatial = f"{SDR_TONEMAP_FILTER},scale=trunc(iw/2)*2:trunc(ih/2)*2"
     else:
@@ -3103,25 +3524,16 @@ def _shot_peak_fov(shot: dict[str, Any] | None) -> float:
 
 
 def _use_stereographic(shot: dict[str, Any] | None) -> bool:
-    """Decide flat vs stereographic ONCE per segment, from the shot alone.
-
-    Deliberately independent of the instantaneous per-frame FOV. The output
-    projection is baked into the filtergraph when the segment is built, while
-    h_fov/v_fov are driven per frame through sendcmd -- so if the two disagreed
-    about which projection is in play they would pair the vertical field by
-    different rules mid-shot. A shot sitting near the threshold with a little
-    fov drift did exactly that: v_fov jumped ~162 deg to 120 deg partway
-    through, a visible pop in an otherwise still hold. Keying off the widest
-    field the shot ever reaches keeps one projection for the whole segment.
-    """
+    """Match the canonical projection for wide presets and Tiny Planet."""
     shot_type = str((shot or {}).get("type") or "")
-    if shot_type == "planet":
-        return True
-    return _shot_peak_fov(shot) > STEREOGRAPHIC_FOV_THRESHOLD
+    preset = normalize_projection_preset((shot or {}).get("projection_preset"), shot_type)
+    return shot_type == "planet" or preset in {"tiny_planet", "megaview", "ultrawide", "crystal_ball"}
 
 
 def _effective_flat_fov(shot: dict[str, Any] | None) -> float:
-    return effective_fov(_shot_float(shot, "fov", 100.0), str((shot or {}).get("type") or ""))
+    shot_type = str((shot or {}).get("type") or "")
+    preset = normalize_projection_preset((shot or {}).get("projection_preset"), shot_type)
+    return effective_fov(_shot_float(shot, "fov", 100.0), shot_type, preset)
 
 
 def _paired_motion_fov(shot: dict[str, Any] | None, fov: float, aspect_ratio: float) -> tuple[float, float]:
@@ -3132,6 +3544,8 @@ def _paired_motion_fov(shot: dict[str, Any] | None, fov: float, aspect_ratio: fl
         aspect_ratio,
         str((shot or {}).get("type") or ""),
         projection_hint="sg" if _use_stereographic(shot) else "flat",
+        projection_preset=(shot or {}).get("projection_preset"),
+        projection_control=(shot or {}).get("projection_control"),
     )
     return float(params["h_fov"]), float(params["v_fov"])
 
@@ -3152,6 +3566,11 @@ def _shot_yaw(shot: dict[str, Any] | None) -> float:
     if yaw > 180.0:
         yaw -= 360.0
     return yaw
+
+
+def _shot_roll(shot: dict[str, Any] | None) -> float:
+    shot_type = str((shot or {}).get("type") or "")
+    return effective_roll(_shot_float(shot, "roll", 0.0), shot_type)
 
 
 def _spherical_shot_usage(segments: list[dict[str, Any]]) -> dict[str, int]:
@@ -3181,6 +3600,22 @@ def _spherical_recording_usage(segments: list[dict[str, Any]]) -> dict[str, Any]
     return {"recorded_segments": recorded, "landmark_segments": landmark, "takes": takes}
 
 
+SDR_OUTPUT_ARGS = ["-color_range", "tv", "-colorspace", "bt709",
+                   "-color_primaries", "bt709", "-color_trc", "bt709"]
+
+
+def _sdr_output_graph(graph: str) -> str:
+    """Convert pixel levels as well as tags after RGBA overlays and motion.
+
+    Mixing full/limited range VUI headers across concatenated cuts causes
+    decoder exposure changes. Relabelling alone would crush/lift the image.
+    """
+    conversion = ("scale=iw:ih:in_range=auto:out_range=tv:out_color_matrix=bt709,"
+                  "format=yuv420p,setparams=range=limited:colorspace=bt709:"
+                  "color_primaries=bt709:color_trc=bt709")
+    return re.sub(r"\[v\]$", f"[sdr_output];[sdr_output]{conversion}[v]", graph)
+
+
 def _segment_filtergraph(
     platform: str,
     duration: float,
@@ -3203,12 +3638,16 @@ def _segment_filtergraph(
     if source_filter:
         filters.append(source_filter)
     base_filter = _base_video_filter(platform)
+    if motion_filter and "zoompan=" in motion_filter and platform in {"youtube", "reel_horizontal"}:
+        # Preserve native 4K detail until the animated crop; downscaling to
+        # 1080p and enlarging again made the moving cut unnecessarily soft.
+        base_filter = base_filter.replace("1920:1080", "3840:2160")
     if platform == "reel" and not reel_letterbox_filter and segment and segment.get("reel_subject_center") and not motion_filter:
         center = segment["reel_subject_center"]
         cx = max(0.0, min(1.0, float(center.get("x") or 0.5)))
         cy = max(0.0, min(1.0, float(center.get("y") or 0.5)))
         base_filter = f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920:x='(iw-ow)*{cx:.4f}':y='(ih-oh)*{cy:.4f}',setsar=1,format=yuv420p"
-    post_filters = [motion_filter, _exact_cadence_filter(frame_count) if frame_count else _constant_cadence_filter()]
+    post_filters = [_exact_cadence_filter(frame_count) if frame_count else _constant_cadence_filter(), motion_filter]
     if intro_fade:
         post_filters.append(f"fade=t=in:st=0:d={CONTENT_FADE_DURATION:.3f}")
     if outro_fade:
@@ -3222,7 +3661,7 @@ def _segment_filtergraph(
         graph = f"[0:v]{prefix + ',' if prefix else ''}{reel_letterbox_filter}[reel_letterboxed];"
         graph += f"[reel_letterboxed]{','.join(item for item in post_filters if item)}[base]"
     else:
-        filters.extend([base_filter, motion_filter, _color_filter(color_profile)])
+        filters.extend([base_filter, _color_filter(color_profile)])
         filters.extend(post_filters)
         graph = f"[0:v]{','.join(filter for filter in filters if filter)}[base]"
     overlay_items = reel_overlay_items or []
@@ -3255,22 +3694,22 @@ def _segment_filtergraph(
         graph += f";[{current_label}]copy[composited]"
         current_label = "composited"
     if not has_watermark:
-        return f"{graph};[{current_label}]copy[v]"
+        return _sdr_output_graph(f"{graph};[{current_label}]copy[v]")
     margin = 40 if platform == "youtube" else 28
     wm_height = 65 if platform == "youtube" else 58
     if not intro_logo and not outro_logo:
         if overlay_items:
-            return (
+            return _sdr_output_graph(
                 f"{graph};"
                 f"[1:v]format=rgba,scale=-1:{wm_height},colorchannelmixer=aa=0.70[wm];"
                 f"[{current_label}][wm]overlay=W-w-{margin}:H-h-{margin}:format=auto[v]"
             )
-        return (
+        return _sdr_output_graph(
             f"{graph};"
             f"[1:v]format=rgba,scale=-1:{wm_height},colorchannelmixer=aa=0.70[wm];"
             f"[{current_label}][wm]overlay=W-w-{margin}:H-h-{margin}:format=auto[v]"
         )
-    return _logo_overlay_filtergraph(graph, platform, duration, intro_logo, outro_logo, margin=margin, wm_height=wm_height)
+    return _sdr_output_graph(_logo_overlay_filtergraph(graph, platform, duration, intro_logo, outro_logo, margin=margin, wm_height=wm_height))
 
 
 def _render_reel_overlays(
@@ -3454,13 +3893,19 @@ def _segment_cache_stamp_path(segment_path: Path) -> Path:
 
 
 def _segment_cache_stamp_payload(segment: dict[str, Any]) -> dict[str, Any]:
+    """Describe the explicit render recipe that produced a cached segment.
+
+    The Git commit is intentionally not part of this attestation. Build,
+    progress-bar, logging, and other non-pixel fixes must be able to reuse
+    valid rendered segments. Pixel-affecting changes must bump one of the
+    explicit recipe versions above.
+    """
     recipe = _spherical_motion_cache_recipe()
     return {
         "schema": 1,
         "export_segment_recipe": EXPORT_SEGMENT_RECIPE_VERSION,
         "spherical_motion_recipe_version": SPHERICAL_MOTION_RECIPE_VERSION,
         "spherical_motion_recipe_hash": stable_fingerprint(recipe),
-        "git_commit": build_info().get("git_commit", "unknown"),
         "spherical_identity": _spherical_cache_identity(segment),
         "spherical_shot_fingerprint": stable_fingerprint(_spherical_shot(segment) or {}),
     }
@@ -3528,12 +3973,12 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "sweep_speed_default": SPHERICAL_SWEEP_SPEED_DEG_PER_SEC,
         "sweep_speed_min": SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC,
         "sweep_speed_max": SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC,
-        "transition_policy": "shortest_yaw_delta_at_angular_speed_v3_cross_cut_returns",
-        "axis_policy": "yaw_only_sweep_and_yaw_hold_v2",
+        "transition_policy": "intershot_sweep_explicit_opt_in_shortest_yaw_delta_v4",
+        "axis_policy": "atomic_frame_remap_pose_and_zoom_v1",
         "hold_step_policy": "deg_per_sec_times_elapsed_seconds_v1",
-        "hold_motion_rate_deg_per_sec": 0.01,
+        "hold_motion_rate_deg_per_sec": (-0.8, 0.0, 0.6, 1.0, -0.5, 0.8),
         "hold_motion_default": "subtle",
-        "sendcmd_event_policy": "two_absolute_poses_start_midpoint_v1",
+        "sendcmd_event_policy": "per_frame_expr_piecewise_v2",
         "landmark_hold_min_sec": 6.0,
         "landmark_hold_target_sec": 8.0,
         "landmark_hold_max_sec": 12.0,
@@ -3545,12 +3990,16 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "normal_fov_max": SPHERICAL_NORMAL_FOV_MAX,
         "max_hold_yaw_deg": SPHERICAL_MAX_HOLD_YAW_DEG,
         "planet_spin_deg_per_sec": PLANET_SPIN_DEG_PER_SEC,
-        "shared_view_parameters_version": 1,
+        "shared_view_parameters_version": 2,
+        "native_source_policy": "original_sdr_equirect_pixel_detail_v1",
+        "native_motion_library_version": NATIVE_SPHERICAL_RECIPE_VERSION,
         "cache_view_identity_version": 1,
         "operator_avoidance_360": "disabled_for_preview_render_coordinate_parity",
         "automatic_yaw_drift_fraction": SPHERICAL_PRIMARY_DRIFT_FRACTION,
         "automatic_motion_fraction_per_sec": SPHERICAL_MAX_MOTION_FRACTION_PER_SEC,
         "v360_target": SPHERE_V360_LABEL,
+        "export_motion_mode": SPHERICAL_EXPORT_MOTION_MODE,
+        "export_proxy_version": SPHERICAL_EXPORT_PROXY_VERSION,
         "target_fps": TARGET_EXPORT_FPS,
     }
 
@@ -4503,7 +4952,7 @@ def _concat_file_line(path: Path) -> str:
     return "file '{}'\n".format(path.as_posix().replace("'", "'\\''"))
 
 
-COLOR_REFERENCE_PRIORITY = ("sony", "360", "iphone")
+COLOR_REFERENCE_PRIORITY = ("nikon", "360", "sony", "iphone")
 
 
 def _color_camera_kind(record: dict[str, Any]) -> str:
@@ -4512,6 +4961,8 @@ def _color_camera_kind(record: dict[str, Any]) -> str:
         "camera_id", "camera_name", "camera", "camera_label", "filename", "path", "source_path"
     )).lower()
     projection = str(record.get("projection") or (record.get("probe") or {}).get("projection") or "").lower()
+    if "nikon" in text:
+        return "nikon"
     if "sony" in text:
         return "sony"
     if projection in {"equirect", "raw_insv"} or "360" in text or "insv" in text:
@@ -4521,13 +4972,38 @@ def _color_camera_kind(record: dict[str, Any]) -> str:
     return "other"
 
 
-def _color_reference_record(records: list[dict[str, Any]]) -> dict[str, Any] | None:
-    present = {kind: record for record in records if (kind := _color_camera_kind(record)) != "other"}
+def _color_reference_record(
+    records: list[dict[str, Any]],
+    measured_records: list[tuple[dict[str, Any], dict[str, Any]]] | None = None,
+) -> dict[str, Any] | None:
+    """Choose the brightest usable camera, with Nikon as the tie-break priority."""
+    priority = {kind: index for index, kind in enumerate(COLOR_REFERENCE_PRIORITY)}
+    if measured_records:
+        candidates = []
+        for record, profile in measured_records:
+            kind = _color_camera_kind(record)
+            if kind == "other" or profile.get("luma") is None:
+                continue
+            candidates.append((record, profile, kind))
+        safe = [
+            item for item in candidates
+            if float(item[1].get("white_clip_ratio") or 0.0) <= 0.05
+            and float(item[1].get("black_clip_ratio") or 0.0) <= 0.05
+        ]
+        pool = safe or candidates
+        if pool:
+            return max(
+                pool,
+                key=lambda item: (
+                    float(item[1].get("luma") or 0.0),
+                    -priority.get(item[2], 99),
+                ),
+            )[0]
+    present = {_color_camera_kind(record): record for record in records if _color_camera_kind(record) != "other"}
     for kind in COLOR_REFERENCE_PRIORITY:
         if kind in present:
             return present[kind]
     return records[0] if records else None
-
 
 def _color_profile_artifact(project: Project) -> Path:
     return project.cache_dir / "color_profiles.json"
@@ -4542,7 +5018,7 @@ def _color_source_key(project: Project, record: dict[str, Any], path: str) -> st
     })[:32]
 
 
-def _color_profiles_for_segments(project: Project, segments: list[dict[str, Any]], warnings: list[str] | None = None) -> dict[str, dict[str, Any]]:
+def _color_profiles_for_segments(project: Project, segments: list[dict[str, Any]], warnings: list[str] | None = None, progress_callback: ProgressCallback | None = None) -> dict[str, dict[str, Any]]:
     """Measure each camera once and correct toward the fixed camera priority reference."""
     warnings = warnings if warnings is not None else []
     records = list(project.data.get("inputs", {}).get("videos", []))
@@ -4555,7 +5031,11 @@ def _color_profiles_for_segments(project: Project, segments: list[dict[str, Any]
         record = next((item for item in records if str((item.get("normalized") or {}).get("path") or item.get("path") or "") in {clip_path, str(info.get("source_path") or "")}), None)
         by_clip[clip_path] = (record or info, str(info.get("source_path") or clip_path))
     measured: dict[str, dict[str, Any]] = {}
-    for clip_path, (record, source_path) in by_clip.items():
+    for index, (clip_path, (record, source_path)) in enumerate(by_clip.items()):
+        if progress_callback:
+            progress_callback(3 + 4 * index / max(1, len(by_clip)),
+                ProgressDetail(f"Export: measuring fixed colour profile {index + 1}/{len(by_clip)} — {Path(source_path).name}",
+                               task_id=f"colour-{index}", label=f"Colour analysis: {Path(source_path).name}", percent=None))
         profile, warning = cached_or_measure_clip_color(project, source_path, record=record)
         if warning:
             warnings.append(warning)
@@ -4563,23 +5043,35 @@ def _color_profiles_for_segments(project: Project, segments: list[dict[str, Any]
         profile["camera_kind"] = _color_camera_kind(record)
         profile["camera_id"] = str(record.get("camera_id") or record.get("camera_name") or Path(source_path).stem).lower()
         measured[clip_path] = profile
+        if progress_callback:
+            progress_callback(3 + 4 * (index + 1) / max(1, len(by_clip)),
+                ProgressDetail(f"Fixed colour profile ready: {Path(source_path).name}",
+                               task_id=f"colour-{index}", label=f"Colour analysis: {Path(source_path).name}", percent=100))
     valid = [profile for profile in measured.values() if profile.get("luma") is not None]
     if not valid:
         return {path: {} for path in measured}
-    ref_record = _color_reference_record([record for record, _ in by_clip.values()])
+    measured_records = [(record, measured[clip_path]) for clip_path, (record, _source_path) in by_clip.items() if clip_path in measured]
+    ref_record = _color_reference_record([record for record, _ in by_clip.values()], measured_records)
     ref_kind = _color_camera_kind(ref_record or {})
-    ref_profile = next((profile for profile in valid if profile.get("camera_kind") == ref_kind), valid[0])
+    ref_profile = next(
+        (profile for record, profile in measured_records if record is ref_record),
+        valid[0],
+    )
+    reference_for_matching = dict(ref_profile)
+    # Lift all cameras slightly while matching to the brightest usable source.
+    reference_for_matching["luma"] = min(235.0, float(ref_profile.get("luma") or 128.0) + 6.0)
     if float(ref_profile.get("white_clip_ratio") or 0) > 0.05 or float(ref_profile.get("black_clip_ratio") or 0) > 0.05 or not 35 <= float(ref_profile.get("luma") or 0) <= 220:
         warnings.append(
             f"La cámara de referencia de color ({ref_profile.get('camera_id')}) presenta exposición potencialmente defectuosa; se usa por prioridad fija ({ref_kind}), sin sustituirla automáticamente."
         )
     corrected: dict[str, dict[str, Any]] = {}
     for path, profile in measured.items():
-        corrected[path] = color_correction_for_profile(profile, ref_profile)
+        corrected[path] = color_correction_for_profile(profile, reference_for_matching)
     artifact = {
         "version": COLOR_PROFILE_VERSION,
         "reference_priority": list(COLOR_REFERENCE_PRIORITY),
         "reference_camera": ref_profile.get("camera_id"),
+        "reference_brightness_lift": 6.0,
         "profiles": {path: profile for path, profile in measured.items()},
         "corrections": corrected,
     }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 import json
 import logging
 import math
@@ -10,12 +11,14 @@ import re
 from pathlib import Path
 from typing import Any
 
+from core.fixed_camera_moves import CATALOG, ZOOM_MOVES, HORIZONTAL_MOVES, VERTICAL_MOVES, FIXED_MOTION_VERSION, fixed_camera_motion
 from core.camera_moves import load_camera_moves, recorded_move_covering, recorded_shot_for_segment
 from core.messages import t
 from core.operator_avoidance import OPERATOR_AVOIDANCE_VERSION, avoidance_for_segment, load_cached_operator_presence
 from core.reel_framing import REEL_FRAMING_VERSION, subject_box_for_window
 from core.non_music import NON_MUSIC_VERSION, analyze_non_music_sources
 from core.project import Project
+from core.spherical_view import effective_fov, effective_pitch, effective_projection_control, effective_roll, normalize_projection_preset
 from core.shot_quality import DIRECTOR_SCORE_THRESHOLD, SHOT_QUALITY_VERSION, analyze_handheld_director_quality, director_quality_for_segment
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.cut import _clip_master_ranges, load_coverage
@@ -24,12 +27,12 @@ from core.stages.cut import _clip_master_ranges, load_coverage
 LOGGER = logging.getLogger(__name__)
 
 MIN_SEGMENT_SEC = 2.0
-MAX_SEGMENT_SEC = 6.0
+MAX_SEGMENT_SEC = 7.0
 MAX_BARS_PER_SEGMENT = 2
 EDIT_FPS = 30.0
 DEFAULT_CAMERA_ROLE_WEIGHTS = {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0}
 SPHERICAL_PAN_SEC = 0.45  # legacy plan field; sweep timing is angular-speed based
-SPHERICAL_MOTION_PLAN_VERSION = 10
+SPHERICAL_MOTION_PLAN_VERSION = 16
 # Reel has its own pacing contract.  Keep this independent from the
 # YouTube/360 segment limits so a Reel change cannot invalidate or alter their
 # edit cadence accidentally.
@@ -43,35 +46,13 @@ REEL_DEFAULT_CUT_TARGET_SEC = 1.75
 REEL_DEFAULT_CUTS_PER_SOURCE = 1.0
 REEL_SINGLE_SOURCE_MIX_INTERVAL_SEC = 5.0
 REEL_PLAN_VERSION = 5
-MOTION_CATALOG = (
-    "full_static", "full_zoom_in", "zoom_in_center", "zoom_out_center", "zoom_in", "zoom_out",
-    "pan_right_center", "pan_left_center", "pan_down_center", "pan_up_center",
-)
-# Selection is weighted per cut, rather than merely exposing every option in
-# the catalogue.  In particular, moves toward the subject are preferred, and
-# the two explicit centred recipes have enough weight to be visible in real
-# plans instead of only in unit-test sequences.
-MOTION_WEIGHTS = {
-    # Kept in the catalogue for backwards-compatible recipe diagnostics;
-    # production fixed-camera calls pass allow_static=False.
-    "full_static": 1.5,
-    "full_zoom_in": 2.0,
-    "zoom_in_center": 4.0,
-    "zoom_in": 4.0,
-    "zoom_out_center": 1.5,
-    "zoom_out": 1.5,
-    "pan_right_center": 1.0,
-    "pan_left_center": 1.0,
-    "pan_down_center": 1.0,
-    "pan_up_center": 1.0,
-}
+MOTION_CATALOG = CATALOG
+MOTION_WEIGHTS = {name: 1.0 for name in MOTION_CATALOG}
 # The previous 1.32x fast setting was too abrupt.  Normal is now the fastest
 # authored speed, and a new very-slow option keeps close-ups composed.
 MOTION_SPEEDS = (("very_slow", 0.50), ("slow", 0.72), ("fast", 1.0))
 IPHONE_CROP_TOP_LIMIT = 0.80
-# Bump this whenever the YouTube camera-choice or framing invariant changes so
-# an older cached edit plan cannot keep producing the previous camera runs.
-YOUTUBE_CAMERA_SELECTION_VERSION = 16
+YOUTUBE_CAMERA_SELECTION_VERSION = 22
 # Legacy diagnostic threshold retained in project settings/manifests. The
 # production policy now stops close-up filler as soon as one alternative
 # physical camera covers the same synced window.
@@ -93,10 +74,10 @@ FIXED_CAMERA_SAFE_TARGET_Y = (0.35, 0.65)
 MAX_CONSECUTIVE_CAMERA_SEGMENTS = 2
 # Retained as a versioned emergency switch for diagnostics; normal builds use
 # the shared gentle hold/sweep motion below.
-FORCE_STATIC_360_ISOLATION = True
-SPHERICAL_SWEEP_SPEED_DEG_PER_SEC = 20.0
-SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC = 15.0
-SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 20.0
+FORCE_STATIC_360_ISOLATION = False
+SPHERICAL_SWEEP_SPEED_DEG_PER_SEC = 5.0
+SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC = 3.0
+SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC = 8.0
 # Automatic 360 motion budget, expressed as a fraction of the shot's visible
 # field (h_fov) rather than in absolute degrees -- see
 # _spherical_motion_profile for why absolute degrees was the bug. The target
@@ -111,19 +92,20 @@ SPHERICAL_MAX_MOTION_FRACTION_PER_SEC = 0.06
 # Planet is a special effect, not the default visual language of a normal
 # 360 edit. Keep its optional rotation at a deliberately gentle absolute rate.
 PLANET_SPIN_DEG_PER_SEC = 5.0
-SPHERICAL_HOLD_MOTION_DEG_PER_SEC = 0.4
+SPHERICAL_HOLD_MOTION_RATES_DEG_PER_SEC = (-0.8, 0.0, 0.6, 1.0, -0.5, 0.8)
 SPHERICAL_MIN_LANDMARK_HOLD_SEC = 6.0
 SPHERICAL_TARGET_LANDMARK_HOLD_SEC = 8.0
 SPHERICAL_MAX_LANDMARK_HOLD_SEC = 12.0
 SPHERICAL_DEFAULT_FOV = 95.0
 SPHERICAL_WIDE_FOV = 120.0
 SPHERICAL_AUDIENCE_STAGE_FOV = 125.0
-SPHERICAL_NORMAL_FOV_MIN = 70.0
-SPHERICAL_NORMAL_FOV_MAX = 300.0
-SPHERICAL_SHOT_ORDER = ("full_stage", "singer", "drummer", "left", "right", "audience", "audience_stage_wide", "planet")
+SPHERICAL_NORMAL_FOV_MIN = 82.0
+SPHERICAL_NORMAL_FOV_MAX = 165.0
+SPHERICAL_SHOT_ORDER = ("full_stage", "singer", "drummer", "pianist", "left", "right", "audience", "audience_stage_wide", "planet")
 SPHERICAL_LANDMARKS = {
     "singer": ("singer_yaw", "Cantante", SPHERICAL_DEFAULT_FOV),
     "drummer": ("drummer_yaw", "Bateria", SPHERICAL_DEFAULT_FOV),
+    "pianist": ("pianist_yaw", "Pianista", SPHERICAL_DEFAULT_FOV),
     "left": ("left_yaw", "Lado izquierdo", SPHERICAL_DEFAULT_FOV),
     "right": ("right_yaw", "Lado derecho", SPHERICAL_DEFAULT_FOV),
     "audience": ("audience_yaw", "Publico", SPHERICAL_DEFAULT_FOV),
@@ -131,13 +113,18 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 17
+EDIT_PLAN_ALGORITHM_VERSION = 29
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
-    "singer": 0.60,
-    "full_stage": 0.10,
-    "audience": 0.10,
+    # Keep every authored stage landmark in rotation, with a small singer
+    # preference. Audience-only views are never automatic editorial targets.
+    "singer": 0.24,
+    "full_stage": 0.16,
+    "drummer": 0.16,
+    "left": 0.16,
+    "right": 0.16,
+    "audience_stage_wide": 0.12,
 }
 
 
@@ -170,7 +157,17 @@ class EditStage(Stage):
                 # built from a previous sync/cut pass.
                 "cut": coverage_payload,
                 "settings": project.data["settings"].get(self.name, {}),
+                # A rerun is intentionally a new creative pass.  The seed is
+                # stored by the wizard and must invalidate edit_plan.json;
+                # otherwise the engine can truthfully report a cache hit while
+                # returning the previous camera sequence.
+                "variation_seed": (
+                    project.data.get("settings", {}).get("edit", {}).get("variation_seed")
+                    or project.data.get("settings", {}).get("wizard", {}).get("variation_seed")
+                    or ""
+                ),
                 "spherical_landmarks": project.data["settings"].get("spherical_landmarks", {}),
+                "spherical_landmarks_by_source": project.data["settings"].get("spherical_landmarks_by_source", {}),
                 "camera_moves": _camera_moves_fingerprint(project),
                 "shot_quality_version": SHOT_QUALITY_VERSION,
                 "director_score_threshold": DIRECTOR_SCORE_THRESHOLD,
@@ -183,6 +180,7 @@ class EditStage(Stage):
                         "plan": REEL_PLAN_VERSION,
                         "framing": REEL_FRAMING_VERSION,
                     } if platform == "reel" else None,
+                    "fixed_motion_library": FIXED_MOTION_VERSION,
                     "youtube": YOUTUBE_CAMERA_SELECTION_VERSION if platform == "youtube" else None,
                     "360": SPHERICAL_MOTION_PLAN_VERSION if platform == "360" else None,
                 },
@@ -224,7 +222,7 @@ class EditStage(Stage):
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, t("choosing_cameras"))
             coverage = {**coverage, "singing_segments": _detect_singing_segments(project, coverage)}
-            plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}), recorded_moves=recorded_moves)
+            plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}), recorded_moves=recorded_moves, progress_callback=progress_callback)
         write_artifact_json(artifact_path(project, "beats.json"), beats)
         plan["edit_plan_algorithm_version"] = EDIT_PLAN_ALGORITHM_VERSION
         validate_plan_camera_source_consistency(plan)
@@ -278,6 +276,7 @@ def _load_or_analyze_beats(project: Project, coverage: dict[str, Any], progress_
     if len(beat_times) < 2:
         beat_times = _fallback_beats(start, duration)
     bars = estimate_bar_starts(beat_times, start, duration)
+    energy_by_bar = _bar_energy_profile(y, sr, bars, start) if "y" in locals() and "sr" in locals() else []
     progress_callback(45, t("rhythm_ready"))
     return {
         "stage": "edit",
@@ -289,7 +288,31 @@ def _load_or_analyze_beats(project: Project, coverage: dict[str, Any], progress_
         "beats_sec": beat_times,
         "bars_sec": bars,
         "sections_sec": section_times,
+        "energy_by_bar": energy_by_bar,
     }
+
+
+
+def _bar_energy_profile(y: Any, sr: int, bars: list[float], start: float) -> list[float]:
+    """Return normalized RMS energy for each authored bar."""
+    try:
+        values: list[float] = []
+        for left, right in zip(bars, bars[1:]):
+            begin = max(0, int((float(left) - start) * sr))
+            end = min(len(y), int((float(right) - start) * sr))
+            chunk = y[begin:end]
+            if len(chunk) == 0:
+                values.append(0.0)
+            else:
+                values.append((sum(float(sample) * float(sample) for sample in chunk) / len(chunk)) ** 0.5)
+        if not values:
+            return []
+        low, high = min(values), max(values)
+        if high - low < 1e-9:
+            return [0.5] * len(values)
+        return [round(max(0.0, min(1.0, (value - low) / (high - low))), 4) for value in values]
+    except Exception:
+        return []
 
 
 def _detect_singing_segments(project: Project, coverage: dict[str, Any]) -> list[dict[str, Any]]:
@@ -341,7 +364,7 @@ def _beat_fingerprint(project: Project, coverage: dict[str, Any]) -> str:
         source = inputs["videos"][0]
         if (source.get("probe") or {}).get("audio_codec"):
             audio = {"path": source.get("path"), "probe": source.get("probe")}
-    return stable_fingerprint({"audio": audio, "window": coverage.get("window")})
+    return stable_fingerprint({"version": 2, "audio": audio, "window": coverage.get("window")})
 
 
 def _camera_moves_fingerprint(project: Project) -> str:
@@ -522,16 +545,22 @@ def _reel_promo_plan(
                 "type": "promo_360", "label": "360 promo", "yaw": 0.0, "pitch": 0.0, "fov": 95.0, "weight": 1.0,
             }
             segment["spherical_shot"] = _spherical_motion_profile(shot, index, enabled=False, hold_motion="none")
-        elif role == "fixed_rear" and bool(wizard.get("fixed_rear_motion", True)):
-            target_x, target_y = _reel_target_for_source(source, clip_start, seg_duration)
+        elif _flat_motion_camera(source) and bool(wizard.get("fixed_rear_motion", True)):
+            target_x, target_y = _tracked_flat_target(source, clip_start, seg_duration, {})
             segment["motion"] = _ken_burns_motion(
                 fixed_index,
                 target_x,
                 target_y,
-                allow_static=False,
-                force_full_zoom=(fixed_index % 2 == 0),
-                force_close=(fixed_index % 2 == 1),
+                duration=seg_duration,
+                variation_seed=stable_fingerprint({"window": window, "sources": [_source_id(item) for item in sources]}),
+                previous_movement=next((item["motion"]["movement"] for item in reversed(segments) if item.get("motion")), ""),
+                subject_confidence=_reel_framing_confidence(source, clip_start, seg_duration),
             )
+            segment["camera_motion_target"] = {
+                "x": round(target_x, 4),
+                "y": round(target_y, 4),
+                "tracking": True,
+            }
             fixed_index += 1
         elif role == "handheld":
             target_x, target_y = _reel_target_for_source(source, clip_start, seg_duration)
@@ -658,6 +687,7 @@ def _youtube_multicam_plan(
     beats: dict[str, Any],
     settings: dict[str, Any] | None = None,
     recorded_moves: list[dict[str, Any]] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     platform = str(coverage.get("platform") or "youtube")
     window = coverage.get("window") or {}
@@ -692,18 +722,37 @@ def _youtube_multicam_plan(
     previous_spherical_yaw: float | None = None
     previous_spherical_type: str | None = None
     recent_spherical_types: list[str] = []
+    recent_subjects: list[str] = []
+    subject_seconds: dict[str, float] = {}
+    subject_fallbacks = 0
     fixed_rear_motion_index = 0
     usage_counts: dict[str, int] = {}
     operator_samples_cache: dict[str, list[dict[str, Any]]] = {}
     selection_stats = _selection_stats_template(sources, start, end)
     project_settings = settings or {}
     edit_settings = project_settings.get("edit") if "edit" in project_settings else project_settings
+    subject_assignments = edit_settings.get("camera_subjects") or {}
+    sources = [dict(source) for source in sources]
+    for source in sources:
+        for identity in (_camera_id(source), str(source.get("source_path") or ""),
+                         str(source.get("path") or ""), str(source.get("filename") or "")):
+            if identity in subject_assignments:
+                source["camera_subject"] = subject_assignments[identity]
+                break
     spherical_landmarks = migrate_spherical_landmarks(project_settings.get("spherical_landmarks") or {})
+    spherical_landmark_profiles = project_settings.get("spherical_landmarks_by_source") or {}
+    preferred_spherical_source = str(edit_settings.get("spherical_source_path") or (project_settings.get("wizard") or {}).get("spherical_source_path") or "").strip()
     spherical_mode = str(edit_settings.get("spherical_mode") or "automatic").lower()
     use_recorded_360 = spherical_mode == "directed"
     role_weights = _camera_role_weights(edit_settings)
     camera_target_weights = _camera_target_weights(sources, role_weights, edit_settings)
     spherical_target_weights = _spherical_target_weights(edit_settings)
+    variation_seed = str(
+        edit_settings.get("variation_seed")
+        or project_settings.get("variation_seed")
+        or (project_settings.get("wizard") or {}).get("variation_seed")
+        or ""
+    )
     fixed_rear_motion = bool(edit_settings.get("fixed_rear_motion", True))
     try:
         fixed_zoom_coverage_threshold = max(
@@ -715,30 +764,64 @@ def _youtube_multicam_plan(
         )
     except (TypeError, ValueError):
         fixed_zoom_coverage_threshold = DEFAULT_FIXED_CAMERA_ZOOM_COVERAGE_THRESHOLD
-    # Static 360 holds are the safe shipped default. Motion remains an explicit
-    # project opt-in until a filter path that does not reconfigure v360 per
-    # frame is available.
-    spherical_motion = False
-    hold_motion = str(edit_settings.get("spherical_hold_motion") or "none").lower()
+    # Automatic 360 motion is enabled for new projects. Users can still turn
+    # it off explicitly, while directed mode uses the recorded camera curve.
+    spherical_motion = bool(edit_settings.get("spherical_motion", True))
+    hold_motion = str(
+        edit_settings.get("spherical_hold_motion")
+        or ("subtle" if spherical_motion else "none")
+    ).lower()
     if hold_motion not in {"none", "subtle"}:
-        hold_motion = "none"
-    spherical_sweep = False
+        hold_motion = "subtle" if spherical_motion else "none"
+    spherical_sweep = bool(edit_settings.get("spherical_sweep", False))
     sweep_speed = max(SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC, min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, float(edit_settings.get("sweep_speed_deg_per_sec", SPHERICAL_SWEEP_SPEED_DEG_PER_SEC))))
+    # Tempo is a deterministic pacing proxy when no intensity analysis exists.
+    tempo = float(beats.get("tempo") or 110.0)
+    intensity = str(beats.get("intensity") or "").lower()
+    min_cut, max_cut = (5.0, 7.0) if intensity == "low" or tempo < 90 else (2.0, 4.0) if intensity == "high" or tempo >= 160 else (3.0, 5.0)
     bar_index = 0
     segment_index = 0
     while bar_index < len(bar_times) - 1:
-        bars_per_segment = _bars_for_segment(segment_index, bar_times, section_times, bar_index)
+        bars_per_segment = _bars_for_segment(segment_index, bar_times, section_times, bar_index, beats.get("energy_by_bar"))
         max_bar_index = min(len(bar_times) - 1, bar_index + MAX_BARS_PER_SEGMENT)
         next_index = min(max_bar_index, bar_index + bars_per_segment)
         section_index = _reachable_section_index(bar_times, section_times, bar_index, next_index)
-        if section_index is not None:
+        energy_profile = beats.get("energy_by_bar") or []
+        try:
+            energy_here = max(0.0, min(1.0, float(energy_profile[bar_index])))
+        except (IndexError, TypeError, ValueError):
+            energy_here = 0.5
+        # A section marker is a useful boundary at high intensity, but it must
+        # not turn a calm phrase into a chain of 1–2 second cuts. In quiet or
+        # medium passages the duration policy remains authoritative.
+        if section_index is not None and energy_here >= 0.86:
             next_index = min(section_index, max_bar_index)
-        while next_index > bar_index + 1 and bar_times[next_index] - bar_times[bar_index] > MAX_SEGMENT_SEC:
+        while next_index > bar_index + 1 and bar_times[next_index] - bar_times[bar_index] > max_cut:
             next_index -= 1
-        while next_index < max_bar_index and bar_times[next_index] - bar_times[bar_index] < MIN_SEGMENT_SEC:
+        while next_index < max_bar_index and bar_times[next_index] - bar_times[bar_index] < min_cut:
             next_index += 1
+        if progress_callback:
+            completed_fraction = (float(bar_times[bar_index]) - start) / max(.1, end - start)
+            progress_callback(55 + int(40 * completed_fraction),
+                              f"Edit: choosing shot {segment_index + 1}; {completed_fraction * 100:.0f}% of song covered")
         segment_start = float(bar_times[bar_index])
         segment_end = min(end, float(bar_times[next_index]))
+        # Quantize an overlong single bar instead of accepting a 1s cut or
+        # a full slow bar. Retain the remainder as an explicit boundary.
+        if segment_end - segment_start > max_cut:
+            segment_end = segment_start + max_cut
+            next_index = bisect.bisect_left(bar_times, segment_end)
+            if next_index == len(bar_times) or bar_times[next_index] != segment_end:
+                bar_times.insert(next_index, segment_end)
+        if 0 < end - segment_end < 2.0:
+            if end - segment_start <= 7.0:
+                segment_end = end
+                next_index = len(bar_times) - 1
+            else:
+                segment_end = end - 3.0
+                next_index = bisect.bisect_left(bar_times, segment_end)
+                if next_index == len(bar_times) or bar_times[next_index] != segment_end:
+                    bar_times.insert(next_index, segment_end)
         if segment_end <= segment_start:
             break
         available = _quality_filtered_sources(_covering_sources(sources, segment_start, segment_end, platform=platform), segment_start, segment_end, selection_stats)
@@ -750,6 +833,24 @@ def _youtube_multicam_plan(
             stats = selection_stats.setdefault(_source_id(source), _selection_stats_for_source(source, start, end))
             stats["eligible_segments"] += 1
             stats["eligible_seconds"] += segment_end - segment_start
+        # The same musician can appear on several cameras. Apply a shared
+        # four-shot cooldown before camera quotas; unknown/wide views remain
+        # valid alternatives rather than inventing person identities.
+        editorial_available = []
+        for candidate in available:
+            subject = _editorial_subject(candidate)
+            if _source_role(candidate) == "360":
+                path = str(candidate.get("source_path") or candidate.get("path") or "")
+                landmarks = migrate_spherical_landmarks(spherical_landmark_profiles.get(path) or spherical_landmarks)
+                poses = _available_spherical_shots(landmarks, spherical_sweep, sweep_speed, balanced_performers=not use_recorded_360)
+                if not poses or any(not _editorial_subject({}, pose) or _editorial_subject({}, pose) not in recent_subjects[-4:] for pose in poses):
+                    editorial_available.append(candidate)
+            elif not subject or subject not in recent_subjects[-4:]:
+                editorial_available.append(candidate)
+        if editorial_available:
+            available = editorial_available
+        else:
+            subject_fallbacks += 1
         available_camera_ids = {_camera_id(source) for source in available}
         forced_alternatives: set[str] = set()
         if (
@@ -767,11 +868,25 @@ def _youtube_multicam_plan(
             camera_target_weights=camera_target_weights,
             allocation_window_seconds=max(1.0, end - start),
             allocation_segment_seconds=max(1.0 / EDIT_FPS, segment_end - segment_start),
+            variation_seed=variation_seed,
             prefer_battery_camera=segment_end >= end - 0.001,
             preferred_camera_ids=_preferred_singing_camera_ids(
                 available, _is_singing_window(coverage, segment_start, segment_end)
             ),
         )
+        # Keep the same authored 360 camera as the preview/editor when it is
+        # available for this interval; otherwise the normal camera scorer applies.
+        if preferred_spherical_source:
+            preferred = next(
+                (
+                    item for item in available
+                    if _source_role(item) == "360"
+                    and str(item.get("source_path") or item.get("path") or "").strip() == preferred_spherical_source
+                ),
+                None,
+            )
+            if preferred is not None and _source_role(source) == "360":
+                source = preferred
         is_automatic_360 = _source_role(source) == "360" and not (
             use_recorded_360 and recorded_move_covering(recorded_moves or [], segment_start, segment_end)
         )
@@ -792,6 +907,13 @@ def _youtube_multicam_plan(
         chosen_stats["chosen_segments"] += 1
         chosen_stats["chosen_seconds"] += segment_end - segment_start
         segment = _segment_from_source(source, segment_start, segment_end, window.get("title") or t("full_video"), platform=platform)
+        # Persist the music decision beside every shot so the edit is
+        # explainable and downstream render/audit code cannot silently discard
+        # the pacing choice that produced this cut.
+        segment_music_target = _music_pacing_target_seconds(energy_here)
+        segment["music_energy"] = round(energy_here, 4)
+        segment["music_pacing_band"] = _music_pacing_band(energy_here)
+        segment["music_pacing_target_sec"] = segment_music_target
         segment["camera_id"] = selected_camera
         segment["singing_detected"] = _is_singing_window(coverage, segment_start, segment_end)
         segment["available_camera_ids"] = sorted(available_camera_ids)
@@ -817,43 +939,75 @@ def _youtube_multicam_plan(
                 segment["spherical_shot"] = recorded_shot_for_segment(recorded, segment_start, segment_end)
             else:
                 current_usage = _spherical_shot_usage(segments)
-                available_shots = _available_spherical_shots(spherical_landmarks, spherical_sweep, sweep_speed)
-                include_planet = current_usage.get("Planeta", 0) == 0 and sum(current_usage.values()) >= 5
+                source_path = str(source.get("source_path") or source.get("path") or source.get("clip_path") or "").strip()
+                profile_raw = (
+                    spherical_landmark_profiles.get(source_path)
+                    or spherical_landmark_profiles.get(str(Path(source_path).expanduser().resolve()))
+                    if source_path else None
+                )
+                source_landmarks = migrate_spherical_landmarks(profile_raw or spherical_landmarks)
+                segment["spherical_source_path"] = source_path
+                available_shots = _available_spherical_shots(source_landmarks, spherical_sweep, sweep_speed, balanced_performers=not use_recorded_360)
+                LOGGER.info(
+                    "360 framing source=%s authored=%s available=%s",
+                    Path(source_path).name,
+                    sorted(source_landmarks),
+                    [shot.get("type") for shot in available_shots],
+                )
+                fresh_shots = [pose for pose in available_shots
+                               if not _editorial_subject({}, pose) or _editorial_subject({}, pose) not in recent_subjects[-4:]]
+                if fresh_shots:
+                    available_shots = fresh_shots
+                # Balanced musicians, rather than the old 60% singer prior.
+                sphere_index = sum(1 for item in segments if item.get("spherical_shot"))
+                wide_shots = [pose for pose in available_shots if pose.get("type") == "full_stage"
+                              and "full_stage" in source_landmarks]
+                scheduled_wide = bool(wide_shots and sphere_index % 5 == 4)
+                musician_shots = [pose for pose in available_shots if _editorial_subject({}, pose)]
+                if scheduled_wide:
+                    available_shots = wide_shots
+                elif musician_shots:
+                    least_seconds = min(subject_seconds.get(_editorial_subject({}, pose), 0.0) for pose in musician_shots)
+                    balanced = [pose for pose in musician_shots
+                                if subject_seconds.get(_editorial_subject({}, pose), 0.0) <= least_seconds + .001]
+                    if balanced:
+                        available_shots = balanced
+                if not any(item.get("spherical_shot") for item in segments):
+                    opening_singer = [pose for pose in available_shots if _editorial_subject({}, pose) == "singer"]
+                    if opening_singer:
+                        available_shots = opening_singer
+                balanced_targets = {str(pose.get("type")): 1.0 for pose in available_shots}
+                include_planet = bool(edit_settings.get("include_spherical_planet", False)) and sum(current_usage.values()) >= 5
                 shot = _next_weighted_spherical_shot(
                     available_shots,
                     _spherical_type_usage(segments),
-                    target_weights=spherical_target_weights,
+                    target_weights=balanced_targets,
                     include_planet=include_planet,
                     previous_yaw=previous_spherical_yaw,
                     previous_type=previous_spherical_type,
                     recent_types=recent_spherical_types,
+                    selection_seed=f"{variation_seed}:{segment_index}",
                 )
                 # Always attach a shot with motion, even with no configured landmarks
                 # (shot=None) — a 360 segment must never fall back to a frozen,
                 # motionless equirect passthrough.
-                segment["spherical_shot"] = _spherical_motion_profile(shot or {}, segment_index, enabled=spherical_motion, hold_motion=hold_motion)
-        elif fixed_rear_motion and _source_role(source) == "fixed_rear":
+                segment["spherical_shot"] = _spherical_motion_profile(shot or {}, sum(1 for item in segments if item.get("spherical_shot")), enabled=spherical_motion, hold_motion=hold_motion)
+        elif fixed_rear_motion and _flat_motion_camera(source):
             # Every fixed-camera cut receives a crop motion. The source role,
             # not the filename, is authoritative: files such as ZZ24.7 .mov
             # are fixed cameras even when they are not named "iPhone".
             target_x, target_y = _visible_iphone_target(source, float(segment.get("clip_start_sec") or 0.0), segment_end - segment_start, operator_samples_cache)
-            if alternative_camera_ids:
-                # One valid alternative is enough to stop treating the fixed
-                # camera as a gap filler. The old threshold compared against
-                # two, so a fixed camera plus one other source still got the
-                # aggressive 3x recipe.
-                segment["motion"] = _gentle_fixed_camera_motion(fixed_rear_motion_index, target_x, target_y)
-                segment["fixed_camera_zoom_policy"] = "gentle_subject_motion_sufficient_coverage"
-            else:
-                segment["motion"] = _ken_burns_motion(
-                    fixed_rear_motion_index,
-                    target_x,
-                    target_y,
-                    allow_static=False,
-                    force_full_zoom=(fixed_rear_motion_index % 2 == 0),
-                    force_close=(fixed_rear_motion_index % 2 == 1),
-                )
-                segment["fixed_camera_zoom_policy"] = "safe_subject_motion_low_coverage"
+            samples = operator_samples_cache.get(str(source.get("path") or source.get("source_path") or ""), [])
+            confidence = _fixed_subject_confidence(source, samples, float(segment.get("clip_start_sec") or 0.0), segment_end - segment_start)
+            previous_motion = next((item["motion"]["movement"] for item in reversed(segments) if (item.get("motion") or {}).get("type") == "ken_burns"), "")
+            segment["motion"] = _ken_burns_motion(
+                fixed_rear_motion_index, target_x, target_y,
+                duration=segment_end-segment_start,
+                variation_seed=stable_fingerprint({"window": window, "sources": [_source_id(item) for item in sources]}),
+                previous_movement=previous_motion, subject_confidence=confidence,
+                gentle=bool(alternative_camera_ids),
+            )
+            segment["fixed_camera_zoom_policy"] = "gentle_subject_motion_sufficient_coverage" if alternative_camera_ids else "safe_subject_motion_low_coverage"
             fixed_rear_motion_index += 1
         _apply_operator_avoidance(segment, source, operator_samples_cache)
         previous_framing = _framing_descriptor(source, segment)
@@ -862,6 +1016,13 @@ def _youtube_multicam_plan(
             previous_spherical_type = str(segment["spherical_shot"].get("type") or "")
             recent_spherical_types.append(previous_spherical_type)
             del recent_spherical_types[:-4]
+        subject = _editorial_subject(source, segment.get("spherical_shot"))
+        segment["editorial_subject"] = subject or str((segment.get("spherical_shot") or {}).get("type") or source.get("camera_subject") or "unknown")
+        segment["subject_cooldown_fallback"] = bool(subject and subject in recent_subjects[-4:])
+        recent_subjects.append(subject)
+        del recent_subjects[:-4]
+        if subject:
+            subject_seconds[subject] = subject_seconds.get(subject, 0.0) + segment_end - segment_start
         segments.append(segment)
         bar_index = next_index
         segment_index += 1
@@ -882,6 +1043,8 @@ def _youtube_multicam_plan(
                 + "; ".join(str(item.get("selection_reason") or "unusable") for item in role_sources)
             )
     return {
+        "pacing": {"min_sec": min_cut, "max_sec": max_cut, "tempo": tempo, "intensity": intensity or "tempo_proxy"},
+        "fixed_motion_library_version": FIXED_MOTION_VERSION,
         "stage": "edit",
         "platform": coverage.get("platform") or "youtube",
         "singing_segments": coverage.get("singing_segments") or [],
@@ -894,6 +1057,9 @@ def _youtube_multicam_plan(
         "clip_diagnostics": coverage.get("clip_diagnostics") or [],
         "selection_diagnostics": finalized_stats,
         "camera_distribution": _camera_distribution(finalized_stats, camera_target_weights),
+        "subject_distribution_seconds": subject_seconds,
+        "subject_cooldown_shots": 4,
+        "subject_unavoidable_repeat_windows": subject_fallbacks,
         "camera_target_weights": camera_target_weights,
         "singing_camera_assignments": _singing_camera_assignments(segments),
         "non_music_bank": {
@@ -1026,11 +1192,11 @@ def build_spherical_shot_segments(
     return output
 
 
-def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, float]]:
+def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Normalize legacy yaw-only landmark settings to the current per-shot schema."""
     if not isinstance(raw, dict):
         return {}
-    migrated: dict[str, dict[str, float]] = {}
+    migrated: dict[str, dict[str, Any]] = {}
     for shot_type, (legacy_key, _label, default_fov) in SPHERICAL_LANDMARKS.items():
         source = raw.get(shot_type)
         if source is None and legacy_key in raw:
@@ -1040,39 +1206,82 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, floa
         yaw = _landmark_yaw(source.get("yaw"), None)
         if yaw is None:
             continue
+        projection_preset = normalize_projection_preset(source.get("projection_preset"), shot_type)
         migrated[shot_type] = {
             "yaw": yaw,
-            "pitch": _landmark_weight(source, "pitch", 0.0),
-            "fov": _landmark_weight(source, "fov", default_fov),
+            "pitch": effective_pitch(_landmark_weight(source, "pitch", 0.0), shot_type),
+            "fov": effective_fov(_landmark_weight(source, "fov", default_fov), shot_type, projection_preset),
+            "roll": effective_roll(_landmark_weight(source, "roll", 0.0), shot_type),
+            "projection_preset": projection_preset,
+            "projection_control": effective_projection_control(source.get("projection_control")),
             "weight": max(0.0, _landmark_weight(source, "weight", 1.0)),
+            "subject": str(source.get("subject") or shot_type),
+            "enabled": source.get("enabled", True) is not False,
         }
     return migrated
 
 
-def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_enabled: bool = False, sweep_speed: float = SPHERICAL_SWEEP_SPEED_DEG_PER_SEC) -> list[dict[str, Any]]:
+def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabled: bool = False, sweep_speed: float = SPHERICAL_SWEEP_SPEED_DEG_PER_SEC, *, balanced_performers: bool = False) -> list[dict[str, Any]]:
     shots: list[dict[str, Any]] = []
+    prepared: list[tuple[str, str, float, dict[str, Any], float]] = []
     for shot_type in SPHERICAL_SHOT_ORDER:
+        # Automatic editing should stay on the stage. A public-only landmark
+        # is retained in project settings for manual review, but is never
+        # offered as an automatic replacement candidate.
+        if shot_type in {"audience", "audience_stage_wide"}:
+            # Public-only landmarks are valid for manual review but are not
+            # automatic editorial shots: every automatic 360 frame must retain
+            # a stage/performer subject.
+            continue
         key, label, default_fov = SPHERICAL_LANDMARKS[shot_type]
         data = landmarks.get(shot_type)
-        if data is None and shot_type == "full_stage":
-            data = {"yaw": 0.0, "pitch": 0.0, "fov": default_fov, "weight": 1.0}
-        if not data:
+        if data is None and shot_type == "full_stage" and not balanced_performers:
+            data = {"yaw": 0.0, "pitch": 0.0, "fov": default_fov, "roll": 0.0, "projection_preset": "linear", "projection_control": 0.0, "weight": 1.0}
+        if not data or data.get("enabled") is False:
+            continue
+        if balanced_performers and str(data.get("subject") or shot_type) == "audience":
             continue
         yaw = _landmark_yaw(data.get("yaw"), None)
         if yaw is None:
             continue
         weight = max(0.0, _landmark_weight(data, "weight", 1.0))
-        if weight <= 0.0:
+        prepared.append((shot_type, label, default_fov, data, weight))
+    positive_count = sum(1 for _shot_type, _label, _default_fov, _data, weight in prepared if weight > 0.0 and _shot_type in landmarks)
+    # Older projects could save one edited landmark with weight=5 and every
+    # other saved yaw with weight=0. That made the whole 360 plan become
+    # "Bateria" forever. Treat a single-positive profile as incomplete and
+    # keep every authored yaw in rotation; an intentionally weighted profile
+    # with two or more positive landmarks still keeps its explicit weights.
+    recover_legacy_profile = len(prepared) >= 2 and positive_count <= 1
+    for shot_type, label, default_fov, data, weight in prepared:
+        yaw = _landmark_yaw(data.get("yaw"), None)
+        if yaw is None:
             continue
+        if balanced_performers and shot_type not in {"full_stage", "planet"}:
+            weight = 1.0
+        if weight <= 0.0 and not recover_legacy_profile:
+            continue
+        if recover_legacy_profile and weight <= 0.0:
+            weight = 1.0
         shot = {
             "type": shot_type,
             "shot_id": shot_type,
+            "subject": str(data.get("subject") or shot_type),
             "label": label,
             "yaw": yaw,
-            "pitch": _landmark_weight(data, "pitch", 0.0),
+            # Use the authored canonical pose from preview/review; an extra
+            # pitch clamp here silently changed the user's saved framing.
+            "pitch": effective_pitch(_landmark_weight(data, "pitch", 0.0), shot_type),
             "fov": _landmark_weight(data, "fov", default_fov),
+            "roll": effective_roll(_landmark_weight(data, "roll", 0.0), shot_type),
+            "projection_preset": normalize_projection_preset(data.get("projection_preset"), shot_type),
+            "projection_control": effective_projection_control(data.get("projection_control")),
             "weight": weight,
             "sweep_enabled": bool(sweep_enabled),
+            # Inter-shot sweeps are an explicit opt-in. They are not the default
+            # camera language because a 100°+ jump between landmarks looks like
+            # a whip-pan even when each individual landmark is correct.
+            "intershot_sweep": bool(sweep_enabled),
             "sweep_speed_deg_per_sec": max(SPHERICAL_MIN_SWEEP_SPEED_DEG_PER_SEC, min(SPHERICAL_MAX_SWEEP_SPEED_DEG_PER_SEC, float(sweep_speed))) if sweep_enabled else 0.0,
         }
         shot["fov"] = _plan_spherical_fov(shot)
@@ -1083,7 +1292,7 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, float]], sweep_ena
 
 
 def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = False, hold_motion: str | None = None) -> dict[str, Any]:
-    """Attach subtle, randomized-but-reproducible movement to a 360 landmark shot.
+    """Attach bounded, reproducible movement to an authored 360 landmark shot.
 
     Automatic motion is OPT-IN (``enabled``, default False). Unpredictable
     movement is worse than none: with the toggle off a landmark shot renders as
@@ -1091,7 +1300,7 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
     Director take or from deliberately switching this on.
 
     Normal landmark shots have optional near-static hold motion. ``none``
-    locks the view; ``subtle`` adds at most 0.01 degrees/second of yaw drift.
+    locks the view; ``subtle`` adds a gentle, deterministic yaw drift capped at 1 degree/second.
     The project-level toggle remains backward-compatible.
 
     Magnitudes are stored as a FRACTION OF THE SHOT'S VISIBLE FIELD, not as
@@ -1113,7 +1322,7 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
         shot["pitch"] = -90.0
         shot["fov"] = max(240.0, float(shot.get("fov") or 240.0))
         shot["projection"] = "tiny_planet"
-        shot["runtime_motion_enabled"] = False
+        shot["runtime_motion_enabled"] = bool(enabled)
         # The tiny-planet spin is a deliberate signature effect, but it is
         # still held to the same fraction-of-field budget so it reads as a
         # slow rotation rather than a carousel. With motion off it holds still
@@ -1132,14 +1341,17 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
     mode = str(hold_motion or ("subtle" if enabled else "none")).lower()
     if mode not in {"none", "subtle"}:
         mode = "subtle" if enabled else "none"
-    shot["sweep_enabled"] = bool(shot.get("sweep_enabled", False)) and enabled
-    # Runtime sendcmd animation is disabled globally until the safe
-    # equirectangular reprojection path replaces FFmpeg's corrupting v360
-    # reconfiguration. Keep the authored subtle rate in the plan for future
-    # use, but make the shipped render pose static.
-    shot["runtime_motion_enabled"] = False
+    shot["intershot_sweep"] = bool(shot.get("intershot_sweep", False)) and enabled
+    shot["sweep_enabled"] = bool(shot.get("sweep_enabled", False)) and shot["intershot_sweep"]
+    # Keep runtime motion explicit in the plan so export can distinguish a
+    # deliberate static hold from an enabled automatic or recorded movement.
+    shot["runtime_motion_enabled"] = bool(enabled)
     shot["hold_motion"] = mode
-    shot["hold_motion_rate_deg_per_sec"] = SPHERICAL_HOLD_MOTION_DEG_PER_SEC if mode == "subtle" and enabled else 0.0
+    if enabled and mode == "subtle":
+        from core.spherical_motion import MOVEMENTS
+        shot["movement"] = MOVEMENTS[int(index) % len(MOVEMENTS)]
+    rates = SPHERICAL_HOLD_MOTION_RATES_DEG_PER_SEC
+    shot["hold_motion_rate_deg_per_sec"] = rates[int(index) % len(rates)] if mode == "subtle" and enabled else 0.0
     shot["drift_yaw_fraction"] = 0.0
     shot["drift_pitch_fraction"] = 0.0
     shot["fov_delta_fraction"] = 0.0
@@ -1153,11 +1365,8 @@ def _plan_spherical_fov(shot: dict[str, Any]) -> float:
         fov = float(shot.get("fov") or SPHERICAL_DEFAULT_FOV)
     except (TypeError, ValueError):
         fov = SPHERICAL_DEFAULT_FOV
-    if shot_type == "planet":
-        return max(220.0, min(300.0, fov))
-    if shot_type == "recorded_move":
-        return max(1.0, min(300.0, fov))
-    return max(SPHERICAL_NORMAL_FOV_MIN, min(SPHERICAL_NORMAL_FOV_MAX, fov))
+    projection_preset = normalize_projection_preset(shot.get("projection_preset"), shot_type)
+    return effective_fov(fov, shot_type, projection_preset)
 
 
 def _next_weighted_spherical_shot(
@@ -1168,6 +1377,7 @@ def _next_weighted_spherical_shot(
     previous_yaw: float | None = None,
     previous_type: str | None = None,
     recent_types: list[str] | None = None,
+    selection_seed: str | None = None,
 ) -> dict[str, Any] | None:
     candidates = [
         shot
@@ -1175,12 +1385,6 @@ def _next_weighted_spherical_shot(
         if float(shot.get("weight") or 0.0) > 0.0 and (include_planet or shot.get("type") != "planet")
     ]
     if not candidates:
-        LOGGER.info(
-            "Sony gap filler unavailable master_start=%.3f duration=%.3f history=%s",
-            master_start,
-            duration,
-            len(history),
-        )
         return None
     recent_types = recent_types or []
 
@@ -1192,7 +1396,7 @@ def _next_weighted_spherical_shot(
     target_weights = target_weights or {str(shot.get("type")): float(shot.get("weight") or 1.0) for shot in candidates}
     total_target = sum(max(0.0, float(target_weights.get(str(shot.get("type")), 0.0))) for shot in candidates) or 1.0
 
-    def score(shot: dict[str, Any]) -> tuple[float, float, float, str]:
+    def score(shot: dict[str, Any]) -> tuple[float, float, float, str, str]:
         shot_type = str(shot.get("type") or "")
         weight = max(0.001, float(target_weights.get(shot_type, 0.0)) / total_target)
         # Deficit from the configured weighted rotation is primary. A shot
@@ -1209,7 +1413,8 @@ def _next_weighted_spherical_shot(
             weighted_deficit += 0.01 * (4 - recent_types[-3:].index(shot_type))
         # Yaw is only a soft tiebreaker. It can make equal-priority choices
         # gentler, but can never starve a configured landmark.
-        return (weighted_deficit, distance(shot), usage.get(shot_type, 0), shot_type)
+        seed_rank = stable_fingerprint({"seed": str(selection_seed or ""), "shot_type": shot_type})[:16]
+        return (weighted_deficit, distance(shot), usage.get(shot_type, 0), seed_rank, shot_type)
 
     return dict(min(candidates, key=score))
 
@@ -1432,14 +1637,56 @@ def _reachable_section_index(bar_times: list[float], section_times: list[float],
     return None
 
 
-def _bars_for_segment(segment_index: int, bar_times: list[float], section_times: list[float], bar_index: int) -> int:
-    current = bar_times[bar_index]
+def _music_pacing_target_seconds(energy: float) -> float:
+    """Return the long-form shot target implied by measured music energy."""
+    value = max(0.0, min(1.0, float(energy)))
+    if value >= 0.92:
+        return 2.0
+    if value >= 0.82:
+        return 3.0
+    if value >= 0.70:
+        return 4.0
+    return 6.0
+
+
+def _music_pacing_band(energy: float) -> str:
+    value = max(0.0, min(1.0, float(energy)))
+    if value >= 0.92:
+        return "peak"
+    if value >= 0.82:
+        return "high"
+    if value >= 0.70:
+        return "rising"
+    return "low"
+
+
+def _bars_for_segment(
+    segment_index: int,
+    bar_times: list[float],
+    section_times: list[float],
+    bar_index: int,
+    energy_by_bar: list[float] | None = None,
+) -> int:
+    current = float(bar_times[bar_index])
+    next_bar = float(bar_times[min(bar_index + 1, len(bar_times) - 1)])
+    bar_duration = max(0.25, next_bar - current)
+    energy = 0.5
+    if energy_by_bar and 0 <= bar_index < len(energy_by_bar):
+        energy = max(0.0, min(1.0, float(energy_by_bar[bar_index])))
+    # Musical pacing contract for long-form edits:
+    # quiet phrases breathe for 5–6 seconds; rising energy moves to 4 seconds;
+    # high energy moves to 3 seconds; only a clear peak may reach 2 seconds.
+    # The global timeline floor prevents one-second cuts.
+    target_seconds = _music_pacing_target_seconds(energy)
+    bars = max(1, min(MAX_BARS_PER_SEGMENT, round(target_seconds / bar_duration)))
+    if bars * bar_duration < target_seconds * 0.85:
+        bars = min(MAX_BARS_PER_SEGMENT, bars + 1)
     near_section = any(current < section <= current + MAX_SEGMENT_SEC for section in section_times)
-    if near_section:
-        return 1
-    if segment_index % 5 in {1, 4}:
-        return 1
-    return MAX_BARS_PER_SEGMENT
+    # High-energy section changes may shorten the hold, but never below the
+    # global two-second floor enforced by the timeline builder.
+    if near_section and energy >= 0.92:
+        bars = max(1, min(bars, round(2.0 / bar_duration)))
+    return bars
 
 
 def _short_form_segments_from_best_coverage(coverage: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1547,7 +1794,8 @@ def _choose_source(
         )
         covered_seconds = max(1.0, float((selection_stats.get(_source_id(source)) or {}).get("covered_seconds") or 0.0))
         director_bonus = float(source.get("director_segment_score") or 1.0) if role == "handheld" else 1.0
-        return (role_chosen_seconds / target_share, chosen_seconds / covered_seconds, usage_counts.get(_source_id(source), 0), -director_bonus, -float(source.get("confidence") or 0.0), _source_id(source))
+        camera_balance = role_chosen_seconds / target_share - _camera_preference_score(source)
+        return (camera_balance, chosen_seconds / covered_seconds, usage_counts.get(_source_id(source), 0), -director_bonus, -float(source.get("confidence") or 0.0), _source_id(source))
 
     return sorted(candidates, key=score)[0]
 
@@ -1566,6 +1814,7 @@ def _choose_source_avoiding_identical_framing(
     use_recorded_360: bool,
     recorded_moves: list[dict[str, Any]],
     forced_alternatives: set[str] | None = None,
+    variation_seed: str = "",
     prefer_battery_camera: bool = False,
     preferred_camera_ids: set[str] | None = None,
     camera_target_weights: dict[str, float] | None = None,
@@ -1753,6 +2002,8 @@ def _segment_from_source(
         # later plan transformation from carrying a camera label over to a
         # different source.
         "camera_id": _camera_id(source),
+        "reel_framing": source.get("reel_framing"),
+        "director_quality": source.get("director_quality"),
     }
 
 
@@ -1796,22 +2047,101 @@ def _camera_target_weights(sources: list[dict[str, Any]], role_weights: dict[str
         same_role = sum(1 for item in cameras.values() if item == role)
         targets[camera_id] = float(role_weights.get(role, 0.0)) / max(1, same_role)
     total = sum(targets.values()) or 1.0
-    return {camera_id: value / total for camera_id, value in targets.items()}
+    normalized = {camera_id: value / total for camera_id, value in targets.items()}
+    # Dedicated percussion inputs share 8% when other cameras cover the song.
+    # The cross-camera subject cooldown still applies to 360 drummer poses.
+    drums = {_camera_id(source) for source in sources
+             if _source_role(source) != "360" and _editorial_subject(source) == "drummer"}
+    drum_total = sum(normalized.get(camera, 0) for camera in drums)
+    other_total = sum(value for camera, value in normalized.items() if camera not in drums)
+    if drum_total > .08 and other_total > 0:
+        normalized = {camera: value * (.08 / drum_total if camera in drums else .92 / other_total)
+                      for camera, value in normalized.items()}
+    return normalized
+
+
+def _editorial_subject(source: dict[str, Any], shot: dict[str, Any] | None = None) -> str:
+    """Read authored identities, never infer a drummer from a camera role."""
+    raw = str((shot or {}).get("subject") or (shot or {}).get("type")
+              or source.get("camera_subject") or source.get("subject") or "").strip().lower()
+    aliases = {"bateria": "drummer", "batería": "drummer", "drums": "drummer",
+               "cantante": "singer", "voz": "singer", "pianista": "pianist",
+               "keys": "pianist", "guitarrista": "guitarist", "bajista": "bassist"}
+    raw = aliases.get(raw, raw)
+    return "" if raw in {"", "unknown", "general", "full_stage", "audience_stage_wide", "planet", "recorded_move"} else raw
+
+
+def _flat_motion_camera(source: dict[str, Any]) -> bool:
+    """Recognize flat fixed/phone inputs without changing quota roles.
+
+    Older projects labelled phones handheld during ingest. Retain that saved
+    role for quota accounting, but let these inputs use conservative motion.
+    Filename hints only expand eligibility; absent subject evidence the
+    solver still emits a full hold or tiny central zoom.
+    """
+    if _source_role(source) == "360":
+        return False
+    if _source_role(source) == "fixed_rear":
+        return True
+    model = " ".join(str(source.get(key) or "") for key in ("camera_make", "camera_model", "device_type", "camera_type" )).lower()
+    if any(word in model for word in ("iphone", "phone", "mobile", "pixel", "samsung")):
+        return True
+    name = str(source.get("filename") or Path(str(source.get("source_path") or source.get("path") or "")).name)
+    return bool(re.match(r"^(?:IMG_\d+|VID_\d{8}_\d{6})(?:-\d+)?\.(?:mov|mp4)$", name, re.IGNORECASE))
 
 
 def _source_role(source: dict[str, Any]) -> str:
-    projection = str(source.get("projection") or "").lower()
-    if projection in {"equirect", "raw_insv"} or source.get("raw_360") is True:
-        return "360"
+    """Classify a source without letting a phone filename become a 360 camera.
+
+    Explicit authoring metadata wins. Projection is only an inferred 360
+    signal, so a source explicitly marked as an iPhone/static phone remains a
+    flat camera even when an ingest/proxy layer attached a 360-like extension.
+    """
     explicit_role = str(source.get("camera_role") or "").strip().lower()
     if explicit_role in {"360", "fixed_rear", "handheld"}:
         return explicit_role
+    if source.get("raw_360") is True:
+        return "360"
     if source.get("is_static_camera") is True or source.get("static_camera") is True:
         return "fixed_rear"
     camera_type = str(source.get("camera_type") or source.get("device_type") or "").lower()
     if camera_type in {"iphone", "phone", "mobile", "smartphone", "static"}:
         return "fixed_rear"
+    projection = str(source.get("projection") or "").lower()
+    if projection in {"equirect", "raw_insv"}:
+        return "360"
     return "handheld"
+
+
+def _flat_camera_motion_enabled(source: dict[str, Any]) -> bool:
+    """Return whether a source is eligible for 2D crop/pan motion."""
+    if _source_role(source) == "360":
+        return False
+    if _source_role(source) == "fixed_rear":
+        return True
+    if source.get("is_static_camera") is True or source.get("static_camera") is True:
+        return True
+    camera_type = str(source.get("camera_type") or source.get("device_type") or "").lower()
+    if camera_type in {"iphone", "phone", "mobile", "smartphone", "static"}:
+        return True
+    value = str(source.get("filename") or source.get("path") or source.get("source_path") or "").lower()
+    return any(token in value for token in ("iphone", "img_", "phone", "mobile"))
+
+
+def _tracked_flat_target(
+    source: dict[str, Any],
+    clip_start_sec: float,
+    duration_sec: float,
+    samples_cache: dict[str, list[dict[str, Any]]],
+) -> tuple[float, float]:
+    """Choose a musician-safe target for a flat camera motion recipe."""
+    profile = source.get("reel_framing") or {}
+    box = subject_box_for_window(profile, clip_start_sec, duration_sec) if profile else None
+    if box:
+        center_x = max(0.25, min(0.75, (float(box["x1"]) + float(box["x2"])) / 2.0))
+        center_y = max(0.35, min(0.65, (float(box["y1"]) + float(box["y2"])) / 2.0))
+        return center_x, center_y
+    return _visible_iphone_target(source, clip_start_sec, duration_sec, samples_cache)
 
 
 def _camera_distribution(selection_stats: list[dict[str, Any]], target_weights: dict[str, float] | None = None) -> list[dict[str, Any]]:
@@ -1867,7 +2197,14 @@ def _preferred_singing_camera_ids(sources: list[dict[str, Any]], singing: bool) 
         return nikon
     if not singing:
         return set()
-    sony = {_camera_id(source) for source in sources if _source_role(source) == "handheld" and "sony" in str(source.get("filename") or source.get("path") or "").lower()}
+    text_for = lambda source: " ".join(
+        str(source.get(key) or "")
+        for key in ("camera_id", "camera_name", "camera", "camera_label", "filename", "path", "source_path")
+    ).lower()
+    nikon = {_camera_id(source) for source in sources if _source_role(source) == "handheld" and "nikon" in text_for(source)}
+    if nikon:
+        return nikon
+    sony = {_camera_id(source) for source in sources if _source_role(source) == "handheld" and "sony" in text_for(source)}
     if sony:
         return sony
     return {_camera_id(source) for source in sources if _source_role(source) == "360"}
@@ -1930,6 +2267,19 @@ def _is_iphone_source(source: dict[str, Any]) -> bool:
 def _is_battery_camera(source: dict[str, Any]) -> bool:
     """Identify the portable/battery camera used for preferred ending shots."""
     return _source_role(source) == "fixed_rear" and _is_iphone_source(source)
+
+
+def _fixed_subject_confidence(source: dict[str, Any], samples: list[dict[str, Any]], start: float, duration: float) -> float:
+    # Cached secondary subjects avoid the dominant, often back-facing operator.
+    reliable = [item for item in samples if start - .5 <= float(item.get("t") or 0) <= start + duration + .5
+                and item.get("subject_cx") is not None and item.get("subject_cy") is not None
+                and float(item.get("subject_area_fraction") or 0) >= .01
+                and .25 <= float(item["subject_cx"]) <= .75
+                and .35 <= float(item["subject_cy"]) <= .65
+                and (float(item.get("area_fraction") or 0) < .08
+                     or abs(float(item["subject_cx"]) - float(item.get("cx") or .5)) >= .18
+                     or abs(float(item["subject_cy"]) - float(item.get("cy") or .5)) >= .18)]
+    return 1.0 if reliable else 0.0
 
 
 def _visible_iphone_target(
@@ -2225,16 +2575,31 @@ def _full_frame_static_motion() -> dict[str, Any]:
     }
 
 
-def _gentle_fixed_camera_motion(index: int, target_x: float = 0.5, target_y: float = 0.5) -> dict[str, Any]:
-    """One barely perceptible subject-anchored move from/to the full frame.
+def _gentle_fixed_camera_motion(
+    index: int,
+    target_x: float = 0.5,
+    target_y: float = 0.5,
+    *,
+    variation_seed: str = "",
+) -> dict[str, Any]:
+    """One centred, barely perceptible move from/to the full frame.
 
-    This is deliberately not built from ``_ken_burns_motion``. That helper's
-    historical ``force_full_zoom`` recipe starts around 3x, which was the
-    source of the apparent double/aggressive zoom in otherwise well-covered
-    YouTube cuts.
+    When another camera covers the interval, the crop stays deliberately
+    centred so a weak detector cannot force a subject into a corner. The
+    tracked target is retained in the recipe for auditability and is used by
+    the stronger low-coverage recipe below.
     """
-    zoom = round(1.0 + FIXED_CAMERA_GENTLE_ZOOM_FRACTION, 3)
-    zoom_in = index % 2 == 0
+    rng = random.Random(stable_fingerprint({
+        "fixed_camera_motion": index,
+        "variation_seed": str(variation_seed or ""),
+    }))
+    zoom_fraction = (
+        rng.uniform(0.08, 0.18)
+        if variation_seed
+        else FIXED_CAMERA_GENTLE_ZOOM_FRACTION
+    )
+    zoom = round(1.0 + zoom_fraction, 3)
+    zoom_in = rng.choice((True, False)) if variation_seed else index % 2 == 0
     return {
         "type": "ken_burns",
         "movement": "zoom_in_center" if zoom_in else "zoom_out_center",
@@ -2246,12 +2611,12 @@ def _gentle_fixed_camera_motion(index: int, target_x: float = 0.5, target_y: flo
         "target_y": round(max(FIXED_CAMERA_SAFE_TARGET_Y[0], min(FIXED_CAMERA_SAFE_TARGET_Y[1], float(target_y))), 4),
         "zoom_start": 1.0 if zoom_in else zoom,
         "zoom_end": zoom if zoom_in else 1.0,
-        "pan_x_start": 0.5,
-        "pan_x_end": 0.5,
-        "pan_y_start": 0.5,
-        "pan_y_end": 0.5,
-        "pan_x": 0.5,
-        "pan_y": 0.5,
+        "pan_x_start": 0.5 if zoom_in else _pan_for_target(zoom, target_x),
+        "pan_x_end": _pan_for_target(zoom, target_x) if zoom_in else 0.5,
+        "pan_y_start": 0.5 if zoom_in else _pan_for_target(zoom, target_y),
+        "pan_y_end": _pan_for_target(zoom, target_y) if zoom_in else 0.5,
+        "pan_x": 0.5 if zoom_in else _pan_for_target(zoom, target_x),
+        "pan_y": 0.5 if zoom_in else _pan_for_target(zoom, target_y),
         "top_edge_limit": IPHONE_CROP_TOP_LIMIT,
         "vertical_motion": "static",
         "enforce_top_edge": False,
@@ -2260,98 +2625,16 @@ def _gentle_fixed_camera_motion(index: int, target_x: float = 0.5, target_y: flo
 
 
 def _ken_burns_motion(
-    index: int,
-    target_x: float = 0.5,
-    target_y: float = 0.5,
-    *,
-    allow_static: bool = True,
-    force_full_zoom: bool = False,
-    force_close: bool = False,
+    index: int, target_x: float = 0.5, target_y: float = 0.5, *,
+    allow_static: bool = True, force_full_zoom: bool = False, force_close: bool = False,
+    duration: float = 4.0, variation_seed: str = "", previous_movement: str = "",
+    subject_confidence: float = 1.0, gentle: bool = False,
 ) -> dict[str, Any]:
-    rng = random.Random(stable_fingerprint({"fixed_camera_motion": index}))
-    # The catalog is explicit: a segment gets one movement recipe, never an
-    # accidental combination.  All recipes share the same conservative
-    # framing envelope; randomisation changes the direction and endpoint, not
-    # whether the shot lands on a speaker, feet, or an empty corner.
-    kind = "full_zoom_in" if force_full_zoom else rng.choices(MOTION_CATALOG, weights=[MOTION_WEIGHTS[kind] for kind in MOTION_CATALOG], k=1)[0]
-    if force_close and kind in {"full_static", "full_zoom_in"}:
-        kind = "zoom_in_center"
-    if kind == "full_static" and not allow_static:
-        # Defensive guard for old/randomized recipes: static fixed-camera
-        # framing is no longer an allowed output.
-        kind = "full_zoom_in"
-    speed_name, speed_factor = MOTION_SPEEDS[index % len(MOTION_SPEEDS)]
-    if force_full_zoom:
-        speed_name, speed_factor = "very_slow", MOTION_SPEEDS[0][1]
-    target_x = max(FIXED_CAMERA_SAFE_TARGET_X[0], min(FIXED_CAMERA_SAFE_TARGET_X[1], float(target_x)))
-    target_y = max(FIXED_CAMERA_SAFE_TARGET_Y[0], min(FIXED_CAMERA_SAFE_TARGET_Y[1], float(target_y)))
-    close_zoom = rng.uniform(1.18, FIXED_CAMERA_SAFE_ZOOM_MAX)
-    tight_zoom = rng.uniform(FIXED_CAMERA_SAFE_ZOOM_MIN, 1.16)
-    if kind == "full_static":
-        zoom_start = zoom_end = 1.0
-        pan_x_start = pan_x_end = 0.5
-        pan_y_start = pan_y_end = 0.5
-    elif kind == "full_zoom_in" and force_full_zoom:
-        # “Full” means a restrained move from the whole frame toward the
-        # detected subject, never the historical 3x close-up.
-        zoom_start, zoom_end = 1.0, round(rng.uniform(1.16, 1.28), 3)
-        pan_x_start = pan_x_end = 0.5
-        pan_y_start = pan_y_end = 0.5
-    elif kind in {"zoom_in", "zoom_in_center", "full_zoom_in"} and not force_full_zoom:
-        zoom_start, zoom_end = tight_zoom, close_zoom
-        pan_x_start, pan_x_end = _pan_for_target(zoom_start, target_x), _pan_for_target(zoom_end, target_x)
-        pan_y_start, pan_y_end = _pan_for_target(zoom_start, target_y), _pan_for_target(zoom_end, target_y)
-    elif kind in {"zoom_out", "zoom_out_center"}:
-        zoom_start, zoom_end = close_zoom, tight_zoom
-        pan_x_start, pan_x_end = _pan_for_target(zoom_start, target_x), _pan_for_target(zoom_end, target_x)
-        pan_y_start, pan_y_end = _pan_for_target(zoom_start, target_y), _pan_for_target(zoom_end, target_y)
-    elif kind.startswith("pan_"):
-        zoom_start = zoom_end = round(rng.uniform(1.10, 1.22), 3)
-        # Pan only a small distance around the detected subject. The old
-        # 0.22/0.78 endpoints traversed most of the frame and routinely ended
-        # on empty stage edges.
-        x_center = 0.5 + (target_x - 0.5) * 0.45
-        y_center = 0.5 + (target_y - 0.5) * 0.35
-        x_span = 0.08
-        y_span = 0.06
-        if kind in {"pan_down_center", "pan_up_center"}:
-            pan_x_start = pan_x_end = 0.5
-            pan_y_start, pan_y_end = ((y_center - y_span, y_center + y_span) if kind == "pan_down_center" else (y_center + y_span, y_center - y_span))
-        else:
-            pan_x_start, pan_x_end = ((x_center - x_span, x_center + x_span) if "right" in kind else (x_center + x_span, x_center - x_span))
-            pan_y_start = pan_y_end = y_center
-    else:
-        zoom_start = zoom_end = 1.12
-        pan_x_start = pan_y_start = 0.5
-        pan_x_end = pan_y_end = 0.5
-    pan_x_start = max(0.25, min(0.75, pan_x_start))
-    pan_x_end = max(0.25, min(0.75, pan_x_end))
-    pan_y_start = max(0.35, min(0.65, pan_y_start))
-    pan_y_end = max(0.35, min(0.65, pan_y_end))
-    vertical_motion = "up" if kind == "pan_up_center" else "down"
-    return {
-        "type": "ken_burns",
-        "movement": kind,
-        "speed": speed_name,
-        "speed_factor": speed_factor,
-        "lock_target": kind in {"zoom_in", "zoom_out", "zoom_in_center", "zoom_out_center", "full_zoom_in"},
-        "target_x": round(target_x, 4),
-        "target_y": round(target_y, 4),
-        "zoom_start": round(zoom_start, 3),
-        "zoom_end": round(zoom_end, 3),
-        "pan_x_start": round(pan_x_start, 3),
-        "pan_x_end": round(pan_x_end, 3),
-        "pan_y_start": round(pan_y_start, 3),
-        "pan_y_end": round(pan_y_end, 3),
-        "pan_x": round(pan_x_start, 3),
-        "pan_y": round(pan_y_start, 3),
-        "top_edge_limit": IPHONE_CROP_TOP_LIMIT,
-        "vertical_motion": vertical_motion,
-        # The generated recipe already stays in a safe vertical envelope. Do
-        # not apply the legacy top-edge guard at low zoom: that guard was
-        # designed for 3x crops and moves a 1.1x crop toward the floor.
-        "enforce_top_edge": False,
-    }
+    return fixed_camera_motion(
+        index, target_x, target_y, duration=duration, seed=variation_seed,
+        previous=previous_movement, confidence=subject_confidence, allow_static=allow_static,
+        preferred="full_zoom_in" if force_full_zoom else "", gentle=gentle,
+    )
 
 
 def _motion_active_axes(motion: dict[str, Any]) -> list[str]:
@@ -2361,7 +2644,7 @@ def _motion_active_axes(motion: dict[str, Any]) -> list[str]:
         axes.append("zoom")
     # These pan values are derived crop coordinates that keep the selected
     # subject locked while zooming; they are not a second authored movement.
-    if motion.get("lock_target") and "zoom" in axes:
+    if (motion.get("lock_target") or motion.get("targeted")) and "zoom" in axes:
         return axes
     if float(motion.get("pan_x_start", motion.get("pan_x", 0.5))) != float(motion.get("pan_x_end", motion.get("pan_x", 0.5))):
         axes.append("pan_x")
@@ -2374,14 +2657,22 @@ def _valid_motion_recipe(motion: dict[str, Any]) -> bool:
     kind = str(motion.get("movement") or "")
     if kind not in MOTION_CATALOG:
         return False
-    axes = _motion_active_axes(motion)
+    try:
+        values = [float(motion.get(key, default)) for key, default in (
+            ("zoom_start", 1.0), ("zoom_end", 1.0), ("pan_x_start", .5),
+            ("pan_x_end", .5), ("pan_y_start", .5), ("pan_y_end", .5))]
+        if not all(math.isfinite(value) for value in values):
+            return False
+        axes = _motion_active_axes(motion)
+    except (TypeError, ValueError):
+        return False
     if kind == "full_static":
         return axes == []
-    if kind in {"zoom_in", "zoom_out", "zoom_in_center", "zoom_out_center", "full_zoom_in"}:
+    if kind in ZOOM_MOVES:
         return axes == ["zoom"]
-    if kind in {"pan_right_center", "pan_left_center"}:
+    if kind in HORIZONTAL_MOVES:
         return axes == ["pan_x"]
-    if kind in {"pan_down_center", "pan_up_center"}:
+    if kind in VERTICAL_MOVES:
         return axes == ["pan_y"]
     return axes == ["pan_x", "pan_y"]
 
@@ -2464,6 +2755,10 @@ def _camera_id(source: dict[str, Any]) -> str:
     parent = path.parent.name.strip().lower()
     if parent not in generic:
         return parent
+    # A spherical VID source and a flat phone VID source are different
+    # physical cameras even when both share the filename family.
+    if role == "360":
+        return "360"
     family = _camera_family(path.stem)
     if family:
         return family
@@ -2491,6 +2786,19 @@ def _camera_family(value: str) -> str:
     if match:
         return match.group(1)
     return ""
+
+
+def _camera_preference_score(source: dict[str, Any]) -> float:
+    """Return a small deterministic bonus for the preferred physical camera."""
+    text = " ".join(
+        str(source.get(key) or "")
+        for key in ("camera_id", "camera_name", "camera", "camera_label", "filename", "path", "source_path")
+    ).lower()
+    if "nikon" in text:
+        return 0.20
+    if "sony" in text:
+        return 0.05
+    return 0.0
 
 
 def _selection_stats_template(sources: list[dict[str, Any]], window_start: float, window_end: float) -> dict[str, dict[str, Any]]:

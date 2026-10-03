@@ -7,6 +7,8 @@ import hashlib
 import io
 import logging
 import math
+import os
+import signal
 import sys
 import threading
 import shutil
@@ -17,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, Response, jsonify, request, send_file, send_from_directory
+from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
@@ -25,8 +27,19 @@ from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.messages import t
 from core.project import Project, ProjectError, create_project, load_project
 from core.spherical_view import MAX_SPHERICAL_FOV, spherical_view_filter
+from core.build_info import build_info
+from core.spherical_view import (
+    MAX_SPHERICAL_FOV,
+    effective_fov,
+    effective_pitch,
+    effective_projection_control,
+    effective_roll,
+    normalize_projection_preset,
+    view_parameters,
+)
 from core.media_validation import record_media_path
 from core.normalization import cache_status, cleanup_unreferenced_cache, global_cache_root, migrate_project_normalization_cache
+from core.retention import build_storage_report, cleanup_plan
 from core.stages.sync import clear_manual_override, cleanup_closed_sync_diagnostics, generate_preview, generate_thumbnail, invalidate_stale_sync_artifact, set_manual_anchor, set_manual_override, set_manual_override_ranges
 from core.shot_review import (
     _review_segments,
@@ -35,6 +48,8 @@ from core.shot_review import (
     replace_slots,
     review_items,
 )
+from core.shot_review import mark_review_render_failed, replace_slots, review_items, set_review_transition_types
+from core.stages.export import TRANSITION_LIBRARY
 from core.backstage_feedback import record_feedback
 from core.stages.backstage import update_backstage_cue_text
 from core.backstage_transcription import transcribe_sources
@@ -93,6 +108,37 @@ def _queue_review_thumbnail_render(project: Project, indices: set[int]) -> None:
         daemon=True,
     ).start()
 
+FFMPEG_TIMEOUT_SECONDS = 30 * 60
+
+
+def _terminate_ffmpeg_process(process: subprocess.Popen | None, timeout: float = 5.0) -> None:
+    """Terminate ffmpeg and its process group without leaving an orphan."""
+    if process is None or process.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+        else:
+            process.terminate()
+    except (OSError, ProcessLookupError):
+        pass
+    try:
+        process.wait(timeout=timeout)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        if os.name == "posix":
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        else:
+            process.kill()
+    except (OSError, ProcessLookupError):
+        pass
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        pass
+
 
 def _single_video_has_audio(video_paths: list[str]) -> bool:
     """Return whether the exact single Reel source carries usable audio."""
@@ -109,16 +155,20 @@ class CompositionJob:
     id: str
     status: str = "running"
     progress: int = 0
-    message: str = "Composing overlays and captions"
-    detail: str = "Preparing the final composition"
+    message: str = "Rendering final video"
+    detail: str = "Preparing the final video render"
     stage: str = "compose"
+    tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
     error: str | None = None
     result: dict[str, Any] | None = None
     project_path: str | None = None
+    output_path: str | None = None
     started_at: float = field(default_factory=time.time)
 
     def snapshot(self) -> dict[str, Any]:
-        return dict(self.__dict__)
+        state = dict(self.__dict__)
+        state["tasks"] = [dict(task) for task in dict(self.tasks).values()]
+        return state
 
 
 @dataclass
@@ -332,9 +382,64 @@ class CompositionRunner:
         self._thread: threading.Thread | None = None
         self._process: subprocess.Popen | None = None
 
-    def status(self) -> dict[str, Any] | None:
+    def status(self, project: Project | None = None) -> dict[str, Any] | None:
         with self._lock:
-            return self._job.snapshot() if self._job else None
+            job = self._job
+            if job and project and job.status == "running" and job.output_path:
+                candidate = Path(job.output_path)
+                try:
+                    ready_on_disk = (
+                        candidate.is_file()
+                        and candidate.stat().st_size > 0
+                        and candidate.stat().st_mtime >= job.started_at - 1.0
+                        and time.time() - candidate.stat().st_mtime >= 1.0
+                    )
+                except OSError:
+                    ready_on_disk = False
+                if ready_on_disk:
+                    try:
+                        base = _composition_base_result(project)
+                        spec_path = project.folder / "overlay_spec.json"
+                        spec = (
+                            json.loads(spec_path.read_text(encoding="utf-8"))
+                            if spec_path.is_file()
+                            else {"images": [], "videos": []}
+                        )
+                        validation = (
+                            _validate_composition_output(Path(str(base.get("path") or "")), candidate, spec)
+                            if base
+                            else {"ok": False, "reason": "composition_validation:no_clean_base"}
+                        )
+                        process_alive = bool(self._process and self._process.poll() is None)
+                        worker_alive = bool(self._thread and self._thread.is_alive())
+                        if validation.get("ok"):
+                            job.progress = 100
+                            job.status = "done"
+                            job.message = "Final video ready"
+                            job.detail = "Recovered validated final export from disk"
+                            job.result = {
+                                **(base or {}),
+                                "path": str(candidate),
+                                "filename": candidate.name,
+                                "media_url": "/api/v1/wizard/result",
+                            }
+                            LOGGER.warning("Recovered composition completion from disk path=%s", candidate)
+                        elif not process_alive and not worker_alive:
+                            job.status = "failed"
+                            job.error = str(validation.get("reason") or "composition output is invalid")
+                            job.detail = "The composition stopped without a valid final export"
+                            LOGGER.error("Composition recovery rejected path=%s reason=%s", candidate, job.error)
+                    except Exception as exc:
+                        # Polling must never turn an incomplete MP4 into HTTP 500.
+                        process_alive = bool(self._process and self._process.poll() is None)
+                        worker_alive = bool(self._thread and self._thread.is_alive())
+                        if not process_alive and not worker_alive:
+                            job.status = "failed"
+                            job.error = f"composition recovery failed: {exc}"
+                            job.detail = "The composition stopped before producing a valid final export"
+                        else:
+                            LOGGER.debug("Composition recovery check deferred: %s", exc)
+            return job.snapshot() if job else None
 
     def reset(self) -> None:
         with self._lock:
@@ -351,9 +456,8 @@ class CompositionRunner:
             job.status = "cancelled"
             job.message = "Composition cancelled"
             job.detail = "The active FFmpeg process was stopped"
-            if process and process.poll() is None:
-                process.terminate()
-            return True
+        _terminate_ffmpeg_process(process)
+        return True
 
     def start(self, project: Project) -> CompositionJob:
         with self._lock:
@@ -367,7 +471,7 @@ class CompositionRunner:
 
     def _run(self, job: CompositionJob, project: Project) -> None:
         try:
-            base = _export_result(project)
+            base = _composition_base_result(project)
             if not base:
                 raise RuntimeError("No base export is available for composition")
             if str(base.get("platform") or "") == "reel":
@@ -391,31 +495,94 @@ class CompositionRunner:
                 project.save()
                 try:
                     job.progress = 2
-                    job.detail = "Refreshing the Reel base without saved overlays"
-                    ExportStage().run(
-                        project,
-                        lambda percent, detail: _set_job_progress(job, 2 + round(min(1.0, float(percent) / 100.0) * 6)),
-                    )
+                    job.message = "Rendering final video"
+                    job.detail = "Preparing a clean Reel base before the final render"
+                    def base_progress(percent: int, detail: str) -> None:
+                        job.detail = str(detail)
+                        job.tasks["base"] = {"id": "base", "label": "Rendering clean Reel base", "percent": percent, "detail": str(detail)}
+                        _set_job_progress(job, 2 + round(min(1.0, float(percent) / 100.0) * 6))
+                    ExportStage().run(project, base_progress)
                 finally:
                     wizard.update(saved_overlay_state)
                     project.save()
                 base = _export_result(project)
                 if not base:
                     raise RuntimeError("The refreshed Reel base export is unavailable")
-            base_path = Path(base["path"]).resolve()
+            original_base_path = Path(base["path"]).resolve()
+            composition_cache = project.cache_dir / "composition-base.mp4"
+            composition_cache_meta = project.cache_dir / "composition-base.json"
+            # Keep one clean private base so re-saving captions/flyers never
+            # compounds the previous final export, but refresh it whenever the
+            # mounted export changes.  The old existence-only check silently
+            # composed new UI state over a stale edit/export.
+            source_stat = original_base_path.stat()
+            expected_cache_meta = {
+                "source": str(original_base_path),
+                "source_size": int(source_stat.st_size),
+                "source_mtime_ns": int(source_stat.st_mtime_ns),
+            }
+            cache_is_current = False
+            if composition_cache.is_file() and composition_cache.stat().st_size > 0 and composition_cache_meta.is_file():
+                try:
+                    cache_is_current = json.loads(composition_cache_meta.read_text(encoding="utf-8")) == expected_cache_meta
+                except (OSError, json.JSONDecodeError):
+                    cache_is_current = False
+            if not cache_is_current:
+                shutil.copy2(original_base_path, composition_cache)
+                composition_cache_meta.write_text(
+                    json.dumps(expected_cache_meta, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            _composition_event(project, job, "cache_miss" if not cache_is_current else "cache_hit", input_path=original_base_path, output_path=composition_cache, duration=None, reason="composition_base_provenance")
+            base_path = composition_cache
+            output_stem = original_base_path.stem
+            render_platform = str(
+                base.get("platform")
+                or project.data.get("settings", {}).get("wizard", {}).get("platform")
+                or ""
+            ).strip().lower()
+            youtube_longform = render_platform in {"youtube", "youtube_longform", "youtube_horizontal"}
             spec_path = project.folder / "overlay_spec.json"
             track_path = project.folder / "cue_track.json"
             spec = json.loads(spec_path.read_text(encoding="utf-8")) if spec_path.is_file() else {"images": [], "videos": []}
+            if youtube_longform:
+                # Long-form YouTube is deliberately a clean horizontal export:
+                # no flyer/image overlays and no caption/letterbox pass. Keep
+                # the saved caption state intact so TikTok/backstage can use it
+                # later, but never let it change the YouTube render.
+                spec = {"images": [], "videos": []}
             track_data = json.loads(track_path.read_text(encoding="utf-8")) if track_path.is_file() else {"cues": [], "style": "clean_bottom"}
-            LOGGER.info("Composition source base=%s overlay_spec=%s cue_track=%s", base_path, spec_path, track_path)
+            header = track_data.get("header") if isinstance(track_data.get("header"), dict) else {}
+            logo = _composition_logo(project, str(header.get("logo_source") or "none"))
+            logo_overlay = header.get("logo_overlay") if isinstance(header.get("logo_overlay"), dict) else {}
+            LOGGER.info("Composition source base=%s overlay_spec=%s cue_track=%s logo=%s", base_path, spec_path, track_path, logo)
             job.progress = 8
-            job.detail = "Applying current image and video overlays"
-            composed = project.exports_dir / f"{base_path.stem}_overlay-composed.mp4"
-            _compose_visual_overlays(base_path, spec, composed, lambda value: _set_job_progress(job, 8 + round(value * 45)))
+            job.message = "Rendering final video"
+            job.detail = f"Overlay pass: {len(spec.get('images') or [])} flyer(s), {len(spec.get('videos') or [])} video overlay(s), logo={'yes' if logo else 'no'}"
+            composed = project.cache_dir / f"{output_stem}_overlay-composed.mp4"
+            _composition_event(project, job, "composition_input", input_path=base_path, output_path=composed, duration=_media_duration(base_path), reason="clean_base_selected")
+            def overlay_progress(value: float) -> None:
+                percent = max(0, min(100, round(float(value) * 100)))
+                job.detail = f"Overlay pass (flyer/logo): {percent}%"
+                job.tasks["overlays"] = {"id": "overlays", "label": "Flyers, images and logo", "percent": percent, "detail": job.detail}
+                _set_job_progress(job, 10 + round(float(value) * 45))
+            def register_overlay_process(process: subprocess.Popen | None) -> None:
+                with self._lock:
+                    self._process = process
+                    cancelled = job.status == "cancelled"
+                if process is not None and cancelled and process.poll() is None:
+                    _terminate_ffmpeg_process(process)
+
+            _compose_visual_overlays(
+                base_path, spec, composed, overlay_progress,
+                logo_path=logo, logo_overlay=logo_overlay,
+                process_callback=register_overlay_process,
+            )
+            with self._lock:
+                self._process = None
+            _composition_event(project, job, "composition_filter", input_path=base_path, output_path=composed, duration=_media_duration(composed), reason="finite_overlay_eof_pass", extra={"image_count": len(spec.get("images") or []), "video_count": len(spec.get("videos") or []), "logo": bool(logo)})
             if job.status == "cancelled":
                 return
-            job.progress = 55
-            job.detail = "Burning captions onto the composed MP4"
             cues = tuple(
                 Cue(
                     tuple(str(line) for line in cue.get("lines", [])),
@@ -428,33 +595,89 @@ class CompositionRunner:
             )
             track = CueTrack(cues, str(track_data.get("lang") or "und"))
             style = get_style(str(track_data.get("style") or "clean_bottom"))
-            header = track_data.get("header") if isinstance(track_data.get("header"), dict) else {}
-            logo = _composition_logo(project, str(header.get("logo_source") or "none"))
-            final = project.exports_dir / f"{base_path.stem}_composed-captions.mp4"
-            def burn_progress(seconds: float) -> None:
-                duration = _media_duration(base_path)
-                _set_job_progress(job, 55 + round(min(1.0, seconds / duration if duration else 0.0) * 40))
-            output = burn_captions(
-                composed,
-                _expand_caption_animations(track),
-                style,
-                output_path=final,
-                header=header,
-                logo_path=logo,
-                letterbox=track_data.get("letterbox") if isinstance(track_data.get("letterbox"), dict) else None,
-                progress_callback=burn_progress,
+            letterbox = track_data.get("letterbox") if isinstance(track_data.get("letterbox"), dict) else None
+            final = project.exports_dir / (
+                f"{output_stem}_composed.mp4"
+                if youtube_longform
+                else f"{output_stem}_composed-captions.mp4"
             )
+            with self._lock:
+                job.output_path = str(final)
+            needs_caption_pass = (not youtube_longform) and (
+                bool(cues)
+                or bool(header.get("title_enabled") and header.get("title"))
+                or bool(letterbox and letterbox.get("enabled"))
+            )
+            if needs_caption_pass:
+                job.progress = 55
+                job.message = "Rendering final video"
+                job.detail = "Caption pass: burning captions onto the rendered video"
+                composition_duration = _media_duration(composed)
+                def burn_progress(seconds: float) -> None:
+                    duration = composition_duration
+                    percent = round(min(1.0, seconds / duration if duration else 0.0) * 100)
+                    job.detail = f"Caption pass: {percent}%"
+                    job.tasks["captions"] = {"id": "captions", "label": "Burning captions", "percent": percent, "detail": job.detail}
+                    _set_job_progress(job, 55 + round(min(1.0, seconds / duration if duration else 0.0) * 40))
+                output = burn_captions(
+                    composed,
+                    _expand_caption_animations(track),
+                    style,
+                    output_path=final,
+                    header=header,
+                    # Flyer and logo are already in the first composition pass.
+                    logo_path=None,
+                    letterbox=letterbox,
+                    progress_callback=burn_progress,
+                    process_callback=register_overlay_process,
+                )
+            else:
+                # YouTube has no captions.  Do not run a second full video
+                # transcode just to burn an empty ASS file; copy the already
+                # composed horizontal result as the single final export.
+                job.progress = 96
+                job.message = "Rendering final video"
+                job.detail = "Finalizing the horizontal YouTube export"
+                _remux_shortest(composed, final, process_callback=register_overlay_process)
+                output = final
             if job.status == "cancelled":
                 output.unlink(missing_ok=True)
                 return
+            validation = _validate_composition_output(base_path, output, spec)
+            _composition_event(project, job, "composition_validation", input_path=base_path, output_path=output, duration=validation.get("duration"), reason=validation.get("reason"), extra=validation)
+            if not validation["ok"]:
+                output.unlink(missing_ok=True)
+                composed.unlink(missing_ok=True)
+                job.status = "failed"
+                job.error = validation["reason"]
+                job.detail = "Final composition rejected; clean base export preserved"
+                _composition_event(project, job, "composition_output_rejected", input_path=base_path, output_path=output, duration=validation.get("duration"), reason=validation.get("reason"), extra=validation)
+                return
+            _composition_event(project, job, "composition_output", input_path=base_path, output_path=output, duration=validation.get("duration"), reason="validated_before_publish")
             job.progress = 100
             job.status = "done"
-            job.message = "Result ready"
-            job.detail = "Overlays and captions were rendered from the saved project state"
+            job.message = "Final video ready"
+            job.detail = "Validated final export published from the saved project state"
             job.result = {**base, "path": str(output), "filename": output.name, "media_url": "/api/v1/wizard/result"}
+            manifest_path = ((project.data.get("stages") or {}).get("export") or {}).get("outputs", {}).get("export_manifest")
+            if manifest_path:
+                try:
+                    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+                    exports = manifest.get("exports") or []
+                    if exports:
+                        exports[0]["path"] = str(output)
+                        exports[0]["filename"] = output.name
+                        manifest["exports"] = exports
+                        Path(manifest_path).write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                except (OSError, json.JSONDecodeError):
+                    LOGGER.warning("Could not update export manifest to the composed result", exc_info=True)
+            for candidate in project.exports_dir.glob("*.mp4"):
+                if candidate.resolve() != output.resolve():
+                    candidate.unlink(missing_ok=True)
+            composed.unlink(missing_ok=True)
             project.data.setdefault("settings", {}).setdefault("wizard", {})["last_composed_result"] = str(output)
             project.save()
-            LOGGER.info("Composition complete base=%s overlays=%s final=%s", base_path, composed, output)
+            LOGGER.info("Composition complete base=%s overlays=%s final=%s", original_base_path, composed, output)
         except Exception as exc:
             if job.status == "cancelled":
                 return
@@ -462,6 +685,12 @@ class CompositionRunner:
             job.status = "failed"
             job.error = str(exc)
             job.detail = "The final composition failed"
+        finally:
+            with self._lock:
+                process = self._process
+                self._process = None
+            if process and process.poll() is None:
+                _terminate_ffmpeg_process(process)
 
 
 def _set_job_progress(job: CompositionJob, progress: int) -> None:
@@ -469,12 +698,168 @@ def _set_job_progress(job: CompositionJob, progress: int) -> None:
         job.progress = max(job.progress, min(98, int(progress)))
 
 
+def _composition_event(project: Project, job: CompositionJob, event: str, *, input_path: Path | None = None,
+                       output_path: Path | None = None, duration: float | None = None,
+                       reason: str | None = None, extra: dict[str, Any] | None = None) -> None:
+    """Write unambiguous, machine-readable composition evidence."""
+    payload = {
+        "event": event,
+        "project_path": str(project.folder),
+        "job_id": job.id,
+        "git_commit": build_info().get("git_commit"),
+        "input_path": str(input_path) if input_path else None,
+        "output_path": str(output_path) if output_path else None,
+        "duration": duration,
+        "camera": None,
+        "timestamp": time.time(),
+        "selection_reason": reason,
+    }
+    if extra:
+        payload.update(extra)
+    log_path = project.cache_dir / "logs" / "composition.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _composition_base_result(project: Project) -> dict[str, Any] | None:
+    """Return the clean export, never the last composed result."""
+    manifest_result = _export_result(project)
+    cache = project.cache_dir / "composition-base.mp4"
+    meta = project.cache_dir / "composition-base.json"
+    if cache.is_file() and cache.stat().st_size > 0 and meta.is_file():
+        try:
+            record = json.loads(meta.read_text(encoding="utf-8"))
+            if int(record.get("source_size") or 0) == cache.stat().st_size:
+                return {**(manifest_result or {}), "path": str(cache), "filename": cache.name}
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    result = manifest_result
+    if not result:
+        return None
+    path = Path(str(result.get("path") or ""))
+    if "_composed" in path.stem or "_overlay-composed" in path.stem or "_captions" in path.stem:
+        candidates = sorted(project.exports_dir.glob("*.mp4"), key=lambda item: item.stat().st_mtime, reverse=True)
+        path = next((item for item in candidates if "_composed" not in item.stem and "_overlay-composed" not in item.stem and "_captions" not in item.stem and item.stat().st_size > 0), Path())
+        if not path:
+            return None
+    return {**result, "path": str(path), "filename": path.name}
+
+
+def _spherical_event(project: Project, event: str, *, input_path: Path | None = None,
+                     output_path: Path | None = None, camera: str | None = None,
+                     reason: str | None = None, extra: dict[str, Any] | None = None) -> None:
+    payload = {
+        "event": event,
+        "project_path": str(project.folder),
+        "job_id": f"spherical-{uuid.uuid4().hex[:10]}",
+        "git_commit": build_info().get("git_commit"),
+        "input_path": str(input_path) if input_path else None,
+        "output_path": str(output_path) if output_path else None,
+        "duration": None,
+        "camera": camera,
+        "timestamp": time.time(),
+        "selection_reason": reason,
+    }
+    if extra:
+        payload.update(extra)
+    log_path = project.cache_dir / "logs" / "spherical.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _validate_composition_output(base: Path, output: Path, spec: dict[str, Any]) -> dict[str, Any]:
+    """Reject black, truncated, malformed, or stream-mismatched results."""
+    try:
+        base_probe = ffprobe(str(base))
+        probe = ffprobe(str(output))
+        streams = probe.get("streams") or []
+        video = next((item for item in streams if item.get("codec_type") == "video"), None)
+        audio = next((item for item in streams if item.get("codec_type") == "audio"), None)
+        base_video = next((item for item in (base_probe.get("streams") or []) if item.get("codec_type") == "video"), None)
+        duration = float((probe.get("format") or {}).get("duration") or 0.0)
+        base_duration = float((base_probe.get("format") or {}).get("duration") or 0.0)
+        if not video or not base_video:
+            return {"ok": False, "reason": "composition_validation:no_video_stream", "duration": duration}
+        if len(streams) > 2 or not audio:
+            return {"ok": False, "reason": "composition_validation:expected_one_video_and_one_audio_stream", "duration": duration}
+        if duration < base_duration - 0.5 or abs(float(video.get("duration") or duration) - base_duration) > 0.75:
+            return {"ok": False, "reason": "composition_validation:duration_mismatch", "duration": duration, "base_duration": base_duration}
+        if int(video.get("width") or 0) != int(base_video.get("width") or 0) or int(video.get("height") or 0) != int(base_video.get("height") or 0):
+            return {"ok": False, "reason": "composition_validation:resolution_mismatch", "duration": duration}
+        # A single representative sample after every overlay interval catches
+        # the full-canvas opaque flyer failure without trusting job status.
+        overlay_end = max(
+            [0.0]
+            + [max(0.0, float(item.get("start_sec") or 0.0)) + max(0.1, float(item.get("duration_sec") or 3.0)) for kind in ("images", "videos") for item in (spec.get(kind) or []) if isinstance(item, dict)]
+        )
+        # The first/last frames may intentionally be black intro/outro cards.
+        # The decisive sample is just after the last configured overlay.
+        samples = [min(base_duration - 0.05, overlay_end + 0.5)]
+        if overlay_end + 0.5 >= base_duration:
+            samples = [min(base_duration - 0.05, base_duration / 2.0)]
+        for timestamp in sorted(set(round(max(0.0, value), 3) for value in samples)):
+            command = [str(tool_status().get("ffmpeg_path") or "ffmpeg"), "-hide_banner", "-loglevel", "error", "-ss", str(timestamp), "-i", str(output), "-frames:v", "1", "-vf", "scale=1:1,format=gray", "-f", "rawvideo", "-"]
+            result = subprocess.run(command, capture_output=True, check=False)
+            if not result.stdout or max(result.stdout) <= 1:
+                return {"ok": False, "reason": f"composition_validation:black_frame_at_{timestamp:.3f}", "duration": duration, "timestamp": timestamp}
+        return {
+            "ok": True,
+            "reason": "composition_validation:passed",
+            "duration": duration,
+            "base_duration": base_duration,
+            "streams": [{"index": item.get("index"), "type": item.get("codec_type"), "codec": item.get("codec_name"), "width": item.get("width"), "height": item.get("height"), "duration": item.get("duration")} for item in streams],
+        }
+    except (FFmpegError, OSError, ValueError, KeyError, TypeError) as exc:
+        return {"ok": False, "reason": f"composition_validation:probe_failed:{exc}", "duration": 0.0}
+
+
 def _media_duration(path: Path) -> float:
     try:
         probe = ffprobe(str(path))
-        return float((probe.get("format") or {}).get("duration") or 0.0)
+        video = next((stream for stream in probe.get("streams", []) if stream.get("codec_type") == "video"), {})
+        return float(video.get("duration") or (probe.get("format") or {}).get("duration") or 0.0)
     except Exception:
         return 0.0
+
+
+def _remux_shortest(source: Path, destination: Path, process_callback=None) -> Path:
+    """Mux the result through a temporary file and publish it atomically."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    pending = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.part")
+    ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
+    command = [
+        ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-i", str(source), "-map", "0:v:0", "-map", "0:a:0?",
+        "-c", "copy", "-avoid_negative_ts", "make_zero", "-shortest", str(pending),
+    ]
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=(os.name == "posix"),
+    )
+    if process_callback:
+        process_callback(process)
+    try:
+        output, _ = process.communicate(timeout=FFMPEG_TIMEOUT_SECONDS)
+        if process.returncode:
+            raise subprocess.CalledProcessError(
+                process.returncode, command, stderr=(output or "")[-4000:],
+            )
+        pending.replace(destination)
+        return destination
+    except subprocess.TimeoutExpired as exc:
+        _terminate_ffmpeg_process(process)
+        raise TimeoutError(f"ffmpeg remux timed out after {FFMPEG_TIMEOUT_SECONDS}s") from exc
+    finally:
+        if process.poll() is None:
+            _terminate_ffmpeg_process(process)
+        if process_callback:
+            process_callback(None)
+        pending.unlink(missing_ok=True)
 
 
 def _composition_logo(project: Project, mode: str) -> Path | None:
@@ -542,23 +927,46 @@ def _image_overlay_canvas(path: Path, raw: dict[str, Any], width: int, height: i
     canvas.save(output, "PNG")
 
 
-def _compose_visual_overlays(source: Path, spec: dict[str, Any], destination: Path, progress_callback) -> Path:
-    """Render saved image/video overlays onto one full-length base export."""
+def _compose_visual_overlays(
+    source: Path,
+    spec: dict[str, Any],
+    destination: Path,
+    progress_callback,
+    *,
+    logo_path: Path | None = None,
+    logo_overlay: dict[str, Any] | None = None,
+    process_callback=None,
+) -> Path:
+    """Render saved overlays and logo onto one full-length base export."""
     from tempfile import TemporaryDirectory
+
     probe = ffprobe(str(source))
     video_stream = next((stream for stream in probe.get("streams", []) if stream.get("codec_type") == "video"), {})
-    width, height = int(video_stream.get("width") or 1080), int(video_stream.get("height") or 1920)
-    images = [item for item in spec.get("images") or [] if isinstance(item, dict) and Path(str(item.get("path") or "")).is_file()]
-    videos = [item for item in spec.get("videos") or [] if isinstance(item, dict) and Path(str(item.get("path") or "")).is_file()]
-    if not images and not videos:
-        shutil.copy2(source, destination)
+    width = int(video_stream.get("width") or 1080)
+    height = int(video_stream.get("height") or 1920)
+    duration = max(0.1, float(video_stream.get("duration") or (probe.get("format") or {}).get("duration") or 0.0))
+    requested_images = [item for item in spec.get("images") or [] if isinstance(item, dict)]
+    requested_videos = [item for item in spec.get("videos") or [] if isinstance(item, dict)]
+    missing_overlays = [
+        str(item.get("path") or "")
+        for item in (*requested_images, *requested_videos)
+        if not Path(str(item.get("path") or "")).is_file()
+    ]
+    if missing_overlays:
+        raise RuntimeError("composition_overlay_source_missing: " + ", ".join(missing_overlays[:5]))
+    images = requested_images
+    videos = requested_videos
+    valid_logo = Path(str(logo_path)).resolve() if logo_path and Path(str(logo_path)).is_file() else None
+    overlay_count = len(images) + len(videos) + (1 if valid_logo else 0)
+    if overlay_count == 0:
+        _remux_shortest(source, destination, process_callback=process_callback)
         progress_callback(1.0)
         return destination
-    duration = float((probe.get("format") or {}).get("duration") or 0.0)
+
     with TemporaryDirectory(prefix="zucker-compose-") as tmp:
         tmp_dir = Path(tmp)
         inputs: list[str] = ["-i", str(source)]
-        filters = ["[0:v]setpts=PTS-STARTPTS[base]"]
+        filters = ["[0:v]setpts=PTS-STARTPTS,fps=30[base]"]
         current = "base"
         for index, raw in enumerate(images):
             canvas = tmp_dir / f"image-{index}.png"
@@ -566,11 +974,11 @@ def _compose_visual_overlays(source: Path, spec: dict[str, Any], destination: Pa
             inputs += ["-loop", "1", "-i", str(canvas)]
             start = max(0.0, float(raw.get("start_sec") or 0.0))
             end = min(duration, start + max(0.1, float(raw.get("duration_sec") or 3.0)))
-            next_label = f"ov{index}"
-            filters.append(f"[{index + 1}:v]format=rgba[{next_label}src]")
-            filters.append(f"[{current}][{next_label}src]overlay=0:0:enable='between(t,{start:.3f},{end:.3f})':eof_action=pass[v{index}]")
-            current = f"v{index}"
-            progress_callback((index + 1) / max(1, len(images) + len(videos)))
+            label = f"image_{index}"
+            filters.append(f"[{index + 1}:v]format=rgba,setpts=PTS-STARTPTS,fps=30,trim=duration={max(0.1, end - start):.3f},setpts=PTS-STARTPTS+{start:.3f}/TB[{label}_src]")
+            filters.append(f"[{current}][{label}_src]overlay=0:0:eof_action=pass:repeatlast=0:shortest=0[{label}_out]")
+            current = f"{label}_out"
+
         for offset, raw in enumerate(videos, start=len(images)):
             inputs += ["-stream_loop", "-1", "-i", str(Path(str(raw["path"])).resolve())]
             start = max(0.0, float(raw.get("start_sec") or 0.0))
@@ -578,14 +986,91 @@ def _compose_visual_overlays(source: Path, spec: dict[str, Any], destination: Pa
             scale = max(2, int(width * max(0.02, min(1.0, float(raw.get("width") or 0.35)))))
             x = max(0, int(float(raw.get("x") or 0.5) * width - scale / 2))
             y = max(0, int(float(raw.get("y") or 0.5) * height - scale / 2))
-            filters.append(f"[{offset + 1}:v]format=rgba,scale={scale}:-2,colorchannelmixer=aa={max(0.0, min(1.0, float(raw.get('opacity') or 1.0))):.3f}[vid{offset}]")
-            filters.append(f"[{current}][vid{offset}]overlay={x}:{y}:enable='between(t,{start:.3f},{end:.3f})':eof_action=pass[v{offset}]")
-            current = f"v{offset}"
-            progress_callback((offset + 1) / max(1, len(images) + len(videos)))
-        command = [str(tool_status().get("ffmpeg_path") or "ffmpeg"), "-y", "-hide_banner", "-loglevel", "error", *inputs, "-filter_complex", ";".join(filters), "-map", f"[{current}]", "-map", "0:a?", "-t", f"{duration:.3f}", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy", str(destination)]
-        subprocess.run(command, check=True)
-    return destination
+            label = f"video_{offset}"
+            filters.append(f"[{offset + 1}:v]format=rgba,scale={scale}:-2,colorchannelmixer=aa={max(0.0, min(1.0, float(raw.get('opacity') or 1.0))):.3f},trim=duration={max(0.1, end - start):.3f},setpts=PTS-STARTPTS+{start:.3f}/TB[{label}]")
+            filters.append(f"[{current}][{label}]overlay={x}:{y}:eof_action=pass:repeatlast=0:shortest=0[{label}_out]")
+            current = f"{label}_out"
 
+        if valid_logo:
+            logo_index = 1 + len(images) + len(videos)
+            inputs += ["-loop", "1", "-i", str(valid_logo)]
+            overlay = logo_overlay or {}
+            logo_width = max(40, int(width * max(0.05, min(0.9, float(overlay.get("width", 0.22))))))
+            logo_x = max(0.0, min(1.0, float(overlay.get("x", 0.5))))
+            logo_y = max(0.0, min(1.0, float(overlay.get("y", 0.08))))
+            filters.append(f"[{logo_index}:v]format=rgba,scale={logo_width}:-1,trim=duration={duration:.3f},setpts=PTS-STARTPTS[composition_logo]")
+            filters.append(f"[{current}][composition_logo]overlay=(W-w)*{logo_x:.5f}:(H-h)*{logo_y:.5f}:eof_action=pass:repeatlast=0:shortest=0[with_logo]")
+            current = "with_logo"
+
+        ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
+        command = [
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-stats_period", "0.5", "-progress", "pipe:1",
+            *inputs, "-filter_complex", ";".join(filters),
+            "-map", f"[{current}]", "-map", "0:a?", "-t", f"{duration:.3f}",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "copy",
+            "-avoid_negative_ts", "make_zero", "-shortest", str(destination),
+        ]
+        # Merge FFmpeg diagnostics into the progress stream. Reading stdout and
+        # stderr independently can deadlock when one pipe fills during a long
+        # H.264 composition, leaving the UI on the last reported percentage.
+        pending_destination = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.part")
+        command[-1] = str(pending_destination)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            start_new_session=(os.name == "posix"),
+        )
+        if process_callback:
+            process_callback(process)
+        diagnostics: list[str] = []
+        timed_out = threading.Event()
+        watchdog_stop = threading.Event()
+
+        def watchdog() -> None:
+            if not watchdog_stop.wait(FFMPEG_TIMEOUT_SECONDS):
+                timed_out.set()
+                _terminate_ffmpeg_process(process)
+
+        watchdog_thread = threading.Thread(target=watchdog, daemon=True, name="zucker-ffmpeg-watchdog")
+        watchdog_thread.start()
+        try:
+            assert process.stdout is not None
+            progress_callback(0.0)
+            last_progress = 0.0
+            for raw_line in process.stdout:
+                line = raw_line.strip()
+                if line.startswith(("out_time_ms=", "out_time_us=")):
+                    try:
+                        raw_value = float(line.split("=", 1)[1])
+                        value = raw_value / 1_000_000.0
+                        last_progress = min(1.0, max(last_progress, value / duration))
+                        progress_callback(last_progress)
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        pass
+                elif line:
+                    diagnostics.append(line)
+            return_code = process.wait()
+            if timed_out.is_set():
+                raise TimeoutError(f"ffmpeg overlay timed out after {FFMPEG_TIMEOUT_SECONDS}s")
+            if return_code:
+                raise subprocess.CalledProcessError(
+                    return_code,
+                    command,
+                    stderr="\n".join(diagnostics[-20:]),
+                )
+            pending_destination.replace(destination)
+            progress_callback(1.0)
+        finally:
+            watchdog_stop.set()
+            if process.poll() is None:
+                _terminate_ffmpeg_process(process)
+            if process_callback:
+                process_callback(None)
+            pending_destination.unlink(missing_ok=True)
+    return destination
 
 def _expand_caption_animations(track: CueTrack) -> CueTrack:
     """Encode per-cue slide/scale motion as short ASS cue segments.
@@ -675,8 +1160,16 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     if dev:
         _enable_cors(app)
 
+    @app.before_request
+    def start_request_timing() -> None:
+        g.request_started = time.perf_counter()
+
     @app.after_request
     def add_no_cache_headers(response: Response) -> Response:
+        elapsed_ms = (time.perf_counter() - g.request_started) * 1000
+        response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.1f}"
+        if elapsed_ms >= 2000 and request.path.startswith("/api/"):
+            LOGGER.warning("Slow request %s %s: %.1f ms (HTTP %s)", request.method, request.path, elapsed_ms, response.status_code)
         if request.path == "/" or request.path.endswith((".html", ".css", ".js", ".png")):
             response.headers["Cache-Control"] = "no-store, max-age=0"
         return response
@@ -1105,6 +1598,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         platform = str(body.get("platform") or "youtube")
         audio_trim = _audio_trim_from_body(body)
         spherical_landmarks = _spherical_landmarks_from_body(body)
+        spherical_landmark_profiles = body.get("spherical_landmarks_by_source") or {}
+        if not isinstance(spherical_landmark_profiles, dict):
+            spherical_landmark_profiles = {}
+        if not spherical_landmark_profiles and state.project is not None:
+            spherical_landmark_profiles = (
+                state.project.data.get("settings", {}).get("spherical_landmarks_by_source") or {}
+            )
+        spherical_source_path = str(body.get("spherical_source_path") or "").strip()
         camera_role_weights = _camera_role_weights_from_body(body)
         fixed_rear_motion = _fixed_rear_motion_from_body(body)
         spherical_motion = _spherical_motion_from_body(body)
@@ -1117,6 +1618,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         reel_cuts_per_source = _reel_cuts_per_source_from_body(body)
         reel_text_overlays = _reel_text_overlays_from_body(body)
         reel_image_overlays = _reel_image_overlays_from_body(body)
+        transition_type = str(body.get("transition_type") or "auto").strip().lower()
+        allowed_transition_types = {"auto", "none"} | set(TRANSITION_LIBRARY)
+        if transition_type not in allowed_transition_types:
+            return error_response("bad_request", "transition_type is not a supported native transition", 400)
         backstage_messages = body.get("backstage_messages") or []
         if not isinstance(backstage_messages, list) or not all(isinstance(value, str) for value in backstage_messages):
             return error_response("bad_request", "backstage_messages must be a list of strings", 400)
@@ -1126,8 +1631,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("bad_request", "platform must be youtube, reel, instagram, tiktok, 360, or backstage", 400)
         if not isinstance(videos, list) or not all(isinstance(path, str) for path in videos) or not videos:
             return error_response("missing_video", t("missing_video"), 400)
-        embedded_reel_audio = platform == "reel" and _single_video_has_audio(videos)
-        if not master and platform != "backstage" and not embedded_reel_audio:
+        embedded_source_audio = platform in {"reel", "360"} and _single_video_has_audio(videos)
+        if not master and platform != "backstage" and not embedded_source_audio:
             return error_response("missing_master", t("missing_master"), 400)
         try:
             options = {
@@ -1136,6 +1641,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 "song_choice": body.get("song_index", body.get("song_choice")),
                 "audio_trim": audio_trim,
                 "spherical_landmarks": spherical_landmarks,
+                "spherical_landmark_profiles": spherical_landmark_profiles,
+                "spherical_source_path": spherical_source_path,
                 "camera_role_weights": camera_role_weights,
                 "fixed_rear_motion": fixed_rear_motion,
                 "spherical_motion": spherical_motion,
@@ -1150,6 +1657,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 "reel_text_overlays": reel_text_overlays,
                 "reel_image_overlays": reel_image_overlays,
                 "backstage_messages": backstage_messages,
+                "transition_type": transition_type,
                 "master_path": master,
                 "songs_path": songs,
                 "video_paths": videos,
@@ -1354,6 +1862,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_wizard_review_render() -> Response:
         try:
             state.project = state.project or _active_wizard_project(state)
+            body = _json_body()
+            if body.get("transitions") is not None:
+                set_review_transition_types(state.project, body.get("transitions"))
             job = state.wizard.render_review(state.project)
             return jsonify(serialize_wizard_job(job)), 202
         except (RuntimeError, ValueError) as exc:
@@ -1400,7 +1911,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.get("/api/v1/wizard/spherical-preview")
     def api_wizard_spherical_preview() -> Response:
-        """Render one real equirectangular frame at an authored landmark pose."""
+        """Render the exact 360 preview projection used by review/export."""
         project = _require_project(state)
         requested = Path(str(request.args.get("source") or "")).expanduser().resolve()
         allowed = set()
@@ -1408,48 +1919,61 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             allowed.update({Path(str(record.get("path") or "")).resolve(), Path(record_media_path(record)).resolve()})
         if requested not in allowed or not requested.is_file():
             return error_response("not_found", "360 source is not registered in this project", 404)
+        shot_type = str(request.args.get("shot") or "").strip()
         try:
-            yaw = ((float(request.args.get("yaw", 0.0)) + 180.0) % 360.0) - 180.0
-            pitch = max(-89.0, min(89.0, float(request.args.get("pitch", 0.0))))
-            fov = max(30.0, min(MAX_SPHERICAL_FOV, float(request.args.get("fov", 95.0))))
+            yaw = float(request.args.get("yaw", 0.0))
+            # Use the same canonical pitch as export/review. The former ±89°
+            # preview-only clamp allowed a saved pose to look correct in the
+            # editor and shift to a different performer in the final MP4.
+            pitch = effective_pitch(float(request.args.get("pitch", 0.0)), shot_type)
+            projection_preset = normalize_projection_preset(request.args.get("projection_preset"), shot_type)
+            roll = effective_roll(float(request.args.get("roll", 0.0)), shot_type)
+            projection_control = effective_projection_control(request.args.get("projection_control"))
+            h_fov = max(30.0, min(MAX_SPHERICAL_FOV, float(request.args.get("fov", 95.0))))
+            time_sec = max(0.0, float(request.args.get("time_sec", 30.0)))
         except (TypeError, ValueError):
-            return error_response("bad_request", "Invalid spherical preview angles", 400)
-        record = next(
-            (
-                candidate for candidate in project.data.get("inputs", {}).get("videos", [])
-                if requested in {
-                    Path(str(candidate.get("path") or "")).expanduser().resolve(),
-                    Path(record_media_path(candidate)).expanduser().resolve(),
-                }
-            ),
-            None,
+            return error_response("bad_request", "Invalid spherical preview parameters", 400)
+        try:
+            duration = float(ffprobe(str(requested)).get("format", {}).get("duration") or 0.0)
+            if duration > 0.0:
+                time_sec = min(time_sec, max(0.0, duration - 0.05))
+        except Exception:
+            pass
+        view = view_parameters(
+            yaw, pitch, h_fov, 16.0 / 9.0, shot_type,
+            projection_preset=projection_preset,
+            roll=roll,
+            projection_control=projection_control,
         )
-        if not record:
-            return error_response("not_found", "360 source is not registered in this project", 404)
-        probe = record.get("probe") or {}
-        projection = str(record.get("projection") or probe.get("projection") or "").lower()
-        if projection not in {"equirect", "raw_insv"}:
-            return error_response("bad_request", "Registered source is not equirectangular 360 media", 400)
-        requested = Path(str(record.get("path") or requested)).expanduser().resolve()
-        shot_type = str(request.args.get("shot_id") or request.args.get("type") or "")
-        filter_graph = spherical_view_filter(
-            projection,
-            yaw,
-            pitch,
-            fov,
-            shot_type,
-            insv_fov=float(probe.get("insv_fov") or 190.0),
-            width=640,
-            height=360,
-        )
-        timestamp = max(0.0, float(request.args.get("time", 30.0) or 30.0))
+        projection = "equirect"
+        insv_fov = 190.0
+        for record in project.data.get("inputs", {}).get("videos", []):
+            record_paths = {
+                str(Path(str(record.get("path") or "")).expanduser().resolve()),
+                str(Path(record_media_path(record)).expanduser().resolve()),
+            }
+            if str(requested) not in record_paths:
+                continue
+            probe = record.get("probe") or {}
+            normalized = record.get("normalized") or {}
+            projection = str(record.get("projection") or probe.get("projection") or normalized.get("projection") or "equirect").lower()
+            try:
+                insv_fov = float(
+                    record.get("insv_fov")
+                    or probe.get("insv_fov")
+                    or normalized.get("insv_fov")
+                    or 190.0
+                )
+            except (TypeError, ValueError):
+                insv_fov = 190.0
+            break
+        projection_prefix = ""
+        if projection == "raw_insv":
+            projection_prefix = f"v360=input=dfisheye:output=e:ih_fov={insv_fov:.3f}:iv_fov={insv_fov:.3f}:interp=lanczos,"
         ffmpeg_path = str(load_global_config().get("ffmpeg_path") or "ffmpeg")
         result = subprocess.run(
-            # The first seconds of the real Insta360 exports are often dark
-            # while the camera is being positioned. Use a representative
-            # mid-clip frame so the editor's previews are actually useful.
-            [ffmpeg_path, "-hide_banner", "-loglevel", "error", "-ss", f"{timestamp:.3f}", "-i", str(requested),
-             "-vf", filter_graph,
+            [ffmpeg_path, "-hide_banner", "-loglevel", "error", "-ss", f"{time_sec:.3f}", "-i", str(requested),
+             "-vf", f"{projection_prefix}v360=input=equirect:output={view['projection']}:yaw={float(view['yaw']):.3f}:pitch={float(view['pitch']):.3f}:roll={float(view['roll']):.3f}:h_fov={float(view['h_fov']):.3f}:v_fov={float(view['v_fov']):.3f},scale=640:360",
              "-frames:v", "1", "-f", "mjpeg", "pipe:1"],
             capture_output=True, check=False, timeout=30,
         )
@@ -1462,16 +1986,43 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         """Serve one equirectangular frame for the interactive client viewer."""
         project = _require_project(state)
         requested = Path(str(request.args.get("source") or "")).expanduser().resolve()
-        allowed = set()
+        source_record: dict[str, Any] | None = None
         for record in project.data.get("inputs", {}).get("videos", []):
-            allowed.update({Path(str(record.get("path") or "")).resolve(), Path(record_media_path(record)).resolve()})
-        if requested not in allowed or not requested.is_file():
+            record_paths = {
+                Path(str(record.get("path") or "")).expanduser().resolve(),
+                Path(record_media_path(record)).expanduser().resolve(),
+            }
+            if requested in record_paths:
+                source_record = record
+                break
+        if source_record is None or not requested.is_file():
             return error_response("not_found", "360 source is not registered in this project", 404)
+        projection = str(
+            source_record.get("projection")
+            or (source_record.get("probe") or {}).get("projection")
+            or (source_record.get("normalized") or {}).get("projection")
+            or "equirect"
+        ).lower()
+        try:
+            insv_fov = float(
+                source_record.get("insv_fov")
+                or (source_record.get("probe") or {}).get("insv_fov")
+                or (source_record.get("normalized") or {}).get("insv_fov")
+                or 190.0
+            )
+        except (TypeError, ValueError):
+            insv_fov = 190.0
+        projection_prefix = ""
+        if projection == "raw_insv":
+            projection_prefix = f"v360=input=dfisheye:output=e:ih_fov={insv_fov:.3f}:iv_fov={insv_fov:.3f}:interp=lanczos,"
         ffmpeg_path = str(load_global_config().get("ffmpeg_path") or "ffmpeg")
         result = subprocess.run(
-            [ffmpeg_path, "-hide_banner", "-loglevel", "error", "-ss", "30", "-i", str(requested),
-             "-frames:v", "1", "-vf", "scale=2048:1024:force_original_aspect_ratio=decrease,pad=2048:1024:(ow-iw)/2:(oh-ih)/2",
-             "-q:v", "3", "-f", "mjpeg", "pipe:1"],
+            [
+                ffmpeg_path, "-hide_banner", "-loglevel", "error", "-ss", "30", "-i", str(requested),
+                "-frames:v", "1",
+                "-vf", f"{projection_prefix}scale=2048:1024:force_original_aspect_ratio=decrease,pad=2048:1024:(ow-iw)/2:(oh-ih)/2",
+                "-q:v", "3", "-f", "mjpeg", "pipe:1",
+            ],
             capture_output=True, check=False, timeout=30,
         )
         if result.returncode != 0 or not result.stdout:
@@ -1488,20 +2039,21 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         videos = body.get("videos") or []
         if not isinstance(videos, list) or not all(isinstance(path, str) for path in videos) or not videos:
             return error_response("missing_video", t("missing_video"), 400)
-        if not master and platform != "backstage" and not (platform == "reel" and _single_video_has_audio(videos)):
+        if not master and platform != "backstage" and not (platform in {"reel", "360"} and _single_video_has_audio(videos)):
             return error_response("missing_master", t("missing_master"), 400)
         try:
-            matching_project = state.project if _can_reuse_prepared_project(state.project, master, songs, videos) else find_project_by_inputs(master, songs, videos)
-            if matching_project and _project_can_skip_prepare(matching_project):
-                state.project = matching_project
-                job = state.wizard.adopt_prepared_project(state.project)
-                LOGGER.info("Reused prepared wizard project %s instead of creating a new project", state.project.folder)
-                return jsonify(serialize_wizard_job(job)), 202
-            if matching_project:
-                state.project = matching_project
-                job = state.wizard.prepare_existing(matching_project, platform=platform)
-                LOGGER.info("Reused existing wizard project %s instead of creating a new project", matching_project.folder)
-                return jsonify(serialize_wizard_job(job)), 202
+            # Every new Step 1 submission is a new run. Matching inputs against
+            # an older .zuckervid project was convenient for development, but
+            # it made the app silently reuse stale frames, camera choices and
+            # stage outputs. Reopening an old project is now explicit through
+            # /wizard/projects/open only.
+            composition_status = state.composition.status(state.project) or {}
+            if composition_status.get("status") in {"running", "cancelling"}:
+                return error_response("wizard_busy", "A previous final render is still stopping; wait until it finishes before starting a new project.", 409)
+            if not state.wizard.reset():
+                return error_response("wizard_busy", "The previous wizard job is still cancelling; wait until it stops before starting a new project.", 409)
+            state.composition.reset()
+            state.project = None
             job = state.wizard.prepare(name=name or "Jam", master_path=master, songs_path=songs, video_paths=videos, platform=platform)
             return jsonify(serialize_wizard_job(job)), 202
         except RuntimeError as exc:
@@ -1523,8 +2075,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 # process-global wizard job. Return the requested project's
                 # persisted state instead; the browser also validates the id.
                 return jsonify(_project_wizard_status(requested_project))
-        composition_status = state.composition.status()
-        if composition_status and composition_status.get("status") in {"running", "failed"}:
+        composition_status = state.composition.status(state.project)
+        if composition_status and composition_status.get("status") in {"running", "cancelling", "cancelled", "failed"}:
             return jsonify(composition_status)
         if composition_status and composition_status.get("status") == "done":
             return jsonify(composition_status)
@@ -1583,9 +2135,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.post("/api/v1/wizard/projects/new")
     def api_wizard_project_new() -> Response:
+        if not state.wizard.reset():
+            return error_response(
+                "wizard_busy",
+                "The previous wizard job is still cancelling; wait until it stops before starting a new project.",
+                409,
+            )
         state.project = None
         state.composition.reset()
-        state.wizard.reset()
         config = load_global_config()
         if config.pop("last_project_path", None) is not None:
             save_global_config(config)
@@ -1593,21 +2150,38 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.post("/api/v1/wizard/reset")
     def api_wizard_reset() -> Response:
-        state.wizard.reset()
+        if not state.wizard.reset():
+            return error_response(
+                "wizard_busy",
+                "The previous wizard job is still cancelling; wait until it stops before resetting.",
+                409,
+            )
         return jsonify({"ok": True})
 
     @app.post("/api/v1/wizard/cancel")
     def api_wizard_cancel() -> Response:
         if state.composition.cancel():
-            return jsonify({"ok": True})
+            return jsonify({"ok": True, "status": "cancelling"})
         cancelled = state.wizard.cancel()
         if not cancelled:
             return error_response("not_running", "No job is currently running", 409)
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "status": state.wizard.status().get("status")})
 
     @app.get("/api/v1/wizard/report")
     def api_wizard_report() -> Response:
-        return Response(wizard_report(state.wizard.status()), mimetype="text/plain")
+        wizard_status = state.wizard.status()
+        composition_status = state.composition.status()
+        active_composition = composition_status and composition_status.get("status") in {
+            "running", "cancelling", "cancelled", "failed", "done"
+        }
+        report_status = composition_status if active_composition else wizard_status
+        report = wizard_report(report_status)
+        if active_composition:
+            report += "\n--- wizard export status ---\n"
+            report += f"status: {wizard_status.get('status')}\n"
+            report += f"message: {wizard_status.get('message')}\n"
+            report += f"error: {wizard_status.get('error')}\n"
+        return Response(report, mimetype="text/plain")
 
     @app.post("/api/v1/wizard/rescue")
     def api_wizard_rescue() -> Response:
@@ -1740,7 +2314,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             track = CueTrack(cues, str(body.get("lang") or "und"))
             cache = project.cache_dir / "captions" / CAPTIONS_VERSION
             cache.mkdir(parents=True, exist_ok=True)
-            destination = project.exports_dir / f"{Path(result['path']).stem}_captions.mp4"
+            destination = project.cache_dir / "captions" / f"{Path(result['path']).stem}_captions.mp4"
+            destination.parent.mkdir(parents=True, exist_ok=True)
             header = body.get("header") if isinstance(body.get("header"), dict) else None
             letterbox = body.get("letterbox") if isinstance(body.get("letterbox"), dict) else None
             ass_width, ass_height = _video_dimensions(Path(result["path"]), str(tool_status().get("ffmpeg_path") or "ffmpeg"))
@@ -1765,7 +2340,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.get("/api/v1/captions/result")
     def api_captions_result() -> Response:
         project = _require_project(state)
-        exports = sorted(project.exports_dir.glob("*_captions.mp4"), key=lambda path: path.stat().st_mtime, reverse=True)
+        exports = sorted((project.cache_dir / "captions").glob("*_captions.mp4"), key=lambda path: path.stat().st_mtime, reverse=True)
         if not exports:
             return error_response("not_found", "No captioned export yet", 404)
         return send_file_with_range(str(exports[0]))
@@ -1782,14 +2357,32 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         logo_mode = str(header.get("logo_source") or "none")
         if logo_mode not in {"custom", "default", "none"}:
             logo_mode = "none"
-        overlay_spec = {"version": 2, "texts": texts, "images": images, "videos": videos}
+        wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
+        # The mounted export is authoritative. Caption UI state must never
+        # turn a YouTube result into a vertical Reel composition.
+        base_result = _export_result(project)
+        compose_platform = str((base_result or {}).get("platform") or wizard.get("platform") or "youtube").strip().lower()
+        if compose_platform not in {"youtube", "reel", "reel_horizontal", "360", "backstage"}:
+            compose_platform = "youtube"
+        if compose_platform == "youtube":
+            # YouTube is one horizontal flyer/base composition. Captions and
+            # letterbox are intentionally outside this mode's contract.
+            cues = []
+            letterbox = {"enabled": False}
+        else:
+            letterbox = body.get("letterbox") or {}
+        overlay_spec = {"version": 3, "platform": compose_platform, "texts": texts, "images": images, "videos": videos}
         header = {**header, "logo_source": logo_mode, "logo_enabled": logo_mode != "none"}
-        cue_track = {"version": CAPTIONS_VERSION, "lang": str(body.get("lang") or "und"), "cues": cues, "style": str(body.get("style") or "karaoke_word"), "header": header, "letterbox": body.get("letterbox") or {}}
+        cue_track = {"version": CAPTIONS_VERSION, "platform": compose_platform, "lang": str(body.get("lang") or "und"), "cues": cues, "style": str(body.get("style") or "karaoke_word"), "header": header, "letterbox": letterbox}
         (project.folder / "overlay_spec.json").write_text(json.dumps(overlay_spec, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         (project.folder / "cue_track.json").write_text(json.dumps(cue_track, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
-        wizard["reel_text_overlays"], wizard["reel_image_overlays"], wizard["reel_video_overlays"] = texts, images, videos
-        wizard["reel_logo_mode"] = logo_mode
+        wizard["composition_platform"] = compose_platform
+        wizard["composition_text_overlays"] = texts
+        wizard["composition_image_overlays"] = images
+        wizard["composition_video_overlays"] = videos
+        if compose_platform in {"reel", "reel_horizontal"}:
+            wizard["reel_text_overlays"], wizard["reel_image_overlays"], wizard["reel_video_overlays"] = texts, images, videos
+            wizard["reel_logo_mode"] = logo_mode
         logo_overlay = header.get("logo_overlay") if isinstance(header.get("logo_overlay"), dict) else None
         if logo_overlay is not None:
             wizard["reel_logo_overlay"] = {
@@ -1832,6 +2425,23 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         project.save()
         return jsonify(project.snapshot())
 
+    @app.post("/api/v1/settings/camera-subjects")
+    def api_camera_subjects() -> Response:
+        project = _require_project(state)
+        assignments = _json_body().get("camera_subjects")
+        if not isinstance(assignments, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in assignments.items()):
+            return error_response("bad_request", "camera_subjects must map source paths to subject names", 400)
+        allowed = {"unknown", "general", "drummer", "singer", "pianist", "guitarist", "bassist", "audience"}
+        sources = {str(record.get("path") or "") for record in project.data.get("inputs", {}).get("videos", [])}
+        if any(path not in sources or subject not in allowed for path, subject in assignments.items()):
+            return error_response("bad_request", "Choose a registered camera and supported subject", 400)
+        if state.wizard.status().get("status") in {"running", "cancelling"}:
+            return error_response("wizard_busy", "Wait for the current edit before changing camera subjects", 409)
+        edit = project.data.setdefault("settings", {}).setdefault("edit", {})
+        edit["camera_subjects"] = dict(assignments)
+        project.save()
+        return jsonify({"camera_subjects": edit["camera_subjects"]})
+
     @app.post("/api/v1/settings/spherical-landmarks")
     def api_spherical_landmarks() -> Response:
         project = _require_project(state)
@@ -1845,31 +2455,62 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             for key in list(incoming):
                 raw_value = raw_landmarks.get(key)
                 if isinstance(raw_value, dict):
-                    incoming[key] = {field: incoming[key][field] for field in ("yaw", "pitch", "fov", "weight") if field in raw_value}
+                    incoming[key] = {field: incoming[key][field] for field in ("yaw", "pitch", "fov", "roll", "projection_preset", "projection_control", "weight", "subject", "enabled") if field in raw_value}
+        source_path = str(body.get("spherical_source_path") or "").strip()
+        source_key = str(Path(source_path).expanduser().resolve()) if source_path else ""
         config = load_global_config()
         global_landmarks = config.get("spherical_landmarks") or {}
-        project_landmarks = project.data.setdefault("settings", {}).get("spherical_landmarks") or {}
+        project_settings = project.data.setdefault("settings", {})
+        project_landmarks = project_settings.get("spherical_landmarks") or {}
         landmarks = merge_spherical_landmarks(global_landmarks, project_landmarks)
         landmarks = merge_spherical_landmarks(landmarks, incoming)
-        project.data["settings"]["spherical_landmarks"] = landmarks
+        # Re-sanitize the merged profile too: old project/global values may
+        # contain pre-2.1.19 pitch/FOV values even when the incoming edit is
+        # only a partial landmark update.
+        landmarks = _sanitize_spherical_landmarks(landmarks)
+        project_settings["spherical_landmarks"] = landmarks
+        if source_key:
+            profiles = project_settings.setdefault("spherical_landmarks_by_source", {})
+            profiles[source_key] = dict(landmarks)
+            # Keep the original UI path as an alias as well. The desktop
+            # picker can return a symlink/bookmark spelling while edit/export
+            # resolve it to the canonical filesystem path.
+            if source_path != source_key:
+                profiles[source_path] = dict(landmarks)
+            project_settings["spherical_source_path"] = source_key
         project.mark_all_stale_from("edit")
         project.save()
         config["spherical_landmarks"] = landmarks
         save_global_config(config)
-        return jsonify({"spherical_landmarks": landmarks})
+        _spherical_event(
+            project,
+            "spherical_preview_saved",
+            input_path=Path(source_path).resolve() if source_path else None,
+            camera=Path(source_path).stem if source_path else None,
+            reason="explicit_save_endpoint",
+            extra={"landmarks": landmarks, "source_path": source_key},
+        )
+        return jsonify({
+            "spherical_landmarks": landmarks,
+            "spherical_source_path": source_key,
+            "spherical_landmarks_by_source": project_settings.get("spherical_landmarks_by_source") or {},
+        })
 
     @app.get("/api/v1/app/config")
     def api_app_config() -> Response:
         config = load_global_config()
+        info = build_info()
+        config["app_version"] = info["version"]
+        config["source_revision"] = info["git_commit"]
         config["dev"] = state.dev
         config["desktop"] = not state.dev
         config.setdefault("camera_role_weights", {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0})
         config.setdefault("fixed_rear_motion", True)
-        config.setdefault("spherical_motion", False)
-        config.setdefault("spherical_hold_motion", "none")
+        config.setdefault("spherical_motion", True)
+        config.setdefault("spherical_hold_motion", "subtle")
         config.setdefault("spherical_mode", "automatic")
         config.setdefault("spherical_sweep", False)
-        config.setdefault("sweep_speed_deg_per_sec", 20.0)
+        config.setdefault("sweep_speed_deg_per_sec", 5.0)
         config.setdefault("audio_trim_by_master", {})
         config.setdefault("master_audio_extensions", [".mp3"])
         config.setdefault("personal_logo_path", "")
@@ -1878,6 +2519,17 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.get("/api/v1/cache/status")
     def api_cache_status() -> Response:
         return jsonify(cache_status())
+
+    @app.get("/api/v1/maintenance/storage")
+    def api_storage_maintenance_report() -> Response:
+        """Return a read-only storage inventory and protected cleanup plan."""
+        report = build_storage_report()
+        protected = [str(state.project.folder)] if state.project else []
+        return jsonify({
+            "report": report,
+            "cleanup_plan": cleanup_plan(report, protected_paths=protected),
+            "protected_paths": protected,
+        })
 
     @app.post("/api/v1/cache/free")
     def api_cache_free() -> Response:
@@ -2488,7 +3140,7 @@ def _spherical_sweep_from_body(body: dict[str, Any]) -> bool | None:
 def _sweep_speed_from_body(body: dict[str, Any]) -> float | None:
     if "sweep_speed_deg_per_sec" not in body:
         return None
-    return max(15.0, min(20.0, _optional_float_setting(body.get("sweep_speed_deg_per_sec"), 20.0)))
+    return max(3.0, min(8.0, _optional_float_setting(body.get("sweep_speed_deg_per_sec"), 5.0)))
 
 
 def _sanitize_camera_role_weights(raw: Any) -> dict[str, float]:
@@ -2502,20 +3154,21 @@ def _sanitize_camera_role_weights(raw: Any) -> dict[str, float]:
     return weights
 
 
-def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, float]]:
+def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(raw, dict):
         return {}
     defaults = {
         "full_stage": {"legacy": "full_stage_yaw", "fov": 120.0},
         "singer": {"legacy": "singer_yaw", "fov": 95.0},
         "drummer": {"legacy": "drummer_yaw", "fov": 95.0},
+        "pianist": {"legacy": "pianist_yaw", "fov": 95.0},
         "left": {"legacy": "left_yaw", "fov": 95.0},
         "right": {"legacy": "right_yaw", "fov": 95.0},
         "audience": {"legacy": "audience_yaw", "fov": 95.0},
         "audience_stage_wide": {"legacy": "audience_stage_wide_yaw", "fov": 125.0},
         "planet": {"legacy": "planet_yaw", "fov": 150.0},
     }
-    landmarks: dict[str, dict[str, float]] = {}
+    landmarks: dict[str, dict[str, Any]] = {}
     for key, meta in defaults.items():
         source = raw.get(key)
         if source is None and meta["legacy"] in raw:
@@ -2525,10 +3178,25 @@ def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, float]]:
         yaw = _optional_degrees(source.get("yaw"))
         if yaw is None:
             continue
-        pitch = _optional_float_setting(source.get("pitch"), 0.0)
-        fov = max(1.0, min(MAX_SPHERICAL_FOV, _optional_float_setting(source.get("fov"), float(meta["fov"]))))
+        # Persist the same canonical pose used by preview/review/export.
+        # Saving raw pitch/FOV here was the remaining preview-to-MP4 drift.
+        projection_preset = normalize_projection_preset(source.get("projection_preset"), key)
+        pitch = effective_pitch(_optional_float_setting(source.get("pitch"), 0.0), key)
+        fov = effective_fov(_optional_float_setting(source.get("fov"), float(meta["fov"])), key, projection_preset)
+        roll = effective_roll(_optional_float_setting(source.get("roll"), 0.0), key)
+        projection_control = effective_projection_control(source.get("projection_control"))
         weight = max(0.0, _optional_float_setting(source.get("weight"), 1.0))
-        landmarks[key] = {"yaw": yaw, "pitch": pitch, "fov": fov, "weight": weight}
+        landmarks[key] = {
+            "yaw": yaw,
+            "pitch": pitch,
+            "fov": fov,
+            "roll": roll,
+            "projection_preset": projection_preset,
+            "projection_control": projection_control,
+            "weight": weight,
+            "subject": str(source.get("subject") or key),
+            "enabled": source.get("enabled", True) is not False,
+        }
     return landmarks
 
 

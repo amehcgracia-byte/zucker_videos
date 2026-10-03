@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -160,6 +161,7 @@ class PipelineEngine:
         return self.stages[stage_name]
 
     def _run_one(self, project: Project, stage: Stage, fingerprint: str) -> None:
+        stage_started = time.perf_counter()
         log = _stage_logger(project, stage.name)
         state = project.data["stages"][stage.name]
         state.update(
@@ -187,6 +189,7 @@ class PipelineEngine:
                     "outputs": outputs,
                     "error": None,
                     "fingerprint": fingerprint,
+                    "elapsed_seconds": round(time.perf_counter() - stage_started, 3),
                 }
             )
             progress(100, f"{stage.name} complete")
@@ -198,6 +201,7 @@ class PipelineEngine:
                     "status": "failed",
                     "finished_at": utc_now(),
                     "error": str(exc),
+                    "elapsed_seconds": round(time.perf_counter() - stage_started, 3),
                 }
             )
             project.save()

@@ -18,10 +18,10 @@ from core.messages import t
 from core.project import Project, create_project
 from core.project_lock import ProjectPipelineLock
 from core.stages.backstage import BackstageAnalysisStage, BackstageEditStage, BackstageExportStage
-from core.stages.base import artifact_path, write_artifact_json
+from core.stages.base import ProgressDetail, artifact_path, write_artifact_json
 from core.stages.cut import CutStage
 from core.stages.edit import EditStage
-from core.stages.export import ExportStage
+from core.stages.export import ExportStage, TRANSITION_LIBRARY
 from core.stages.ingest import IngestStage
 from core.stages.sync import SyncStage, load_song_boundaries, set_manual_override, set_manual_override_ranges
 from core.shot_review import review_items
@@ -46,6 +46,9 @@ class WizardJob:
     message: str = t("working")
     detail: str | None = None
     stage: str = "prepare"
+    stage_progress: int = 0
+    tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
+    progress_updated_at: float | None = None
     error: str | None = None
     technical_details: str | None = None
     result: dict[str, Any] | None = None
@@ -60,12 +63,17 @@ class WizardJob:
     input_warnings: list[str] = field(default_factory=list)
     paper_edit_available: bool = False
     project_lock: ProjectPipelineLock | None = field(default=None, repr=False)
+    cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
+    cancel_requested_at: float | None = None
 
 
 def serialize_wizard_job(job: WizardJob) -> dict[str, Any]:
     """Return only JSON-safe wizard state for API responses."""
     snapshot = dict(job.__dict__)
+    snapshot["tasks"] = [dict(task) for task in dict(job.tasks).values()]
+    snapshot.pop("cancel_event", None)
     snapshot["project_lock"] = bool(job.project_lock)
+    snapshot["cancel_requested"] = bool(job.cancel_requested_at)
     return snapshot
 
 
@@ -86,6 +94,33 @@ def is_single_source_reel(project: Project) -> bool:
     return bool(segments) and all(segment.get("single_source_continuous") for segment in segments)
 
 
+def _platform_needs_sync(platform: str, project: Project | None = None, master_path: str | None = None) -> bool:
+    """Return whether the selected mode has a separate master to synchronize."""
+    if platform in {"reel", "backstage"}:
+        return False
+    if platform != "360":
+        return True
+    if str(master_path or "").strip():
+        return True
+    if project is not None:
+        master = (project.data.get("inputs") or {}).get("master") or {}
+        return bool(str(master.get("path") or "").strip())
+    return False
+
+
+def _aggregate_segment_progress(progress_by_index: dict[int, float], total: int) -> tuple[int, int]:
+    """Return aggregate percentage and completed count for parallel segment work."""
+    total = max(1, int(total))
+    bounded = {
+        int(index): max(0.0, min(1.0, float(value)))
+        for index, value in progress_by_index.items()
+    }
+    units = sum(bounded.values())
+    completed = sum(1 for value in bounded.values() if value >= 0.999)
+    percent = int(round(100.0 * units / total))
+    return max(0, min(100, percent)), completed
+
+
 @dataclass
 class WizardRunner:
     """Runs one wizard render job at a time."""
@@ -94,20 +129,25 @@ class WizardRunner:
     _job: WizardJob | None = None
     _thread: threading.Thread | None = None
     _prepared_project: Project | None = None
-    _cancel_event: threading.Event = field(default_factory=threading.Event)
     _finish_requested: bool = False
 
     def cancel(self) -> bool:
-        """Request that the currently running job stop as soon as possible.
+        """Request cancellation for the current job without losing the signal.
 
-        Cooperative: the running stage notices this the next time it reports
-        progress (see ``_run_stage``) and unwinds via ``WizardCancelled``,
-        which also kills any in-flight ffmpeg subprocess immediately.
+        The event belongs to this job, so a reset or a later job cannot clear
+        the cancellation request while the worker is still unwinding.
         """
         with self._lock:
-            if not self._job or self._job.status != "running":
+            job = self._job
+            if not job or job.status not in {"running", "cancelling"}:
                 return False
-            self._cancel_event.set()
+            job.cancel_event.set()
+            job.cancel_requested_at = time.time()
+            if job.status == "running":
+                job.status = "cancelling"
+                job.message = "Cancelling…"
+                job.detail = "Stopping the current stage…"
+            LOGGER.info("Wizard cancellation requested project=%s stage=%s", job.project_path, job.stage)
             return True
 
     def _mark_cancelled(self, job: WizardJob) -> None:
@@ -119,13 +159,14 @@ class WizardRunner:
     def prepare(self, *, name: str, master_path: str, songs_path: str | None, video_paths: list[str], platform: str = "youtube") -> WizardJob:
         """Create/register a project and run ingest + sync while the user chooses an edit type."""
         with self._lock:
+            if self._thread and self._thread.is_alive():
+                raise RuntimeError("A previous wizard job is still stopping")
             if self._job and self._job.status == "running":
                 raise RuntimeError("A video is already being processed")
             job = WizardJob(id="current", message=t("listening"))
             self._job = job
             self._prepared_project = None
             self._finish_requested = False
-            self._cancel_event.clear()
             thread = threading.Thread(
                 target=self._prepare_project,
                 kwargs={"job": job, "name": name, "master_path": master_path, "songs_path": songs_path, "video_paths": video_paths, "platform": platform},
@@ -147,12 +188,17 @@ class WizardRunner:
                 # project; otherwise the desktop UI gets a misleading 500.
                 if same_project_path(self._job.project_path, str(project.folder)):
                     return self._job
-                self._cancel_event.set()
+                self._job.cancel_event.set()
+                self._job.cancel_requested_at = time.time()
+                self._job.status = "cancelling"
+                self._job.message = "Cancelling…"
                 previous_thread = self._thread
         if previous_thread and previous_thread.is_alive():
             previous_thread.join(timeout=10.0)
+        if previous_thread and previous_thread.is_alive():
+            raise RuntimeError("The previous wizard job is still cancelling; wait a few seconds and try again")
         with self._lock:
-            if self._job and self._job.status == "running":
+            if self._job and self._job.status == "cancelling":
                 self._job.status = "cancelled"
                 self._job.message = t("cancelled")
                 self._job.error = None
@@ -162,7 +208,6 @@ class WizardRunner:
             self._job = job
             self._prepared_project = None
             self._finish_requested = False
-            self._cancel_event.clear()
             thread = threading.Thread(
                 target=self._prepare_existing_project,
                 kwargs={"job": job, "project": project, "platform": platform or str((project.data.get("settings", {}).get("wizard") or {}).get("platform") or "youtube")},
@@ -199,7 +244,9 @@ class WizardRunner:
         platform: str,
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
-        spherical_landmarks: dict[str, float] | None,
+        spherical_landmarks: dict[str, Any] | None,
+        spherical_landmark_profiles: dict[str, Any] | None,
+        spherical_source_path: str | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
         spherical_motion: bool | None,
@@ -214,12 +261,15 @@ class WizardRunner:
         reel_text_overlays: list[dict[str, Any]] | None,
         reel_image_overlays: list[dict[str, Any]] | None,
         backstage_messages: list[str] | None,
+        transition_type: str | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
     ) -> WizardJob:
         """Create/register a project and run the simplified render chain."""
         with self._lock:
+            if self._thread and self._thread.is_alive() and self._job and self._job.status != "running":
+                raise RuntimeError("A previous wizard job is still stopping")
             if self._job and self._job.status == "running":
                 if self._finish_requested or same_project_path(self._job.project_path, str(self._prepared_project.folder) if self._prepared_project else None):
                     return self._job
@@ -236,6 +286,8 @@ class WizardRunner:
                         "song_choice": song_choice,
                         "audio_trim": audio_trim,
                         "spherical_landmarks": spherical_landmarks,
+                        "spherical_landmark_profiles": spherical_landmark_profiles,
+                        "spherical_source_path": spherical_source_path,
                         "camera_role_weights": camera_role_weights,
                         "fixed_rear_motion": fixed_rear_motion,
                         "spherical_motion": spherical_motion,
@@ -250,6 +302,7 @@ class WizardRunner:
                         "reel_text_overlays": reel_text_overlays,
                         "reel_image_overlays": reel_image_overlays,
                         "backstage_messages": backstage_messages,
+                        "transition_type": transition_type,
                         "master_path": master_path,
                         "songs_path": songs_path,
                         "video_paths": video_paths,
@@ -262,7 +315,6 @@ class WizardRunner:
                 return job
             job = WizardJob(id="current")
             self._job = job
-            self._cancel_event.clear()
             self._finish_requested = False
             project = self._prepared_project
             target = self._finish if project else self._run
@@ -273,6 +325,8 @@ class WizardRunner:
                 "song_choice": song_choice,
                 "audio_trim": audio_trim,
                 "spherical_landmarks": spherical_landmarks,
+                "spherical_landmark_profiles": spherical_landmark_profiles,
+                "spherical_source_path": spherical_source_path,
                 "camera_role_weights": camera_role_weights,
                 "fixed_rear_motion": fixed_rear_motion,
                 "spherical_motion": spherical_motion,
@@ -287,6 +341,7 @@ class WizardRunner:
                 "reel_text_overlays": reel_text_overlays,
                 "reel_image_overlays": reel_image_overlays,
                 "backstage_messages": backstage_messages,
+                "transition_type": transition_type,
                 "master_path": master_path,
                 "songs_path": songs_path,
                 "video_paths": video_paths,
@@ -309,6 +364,8 @@ class WizardRunner:
     def start_existing(self, project: Project, **options: Any) -> WizardJob:
         """Start the complete pipeline again for an opened project."""
         with self._lock:
+            if self._thread and self._thread.is_alive():
+                raise RuntimeError("A previous wizard job is still stopping")
             if self._job and self._job.status == "running":
                 return self._job
             job = WizardJob(id="current", message=t("listening"))
@@ -318,7 +375,6 @@ class WizardRunner:
             self._job = job
             self._prepared_project = None
             self._finish_requested = False
-            self._cancel_event.clear()
             thread = threading.Thread(
                 target=self._run_existing_from_scratch,
                 kwargs={"job": job, "project": project, "options": options},
@@ -343,7 +399,7 @@ class WizardRunner:
             )
             project.save()
             self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
-            if platform not in {"reel", "backstage"}:
+            if _platform_needs_sync(platform, project=project, master_path=options.get("master_path")):
                 self._run_stage(job, project, SyncStage(), 22, 48, t("syncing_audio"))
             else:
                 job.progress = 22
@@ -375,7 +431,6 @@ class WizardRunner:
             if self._thread and self._thread.is_alive():
                 raise RuntimeError("A video is already being processed")
             job = self._job
-            self._cancel_event.clear()
             thread = threading.Thread(target=self._render_review_job, args=(job, project), daemon=True, name="zucker-review-render")
             self._thread = thread
             thread.start()
@@ -440,7 +495,6 @@ class WizardRunner:
             job.message = "Rendering approved Backstage paper edit"
             job.detail = f"{len(segments)} approved cuts"
             job.paper_edit_available = False
-            self._cancel_event.clear()
             thread = threading.Thread(target=self._render_paper_edit_job, args=(job, project), daemon=True, name="zucker-paper-edit-render")
             self._thread = thread
             thread.start()
@@ -499,26 +553,41 @@ class WizardRunner:
             job.technical_details = traceback.format_exc()
             job.message = t("cannot_finish")
 
-    def reset(self) -> None:
-        """Forget the process-local wizard state without deleting project files."""
+    def reset(self) -> bool:
+        """Forget wizard state only after the worker has actually stopped.
+
+        Reset used to release the project lock and clear the cancellation event
+        while the daemon thread was still rendering. That made Start again
+        revive the old worker and corrupt the runner state.
+        """
         with self._lock:
+            thread = self._thread
+            if thread and thread.is_alive():
+                if self._job:
+                    self._job.cancel_event.set()
+                    self._job.cancel_requested_at = time.time()
+                    self._job.status = "cancelling"
+                    self._job.message = "Cancelling…"
+                    self._job.detail = "Waiting for the current stage to stop…"
+                return False
             if self._job:
                 _release_job_project_lock(self._job)
             self._job = None
             self._thread = None
             self._prepared_project = None
-            self._cancel_event.clear()
+            return True
 
     def rescue(self, project: Project, *, clip_id: str, offset_sec: float) -> WizardJob:
         """Apply a manual sync override and rerender cut/edit/export for the wizard."""
         with self._lock:
+            if self._thread and self._thread.is_alive():
+                raise RuntimeError("A previous wizard job is still stopping")
             if self._job and self._job.status == "running":
                 raise RuntimeError("A video is already being processed")
             job = WizardJob(id="current", message=t("building_edit"))
             _attach_project(job, project)
             self._job = job
             self._prepared_project = None
-            self._cancel_event.clear()
             thread = threading.Thread(
                 target=self._rescue_and_rerender,
                 kwargs={"job": job, "project": project, "clip_id": clip_id, "offset_sec": offset_sec},
@@ -540,7 +609,6 @@ class WizardRunner:
             _attach_project(job, project)
             self._job = job
             self._prepared_project = None
-            self._cancel_event.clear()
             thread = threading.Thread(
                 target=self._rescue_and_rerender_ranges,
                 kwargs={"job": job, "project": project, "clip_id": clip_id, "offset_ranges": offset_ranges},
@@ -559,7 +627,9 @@ class WizardRunner:
         platform: str,
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
-        spherical_landmarks: dict[str, float] | None,
+        spherical_landmarks: dict[str, Any] | None,
+        spherical_landmark_profiles: dict[str, Any] | None,
+        spherical_source_path: str | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
         spherical_motion: bool | None,
@@ -574,6 +644,7 @@ class WizardRunner:
         reel_text_overlays: list[dict[str, Any]] | None,
         reel_image_overlays: list[dict[str, Any]] | None,
         backstage_messages: list[str] | None,
+        transition_type: str | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -604,18 +675,20 @@ class WizardRunner:
                 "backstage_run_id": str(time.time_ns()) if platform == "backstage" else "",
             }
             _store_audio_trim(master_path, audio_trim)
-            _store_spherical_landmarks(project, spherical_landmarks)
+            _store_spherical_landmarks(project, spherical_landmarks, spherical_landmark_profiles, spherical_source_path)
+            _store_spherical_source_path(project, spherical_source_path)
             _store_camera_role_weights(project, camera_role_weights)
             _store_fixed_rear_motion(project, fixed_rear_motion)
             _store_spherical_motion(project, spherical_motion)
             _store_spherical_mode(project, spherical_mode)
             _store_spherical_sweep(project, spherical_sweep, sweep_speed_deg_per_sec)
+            _store_transition_type(project, platform, transition_type)
             project.save()
 
             self._run_stage(job, project, IngestStage(), 0, 15 if platform == "360" else 22, t("listening"))
             sync_start = 15 if platform == "360" else 22
             sync_end = 30 if platform == "360" else 48
-            if platform not in {"reel", "backstage"}:
+            if _platform_needs_sync(platform, project=project, master_path=master_path):
                 self._run_stage(job, project, SyncStage(), sync_start, sync_end, t("syncing_audio"))
             else:
                 job.progress = 22
@@ -627,6 +700,8 @@ class WizardRunner:
                 song_choice=song_choice,
                 audio_trim=audio_trim,
                 spherical_landmarks=spherical_landmarks,
+                spherical_landmark_profiles=spherical_landmark_profiles,
+                spherical_source_path=spherical_source_path,
                 camera_role_weights=camera_role_weights,
                 fixed_rear_motion=fixed_rear_motion,
                 spherical_motion=spherical_motion,
@@ -667,7 +742,7 @@ class WizardRunner:
             job.input_warnings = list(project.data.get("inputs", {}).get("warnings") or [])
             _write_stage_log(project, "wizard", f"Master audio selected: {Path(master_path).name}")
             self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
-            if platform not in {"reel", "backstage"}:
+            if _platform_needs_sync(platform, project=project, master_path=master_path):
                 self._run_stage(job, project, SyncStage(), 22, 48, t("syncing_audio"))
             else:
                 job.progress = 22
@@ -705,7 +780,7 @@ class WizardRunner:
                 _write_stage_log(project, "wizard", "REUSING completed ingest; no re-ingest required")
             else:
                 self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
-            if platform not in {"reel", "backstage"}:
+            if _platform_needs_sync(platform, project=project):
                 self._run_stage(job, project, SyncStage(), 22, 48, t("syncing_audio"))
             else:
                 job.progress = 22
@@ -736,7 +811,9 @@ class WizardRunner:
         platform: str,
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
-        spherical_landmarks: dict[str, float] | None,
+        spherical_landmarks: dict[str, Any] | None,
+        spherical_landmark_profiles: dict[str, Any] | None,
+        spherical_source_path: str | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
         spherical_motion: bool | None,
@@ -751,6 +828,7 @@ class WizardRunner:
         reel_text_overlays: list[dict[str, Any]] | None,
         reel_image_overlays: list[dict[str, Any]] | None,
         backstage_messages: list[str] | None,
+        transition_type: str | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
@@ -779,12 +857,14 @@ class WizardRunner:
                 "backstage_run_id": variation_seed if platform == "backstage" else "",
             }
             _store_audio_trim(master_path, audio_trim)
-            _store_spherical_landmarks(project, spherical_landmarks)
+            _store_spherical_landmarks(project, spherical_landmarks, spherical_landmark_profiles, spherical_source_path)
+            _store_spherical_source_path(project, spherical_source_path)
             _store_camera_role_weights(project, camera_role_weights)
             _store_fixed_rear_motion(project, fixed_rear_motion)
             _store_spherical_motion(project, spherical_motion)
             _store_spherical_mode(project, spherical_mode)
             _store_spherical_sweep(project, spherical_sweep, sweep_speed_deg_per_sec)
+            _store_transition_type(project, platform, transition_type)
             project.save()
             job.started_at = time.time()
             cut_start, cut_end, edit_start, edit_end = ((30, 35, 35, 40) if platform == "360" else (48, 58, 58, 70))
@@ -797,7 +877,8 @@ class WizardRunner:
             # earliest point a grounded estimate can be made -- and it is still
             # before any rendering, which is the part that actually takes time.
             job.estimated_total_seconds = _predicted_total_seconds(project, platform)
-            self._run_stage(job, project, edit_stage, edit_start, edit_end, "Building Backstage narrative" if platform == "backstage" else t("building_edit"))
+            needs_review = platform in {"reel", "youtube"} and not (platform == "reel" and is_single_source_reel(project))
+            self._run_stage(job, project, edit_stage, edit_start, edit_end - 5 if needs_review else edit_end, "Building Backstage narrative" if platform == "backstage" else t("building_edit"))
             # This is deliberately after EditStage and before ExportStage: the
             # user must see a concrete reason instead of receiving a silent
             # single-camera export.
@@ -815,7 +896,22 @@ class WizardRunner:
             if platform in {"reel", "youtube"} and not (platform == "reel" and is_single_source_reel(project)):
                 # Review-ready is a user-visible promise. Materialize every
                 # thumbnail first, including the authored crop/motion frame.
-                review = review_items(project)
+                job.stage = "review_prepare"
+                job.message = "Preparing shot review"
+                job.stage_progress = 0
+                job.tasks = {}
+                def review_progress(percent: int, detail: str) -> None:
+                    if job.cancel_event.is_set():
+                        raise WizardCancelled()
+                    task = detail.task if isinstance(detail, ProgressDetail) else {
+                        "id": "thumbnails", "label": "Review thumbnails", "percent": percent, "detail": str(detail)}
+                    job.tasks[task["id"]] = dict(task)
+                    job.stage_progress = max(job.stage_progress, percent)
+                    if not isinstance(detail, ProgressDetail):
+                        job.progress = max(job.progress, edit_end - 5 + int(5 * percent / 100))
+                    job.detail = str(detail)
+                    job.progress_updated_at = time.time()
+                review = review_items(project, progress_callback=review_progress)
                 if any(not item.get("thumbnail") for item in review):
                     raise RuntimeError("Shot review frames were not fully generated")
                 job.status = "waiting_review"
@@ -881,7 +977,9 @@ class WizardRunner:
         platform: str,
         song_choice: int | str | None,
         audio_trim: dict[str, float] | None,
-        spherical_landmarks: dict[str, float] | None,
+        spherical_landmarks: dict[str, Any] | None,
+        spherical_landmark_profiles: dict[str, Any] | None,
+        spherical_source_path: str | None,
         camera_role_weights: dict[str, float] | None,
         fixed_rear_motion: bool | None,
         spherical_motion: bool | None,
@@ -896,11 +994,12 @@ class WizardRunner:
         reel_text_overlays: list[dict[str, Any]] | None,
         reel_image_overlays: list[dict[str, Any]] | None,
         backstage_messages: list[str] | None,
+        transition_type: str | None,
         master_path: str,
         songs_path: str | None,
         video_paths: list[str],
     ) -> None:
-        job.message = t("waiting_for_sync") if platform not in {"reel", "backstage"} else ("Finding Backstage moments" if platform == "backstage" else t("building_coverage"))
+        job.message = t("waiting_for_sync") if _platform_needs_sync(platform, master_path=master_path) else ("Finding Backstage moments" if platform == "backstage" else ("Preparing 360 source" if platform == "360" else t("building_coverage")))
         if prepare_thread:
             prepare_thread.join()
         if job.status in {"failed", "cancelled"}:
@@ -921,6 +1020,8 @@ class WizardRunner:
             song_choice=song_choice,
             audio_trim=audio_trim,
             spherical_landmarks=spherical_landmarks,
+            spherical_landmark_profiles=spherical_landmark_profiles,
+            spherical_source_path=spherical_source_path,
             camera_role_weights=camera_role_weights,
             fixed_rear_motion=fixed_rear_motion,
             spherical_motion=spherical_motion,
@@ -935,6 +1036,7 @@ class WizardRunner:
             reel_text_overlays=reel_text_overlays,
             reel_image_overlays=reel_image_overlays,
             backstage_messages=backstage_messages,
+            transition_type=transition_type,
             master_path=master_path,
             songs_path=songs_path,
             video_paths=video_paths,
@@ -1027,6 +1129,9 @@ class WizardRunner:
     def _run_stage(self, job: WizardJob, project: Project, stage: Any, start: int, end: int, message: str) -> dict[str, str]:
         job.message = message
         job.stage = stage.name
+        job.stage_progress = 0
+        job.tasks = {}
+        stage_started = time.perf_counter()
         _write_stage_log(project, stage.name, f"START {stage.name}: {message}")
         stage_state = project.data["stages"][stage.name]
         stage_state.update({"status": "running", "error": None})
@@ -1034,47 +1139,91 @@ class WizardRunner:
         last_logged_percent = -1
         last_logged_at = 0.0
         completed_segments: set[int] = set()
+        segment_progress: dict[int, float] = {}
         segment_total: int | None = None
 
         def progress(percent: int, detail: str) -> None:
             nonlocal last_logged_percent, last_logged_at, segment_total
-            if self._cancel_event.is_set():
+            if job.cancel_event.is_set():
                 raise WizardCancelled()
-            safe_percent = max(0, min(100, int(percent)))
+            safe_percent = max(0, min(100, float(percent)))
+            measured_task = detail.task if isinstance(detail, ProgressDetail) else None
+            if measured_task:
+                job.tasks[measured_task["id"]] = dict(measured_task)
             segment_match = re.search(r"Rendering segment (\d+)/(\d+):\s*(.*)$", str(detail or ""))
             if segment_match:
+                job.tasks.pop("stage", None)
                 segment_index = int(segment_match.group(1))
                 segment_total = int(segment_match.group(2))
-                if segment_match.group(3).strip().lower() == "complete":
+                segment_detail = segment_match.group(3).strip()
+                if measured_task and measured_task["id"].startswith("segment-"):
+                    local_fraction = float(measured_task.get("percent") or 0) / 100
+                elif measured_task:
+                    local_fraction = segment_progress.get(segment_index, 0.0)
+                elif segment_detail.lower() == "complete":
+                    local_fraction = 1.0
+                else:
+                    local_match = re.search(r"(\d+)%\s*$", segment_detail)
+                    local_fraction = (int(local_match.group(1)) / 100.0) if local_match else 0.0
+                segment_progress[segment_index] = max(
+                    segment_progress.get(segment_index, 0.0),
+                    local_fraction,
+                )
+                if local_fraction >= 0.999:
                     completed_segments.add(segment_index)
-                if completed_segments and segment_total:
-                    # Worker-local progress is deliberately not surfaced as a
-                    # step counter: parallel workers report out of order. The
-                    # label and the stage progress use completed work only.
-                    safe_percent = max(safe_percent, int(100 * len(completed_segments) / segment_total))
-                    detail = f"Rendering segments ({len(completed_segments)} of {segment_total} complete)"
-            candidate = start + int((end - start) * safe_percent / 100)
+                aggregate_percent, completed_count = _aggregate_segment_progress(
+                    segment_progress,
+                    segment_total,
+                )
+                # Parallel workers report out of order. Aggregate their
+                # known progress instead of using the current worker's local
+                # percentage, which previously made the global bar stall.
+                # This is the global fraction of all segments. Do not use
+                # the worker's local/export-position percentage here: segment
+                # 128/128 must not make the whole job look 80% complete.
+                safe_percent = getattr(detail, "aggregate_percent", 10 + 70 * aggregate_percent / 100)
+                job.tasks[f"segment-{segment_index}"] = {
+                    "id": f"segment-{segment_index}",
+                    "label": f"Shot {segment_index}/{segment_total}",
+                    "percent": round(local_fraction * 100),
+                    "detail": segment_detail,
+                }
+                detail = (
+                    f"Rendering segments ({completed_count} of {segment_total} complete; "
+                    f"current {segment_index}: {round(local_fraction * 100)}%)"
+                )
+            candidate = round(start + (end - start) * safe_percent / 100, 2)
             job.progress = max(job.progress, candidate)
             if job.progress >= end and segment_total and len(completed_segments) < segment_total:
                 # Never expose a stage as complete while workers are pending.
                 job.progress = min(job.progress, end - 1)
+            job.stage_progress = max(job.stage_progress, safe_percent)
+            if not segment_match and not measured_task:
+                local_match = re.search(r"^(.*?)\s*[—–]\s*(\d+)%\s*$", str(detail))
+                job.tasks["stage"] = {"id": "stage", "label": local_match.group(1) if local_match else message,
+                    "percent": int(local_match.group(2)) if local_match else 100 if safe_percent == 100 else None,
+                    "detail": str(detail)}
             job.detail = detail
+            job.progress_updated_at = time.time()
             now = time.monotonic()
-            if percent != last_logged_percent or now - last_logged_at >= 5:
-                _write_stage_log(project, stage.name, f"{percent}% {detail}")
-                last_logged_percent = percent
+            if candidate != last_logged_percent or now - last_logged_at >= 5:
+                _write_stage_log(project, stage.name, f"{candidate}% {detail}")
+                last_logged_percent = candidate
                 last_logged_at = now
 
         try:
             outputs = stage.run(project, progress)
         except BaseException as exc:
+            stage_state["elapsed_seconds"] = round(time.perf_counter() - stage_started, 3)
             stage_state.update({"status": "failed", "error": f"{type(exc).__name__}: {exc}"})
             project.save()
             raise
         stage_state.update({"status": "done", "outputs": outputs, "error": None, "fingerprint": stage.inputs_fingerprint(project)})
+        stage_state["elapsed_seconds"] = round(time.perf_counter() - stage_started, 3)
         project.save()
         job.progress = max(job.progress, end)
-        _write_stage_log(project, stage.name, f"DONE {stage.name}: {outputs}")
+        job.stage_progress = 100
+        _write_stage_log(project, stage.name, f"DONE {stage.name} in {stage_state['elapsed_seconds']} s: {outputs}")
         return outputs
 
 
@@ -1150,6 +1299,7 @@ def wizard_report(status: dict[str, Any]) -> str:
     lines.append(f"status: {status.get('status')}")
     lines.append(f"message: {status.get('message')}")
     lines.append(f"error: {status.get('error')}")
+    lines.append(f"cancel_requested: {status.get('cancel_requested', False)}")
     if project_path:
         project = Project(Path(project_path), {})
         project_json = Path(project_path) / "project.json"
@@ -1161,9 +1311,18 @@ def wizard_report(status: dict[str, Any]) -> str:
             lines.append("stage statuses:")
             for name, stage in (data.get("stages") or {}).items():
                 lines.append(f"- {name}: {stage.get('status')} {stage.get('error') or ''}".rstrip())
+                if stage.get("elapsed_seconds") is not None:
+                    lines.append(f"  measured duration: {stage['elapsed_seconds']} s")
         log_dir = Path(project_path) / "cache" / "logs"
         lines.append("last log lines:")
-        lines.extend(_combined_log_tail(log_dir, 160))
+        lines.extend(_combined_log_tail(log_dir, 120))
+        # Keep post-export composition and 360 evidence visible even when a
+        # large segment render fills the combined log tail.
+        for log_name in ("composition.log", "spherical.log"):
+            log_path = log_dir / log_name
+            if log_path.is_file():
+                lines.append(f"--- {log_name} tail ---")
+                lines.extend(_tail_lines(log_path, 40))
     technical = status.get("technical_details")
     if technical:
         lines.append("--- technical_details ---")
@@ -1225,7 +1384,22 @@ def same_project_path(left: str | None, right: str | None) -> bool:
     return str(Path(left).expanduser().resolve()) == str(Path(right).expanduser().resolve())
 
 
-def _store_spherical_landmarks(project: Project, landmarks: dict[str, float] | None) -> None:
+def _store_transition_type(project: Project, platform: str, transition_type: str | None) -> None:
+    """Persist the selected transition preset for this mode."""
+    value = str(transition_type or "auto").strip().lower()
+    if value != "auto" and value not in TRANSITION_LIBRARY:
+        value = "crossfade"
+    transitions = project.data.setdefault("settings", {}).setdefault("export", {}).setdefault("transitions", {})
+    transitions.setdefault(str(platform or "youtube"), {})["type"] = value
+
+
+def _store_spherical_landmarks(
+    project: Project,
+    landmarks: dict[str, Any] | None,
+    profiles: dict[str, Any] | None = None,
+    source_path: str | None = None,
+) -> None:
+    """Persist global landmarks and every source-specific authoring profile."""
     explicit = bool(landmarks)
     config = load_global_config()
     existing = config.get("spherical_landmarks") or {}
@@ -1234,10 +1408,60 @@ def _store_spherical_landmarks(project: Project, landmarks: dict[str, float] | N
     merged = merge_spherical_landmarks(existing, landmarks or {})
     if not merged:
         return
-    project.data.setdefault("settings", {})["spherical_landmarks"] = merged
+    settings = project.data.setdefault("settings", {})
+    settings["spherical_landmarks"] = merged
+
+    combined_profiles: dict[str, dict[str, dict[str, Any]]] = {}
+    for key, raw in (settings.get("spherical_landmarks_by_source") or {}).items():
+        if isinstance(raw, dict):
+            normalized = merge_spherical_landmarks({}, raw)
+            if normalized:
+                combined_profiles[str(key)] = normalized
+    for key, raw in (profiles or {}).items():
+        if not isinstance(raw, dict):
+            continue
+        normalized = merge_spherical_landmarks({}, raw)
+        if not normalized:
+            continue
+        raw_key = str(key).strip()
+        if not raw_key:
+            continue
+        combined_profiles[raw_key] = normalized
+        try:
+            combined_profiles[str(Path(raw_key).expanduser().resolve())] = dict(normalized)
+        except (OSError, RuntimeError, ValueError):
+            pass
+
+    if source_path:
+        raw_key = str(source_path).strip()
+        source_key = str(Path(raw_key).expanduser().resolve())
+        active = (
+            combined_profiles.get(raw_key)
+            or combined_profiles.get(source_key)
+            or merge_spherical_landmarks({}, merged)
+        )
+        combined_profiles[raw_key] = dict(active)
+        combined_profiles[source_key] = dict(active)
+        settings["spherical_source_path"] = source_key
+    if combined_profiles:
+        settings["spherical_landmarks_by_source"] = combined_profiles
+
     if not explicit:
         return
     config["spherical_landmarks"] = merged
+    save_global_config(config)
+
+
+def _store_spherical_source_path(project: Project, source_path: str | None) -> None:
+    """Persist the exact 360 source used to author the saved landmarks."""
+    if source_path is None:
+        return
+    value = str(source_path or "").strip()
+    edit = project.data.setdefault("settings", {}).setdefault("edit", {})
+    edit["spherical_source_path"] = value
+    project.data.setdefault("settings", {}).setdefault("wizard", {})["spherical_source_path"] = value
+    config = load_global_config()
+    config["spherical_source_path"] = value
     save_global_config(config)
 
 
