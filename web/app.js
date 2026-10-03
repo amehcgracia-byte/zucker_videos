@@ -42,6 +42,8 @@ let captionPendingStart = null;
 let captionActiveIndex = null;
 let lastProgressReportAt = 0;
 let trimDefaultsAppliedFor = "";
+let cameraSubjects = {};
+let progressJobId = null;
 let cameraRoleWeights = { "360": 50, handheld: 30, fixed_rear: 20 };
 let fixedRearMotion = true;
 let reelTextOverlays = [];
@@ -117,6 +119,7 @@ let sphericalSetupAnimation = null;
 
 const LANDMARK_LABELS = {
   full_stage: "Full stage",
+  pianist: "Pianist",
   singer: "Singer",
   drummer: "Drummer",
   left: "Left side",
@@ -975,7 +978,7 @@ function hasSphericalInput() {
 }
 
 function normalizeSphericalSetup(raw = {}) {
-  const defaults = { full_stage: 110, singer: 74.8, drummer: 95, left: 95, right: 95, audience: 95, audience_stage_wide: 113.6, planet: 150 };
+  const defaults = { full_stage: 110, singer: 74.8, drummer: 95, pianist: 95, left: 95, right: 95, audience: 95, audience_stage_wide: 113.6, planet: 150 };
   const result = {};
   for (const key of Object.keys(defaults)) {
     const source = raw[key];
@@ -986,6 +989,7 @@ function normalizeSphericalSetup(raw = {}) {
       projection_preset: String(source.projection_preset ?? "linear"),
       projection_control: Number(source.projection_control ?? 0),
       weight: Number(source.weight ?? 1),
+      subject: String(source.subject ?? key),
     };
   }
   return result;
@@ -1009,6 +1013,8 @@ function sphericalSetupValuesFor(group) {
     const value = Number(group.querySelector(`[data-field="${field}"]`)?.value);
     if (Number.isFinite(value)) values[field] = value;
   }
+  const subject = group.querySelector('[data-field="subject"]')?.value;
+  if (subject) values.subject = subject;
   const projectionPreset = group.querySelector('[data-field="projection_preset"]')?.value;
   if (projectionPreset) values.projection_preset = projectionPreset;
   return values;
@@ -1334,6 +1340,8 @@ function sphericalLandmarksFromForm() {
       const value = Number(group.querySelector(`[data-field="${field}"]`)?.value);
       if (Number.isFinite(value)) valuesForShot[field] = value;
     }
+    const subject = group.querySelector('[data-field="subject"]')?.value;
+    if (subject) valuesForShot.subject = subject;
     const projectionPreset = group.querySelector('[data-field="projection_preset"]')?.value;
     if (projectionPreset) valuesForShot.projection_preset = projectionPreset;
     if (Number.isFinite(valuesForShot.yaw)) values[group.dataset.sphericalLandmark] = valuesForShot;
@@ -1405,6 +1413,7 @@ async function resumeInputsFromProject() {
       detected.videos.push(recordToDetectedItem(record, "videos"));
     }
   }
+  cameraSubjects = { ...(project.settings?.edit?.camera_subjects || {}) };
   chooseDefaultMaster();
   renderChips();
   document.querySelector("#videoName").value = project.name || document.querySelector("#videoName").value || todayName();
@@ -1481,6 +1490,11 @@ function renderChips() {
       )}">
           ${iconFor(item)} ${escapeHtml(item.filename || filename(item.path))}
           ${isSphericalVideo(item) ? "<small>360°</small>" : ""}
+          ${item.kind === "videos" && !isSphericalVideo(item) ? `<label class="camera-subject-label">Main subject
+            <select data-camera-subject="${escapeHtml(item.path)}" aria-label="Main subject in ${escapeHtml(item.filename || filename(item.path))}">
+              ${[["unknown", "Not assigned"], ["general", "Whole stage"], ["drummer", "Drummer"], ["singer", "Singer"], ["pianist", "Pianist"], ["guitarist", "Guitarist"], ["bassist", "Bassist"], ["audience", "Audience"]].map(([value, label]) => `<option value="${value}" ${value === (cameraSubjects[item.path] || "unknown") ? "selected" : ""}>${label}</option>`).join("")}
+            </select></label>` : ""}
+
           ${item.source === "inbox" ? "<small>from Inbox</small>" : ""}
           ${item.sync_confidence != null ? `<small>sync ${Number(item.sync_confidence).toFixed(1)} · offset ${formatDuration(item.sync_offset_sec || 0)}</small>` : ""}
           ${isRaw360(item) ? `<small>${escapeHtml(item.info || "360 stitched automatically")}</small>` : ""}
@@ -1493,6 +1507,9 @@ function renderChips() {
       }
     )
     .join("");
+  root.querySelectorAll("[data-camera-subject]").forEach((select) => {
+    select.addEventListener("change", () => { cameraSubjects[select.dataset.cameraSubject] = select.value; });
+  });
   if (detected.master.length > 1 && !document.querySelector("#inboxMasterSelect")) {
     const selected = selectedMasterPath || detected.master[0].path;
     root.insertAdjacentHTML(
@@ -1645,6 +1662,7 @@ async function registerInputsBeforePreview(inputs) {
       body: JSON.stringify({ master: inputs.master, songs: inputs.songs }),
     });
   }
+  await api("/settings/camera-subjects", { method: "POST", body: JSON.stringify({ camera_subjects: Object.fromEntries(inputs.videos.filter((path) => cameraSubjects[path]).map((path) => [path, cameraSubjects[path]])) }) });
   // Reload the canonical project records so projection/raw_360 metadata from
   // the classifier is available to the source picker and preview endpoint.
   await resumeInputsFromProject();
@@ -2788,6 +2806,7 @@ async function startWizard(options = {}) {
     await waitForPreparedProject();
     prepareHandoffInProgress = false;
   }
+  await api("/settings/camera-subjects", { method: "POST", body: JSON.stringify({ camera_subjects: Object.fromEntries(inputs.videos.filter((path) => cameraSubjects[path]).map((path) => [path, cameraSubjects[path]])) }) });
   const started = await api("/wizard/start", {
     method: "POST",
     body: JSON.stringify({
@@ -3022,6 +3041,10 @@ function renderWizardStatus(status) {
       showToast(warning, true);
     }
   }
+  if (status.id && status.id !== progressJobId) {
+    progressFloor = 0;
+    progressJobId = status.id;
+  }
   const reportedProgress = Math.max(0, Math.min(100, Number(status.progress || 0)));
   const progress = Math.max(progressFloor, reportedProgress);
   const progressBar = document.querySelector("#progressBar");
@@ -3129,8 +3152,35 @@ function renderWizardStatus(status) {
   renderStatusStrip(status, progress);
   if (progressBar) progressBar.style.width = `${progress}%`;
   document.querySelector("#progressPercent").textContent = `${Math.round(progress)}%`;
-  document.querySelector("#progressMessage").textContent = playfulProgressMessage(status.message) || S.working;
+  document.querySelector("#progressMessage").textContent = status.message || S.working;
   document.querySelector("#progressDetail").textContent = status.detail || currentSubtask(status) || S.nextStep;
+  const measuredUpdate = document.querySelector("#progressMeasuredUpdate");
+  if (measuredUpdate) {
+    const since = status.progress_updated_at ? Math.max(0, Math.floor(Date.now() / 1000 - status.progress_updated_at)) : null;
+    measuredUpdate.textContent = status.status === "running" && since != null && since >= 15
+      ? `Last measured update ${formatElapsed(since)} ago. Current task: ${status.detail || status.message || status.stage}`
+      : "";
+  }
+  const taskBox = document.querySelector("#progressTasks");
+  if (taskBox) {
+    taskBox.replaceChildren();
+    const tasks = Array.isArray(status.tasks) ? status.tasks : [];
+    const active = tasks.filter((task) => Number(task.percent) < 100);
+    const visible = active.length ? active : tasks.slice(-3);
+    for (const task of visible) {
+      const row = document.createElement("div");
+      row.className = "progress-task";
+      const label = document.createElement("span");
+      const percent = Math.max(0, Math.min(100, Number(task.percent || 0)));
+      label.textContent = `${task.label}: ${task.percent == null ? "Percentage pending" : `${percent}%`} — ${task.detail || ""}`;
+      const bar = document.createElement("progress");
+      bar.max = 100;
+      bar.value = percent;
+      bar.setAttribute("aria-label", task.label);
+      row.append(label, bar);
+      taskBox.append(row);
+    }
+  }
   document.querySelector("#elapsedTime").textContent = `${S.elapsed}: ${formatElapsed(elapsedSeconds())}`;
   document.querySelector("#etaTime").textContent = `${S.eta}: ${formatEta(etaSeconds(progress, status))}`;
   updateStageChecks(progress, status);

@@ -101,10 +101,11 @@ SPHERICAL_WIDE_FOV = 120.0
 SPHERICAL_AUDIENCE_STAGE_FOV = 125.0
 SPHERICAL_NORMAL_FOV_MIN = 82.0
 SPHERICAL_NORMAL_FOV_MAX = 165.0
-SPHERICAL_SHOT_ORDER = ("full_stage", "singer", "drummer", "left", "right", "audience", "audience_stage_wide", "planet")
+SPHERICAL_SHOT_ORDER = ("full_stage", "singer", "drummer", "pianist", "left", "right", "audience", "audience_stage_wide", "planet")
 SPHERICAL_LANDMARKS = {
     "singer": ("singer_yaw", "Cantante", SPHERICAL_DEFAULT_FOV),
     "drummer": ("drummer_yaw", "Bateria", SPHERICAL_DEFAULT_FOV),
+    "pianist": ("pianist_yaw", "Pianista", SPHERICAL_DEFAULT_FOV),
     "left": ("left_yaw", "Lado izquierdo", SPHERICAL_DEFAULT_FOV),
     "right": ("right_yaw", "Lado derecho", SPHERICAL_DEFAULT_FOV),
     "audience": ("audience_yaw", "Publico", SPHERICAL_DEFAULT_FOV),
@@ -112,7 +113,7 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 28
+EDIT_PLAN_ALGORITHM_VERSION = 29
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
@@ -221,7 +222,7 @@ class EditStage(Stage):
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, t("choosing_cameras"))
             coverage = {**coverage, "singing_segments": _detect_singing_segments(project, coverage)}
-            plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}), recorded_moves=recorded_moves)
+            plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}), recorded_moves=recorded_moves, progress_callback=progress_callback)
         write_artifact_json(artifact_path(project, "beats.json"), beats)
         plan["edit_plan_algorithm_version"] = EDIT_PLAN_ALGORITHM_VERSION
         validate_plan_camera_source_consistency(plan)
@@ -686,6 +687,7 @@ def _youtube_multicam_plan(
     beats: dict[str, Any],
     settings: dict[str, Any] | None = None,
     recorded_moves: list[dict[str, Any]] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     platform = str(coverage.get("platform") or "youtube")
     window = coverage.get("window") or {}
@@ -720,12 +722,23 @@ def _youtube_multicam_plan(
     previous_spherical_yaw: float | None = None
     previous_spherical_type: str | None = None
     recent_spherical_types: list[str] = []
+    recent_subjects: list[str] = []
+    subject_seconds: dict[str, float] = {}
+    subject_fallbacks = 0
     fixed_rear_motion_index = 0
     usage_counts: dict[str, int] = {}
     operator_samples_cache: dict[str, list[dict[str, Any]]] = {}
     selection_stats = _selection_stats_template(sources, start, end)
     project_settings = settings or {}
     edit_settings = project_settings.get("edit") if "edit" in project_settings else project_settings
+    subject_assignments = edit_settings.get("camera_subjects") or {}
+    sources = [dict(source) for source in sources]
+    for source in sources:
+        for identity in (_camera_id(source), str(source.get("source_path") or ""),
+                         str(source.get("path") or ""), str(source.get("filename") or "")):
+            if identity in subject_assignments:
+                source["camera_subject"] = subject_assignments[identity]
+                break
     spherical_landmarks = migrate_spherical_landmarks(project_settings.get("spherical_landmarks") or {})
     spherical_landmark_profiles = project_settings.get("spherical_landmarks_by_source") or {}
     preferred_spherical_source = str(edit_settings.get("spherical_source_path") or (project_settings.get("wizard") or {}).get("spherical_source_path") or "").strip()
@@ -787,6 +800,10 @@ def _youtube_multicam_plan(
             next_index -= 1
         while next_index < max_bar_index and bar_times[next_index] - bar_times[bar_index] < min_cut:
             next_index += 1
+        if progress_callback:
+            completed_fraction = (float(bar_times[bar_index]) - start) / max(.1, end - start)
+            progress_callback(55 + int(40 * completed_fraction),
+                              f"Edit: choosing shot {segment_index + 1}; {completed_fraction * 100:.0f}% of song covered")
         segment_start = float(bar_times[bar_index])
         segment_end = min(end, float(bar_times[next_index]))
         # Quantize an overlong single bar instead of accepting a 1s cut or
@@ -816,6 +833,24 @@ def _youtube_multicam_plan(
             stats = selection_stats.setdefault(_source_id(source), _selection_stats_for_source(source, start, end))
             stats["eligible_segments"] += 1
             stats["eligible_seconds"] += segment_end - segment_start
+        # The same musician can appear on several cameras. Apply a shared
+        # four-shot cooldown before camera quotas; unknown/wide views remain
+        # valid alternatives rather than inventing person identities.
+        editorial_available = []
+        for candidate in available:
+            subject = _editorial_subject(candidate)
+            if _source_role(candidate) == "360":
+                path = str(candidate.get("source_path") or candidate.get("path") or "")
+                landmarks = migrate_spherical_landmarks(spherical_landmark_profiles.get(path) or spherical_landmarks)
+                poses = _available_spherical_shots(landmarks, spherical_sweep, sweep_speed)
+                if not poses or any(not _editorial_subject({}, pose) or _editorial_subject({}, pose) not in recent_subjects[-4:] for pose in poses):
+                    editorial_available.append(candidate)
+            elif not subject or subject not in recent_subjects[-4:]:
+                editorial_available.append(candidate)
+        if editorial_available:
+            available = editorial_available
+        else:
+            subject_fallbacks += 1
         available_camera_ids = {_camera_id(source) for source in available}
         forced_alternatives: set[str] = set()
         if (
@@ -846,11 +881,11 @@ def _youtube_multicam_plan(
                 (
                     item for item in available
                     if _source_role(item) == "360"
-                    and str(item.get("path") or item.get("source_path") or "").strip() == preferred_spherical_source
+                    and str(item.get("source_path") or item.get("path") or "").strip() == preferred_spherical_source
                 ),
                 None,
             )
-            if preferred is not None:
+            if preferred is not None and _source_role(source) == "360":
                 source = preferred
         is_automatic_360 = _source_role(source) == "360" and not (
             use_recorded_360 and recorded_move_covering(recorded_moves or [], segment_start, segment_end)
@@ -904,7 +939,7 @@ def _youtube_multicam_plan(
                 segment["spherical_shot"] = recorded_shot_for_segment(recorded, segment_start, segment_end)
             else:
                 current_usage = _spherical_shot_usage(segments)
-                source_path = str(source.get("path") or source.get("source_path") or source.get("clip_path") or "").strip()
+                source_path = str(source.get("source_path") or source.get("path") or source.get("clip_path") or "").strip()
                 profile_raw = (
                     spherical_landmark_profiles.get(source_path)
                     or spherical_landmark_profiles.get(str(Path(source_path).expanduser().resolve()))
@@ -919,11 +954,24 @@ def _youtube_multicam_plan(
                     sorted(source_landmarks),
                     [shot.get("type") for shot in available_shots],
                 )
+                fresh_shots = [pose for pose in available_shots
+                               if not _editorial_subject({}, pose) or _editorial_subject({}, pose) not in recent_subjects[-4:]]
+                if fresh_shots:
+                    available_shots = fresh_shots
+                # Balanced musicians, rather than the old 60% singer prior.
+                musician_shots = [pose for pose in available_shots if _editorial_subject({}, pose)]
+                if musician_shots:
+                    least_seconds = min(subject_seconds.get(_editorial_subject({}, pose), 0.0) for pose in musician_shots)
+                    balanced = [pose for pose in musician_shots
+                                if subject_seconds.get(_editorial_subject({}, pose), 0.0) <= least_seconds + .001]
+                    if balanced:
+                        available_shots = balanced
+                balanced_targets = {str(pose.get("type")): 1.0 for pose in available_shots}
                 include_planet = bool(edit_settings.get("include_spherical_planet", False)) and sum(current_usage.values()) >= 5
                 shot = _next_weighted_spherical_shot(
                     available_shots,
                     _spherical_type_usage(segments),
-                    target_weights=spherical_target_weights,
+                    target_weights=balanced_targets,
                     include_planet=include_planet,
                     previous_yaw=previous_spherical_yaw,
                     previous_type=previous_spherical_type,
@@ -958,6 +1006,13 @@ def _youtube_multicam_plan(
             previous_spherical_type = str(segment["spherical_shot"].get("type") or "")
             recent_spherical_types.append(previous_spherical_type)
             del recent_spherical_types[:-4]
+        subject = _editorial_subject(source, segment.get("spherical_shot"))
+        segment["editorial_subject"] = subject or str((segment.get("spherical_shot") or {}).get("type") or source.get("camera_subject") or "unknown")
+        segment["subject_cooldown_fallback"] = bool(subject and subject in recent_subjects[-4:])
+        recent_subjects.append(subject)
+        del recent_subjects[:-4]
+        if subject:
+            subject_seconds[subject] = subject_seconds.get(subject, 0.0) + segment_end - segment_start
         segments.append(segment)
         bar_index = next_index
         segment_index += 1
@@ -992,6 +1047,9 @@ def _youtube_multicam_plan(
         "clip_diagnostics": coverage.get("clip_diagnostics") or [],
         "selection_diagnostics": finalized_stats,
         "camera_distribution": _camera_distribution(finalized_stats, camera_target_weights),
+        "subject_distribution_seconds": subject_seconds,
+        "subject_cooldown_shots": 4,
+        "subject_unavoidable_repeat_windows": subject_fallbacks,
         "camera_target_weights": camera_target_weights,
         "singing_camera_assignments": _singing_camera_assignments(segments),
         "non_music_bank": {
@@ -1147,6 +1205,7 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, Any]
             "projection_preset": projection_preset,
             "projection_control": effective_projection_control(source.get("projection_control")),
             "weight": max(0.0, _landmark_weight(source, "weight", 1.0)),
+            "subject": str(source.get("subject") or shot_type),
         }
     return migrated
 
@@ -1174,7 +1233,7 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabl
             continue
         weight = max(0.0, _landmark_weight(data, "weight", 1.0))
         prepared.append((shot_type, label, default_fov, data, weight))
-    positive_count = sum(1 for _shot_type, _label, _default_fov, _data, weight in prepared if weight > 0.0)
+    positive_count = sum(1 for _shot_type, _label, _default_fov, _data, weight in prepared if weight > 0.0 and _shot_type in landmarks)
     # Older projects could save one edited landmark with weight=5 and every
     # other saved yaw with weight=0. That made the whole 360 plan become
     # "Bateria" forever. Treat a single-positive profile as incomplete and
@@ -1182,6 +1241,9 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabl
     # with two or more positive landmarks still keeps its explicit weights.
     recover_legacy_profile = len(prepared) >= 2 and positive_count <= 1
     for shot_type, label, default_fov, data, weight in prepared:
+        yaw = _landmark_yaw(data.get("yaw"), None)
+        if yaw is None:
+            continue
         if weight <= 0.0 and not recover_legacy_profile:
             continue
         if recover_legacy_profile and weight <= 0.0:
@@ -1189,11 +1251,12 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabl
         shot = {
             "type": shot_type,
             "shot_id": shot_type,
+            "subject": str(data.get("subject") or shot_type),
             "label": label,
             "yaw": yaw,
-            # Keep automatic framing on the stage plane; extreme pitch angles
-            # are the source of empty corners, feet and ceiling shots.
-            "pitch": max(-18.0, min(18.0, _landmark_weight(data, "pitch", 0.0))),
+            # Use the authored canonical pose from preview/review; an extra
+            # pitch clamp here silently changed the user's saved framing.
+            "pitch": effective_pitch(_landmark_weight(data, "pitch", 0.0), shot_type),
             "fov": _landmark_weight(data, "fov", default_fov),
             "roll": effective_roll(_landmark_weight(data, "roll", 0.0), shot_type),
             "projection_preset": normalize_projection_preset(data.get("projection_preset"), shot_type),
@@ -1304,12 +1367,6 @@ def _next_weighted_spherical_shot(
         if float(shot.get("weight") or 0.0) > 0.0 and (include_planet or shot.get("type") != "planet")
     ]
     if not candidates:
-        LOGGER.info(
-            "Sony gap filler unavailable master_start=%.3f duration=%.3f history=%s",
-            master_start,
-            duration,
-            len(history),
-        )
         return None
     recent_types = recent_types or []
 
@@ -1975,6 +2032,17 @@ def _camera_target_weights(sources: list[dict[str, Any]], role_weights: dict[str
     return {camera_id: value / total for camera_id, value in targets.items()}
 
 
+def _editorial_subject(source: dict[str, Any], shot: dict[str, Any] | None = None) -> str:
+    """Read authored identities, never infer a drummer from a camera role."""
+    raw = str((shot or {}).get("subject") or (shot or {}).get("type")
+              or source.get("camera_subject") or source.get("subject") or "").strip().lower()
+    aliases = {"bateria": "drummer", "batería": "drummer", "drums": "drummer",
+               "cantante": "singer", "voz": "singer", "pianista": "pianist",
+               "keys": "pianist", "guitarrista": "guitarist", "bajista": "bassist"}
+    raw = aliases.get(raw, raw)
+    return "" if raw in {"", "unknown", "general", "full_stage", "audience_stage_wide", "planet", "recorded_move"} else raw
+
+
 def _flat_motion_camera(source: dict[str, Any]) -> bool:
     """Recognize flat fixed/phone inputs without changing quota roles.
 
@@ -1991,7 +2059,7 @@ def _flat_motion_camera(source: dict[str, Any]) -> bool:
     if any(word in model for word in ("iphone", "phone", "mobile", "pixel", "samsung")):
         return True
     name = str(source.get("filename") or Path(str(source.get("source_path") or source.get("path") or "")).name)
-    return bool(re.match(r"^(?:IMG_\d+|VID_\d{8}_\d{6})\.(?:mov|mp4)$", name, re.IGNORECASE))
+    return bool(re.match(r"^(?:IMG_\d+|VID_\d{8}_\d{6})(?:-\d+)?\.(?:mov|mp4)$", name, re.IGNORECASE))
 
 
 def _source_role(source: dict[str, Any]) -> str:

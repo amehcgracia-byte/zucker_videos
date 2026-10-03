@@ -7,7 +7,7 @@ from typing import Any
 
 from core.stages.base import stable_fingerprint
 
-FIXED_MOTION_VERSION = 1
+FIXED_MOTION_VERSION = 2
 MAX_ZOOM = 1.38
 ZOOM_MOVES = {"full_zoom_in", "zoom_in_center", "zoom_out_center", "zoom_in", "zoom_out",
               "zoom_in_very_slow", "zoom_out_very_slow", "subject_reframe", "subject_release"}
@@ -38,7 +38,7 @@ def fixed_camera_motion(index: int, target_x: float = .5, target_y: float = .5, 
 
     Crop endpoints and the complete straight-line path must keep the anchor
     inside the central 80% of the output. Without positive evidence only a
-    full-frame hold or a tiny central zoom is allowed. No detector runs here.
+    full-frame hold or a conservative central zoom is allowed. No detector runs here.
     """
     duration = max(.1, _finite(duration, 4.0))
     known = (_finite(confidence, 0.0) >= .5
@@ -46,15 +46,15 @@ def fixed_camera_motion(index: int, target_x: float = .5, target_y: float = .5, 
              and .35 <= _finite(target_y, float("nan")) <= .65)
     tx = min(.75, max(.25, _finite(target_x, .5))) if known else .5
     ty = min(.65, max(.35, _finite(target_y, .5))) if known else .5
-    rng = random.Random(stable_fingerprint({"version": FIXED_MOTION_VERSION, "seed": seed, "index": index}))
+    rng = random.Random(stable_fingerprint({"version": 1, "seed": seed, "index": index}))
     eligible = list(CATALOG) if known else ["full_static", "zoom_in_very_slow", "zoom_out_very_slow"]
     if not allow_static:
         eligible.remove("full_static")
     eligible = [name for name in eligible if name != previous]
     kind = preferred if preferred in eligible else rng.choice(eligible)
     very_slow = "very_slow" in kind or not known
-    rate = .009 if very_slow else .025
-    travel = min(.04 if very_slow else .16, duration * rate) * rng.uniform(.9, 1.0)
+    rate = .018 if not known else .009 if very_slow else .025
+    travel = min(.10 if not known else .04 if very_slow else .16, duration * rate) * rng.uniform(.9, 1.0)
     if gentle:
         travel = min(travel, .10)
     z0 = z1 = 1.0

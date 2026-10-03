@@ -15,7 +15,7 @@ from core.normalization import ensure_global_cache_dirs, ensure_normalized_space
 from core.operator_avoidance import OPERATOR_AVOIDANCE_VERSION, analyze_and_cache_operator_presence, role_for_record
 from core.reel_framing import REEL_FRAMING_VERSION, analyze_reel_framing_records
 from core.project import Project
-from core.stages.base import ProgressCallback, Stage, stable_fingerprint
+from core.stages.base import ProgressCallback, ProgressDetail, Stage, stable_fingerprint
 
 LOGGER = logging.getLogger(__name__)
 
@@ -148,21 +148,22 @@ def prepare_videos(project: Project, records: list[dict[str, Any]], progress_cal
         with lock:
             progresses[index] = max(progresses[index], int(percent))
 
-    def emit() -> None:
+    def emit(index: int) -> None:
         with lock:
             overall = min(95, 25 + int(sum(progresses.values()) / max(1, len(records)) * 70 / 100))
             active = " · ".join(f"{labels[index]} {progresses[index]}%" for index in sorted(progresses) if progresses[index] < 100) or "complete"
-        progress_callback(overall, t("preparing_videos", count=len(records), details=active))
+        progress_callback(overall, ProgressDetail(t("preparing_videos", count=len(records), details=active),
+            task_id=f"proxy-{index}", label=f"Preparing {labels[index]}", percent=progresses[index]))
 
     def run_one(index: int, record: dict[str, Any]) -> None:
         LOGGER.info("Ingest normalization queued index=%d source=%s", index, record.get("path"))
         def clip_progress(percent: int, message: str) -> None:
             set_progress(index, percent)
-            emit()
+            emit(index)
         try:
             normalize_video_record(project, record, clip_progress)
             set_progress(index, 100)
-            emit()
+            emit(index)
             LOGGER.info("Ingest normalization finished index=%d source=%s", index, record.get("path"))
         except Exception:
             LOGGER.exception("Ingest normalization failed index=%d source=%s", index, record.get("path"))

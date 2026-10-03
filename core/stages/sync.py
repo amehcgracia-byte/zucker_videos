@@ -60,6 +60,7 @@ class SyncStage(Stage):
 
         old_map = load_sync_map(project, missing_ok=True)
         migrate_legacy_manual_overrides(project, old_map)
+        progress_callback(0, "Sync: analysing the master audio waveform")
         master_env = load_or_compute_master_envelope(project)
         master_duration = media_duration(master_record["path"])
         clips: dict[str, Any] = {}

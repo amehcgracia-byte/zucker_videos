@@ -158,6 +158,7 @@ class CompositionJob:
     message: str = "Rendering final video"
     detail: str = "Preparing the final video render"
     stage: str = "compose"
+    tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
     error: str | None = None
     result: dict[str, Any] | None = None
     project_path: str | None = None
@@ -165,7 +166,9 @@ class CompositionJob:
     started_at: float = field(default_factory=time.time)
 
     def snapshot(self) -> dict[str, Any]:
-        return dict(self.__dict__)
+        state = dict(self.__dict__)
+        state["tasks"] = [dict(task) for task in dict(self.tasks).values()]
+        return state
 
 
 @dataclass
@@ -494,10 +497,11 @@ class CompositionRunner:
                     job.progress = 2
                     job.message = "Rendering final video"
                     job.detail = "Preparing a clean Reel base before the final render"
-                    ExportStage().run(
-                        project,
-                        lambda percent, detail: _set_job_progress(job, 2 + round(min(1.0, float(percent) / 100.0) * 6)),
-                    )
+                    def base_progress(percent: int, detail: str) -> None:
+                        job.detail = str(detail)
+                        job.tasks["base"] = {"id": "base", "label": "Rendering clean Reel base", "percent": percent, "detail": str(detail)}
+                        _set_job_progress(job, 2 + round(min(1.0, float(percent) / 100.0) * 6))
+                    ExportStage().run(project, base_progress)
                 finally:
                     wizard.update(saved_overlay_state)
                     project.save()
@@ -560,6 +564,7 @@ class CompositionRunner:
             def overlay_progress(value: float) -> None:
                 percent = max(0, min(100, round(float(value) * 100)))
                 job.detail = f"Overlay pass (flyer/logo): {percent}%"
+                job.tasks["overlays"] = {"id": "overlays", "label": "Flyers, images and logo", "percent": percent, "detail": job.detail}
                 _set_job_progress(job, 10 + round(float(value) * 45))
             def register_overlay_process(process: subprocess.Popen | None) -> None:
                 with self._lock:
@@ -612,6 +617,7 @@ class CompositionRunner:
                     duration = composition_duration
                     percent = round(min(1.0, seconds / duration if duration else 0.0) * 100)
                     job.detail = f"Caption pass: {percent}%"
+                    job.tasks["captions"] = {"id": "captions", "label": "Burning captions", "percent": percent, "detail": job.detail}
                     _set_job_progress(job, 55 + round(min(1.0, seconds / duration if duration else 0.0) * 40))
                 output = burn_captions(
                     composed,
@@ -2411,6 +2417,23 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         project.save()
         return jsonify(project.snapshot())
 
+    @app.post("/api/v1/settings/camera-subjects")
+    def api_camera_subjects() -> Response:
+        project = _require_project(state)
+        assignments = _json_body().get("camera_subjects")
+        if not isinstance(assignments, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in assignments.items()):
+            return error_response("bad_request", "camera_subjects must map source paths to subject names", 400)
+        allowed = {"unknown", "general", "drummer", "singer", "pianist", "guitarist", "bassist", "audience"}
+        sources = {str(record.get("path") or "") for record in project.data.get("inputs", {}).get("videos", [])}
+        if any(path not in sources or subject not in allowed for path, subject in assignments.items()):
+            return error_response("bad_request", "Choose a registered camera and supported subject", 400)
+        if state.wizard.status().get("status") in {"running", "cancelling"}:
+            return error_response("wizard_busy", "Wait for the current edit before changing camera subjects", 409)
+        edit = project.data.setdefault("settings", {}).setdefault("edit", {})
+        edit["camera_subjects"] = dict(assignments)
+        project.save()
+        return jsonify({"camera_subjects": edit["camera_subjects"]})
+
     @app.post("/api/v1/settings/spherical-landmarks")
     def api_spherical_landmarks() -> Response:
         project = _require_project(state)
@@ -3130,6 +3153,7 @@ def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, Any]]:
         "full_stage": {"legacy": "full_stage_yaw", "fov": 120.0},
         "singer": {"legacy": "singer_yaw", "fov": 95.0},
         "drummer": {"legacy": "drummer_yaw", "fov": 95.0},
+        "pianist": {"legacy": "pianist_yaw", "fov": 95.0},
         "left": {"legacy": "left_yaw", "fov": 95.0},
         "right": {"legacy": "right_yaw", "fov": 95.0},
         "audience": {"legacy": "audience_yaw", "fov": 95.0},
@@ -3162,6 +3186,7 @@ def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, Any]]:
             "projection_preset": projection_preset,
             "projection_control": projection_control,
             "weight": weight,
+            "subject": str(source.get("subject") or key),
         }
     return landmarks
 

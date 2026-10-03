@@ -22,7 +22,7 @@ DMG_RW="$ROOT/build/${APP_DISPLAY_NAME}.tmp.dmg"
 BUILD_INFO="$ROOT/build/build_info.json"
 VERSION="$(cd "$ROOT" && "$PYTHON" -c 'from core.build_info import APP_VERSION; print(APP_VERSION)')"
 APP_DISPLAY_NAME="$APP_NAME $VERSION"
-DMG_PATH="$DIST/$APP_DISPLAY_NAME.dmg"
+DMG_PATH="$DIST/$APP_NAME.dmg"
 APP_BUNDLE="$RELEASE/$APP_NAME.app"
 
 if [[ ! -x "$PYTHON" ]]; then

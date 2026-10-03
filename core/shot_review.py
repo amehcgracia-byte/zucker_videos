@@ -24,7 +24,7 @@ from core.spherical_view import (
     normalize_projection_preset,
     view_parameters,
 )
-from core.stages.base import artifact_path
+from core.stages.base import ProgressCallback, ProgressDetail, artifact_path
 from core.stages.cut import load_coverage
 from core.stages.edit import IPHONE_CROP_TOP_LIMIT, SPHERICAL_NORMAL_FOV_MIN, _camera_id
 from core.reel_framing import subject_box_for_window
@@ -45,6 +45,7 @@ _REVIEW_SHOT_LABELS = {
     "right": "Lado derecho",
     "audience_stage_wide": "Publico y escenario",
     "drummer": "Bateria",
+    "pianist": "Pianista",
     "planet": "Planeta",
 }
 
@@ -118,7 +119,7 @@ def _review_segments(project: Project) -> list[dict[str, Any]]:
 
 
 
-def _spherical_analysis_source(project: Project, segment: dict[str, Any]) -> str:
+def _spherical_analysis_source(project: Project, segment: dict[str, Any], progress_callback: ProgressCallback | None = None) -> str:
     """Return a cached low-resolution equirectangular source for one 360 clip.
 
     Decoding a 5K/6K original once per thumbnail is the dominant Review cost.
@@ -167,13 +168,18 @@ def _spherical_analysis_source(project: Project, segment: dict[str, Any]) -> str
             "-i", str(source_path), "-map", "0:v:0", "-an",
             "-vf", filter_graph,
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
-            "-pix_fmt", "yuv420p", str(tmp),
+            "-pix_fmt", "yuv420p", "-progress", "pipe:1", "-nostats", str(tmp),
         ]
         try:
-            result = subprocess.run(command, capture_output=True, text=True, check=False)
-            if result.returncode != 0 or not tmp.exists() or tmp.stat().st_size <= 0:
-                detail = result.stderr.strip() or "Could not create the 360 analysis proxy"
-                raise ThumbnailRenderError(detail)
+            from core.stages.export import _media_duration, _run_ffmpeg_progress
+            def proxy_progress(percent: int, detail: str) -> None:
+                if progress_callback:
+                    progress_callback(0, ProgressDetail(detail, task_id=f"review-source-{key}",
+                        label=f"Preparing 360 review source {source_path.name}", percent=percent))
+            _run_ffmpeg_progress(command, _media_duration(str(source_path)),
+                                 f"Preparing 360 review source {source_path.name}", proxy_progress)
+            if not tmp.exists() or tmp.stat().st_size <= 0:
+                raise ThumbnailRenderError("Could not create the 360 analysis proxy")
             os.replace(tmp, target)
         finally:
             tmp.unlink(missing_ok=True)
@@ -708,6 +714,7 @@ def review_items(
     render_missing: bool = True,
     render_indices: set[int] | None = None,
     apply_color_profile: bool = False,
+    progress_callback: ProgressCallback | None = None,
 ) -> list[dict[str, Any]]:
     """Return review items, optionally rendering only selected missing thumbnails."""
     segments = _review_segments(project)
@@ -733,6 +740,9 @@ def review_items(
     else:
         color_profiles = {}
     for index, segment in enumerate(segments):
+        if progress_callback:
+            progress_callback(int(100 * index / max(1, len(segments))),
+                              f"Preparing review thumbnail {index + 1}/{len(segments)}")
         source = _source_for(segment)
         duration = max(0.1, float(segment.get("duration_sec") or 0.1))
         clip_start = float(segment.get("clip_start_sec") or 0.0)
@@ -748,7 +758,7 @@ def review_items(
         render_source = source
         render_segment = dict(segment)
         if should_render and segment.get("spherical_shot"):
-            render_source = _spherical_analysis_source(project, segment)
+            render_source = _spherical_analysis_source(project, segment, progress_callback)
             if render_source != source:
                 # The cached analysis source is equirectangular even when the
                 # original was raw INSV; never apply the dfisheye step twice.
@@ -818,6 +828,8 @@ def review_items(
             "keep": True,
             "no_alternative": index in unavailable,
         })
+    if progress_callback:
+        progress_callback(100, f"Review thumbnails ready: {len(items)}/{len(segments)}")
     return items
 
 

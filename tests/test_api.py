@@ -1453,3 +1453,17 @@ def test_audio_trim_persists_by_master_in_global_config(tmp_path, monkeypatch):
     config = load_global_config()
 
     assert config["audio_trim_by_master"][master] == {"start_sec": 12.5, "end_sec": 98.0}
+
+
+def test_camera_subject_assignments_only_accept_registered_sources(tmp_path):
+    folder = tmp_path/'subjects.zuckervid'
+    project = create_project('Subjects', str(folder))
+    source = str(tmp_path/'drums.mp4')
+    project.data['inputs']['videos'] = [{'path': source}]
+    project.save()
+    client = create_app(project_path=str(folder)).test_client()
+    response = client.post('/api/v1/settings/camera-subjects', json={'camera_subjects': {source: 'drummer'}})
+    assert response.status_code == 200
+    assert load_project(str(folder)).data['settings']['edit']['camera_subjects'] == {source: 'drummer'}
+    assert client.post('/api/v1/settings/camera-subjects', json={'camera_subjects': {'/unregistered.mp4': 'drummer'}}).status_code == 400
+    assert client.post('/api/v1/settings/camera-subjects', json={'camera_subjects': {source: 'made-up'}}).status_code == 400

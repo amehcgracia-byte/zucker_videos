@@ -8,6 +8,8 @@ detector for every cut.
 
 from __future__ import annotations
 
+from core.stages.base import ProgressDetail
+
 import json
 import logging
 import sys
@@ -104,7 +106,8 @@ def analyze_reel_framing_records(records: list[dict[str, Any]], progress_callbac
                 record,
                 lambda percent, message: progress_callback(
                     96 + int((index + percent / 100.0) / max(1, len(records)) * 4),
-                    message,
+                    ProgressDetail(message, task_id=f"framing-{index}",
+                                   label=f"Analysing subjects in {Path(str(record.get('path') or 'clip')).name}", percent=percent),
                 ) if progress_callback else None,
             )
             if profile is not None:

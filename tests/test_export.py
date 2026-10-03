@@ -322,7 +322,7 @@ def test_render_plan_uses_standalone_intro_and_outro_clips(tmp_path, monkeypatch
     monkeypatch.setattr("core.stages.export._verify_segment_frame_duration", lambda *args, **kwargs: None)
     monkeypatch.setattr("core.stages.export._media_duration", lambda path: 6.0)
     monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
-    monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda project, segments, warnings: {})
+    monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda project, segments, warnings, progress_callback=None: {})
 
     _render_plan(
         project,
@@ -378,7 +378,7 @@ def test_render_plan_verifies_every_segment_not_just_every_source(tmp_path, monk
     monkeypatch.setattr("core.stages.export._media_duration", lambda path: 6.0)
     monkeypatch.setattr("core.stages.export._render_logo_clip", lambda *args, **kwargs: args[0].write_bytes(b"logo"))
     monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
-    monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda project, segments, warnings: {})
+    monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda project, segments, warnings, progress_callback=None: {})
 
     shared_source = str(tmp_path / "sony.mp4")
     _render_plan(
@@ -1030,9 +1030,10 @@ def test_motion_filter_builds_bounded_ken_burns_zoom():
     graph = _motion_filter({"motion": {"type": "ken_burns", "movement": "zoom_out", "zoom_start": 3.0, "zoom_end": 2.5, "pan_x_start": 0.5, "pan_x_end": 0.5, "pan_y_start": 0.5, "pan_y_end": 0.5}}, "youtube", 4.0)
 
     assert graph is not None
-    assert "zoompan=" not in graph
-    assert "eval=frame" in graph
-    assert "crop=1920:1080" in graph
+    assert "zoompan=" in graph
+    assert "eval=frame" not in graph
+    assert "s=1920x1080" in graph
+    assert "1.380000" in graph
 
 
 def test_motion_filter_rejects_combined_zoom_and_pan_recipe():

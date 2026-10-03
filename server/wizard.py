@@ -18,7 +18,7 @@ from core.messages import t
 from core.project import Project, create_project
 from core.project_lock import ProjectPipelineLock
 from core.stages.backstage import BackstageAnalysisStage, BackstageEditStage, BackstageExportStage
-from core.stages.base import artifact_path, write_artifact_json
+from core.stages.base import ProgressDetail, artifact_path, write_artifact_json
 from core.stages.cut import CutStage
 from core.stages.edit import EditStage
 from core.stages.export import ExportStage, TRANSITION_LIBRARY
@@ -46,6 +46,9 @@ class WizardJob:
     message: str = t("working")
     detail: str | None = None
     stage: str = "prepare"
+    stage_progress: int = 0
+    tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
+    progress_updated_at: float | None = None
     error: str | None = None
     technical_details: str | None = None
     result: dict[str, Any] | None = None
@@ -67,6 +70,7 @@ class WizardJob:
 def serialize_wizard_job(job: WizardJob) -> dict[str, Any]:
     """Return only JSON-safe wizard state for API responses."""
     snapshot = dict(job.__dict__)
+    snapshot["tasks"] = [dict(task) for task in dict(job.tasks).values()]
     snapshot.pop("cancel_event", None)
     snapshot["project_lock"] = bool(job.project_lock)
     snapshot["cancel_requested"] = bool(job.cancel_requested_at)
@@ -873,7 +877,8 @@ class WizardRunner:
             # earliest point a grounded estimate can be made -- and it is still
             # before any rendering, which is the part that actually takes time.
             job.estimated_total_seconds = _predicted_total_seconds(project, platform)
-            self._run_stage(job, project, edit_stage, edit_start, edit_end, "Building Backstage narrative" if platform == "backstage" else t("building_edit"))
+            needs_review = platform in {"reel", "youtube"} and not (platform == "reel" and is_single_source_reel(project))
+            self._run_stage(job, project, edit_stage, edit_start, edit_end - 5 if needs_review else edit_end, "Building Backstage narrative" if platform == "backstage" else t("building_edit"))
             # This is deliberately after EditStage and before ExportStage: the
             # user must see a concrete reason instead of receiving a silent
             # single-camera export.
@@ -891,7 +896,22 @@ class WizardRunner:
             if platform in {"reel", "youtube"} and not (platform == "reel" and is_single_source_reel(project)):
                 # Review-ready is a user-visible promise. Materialize every
                 # thumbnail first, including the authored crop/motion frame.
-                review = review_items(project)
+                job.stage = "review_prepare"
+                job.message = "Preparing shot review"
+                job.stage_progress = 0
+                job.tasks = {}
+                def review_progress(percent: int, detail: str) -> None:
+                    if job.cancel_event.is_set():
+                        raise WizardCancelled()
+                    task = detail.task if isinstance(detail, ProgressDetail) else {
+                        "id": "thumbnails", "label": "Review thumbnails", "percent": percent, "detail": str(detail)}
+                    job.tasks[task["id"]] = dict(task)
+                    job.stage_progress = max(job.stage_progress, percent)
+                    if not isinstance(detail, ProgressDetail):
+                        job.progress = max(job.progress, edit_end - 5 + int(5 * percent / 100))
+                    job.detail = str(detail)
+                    job.progress_updated_at = time.time()
+                review = review_items(project, progress_callback=review_progress)
                 if any(not item.get("thumbnail") for item in review):
                     raise RuntimeError("Shot review frames were not fully generated")
                 job.status = "waiting_review"
@@ -1109,6 +1129,8 @@ class WizardRunner:
     def _run_stage(self, job: WizardJob, project: Project, stage: Any, start: int, end: int, message: str) -> dict[str, str]:
         job.message = message
         job.stage = stage.name
+        job.stage_progress = 0
+        job.tasks = {}
         _write_stage_log(project, stage.name, f"START {stage.name}: {message}")
         stage_state = project.data["stages"][stage.name]
         stage_state.update({"status": "running", "error": None})
@@ -1123,13 +1145,20 @@ class WizardRunner:
             nonlocal last_logged_percent, last_logged_at, segment_total
             if job.cancel_event.is_set():
                 raise WizardCancelled()
-            safe_percent = max(0, min(100, int(percent)))
+            safe_percent = max(0, min(100, float(percent)))
+            measured_task = detail.task if isinstance(detail, ProgressDetail) else None
+            if measured_task:
+                job.tasks[measured_task["id"]] = dict(measured_task)
             segment_match = re.search(r"Rendering segment (\d+)/(\d+):\s*(.*)$", str(detail or ""))
             if segment_match:
                 segment_index = int(segment_match.group(1))
                 segment_total = int(segment_match.group(2))
                 segment_detail = segment_match.group(3).strip()
-                if segment_detail.lower() == "complete":
+                if measured_task and measured_task["id"].startswith("segment-"):
+                    local_fraction = float(measured_task.get("percent") or 0) / 100
+                elif measured_task:
+                    local_fraction = segment_progress.get(segment_index, 0.0)
+                elif segment_detail.lower() == "complete":
                     local_fraction = 1.0
                 else:
                     local_match = re.search(r"(\d+)%\s*$", segment_detail)
@@ -1150,17 +1179,30 @@ class WizardRunner:
                 # This is the global fraction of all segments. Do not use
                 # the worker's local/export-position percentage here: segment
                 # 128/128 must not make the whole job look 80% complete.
-                safe_percent = aggregate_percent
+                safe_percent = getattr(detail, "aggregate_percent", 10 + 70 * aggregate_percent / 100)
+                job.tasks[f"segment-{segment_index}"] = {
+                    "id": f"segment-{segment_index}",
+                    "label": f"Shot {segment_index}/{segment_total}",
+                    "percent": round(local_fraction * 100),
+                    "detail": segment_detail,
+                }
                 detail = (
                     f"Rendering segments ({completed_count} of {segment_total} complete; "
                     f"current {segment_index}: {round(local_fraction * 100)}%)"
                 )
-            candidate = start + int((end - start) * safe_percent / 100)
+            candidate = round(start + (end - start) * safe_percent / 100, 2)
             job.progress = max(job.progress, candidate)
             if job.progress >= end and segment_total and len(completed_segments) < segment_total:
                 # Never expose a stage as complete while workers are pending.
                 job.progress = min(job.progress, end - 1)
+            job.stage_progress = max(job.stage_progress, safe_percent)
+            if not segment_match and not measured_task:
+                local_match = re.search(r"^(.*?)\s*[—–]\s*(\d+)%\s*$", str(detail))
+                job.tasks["stage"] = {"id": "stage", "label": local_match.group(1) if local_match else message,
+                    "percent": int(local_match.group(2)) if local_match else 100 if safe_percent == 100 else None,
+                    "detail": str(detail)}
             job.detail = detail
+            job.progress_updated_at = time.time()
             now = time.monotonic()
             if candidate != last_logged_percent or now - last_logged_at >= 5:
                 _write_stage_log(project, stage.name, f"{candidate}% {detail}")
@@ -1176,6 +1218,7 @@ class WizardRunner:
         stage_state.update({"status": "done", "outputs": outputs, "error": None, "fingerprint": stage.inputs_fingerprint(project)})
         project.save()
         job.progress = max(job.progress, end)
+        job.stage_progress = 100
         _write_stage_log(project, stage.name, f"DONE {stage.name}: {outputs}")
         return outputs
 

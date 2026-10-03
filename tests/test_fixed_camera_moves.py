@@ -40,7 +40,7 @@ def test_unknown_subject_has_no_directional_pan():
         assert move["subject_fallback"]
         assert move["target_x"] == move["target_y"] == .5
         assert move["movement"] in {"full_static", "zoom_in_very_slow", "zoom_out_very_slow"}
-        assert max(move["zoom_start"], move["zoom_end"]) <= 1.04
+        assert max(move["zoom_start"], move["zoom_end"]) <= 1.10
 
 
 def test_short_shot_limits_travel_and_renderer_respects_vertical_path():
@@ -112,3 +112,20 @@ def test_explicit_review_transition_survives_clean_cut_defaults(tmp_path):
     segments[0]["transition_type"] = "auto"
     artifact_path(project, "edit_plan.json").write_text(json.dumps({"segments": segments}))
     assert _transition_boundaries(segments, _transition_profile(project, "youtube")) == []
+
+
+@pytest.mark.parametrize("filename", ["IMG_0043-2.MOV", "VID_20260824_203210-2.mp4", "IMG_0043.MOV"])
+def test_uploaded_duplicate_phone_name_keeps_native_motion(filename):
+    from core.stages.edit import _flat_motion_camera
+    assert _flat_motion_camera({"filename": filename, "camera_role": "handheld"})
+
+
+def test_motion_is_applied_once_with_constant_output_geometry():
+    from core.stages.export import _segment_filtergraph
+    move = fixed_camera_motion(1, duration=4, preferred="zoom_in")
+    motion_filter = _ken_burns_filter(move, "youtube", 4)
+    graph = _segment_filtergraph("youtube", 4, {}, {}, has_watermark=False,
+                                text_enabled=False, motion_filter=motion_filter, frame_count=120)
+    assert graph.count("zoompan=") == 1
+    assert "eval=frame" not in graph
+    assert "fade=" not in graph

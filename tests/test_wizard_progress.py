@@ -15,3 +15,32 @@ def test_parallel_segment_progress_uses_all_known_worker_progress():
 def test_parallel_segment_progress_is_bounded_and_empty_safe():
     assert _aggregate_segment_progress({}, 0) == (0, 0)
     assert _aggregate_segment_progress({1: 1.5, 2: -1.0}, 2) == (50, 1)
+
+
+def test_segment_phase_leaves_progress_for_join_audio_and_validation(tmp_path):
+    from core.project import create_project
+    from core.stages.base import ProgressDetail
+    from server.wizard import WizardRunner, WizardJob, serialize_wizard_job
+    project = create_project('Measured', str(tmp_path/'measured.zuckervid'))
+    job = WizardJob(id='measured', progress=70)
+    snapshots = []
+    class MeasuredExport:
+        name = 'export'
+        def inputs_fingerprint(self, project):
+            return 'measured'
+        def run(self, project, callback):
+            callback(80, 'Rendering segment 2/2: complete')
+            snapshots.append(serialize_wizard_job(job))
+            callback(80, ProgressDetail('Rendering segment 1/2: Preparing 360 source — 100%',
+                                       task_id='source', label='Preparing source', percent=100))
+            snapshots.append(serialize_wizard_job(job))
+            callback(80, 'Rendering segment 1/2: complete')
+            snapshots.append(serialize_wizard_job(job))
+            callback(90, 'Joining rendered shots')
+            snapshots.append(serialize_wizard_job(job))
+            callback(95, 'Muxing master audio')
+            return {}
+    WizardRunner()._run_stage(job, project, MeasuredExport(), 70, 100, 'Exporting video')
+    assert [snapshot['progress'] for snapshot in snapshots] == [83.5, 83.5, 94, 97]
+    assert snapshots[2]['stage_progress'] == 80
+    assert job.progress == 100
