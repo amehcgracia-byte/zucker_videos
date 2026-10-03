@@ -11,7 +11,9 @@ RELEASE="$ROOT/build/release"
 DMG_ROOT="$ROOT/build/dmg"
 DMG_RW="$ROOT/build/Zucker Editor.tmp.dmg"
 BUILD_INFO="$ROOT/build/build_info.json"
-DMG_PATH="$DIST/Zucker Editor.dmg"
+VERSION="$(cd "$ROOT" && "$PYTHON" -c 'from core.build_info import APP_VERSION; print(APP_VERSION)')"
+APP_DISPLAY_NAME="$APP_NAME $VERSION"
+DMG_PATH="$DIST/$APP_DISPLAY_NAME.dmg"
 APP_BUNDLE="$RELEASE/$APP_NAME.app"
 
 if [[ ! -x "$PYTHON" ]]; then
@@ -28,14 +30,31 @@ PY
 
 cd "$ROOT"
 "$PYTHON" tools/make_icon.py
-rm -rf "$APP_BUNDLE" "$PYI_DIST" "$DIST/$APP_NAME" "$BUILD" "$DMG_ROOT" "$DMG_PATH" "$DMG_RW"
+# Preserve existing user/local build products, including the hand-edited spec.
+BUILD_BACKUP="$ROOT/build/previous-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$BUILD_BACKUP"
+for previous in "$APP_BUNDLE" "$PYI_DIST" "$DIST/$APP_NAME" "$BUILD" "$DMG_ROOT" "$DMG_PATH" "$DMG_RW"; do
+  if [[ -e "$previous" ]]; then
+    mv "$previous" "$BUILD_BACKUP/$(basename "$previous")"
+  fi
+done
+restore_local_spec() {
+  if [[ -f "$BUILD_BACKUP/pyinstaller/Zucker Editor.spec" ]]; then
+    mkdir -p "$BUILD"
+    if [[ -f "$BUILD/Zucker Editor.spec" ]]; then
+      cp "$BUILD/Zucker Editor.spec" "$BUILD_BACKUP/generated-Zucker Editor.spec"
+    fi
+    cp "$BUILD_BACKUP/pyinstaller/Zucker Editor.spec" "$BUILD/Zucker Editor.spec"
+  fi
+}
+trap restore_local_spec EXIT
 mkdir -p "$DIST" "$RELEASE"
 mkdir -p "$ROOT/build"
-COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 "$PYTHON" - <<PY
 import json
 from pathlib import Path
-Path("$BUILD_INFO").write_text(json.dumps({"version": "2.1.31", "git_commit": "$COMMIT"}, indent=2) + "\n", encoding="utf-8")
+Path("$BUILD_INFO").write_text(json.dumps({"version": "$VERSION", "git_commit": "$COMMIT"}, indent=2) + "\n", encoding="utf-8")
 PY
 
 "$PYTHON" -m PyInstaller \
@@ -107,7 +126,10 @@ import json
 from pathlib import Path
 
 bundle_info = Path("$APP_BUNDLE/Contents/Resources/build_info.json")
-actual = json.loads(bundle_info.read_text(encoding="utf-8"))["git_commit"]
+payload = json.loads(bundle_info.read_text(encoding="utf-8"))
+actual = payload["git_commit"]
+if payload.get("version") != "$VERSION":
+    raise SystemExit("Packaged build_info version does not match APP_VERSION")
 expected = "$COMMIT"
 if actual != expected:
     raise SystemExit(f"Packaged build_info commit {actual!r} does not match HEAD {expected!r}")
@@ -121,7 +143,7 @@ cp "$ROOT/assets/icon.icns" "$DMG_ROOT/.VolumeIcon.icns"
 mkdir -p "$DMG_ROOT/.background"
 cp "$ROOT/build/dmg_background.png" "$DMG_ROOT/.background/background.png"
 hdiutil create \
-  -volname "$APP_NAME" \
+  -volname "$APP_DISPLAY_NAME" \
   -srcfolder "$DMG_ROOT" \
   -ov \
   -fs HFS+ \
@@ -138,7 +160,7 @@ if [[ -n "$DEVICE" && -d "$VOLUME" ]]; then
   fi
   osascript <<OSA || true
 tell application "Finder"
-  tell disk "$APP_NAME"
+  tell disk "$APP_DISPLAY_NAME"
     open
     set current view of container window to icon view
     set toolbar visible of container window to false
@@ -167,11 +189,12 @@ fi
 hdiutil convert "$DMG_RW" -format UDZO -ov -o "$DMG_PATH"
 rm -f "$DMG_RW"
 
-# dist/ is the hand-off folder. Keep only the installer there so the
-# PyInstaller app bundle and its terminal launcher cannot be mistaken for the
-# thing Chema should install.
-rm -rf "$APP_BUNDLE" "$DIST/$APP_NAME" "$PYI_DIST"
-find "$DIST" -mindepth 1 -maxdepth 1 ! -name "$(basename "$DMG_PATH")" -exec rm -rf {} +
+# Keep the tested app bundle and unrelated dist products for review.
+# Restore the user's tracked spec; PyInstaller's generated spec stays in backup.
+if [[ -f "$BUILD_BACKUP/pyinstaller/Zucker Editor.spec" ]]; then
+  cp "$BUILD/Zucker Editor.spec" "$BUILD_BACKUP/generated-Zucker Editor.spec"
+  cp "$BUILD_BACKUP/pyinstaller/Zucker Editor.spec" "$BUILD/Zucker Editor.spec"
+fi
 
 echo "Built $DMG_PATH"
 echo "Installer hand-off directory contains:"

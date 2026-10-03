@@ -488,3 +488,26 @@ Troubleshooting:
 - If native picker buttons do nothing in `/advanced`, wait for the window to finish loading. A missing bridge shows a toast; rebuild with the current `app.py` if the toast says the desktop picker bridge is unavailable.
 - If browser drag/drop reports the 512 MB limit, move large videos to `~/ZuckerVideos/Inbox/` and press Rescan, or use the bundled app's `Add video folder...` picker.
 - In the wizard, `songs.json` is optional. Without it, Zucker Editor exports one continuous video. In `/advanced`, `songs.json` is only required for manual cut/edit/export debugging.
+
+### Native fixed-camera and phone motion
+
+Flat fixed cameras and recognized legacy phone inputs use a native catalogue of
+20 bounded hold, zoom, horizontal, vertical, diagonal and subject-reframing
+recipes. Selection is seeded from the edit window, source identities and cut
+index, excludes the previous recipe, and scales travel to the shot duration.
+A cached, independent subject inside the safe framing area is required for
+subject-directed moves. Without that evidence, use a full-frame hold or a tiny
+central zoom. No new detection dependency is required. Both authored and stale
+Ken Burns recipes are capped at 1.38x during export; automatic 360 remains static.
+
+YouTube pacing prefers 5–7 seconds for low intensity/tempo, 3–5 seconds for
+medium, and 2–4 seconds for high. When explicit intensity is unavailable, tempo
+is used as a pacing proxy. Tail boundaries must never create a one-second shot.
+Transitions require an explicit `enabled: true` setting; saved legacy durations
+alone cannot enable a hidden crossfade.
+
+The macOS build reads the version from `core.build_info.APP_VERSION`, embeds the
+full HEAD commit, names the image and volume `Zucker Editor <version>`, retains
+the tested `.app`, and backs up existing build products. A locally edited
+PyInstaller spec is restored on success or failure. Unrelated installers and
+user environments are preserved.

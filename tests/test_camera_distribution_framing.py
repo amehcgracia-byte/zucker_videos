@@ -15,7 +15,7 @@ def test_camera_identity_does_not_collapse_shared_edited_folder() -> None:
     root = "/Volumes/RAWVideos/ZZSessions/2026/August/24.08.26/Edited"
     assert _camera_id({"source_path": f"{root}/C0185.MP4", "filename": "C0185.MP4"}) == "c"
     assert _camera_id({"source_path": f"{root}/IMG_0043.MOV", "filename": "IMG_0043.MOV"}) == "img"
-    assert _camera_id({"source_path": f"{root}/VID_20260824_203343_00_003.mp4", "filename": "VID_20260824_203343_00_003.mp4", "projection": "equirect"}) == "vid"
+    assert _camera_id({"source_path": f"{root}/VID_20260824_203343_00_003.mp4", "filename": "VID_20260824_203343_00_003.mp4", "projection": "equirect"}) == "360"
 
 
 def test_camera_allocation_matches_explicit_percentages() -> None:

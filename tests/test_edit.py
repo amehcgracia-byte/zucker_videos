@@ -162,7 +162,7 @@ def test_youtube_plan_excludes_missing_sources_and_cuts_on_bars():
 
     assert plan["excluded_clips"][0]["filename"] == "bad.mp4"
     assert {segment["master_start_sec"] for segment in plan["segments"]}.issubset({0.0, 2.0, 4.0, 6.0})
-    assert plan["cut_count"] == 2
+    assert plan["cut_count"] == 1
     assert all("eligible_segments" in item for item in plan["selection_diagnostics"])
 
 
@@ -204,7 +204,7 @@ def test_reel_uses_real_multicam_plan_not_the_placeholder():
     plan = _youtube_multicam_plan(coverage, beats)
 
     assert plan["platform"] == "reel"
-    assert plan["cut_count"] == 2
+    assert plan["cut_count"] == 1
     assert "beat-aligned multicam" in plan["real_edit_logic"]
 
 
@@ -842,7 +842,8 @@ def test_fixed_rear_uses_gentle_center_motion_when_coverage_is_available():
     assert all(abs(float(segment["motion"]["zoom_end"]) - float(segment["motion"]["zoom_start"])) <= 0.15 for segment in fixed)
     assert all(1.0 <= float(segment["motion"]["zoom_start"]) <= 1.15 for segment in fixed)
     assert all(1.0 <= float(segment["motion"]["zoom_end"]) <= 1.15 for segment in fixed)
-    assert all(segment["motion"].get("lock_target") is True for segment in fixed)
+    assert all(segment["motion"].get("subject_fallback") is True for segment in fixed)
+    assert all(segment["motion"]["target_x"] == segment["motion"]["target_y"] == 0.5 for segment in fixed)
 
 
 def test_fixed_camera_coverage_threshold_is_configurable():

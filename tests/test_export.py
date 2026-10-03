@@ -1809,7 +1809,8 @@ def test_fractional_segment_export_keeps_audio_video_duration_and_markers_in_syn
     streams = _probe_stream_durations(output)
     assert abs(streams["video"] - streams["audio"]) <= 1.0 / TARGET_EXPORT_FPS
     for index in (0, 9, len(normalized) - 1):
-        timeline = 10.2 + sum(float(segment["duration_sec"]) for segment in normalized[:index]) + marker_offset
+        from core.stages.export import INTRO_DURATION
+        timeline = INTRO_DURATION + sum(float(segment["duration_sec"]) for segment in normalized[:index]) + marker_offset
         assert _audio_rms(output, timeline - 0.025, 0.050) > 0.20
         assert _frame_luma(output, timeline) > 150.0
     _verify_video_cadence(output, "drift guard final", duration=streams["video"])

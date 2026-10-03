@@ -66,7 +66,7 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # against the filter's instance name ("v360@sphere"), NOT the bare "@id" suffix.
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
-EXPORT_SEGMENT_RECIPE_VERSION = 21
+EXPORT_SEGMENT_RECIPE_VERSION = 22
 # v17 adds byte-level and full-shot attestation to segment sidecars.  A file
 # with a copied/reused sidecar is no longer accepted if its bytes or authored
 # motion fields differ from the current render.
@@ -89,9 +89,9 @@ REEL_BASE_LOGO_POLICY_VERSION = 1
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
 TRANSITION_PROFILES = {
-    "youtube": {"duration": 0.12, "sections_only": True},
-    "reel": {"duration": 0.08, "sections_only": False, "every": 3},
-    "reel_horizontal": {"duration": 0.08, "sections_only": False, "every": 3},
+    "youtube": {"duration": 0.0, "sections_only": True},
+    "reel": {"duration": 0.0, "sections_only": False, "every": 3},
+    "reel_horizontal": {"duration": 0.0, "sections_only": False, "every": 3},
     # No crossfade between equirectangular cuts: the 360 path is a direct
     # projection-safe passthrough. Its logo clips already fade from/to black.
     "360": {"duration": 0.0, "sections_only": True},
@@ -104,7 +104,8 @@ def _transition_profile(project: Project, platform: str) -> dict[str, Any]:
     configured = (((project.data.get("settings") or {}).get("export") or {}).get("transitions") or {}).get(platform)
     if isinstance(configured, dict):
         profile.update(configured)
-    profile["duration"] = max(0.0, float(profile.get("duration") or 0.0))
+    # Legacy saved defaults must not silently enable transitions.
+    profile["duration"] = max(0.0, float(profile.get("duration") or 0.0)) if profile.get("enabled") is True else 0.0
     return profile
 
 
@@ -2659,10 +2660,8 @@ def _ken_burns_filter(motion: dict[str, Any], platform: str, duration: float) ->
         pan_y = 0.5
     except (TypeError, ValueError):
         return None
-    # Clamp even stale plans. The new editor recipes stay below 1.38x; the
-    # small headroom here lets an older cached recipe be rendered safely while
-    # its cache is being invalidated by the new edit-plan version.
-    safe_zoom_max = FIXED_CAMERA_SAFE_ZOOM_MAX + 0.12
+    # Clamp stale plans to the same ceiling as newly authored moves.
+    safe_zoom_max = FIXED_CAMERA_SAFE_ZOOM_MAX
     zoom_start = max(1.0, min(safe_zoom_max, zoom_start))
     zoom_end = max(1.0, min(safe_zoom_max, zoom_end))
     pan_x_start = max(0.0, min(1.0, pan_x_start))
@@ -2678,10 +2677,12 @@ def _ken_burns_filter(motion: dict[str, Any], platform: str, duration: float) ->
     # It prevents an out-of-bounds crop from wrapping/reversing into a second
     # apparent movement.
     progress = f"min(1,n/{max(1, frame_count - 1)}*{speed_factor:.6f})"
+    if motion.get("library_version"):
+        progress = f"(({progress})*({progress})*(3-2*({progress})))"
     zoom_expr = f"({zoom_start:.6f}+({zoom_end:.6f}-{zoom_start:.6f})*{progress})"
     if motion.get("lock_target"):
-        target_x = max(0.05, min(0.95, float(motion.get("target_x", 0.5))))
-        target_y = max(0.05, min(0.95, float(motion.get("target_y", 0.5))))
+        target_x = max(0.25, min(0.75, float(motion.get("target_x", 0.5))))
+        target_y = max(0.35, min(0.65, float(motion.get("target_y", 0.5))))
         pan_x_expr = f"if(gt(({zoom_expr}),1.001),min(1,max(0,(({zoom_expr})*{target_x:.6f}-0.5)/(({zoom_expr})-1))),0.5)"
         enforce_top_edge = motion.get("enforce_top_edge", True) is not False
         if enforce_top_edge and motion.get("vertical_motion") in {"down", "up"}:
@@ -2696,7 +2697,7 @@ def _ken_burns_filter(motion: dict[str, Any], platform: str, duration: float) ->
         # the top edge well below the 0.80 ceiling. Applying the historical
         # crop-space lower bound here would push a 1.15x centre crop to the
         # bottom of the frame and make the motion look like a second crop.
-        if motion.get("centered"):
+        if motion.get("centered") or motion.get("enforce_top_edge") is False:
             pan_y_expr = f"({pan_y_start:.6f}+({pan_y_end:.6f}-{pan_y_start:.6f})*{progress})"
         else:
             pan_y_expr = f"max(({IPHONE_CROP_TOP_LIMIT:.6f}+0.5/({zoom_expr})),({pan_y_start:.6f}+({pan_y_end:.6f}-{pan_y_start:.6f})*{progress}))"
