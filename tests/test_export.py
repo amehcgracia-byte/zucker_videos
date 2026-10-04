@@ -1845,7 +1845,7 @@ def test_final_audio_verifier_allows_source_level_change_and_smooth_fade_stack(t
             "-vf",
             "fps=30,setpts=N/(30*TB),format=yuv420p",
             "-af",
-            f"afade=t=in:st=0.000:d=1.500,afade=t=out:st={source_duration - 1.5:.3f}:d=1.500",
+            f"afade=t=in:st=10.200:d=1.500,afade=t=out:st={source_duration - 1.5:.3f}:d=1.500",
             "-c:v",
             "libx264",
             "-pix_fmt",
@@ -1878,8 +1878,9 @@ def test_final_audio_verifier_allows_source_level_change_and_smooth_fade_stack(t
         content_end=source_duration,
     )
     curve = _audio_gain_curve_samples(source_duration, 10.2, source_duration)
-    fade_in = [gain for timestamp, gain in curve if 0.0 <= timestamp <= 1.5]
-    steady = [gain for timestamp, gain in curve if 1.5 < timestamp < source_duration - 1.5]
+    fade_in = [gain for timestamp, gain in curve if 10.2 <= timestamp <= 11.7]
+    steady = [gain for timestamp, gain in curve if 11.7 < timestamp < source_duration - 1.5]
+    assert all(gain == 0 for timestamp, gain in curve if timestamp < 10.2)
     assert fade_in == sorted(fade_in)
     assert all(gain == pytest.approx(1.0) for gain in steady)
 

@@ -378,20 +378,31 @@ def cleanup_expired_segment_cache(
 
 def _referenced_segment_names(projects_root: Path | None = None) -> set[str]:
     """Find segment basenames explicitly retained by live project artifacts."""
-    import json
+    import re
     root = Path(projects_root or (Path.home() / "ZuckerVideos" / "Projects")).expanduser()
     names: set[str] = set()
     if not root.exists():
         return names
+    # Inventory once. Previously every project JSON (including frame banks)
+    # re-listed the cache and tested every filename in Python.
+    candidates = {path.name for path in (root.parent / "Cache" / "segments").glob("*.mp4")}
+    if not candidates:
+        return names
+    # Render-cache keys are 24 lowercase hexadecimal characters. Match that
+    # shape once in C, then intersect with the actual inventory. Legacy names
+    # retain the original substring matching behavior.
+    matcher = re.compile(r"\.mp4")
+    legacy = [name for name in candidates if not re.fullmatch(r"[0-9a-f]{24}\.mp4", name)]
     for path in root.rglob("*.json"):
         try:
             text = path.read_text(encoding="utf-8")
         except OSError:
             continue
-        for candidate in (root.parent / "Cache" / "segments").glob("*.mp4"):
-            if candidate.name in text or candidate.with_suffix(candidate.suffix + ".json").name in text:
-                names.add(candidate.name)
-                names.add(candidate.with_suffix(candidate.suffix + ".json").name)
+        found = {text[max(0, match.start() - 24):match.end()] for match in matcher.finditer(text)} & candidates
+        found.update(name for name in legacy if name in text)
+        for name in found:
+            names.add(name)
+            names.add(name + ".json")
     return names
 
 

@@ -1,6 +1,6 @@
 # Zucker Editor — guía incluida en la aplicación
 
-La versión aparece en el nombre del DMG y en `build_info.json`, dentro del paquete.
+La versión y el commit aparecen en la aplicación y en `build_info.json`, dentro del paquete. El instalador macOS habitual se llama `Zucker Editor.dmg`.
 
 Zucker Editor convierte audio de una sesión y grabaciones de cámara en un vídeo editado. El flujo normal es:
 
@@ -18,6 +18,16 @@ Zucker Editor convierte audio de una sesión y grabaciones de cámara en un víd
 
 Un proyecto nuevo siempre crea una carpeta `.zuckervid` nueva. Abrir un proyecto anterior es una acción explícita desde la bandeja de proyectos; nunca se selecciona automáticamente por coincidir las rutas de entrada.
 
+## Frames y tiempos de audio
+
+Cada proyecto conserva su biblioteca de alternativas. «Otro frame» reemplaza solo la toma elegida y mantiene las otras miniaturas. Si no hay otra cámara o vista que cubra ese intervalo, se informa en la tarjeta. Durante una exportación hay que esperar o cancelarla antes de cambiar tomas.
+
+El inicio y el final elegidos limitan el audio del máster. Las cabeceras no añaden audio anterior ni posterior a ese intervalo. En una edición sincronizada, el audio seleccionado comienza con las imágenes correspondientes; las zonas de logo sin contenido seleccionado quedan en silencio.
+
+## Windows
+
+El repositorio incluye `tools/build_windows.ps1`, que genera un ZIP con `Zucker Editor <versión>.exe` y sus recursos. El ZIP debe extraerse completo antes de abrir el EXE; no basta con copiar solo el ejecutable. Se necesita FFmpeg/FFprobe disponible en PATH. La existencia del script no implica que haya un EXE publicado: cada entrega Windows debe comprobarse por versión y commit.
+
 ## Datos y limpieza
 
 Los originales, las entradas del proyecto y los exports válidos no deben borrarse como “caché”. La herramienta de limpieza solo propone temporales generados antiguos, backups sobrantes, proyectos de verificación caducados y exports históricos que no son el actual ni los dos anteriores. Los elementos se mueven a la Papelera y la auditoría es de solo lectura.
@@ -33,7 +43,7 @@ El comando `clean` muestra primero el inventario y exige escribir `CLEANUP`. No 
 
 ## Identificación de builds
 
-El nombre del DMG incluye la versión, mientras que el nombre instalable sigue siendo `Zucker Editor.app` para poder reemplazar la instalación anterior. Dentro del paquete se incluyen este README y `build_info.json`, con versión y commit.
+El instalador macOS se llama `Zucker Editor.dmg`; la versión identifica el volumen montado. El nombre instalable sigue siendo `Zucker Editor.app` para poder reemplazar la instalación anterior. Dentro del paquete se incluyen este README y `build_info.json`, con versión y commit.
 
 ## Soporte
 

@@ -1080,12 +1080,10 @@ def _render_360_plan(
             lambda percent, detail: progress_callback(84 + int(percent * 10 / 100), detail),
             extra_args=_spherical_metadata_args(),
             content_start=INTRO_DURATION,
-            # L-cut at BOTH ends: the music is already playing under the intro
-            # logo (content_start fades it in from t=0), and it keeps playing
-            # under the outro logo, fading out only at the very end of the
-            # timeline. Fading at the end of the BODY instead left the outro
-            # silent and chopped the tail off the song.
-            content_end=real_duration,
+            # Any audio tail under the outro must still lie inside the
+            # selected master window. Without an explicit end, stop at body end.
+            content_end=min(real_duration, INTRO_DURATION + max(0.0,
+                (float(song_end_sec) if song_end_sec is not None else audio_start + duration) - audio_start)),
             audio_delay=audio_delay,
         )
         phase_times["mux_sec"] = round(time.perf_counter() - phase_started, 3)
@@ -1921,8 +1919,9 @@ def _intro_master_start(segments: list[dict[str, Any]]) -> float:
 
 def _audio_mux_start_and_delay(segments: list[dict[str, Any]], first_master_start: float | None = None) -> tuple[float, float]:
     first = float(first_master_start) if first_master_start is not None else (float(segments[0].get("master_start_sec") or 0.0) if segments else 0.0)
-    desired_start = first - INTRO_DURATION
-    return max(0.0, desired_start), max(0.0, -desired_start)
+    # Logo clips must never borrow audio from outside the selected window.
+    # Delay the selected master span until its matching content begins.
+    return max(0.0, first), INTRO_DURATION
 
 
 def _outro_master_start(segments: list[dict[str, Any]]) -> float:
@@ -2892,19 +2891,15 @@ def _mux_continuous_master_audio(
     ffmpeg = _ffmpeg_path()
     movflags = "+faststart+use_metadata_tags" if extra_args else "+faststart"
     filters = []
+    if content_start is not None and content_end is not None:
+        selected_duration = max(0.0, content_end - content_start)
+        filters.extend([f"atrim=duration={selected_duration:.3f}", "asetpts=PTS-STARTPTS"])
     if audio_delay > 0:
         delay_ms = int(round(audio_delay * 1000))
         filters.append(f"adelay={delay_ms}:all=1")
     filters.extend(["apad", f"atrim=0:{duration:.3f}", "asetpts=PTS-STARTPTS"])
     if content_start is not None:
-        # L-cut: audio fades in from the very start of the timeline (under
-        # the intro logo), not once the intro finishes -- ffmpeg's afade is
-        # silent before its own start point, so fading in at content_start
-        # meant the intro played with no sound at all until the video content
-        # began. By the time content_start arrives the fade is long done
-        # (CONTENT_FADE_DURATION << INTRO_DURATION), so this only affects the
-        # first ~1.5s of the intro, not the cut point itself.
-        filters.append(f"afade=t=in:st=0.000:d={CONTENT_FADE_DURATION:.3f}")
+        filters.append(f"afade=t=in:st={content_start:.3f}:d={CONTENT_FADE_DURATION:.3f}")
     if content_end is not None:
         filters.append(f"afade=t=out:st={max(0.0, content_end - CONTENT_FADE_DURATION):.3f}:d={CONTENT_FADE_DURATION:.3f}")
     audio_filter = ",".join(filters) + "[a]"
@@ -4308,12 +4303,12 @@ def _expected_master_rms(
 
 
 def _audio_gain_at(timestamp: float, total_duration: float | None, content_start: float | None, content_end: float | None) -> float:
-    # L-cut: the intro fade-in runs from t=0 (see _mux_continuous_master_audio),
-    # not from content_start -- audio plays under the intro logo, already at
-    # full volume well before video content begins.
     gain = 1.0
-    if content_start is not None and timestamp < CONTENT_FADE_DURATION:
-        gain *= max(0.0, min(1.0, timestamp / CONTENT_FADE_DURATION))
+    if content_start is not None:
+        if timestamp < content_start:
+            return 0.0
+        if timestamp < content_start + CONTENT_FADE_DURATION:
+            gain *= max(0.0, min(1.0, (timestamp - content_start) / CONTENT_FADE_DURATION))
     if content_end is not None and content_end - CONTENT_FADE_DURATION < timestamp <= content_end:
         gain *= max(0.0, min(1.0, (content_end - timestamp) / CONTENT_FADE_DURATION))
     if content_end is not None and timestamp > content_end:
@@ -4340,7 +4335,7 @@ def _time_overlaps_audio_fade(
 def _audio_fade_windows(total_duration: float | None, content_start: float | None, content_end: float | None) -> list[tuple[float, float]]:
     windows: list[tuple[float, float]] = []
     if content_start is not None:
-        windows.append((0.0, CONTENT_FADE_DURATION))
+        windows.append((content_start, content_start + CONTENT_FADE_DURATION))
     if content_end is not None:
         windows.append((max(0.0, content_end - CONTENT_FADE_DURATION), max(0.0, content_end)))
     if total_duration is not None:
