@@ -1229,7 +1229,8 @@ class WizardRunner:
 
 def _create_wizard_project(name: str) -> Project:
     safe_name = "".join(ch if ch.isalnum() or ch in " ._-" else "-" for ch in name).strip() or "Jam"
-    base = app_home() / "Projects"
+    from server.projects import projects_root
+    base = projects_root()
     base.mkdir(parents=True, exist_ok=True)
     for index in range(1, 10_000):
         suffix = "" if index == 1 else f"-{index}"

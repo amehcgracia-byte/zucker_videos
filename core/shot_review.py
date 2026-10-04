@@ -141,8 +141,10 @@ def _spherical_analysis_source(project: Project, segment: dict[str, Any], progre
     except OSError:
         return source
     insv_fov = float(segment.get("insv_fov") or 190.0)
+    from core.storage import cache_file_signature, cache_mtime_ns
+    identity = cache_file_signature(source_path)
     key = hashlib.sha256(
-        f"{source_path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}|{projection}|{insv_fov:.3f}|{SPHERICAL_ANALYSIS_PROXY_VERSION}"
+        f"{identity['path']}|{stat.st_size}|{cache_mtime_ns(source_path)}|{projection}|{insv_fov:.3f}|{SPHERICAL_ANALYSIS_PROXY_VERSION}"
         .encode("utf-8")
     ).hexdigest()[:24]
     target = project.cache_dir / "spherical_analysis" / f"equirect-{key}.mp4"
@@ -811,10 +813,11 @@ def review_items(
         duration = max(0.1, float(segment.get("duration_sec") or 0.1))
         clip_start = float(segment.get("clip_start_sec") or 0.0)
         timestamp = clip_start + duration / 2.0
-        source_stat = Path(source).stat() if Path(source).exists() else None
+        from core.storage import cache_mtime_ns
+        source_mtime = cache_mtime_ns(Path(source)) if Path(source).exists() else 0
         shot = segment.get("spherical_shot") or {}
         pose = json.dumps(_review_pose_for_cache(segment), sort_keys=True)
-        key = hashlib.sha256(f"{source}|{source_stat.st_mtime_ns if source_stat else 0}|{timestamp:.4f}|{pose}".encode()).hexdigest()[:20]
+        key = hashlib.sha256(f"{source}|{source_mtime}|{timestamp:.4f}|{pose}".encode()).hexdigest()[:20]
         output = root / f"shot-{index:04d}-{key}.jpg"
         if not output.exists():
             legacy = _legacy_review_assets(str(root.parent)).get(output.name)

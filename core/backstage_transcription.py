@@ -14,6 +14,7 @@ import platform
 import sys
 import time
 from pathlib import Path
+from core.storage import whisper_model_path, data_root
 from typing import Any, Callable
 
 from core.stages.base import stable_fingerprint, write_artifact_json
@@ -112,9 +113,10 @@ def _source_fingerprint(
 ) -> str:
     source = Path(path)
     stat = source.stat()
+    from core.storage import cache_mtime_ns
     return stable_fingerprint({
         "size": stat.st_size,
-        "mtime_ns": stat.st_mtime_ns, "model": model_name,
+        "mtime_ns": cache_mtime_ns(source), "model": model_name,
         "version": WHISPER_TRANSCRIPTION_VERSION, "task": task,
         "forced_language": forced_language or "auto",
         "transcription_options": transcription_options or {},
@@ -253,13 +255,13 @@ def transcribe_sources(
                     _configure_faster_whisper_assets()
                     from faster_whisper import WhisperModel  # type: ignore
                     compute_type = "int8_float16" if platform.machine() in {"arm64", "aarch64"} else "int8"
-                    models[source_model] = WhisperModel(source_model, device="auto", compute_type=compute_type)
+                    models[source_model] = WhisperModel(whisper_model_path(source_model), device="auto", compute_type=compute_type)
                 elif backend == "mlx-whisper":
                     import mlx_whisper  # type: ignore
                     models[source_model] = mlx_whisper
                 else:
                     import whisper  # type: ignore
-                    models[source_model] = whisper.load_model(source_model)
+                    models[source_model] = whisper.load_model(source_model, download_root=str(data_root() / "Cache" / "OpenAIWhisper"))
         except Exception as exc:
             payload = {"stage": "backstage_transcription", "version": WHISPER_TRANSCRIPTION_VERSION, "model": model_name, "task": task, "backend": backend, "status": "unavailable", "reason": f"Local Whisper unavailable: {exc}", "sources": output_sources}
             write_artifact_json(artifact, payload)

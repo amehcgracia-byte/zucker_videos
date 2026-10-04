@@ -9,6 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from core.storage import media_signature
 from typing import Any
 
 STAGE_NAMES = ("ingest", "sync", "cut", "edit", "export")
@@ -27,11 +28,11 @@ def utc_now() -> str:
 def file_record(path: str, label: str | None = None) -> dict[str, Any]:
     """Build a stable project input record for a local file."""
     p = Path(path).expanduser().resolve()
-    stat = p.stat()
+    signature = media_signature(p)
     record: dict[str, Any] = {
         "path": str(p),
-        "size": stat.st_size,
-        "mtime": stat.st_mtime,
+        "size": signature["size"],
+        "mtime": signature["mtime"],
     }
     if label:
         record["label"] = label
@@ -199,9 +200,9 @@ def _refresh_record(record: dict[str, Any]) -> bool:
         changed = not record.get("missing", False)
         record["missing"] = True
         return changed
-    stat = path.stat()
-    new_size = stat.st_size
-    new_mtime = stat.st_mtime
+    signature = media_signature(path)
+    new_size = signature["size"]
+    new_mtime = signature["mtime"]
     changed = record.get("size") != new_size or record.get("mtime") != new_mtime or record.get("missing", False)
     record["size"] = new_size
     record["mtime"] = new_mtime

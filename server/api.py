@@ -70,6 +70,7 @@ from server.inbox import (
     unique_destination,
 )
 from server.media import send_file_with_range
+from server.media_import import save_media_upload
 from server.projects import delete_project_folder, find_project_by_inputs, input_signature, list_projects, project_input_signature
 from server.wizard import WizardRunner, is_single_source_reel, merge_spherical_landmarks, same_project_path, serialize_wizard_job, wizard_report, wizard_song_options
 from captions.burn import _video_dimensions, burn as burn_captions
@@ -1473,9 +1474,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         upload_dir.mkdir(parents=True, exist_ok=True)
         saved: list[str] = []
         for storage in files:
-            filename = Path(storage.filename or "upload.bin").name
-            destination = unique_destination(upload_dir / filename)
-            storage.save(destination)
+            destination = save_media_upload(storage, upload_dir)
             saved.append(str(destination.resolve()))
         return jsonify(classify_paths(saved))
 
@@ -2506,6 +2505,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_app_config() -> Response:
         config = load_global_config()
         info = build_info()
+        config["storage_path"] = str(app_home())
+        config["project_root"] = str(config.get("project_root") or app_home() / "Projects")
         config["app_version"] = info["version"]
         config["source_revision"] = info["git_commit"]
         config["dev"] = state.dev
@@ -2539,7 +2540,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.post("/api/v1/cache/free")
     def api_cache_free() -> Response:
-        return jsonify(cleanup_unreferenced_cache())
+        from core.normalization import cleanup_expired_segment_cache
+        expired = cleanup_expired_segment_cache()
+        result = cleanup_unreferenced_cache()
+        result["before_bytes"] += expired["deleted_bytes"]
+        result["deleted_bytes"] += expired["deleted_bytes"]
+        result["deleted_files"] += expired["deleted_files"]
+        result["expired_segments"] = expired
+        return jsonify(result)
 
     @app.post("/api/v1/stages/<name>/run")
     def api_run_stage(name: str) -> Response:
@@ -2717,6 +2725,7 @@ def _require_project(state: AppState) -> Project:
 def _remember_project(project: Project) -> None:
     config = load_global_config()
     config["last_project_path"] = str(project.folder)
+    config["project_roots"] = list(dict.fromkeys([*config.get("project_roots", []), str(project.folder.parent)]))
     save_global_config(config)
 
 

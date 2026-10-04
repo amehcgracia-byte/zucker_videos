@@ -20,4 +20,4 @@ def test_new_project_registers_inputs_before_360_preview():
 
 def test_build_version_is_current():
     build_info = (Path(__file__).parents[1] / "core" / "build_info.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "2.1.32"' in build_info
+    assert 'APP_VERSION = "2.4.7"' in build_info

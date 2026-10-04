@@ -7,6 +7,7 @@ import logging
 import shutil
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,8 @@ COARSE_MATCH_THRESHOLD = 6.0
 
 def app_home() -> Path:
     """Return the global Zucker Videos home directory."""
-    return Path.home() / "ZuckerVideos"
+    from core.storage import data_root
+    return data_root()
 
 
 def config_path() -> Path:
@@ -78,9 +80,13 @@ def load_global_config() -> dict[str, Any]:
 def save_global_config(config: dict[str, Any]) -> None:
     """Save global app config."""
     app_home().mkdir(parents=True, exist_ok=True)
-    with config_path().open("w", encoding="utf-8") as fh:
-        json.dump(config, fh, indent=2, sort_keys=True)
-        fh.write("\n")
+    path = config_path()
+    pending = path.with_name(".config-" + uuid.uuid4().hex + ".tmp")
+    try:
+        pending.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        pending.replace(path)
+    finally:
+        pending.unlink(missing_ok=True)
 
 
 def scan_inbox(root: str | None = None) -> dict[str, Any]:

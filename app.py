@@ -15,10 +15,12 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from core.storage import data_root, configure_working_storage
 
 from core.build_info import startup_label
 from server.api import create_app
-from server.inbox import load_global_config
+from server.inbox import load_global_config, save_global_config
+from core.storage import storage_ready, save_data_root, require_available
 
 APP_NAME = "Zucker Editor"
 
@@ -41,6 +43,30 @@ class DesktopApi:
     def pick_video_folder(self) -> list[str]:
         """Open a native folder dialog for a folder of video clips."""
         return _open_folder_dialog()
+
+    def choose_storage(self) -> str | None:
+        """Select where all imported media and working caches will live."""
+        paths = _open_folder_dialog()
+        if not paths:
+            return None
+        parent = Path(paths[0])
+        root = parent if parent.name == "Zucker Editor" else parent / "Zucker Editor"
+        save_data_root(str(root))
+        callback = getattr(self, "_storage_selected", None)
+        return callback() if callback else str(root)
+
+    def pick_project_location(self) -> str | None:
+        """Choose the session folder before creating a new project."""
+        config = load_global_config()
+        paths = _open_folder_dialog(str(config.get("project_root") or data_root()))
+        if not paths:
+            return None
+        parent = require_available(Path(paths[0]))
+        config = load_global_config()
+        config["project_root"] = str(parent)
+        config["project_roots"] = list(dict.fromkeys([*config.get("project_roots", []), str(parent)]))
+        save_global_config(config)
+        return str(parent)
 
     def reveal_in_finder(self, path: str | None = None) -> bool:
         """Reveal a path in Finder."""
@@ -80,9 +106,22 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     """Run Zucker Editor in desktop or dev-server mode."""
     multiprocessing.freeze_support()
+    args = parse_args()
+    if not (args.dev or args.selftest or args.webgl_probe or args.operator_avoidance_probe) and not storage_ready():
+        import webview
+        bridge = DesktopApi()
+        bridge._storage_selected = lambda: _start_desktop_server(args)
+        html = """<!doctype html><html lang="es"><meta charset="utf-8">
+        <style>body{font:18px system-ui;max-width:650px;margin:70px auto;padding:20px}button{font:inherit;padding:14px;border-radius:12px}#error{color:#a22}</style>
+        <h1>Elige dónde guardar tu trabajo</h1>
+        <p>Vídeos importados, cachés y proyectos se guardarán en esta ubicación. Puedes elegir tu disco externo.</p>
+        <button id="choose" onclick="choose()">Seleccionar ubicación</button><p id="error"></p>
+        <script>async function choose(){const b=document.getElementById('choose');b.disabled=true;try{const url=await window.pywebview.api.choose_storage();if(url)location.href=url;}catch(e){document.getElementById('error').textContent=e.message;}finally{b.disabled=false;}}document.getElementById('choose').disabled=true;window.addEventListener('pywebviewready',()=>document.getElementById('choose').disabled=false);</script></html>"""
+        webview.create_window(APP_NAME, html=html, width=850, height=540, js_api=bridge)
+        webview.start()
+        return
     _configure_logging()
     logging.getLogger(__name__).info("Starting %s", startup_label())
-    args = parse_args()
     if args.webgl_probe:
         raise SystemExit(_run_webgl_probe())
     if args.operator_avoidance_probe:
@@ -130,6 +169,22 @@ def main() -> None:
 
     window.events.loaded += on_loaded
     webview.start()
+
+
+def _start_desktop_server(args: argparse.Namespace) -> str:
+    _configure_logging()
+    logging.getLogger(__name__).info("Starting %s", startup_label())
+    project_path = args.project if args.project and Path(args.project).exists() else None
+    app = create_app(project_path=project_path, dev=False)
+    port = find_free_port()
+    threading.Thread(target=lambda: app.run(host="127.0.0.1", port=port, debug=False, use_reloader=False), daemon=True).start()
+    for _ in range(100):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=.1):
+                return f"http://127.0.0.1:{port}"
+        except OSError:
+            time.sleep(.02)
+    raise RuntimeError("The application server could not start.")
 
 
 def _run_selftest() -> int:
@@ -183,7 +238,7 @@ def _run_selftest() -> int:
             if getattr(sys, "_MEIPASS", None) or os.environ.get("ZUCKER_SELFTEST_TRANSCRIPTION") == "1":
                 audio_source = os.environ.get("ZUCKER_SELFTEST_AUDIO")
                 if not audio_source:
-                    candidates = sorted((Path.home() / "ZuckerVideos" / "WizardUploads").glob("*.MP4"))
+                    candidates = sorted((data_root() / "WizardUploads").glob("*.MP4"))
                     audio_source = str(candidates[0]) if candidates else ""
                 if not audio_source or not Path(audio_source).is_file():
                     raise RuntimeError("No real audio source available for packaged transcription self-test")
@@ -355,23 +410,25 @@ def _open_file_dialog(allow_multiple: bool) -> list[str]:
     return [str(Path(path).resolve()) for path in (result or [])]
 
 
-def _open_folder_dialog() -> list[str]:
+def _open_folder_dialog(directory: str = "") -> list[str]:
     import webview
 
     if not webview.windows:
         return []
-    result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG, allow_multiple=False)
+    result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG, directory=directory, allow_multiple=False)
     return [str(Path(path).resolve()) for path in (result or [])]
 
 
 def _configure_logging() -> None:
     """Write startup/runtime logs to both stderr and the user app log folder."""
-    log_dir = Path.home() / "ZuckerVideos" / "logs"
+    configure_working_storage()
+    from logging.handlers import RotatingFileHandler
+    log_dir = data_root() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        handlers=[logging.StreamHandler(sys.stderr), logging.FileHandler(log_dir / "app.log", encoding="utf-8")],
+        handlers=[logging.StreamHandler(sys.stderr), RotatingFileHandler(log_dir / "app.log", maxBytes=5*1024*1024, backupCount=2, encoding="utf-8")],
         force=True,
     )
 

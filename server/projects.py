@@ -7,12 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from core.project import Project, ProjectError, load_project
-from server.inbox import app_home
+from server.inbox import app_home, load_global_config
+from core.storage import project_locations, require_available, media_signature
 
 
 def projects_root() -> Path:
     """Return the global projects directory."""
-    root = app_home() / "Projects"
+    root = require_available(Path(load_global_config().get("project_root") or app_home() / "Projects"))
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -20,7 +21,7 @@ def projects_root() -> Path:
 def list_projects() -> list[dict[str, Any]]:
     """Return lightweight metadata for existing wizard projects."""
     projects: list[dict[str, Any]] = []
-    for project_json in sorted(projects_root().glob("*.zuckervid/project.json")):
+    for project_json in sorted({file.resolve() for root in project_locations() for file in root.glob("*.zuckervid/project.json")}):
         try:
             project = load_project(str(project_json.parent))
         except ProjectError:
@@ -45,7 +46,8 @@ def project_summary(project: Project) -> dict[str, Any]:
         "created_at": project.data.get("created_at"),
         "modified_at": project.data.get("modified_at"),
         "status": project_status(project),
-        "size_bytes": directory_size(project.folder),
+        # Full recursive sizes belong to the explicit storage audit, never startup cards.
+        "size_bytes": None,
         "has_export": has_export,
         "export_path": export_path,
     }
@@ -54,7 +56,7 @@ def project_summary(project: Project) -> dict[str, Any]:
 def find_project_by_inputs(master: str, songs: str | None, videos: list[str]) -> Project | None:
     """Find an existing project with the same input paths, sizes, and mtimes."""
     wanted = input_signature(master, songs, videos)
-    for project_json in sorted(projects_root().glob("*.zuckervid/project.json")):
+    for project_json in sorted({file.resolve() for root in project_locations() for file in root.glob("*.zuckervid/project.json")}):
         try:
             project = load_project(str(project_json.parent))
         except ProjectError:
@@ -95,7 +97,9 @@ def input_signature(master: str, songs: str | None, videos: list[str]) -> dict[s
 def delete_project_folder(project_path: str, keep_exports: bool = False) -> dict[str, Any]:
     """Delete one project folder, optionally moving exports out first."""
     folder = Path(project_path).expanduser().resolve()
-    folder.relative_to(projects_root().resolve())
+    allowed = {root.resolve() for root in project_locations()}
+    if folder.parent not in allowed or folder.suffix != ".zuckervid":
+        raise ValueError("Project is outside the registered project locations")
     project = load_project(str(folder))
     kept_exports: list[str] = []
     if keep_exports and project.exports_dir.exists():
@@ -143,8 +147,7 @@ def path_signature(path: str | None) -> dict[str, Any]:
     if not path:
         raise ValueError("path is required")
     candidate = Path(path).expanduser().resolve()
-    stat = candidate.stat()
-    return {"path": str(candidate), "size": stat.st_size, "mtime": stat.st_mtime}
+    return {"path": str(candidate), **media_signature(candidate)}
 
 
 def record_signature(record: dict[str, Any]) -> dict[str, Any]:

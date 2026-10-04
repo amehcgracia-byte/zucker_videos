@@ -1904,7 +1904,7 @@ function renderProjects(projects) {
         <div class="project-row">
           <div>
             <strong>${escapeHtml(project.name)}</strong>
-            <span>${escapeHtml(formatProjectDate(project.modified_at))} · ${escapeHtml(project.status || "new")} · ${formatBytes(project.size_bytes || 0)}</span>
+            <span>${escapeHtml(formatProjectDate(project.modified_at))} · ${escapeHtml(project.status || "new")}</span>
           </div>
           ${project.has_export ? `<small>${escapeHtml(S.hasExport || "export")}</small>` : ""}
           <button data-open-project="${escapeHtml(project.path)}">${escapeHtml(S.openProject || "Open")}</button>
@@ -2840,6 +2840,11 @@ async function waitForPreparedProject() {
 
 async function startWizard(options = {}) {
   const waitForPrepare = options.waitForPrepare === true;
+  if (appConfig.desktop && !activeProjectId) {
+    const location = await window.NativeBridge.call("pick_project_location", [], "Choose project location");
+    if (!location) return;
+    appConfig.project_root = location;
+  }
   // Every explicit run is a fresh creative pass.  Keeping the same seed
   // made the edit fingerprint and camera tie-breaks reproduce the prior cut.
   currentVariationSeed = `${Date.now()}-${Math.random()}`;

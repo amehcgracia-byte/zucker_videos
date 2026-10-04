@@ -63,3 +63,9 @@ YouTube adapta cortes y movimientos a la energía suavizada por compás: Tranqui
 Hacer otro genera una semilla nueva: varían la colocación de cortes sobre la rejilla musical, los desempates de cámaras y los movimientos. La misma semilla conserva la reproducibilidad del render. Si solo hay una cámara o una vista válida, las alternativas quedan limitadas al material disponible. Las cuotas y la alternancia de músicos siguen activas.
 
 Versiones: la antigua 2.1.35 equivale a 2.4.5; esta entrega es 2.4.6. Cada diez revisiones aumenta el número central: 2.4.9 → 2.5.0.
+
+## Ubicaciones y espacio — 2.4.7
+
+Al arrancar por primera vez se elige dónde guardar los vídeos importados, cachés, modelos de transcripción, temporales y logs. Al crear un proyecto nuevo se abre un selector nativo para elegir la carpeta de su sesión. Cancelar no crea un proyecto. Los proyectos siguen visibles desde las ubicaciones ya elegidas cuando sus discos están conectados. Si el disco elegido está desconectado, se solicita una ubicación: no se vuelve automáticamente al disco interno. Solo queda una pequeña preferencia de ubicación en la configuración del usuario.
+
+Importar de nuevo el mismo contenido reutiliza el archivo ya importado, incluso si el nombre cambia. Los logs tienen rotación para limitar su crecimiento futuro. Cambiar de ubicación no migra por sí solo los proyectos antiguos; deben trasladarse con verificación y conservar sus entradas.

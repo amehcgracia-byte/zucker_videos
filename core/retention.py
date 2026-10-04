@@ -7,6 +7,7 @@ import shutil
 import time
 from datetime import datetime
 from pathlib import Path
+from core.storage import data_root
 from typing import Any
 
 from core.build_info import build_info
@@ -156,7 +157,7 @@ def build_storage_report(
     now: float | None = None,
 ) -> dict[str, Any]:
     """Build a read-only report. This function does not mutate the filesystem."""
-    root = Path(root or (Path.home() / "ZuckerVideos")).expanduser().resolve()
+    root = Path(root or (data_root())).expanduser().resolve()
     repo_root = Path(repo_root or Path(__file__).resolve().parents[1]).resolve()
     huggingface_root = Path(huggingface_root or (Path.home() / ".cache" / "huggingface")).expanduser().resolve()
     now = now or time.time()

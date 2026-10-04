@@ -12,6 +12,7 @@ import time
 import logging
 import math
 from pathlib import Path
+from core.storage import data_root, project_locations, media_signature, migrated_identity
 from typing import Any, Callable
 
 from core.ffmpeg import FFmpegError, tool_status
@@ -51,12 +52,7 @@ def ensure_global_cache_dirs() -> Path:
     root.mkdir(parents=True, exist_ok=True)
     for name in CACHE_SUBDIRS:
         (root / name).mkdir(parents=True, exist_ok=True)
-    cleanup_expired_segment_cache()
-    try:
-        from core.retention import cleanup_automatic_retention
-        cleanup_automatic_retention()
-    except Exception:
-        LOGGER.debug("Automatic storage retention skipped", exc_info=True)
+    # Creating cache directories must not audit all projects and media.
     return root
 
 
@@ -266,7 +262,7 @@ def cache_key_for_signature(source: Path, signature: dict[str, Any]) -> str:
     """Return the cheap stable global cache key for a source signature."""
     return stable_fingerprint(
         {
-            "path": str(source),
+            "path": (migrated_identity(source) or (str(source), 0))[0],
             "size": signature.get("size"),
             "mtime": signature.get("mtime"),
             "normalization_version": NORMALIZATION_VERSION,
@@ -276,7 +272,7 @@ def cache_key_for_signature(source: Path, signature: dict[str, Any]) -> str:
 
 def global_cache_root() -> Path:
     """Return the app-wide media cache root."""
-    return Path.home() / "ZuckerVideos" / "Cache"
+    return data_root() / "Cache"
 
 
 def global_normalized_path(key: str) -> Path:
@@ -379,13 +375,11 @@ def cleanup_expired_segment_cache(
 def _referenced_segment_names(projects_root: Path | None = None) -> set[str]:
     """Find segment basenames explicitly retained by live project artifacts."""
     import re
-    root = Path(projects_root or (Path.home() / "ZuckerVideos" / "Projects")).expanduser()
+    roots = [Path(projects_root).expanduser()] if projects_root is not None else project_locations()
     names: set[str] = set()
-    if not root.exists():
-        return names
     # Inventory once. Previously every project JSON (including frame banks)
     # re-listed the cache and tested every filename in Python.
-    candidates = {path.name for path in (root.parent / "Cache" / "segments").glob("*.mp4")}
+    candidates = {path.name for path in ((roots[0].parent / "Cache" / "segments") if projects_root is not None else (global_cache_root() / "segments")).glob("*.mp4")}
     if not candidates:
         return names
     # Render-cache keys are 24 lowercase hexadecimal characters. Match that
@@ -393,7 +387,7 @@ def _referenced_segment_names(projects_root: Path | None = None) -> set[str]:
     # retain the original substring matching behavior.
     matcher = re.compile(r"\.mp4")
     legacy = [name for name in candidates if not re.fullmatch(r"[0-9a-f]{24}\.mp4", name)]
-    for path in root.rglob("*.json"):
+    for path in {p for root in roots for p in root.rglob("*.json")}:
         try:
             text = path.read_text(encoding="utf-8")
         except OSError:
@@ -411,6 +405,7 @@ def cleanup_unreferenced_cache(projects_root: Path | None = None) -> dict[str, A
     root = global_cache_root()
     before = _directory_size(root)
     referenced = referenced_cache_keys(projects_root)
+    retained_segments = _referenced_segment_names(projects_root)
     deleted_files = 0
     deleted_bytes = 0
     for subdir in CACHE_SUBDIRS:
@@ -421,7 +416,7 @@ def cleanup_unreferenced_cache(projects_root: Path | None = None) -> dict[str, A
             if not path.is_file():
                 continue
             key = path.name.split(".", 1)[0].split("-", 1)[0]
-            if key in referenced:
+            if key in referenced or (subdir == "segments" and path.name in retained_segments):
                 continue
             try:
                 size = path.stat().st_size
@@ -480,11 +475,9 @@ def referenced_cache_keys(projects_root: Path | None = None) -> set[str]:
     """Return cache keys referenced by existing project.json files."""
     import json
 
-    root = Path(projects_root or (Path.home() / "ZuckerVideos" / "Projects")).expanduser()
+    roots = [Path(projects_root).expanduser()] if projects_root is not None else project_locations()
     keys: set[str] = set()
-    if not root.exists():
-        return keys
-    for project_json in root.rglob("project.json"):
+    for project_json in {p for root in roots for p in root.rglob("project.json")}:
         try:
             with project_json.open("r", encoding="utf-8") as fh:
                 data = json.load(fh)
@@ -734,8 +727,7 @@ def _float_or_zero(value: Any) -> float:
 
 
 def _source_signature(path: Path) -> dict[str, Any]:
-    stat = path.stat()
-    return {"size": stat.st_size, "mtime": stat.st_mtime}
+    return media_signature(path)
 
 
 def _legacy_normalized_path(project: Project, record: dict[str, Any]) -> Path:
