@@ -48,8 +48,13 @@ def reproject_maps(source_size: tuple[int, int], output_size: tuple[int, int], s
     """Return continuous longitude/latitude maps; unwrap before interpolation."""
     sw, sh = source_size; width, height = output_size
     yaw, pitch, fov = pose or (float(shot.get("yaw") or 0), float(shot.get("pitch") or 0), float(shot.get("fov") or 82))
+    preset = shot.get("projection_preset")
+    if pose is not None and shot.get("runtime_motion_enabled") and preset == "dewarp" and fov < 70:
+        # DEWARP is rectilinear too. Its editor's 70-degree preset floor must
+        # not silently cancel an authored close-up zoom during native rendering.
+        preset = "linear"
     view = view_parameters(yaw, pitch, fov, width / height, str(shot.get("type") or ""),
-                           projection_preset=shot.get("projection_preset"), roll=float(shot.get("roll") or 0))
+                           projection_preset=preset, roll=float(shot.get("roll") or 0))
     mw, mh = (width, height) if exact else (max(64, width // 3), max(36, height // 3))
     xx, yy = np.meshgrid((np.arange(mw, dtype=np.float32) + .5) * 2 / mw - 1,
                          (np.arange(mh, dtype=np.float32) + .5) * 2 / mh - 1)

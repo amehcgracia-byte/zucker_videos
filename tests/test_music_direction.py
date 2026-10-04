@@ -63,3 +63,14 @@ def test_tiny_planet_has_equal_horizontal_and_vertical_pixel_scale():
         sx = math.tan(math.radians(view["h_fov"])/4)/aspect
         sy = math.tan(math.radians(view["v_fov"])/4)
         assert sx == pytest.approx(sy)
+
+
+def test_dewarp_closeup_zoom_changes_the_actual_projection_map():
+    import numpy as np
+    from core.spherical_motion import reproject_maps
+    shot = {"yaw": 200., "pitch": 0., "fov": 70., "projection_preset": "dewarp", "runtime_motion_enabled": True}
+    wide = reproject_maps((2560,1280),(640,360),shot,(200.,0.,70.))
+    close = reproject_maps((2560,1280),(640,360),shot,(200.,0.,55.))
+    assert np.abs(wide[0]-close[0]).mean() > 10
+    expected = reproject_maps((2560,1280),(640,360),{**shot,"projection_preset":"linear"},(200.,0.,55.))
+    assert np.allclose(close[0],expected[0])
