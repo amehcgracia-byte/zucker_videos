@@ -2540,7 +2540,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.post("/api/v1/cache/free")
     def api_cache_free() -> Response:
-        return jsonify(cleanup_unreferenced_cache())
+        from core.normalization import cleanup_expired_segment_cache
+        expired = cleanup_expired_segment_cache()
+        result = cleanup_unreferenced_cache()
+        result["before_bytes"] += expired["deleted_bytes"]
+        result["deleted_bytes"] += expired["deleted_bytes"]
+        result["deleted_files"] += expired["deleted_files"]
+        result["expired_segments"] = expired
+        return jsonify(result)
 
     @app.post("/api/v1/stages/<name>/run")
     def api_run_stage(name: str) -> Response:

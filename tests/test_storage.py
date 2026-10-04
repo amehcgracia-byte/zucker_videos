@@ -190,3 +190,41 @@ def test_project_cards_never_scan_media_or_cache_sizes(home,tmp_path,monkeypatch
     cards=projects.list_projects()
     assert cards[0]['name']=='Fast card'
     assert cards[0]['size_bytes'] is None
+
+
+def test_cache_directory_initialization_never_runs_full_storage_audits(home,tmp_path,monkeypatch):
+    from core import normalization, retention
+    root=storage.save_data_root(str(tmp_path/'external'))
+    def forbidden_audit(*args,**kwargs):raise AssertionError('Directory creation must not scan all media')
+    monkeypatch.setattr(normalization,'cleanup_expired_segment_cache',forbidden_audit)
+    monkeypatch.setattr(retention,'cleanup_automatic_retention',forbidden_audit)
+    for _ in range(2):assert normalization.ensure_global_cache_dirs()==root/'Cache'
+    assert all((root/'Cache'/name).is_dir() for name in normalization.CACHE_SUBDIRS)
+
+
+def test_explicit_cache_free_preserves_render_segments_in_registered_sessions(home,tmp_path):
+    from core.normalization import cleanup_unreferenced_cache
+    root=storage.save_data_root(str(tmp_path/'external'));session=tmp_path/'session';session.mkdir()
+    (root/'config.json').write_text(json.dumps({'project_roots':[str(session)]}))
+    project=create_project('Protected',str(session/'Protected.zuckervid'))
+    cache=root/'Cache'/'segments';cache.mkdir(parents=True)
+    retained=cache/('a'*24+'.mp4');retained.write_bytes(b'current segment')
+    stale=cache/('c'*24+'.mp4');stale.write_bytes(b'unused segment')
+    (project.artifacts_dir/'edit_plan.json').write_text(json.dumps({'render_path':str(retained)}))
+    result=cleanup_unreferenced_cache()
+    assert retained.read_bytes()==b'current segment'
+    assert not stale.exists()
+    assert result['deleted_files']==1
+
+
+def test_explicit_cache_endpoint_reports_all_recoverable_cleanup_bytes(home,tmp_path,monkeypatch):
+    from server import api
+    from core import normalization
+    storage.save_data_root(str(tmp_path/'external'))
+    monkeypatch.setattr(normalization,'cleanup_expired_segment_cache',lambda:dict(deleted_files=2,deleted_bytes=20,remaining_bytes=1))
+    monkeypatch.setattr(api,'cleanup_unreferenced_cache',lambda:dict(before_bytes=100,after_bytes=70,deleted_files=3,deleted_bytes=30))
+    response=api.create_app().test_client().post('/api/v1/cache/free')
+    result=response.get_json()
+    assert response.status_code==200
+    assert result['before_bytes']==120 and result['after_bytes']==70
+    assert result['deleted_bytes']==50 and result['deleted_files']==5

@@ -52,12 +52,7 @@ def ensure_global_cache_dirs() -> Path:
     root.mkdir(parents=True, exist_ok=True)
     for name in CACHE_SUBDIRS:
         (root / name).mkdir(parents=True, exist_ok=True)
-    cleanup_expired_segment_cache()
-    try:
-        from core.retention import cleanup_automatic_retention
-        cleanup_automatic_retention()
-    except Exception:
-        LOGGER.debug("Automatic storage retention skipped", exc_info=True)
+    # Creating cache directories must not audit all projects and media.
     return root
 
 
@@ -410,6 +405,7 @@ def cleanup_unreferenced_cache(projects_root: Path | None = None) -> dict[str, A
     root = global_cache_root()
     before = _directory_size(root)
     referenced = referenced_cache_keys(projects_root)
+    retained_segments = _referenced_segment_names(projects_root)
     deleted_files = 0
     deleted_bytes = 0
     for subdir in CACHE_SUBDIRS:
@@ -420,7 +416,7 @@ def cleanup_unreferenced_cache(projects_root: Path | None = None) -> dict[str, A
             if not path.is_file():
                 continue
             key = path.name.split(".", 1)[0].split("-", 1)[0]
-            if key in referenced:
+            if key in referenced or (subdir == "segments" and path.name in retained_segments):
                 continue
             try:
                 size = path.stat().st_size
