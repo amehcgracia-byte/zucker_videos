@@ -21,6 +21,8 @@ from typing import Any
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.datastructures import FileStorage
+from urllib.parse import unquote
 
 from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
 from core.ffmpeg import FFmpegError, ffprobe, tool_status
@@ -72,7 +74,7 @@ from server.inbox import (
 from server.media import send_file_with_range
 from server.media_import import save_media_upload
 from server.projects import delete_project_folder, find_project_by_inputs, input_signature, list_projects, project_input_signature
-from server.wizard import WizardRunner, is_single_source_reel, merge_spherical_landmarks, same_project_path, serialize_wizard_job, wizard_report, wizard_song_options
+from server.wizard import _create_wizard_project, WizardRunner, is_single_source_reel, merge_spherical_landmarks, same_project_path, serialize_wizard_job, wizard_report, wizard_song_options
 from captions.burn import _video_dimensions, burn as burn_captions
 from captions.align import align_known_lyrics
 from captions.model import Cue, CueTrack, Word
@@ -863,13 +865,21 @@ def _remux_shortest(source: Path, destination: Path, process_callback=None) -> P
         pending.unlink(missing_ok=True)
 
 
+def _default_brand_logo() -> Path:
+    personal = Path(str(load_global_config().get("personal_logo_path") or "")).expanduser()
+    if personal.is_file():
+        return personal
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+    return root / "web" / "logo_editor_green.png"
+
+
 def _composition_logo(project: Project, mode: str) -> Path | None:
     wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
     if mode == "custom":
         candidate = Path(str(wizard.get("reel_logo_path") or "")).expanduser().resolve()
         return candidate if candidate.is_file() and candidate.parent == project.folder.resolve() else None
     if mode == "default":
-        candidate = Path(str(load_global_config().get("personal_logo_path") or "")).expanduser().resolve()
+        candidate = _default_brand_logo().resolve()
         return candidate if candidate.is_file() else None
     return None
 
@@ -1343,7 +1353,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
         custom = Path(str(wizard.get("reel_logo_path") or "")).expanduser()
         config = load_global_config()
-        default = Path(str(config.get("personal_logo_path") or "")).expanduser()
+        default = _default_brand_logo()
         mode = str(wizard.get("reel_logo_mode") or ("custom" if custom.is_file() else "none"))
         if mode not in {"custom", "default", "none"}:
             mode = "none"
@@ -1406,7 +1416,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.get("/api/v1/wizard/logo/default")
     def api_wizard_logo_default_file() -> Response:
-        path = Path(str(load_global_config().get("personal_logo_path") or ""))
+        path = _default_brand_logo()
         if not path.is_file():
             return error_response("not_found", "No default brand logo", 404)
         return send_file(str(path))
@@ -1467,7 +1477,15 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 f"Browser uploads are limited to {limit_mb} MB. Put large videos in the Inbox or use the desktop folder picker.",
                 413,
             )
-        files = list(request.files.getlist("files"))
+        # Raw browser uploads stream straight to the selected disk, avoiding
+        # Werkzeug multipart spooling followed by a second full media copy.
+        if request.mimetype == "application/octet-stream":
+            name = unquote(request.headers.get("X-Zucker-Filename", ""))
+            if not name:
+                return error_response("bad_request", "filename is required", 400)
+            files = [FileStorage(stream=request.stream, filename=name)]
+        else:
+            files = list(request.files.getlist("files"))
         if not files:
             return error_response("bad_request", "multipart field files is required", 400)
         upload_dir = app_home() / "WizardUploads"
@@ -2034,6 +2052,43 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("preview_failed", "Could not read the equirectangular 360 frame", 500)
         return send_file(io.BytesIO(result.stdout), mimetype="image/jpeg", download_name="spherical-source-frame.jpg")
 
+    @app.post("/api/v1/wizard/draft")
+    def api_wizard_draft() -> Response:
+        body = _json_body()
+        videos = body.get("videos") or []
+        if not isinstance(videos, list) or not videos or not all(isinstance(path, str) for path in videos):
+            return error_response("missing_video", t("missing_video"), 400)
+        if state.wizard.status().get("status") in {"running", "cancelling"} or (state.composition.status(state.project) or {}).get("status") in {"running", "cancelling"}:
+            return error_response("wizard_busy", "Wait until the current job finishes before creating a project.", 409)
+        try:
+            requested_id = str(body.get("project_id") or "")
+            if requested_id:
+                if state.project is None or not same_project_path(requested_id, str(state.project.folder)):
+                    return error_response("project_mismatch", "The selected project is no longer open", 409)
+                project = state.project
+            else:
+                project = _create_wizard_project(str(body.get("name") or "Jam"))
+                state.project = project
+                # Register immediately, even if a media probe later fails: the
+                # draft remains recoverable and appears in the project list.
+                _remember_project(project)
+            master = str(body.get("master") or "")
+            songs = str(body.get("songs") or "")
+            if not _project_matches_inputs(project, master, songs or None, videos):
+                result = register_selected_inputs(project, master or None, songs or None, videos, append_videos=False)
+                if not master:
+                    project.data["inputs"]["master"] = None
+                if not songs:
+                    project.data["inputs"]["songs"] = None
+                project.save()
+            result = project.snapshot()
+            if not requested_id:
+                project.data.setdefault("settings", {}).setdefault("wizard", {})["reel_logo_mode"] = "default"
+                project.save()
+            return jsonify({"project_id": str(project.folder), "project": result})
+        except (OSError, ProjectError) as exc:
+            return error_response("input_file_error", str(exc), 400)
+
     @app.post("/api/v1/wizard/prepare")
     def api_wizard_prepare() -> Response:
         body = _json_body()
@@ -2058,8 +2113,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if not state.wizard.reset():
                 return error_response("wizard_busy", "The previous wizard job is still cancelling; wait until it stops before starting a new project.", 409)
             state.composition.reset()
-            state.project = None
-            job = state.wizard.prepare(name=name or "Jam", master_path=master, songs_path=songs, video_paths=videos, platform=platform)
+            requested_id = str(body.get("project_id") or "")
+            if requested_id:
+                if state.project is None or not same_project_path(requested_id, str(state.project.folder)):
+                    return error_response("project_mismatch", "The selected project is no longer open", 409)
+                job = state.wizard.prepare_existing(state.project, platform=platform)
+            else:
+                state.project = None
+                job = state.wizard.prepare(name=name or "Jam", master_path=master, songs_path=songs, video_paths=videos, platform=platform)
             return jsonify(serialize_wizard_job(job)), 202
         except RuntimeError as exc:
             return error_response("wizard_busy", str(exc), 409)

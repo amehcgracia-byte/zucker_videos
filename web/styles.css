@@ -1809,3 +1809,7 @@ pre {
 .camera-subject-label select { max-width: 180px; }
 
 .progress-measured-update { font-size: 12px; color: #fff; }
+
+.import-chip { position: relative; display: flex; flex-direction: column; align-items: stretch; min-width: min(320px, 100%); gap: 6px; }
+.import-chip progress { width: 100%; height: 7px; accent-color: var(--accent, #89e260); }
+.import-chip small { white-space: normal; }
