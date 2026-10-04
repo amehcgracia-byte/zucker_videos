@@ -1,6 +1,11 @@
 # Zucker Editor
 
-Simple three-step app for turning Zucker Mixer audio plus raw camera clips into a finished video.
+## Download and install
+
+Public packages are listed under [GitHub Releases](https://github.com/amehcgracia-byte/zucker_videos/releases). macOS uses the normal `Zucker Editor.dmg`; copy the app into Applications. Windows uses a ZIP containing `Zucker Editor 2.4.6.exe` and its resource folder: extract everything, then run the EXE. See [README_APP.md](README_APP.md) for requirements and user guidance. A release is published only after the corresponding frozen package checks.
+
+
+Zucker Editor 2.4.6 turns master audio plus synchronized camera clips into a finished video.
 
 The user-facing UI is English-only in this build. User strings are centralized in `core/messages.py` for backend/status text and `web/strings.js` for frontend dynamic text.
 
@@ -34,11 +39,11 @@ The user-facing UI is English-only in this build. User strings are centralized i
 
 Creative logic in this version:
 
-- YouTube builds a first real multicam edit: bar-aligned cuts, 2-4 bar segment lengths, confidence-weighted camera rotation, and no silent fallback to bad sync.
+- YouTube uses music-aware Tranquilo / Animado / Frenético pacing and movement, bounded subject-safe zooms, musician rotation and camera quotas. Make another changes the run seed and creative decisions while rerendering the same plan stays reproducible.
 - Clips below the sync confidence threshold, clips with unstable second-pass sync verification, clips without usable audio, and invalid videos are excluded from multicam. If no clip qualifies, the job fails with per-clip diagnostics.
 - Manual sync overrides in `/advanced` still rescue a clip when the user has verified it by hand.
 - Instagram/TikTok use a center crop and fixed short excerpt sourced from the best-covered synced stretch.
-- All exports include the Zucker watermark, intro/outro fades, subtle per-source color normalization, and title overlays when the active ffmpeg build supports `drawtext`.
+- Exports use clean cuts by default, a watermark and intro/outro. The selected master span starts with video content; logo windows outside that span remain silent.
 - Instagram/TikTok highlight selection, automatic subject tracking, and more advanced creative pacing are still placeholders.
 
 The old technical UI is still available for debugging at:

@@ -7,7 +7,7 @@ from typing import Any
 
 from core.stages.base import stable_fingerprint
 
-FIXED_MOTION_VERSION = 2
+FIXED_MOTION_VERSION = 3
 MAX_ZOOM = 1.38
 ZOOM_MOVES = {"full_zoom_in", "zoom_in_center", "zoom_out_center", "zoom_in", "zoom_out",
               "zoom_in_very_slow", "zoom_out_very_slow", "subject_reframe", "subject_release"}
@@ -33,7 +33,7 @@ def _finite(value: float, default: float) -> float:
 def fixed_camera_motion(index: int, target_x: float = .5, target_y: float = .5, *,
                         duration: float = 4.0, seed: str = "", previous: str = "",
                         confidence: float = 1.0, allow_static: bool = True,
-                        preferred: str = "", gentle: bool = False) -> dict[str, Any]:
+                        preferred: str = "", gentle: bool = False, style: str = "tranquilo") -> dict[str, Any]:
     """Select one authored family; bound travel by seconds and subject position.
 
     Crop endpoints and the complete straight-line path must keep the anchor
@@ -54,8 +54,14 @@ def fixed_camera_motion(index: int, target_x: float = .5, target_y: float = .5, 
     kind = preferred if preferred in eligible else rng.choice(eligible)
     very_slow = "very_slow" in kind or not known
     rate = .018 if not known else .009 if very_slow else .025
+    expressive = known and style in {"animado", "frenetico"}
+    if expressive:
+        rate = .07 if style == "animado" else .16
+        very_slow = False
     travel = min(.10 if not known else .04 if very_slow else .16, duration * rate) * rng.uniform(.9, 1.0)
-    if gentle:
+    if expressive:
+        travel = min(.26 if style == "animado" else .32, duration * rate) * rng.uniform(.9, 1.0)
+    if gentle and not expressive:
         travel = min(travel, .10)
     z0 = z1 = 1.0
     x0 = x1 = y0 = y1 = .5
@@ -66,10 +72,12 @@ def fixed_camera_motion(index: int, target_x: float = .5, target_y: float = .5, 
         if "out" in kind or kind == "subject_release":
             z0, z1 = z1, z0
     elif kind != "full_static":
-        z0 = z1 = 1.12 if gentle else 1.18
+        z0 = z1 = 1.12 if gentle and not expressive else 1.18
         # Pan travel in source space stays below 1% per second, and much
         # smaller vertically/diagonally. Never combine a pan with a zoom.
         span = min(.07, duration * .012) * rng.uniform(.8, 1.0)
+        if expressive:
+            span = min(.14, duration * (.035 if style == "animado" else .07)) * rng.uniform(.8, 1.0)
         if kind in HORIZONTAL_MOVES:
             x0, x1 = {
                 "left_to_center": (.5-span, .5), "center_to_right": (.5, .5+span),
@@ -100,6 +108,7 @@ def fixed_camera_motion(index: int, target_x: float = .5, target_y: float = .5, 
         y0 = bounded_pan(y0, ty, z0, .35, .65)
         y1 = bounded_pan(y1, ty, z1, .35, .65)
     return {"type": "ken_burns", "movement": kind, "library_version": FIXED_MOTION_VERSION,
+            "music_style": style, "easing": "accelerate" if expressive and lock else "smooth",
             "seed": seed, "duration_sec": round(duration, 6), "subject_confidence": min(1.0, max(0.0, _finite(confidence, 0.0))),
             "subject_fallback": not known, "speed": "very_slow" if very_slow else "slow",
             "speed_factor": 1.0, "lock_target": lock, "target_x": round(tx, 4), "target_y": round(ty, 4),

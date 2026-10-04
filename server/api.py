@@ -1681,6 +1681,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             elif matching_project:
                 state.project = matching_project
                 state.wizard.prepare_existing(matching_project, platform=platform)
+            seed_project = state.wizard._prepared_project or state.project
+            if seed_project is not None:
+                seed_project.data.setdefault("settings", {}).setdefault("wizard", {})["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
+                seed_project.save()
             job = state.wizard.start(**options)
             return jsonify(serialize_wizard_job(job)), 202
         except RuntimeError as exc:

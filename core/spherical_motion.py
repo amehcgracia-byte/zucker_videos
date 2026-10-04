@@ -14,26 +14,32 @@ import numpy as np
 from core.ffmpeg import FFmpegError
 from core.spherical_view import view_parameters
 
-RECIPE_VERSION = 2
+RECIPE_VERSION = 3
 MOVEMENTS = ("push_in", "pull_out", "pan_left", "pan_right", "close_hold", "reveal", "settle", "hold")
 
 
 def motion_pose(shot: dict[str, Any], duration: float, seconds: float) -> tuple[float, float, float]:
     yaw, pitch, fov = (float(shot.get(key) or default) for key, default in (("yaw", 0), ("pitch", 0), ("fov", 82)))
-    if not shot.get("runtime_motion_enabled") or duration < 2:
+    style = str(shot.get("music_style") or "tranquilo")
+    if not shot.get("runtime_motion_enabled") or duration < (1 if style == "frenetico" else 2):
         return yaw, pitch, fov
     amount = min(1., max(0., seconds / max(.001, duration - 1 / 30)))
     eased = amount * amount * (3 - 2 * amount)
+    if shot.get("motion_easing") == "accelerate":
+        eased = amount ** 1.8
     movement = str(shot.get("movement") or "pan_right")
     minimum_fov = min(55., fov)
     delta = min(10., fov * .12, max(0., fov - minimum_fov))
+    if style in {"animado", "frenetico"}:
+        delta = min(22., fov * (.23 if style == "animado" else .32), max(0., fov - minimum_fov))
     if movement == "push_in": fov -= delta * eased
     elif movement == "pull_out": fov -= delta * (1 - eased)
     elif movement == "close_hold": fov = max(minimum_fov, fov * .82)
     elif movement == "reveal": fov -= delta * (1 - eased); yaw += 2 * eased
     elif movement == "settle": fov -= delta * eased; yaw -= 2 * eased
     elif movement in {"pan_left", "pan_right"}:
-        yaw += (-1 if movement == "pan_left" else 1) * min(4., duration * .6) * eased
+        span = min(4., duration * .6) if style == "tranquilo" else min(fov * .14, duration * (3 if style == "animado" else 6))
+        yaw += (-1 if movement == "pan_left" else 1) * span * eased
     return yaw, pitch, max(minimum_fov, fov)
 
 

@@ -26,7 +26,7 @@ El inicio y el final elegidos limitan el audio del máster. Las cabeceras no añ
 
 ## Windows
 
-El repositorio incluye `tools/build_windows.ps1`, que genera un ZIP con `Zucker Editor <versión>.exe` y sus recursos. El ZIP debe extraerse completo antes de abrir el EXE; no basta con copiar solo el ejecutable. Se necesita FFmpeg/FFprobe disponible en PATH. La existencia del script no implica que haya un EXE publicado: cada entrega Windows debe comprobarse por versión y commit.
+El repositorio incluye `tools/build_windows.ps1`, que genera un ZIP con `Zucker Editor <versión>.exe` y sus recursos. El ZIP debe extraerse completo antes de abrir el EXE; no basta con copiar solo el ejecutable. El paquete incluye FFmpeg/FFprobe y sus avisos de distribución. La existencia del script no implica que haya un EXE publicado: cada entrega Windows debe comprobarse por versión y commit.
 
 ## Datos y limpieza
 
@@ -55,3 +55,11 @@ Para diagnosticar un problema, conserva:
 - el `report` del asistente.
 
 No borres los vídeos originales para “limpiar” el proyecto.
+
+## Dirección musical y variaciones — 2.4.6
+
+YouTube adapta cortes y movimientos a la energía suavizada por compás: Tranquilo (5–7 s), Animado (2,5–4 s) y Frenético (1–2 s en picos claros). Los finales y la cobertura pueden requerir duraciones distintas para conservar el tramo completo. Los zooms animados aceleran; paneos y zooms respetan el sujeto y los límites de encuadre. Si no hay evidencia del sujeto, se mantiene un movimiento central conservador. Planeta puede aparecer brevemente en una sección intensa con escenario 360 calibrado, separado al menos 40 s de otro planeta.
+
+Hacer otro genera una semilla nueva: varían la colocación de cortes sobre la rejilla musical, los desempates de cámaras y los movimientos. La misma semilla conserva la reproducibilidad del render. Si solo hay una cámara o una vista válida, las alternativas quedan limitadas al material disponible. Las cuotas y la alternancia de músicos siguen activas.
+
+Versiones: la antigua 2.1.35 equivale a 2.4.5; esta entrega es 2.4.6. Cada diez revisiones aumenta el número central: 2.4.9 → 2.5.0.

@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,10 @@ MEDIA_COMMAND_TIMEOUT_SEC = 300
 
 def locate_executable(name: str) -> str | None:
     """Resolve an executable from PATH and common macOS Homebrew locations."""
+    if getattr(sys, "_MEIPASS", None):
+        bundled = Path(sys._MEIPASS) / "bin" / (name + (".exe" if os.name == "nt" else ""))
+        if bundled.is_file():
+            return str(bundled.resolve())
     for folder in COMMON_BIN_DIRS:
         candidate = folder / name
         if candidate.exists() and os.access(candidate, os.X_OK):

@@ -1726,7 +1726,7 @@ def _spherical_segment_parts(segment: dict[str, Any], previous_shot: dict[str, A
         return []
     if FORCE_STATIC_360_ISOLATION:
         return [_spherical_part(segment, 0.0, duration, shot)]
-    if duration < SPHERICAL_SHORT_SEGMENT_STATIC_SEC:
+    if duration < SPHERICAL_SHORT_SEGMENT_STATIC_SEC and shot.get("music_style") != "frenetico":
         return [_spherical_part(segment, 0.0, duration, shot)]
     parts: list[dict[str, Any]] = []
     current = 0.0
@@ -3098,7 +3098,9 @@ def _ken_burns_filter(motion: dict[str, Any], platform: str, duration: float) ->
     # It prevents an out-of-bounds crop from wrapping/reversing into a second
     # apparent movement.
     progress = f"min(1,n/{max(1, frame_count - 1)}*{speed_factor:.6f})"
-    if motion.get("library_version"):
+    if motion.get("easing") == "accelerate":
+        progress = f"pow(({progress}),1.8)"
+    elif motion.get("library_version"):
         progress = f"(({progress})*({progress})*(3-2*({progress})))"
     zoom_expr = f"({zoom_start:.6f}+({zoom_end:.6f}-{zoom_start:.6f})*{progress})"
     if motion.get("lock_target"):

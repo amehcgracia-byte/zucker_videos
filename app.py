@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import multiprocessing
@@ -87,6 +88,11 @@ def main() -> None:
     if args.operator_avoidance_probe:
         raise SystemExit(_run_operator_avoidance_probe())
     if args.selftest:
+        report = os.environ.get("ZUCKER_SELFTEST_REPORT")
+        if report:
+            # Windows GUI executables have no stdout; retain machine-readable proof.
+            with Path(report).open("w", encoding="utf-8") as output, contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                raise SystemExit(_run_selftest())
         raise SystemExit(_run_selftest())
     config = load_global_config()
     # A normal relaunch is intentionally a fresh Step 1 session. Existing
