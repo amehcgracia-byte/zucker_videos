@@ -149,7 +149,7 @@ def test_spherical_thumbnail_uses_the_segment_landmark_pose() -> None:
     })
     assert singer != drummer
     assert "yaw=25.000" in singer and "h_fov=82.000" in singer
-    assert "yaw=-150.000" in drummer and "h_fov=125.000" in drummer
+    assert "yaw=-150.000" in drummer and "h_fov=110.000" in drummer
 
 
 def test_review_uses_current_saved_landmark_and_invalidates_pose_cache(tmp_path: Path) -> None:
@@ -207,3 +207,32 @@ def test_spherical_review_pool_uses_slot_record_and_many_distinct_poses(tmp_path
     spherical = [item for item in pool if item.get("spherical_shot")]
     assert len(spherical) >= 12
     assert {round(float(item["clip_start_sec"]), 3) for item in spherical} == {2.0}
+
+
+def test_replacing_one_pose_keeps_other_project_thumbnails(tmp_path, monkeypatch):
+    project = create_project('Stable frames', str(tmp_path / 'stable.zuckervid'))
+    source = tmp_path / 'camera.mp4'; source.write_bytes(b'source')
+    segments = [dict(source_path=str(source),clip_path=str(source),clip_start_sec=i,master_start_sec=i,duration_sec=1) for i in (0,2)]
+    artifact_path(project,'edit_plan.json').write_text(json.dumps(dict(segments=segments)))
+    artifact_path(project,'coverage.json').write_text('{}')
+    first = review_items(project,render_missing=False)
+    root = project.cache_dir / 'shot_review' / 'assets-v2'
+    for item in first:(root / item['thumbnail_asset']).write_bytes(b'complete thumbnail')
+    segments[0]['clip_start_sec'] = .5
+    artifact_path(project,'edit_plan.json').write_text(json.dumps(dict(segments=segments)))
+    after = review_items(project,render_missing=False)
+    assert after[0]['thumbnail_status'] == 'missing'
+    assert after[1]['thumbnail'] == review_items(project,render_missing=False)[1]['thumbnail']
+    assert after[1]['thumbnail_status'] == 'ready'
+
+
+def test_project_candidate_reserve_survives_reopen(tmp_path, monkeypatch):
+    import core.shot_review as module
+    project = create_project('Reserve', str(tmp_path / 'reserve.zuckervid'))
+    segment = dict(source_path='/tmp/source.mp4',master_start_sec=10,duration_sec=2)
+    calls=[]
+    monkeypatch.setattr(module,'_review_candidate_pool',lambda *args:(calls.append(1) or [dict(path='/tmp/alternative.mp4')], 'test reserve'))
+    first=module._project_candidate_pool(project,{},[segment],segment,'youtube')
+    reopened=load_project(str(project.folder))
+    assert module._project_candidate_pool(reopened,{},[segment],segment,'youtube') == first
+    assert calls == [1]

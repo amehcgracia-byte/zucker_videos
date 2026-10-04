@@ -2297,13 +2297,17 @@ function replaceReviewShot(index, button) {
       renderShotReview(result.items || []);
       const unavailable = result.replacement_diagnostics?.some((item) => Number(item.index) === Number(index) && item.status === "unavailable");
       if (unavailable) showToast("No hay más frames alternativos para esta toma", true);
-      else refreshShotReviewAfterReplace();
+      else refreshShotReviewAfterReplace(0, result.replaced || [Number(index)]);
     })
     .catch((error) => showToast(error.message, true))
     .finally(() => { if (button) button.disabled = false; });
 }
 
-function refreshShotReviewAfterReplace(attempt = 0) {
+function refreshShotReviewAfterReplace(attempt = 0, indices = null, startedAt = Date.now()) {
+  if (Date.now() - startedAt > 180000) {
+    showToast("La miniatura ha tardado demasiado. Reabre Frames para reintentar; el montaje está guardado.", true);
+    return;
+  }
   // Rendering time depends heavily on the source (especially 360 footage).
   // Poll until the worker reports ready or failed; there is no arbitrary
   // 10-second cutoff that can turn an in-flight render into a grey card.
@@ -2313,19 +2317,23 @@ function refreshShotReviewAfterReplace(attempt = 0) {
       .then((result) => {
         const items = result.items || [];
         renderShotReview(items);
-        const pending = items.some((item) => ["missing", "rendering", "generating"].includes(item.thumbnail_status) && !item.thumbnail_error);
-        if (pending) refreshShotReviewAfterReplace(attempt + 1);
+        const pending = items.some((item) => (!indices || indices.includes(Number(item.index))) && ["missing", "rendering", "generating"].includes(item.thumbnail_status) && !item.thumbnail_error);
+        if (pending) refreshShotReviewAfterReplace(attempt + 1, indices, startedAt);
       })
       .catch((error) => {
         // A transient HTTP failure is still a pending render. Keep the old
         // thumbnail in place and retry with the same adaptive backoff.
         logFrontendError(`review thumbnail poll failed: ${error.message}`, error.stack || "");
-        refreshShotReviewAfterReplace(attempt + 1);
+        refreshShotReviewAfterReplace(attempt + 1, indices, startedAt);
       });
   }, delay);
 }
 
-function refreshShotReviewAfterInitialLoad(attempt = 0) {
+function refreshShotReviewAfterInitialLoad(attempt = 0, startedAt = Date.now()) {
+  if (Date.now() - startedAt > 300000) {
+    showToast("La preparación de miniaturas sigue pendiente. Reabre Frames para reintentar.", true);
+    return;
+  }
   const delay = Math.min(3000, 400 + attempt * 250);
   setTimeout(() => {
     api("/wizard/review?render=0")
@@ -2333,11 +2341,11 @@ function refreshShotReviewAfterInitialLoad(attempt = 0) {
         const items = result.items || [];
         renderShotReview(items);
         const pending = items.some((item) => ["missing", "rendering", "generating"].includes(item.thumbnail_status) && !item.thumbnail_error);
-        if (pending) refreshShotReviewAfterInitialLoad(attempt + 1);
+        if (pending) refreshShotReviewAfterInitialLoad(attempt + 1, startedAt);
       })
       .catch((error) => {
         logFrontendError(`review thumbnail poll failed: ${error.message}`, error.stack || "");
-        refreshShotReviewAfterInitialLoad(attempt + 1);
+        refreshShotReviewAfterInitialLoad(attempt + 1, startedAt);
       });
   }, delay);
 }
@@ -3614,7 +3622,7 @@ document.addEventListener("click", (event) => {
           const indexes = unavailable.map((item) => `#${Number(item.index) + 1}`).join(", ");
           showToast(`No alternative coverage for ${indexes}. The shot was kept and marked unavailable.`);
         }
-        if ((result.replaced || []).length) refreshShotReviewAfterReplace();
+        if ((result.replaced || []).length) refreshShotReviewAfterReplace(0, result.replaced);
       })
       .catch((error) => showToast(error.message, true))
       .finally(() => { target.disabled = false; });

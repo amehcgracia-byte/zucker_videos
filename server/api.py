@@ -1841,6 +1841,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         rejected = body.get("rejected") or []
         if not project or not isinstance(rejected, list) or not all(isinstance(value, int) for value in rejected):
             return error_response("bad_request", "rejected must be a list of shot indexes", 400)
+        if state.wizard.status().get("status") in {"running", "cancelling"}:
+            return error_response("wizard_busy", "Espera o cancela la exportación antes de cambiar frames", 409)
         try:
             result = replace_slots(project, rejected)
             replaced = {int(value) for value in result.get("replaced", [])}
