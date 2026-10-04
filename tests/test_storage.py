@@ -130,3 +130,38 @@ def test_switching_storage_keeps_existing_project_discovery(home,tmp_path):
     storage.save_data_root(str(tmp_path/'new'))
     from server.projects import list_projects
     assert any(p['name']=='Existing' for p in list_projects())
+
+
+def test_matching_relocated_inputs_reuses_existing_project(home, tmp_path):
+    from core.project import file_record
+    from server.projects import find_project_by_inputs
+    root=storage.save_data_root(str(tmp_path/'external'))
+    media=root/'WizardUploads'/'take.mp4';media.parent.mkdir();media.write_bytes(b'video')
+    old_mtime=12345.6789
+    (root/'migration-signatures.json').write_text(json.dumps({str(media):dict(bytes=media.stat().st_size,destination_mtime_ns=media.stat().st_mtime_ns,source_mtime=old_mtime,identity_path='/old/take.mp4')}))
+    project=create_project('Existing',str(root/'Projects'/'Existing.zuckervid'))
+    project.data['inputs']['videos']=[file_record(str(media))];project.save()
+    assert find_project_by_inputs('',None,[str(media)]).folder==project.folder
+
+
+def test_registered_previous_session_project_can_be_deleted(home,tmp_path):
+    from server.projects import delete_project_folder
+    root=storage.save_data_root(str(tmp_path/'external'))
+    old=tmp_path/'old-session';new=tmp_path/'new-session';old.mkdir();new.mkdir()
+    (root/'config.json').write_text(json.dumps({'project_root':str(new),'project_roots':[str(old),str(new)]}))
+    project=create_project('Old session',str(old/'Old.zuckervid'))
+    delete_project_folder(str(project.folder))
+    assert not project.folder.exists()
+    unrelated=create_project('Unrelated',str(tmp_path/'unregistered'/'Unrelated.zuckervid'))
+    with pytest.raises(ValueError):delete_project_folder(str(unrelated.folder))
+    assert unrelated.folder.exists()
+
+
+def test_external_cleanup_keeps_recoverable_trash_on_external_volume(home,tmp_path,monkeypatch):
+    from core import trash
+    external=tmp_path/'mounted';external.mkdir();clip=external/'cache.mp4';clip.write_bytes(b'cached video')
+    monkeypatch.setattr(trash,'_volume_root',lambda p: home if p==home else external)
+    target=trash.move_to_trash(clip)
+    assert target==external/'.ZuckerEditorTrash'/'cache.mp4'
+    assert target.read_bytes()==b'cached video'
+    assert not (home/'.Trash').exists()

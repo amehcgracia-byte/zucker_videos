@@ -8,7 +8,7 @@ from typing import Any
 
 from core.project import Project, ProjectError, load_project
 from server.inbox import app_home, load_global_config
-from core.storage import project_locations, require_available
+from core.storage import project_locations, require_available, media_signature
 
 
 def projects_root() -> Path:
@@ -96,7 +96,9 @@ def input_signature(master: str, songs: str | None, videos: list[str]) -> dict[s
 def delete_project_folder(project_path: str, keep_exports: bool = False) -> dict[str, Any]:
     """Delete one project folder, optionally moving exports out first."""
     folder = Path(project_path).expanduser().resolve()
-    folder.relative_to(projects_root().resolve())
+    allowed = {root.resolve() for root in project_locations()}
+    if folder.parent not in allowed or folder.suffix != ".zuckervid":
+        raise ValueError("Project is outside the registered project locations")
     project = load_project(str(folder))
     kept_exports: list[str] = []
     if keep_exports and project.exports_dir.exists():
@@ -144,8 +146,7 @@ def path_signature(path: str | None) -> dict[str, Any]:
     if not path:
         raise ValueError("path is required")
     candidate = Path(path).expanduser().resolve()
-    stat = candidate.stat()
-    return {"path": str(candidate), "size": stat.st_size, "mtime": stat.st_mtime}
+    return {"path": str(candidate), **media_signature(candidate)}
 
 
 def record_signature(record: dict[str, Any]) -> dict[str, Any]:
