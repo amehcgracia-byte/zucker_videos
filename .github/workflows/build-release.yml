@@ -1,0 +1,50 @@
+name: Build Zucker Editor releases
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "fix/native-safe-camera-moves"
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-build.txt
+      - name: Install media tools and prepare packaging test audio
+        shell: pwsh
+        run: |
+          choco install ffmpeg --no-progress -y
+          if ($LASTEXITCODE -ne 0) { throw "FFmpeg installation failed" }
+          $bin = (Get-ChildItem "C:\ProgramData\chocolatey\lib\ffmpeg*" -Recurse -Filter ffmpeg.exe | Select-Object -First 1).DirectoryName
+          Add-Content $env:GITHUB_PATH $bin
+          & "$bin\ffmpeg.exe" -y -f lavfi -i "sine=frequency=440:duration=8" -ar 16000 selftest.wav
+          if ($LASTEXITCODE -ne 0) { throw "Packaging audio fixture failed" }
+      - name: Build Windows package
+        shell: pwsh
+        env:
+          ZUCKER_SELFTEST_AUDIO: ${{ github.workspace }}\selftest.wav
+        run: ./tools/build_windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zucker-editor-windows
+          path: |
+            dist/*-windows.zip
+            dist/packaged-selftest-windows.log
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: windows-build-diagnostics
+          path: build/packaged-selftest-windows.log

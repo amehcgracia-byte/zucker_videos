@@ -14,7 +14,7 @@ def test_director_score_gates_no_face_and_high_motion_windows():
     assert "camera moving" in bad_reasons
 
 
-def test_quality_filtered_sources_excludes_bad_sony_window():
+def test_quality_filtered_sources_keeps_bad_sony_window_as_soft_diagnostic():
     sony = {
         "path": "/tmp/sony.mp4",
         "filename": "sony.mp4",
@@ -33,7 +33,7 @@ def test_quality_filtered_sources_excludes_bad_sony_window():
     first = _quality_filtered_sources([sony, iphone], 0, 2, stats)
     second = _quality_filtered_sources([sony, iphone], 2, 4, stats)
 
-    assert [source["filename"] for source in first] == ["iphone.mov"]
+    assert {source["filename"] for source in first} == {"sony.mp4", "iphone.mov"}
     assert {source["filename"] for source in second} == {"sony.mp4", "iphone.mov"}
     assert stats["/tmp/sony.mp4"]["director_rejected_segments"] == 1
     assert stats["/tmp/sony.mp4"]["director_reject_reasons"] == {"no face": 1}

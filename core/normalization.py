@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections import deque
 import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import logging
 import math
@@ -13,9 +15,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core.ffmpeg import FFmpegError, tool_status
+from core.build_info import build_info
 from core.messages import t
 from core.project import Project
 from core.stages.base import stable_fingerprint
+from core.trash import move_to_trash
 
 Progress = Callable[[int, str], None]
 
@@ -34,23 +38,72 @@ LOGGER = logging.getLogger(__name__)
 
 EQUIRECT_FILTER = "v360=input=equirect:output=flat:yaw=0:pitch=0:h_fov=100:v_fov=67.673:w=1280:h=720,fps=30,setpts=PTS-STARTPTS,format=yuv420p"
 CACHE_SUBDIRS = ("proxies", "normalized", "segments", "audio", "envelopes", "thumbnails")
+SEGMENT_CACHE_MAX_BYTES = 40 * 1024 * 1024 * 1024
+SEGMENT_CACHE_MAX_AGE_DAYS = 14
+PROXY_TIMEOUT_MIN_SEC = 300
+PROXY_TIMEOUT_PER_SOURCE_SEC = 12
+PROXY_TIMEOUT_MARGIN_SEC = 120
+
+
+def ensure_global_cache_dirs() -> Path:
+    """Recreate disposable cache directories after manual cleanup."""
+    root = global_cache_root()
+    root.mkdir(parents=True, exist_ok=True)
+    for name in CACHE_SUBDIRS:
+        (root / name).mkdir(parents=True, exist_ok=True)
+    cleanup_expired_segment_cache()
+    try:
+        from core.retention import cleanup_automatic_retention
+        cleanup_automatic_retention()
+    except Exception:
+        LOGGER.debug("Automatic storage retention skipped", exc_info=True)
+    return root
 
 
 def ensure_normalized_space(project: Project, records: list[dict[str, Any]]) -> None:
     """Fail early when cache storage is unlikely to fit normalized outputs."""
-    estimate = sum(int(record.get("size") or 0) for record in records) // 4
+    # Proxy size is determined by the output bitrate and duration, not by the
+    # often much larger camera-file byte size. The old size/4 heuristic made a
+    # valid disk look full for high-bitrate PCM/H.264 camera files.
+    estimate = 0
+    fallback_bytes = 0
+    for record in records:
+        probe = record.get("probe") or {}
+        if proxy_transcode_compliant(probe):
+            # The original is already a valid analysis proxy and produces no
+            # cache output, so it must not consume the preflight budget.
+            continue
+        duration = float(probe.get("duration") or 0.0)
+        if duration > 0:
+            estimate += int(duration * (2_500_000 + 192_000) / 8 * 1.35)
+        else:
+            fallback_bytes += int(record.get("size") or 0) // 4
+    estimate += fallback_bytes
     if estimate <= 0:
         return
-    root = global_cache_root()
-    root.mkdir(parents=True, exist_ok=True)
-    free = shutil.disk_usage(root).free
+    root = ensure_global_cache_dirs()
+    usage = shutil.disk_usage(root)
+    free = usage.free
+    LOGGER.info(
+        "Normalization cache preflight root=%s device=%d free_bytes=%d estimate_bytes=%d required_bytes=%d records=%d",
+        root.resolve(),
+        root.stat().st_dev,
+        free,
+        estimate,
+        estimate * 2,
+        len(records),
+    )
     if free < estimate * 2:
-        raise RuntimeError(t("not_enough_space"))
+        raise RuntimeError(
+            f"{t('not_enough_space')} Available: {free / (1024 ** 3):.1f} GB; "
+            f"estimated requirement: {(estimate * 2) / (1024 ** 3):.1f} GB; cache: {root.resolve()}"
+        )
 
 
 def normalize_video_record(project: Project, record: dict[str, Any], progress: Progress) -> dict[str, Any]:
     """Create or reuse the low-resolution proxy for one validated video record."""
     source = Path(record["path"]).expanduser().resolve()
+    LOGGER.info("Normalization start source=%s size_bytes=%s", source, record.get("size"))
     destination = normalized_path(project, record)
     signature = _source_signature(source)
     key = cache_key_for_signature(source, signature)
@@ -100,6 +153,10 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
     if probe.get("projection") == "equirect":
         LOGGER.info("Normalizing equirectangular source %s with probe=%s filter=%s", source, probe, filtergraph)
     try:
+        LOGGER.info(
+            "Proxy ffmpeg start source=%s destination=%s duration=%.3f fps=%.3f codec=h264_videotoolbox",
+            source, tmp_path, duration, fps,
+        )
         _run_ffmpeg_progress(
             _normalization_command(source, tmp_path, fps, filtergraph, "h264_videotoolbox", hwaccel=True, paired_source=_paired_source(record)),
             duration,
@@ -108,9 +165,14 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
         )
         encode_path = "hardware"
         LOGGER.info("Proxy generated with hardware decode/encode for %s", source)
-    except FFmpegError:
+    except FFmpegError as exc:
+        LOGGER.warning("Proxy hardware encode failed source=%s error=%s; retrying software", source, exc)
         if tmp_path.exists():
             tmp_path.unlink()
+        LOGGER.info(
+            "Proxy ffmpeg start source=%s destination=%s duration=%.3f fps=%.3f codec=libx264",
+            source, tmp_path, duration, fps,
+        )
         _run_ffmpeg_progress(_normalization_command(source, tmp_path, fps, filtergraph, "libx264", paired_source=_paired_source(record)), duration, source.name, progress)
         encode_path = "software"
         LOGGER.info("Proxy generated with software fallback for %s", source)
@@ -135,6 +197,7 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
         normalized["projection"] = "equirect"
         normalized["reframe"] = {"yaw": 0, "pitch": 0, "h_fov": 100, "width": PROXY_MAX_WIDTH, "height": PROXY_MAX_HEIGHT}
     record["normalized"] = normalized
+    LOGGER.info("Normalization complete source=%s destination=%s encode_path=%s", source, destination, encode_path)
     return normalized
 
 
@@ -254,6 +317,95 @@ def cache_status() -> dict[str, Any]:
     return {"path": str(root), "size_bytes": size, "counts": counts}
 
 
+def cleanup_expired_segment_cache(
+    projects_root: Path | None = None,
+    max_age_days: int = SEGMENT_CACHE_MAX_AGE_DAYS,
+    max_bytes: int = SEGMENT_CACHE_MAX_BYTES,
+) -> dict[str, Any]:
+    """Keep global render segments bounded and remove stale recipe versions.
+
+    Segment files are disposable and globally keyed. A sidecar from an older
+    build cannot pass the renderer's attestation check, so it is immediately
+    eligible unless a live project explicitly references that segment. Current
+    segments are retained for 14 days, then the oldest unreferenced files are
+    evicted until the cache is at or below 40 GB.
+    """
+    folder = global_cache_root() / "segments"
+    if not folder.exists():
+        return {"deleted_files": 0, "deleted_bytes": 0, "remaining_bytes": 0}
+    current_commit = str(build_info().get("git_commit") or "unknown")
+    referenced = _referenced_segment_names(projects_root)
+    now = time.time()
+    entries: list[tuple[Path, Path | None, int, float, bool, bool]] = []
+    total = 0
+    for segment in folder.glob("*.mp4"):
+        try:
+            size = segment.stat().st_size
+            mtime = segment.stat().st_mtime
+        except OSError:
+            continue
+        sidecar = segment.with_suffix(segment.suffix + ".json")
+        commit = ""
+        if sidecar.exists():
+            try:
+                import json
+                commit = str(json.loads(sidecar.read_text(encoding="utf-8")).get("git_commit") or "")
+            except (OSError, ValueError, json.JSONDecodeError):
+                commit = ""
+        protected = segment.name in referenced or sidecar.name in referenced
+        entries.append((segment, sidecar if sidecar.exists() else None, size, mtime, protected or commit == current_commit, commit != current_commit))
+        total += size + (sidecar.stat().st_size if sidecar.exists() else 0)
+    deleted_files = 0
+    deleted_bytes = 0
+    for segment, sidecar, size, mtime, protected, stale_recipe in sorted(entries, key=lambda item: item[3]):
+        expired = (now - mtime) > max_age_days * 86400
+        over_limit = total > max_bytes
+        if protected or not (stale_recipe or expired or over_limit):
+            continue
+        for path in (segment, sidecar):
+            if path is None:
+                continue
+            try:
+                bytes_removed = path.stat().st_size
+                move_to_trash(path)
+            except OSError:
+                continue
+            deleted_files += 1
+            deleted_bytes += bytes_removed
+            total -= bytes_removed
+    return {"deleted_files": deleted_files, "deleted_bytes": deleted_bytes, "remaining_bytes": total}
+
+
+def _referenced_segment_names(projects_root: Path | None = None) -> set[str]:
+    """Find segment basenames explicitly retained by live project artifacts."""
+    import re
+    root = Path(projects_root or (Path.home() / "ZuckerVideos" / "Projects")).expanduser()
+    names: set[str] = set()
+    if not root.exists():
+        return names
+    # Inventory once. Previously every project JSON (including frame banks)
+    # re-listed the cache and tested every filename in Python.
+    candidates = {path.name for path in (root.parent / "Cache" / "segments").glob("*.mp4")}
+    if not candidates:
+        return names
+    # Render-cache keys are 24 lowercase hexadecimal characters. Match that
+    # shape once in C, then intersect with the actual inventory. Legacy names
+    # retain the original substring matching behavior.
+    matcher = re.compile(r"\.mp4")
+    legacy = [name for name in candidates if not re.fullmatch(r"[0-9a-f]{24}\.mp4", name)]
+    for path in root.rglob("*.json"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        found = {text[max(0, match.start() - 24):match.end()] for match in matcher.finditer(text)} & candidates
+        found.update(name for name in legacy if name in text)
+        for name in found:
+            names.add(name)
+            names.add(name + ".json")
+    return names
+
+
 def cleanup_unreferenced_cache(projects_root: Path | None = None) -> dict[str, Any]:
     """Delete global cache files whose source key is not referenced by any project."""
     root = global_cache_root()
@@ -273,7 +425,7 @@ def cleanup_unreferenced_cache(projects_root: Path | None = None) -> dict[str, A
                 continue
             try:
                 size = path.stat().st_size
-                path.unlink()
+                move_to_trash(path)
             except OSError:
                 continue
             deleted_files += 1
@@ -497,12 +649,39 @@ def _paired_source(record: dict[str, Any]) -> Path | None:
 
 
 def _run_ffmpeg_progress(command: list[str], duration: float, filename: str, progress: Progress) -> None:
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    LOGGER.info("ffmpeg normalization process start filename=%s command=%s", filename, " ".join(command))
+    # Consume stderr together with the progress stream. Keeping stderr in a
+    # separate pipe while reading only stdout can deadlock ffmpeg when a
+    # problematic/verbose source fills the stderr pipe.
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
+    )
     assert process.stdout is not None
     current = 0
     last_emit = 0.0
+    diagnostic_tail: deque[str] = deque(maxlen=100)
+    timeout_sec = max(PROXY_TIMEOUT_MIN_SEC, duration * PROXY_TIMEOUT_PER_SOURCE_SEC + PROXY_TIMEOUT_MARGIN_SEC)
+    timed_out = False
+
+    def stop_stuck_process() -> None:
+        nonlocal timed_out
+        timed_out = True
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+    watchdog = threading.Timer(timeout_sec, stop_stuck_process)
+    watchdog.daemon = True
+    watchdog.start()
     try:
         for line in process.stdout:
+            diagnostic_tail.append(line)
             match = re.match(r"out_time_ms=(\d+)", line.strip())
             if not match or duration <= 0:
                 continue
@@ -519,9 +698,18 @@ def _run_ffmpeg_progress(command: list[str], duration: float, filename: str, pro
         process.kill()
         process.wait()
         raise
-    _, stderr = process.communicate()
+    finally:
+        watchdog.cancel()
+    output, _ = process.communicate()
+    if timed_out:
+        raise FFmpegError(
+            f"ffmpeg normalization timed out after {timeout_sec:.0f}s for {filename}; "
+            f"source may be damaged, unavailable, or the decoder may be stuck"
+        )
     if process.returncode != 0:
-        raise FFmpegError((stderr or "").strip() or "ffmpeg normalization failed")
+        details = "".join(diagnostic_tail) + (output or "")
+        raise FFmpegError(details.strip()[-4000:] or "ffmpeg normalization failed")
+    LOGGER.info("ffmpeg normalization process complete filename=%s", filename)
     progress(100, f"{filename} — 100%")
 
 

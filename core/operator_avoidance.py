@@ -21,12 +21,12 @@ from core.stages.base import stable_fingerprint
 
 LOGGER = logging.getLogger(__name__)
 
-CACHE_VERSION = 2
-OPERATOR_AVOIDANCE_VERSION = 2
+CACHE_VERSION = 4
+OPERATOR_AVOIDANCE_VERSION = 4
 
 # Sample the clip at ~2fps: dense enough to catch the operator stepping into
 # frame, cheap enough not to meaningfully slow ingest.
-DETECTION_FPS = 2.0
+DETECTION_FPS = 4.0
 
 # Minimum fraction of frame area a person-blob must occupy to be considered
 # a foreground camera-operator figure worth avoiding.
@@ -34,7 +34,7 @@ OPERATOR_AREA_THRESHOLD = 0.08
 
 # Minimum fraction of frame area a secondary person-blob must occupy to be
 # treated as a real subject of interest (the singer/band) rather than noise.
-SUBJECT_AREA_THRESHOLD = 0.02
+SUBJECT_AREA_THRESHOLD = 0.01
 
 # Maximum yaw shift we will apply to a 360 segment to avoid the operator.
 MAX_360_YAW_SHIFT_DEG = 20.0
@@ -205,7 +205,9 @@ def _detect_frame(net: Any, frame: Any) -> list[dict[str, float]]:
     for i in range(detections.shape[2]):
         confidence = float(detections[0, 0, i, 2])
         class_id = int(detections[0, 0, i, 1])
-        if class_id != PERSON_CLASS or confidence <= 0.4:
+        # Dark live-stage footage produces weak but useful person boxes.
+        # Area/overlap filtering below still rejects detector noise.
+        if class_id != PERSON_CLASS or confidence <= 0.30:
             continue
         x1 = float(detections[0, 0, i, 3]) * width
         y1 = float(detections[0, 0, i, 4]) * height
@@ -233,7 +235,11 @@ def _secondary_subject(ranked_blobs: list[dict[str, float]], dominant: dict[str,
     for blob in ranked_blobs[1:]:
         if blob["area_fraction"] < SUBJECT_AREA_THRESHOLD:
             break
-        if abs(blob["cx"] - dominant["cx"]) < 0.08 and abs(blob["cy"] - dominant["cy"]) < 0.08:
+        # MobileNet frequently emits two overlapping boxes for the same
+        # foreground person (especially a dark back-facing operator).  The
+        # old 8% centre gate let those duplicate boxes through as a fake
+        # "subject", causing the iPhone crop to lock back onto the operator.
+        if abs(blob["cx"] - dominant["cx"]) < 0.18 and abs(blob["cy"] - dominant["cy"]) < 0.18:
             continue
         return blob
     return None
@@ -244,17 +250,27 @@ def _secondary_subject(ranked_blobs: list[dict[str, float]], dominant: dict[str,
 # ---------------------------------------------------------------------------
 
 
-def role_for_record(projection: str | None, filename: str) -> str:
+def role_for_record(projection: str | None, filename: str, metadata: dict[str, Any] | None = None) -> str:
     """Classify a source into 360 / fixed_rear / handheld from cheap metadata.
 
     Mirrors ``core.stages.edit._source_role``; kept independent here so ingest
     doesn't need to import the edit stage.
     """
     projection_l = str(projection or "").lower()
-    filename_l = str(filename or "").lower()
-    if projection_l in {"equirect", "raw_insv"} or filename_l.endswith(".insv") or "360" in filename_l:
+    metadata = metadata or {}
+    # Projection is authoritative. A 360 camera can be mounted statically or
+    # be described as a mobile camera by the uploader; neither may demote it
+    # out of the spherical candidate pool.
+    # The filename is deliberately ignored.  In particular, Insta360's
+    # exported VID_*.mp4 names are indistinguishable from phone filenames.
+    if projection_l in {"equirect", "raw_insv"} or metadata.get("raw_360") is True:
         return "360"
-    if "iphone" in filename_l or filename_l.endswith(".mov"):
+    explicit_role = str(metadata.get("camera_role") or "").strip().lower()
+    if explicit_role in {"360", "fixed_rear", "handheld"}:
+        return explicit_role
+    if metadata.get("is_static_camera") is True or metadata.get("static_camera") is True:
+        return "fixed_rear"
+    if str(metadata.get("camera_type") or metadata.get("device_type") or "").lower() in {"iphone", "phone", "mobile", "smartphone", "static"}:
         return "fixed_rear"
     return "handheld"
 

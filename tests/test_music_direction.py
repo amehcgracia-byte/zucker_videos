@@ -1,0 +1,93 @@
+import pytest
+import math
+
+from core.music_direction import direction_at, energy_timeline
+from core.stages.edit import _youtube_multicam_plan, _spherical_motion_profile
+from core.fixed_camera_moves import fixed_camera_motion
+from core.spherical_motion import motion_pose
+from core.stages.export import _ken_burns_filter
+
+
+def test_music_boundaries_and_repeated_run_variation_keep_full_coverage():
+    beats = {"bars_sec": list(range(0, 121, 2)), "tempo": 120,
+             "energy_by_bar": [.1]*20 + [.7]*20 + [1.]*20}
+    sources = [{"path": f"/tmp/camera-{i}.mp4", "camera_id": str(i),
+                "duration_sec": 120, "role": "fixed_rear"} for i in range(3)]
+    coverage = {"platform": "youtube", "window": {"start_sec": 0, "duration_sec": 120}, "sources": sources}
+    def plan(seed):
+        return _youtube_multicam_plan(coverage, beats, {"wizard": {"variation_seed": seed}})["segments"]
+    a, b = plan("first"), plan("second")
+    assert a == plan("first")
+    assert [(s["master_start_sec"],s["clip_path"]) for s in a] != [(s["master_start_sec"],s["clip_path"]) for s in b]
+    for segments in (a, b):
+        assert sum(s["duration_sec"] for s in segments) == pytest.approx(120)
+        assert segments[0]["master_start_sec"] == 0
+        assert segments[-1]["master_start_sec"]+segments[-1]["duration_sec"] == pytest.approx(120)
+        assert {s["music_direction"]["group"] for s in segments} == {"tranquilo","animado","frenetico"}
+        quiet = [s["duration_sec"] for s in segments if s["master_start_sec"] < 34]
+        peak = [s["duration_sec"] for s in segments if 88 < s["master_start_sec"] < 114]
+        assert min(quiet) >= 5 and max(peak) <= 2
+        assert all(s["duration_sec"] >= 1 for s in segments)
+
+
+def test_energy_timeline_is_not_shifted_by_inserted_cuts():
+    timeline = energy_timeline({"bars_sec": [10,14,18,22], "energy_by_bar": [.1,.1,1.]})
+    assert direction_at(timeline, 12, "run", 20)["group"] == "tranquilo"
+    assert direction_at(timeline, 19, "run", 21)["group"] == "frenetico"
+
+
+def test_expressive_moves_preserve_safe_zoom_and_render_acceleration():
+    for style in ("tranquilo", "animado", "frenetico"):
+        move = fixed_camera_motion(2, duration=2, seed="run", preferred="zoom_in", style=style)
+        assert max(move["zoom_start"],move["zoom_end"]) <= 1.38
+        if style != "tranquilo":
+            assert "pow(" in _ken_burns_filter(move, "youtube", 2)
+    quiet = fixed_camera_motion(2, duration=2, seed="run", preferred="zoom_in")
+    active = fixed_camera_motion(2, duration=2, seed="run", preferred="zoom_in", style="animado")
+    assert active["zoom_end"]-active["zoom_start"] > quiet["zoom_end"]-quiet["zoom_start"]
+    unknown = fixed_camera_motion(2, confidence=0, style="frenetico")
+    assert unknown["subject_fallback"] and unknown["easing"] == "smooth"
+
+
+def test_native_spherical_motion_can_move_in_short_peak_cut():
+    shot = _spherical_motion_profile({"yaw":200,"pitch":0,"fov":70}, 0, True, style="frenetico")
+    shot["movement"] = "push_in"
+    assert motion_pose(shot,1.5,0) != motion_pose(shot,1.5,1.4)
+    assert motion_pose(shot,1.5,1.4)[2] >= 55
+
+
+def test_tiny_planet_has_equal_horizontal_and_vertical_pixel_scale():
+    from core.spherical_view import view_parameters
+    for aspect in (16/9, 9/16, 1):
+        view = view_parameters(0, -90, 270, aspect, "planet")
+        sx = math.tan(math.radians(view["h_fov"])/4)/aspect
+        sy = math.tan(math.radians(view["v_fov"])/4)
+        assert sx == pytest.approx(sy)
+
+
+def test_dewarp_closeup_zoom_changes_the_actual_projection_map():
+    import numpy as np
+    from core.spherical_motion import reproject_maps
+    shot = {"yaw": 200., "pitch": 0., "fov": 70., "projection_preset": "dewarp", "runtime_motion_enabled": True}
+    wide = reproject_maps((2560,1280),(640,360),shot,(200.,0.,70.))
+    close = reproject_maps((2560,1280),(640,360),shot,(200.,0.,55.))
+    assert np.abs(wide[0]-close[0]).mean() > 10
+    expected = reproject_maps((2560,1280),(640,360),{**shot,"projection_preset":"linear"},(200.,0.,55.))
+    assert np.allclose(close[0],expected[0])
+
+
+def test_planet_reveal_moves_continuously_to_calibrated_stage():
+    import numpy as np
+    from core.spherical_motion import reproject_maps
+    shot = _spherical_motion_profile(dict(type="planet",yaw=350,pitch=-90,fov=270,
+        projection_preset="tiny_planet",movement="planet_to_stage",
+        reveal_target=dict(yaw=10,pitch=-12,fov=130)),0,True,style="frenetico")
+    poses = [motion_pose(shot,3.2,t) for t in (0,1.6,3.2)]
+    assert poses[0] == pytest.approx((350,-90,270))
+    assert poses[-1] == pytest.approx((370,-12,130))
+    assert poses[0][2] > poses[1][2] > poses[2][2]
+    maps = [reproject_maps((2560,1280),(320,180),shot,pose) for pose in poses]
+    assert all(np.isfinite(m).all() for pair in maps for m in pair)
+    assert np.abs(maps[0][1]-maps[1][1]).mean() > 20
+    assert np.abs(maps[1][1]-maps[2][1]).mean() > 20
+    assert shot["spin_deg_per_sec"] == 0

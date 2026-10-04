@@ -6,10 +6,16 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
-COMMON_BIN_DIRS = (Path("/opt/homebrew/bin"), Path("/usr/local/bin"))
+COMMON_BIN_DIRS = (
+    Path("/opt/homebrew/opt/ffmpeg-full/bin"),
+    Path("/usr/local/opt/ffmpeg-full/bin"),
+    Path("/opt/homebrew/bin"),
+    Path("/usr/local/bin"),
+)
 _FFMPEG_PATH: str | None = None
 _FFPROBE_PATH: str | None = None
 
@@ -18,24 +24,73 @@ class FFmpegError(RuntimeError):
     """Raised when ffmpeg or ffprobe fails."""
 
 
+# Media tools are allowed to take longer for large camera files, but they must
+# never wait forever on a damaged file, an unavailable volume, or a stuck
+# hardware decoder.
+MEDIA_COMMAND_TIMEOUT_SEC = 300
+
+
 def locate_executable(name: str) -> str | None:
     """Resolve an executable from PATH and common macOS Homebrew locations."""
-    found = shutil.which(name)
-    if found:
-        return str(Path(found).resolve())
+    if getattr(sys, "_MEIPASS", None):
+        bundled = Path(sys._MEIPASS) / "bin" / (name + (".exe" if os.name == "nt" else ""))
+        if bundled.is_file():
+            return str(bundled.resolve())
     for folder in COMMON_BIN_DIRS:
         candidate = folder / name
         if candidate.exists() and os.access(candidate, os.X_OK):
             return str(candidate.resolve())
+    found = shutil.which(name)
+    if found:
+        return str(Path(found).resolve())
     return None
 
 
 def configure_tools(ffmpeg_path: str | None = None, ffprobe_path: str | None = None) -> dict[str, str | None]:
     """Set process-local ffmpeg/ffprobe paths and return the effective config."""
     global _FFMPEG_PATH, _FFPROBE_PATH
-    _FFMPEG_PATH = _usable_path(ffmpeg_path) or locate_executable("ffmpeg")
-    _FFPROBE_PATH = _usable_path(ffprobe_path) or locate_executable("ffprobe")
+    requested_ffmpeg = _usable_path(ffmpeg_path)
+    requested_ffprobe = _usable_path(ffprobe_path)
+    full_ffmpeg = _usable_path(str(COMMON_BIN_DIRS[0] / "ffmpeg")) or _usable_path(str(COMMON_BIN_DIRS[1] / "ffmpeg"))
+    full_ffprobe = _usable_path(str(COMMON_BIN_DIRS[0] / "ffprobe")) or _usable_path(str(COMMON_BIN_DIRS[1] / "ffprobe"))
+    # The regular Homebrew formula has no libass. Prefer the explicitly
+    # installed ffmpeg-full variant even when an older regular path is saved
+    # in the user's config; custom non-Homebrew paths remain respected.
+    if full_ffmpeg and (not requested_ffmpeg or "/Cellar/ffmpeg/" in requested_ffmpeg):
+        requested_ffmpeg = full_ffmpeg
+    if full_ffprobe and (not requested_ffprobe or "/Cellar/ffprobe/" in requested_ffprobe or "/Cellar/ffmpeg/" in requested_ffprobe):
+        requested_ffprobe = full_ffprobe
+    _FFMPEG_PATH = requested_ffmpeg or locate_executable("ffmpeg")
+    _FFPROBE_PATH = requested_ffprobe or locate_executable("ffprobe")
+    _prepend_tool_directories_to_path()
     return {"ffmpeg_path": _FFMPEG_PATH, "ffprobe_path": _FFPROBE_PATH}
+
+
+def _prepend_tool_directories_to_path() -> None:
+    """Make the configured media-tool directory visible to libraries using ``ffmpeg`` by name.
+
+    Whisper/openai-whisper launches ffmpeg through ``subprocess`` and does not
+    accept Zucker's resolved executable path. This keeps that child process
+    working in both the dev server and a packaged app whose binary lives inside
+    the bundle.
+    """
+    directories = []
+    for executable in (_FFMPEG_PATH, _FFPROBE_PATH):
+        if executable:
+            directory = str(Path(executable).resolve().parent)
+            if directory not in directories:
+                directories.append(directory)
+    current = os.environ.get("PATH", "").split(os.pathsep)
+    prefix = [directory for directory in directories if directory not in current]
+    if prefix:
+        os.environ["PATH"] = os.pathsep.join(prefix + current)
+
+
+def ensure_tools_on_path() -> dict[str, Any]:
+    """Expose the configured tool paths to subprocess-based media libraries."""
+    status = tool_status()
+    _prepend_tool_directories_to_path()
+    return status
 
 
 def _usable_path(path: str | None) -> str | None:
@@ -73,7 +128,16 @@ def ffprobe(path: str) -> dict[str, Any]:
         "-show_streams",
         str(Path(path)),
     ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=MEDIA_COMMAND_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise FFmpegError(f"ffprobe timed out after {MEDIA_COMMAND_TIMEOUT_SEC}s for {path}") from exc
     if result.returncode != 0:
         raise FFmpegError(result.stderr.strip() or f"ffprobe failed for {path}")
     return json.loads(result.stdout or "{}")
@@ -96,6 +160,15 @@ def extract_audio(video_path: str, output_path: str) -> None:
         "48000",
         str(Path(output_path)),
     ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=MEDIA_COMMAND_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise FFmpegError(f"ffmpeg audio extraction timed out after {MEDIA_COMMAND_TIMEOUT_SEC}s for {video_path}") from exc
     if result.returncode != 0:
         raise FFmpegError(result.stderr.strip() or f"ffmpeg failed for {video_path}")

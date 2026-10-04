@@ -11,9 +11,13 @@ from typing import Any
 
 from core.project import Project
 
-CAMERA_MOVE_VERSION = 1
+CAMERA_MOVE_VERSION = 3
 DEFAULT_SAMPLE_RATE_HZ = 15.0
-SMOOTHING_RADII = {"light": 2, "medium": 5, "strong": 9}
+SMOOTHING_RADII = {"light": 3, "medium": 7, "strong": 12}
+# Recorded Director movement expresses where the user wanted to look, not the
+# exact hand velocity. Keep even the lightest smoothing comfortable enough for
+# a finished edit and make this a hard render-time guarantee.
+MAX_RECORDED_YAW_RATE_DEG_PER_SEC = 40.0
 
 
 def camera_moves_dir(project: Project) -> Path:
@@ -50,7 +54,7 @@ def normalize_recorded_samples(samples: list[dict[str, Any]]) -> list[dict[str, 
             "t": round(max(0.0, t), 6),
             "yaw": round(yaw % 360.0, 6),
             "pitch": round(max(-89.0, min(89.0, pitch)), 6),
-            "fov": round(max(1.0, min(179.0, fov)), 6),
+            "fov": round(max(1.0, min(300.0, fov)), 6),
         }
         if sample.get("video_time") is not None:
             try:
@@ -86,6 +90,38 @@ def smooth_camera_curve(samples: list[dict[str, float]], radius: int = 2) -> lis
     return smoothed
 
 
+def limit_yaw_velocity(
+    samples: list[dict[str, Any]],
+    max_rate_deg_per_sec: float = MAX_RECORDED_YAW_RATE_DEG_PER_SEC,
+) -> list[dict[str, float]]:
+    """Slew-limit a recorded curve after unwrapping its yaw.
+
+    The limiter works in a continuous yaw space, so 359° -> 1° remains a
+    small positive move. It deliberately limits against the already-emitted
+    yaw rather than merely clamping each raw delta: a burst cannot reappear
+    after a wrap or after a preceding sample was held back.
+    """
+    normalized = normalize_recorded_samples(samples)
+    if len(normalized) <= 1:
+        return [dict(sample) for sample in normalized]
+    limit = max(0.0, float(max_rate_deg_per_sec))
+    raw_unwrapped = _unwrap_yaws([float(sample["yaw"]) for sample in normalized])
+    limited_yaw = [raw_unwrapped[0]]
+    output = [dict(normalized[0])]
+    for index in range(1, len(normalized)):
+        previous = normalized[index - 1]
+        current = normalized[index]
+        dt = max(0.0, float(current["t"]) - float(previous["t"]))
+        target_delta = raw_unwrapped[index] - limited_yaw[-1]
+        max_delta = limit * dt
+        if abs(target_delta) > max_delta:
+            target_delta = math.copysign(max_delta, target_delta)
+        next_yaw = limited_yaw[-1] + target_delta
+        limited_yaw.append(next_yaw)
+        output.append({**current, "yaw": round(next_yaw % 360.0, 6)})
+    return output
+
+
 def smoothing_radius(strength: str | None) -> int:
     return SMOOTHING_RADII.get(str(strength or "medium").lower(), SMOOTHING_RADII["medium"])
 
@@ -101,7 +137,7 @@ def save_camera_move(
     if len(raw) < 2:
         raise ValueError("Record at least two camera samples")
     strength = str(smoothing or "medium").lower()
-    smoothed = smooth_camera_curve(raw, radius=smoothing_radius(strength))
+    smoothed = limit_yaw_velocity(smooth_camera_curve(raw, radius=smoothing_radius(strength)))
     take_name = _unique_take_name(project, sanitize_take_name(name))
     duration = max(0.0, smoothed[-1]["t"] - smoothed[0]["t"])
     sample_rate = (len(smoothed) - 1) / duration if duration > 0 else DEFAULT_SAMPLE_RATE_HZ
@@ -141,7 +177,12 @@ def load_camera_moves(project: Project) -> list[dict[str, Any]]:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        samples = normalize_recorded_samples(data.get("smoothed") or data.get("raw") or [])
+        raw_samples = normalize_recorded_samples(data.get("raw") or [])
+        if raw_samples and int(data.get("version") or 1) < CAMERA_MOVE_VERSION:
+            strength = str(data.get("smoothing") or "medium")
+            samples = limit_yaw_velocity(smooth_camera_curve(raw_samples, radius=smoothing_radius(strength)))
+        else:
+            samples = limit_yaw_velocity(data.get("smoothed") or data.get("raw") or [])
         if len(samples) < 2:
             continue
         data["smoothed"] = samples
@@ -188,25 +229,15 @@ def recorded_shot_for_segment(move: dict[str, Any], start_sec: float, end_sec: f
     }
 
 
-# A recorded take is handheld, deliberate motion. Real fast whip-pans in
-# practice peak in the low hundreds of deg/s (observed up to ~340°/s in real
-# takes) — this ceiling sits well above that so it never flags genuine human
-# motion, while still catching a time-mapping bug (e.g. the whole take's
-# rotation dumped into a short segment, or a giant multi-minute body segment
-# where a bug compounds many samples' worth of motion into a few frames),
-# which produces rates an order of magnitude higher.
-#
-# This is checked LOCALLY between each pair of consecutive samples, not as
-# total-travel-over-duration: an aggregate check scales its own tolerance
-# with duration, so for the 360 "body" export (one segment spanning the
-# whole song, minutes long) the allowed travel becomes tens of thousands of
-# degrees — meaningless as a guard. A local rate check catches the same bug
-# regardless of how long the segment is.
+# Defensive ceiling for malformed data after the user-facing 40°/s limiter.
+# This remains a local-rate check (rather than total travel over duration), so
+# it catches a future time-mapping regression without rejecting legitimate
+# long takes. Normal recorded curves should never reach this ceiling.
 MAX_PLAUSIBLE_YAW_RATE_DEG_PER_SEC = 720.0
 
 
 def clip_curve_for_segment(move: dict[str, Any], start_sec: float, end_sec: float) -> list[dict[str, float]]:
-    samples = normalize_recorded_samples(move.get("smoothed") or move.get("raw") or [])
+    samples = limit_yaw_velocity(move.get("smoothed") or move.get("raw") or [])
     if len(samples) < 2:
         return []
     duration = max(0.001, end_sec - start_sec)
@@ -223,6 +254,7 @@ def clip_curve_for_segment(move: dict[str, Any], start_sec: float, end_sec: floa
             local_t = round(min(duration, last_local + 0.000001), 6)
         last_local = local_t
         output.append({"t": local_t, "yaw": sample["yaw"], "pitch": sample["pitch"], "fov": sample["fov"]})
+    output = limit_yaw_velocity(output)
     _assert_plausible_yaw_rate(output, start_sec, end_sec)
     return output
 

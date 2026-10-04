@@ -22,7 +22,7 @@ const stageRequirementHints = {
 };
 
 async function api(path, options = {}) {
-  const response = await fetch(`/api/v1${path}`, {
+  const response = await window.UiFeedback.request(`/api/v1${path}`, {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
@@ -32,20 +32,14 @@ async function api(path, options = {}) {
 }
 
 async function apiForm(path, formData) {
-  const response = await fetch(`/api/v1${path}`, { method: "POST", body: formData });
+  const response = await window.UiFeedback.request(`/api/v1${path}`, { method: "POST", body: formData });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error?.message || "Request failed");
   return data;
 }
 
 function showToast(message, isError = false) {
-  const toast = document.querySelector("#toast");
-  toast.textContent = message;
-  toast.classList.toggle("error", isError);
-  toast.hidden = false;
-  setTimeout(() => {
-    toast.hidden = true;
-  }, 4500);
+  window.UiFeedback.message(message, isError);
 }
 
 function showError(error) {
@@ -215,9 +209,13 @@ async function refreshPipelineState() {
   await refreshStatus();
 }
 
-async function scanInbox() {
-  detectedInputs = await api("/inbox");
-  renderDetectedInputs();
+let inboxScan = null;
+function scanInbox() {
+  if (!inboxScan) inboxScan = api("/inbox").then(result => {
+    detectedInputs = result;
+    renderDetectedInputs();
+  }).finally(() => { inboxScan = null; });
+  return inboxScan;
 }
 
 function mergeDetected(result) {
@@ -689,13 +687,8 @@ document.addEventListener("click", async (event) => {
 });
 
 async function boot() {
-  await loadAppConfig();
-  await refreshProject();
-  await scanInbox();
-  await refreshSongSuggestions();
-  await refreshStatus();
-  await refreshSyncMap();
-  await refreshCacheStatus();
+  await Promise.all([loadAppConfig(), refreshProject()]);
+  await Promise.all([scanInbox(), refreshSongSuggestions(), refreshStatus(), refreshSyncMap(), refreshCacheStatus()]);
 }
 
 setInterval(async () => {
@@ -704,5 +697,11 @@ setInterval(async () => {
   }
 }, 4000);
 
-setInterval(refreshStatus, 1000);
+let statusRefresh = false;
+setInterval(async () => {
+  if (statusRefresh) return;
+  statusRefresh = true;
+  try { await refreshStatus(); } catch (error) { showError(error); }
+  finally { statusRefresh = false; }
+}, 1000);
 boot().catch(showError);

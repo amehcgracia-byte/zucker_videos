@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import wave
@@ -15,11 +16,102 @@ from core.stages.sync import (
     SYNC_SAMPLE_RATE,
     SyncStage,
     confidence_from_correlation,
+    coarse_master_match,
     extract_clip_audio,
+    apply_project_manual_override,
+    file_signature,
     recover_offset,
     sync_clip,
+    set_manual_override,
+    set_manual_override_ranges,
+    set_manual_anchor,
     verify_sync_stability,
+    SYNC_ALGORITHM_VERSION,
+    invalidate_stale_sync_artifact,
+    sync_map_is_current,
 )
+
+
+def test_old_sync_map_version_is_invalidated(tmp_path):
+    project = create_project("Stale sync", str(tmp_path / "Stale sync.zuckervid"))
+    project.data["stages"]["sync"].update({"status": "done", "fingerprint": "old"})
+    path = project.artifacts_dir / "sync_map.json"
+    path.write_text(json.dumps({"sync_algorithm_version": SYNC_ALGORITHM_VERSION - 1, "clips": {}}), encoding="utf-8")
+    assert not sync_map_is_current(project)
+    assert invalidate_stale_sync_artifact(project) is True
+    assert project.data["stages"]["sync"]["status"] == "stale"
+
+
+def test_manual_override_is_source_identity_and_master_specific(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project = create_project("Manual", str(tmp_path / "Manual.zuckervid"))
+    master = tmp_path / "song.mp3"
+    other_master = tmp_path / "other.mp3"
+    video = tmp_path / "iphone.mov"
+    master.write_bytes(b"master")
+    other_master.write_bytes(b"other")
+    video.write_bytes(b"video")
+    project.data["inputs"]["master"] = {"path": str(master)}
+    clip_id = "iphone-clip"
+    sync_path = project.artifacts_dir / "sync_map.json"
+    sync_path.parent.mkdir(parents=True, exist_ok=True)
+    sync_path.write_text(
+        json.dumps(
+            {
+                "clips": {
+                    clip_id: {
+                        "path": str(video),
+                        "source_path": str(video),
+                        "source_signature": file_signature(str(video)),
+                        "offset_sec": 199.018,
+                        "confidence": 5.152,
+                        "low_confidence": True,
+                        "unstable_sync": True,
+                        "manual_override": False,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    set_manual_override(project, clip_id, 386.775)
+    payload = json.loads(sync_path.read_text(encoding="utf-8"))
+    assert payload["manual_overrides"]
+
+    restored = apply_project_manual_override(
+        project,
+        payload,
+        clip_id,
+        {"path": str(video)},
+        {"offset_sec": 199.018, "confidence": 5.152, "low_confidence": True, "unstable_sync": True},
+    )
+    assert restored["offset_sec"] == pytest.approx(386.775)
+    assert restored["manual_override"] is True
+    assert restored["low_confidence"] is False
+    assert restored["unstable_sync"] is False
+
+    # A newly created project with the same master and copied/renamed source
+    # gets the same override from the global identity cache.
+    second = create_project("Manual Again", str(tmp_path / "Manual Again.zuckervid"))
+    second.data["inputs"]["master"] = {"path": str(master)}
+    restored_in_new_project = apply_project_manual_override(
+        second,
+        {"clips": {}},
+        clip_id,
+        {"path": str(video)},
+        {"offset_sec": 199.018, "low_confidence": True, "unstable_sync": True},
+    )
+    assert restored_in_new_project["offset_sec"] == pytest.approx(386.775)
+
+    project.data["inputs"]["master"] = {"path": str(other_master)}
+    assert apply_project_manual_override(
+        project,
+        payload,
+        clip_id,
+        {"path": str(video)},
+        {"offset_sec": 199.018, "low_confidence": True, "unstable_sync": True},
+    )["low_confidence"] is True
 
 
 def test_confidence_formula_separates_planted_peak_from_noise():
@@ -33,6 +125,61 @@ def test_confidence_formula_separates_planted_peak_from_noise():
     assert planted_confidence > noise_confidence * 2.0
 
 
+def test_coarse_master_match_accepts_same_signal_and_rejects_unrelated_signal():
+    rng = np.random.default_rng(12)
+    master = rng.normal(0, 1, 800).astype(np.float32)
+    clip = master[120:420].copy()
+    unrelated = rng.normal(0, 1, 300).astype(np.float32)
+
+    assert coarse_master_match(master, clip)["reasonable_peak"] is True
+    assert coarse_master_match(master, unrelated)["reasonable_peak"] is False
+
+
+def test_manual_override_ranges_preserve_unconfirmed_clip_time(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project = create_project("Range", str(tmp_path / "Range.zuckervid"))
+    master = tmp_path / "song.mp3"; video = tmp_path / "iphone.mov"
+    master.write_bytes(b"master"); video.write_bytes(b"video")
+    project.data["inputs"]["master"] = {"path": str(master)}
+    clip_id = "iphone"
+    (project.artifacts_dir / "sync_map.json").write_text(json.dumps({"clips": {clip_id: {
+        "path": str(video), "source_path": str(video), "offset_sec": 199.018,
+        "duration_sec": 276.7, "confidence": 5.15, "low_confidence": True,
+        "unstable_sync": True, "manual_override": False,
+    }}}), encoding="utf-8")
+    clip = set_manual_override_ranges(project, clip_id, [{"clip_start_sec": 184.5, "clip_end_sec": 276.7, "offset_sec": 386.775}])
+    assert clip["offset_ranges"] == [{"clip_start_sec": 184.5, "clip_end_sec": 276.7, "offset_sec": 386.775}]
+    assert clip["manual_override_ranges"] is True
+    assert clip["offset_sec"] == pytest.approx(386.775)
+
+    restored = apply_project_manual_override(
+        project, json.loads((project.artifacts_dir / "sync_map.json").read_text()), clip_id,
+        {"path": str(video)}, {"offset_sec": 199.018, "duration_sec": 276.7, "low_confidence": True},
+    )
+    assert restored["offset_ranges"][0]["offset_sec"] == pytest.approx(386.775)
+
+
+def test_manual_anchor_converts_master_and_clip_points_to_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project = create_project("Anchor", str(tmp_path / "Anchor.zuckervid"))
+    master = tmp_path / "song.mp3"; video = tmp_path / "sony.mp4"
+    master.write_bytes(b"master"); video.write_bytes(b"video")
+    project.data["inputs"]["master"] = {"path": str(master)}
+    clip_id = "sony"
+    (project.artifacts_dir / "sync_map.json").write_text(json.dumps({"clips": {clip_id: {
+        "path": str(video), "source_path": str(video), "offset_sec": 12.0,
+        "duration_sec": 100.0, "confidence": 2.0, "low_confidence": True,
+        "unstable_sync": True, "manual_override": False,
+    }}}), encoding="utf-8")
+
+    clip = set_manual_anchor(project, clip_id, master_sec=512.25, clip_sec=30.0)
+
+    assert clip["offset_sec"] == pytest.approx(482.25)
+    assert clip["manual_anchor"] == {"master_sec": 512.25, "clip_sec": 30.0}
+    saved = json.loads((project.artifacts_dir / "sync_map.json").read_text())
+    assert saved["clips"][clip_id]["manual_anchor"]["master_sec"] == pytest.approx(512.25)
+
+
 def test_offset_math_recovers_known_shift_exactly():
     rng = np.random.default_rng(7)
     clip = rng.normal(0.0, 1.0, 18).astype(np.float32)
@@ -43,6 +190,17 @@ def test_offset_math_recovers_known_shift_exactly():
     offset_sec, _ = recover_offset(master, clip)
 
     assert offset_sec == pytest.approx(shift_frames * SYNC_HOP_LENGTH / SYNC_SAMPLE_RATE)
+
+
+def test_offset_math_recovers_trimmed_master_inside_longer_clip():
+    rng = np.random.default_rng(8)
+    master = rng.normal(0.0, 1.0, 100).astype(np.float32)
+    clip = np.zeros(160, dtype=np.float32)
+    clip[24:124] = master
+
+    offset_sec, _ = recover_offset(master, clip)
+
+    assert offset_sec == pytest.approx(-24 * SYNC_HOP_LENGTH / SYNC_SAMPLE_RATE)
 
 
 def test_extract_clip_audio_uses_configured_ffmpeg_path(tmp_path, monkeypatch):
@@ -68,7 +226,7 @@ def test_extract_clip_audio_uses_configured_ffmpeg_path(tmp_path, monkeypatch):
 def test_sync_verification_marks_disagreeing_offsets_unstable(monkeypatch):
     import core.stages.sync as sync
 
-    calls = iter([(1.0, 8.0), (1.3, 8.0)])
+    calls = iter([(1.0, 8.0), (1.3, 8.0), (1.1, 8.0)])
     monkeypatch.setattr(sync, "recover_offset", lambda master, clip: next(calls))
 
     result = verify_sync_stability(np.ones(2000), np.ones(900), 1.0)

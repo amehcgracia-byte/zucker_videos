@@ -14,6 +14,7 @@ from core.project import create_project, file_record
 from core.stages.base import write_artifact_json
 from core.stages.export import (
     MAX_EXPORT_BYTES,
+    MAX_SPHERICAL_FOV,
     MIN_ACCEPTABLE_VIDEO_BITRATE,
     TARGET_EXPORT_FPS,
     ExportStage,
@@ -22,21 +23,46 @@ from core.stages.export import (
     _cadence_checked_joined_video,
     cached_segment_path,
     _continuous_spherical_render_segments,
+    _effective_flat_fov,
     _expand_spherical_render_segments,
     _export_source_filter,
     _frame_pts_times,
     _motion_filter,
     _paired_flat_fov,
+    _paired_motion_fov,
+    _shot_peak_fov,
+    _use_stereographic,
+    _warn_if_spherical_framing_was_dropped,
     _v360_motion_at,
     _v360_motion_commands,
+    _v360_sendcmd_filter,
+    degrees_per_second_to_step,
     _run_ffmpeg_progress,
     SPHERE_V360_LABEL,
     _render_plan,
     _render_segment,
+    _render_logo_clip,
+    _render_matched_logo_clip,
+    _bookend_asset_path,
+    _intro_card_path,
+    _logo_filtergraph,
+    _missing_project_sources,
+    _native_clip_geometry,
+    _reel_overlay_items,
+    _reel_letterbox_filter,
+    _segment_filtergraph,
+    _segment_worker_count,
+    _stream_copy_eligible,
+    _segment_cache_stamp_matches,
+    _segment_cache_stamp_path,
+    _write_segment_cache_stamp,
+    _export_run_id,
+    _output_path,
     _audio_rms,
     _frame_normalized_segments,
     _frame_md5,
     _verify_final_audio,
+    _video_frame_count,
     _verify_moving_segment,
     _verify_video_cadence,
     _clip_fates,
@@ -45,7 +71,103 @@ from core.stages.export import (
     color_sample_commands,
     color_correction_for_profile,
     measure_clip_color,
+    SegmentRenderError,
+    _check_export_disk_space,
+    _required_export_space_bytes,
+    _segment_failure_message,
+    _transition_boundaries,
 )
+
+
+def test_single_source_reel_mix_does_not_create_crossfade_boundaries():
+    segments = [
+        {"single_source_continuous_group": "single-source-reel"},
+        {"single_source_continuous_group": "single-source-reel"},
+        {"single_source_continuous_group": "single-source-reel"},
+    ]
+    assert _transition_boundaries(segments, {"duration": 0.08, "every": 1}) == []
+
+
+def test_segment_failure_diagnostics_distinguish_missing_drive_and_codec(tmp_path):
+    missing = tmp_path / "RAWVideos" / "clip.MP4"
+    drive_error = RuntimeError("could not read input")
+    assert "drive containing" in _segment_failure_message(63, str(missing), drive_error).lower()
+
+    source = tmp_path / "clip.MP4"
+    source.write_bytes(b"source")
+    codec_error = RuntimeError("Invalid argument")
+    codec_error.exit_code = 1
+    codec_error.stderr_tail = ["[v360] Invalid option", "Error initializing filter"]
+    message = _segment_failure_message(63, str(source), codec_error)
+    assert "segment 63" in message
+    assert "exit code 1" in message
+    assert "Error initializing filter" in message
+
+
+def test_export_space_preflight_reports_required_size(tmp_path, monkeypatch):
+    required = _required_export_space_bytes(600.0, 12_000_000, 101)
+    monkeypatch.setattr("core.stages.export.shutil.disk_usage", lambda _path: shutil.disk_usage(tmp_path))
+    monkeypatch.setattr("core.stages.export.global_cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr("core.stages.export.shutil.disk_usage", lambda _path: type("Usage", (), {"free": required - 1})())
+    with pytest.raises(Exception, match="Not enough free space.*needs ~"):
+        _check_export_disk_space(tmp_path / "exports" / "out.mp4", required)
+
+
+def test_render_plan_wraps_worker_failure_without_required_space_nameerror(tmp_path, monkeypatch):
+    project = create_project("Space check", str(tmp_path / "Space check.zuckervid"))
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    master = tmp_path / "master.wav"
+    master.write_bytes(b"master")
+    monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
+    monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda *args: {})
+    monkeypatch.setattr("core.stages.export._render_logo_clip", lambda output, *args, **kwargs: output.write_bytes(b"logo"))
+    monkeypatch.setattr("core.stages.export._render_segment_job", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("filter init failed")))
+    with pytest.raises(SegmentRenderError, match="segment 1") as exc_info:
+        _render_plan(
+            project,
+            [{"source_path": str(source), "clip_path": str(source), "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 1}],
+            str(master), tmp_path / "out.mp4", "youtube", 4_000_000, [], lambda *_args: None,
+        )
+    assert "required_space" not in str(exc_info.value)
+
+
+def test_video_frame_count_uses_container_metadata_first(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr("core.stages.export._ffprobe_path", lambda: "ffprobe")
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="270\n9.000000\n30/1\n", stderr="")
+
+    monkeypatch.setattr("core.stages.export.subprocess.run", fake_run)
+    assert _video_frame_count(tmp_path / "segment.mp4", expected_frames=270) == 270
+    assert len(calls) == 1
+    assert "-count_frames" not in calls[0][0]
+
+
+def test_video_frame_count_retries_a_slow_full_decode(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr("core.stages.export._ffprobe_path", lambda: "ffprobe")
+
+    def fake_run(command, **kwargs):
+        calls.append(kwargs["timeout"])
+        if "-count_frames" not in command:
+            return subprocess.CompletedProcess(command, 0, stdout="N/A\n", stderr="")
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr("core.stages.export.subprocess.run", fake_run)
+    with pytest.raises(Exception, match="timed out twice"):
+        _video_frame_count(tmp_path / "360-segment.mp4", expected_frames=270)
+    assert calls == [10, 120, 300]
+
+
+def test_each_export_run_gets_a_distinct_result_path(tmp_path):
+    project = create_project("Run", str(tmp_path / "project"))
+    first = _output_path(project, "youtube", _export_run_id())
+    second = _output_path(project, "youtube", _export_run_id())
+    assert first != second
+    assert first.name.endswith(".mp4")
 
 
 class FakeProcess:
@@ -103,6 +225,41 @@ def test_segment_filtergraph_adds_watermark_and_texts():
     assert "eq=brightness=0.0200:saturation=1.0500" in graph
     assert "fade=t=in:st=0:d=1.500" not in graph
     assert "fade=t=out:st=10.500:d=1.500" not in graph
+
+
+def test_reel_letterbox_uses_native_geometry_and_project_cache(tmp_path):
+    project = create_project("Letterbox", str(tmp_path / "Letterbox.zuckervid"))
+    project.data.setdefault("settings", {}).setdefault("wizard", {})["reel_aspect"] = "mix"
+    source = tmp_path / "vertical.mp4"
+    source.write_bytes(b"test media")
+    record = file_record(str(source))
+    record["probe"] = {"width": 608, "height": 1080, "sample_aspect_ratio": "1:1"}
+    project.data["inputs"]["videos"] = [record]
+    segment = {"source_path": str(source), "clip_path": str(source), "duration_sec": 1.0}
+
+    geometry = _native_clip_geometry(project, segment)
+    assert geometry["width"] == 608
+    assert geometry["height"] == 1080
+    assert geometry["aspect"] == pytest.approx(608 / 1080)
+    cache_path = project.cache_dir / "reel_letterbox" / f"{geometry['fingerprint']}.json"
+    assert cache_path.is_file()
+    letterbox = _reel_letterbox_filter(project, segment, "reel")
+    assert letterbox and "gblur=sigma=18.0" in letterbox and "setsar=1" in letterbox
+    project.data["settings"]["wizard"]["reel_aspect"] = "9:16"
+    assert _reel_letterbox_filter(project, segment, "reel") is None
+    assert _reel_letterbox_filter(project, segment, "youtube") is None
+
+
+def test_reel_vertical_horizontal_mix_only_letterboxes_horizontal_treatment(tmp_path):
+    project = create_project("Editorial Mix", str(tmp_path / "Editorial Mix.zuckervid"))
+    project.data.setdefault("settings", {}).setdefault("wizard", {})["reel_aspect"] = "mix_vertical_horizontal"
+    source = tmp_path / "wide.mp4"
+    source.write_bytes(b"test media")
+    segment = {"source_path": str(source), "clip_path": str(source), "duration_sec": 1.0}
+    assert _reel_letterbox_filter(project, {**segment, "reel_mix_treatment": "vertical"}, "reel") is None
+    assert _reel_letterbox_filter(project, {**segment, "reel_mix_treatment": "horizontal"}, "reel")
+    project.data["settings"]["wizard"]["reel_aspect"] = "9:16"
+    assert _reel_letterbox_filter(project, {**segment, "reel_mix_treatment": "horizontal"}, "reel") is None
 
 
 def test_segment_filtergraph_keeps_only_explicit_intro_outro_fades():
@@ -165,7 +322,7 @@ def test_render_plan_uses_standalone_intro_and_outro_clips(tmp_path, monkeypatch
     monkeypatch.setattr("core.stages.export._verify_segment_frame_duration", lambda *args, **kwargs: None)
     monkeypatch.setattr("core.stages.export._media_duration", lambda path: 6.0)
     monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
-    monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda project, segments, warnings: {})
+    monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda project, segments, warnings, progress_callback=None: {})
 
     _render_plan(
         project,
@@ -182,8 +339,8 @@ def test_render_plan_uses_standalone_intro_and_outro_clips(tmp_path, monkeypatch
         lambda percent, detail: None,
     )
 
-    assert [call["intro_fade"] for call in calls] == [True, False, False]
-    assert [call["outro_fade"] for call in calls] == [False, False, True]
+    assert sorted(call["intro_fade"] for call in calls) == [False, False, True]
+    assert sorted(call["outro_fade"] for call in calls) == [False, False, True]
     assert [call[0][2] for call in logo_clips] == ["intro", "outro"]
 
 
@@ -221,7 +378,7 @@ def test_render_plan_verifies_every_segment_not_just_every_source(tmp_path, monk
     monkeypatch.setattr("core.stages.export._media_duration", lambda path: 6.0)
     monkeypatch.setattr("core.stages.export._render_logo_clip", lambda *args, **kwargs: args[0].write_bytes(b"logo"))
     monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
-    monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda project, segments, warnings: {})
+    monkeypatch.setattr("core.stages.export._color_profiles_for_segments", lambda project, segments, warnings, progress_callback=None: {})
 
     shared_source = str(tmp_path / "sony.mp4")
     _render_plan(
@@ -288,6 +445,50 @@ def test_render_segment_uses_original_source_with_proxy_metadata(tmp_path, monke
     assert commands[0][commands[0].index("-video_track_timescale") + 1] == "30000"
 
 
+def test_spherical_proxy_fallback_keeps_v360_sendcmd(tmp_path, monkeypatch):
+    project = create_project("Spherical proxy", str(tmp_path / "Spherical proxy.zuckervid"))
+    source = tmp_path / "source.mp4"
+    proxy = tmp_path / "proxy.mp4"
+    master = tmp_path / "master.wav"
+    output = tmp_path / "segment.mp4"
+    for path in (source, proxy, master):
+        path.write_bytes(b"input")
+    record = file_record(str(source))
+    record["probe"] = {"valid_video": True, "projection": "equirect", "width": 1920, "height": 1080, "fps": 30.0}
+    record["cache_key"] = "spherical-clip"
+    record["normalized"] = {"path": str(proxy), "cache_key": "spherical-clip", "kind": "proxy"}
+    project.data["inputs"]["videos"] = [record]
+    commands = []
+    monkeypatch.setattr("core.stages.export._ffmpeg_path", lambda: "ffmpeg")
+    monkeypatch.setattr("core.stages.export._watermark_path", lambda: None)
+    monkeypatch.setattr("core.stages.export._ffmpeg_supports_filter", lambda name: False)
+
+    def fake_progress(command, duration, label, progress):
+        commands.append(command)
+        output.write_bytes(b"segment")
+
+    monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", fake_progress)
+    rendered_from = _render_segment(
+        project,
+        {
+            "clip_path": str(proxy),
+            "source_path": str(source),
+            "clip_start_sec": 1,
+            "master_start_sec": 2,
+            "duration_sec": 3,
+            "spherical_shot": {"type": "audience", "yaw": 175, "pitch": -12.9, "fov": 100, "hold_motion": "none"},
+        },
+        str(master), output, "youtube", 4_000_000, force_proxy=True,
+    )
+
+    assert rendered_from == "proxy"
+    assert str(proxy) in commands[0]
+    filtergraph = commands[0][commands[0].index("-filter_complex") + 1]
+    assert "sendcmd=f=" not in filtergraph
+    assert "v360@sphere" in filtergraph
+    assert not output.with_suffix(".sendcmd.txt").exists()
+
+
 def test_cached_segment_path_includes_spherical_shot_recipe(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     project = create_project("Cache", str(tmp_path / "Cache.zuckervid"))
@@ -303,6 +504,73 @@ def test_cached_segment_path_includes_spherical_shot_recipe(tmp_path, monkeypatc
     second = cached_segment_path(project, {**base, "spherical_shot": {"type": "drummer", "yaw": 120}}, "youtube", 4_000_000, {}, {}, False, False)
 
     assert first != second
+
+
+def test_cached_segment_path_includes_spherical_motion_recipe_version(tmp_path, monkeypatch):
+    project = create_project("Motion cache", str(tmp_path / "Motion cache.zuckervid"))
+    source = tmp_path / "360.mp4"
+    source.write_bytes(b"360")
+    project.data["inputs"]["videos"] = [{"path": str(source), "normalized": {}, "cache_key": "source"}]
+    segment = {"clip_path": str(source), "source_path": str(source), "clip_start_sec": 0, "duration_sec": 3}
+
+    first = cached_segment_path(project, segment, "youtube", 4_000_000, {}, {}, False, False)
+    monkeypatch.setattr("core.stages.export.SPHERICAL_MOTION_RECIPE_VERSION", 99)
+    second = cached_segment_path(project, segment, "youtube", 4_000_000, {}, {}, False, False)
+
+    assert first != second
+
+
+def test_segment_cache_attestation_rejects_missing_or_changed_recipe(tmp_path, monkeypatch):
+    segment_path = tmp_path / "segment.mp4"
+    segment_path.write_bytes(b"rendered")
+    segment = {
+        "clip_path": str(tmp_path / "source.mp4"),
+        "source_path": str(tmp_path / "source.mp4"),
+        "clip_start_sec": 0,
+        "duration_sec": 3,
+        "spherical_shot": {"type": "singer", "yaw": 10, "pitch": 0, "fov": 90},
+    }
+
+    assert not _segment_cache_stamp_matches(segment_path, segment)
+    _write_segment_cache_stamp(segment_path, segment)
+    assert _segment_cache_stamp_matches(segment_path, segment)
+
+    monkeypatch.setattr("core.stages.export.SPHERICAL_MOTION_RECIPE_VERSION", 13)
+    assert not _segment_cache_stamp_matches(segment_path, segment)
+    assert _segment_cache_stamp_path(segment_path).exists()
+
+
+def test_segment_cache_attestation_rejects_rewritten_bytes(tmp_path):
+    segment_path = tmp_path / "segment.mp4"
+    segment_path.write_bytes(b"rendered")
+    segment = {
+        "clip_path": str(tmp_path / "source.mp4"),
+        "source_path": str(tmp_path / "source.mp4"),
+        "clip_start_sec": 0,
+        "duration_sec": 3,
+        "spherical_shot": {"type": "audience", "yaw": 175, "pitch": -12.9, "fov": 100},
+    }
+
+    _write_segment_cache_stamp(segment_path, segment)
+    assert _segment_cache_stamp_matches(segment_path, segment)
+    segment_path.write_bytes(b"different-render")
+    assert not _segment_cache_stamp_matches(segment_path, segment)
+
+
+def test_segment_cache_attestation_includes_full_spherical_shot(tmp_path):
+    segment_path = tmp_path / "segment.mp4"
+    segment_path.write_bytes(b"rendered")
+    segment = {
+        "clip_path": str(tmp_path / "source.mp4"),
+        "source_path": str(tmp_path / "source.mp4"),
+        "clip_start_sec": 0,
+        "duration_sec": 3,
+        "spherical_shot": {"type": "audience", "yaw": 175, "pitch": -12.9, "fov": 100, "hold_motion": "none"},
+    }
+
+    _write_segment_cache_stamp(segment_path, segment)
+    segment["spherical_shot"]["hold_motion"] = "subtle"
+    assert not _segment_cache_stamp_matches(segment_path, segment)
 
 
 def test_join_fast_path_skips_cfr_rewrite_when_cadence_passes(tmp_path, monkeypatch):
@@ -321,7 +589,7 @@ def test_join_fast_path_skips_cfr_rewrite_when_cadence_passes(tmp_path, monkeypa
     assert calls == []
 
 
-def test_spherical_render_parts_expand_pan_and_planet_motion():
+def test_spherical_render_parts_apply_gentle_planet_motion():
     segments = [
         {"clip_path": "/tmp/360.mp4", "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 3, "spherical_shot": {"type": "singer", "label": "Cantante", "yaw": 20, "pitch": 0, "fov": 80}},
         {"clip_path": "/tmp/360.mp4", "clip_start_sec": 3, "master_start_sec": 3, "duration_sec": 3, "spherical_shot": {"type": "planet", "label": "Planeta", "yaw": 40, "pitch": -65, "fov": 180, "spin_deg_per_sec": 22, "transition_sec": 0.45}},
@@ -331,11 +599,27 @@ def test_spherical_render_parts_expand_pan_and_planet_motion():
 
     assert sum(float(part["duration_sec"]) for part in parts) == pytest.approx(6.0)
     yaws = [round(float(part["spherical_shot"]["yaw"]), 1) for part in parts if part["spherical_shot"].get("type") == "planet"]
-    assert len(yaws) > 1
-    assert len(set(yaws)) > 1
+    assert len(yaws) == 6
+    assert max(b - a for a, b in zip(yaws, yaws[1:])) <= 15.0
 
 
-def test_spherical_render_parts_add_bounded_static_drift():
+def test_planet_part_motion_uses_seconds_not_frames():
+    segments = [
+        {
+            "clip_path": "/tmp/360.mp4",
+            "clip_start_sec": 0,
+            "master_start_sec": 0,
+            "duration_sec": 3,
+            "spherical_shot": {"type": "planet", "yaw": 40, "pitch": -65, "fov": 180, "spin_deg_per_sec": 0.4},
+        }
+    ]
+
+    parts = _expand_spherical_render_segments(segments)
+    yaws = [float(part["spherical_shot"]["yaw"]) for part in parts]
+    assert max(yaws) - min(yaws) == pytest.approx(0.4 * 2.5, abs=0.05)
+
+
+def test_spherical_render_parts_do_not_add_static_drift():
     segments = [
         {
             "clip_path": "/tmp/360.mp4",
@@ -350,27 +634,77 @@ def test_spherical_render_parts_add_bounded_static_drift():
 
     yaws = [part["spherical_shot"]["yaw"] for part in parts]
     pitches = [part["spherical_shot"]["pitch"] for part in parts]
-    assert len(parts) > 1
-    assert min(yaws) >= 334.8
-    assert max(yaws) <= 338.8
-    assert min(pitches) >= -29.8
-    assert max(pitches) <= -27.8
-    assert yaws[0] != yaws[-1]
+    assert len(parts) == 3
+    assert yaws[1] == pytest.approx(336.8)
+    assert yaws[0] < yaws[1] < yaws[2]
+    assert pitches == [-28.8, -28.8, -28.8]
 
 
 def test_spherical_pan_steps_keep_angle_increments_small():
     segments = [
         {"clip_path": "/tmp/360.mp4", "clip_start_sec": 0, "master_start_sec": 0, "duration_sec": 3, "spherical_shot": {"type": "singer", "label": "Cantante", "yaw": 20, "pitch": 0, "fov": 80}},
-        {"clip_path": "/tmp/360.mp4", "clip_start_sec": 3, "master_start_sec": 3, "duration_sec": 3, "spherical_shot": {"type": "left", "label": "Lado izquierdo", "yaw": 100, "pitch": 0, "fov": 80, "transition_sec": 0.45}},
+        {"clip_path": "/tmp/360.mp4", "clip_start_sec": 3, "master_start_sec": 3, "duration_sec": 3, "spherical_shot": {"type": "left", "label": "Lado izquierdo", "yaw": 100, "pitch": 0, "fov": 80, "transition_sec": 0.45, "sweep_enabled": True, "intershot_sweep": True}},
     ]
 
     parts = _expand_spherical_render_segments(segments)
     pan_yaws = [float(part["spherical_shot"]["yaw"]) for part in parts if part["spherical_shot"].get("type") == "pan"]
     deltas = [abs(((b - a + 540) % 360) - 180) for a, b in zip([20.0, *pan_yaws], pan_yaws)]
 
-    assert len(pan_yaws) >= 9
-    assert max(deltas) <= 10.0
+    assert pan_yaws == []
+    assert deltas == []
 
+
+def test_shortest_yaw_delta_crossing_zero_takes_short_positive_path():
+    from core.stages.export import _shortest_yaw_delta
+
+    assert _shortest_yaw_delta(349.0, 17.0) == 28.0
+
+
+@pytest.mark.parametrize("duration", [0.1, 1.0, 1.999])
+def test_short_360_segments_hold_all_view_axes(duration):
+    shot = {
+        "type": "singer",
+        "yaw": 17.0,
+        "pitch": -12.0,
+        "fov": 95.0,
+        "previous_shot": {"type": "left", "yaw": 349.0, "pitch": -30.0, "fov": 140.0},
+        "sweep_enabled": True,
+        "sweep_speed_deg_per_sec": 33.0,
+        "drift_yaw_fraction": 0.06,
+    }
+    assert _v360_motion_at(shot, duration, 0.0) == (17.0, -12.0, 95.0)
+    assert _v360_motion_at(shot, duration, duration) == (17.0, -12.0, 95.0)
+
+
+def test_planet_spin_is_capped_to_a_gentle_rate():
+    planet = {"type": "planet", "yaw": 0.0, "pitch": -90.0, "fov": 240.0, "spin_deg_per_sec": 18.0}
+    start = _v360_motion_at(planet, 4.0, 0.0)[0]
+    end = _v360_motion_at(planet, 4.0, 4.0)[0]
+    assert end - start == pytest.approx(20.0)
+
+
+def test_sendcmd_emits_gentle_yaw_only_pose_motion():
+    shot = {
+        "type": "singer",
+        "yaw": 17.0,
+        "pitch": -12.0,
+        "fov": 95.0,
+        "drift_yaw_fraction": 0.04,
+        "drift_pitch_fraction": 0.0,
+        "fov_delta_fraction": 0.0,
+    }
+
+    samples = [_v360_motion_at(shot, 3.0, t) for t in (0.0, 1.5, 3.0)]
+    commands = _v360_motion_commands(shot, 3.0)
+
+    # Eight piecewise intervals are evaluated on every frame. This is
+    # materially different from the old two boundary events, which left the
+    # rendered v360 view frozen between timestamps.
+    assert len(commands) == 7 * 4
+    assert all("[expr]" in command for command in commands)
+    assert len({line.split()[0] for line in commands}) == 7
+    assert all("*TI;" in command for command in commands)
+    assert samples[0][0] < samples[1][0] < samples[2][0]
 
 def test_continuous_spherical_segments_keep_cut_count_flat():
     segments = [
@@ -384,15 +718,63 @@ def test_continuous_spherical_segments_keep_cut_count_flat():
     assert render_segments[1]["spherical_shot"]["previous_shot"]["type"] == "singer"
 
 
-def test_v360_sendcmd_motion_progresses_smoothly_across_pan():
+def test_v360_sendcmd_is_constant_even_for_a_legacy_pan_plan():
     shot = {"type": "left", "yaw": 100, "pitch": 0, "fov": 80, "transition_sec": 0.45, "previous_shot": {"type": "singer", "yaw": 20, "pitch": 0, "fov": 80}}
     samples = [_v360_motion_at(shot, 3.0, index * (1.0 / TARGET_EXPORT_FPS))[0] for index in range(10)]
     deltas = [abs(((b - a + 540) % 360) - 180) for a, b in zip(samples, samples[1:])]
     commands = _v360_motion_commands(shot, 3.0)
 
-    assert all(delta <= 7.0 for delta in deltas)
-    assert samples == sorted(samples)
-    assert len(commands) > 30
+    assert all(delta == pytest.approx(0.0) for delta in deltas)
+    assert samples[0] == samples[-1]
+    assert commands == []
+
+
+def test_static_hold_has_no_sendcmd_filter_or_commands():
+    shot = {
+        "type": "audience",
+        "yaw": 175.0,
+        "pitch": -12.9,
+        "fov": 100.0,
+        "hold_motion": "none",
+        "hold_motion_rate_deg_per_sec": 0.0,
+        "sweep_enabled": False,
+    }
+    assert _v360_motion_commands(shot, 8.9) == []
+    assert _v360_sendcmd_filter(shot, 8.9, Path("/tmp/static-hold.sendcmd")) == ""
+
+
+def test_landmark_sweep_uses_distance_over_speed_not_transition_sec():
+    shot = {
+        "type": "audience",
+        "yaw": 175.0,
+        "pitch": -12.0,
+        "fov": 111.0,
+        "transition_sec": 0.45,
+        "sweep_speed_deg_per_sec": 30.0,
+        "previous_shot": {"type": "left", "yaw": 16.0, "pitch": -16.0, "fov": 100.0},
+    }
+
+    # A landmark with sweep disabled never interpolates from the previous shot,
+    # regardless of legacy transition fields.
+    before_target = _v360_motion_at(shot, 6.0, 5.0)[0]
+    at_target = _v360_motion_at(shot, 6.0, 5.3)[0]
+    commands = _v360_motion_commands(shot, 6.0)
+    yaws = [float(line.split(" yaw ", 1)[1].strip().rstrip(";")) for line in commands if " yaw " in line]
+
+    assert before_target == pytest.approx(175.0)
+    assert at_target == pytest.approx(175.0)
+    assert yaws == []
+
+
+def test_returning_to_360_keeps_previous_spherical_view_across_other_camera_cut():
+    segments = [
+        {"duration_sec": 3, "spherical_shot": {"type": "left", "yaw": 16, "pitch": -16, "fov": 100}},
+        {"duration_sec": 3},
+        {"duration_sec": 3, "spherical_shot": {"type": "audience", "yaw": 175, "pitch": -12, "fov": 111, "sweep_speed_deg_per_sec": 30, "sweep_enabled": True, "intershot_sweep": True}},
+    ]
+
+    rendered = _continuous_spherical_render_segments(segments)
+    assert rendered[2]["spherical_shot"]["previous_shot"]["yaw"] == 16
 
 
 def test_v360_sendcmd_follows_recorded_curve_samples():
@@ -415,6 +797,104 @@ def test_v360_sendcmd_follows_recorded_curve_samples():
     assert any("sphere v_fov" in command for command in commands)
 
 
+def test_recorded_take_render_path_caps_yaw_rate_and_unwraps_seam():
+    shot = {
+        "type": "recorded_move",
+        "curve": [
+            {"t": 0.0, "yaw": 350.0, "pitch": 0.0, "fov": 90.0},
+            {"t": 0.1, "yaw": 20.0, "pitch": 0.0, "fov": 90.0},
+        ],
+    }
+
+    start = _v360_motion_at(shot, 0.1, 0.0)[0]
+    end = _v360_motion_at(shot, 0.1, 0.1)[0]
+    delta = ((end - start + 180.0) % 360.0) - 180.0
+
+    assert delta == pytest.approx(4.0)
+
+
+def test_landmark_hold_motion_is_bounded_and_never_pans_from_previous_shot():
+    base = {
+        "type": "singer",
+        "yaw": 17.0,
+        "pitch": -12.0,
+        "fov": 95.0,
+        "sweep_enabled": False,
+        "previous_shot": {"type": "left", "yaw": 160.0, "pitch": -12.0, "fov": 95.0},
+    }
+    for mode, rate in (("subtle", 0.75), ("none", 0.0)):
+        shot = {**base, "hold_motion": mode, "hold_motion_rate_deg_per_sec": rate}
+        duration = 3.0
+        yaws = [_v360_motion_at(shot, duration, frame / 30.0)[0] for frame in range(91)]
+        total = abs(((yaws[-1] - yaws[0] + 180.0) % 360.0) - 180.0)
+        measured_rate = total / duration
+        assert measured_rate <= 1.0
+        assert total <= 3.0
+        if mode == "none":
+            assert total == pytest.approx(0.0)
+        assert yaws[0] == pytest.approx(17.0)
+        assert yaws[-1] == pytest.approx(19.25 if mode == "subtle" else 17.0)
+
+
+def test_hold_rate_is_converted_from_degrees_per_second_to_total_travel():
+    shot = {
+        "type": "audience",
+        "yaw": 175.0,
+        "pitch": -12.9,
+        "fov": 100.0,
+        "hold_motion": "subtle",
+        "hold_motion_rate_deg_per_sec": 0.4,
+        "sweep_enabled": False,
+    }
+    duration = 8.7
+    commands = _v360_motion_commands(shot, duration)
+    assert commands
+    assert all("[expr]" in command and "*TI;" in command for command in commands)
+    assert any(command.startswith("0.000000-") for command in commands)
+    start = _v360_motion_at(shot, duration, 0.0)[0]
+    end = _v360_motion_at(shot, duration, duration)[0]
+    assert end - start == pytest.approx(degrees_per_second_to_step(0.4, duration))
+    assert end - start < 10.0
+
+@pytest.mark.parametrize(
+    ("shot", "expected_travel"),
+    [
+        (
+            {
+                "type": "planet",
+                "yaw": 10.0,
+                "pitch": -90.0,
+                "fov": 240.0,
+                "spin_deg_per_sec": 5.0,
+            },
+            5.0 * 8.9,
+        ),
+        (
+            {
+                "type": "audience",
+                "yaw": 120.0,
+                "pitch": -12.0,
+                "fov": 100.0,
+                "sweep_enabled": True,
+                "sweep_speed_deg_per_sec": 20.0,
+                "previous_shot": {"type": "left", "yaw": 30.0},
+            },
+            90.0,
+        ),
+    ],
+)
+def test_sendcmd_rate_fields_are_seconds_not_frames(shot, expected_travel):
+    commands = _v360_motion_commands(shot, 8.9)
+    assert commands
+    assert all("[expr]" in command and "*TI;" in command for command in commands)
+    start = _v360_motion_at(shot, 8.9, 0.0)[0]
+    end = _v360_motion_at(shot, 8.9, 8.9)[0]
+    travel = abs(((end - start + 180.0) % 360.0) - 180.0)
+    assert travel == pytest.approx(expected_travel, rel=0.10, abs=0.1)
+    # A 30-fps implementation accidentally multiplying a deg/s value by the
+    # number of command steps would exceed this by roughly 30x.
+    assert travel < expected_travel * 1.2 + 0.2
+
 def test_planet_uses_stereographic_tiny_planet_projection():
     graph = _export_source_filter({"projection": "equirect"}, {"type": "planet", "yaw": 6, "pitch": -90, "fov": 260}, duration=3.0, command_path=None)
 
@@ -423,13 +903,142 @@ def test_planet_uses_stereographic_tiny_planet_projection():
     assert "h_fov=260.000" in graph
 
 
+def test_wide_shots_render_stereographic_and_narrow_ones_stay_rectilinear():
+    # A rectilinear ("flat") view tears as it approaches 180 deg, so a shot
+    # pulled back to the full-sphere look has to switch to stereographic. An
+    # ordinary shot must NOT: sg would visibly bend a normal 95 deg framing.
+    wide = _export_source_filter({"projection": "equirect"}, {"type": "planet", "yaw": 0, "pitch": -90, "fov": 240})
+    narrow = _export_source_filter({"projection": "equirect"}, {"type": "singer", "yaw": 0, "pitch": -20, "fov": 95})
+
+    assert "output=sg" in wide
+    assert "h_fov=240.000" in wide
+    assert "output=flat" in narrow
+    assert "output=sg" not in narrow
+
+
+def test_shot_wider_than_the_old_rectilinear_cap_is_no_longer_clamped_to_190():
+    # Regression guard for the authored range: the UI now offers up to 300 deg,
+    # so the export must actually render it rather than silently clamping.
+    assert _effective_flat_fov({"type": "audience", "fov": 260}) == 260.0
+    assert _effective_flat_fov({"type": "audience", "fov": 400}) == 300.0
+    assert _effective_flat_fov({"type": "planet", "fov": 300}) == 300.0
+
+
+def test_normal_landmark_fov_stays_natural_and_reaches_v360_unchanged_when_in_range():
+    assert _effective_flat_fov({"type": "drummer", "fov": 73.3}) == 73.3
+    assert _effective_flat_fov({"type": "singer", "fov": 95.0}) == 95.0
+    assert _effective_flat_fov({"type": "audience", "fov": 111.4}) == 111.4
+    assert "output=sg" in _export_source_filter({"projection": "equirect"}, {"type": "audience", "fov": 260})
+
+
+def test_automatic_hold_yaw_travel_is_capped_to_a_few_degrees():
+    shot = {
+        "type": "singer",
+        "yaw": 90.0,
+        "pitch": -20.0,
+        "fov": 95.0,
+        "drift_yaw_fraction": 1.0,
+        "drift_pitch_fraction": 0.0,
+        "fov_delta_fraction": 0.0,
+    }
+    start = _v360_motion_at(shot, 4.0, 0.0)[0]
+    end = _v360_motion_at(shot, 4.0, 4.0)[0]
+    assert abs(((end - start + 180.0) % 360.0) - 180.0) <= 10.1
+
+
+def test_projection_choice_is_fixed_per_segment_so_fov_drift_cannot_pop_the_framing():
+    """The flat/sg decision must not depend on the instantaneous FOV.
+
+    The output projection is baked into the filtergraph once, while h_fov/v_fov
+    are driven per frame by sendcmd. When the two disagreed, a shot sitting near
+    the threshold with a little fov drift paired its vertical field by flat
+    rules for part of the segment and stereographic rules for the rest --
+    v_fov jumped from ~162 deg to 120 deg partway through an otherwise still
+    hold, a visible pop.
+    """
+    shot = {"type": "recorded_move", "yaw": 72.0, "pitch": -14.3, "fov": 170.0, "fov_delta_fraction": 0.04}
+    assert not _use_stereographic(shot)  # 170 is not past the threshold...
+
+    # ...so every frame of the segment, including ones whose drifting FOV
+    # crosses 170, must stay on the flat pairing and vary smoothly.
+    verticals = [_paired_motion_fov(shot, fov, 16.0 / 9.0)[1] for fov in (166.0, 168.0, 170.0, 172.0, 174.0)]
+    assert verticals == sorted(verticals)
+    steps = [b - a for a, b in zip(verticals, verticals[1:])]
+    assert max(steps) < 2.5 * min(steps), verticals
+
+
+def test_a_recorded_take_that_zooms_wide_is_stereographic_for_its_whole_duration():
+    # The authored `fov` is only where a recorded move STARTS; the curve says
+    # how wide it gets. Picking the projection from the start value would flip
+    # projection mid-take, so the widest moment decides for the whole segment.
+    zooming_out = {
+        "type": "recorded_move",
+        "fov": 90.0,
+        "curve": [{"t": 0.0, "yaw": 0, "pitch": 0, "fov": 90.0}, {"t": 4.0, "yaw": 0, "pitch": 0, "fov": 280.0}],
+    }
+
+    assert _shot_peak_fov(zooming_out) == 280.0
+    assert _use_stereographic(zooming_out)
+    # ...and while it is still zoomed in, the vertical field must stay NARROWER
+    # than the horizontal one. A floor on the stereographic vertical field made
+    # v_fov exceed h_fov here, which renders as a vertically stretched frame.
+    h_fov, v_fov = _paired_motion_fov(zooming_out, 90.0, 16.0 / 9.0)
+    assert v_fov < h_fov
+
+
+def test_planet_framing_is_unchanged_by_the_wide_shot_support():
+    # Planet's pairing is a deliberately un-aspect-paired signature look, not a
+    # geometric view. Generalising the stereographic path must not restyle every
+    # existing planet shot.
+    for fov in (220.0, 250.0, 300.0):
+        h_fov, v_fov = _paired_motion_fov({"type": "planet", "fov": fov}, fov, 16.0 / 9.0)
+        assert h_fov == fov
+        assert v_fov == max(160.0, min(260.0, fov / (16.0 / 9.0)))
+
+
+def test_warns_when_a_360_segment_loses_its_framing_and_renders_flat():
+    # A segment that wants a spherical shot but whose probe reports no
+    # projection gets NO v360 reframing: it renders as a flat letterboxed
+    # passthrough, identical for every landmark and with no motion. That used to
+    # happen silently whenever a segment's source failed to match its input
+    # record.
+    warnings: list[str] = []
+    segment = {"source_path": "/tmp/insta360.mp4", "spherical_shot": {"type": "singer", "yaw": 10, "fov": 95}}
+    _warn_if_spherical_framing_was_dropped(segment, {}, warnings)
+
+    assert len(warnings) == 1
+    assert "insta360.mp4" in warnings[0]
+    assert "360 framing was dropped" in warnings[0]
+
+
+def test_no_dropped_framing_warning_for_healthy_360_or_ordinary_flat_segments():
+    healthy: list[str] = []
+    _warn_if_spherical_framing_was_dropped(
+        {"source_path": "/tmp/insta360.mp4", "spherical_shot": {"type": "singer", "fov": 95}},
+        {"projection": "equirect"},
+        healthy,
+    )
+    assert healthy == []
+
+    # An iPhone/Sony segment never asked for spherical framing in the first place.
+    flat: list[str] = []
+    _warn_if_spherical_framing_was_dropped({"source_path": "/tmp/iphone.mov"}, {}, flat)
+    assert flat == []
+
+
 def test_motion_filter_builds_bounded_ken_burns_zoom():
-    graph = _motion_filter({"motion": {"type": "ken_burns", "zoom_start": 1.0, "zoom_end": 1.08, "pan_x": 0.5, "pan_y": 0.5}}, "youtube", 4.0)
+    graph = _motion_filter({"motion": {"type": "ken_burns", "movement": "zoom_out", "zoom_start": 3.0, "zoom_end": 2.5, "pan_x_start": 0.5, "pan_x_end": 0.5, "pan_y_start": 0.5, "pan_y_end": 0.5}}, "youtube", 4.0)
 
     assert graph is not None
-    assert "zoompan=" not in graph
-    assert "eval=frame" in graph
-    assert "crop=1920:1080" in graph
+    assert "zoompan=" in graph
+    assert "eval=frame" not in graph
+    assert "s=1920x1080" in graph
+    assert "1.380000" in graph
+
+
+def test_motion_filter_rejects_combined_zoom_and_pan_recipe():
+    graph = _motion_filter({"motion": {"type": "ken_burns", "movement": "zoom_out", "zoom_start": 3.0, "zoom_end": 2.5, "pan_x_start": 0.2, "pan_x_end": 0.8, "pan_y_start": 0.5, "pan_y_end": 0.5}}, "youtube", 4.0)
+    assert graph is None
 
 
 def test_fixed_rear_export_cadence_passes_with_zoom_on_and_off(tmp_path):
@@ -455,8 +1064,8 @@ def test_spherical_flat_filter_uses_signed_yaw_for_saved_singer_value():
 
     assert "yaw=-23.200" in graph
     assert "pitch=-28.800" in graph
-    assert "h_fov=95.000" in graph
-    assert "v_fov=63.088" in graph
+    assert "h_fov=74.800" in graph
+    assert "v_fov=46.542" in graph
     assert "interp=lanczos" in graph
 
 
@@ -715,6 +1324,85 @@ def test_copy_trim_video_uses_stream_copy_not_a_reencode(tmp_path, monkeypatch):
     assert command.index("-ss") < command.index("-i")
 
 
+def test_segment_worker_count_is_bounded_and_scales_with_cpu(tmp_path, monkeypatch):
+    project = create_project("workers", str(tmp_path / "workers.zuckervid"))
+    project.data["settings"]["export"]["segment_workers"] = 2
+    monkeypatch.setattr("core.stages.export.os", type("FakeOS", (), {
+        "cpu_count": staticmethod(lambda: 16),
+        "sysconf": staticmethod(lambda key: 1024 ** 3 if key == "SC_PAGE_SIZE" else 16),
+    }))
+    assert _segment_worker_count(project, 20) == 8
+    assert _segment_worker_count(project, 3) == 3
+
+
+def test_logo_clips_are_cached_by_kind_and_encoding_parameters(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    logo = tmp_path / "logo.png"
+    logo.write_bytes(b"logo")
+    calls = []
+
+    def fake_ffmpeg(command, duration, label, progress):
+        calls.append(label)
+        Path(command[-1]).write_bytes(b"encoded-logo")
+
+    monkeypatch.setattr("core.stages.export._run_ffmpeg_progress", fake_ffmpeg)
+    monkeypatch.setattr("core.stages.export._intro_logo_path", lambda: logo)
+    monkeypatch.setattr("core.stages.export._logo_path", lambda: logo)
+    intro = tmp_path / "intro.mp4"
+    outro = tmp_path / "outro.mp4"
+    _render_logo_clip(intro, "youtube", "intro", 10.2, 4_000_000, None)
+    _render_logo_clip(outro, "youtube", "intro", 10.2, 4_000_000, None)
+    assert len(calls) == 1
+    assert intro.read_bytes() == outro.read_bytes()
+    assert _logo_clip_cache_path_for_test("intro") != _logo_clip_cache_path_for_test("outro")
+
+
+def test_intro_card_is_default_intro_and_personal_logo_has_priority(tmp_path, monkeypatch):
+    card = tmp_path / "intro_card_watermark.png"
+    card.write_bytes(b"card")
+    personal = tmp_path / "custom-logo.png"
+    personal.write_bytes(b"custom")
+    monkeypatch.setattr("core.stages.export._intro_card_path", lambda: card)
+    monkeypatch.setattr("core.stages.export._intro_logo_path", lambda: tmp_path / "legacy.png")
+    monkeypatch.setattr("core.stages.export._global_config", lambda: {})
+
+    assert _bookend_asset_path("intro") == card
+    assert _bookend_asset_path("outro") == tmp_path / "legacy.png"
+
+    monkeypatch.setattr("core.stages.export._global_config", lambda: {"personal_logo_path": str(personal)})
+    assert _bookend_asset_path("intro") == personal
+    assert _bookend_asset_path("outro") == personal
+
+
+def test_intro_card_filter_contains_full_frame_with_fade():
+    graph = _logo_filtergraph("youtube", "intro", 10.0, True, True)
+    assert "scale=1920:1080" in graph
+    assert "pad=1920:1080" in graph
+    assert "fade=t=in" in graph
+    assert "fade=t=out" in graph
+
+
+def test_intro_card_path_prefers_pyinstaller_bundle_assets(tmp_path, monkeypatch):
+    bundled = tmp_path / "assets" / "intro_card_watermark.png"
+    bundled.parent.mkdir()
+    bundled.write_bytes(b"bundled-card")
+    monkeypatch.setattr("core.stages.export.sys._MEIPASS", str(tmp_path), raising=False)
+    assert _intro_card_path() == bundled
+
+
+def _logo_clip_cache_path_for_test(kind: str):
+    from core.stages.export import _logo_clip_cache_path
+    return _logo_clip_cache_path(kind, 10.2, 4_000_000, None, {"width": 1920}, "test")
+
+
+def test_missing_project_sources_lists_relinkable_paths(tmp_path):
+    project = create_project("missing", str(tmp_path / "missing.zuckervid"))
+    missing = tmp_path / "gone clip.mp4"
+    project.data["inputs"]["videos"] = [{"path": str(missing)}]
+    result = _missing_project_sources(project, {"segments": [{"source_path": str(missing)}]})
+    assert result == [str(missing)]
+
+
 @pytest.mark.slow
 def test_360_export_is_a_true_passthrough_not_a_reencode(tmp_path, monkeypatch):
     """360 mode must only trim + swap audio + add intro/outro -- never
@@ -927,7 +1615,12 @@ def test_360_export_of_hevc_source_decodes_cleanly_not_black(tmp_path, monkeypat
     export_entry = manifest["exports"][0]
     output = Path(export_entry["path"])
     assert output.exists()
-    assert any("re-encoded once when joining" in warning for warning in export_entry["warnings"])
+    # A clean stream-copy join is now retained.  Re-encoding remains a
+    # last-resort fallback when the assembled HEVC fails decode/duration
+    # validation, so this fixture may legitimately take either path.
+    performance = manifest.get("performance") or {}
+    if performance.get("concat_reencoded"):
+        assert any("re-encoded once when joining" in warning for warning in export_entry["warnings"])
 
     tag = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_tag_string", "-of", "default=nw=1:nk=1", str(output)],
@@ -1124,7 +1817,8 @@ def test_fractional_segment_export_keeps_audio_video_duration_and_markers_in_syn
     streams = _probe_stream_durations(output)
     assert abs(streams["video"] - streams["audio"]) <= 1.0 / TARGET_EXPORT_FPS
     for index in (0, 9, len(normalized) - 1):
-        timeline = 10.2 + sum(float(segment["duration_sec"]) for segment in normalized[:index]) + marker_offset
+        from core.stages.export import INTRO_DURATION
+        timeline = INTRO_DURATION + sum(float(segment["duration_sec"]) for segment in normalized[:index]) + marker_offset
         assert _audio_rms(output, timeline - 0.025, 0.050) > 0.20
         assert _frame_luma(output, timeline) > 150.0
     _verify_video_cadence(output, "drift guard final", duration=streams["video"])
@@ -1151,7 +1845,7 @@ def test_final_audio_verifier_allows_source_level_change_and_smooth_fade_stack(t
             "-vf",
             "fps=30,setpts=N/(30*TB),format=yuv420p",
             "-af",
-            f"afade=t=in:st=0.000:d=1.500,afade=t=out:st={source_duration - 1.5:.3f}:d=1.500",
+            f"afade=t=in:st=10.200:d=1.500,afade=t=out:st={source_duration - 1.5:.3f}:d=1.500",
             "-c:v",
             "libx264",
             "-pix_fmt",
@@ -1184,8 +1878,9 @@ def test_final_audio_verifier_allows_source_level_change_and_smooth_fade_stack(t
         content_end=source_duration,
     )
     curve = _audio_gain_curve_samples(source_duration, 10.2, source_duration)
-    fade_in = [gain for timestamp, gain in curve if 0.0 <= timestamp <= 1.5]
-    steady = [gain for timestamp, gain in curve if 1.5 < timestamp < source_duration - 1.5]
+    fade_in = [gain for timestamp, gain in curve if 10.2 <= timestamp <= 11.7]
+    steady = [gain for timestamp, gain in curve if 11.7 < timestamp < source_duration - 1.5]
+    assert all(gain == 0 for timestamp, gain in curve if timestamp < 10.2)
     assert fade_in == sorted(fade_in)
     assert all(gain == pytest.approx(1.0) for gain in steady)
 
@@ -1257,6 +1952,52 @@ def _probe_stream_durations(path: Path) -> dict[str, float]:
     return durations
 
 
+def test_reel_overlay_global_timing_and_position_are_converted_per_segment(tmp_path: Path) -> None:
+    from PIL import Image
+
+    flyer = tmp_path / "flyer.png"
+    Image.new("RGBA", (120, 80), (255, 0, 0, 255)).save(flyer)
+    config = {
+        "reel_origin_sec": 0.0,
+        "reel_texts": [{
+            "text": "MIDDLE", "x": 0.18, "y": 0.22, "size": 54,
+            "color": "#ffffff", "start_sec": 10.0, "duration_sec": 4.0,
+            "outline_color": "#ff0000", "outline_width": 3,
+            "shadow_color": "#000000", "shadow_blur": 2,
+        }],
+        "reel_images": [{"path": str(flyer), "x": 0.75, "y": 0.7, "width": 0.2, "start_sec": 11.0, "duration_sec": 2.0}],
+    }
+    assert _reel_overlay_items({"master_start_sec": 0.0, "duration_sec": 8.0}, config, "reel", tmp_path) == []
+    items = _reel_overlay_items({"master_start_sec": 8.0, "duration_sec": 8.0}, config, "reel", tmp_path)
+    assert len(items) == 2
+    assert items[0]["start_sec"] == pytest.approx(2.0)
+    assert items[0]["end_sec"] == pytest.approx(6.0)
+    assert items[1]["start_sec"] == pytest.approx(3.0)
+    assert items[1]["end_sec"] == pytest.approx(5.0)
+    alpha = Image.open(items[0]["path"]).getchannel("A")
+    bbox = alpha.getbbox()
+    assert bbox is not None
+    assert bbox[0] < 0.25 * 1080 and bbox[1] < 0.3 * 1920
+
+
+def test_reel_scale_overlay_expression_runs_with_ffmpeg(tmp_path: Path) -> None:
+    """Dynamic overlay scaling must be evaluated per frame, not at init."""
+    from PIL import Image
+
+    overlay = tmp_path / "overlay.png"
+    Image.new("RGBA", (1080, 1920), (255, 0, 0, 180)).save(overlay)
+    graph = _segment_filtergraph(
+        "reel", 0.5, {}, {}, has_watermark=False, text_enabled=False,
+        frame_count=15, reel_overlay_items=[{
+            "path": overlay, "start_sec": 0.0, "end_sec": 0.5, "animation": "scale",
+        }],
+    )
+    source = ["-f", "lavfi", "-i", "color=c=blue:s=320x240:r=30:d=0.5"]
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", *source, "-loop", "1", "-i", str(overlay), "-filter_complex", graph, "-map", "[v]", "-t", "0.5", "-f", "null", "-"]
+    result = subprocess.run(command, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def _frame_luma(path: Path, timestamp: float) -> float:
     result = subprocess.run(
         [
@@ -1281,3 +2022,70 @@ def _frame_luma(path: Path, timestamp: float) -> float:
     )
     match = re.search(r"lavfi.signalstats.YAVG=([0-9.]+)", f"{result.stdout}\n{result.stderr}")
     return float(match.group(1)) if match else 0.0
+
+
+def test_reel_image_overlay_effects_are_rasterized(tmp_path: Path) -> None:
+    from PIL import Image
+
+    source = tmp_path / "overlay.png"
+    Image.new("RGBA", (40, 40), (255, 255, 255, 255)).save(source)
+    items = _reel_overlay_items(
+        {"master_start_sec": 0.0, "duration_sec": 3.0},
+        {
+            "reel_images": [{
+                "path": str(source), "x": 0.5, "y": 0.5, "width": 0.1,
+                "opacity": 1.0, "start_sec": 0.0, "duration_sec": 3.0,
+                "tint_color": "#00ff00", "tint_opacity": 1.0,
+                "shadow_color": "#ff00ff", "shadow_distance": 12,
+                "shadow_blur": 4, "shadow_opacity": 1.0,
+                "glow_color": "#00ffff", "glow_blur": 10, "glow_layers": 3,
+            }],
+            "reel_origin_sec": 0.0,
+        },
+        "reel",
+        tmp_path,
+    )
+    assert len(items) == 1
+    rendered = Image.open(items[0]["path"]).convert("RGBA")
+    center = rendered.getpixel((540, 960))
+    assert center[1] > 200 and center[0] < 80 and center[2] < 80
+    assert any(pixel[3] > 0 for pixel in rendered.crop((530, 950, 560, 980)).getdata())
+
+
+
+def test_export_filter_preserves_authored_360_roll_and_dewarp_fov():
+    from core.stages.export import _export_source_filter
+
+    graph = _export_source_filter(
+        {"projection": "equirect"},
+        {
+            "type": "singer",
+            "yaw": 171.2,
+            "pitch": -36.5,
+            "fov": 150.0,
+            "roll": 7.5,
+            "projection_preset": "dewarp",
+        },
+    )
+    assert "roll=7.500" in graph
+    assert "h_fov=100.000" in graph
+    assert "output=flat" in graph
+
+
+
+def test_negative_hold_rate_is_rendered_as_a_real_in_shot_move():
+    from core.stages.export import _v360_motion_at, _v360_motion_commands
+
+    shot = {
+        "type": "singer",
+        "yaw": 17.0,
+        "pitch": -12.0,
+        "fov": 95.0,
+        "sweep_enabled": False,
+        "hold_motion": "subtle",
+        "hold_motion_rate_deg_per_sec": -0.8,
+    }
+    start = _v360_motion_at(shot, 6.0, 0.0)[0]
+    end = _v360_motion_at(shot, 6.0, 6.0)[0]
+    assert end - start == pytest.approx(-4.8)
+    assert _v360_motion_commands(shot, 6.0)

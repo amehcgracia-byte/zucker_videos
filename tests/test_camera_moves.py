@@ -5,7 +5,7 @@ import json
 import pytest
 
 from core.camera_moves import (
-    MAX_PLAUSIBLE_YAW_RATE_DEG_PER_SEC,
+    MAX_RECORDED_YAW_RATE_DEG_PER_SEC,
     clip_curve_for_segment,
     interpolate_curve,
     normalize_recorded_samples,
@@ -89,9 +89,8 @@ def test_clip_curve_does_not_compress_a_long_take_into_a_short_segment():
     assert unwrapped_travel < 30.0
 
 
-def test_clip_curve_raises_when_yaw_rate_is_implausible():
-    """If a bug ever dumps a whole take's rotation into one short segment
-    again, this must fail loudly instead of silently shipping a spinning shot.
+def test_clip_curve_limits_an_implausibly_fast_take():
+    """A recorded burst is rate-limited instead of shipped as a whip-pan.
 
     Samples are stored wrapped to [0, 360), like real recorded data, so this
     builds many closely-spaced steps (each < 180 deg apart, so unwrap keeps
@@ -103,11 +102,16 @@ def test_clip_curve_raises_when_yaw_rate_is_implausible():
         "smoothed": [{"t": index * 0.01, "yaw": (index * 30.0) % 360.0, "pitch": 0.0, "fov": 100.0} for index in range(201)],
     }
 
-    with pytest.raises(ValueError, match="Implausible yaw rate"):
-        clip_curve_for_segment(move, 0.0, 2.0)
+    curve = clip_curve_for_segment(move, 0.0, 2.0)
+    rates = [
+        abs(((b["yaw"] - a["yaw"] + 180) % 360) - 180) / (b["t"] - a["t"])
+        for a, b in zip(curve, curve[1:])
+        if b["t"] > a["t"]
+    ]
+    assert max(rates) <= MAX_RECORDED_YAW_RATE_DEG_PER_SEC + 1e-6
 
 
-def test_clip_curve_raises_on_a_long_body_segment_too_not_just_short_ones():
+def test_clip_curve_limits_a_long_body_segment_too_not_just_short_ones():
     """The guard must check LOCAL rate, not total-travel-over-duration: an
     aggregate check's tolerance grows with duration, so for the 360 "body"
     export (one segment spanning the whole multi-minute song) it would
@@ -121,11 +125,16 @@ def test_clip_curve_raises_on_a_long_body_segment_too_not_just_short_ones():
 
     # Same implausible burst, but clipped as part of a much longer segment —
     # an aggregate/duration-scaled check would have allowed this.
-    with pytest.raises(ValueError, match="Implausible yaw rate"):
-        clip_curve_for_segment(move, 0.0, 600.0)
+    curve = clip_curve_for_segment(move, 0.0, 600.0)
+    rates = [
+        abs(((b["yaw"] - a["yaw"] + 180) % 360) - 180) / (b["t"] - a["t"])
+        for a, b in zip(curve, curve[1:])
+        if b["t"] > a["t"]
+    ]
+    assert max(rates) <= MAX_RECORDED_YAW_RATE_DEG_PER_SEC + 1e-6
 
 
-def test_clip_curve_allows_a_fast_but_plausible_pan():
+def test_clip_curve_caps_a_fast_pan():
     # A single fast whip-pan just under the local-rate ceiling: 140 degrees
     # in 0.2s = 700 deg/s (real takes have been observed peaking around
     # 300-340 deg/s, so this is already a generous margin above real motion).
@@ -138,4 +147,4 @@ def test_clip_curve_allows_a_fast_but_plausible_pan():
     }
 
     curve = clip_curve_for_segment(move, 0.0, 0.2)
-    assert curve[-1]["yaw"] == pytest.approx(140.0)
+    assert curve[-1]["yaw"] == pytest.approx(8.0)

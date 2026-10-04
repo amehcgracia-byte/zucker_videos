@@ -66,7 +66,7 @@ STRINGS = {
     "songs_problem": "songs.json could not be read correctly.",
     "unexpected_error": "Unexpected error",
     "song_default": "Song",
-    "full_video": "Full video",
+    "full_video": "Video",
     "video_title": "Video",
     "color_skipped": "Skipped color matching for {filename}: {reason}",
 }

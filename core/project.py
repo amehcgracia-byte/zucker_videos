@@ -49,10 +49,31 @@ def default_settings() -> dict[str, Any]:
             "style": "coverage_first",
             "camera_role_weights": {"360": 50.0, "handheld": 30.0, "fixed_rear": 20.0},
             "fixed_rear_motion": True,
+            # With this many alternative physical cameras covering the same
+            # synced window, a fixed/iPhone source stays full-frame instead of
+            # being forced into a close-up filler shot.
+            "fixed_camera_zoom_coverage_threshold": 2,
+            "spherical_shot_target_weights": {"singer": 0.60, "full_stage": 0.10, "audience": 0.10},
+            # Movement reprojects complete frames without reconfiguring v360.
+            "spherical_motion": True,
+            "spherical_hold_motion": "subtle",
             "spherical_mode": "automatic",
+            "spherical_sweep": False,
+            "sweep_speed_deg_per_sec": 20.0,
         },
         "spherical_landmarks": {},
-        "export": {"format": "mp4", "resolution": "source", "transiciones_suaves": False},
+        "export": {
+            "format": "mp4", "resolution": "source", "transiciones_suaves": False,
+            "segment_workers": 2, "force_rerender_segments": False,
+            # Mode-local defaults.  These are deliberately nested by mode so
+            # changing Reel timing cannot invalidate or alter YouTube/360.
+            "transitions": {
+                "youtube": {"duration": 0.0, "sections_only": True},
+                "reel": {"duration": 0.0, "every": 3},
+                "360": {"duration": 0.0},
+                "backstage": {"duration": 0.0},
+            },
+        },
     }
 
 

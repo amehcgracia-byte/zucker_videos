@@ -5,11 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Zucker Editor</title>
     <link rel="icon" href="/logo_editor_green.png?v=editor-ui-4" />
-    <link rel="stylesheet" href="/styles.css?v=editor-ui-4" />
+    <link rel="stylesheet" href="/styles.css?v=editor-ui-5" />
     <script src="/theme.js?v=editor-ui-4"></script>
   </head>
   <body>
-    <img id="backdropLogo" src="/logo_watermark.png" alt="" aria-hidden="true" />
     <button id="statusStrip" class="status-strip" hidden>
       <span class="status-dot"></span>
       <span id="statusStripText">Working...</span>
@@ -19,7 +18,9 @@
         <button class="step-nav active" data-step-nav="1">Inputs</button>
         <button class="step-nav" data-step-nav="2">Edit type</button>
         <button class="step-nav" data-step-nav="3">Progress</button>
-        <button class="step-nav" data-step-nav="4">Result</button>
+        <button class="step-nav" data-step-nav="4">Frames</button>
+        <button class="step-nav" data-step-nav="5">Overlay &amp; Captions</button>
+        <button class="step-nav" data-step-nav="6">Result</button>
       </div>
       <div class="nav-actions">
         <button id="themeToggle" class="icon-button small" type="button">Dark mode</button>
@@ -27,11 +28,12 @@
       </div>
     </nav>
     <main class="wizard">
+      <div id="backdropFlow" aria-hidden="true"><img id="backdropLogo" src="/logo_watermark.png" alt="" /></div>
       <section class="step active" id="step1">
         <div class="step-header">
           <div class="brand-line">
             <img src="/logo_editor_green.png?v=editor-ui-4" alt="" />
-            <span>Step 1 of 4</span>
+          <span>Step 1 of 5</span>
           </div>
           <h1>Zucker Editor</h1>
         </div>
@@ -46,6 +48,40 @@
           Video name
           <input id="videoName" />
         </label>
+        <div class="inbox-analysis-bar">
+          <div>
+            <strong>Inbox pre-analysis</strong>
+            <span id="inboxAnalysisStatus">Inbox pre-analysis has not run yet</span>
+          </div>
+          <div class="source-folder-settings">
+            <label>
+              Source folders
+              <input id="sourceFolderPath" type="text" placeholder="/Volumes/RAWVideos/…" spellcheck="false" />
+            </label>
+            <button id="addSourceFolder" class="icon-button small" type="button">Add folder</button>
+            <div id="sourceFolderList" class="source-folder-list"></div>
+            <label>
+              Master formats
+              <select id="masterAudioFilter">
+                <option value="mp3">MP3 mixes only</option>
+                <option value="all">All supported audio</option>
+              </select>
+            </label>
+          </div>
+          <label>
+            Master audio
+            <select id="inboxMasterSelect" aria-label="Master audio">
+              <option value="">Scan Inbox to load audio masters…</option>
+            </select>
+          </label>
+          <label>
+            Add your personal logo
+            <input id="personalLogoInput" type="file" accept="image/png,image/jpeg,image/webp" />
+            <small id="personalLogoStatus">The app logo is used by default</small>
+          </label>
+          <button id="addMasterVideos" class="icon-button small" type="button" disabled>Add videos for this master</button>
+          <button id="scanInbox" class="icon-button small" type="button">Scan Inbox</button>
+        </div>
         <div id="dropZone" class="drop-zone">
           <div class="drop-copy">
             <strong>Drop your files here</strong>
@@ -62,13 +98,40 @@
             <li>Drop the MP4 into Zucker Editor.</li>
           </ol>
         </div>
+        <div id="singleVideoChoice" class="callout single-video-choice" hidden>
+          <strong>Single video detected</strong>
+          <p>Choose how to continue with this video:</p>
+          <div class="single-video-options">
+            <button type="button" class="platform-card" data-single-platform="backstage">
+              <strong>Backstage</strong>
+              <span>Use the original camera audio; no master audio required.</span>
+            </button>
+            <button type="button" class="platform-card" data-single-platform="reel">
+              <strong>Reel</strong>
+              <span>One continuous video cut, with the selected audio offset and aspect ratio applied.</span>
+            </button>
+          </div>
+          <div id="singleReelAudioChoice" class="single-reel-audio-choice" hidden>
+            <strong>Reel audio</strong>
+            <button type="button" class="platform-card" data-reel-audio-source="video">
+              <strong>Use this video's audio</strong>
+              <span>Use the embedded audio from this video; no master is required.</span>
+            </button>
+            <button type="button" class="platform-card" data-reel-audio-source="master">
+              <strong>Use master audio</strong>
+              <span>Use the optional master audio selected above.</span>
+            </button>
+          </div>
+          <small id="singleVideoChoiceHint" class="field-help"></small>
+        </div>
         <p id="softRule" class="soft-rule">Missing master audio</p>
+        <div id="masterMismatchNotice" class="callout warning" hidden role="alert"></div>
         <button id="confirmFiles" class="primary icon-button" data-icon="arrow" disabled>Confirm and continue</button>
       </section>
 
       <section class="step" id="step2">
         <div class="step-header">
-          <span>Step 2 of 4</span>
+          <span>Step 2 of 5</span>
           <h1>Choose edit type</h1>
         </div>
         <div class="platforms">
@@ -86,6 +149,11 @@
             <span class="platform-glyph" data-glyph="sphere"></span>
             <strong>360</strong>
             <span>Full 360 clip</span>
+          </button>
+          <button class="platform-card" data-platform="backstage">
+            <span class="platform-glyph" data-glyph="backstage"></span>
+            <strong>Backstage</strong>
+            <span>Documentary diary with original camera audio</span>
           </button>
         </div>
         <div id="songPicker" class="song-picker" hidden>
@@ -111,6 +179,58 @@
             </label>
           </div>
         </div>
+        <details id="reelOptions" class="reel-options" hidden>
+          <summary>Reel options</summary>
+          <div class="reel-option-grid">
+            <p id="reelSingleSourceNote" class="field-help" hidden>Single video detected: multicamera cuts and subject reframing are disabled. The video is used as one continuous take; only aspect ratio is changed.</p>
+            <label>Duration <output id="reelDurationValue">30s</output><input id="reelDuration" type="range" min="20" max="60" step="1" value="30" /></label>
+            <label>Aspect ratio<select id="reelAspect"><option value="9:16">9:16 vertical</option><option value="16:9">16:9 horizontal</option><option value="mix">Mix (per clip)</option><option value="mix_vertical_horizontal">Mix (vertical/horizontal)</option></select></label>
+            <label id="reelMixVerticalRatioWrap" hidden>Vertical treatment share
+              <select id="reelMixVerticalRatio" aria-label="Approximate share of vertical full-bleed cuts">
+                <option value="auto">Auto (confidence)</option>
+                <option value="0.75">Mostly vertical (75%)</option>
+                <option value="0.5">Balanced (50%)</option>
+                <option value="0.25">Mostly horizontal (25%)</option>
+              </select>
+            </label>
+            <label>Cut density <output id="reelCutsPerSourceValue">1.0× source</output><input id="reelCutsPerSource" type="range" min="1" max="3" step="0.5" value="1" /><small>At least one cut per usable source</small></label>
+          </div>
+        </details>
+        <details id="backstageOptions" class="reel-options" hidden>
+          <summary>Backstage options</summary>
+          <div class="reel-option-grid">
+            <label>Montage duration <output id="backstageDurationValue">180s</output><input id="backstageDuration" type="range" min="30" max="240" step="5" value="180" /></label>
+          </div>
+          <p class="field-help">Choose the target length, up to 4 minutes. The story-bite selection adapts to it.</p>
+          <label class="field-label">Mensajes de pergamino (uno por campo; se repartirán por el montaje)</label>
+          <div class="backstage-messages">
+            <input id="backstageMessage1" type="text" maxlength="180" placeholder="Mensaje 1" />
+            <input id="backstageMessage2" type="text" maxlength="180" placeholder="Mensaje 2" />
+            <input id="backstageMessage3" type="text" maxlength="180" placeholder="Mensaje 3" />
+            <input id="backstageMessage4" type="text" maxlength="180" placeholder="Mensaje 4" />
+          </div>
+        </details>
+        <div id="sphericalSetup" class="spherical-setup" hidden>
+          <div class="setup-heading">
+            <h2>360° Shot Setup</h2>
+            <button id="saveSphericalSetup" class="icon-button small" type="button">Save angles</button>
+          </div>
+          <label class="spherical-source-picker">Preview source
+            <select id="sphericalSourceSelect" aria-label="360 preview source"></select>
+          </label>
+          <p class="setup-hint">Preview and export share the same 360 projection. Linear/Dewarp suit portraits; MegaView/UltraWide curve wide views to reduce edge stretching. Automatic multicamera editing balances enabled performer views, including legacy zero weights; the first 360 shot favours the singer. Uncheck “Use automatically” to exclude an unsuitable view. Advanced weights remain available for other selection modes.</p>
+          <div class="spherical-fields">
+            <fieldset data-spherical-landmark="full_stage"><legend>Stage</legend><label><input type="checkbox" data-field="enabled" checked />Use automatically</label><label>Main subject<select data-field="subject"><option value="singer">Singer</option><option value="drummer">Drummer</option><option value="pianist">Pianist</option><option value="guitarist">Guitarist</option><option value="bassist">Bassist</option><option value="full_stage" selected>Full Stage</option><option value="audience">Audience</option><option value="left">Left</option><option value="right">Right</option></select></label><canvas data-spherical-canvas="full_stage" aria-label="Stage 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="full_stage">Save as Stage</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Roll<input data-field="roll" type="number" step="0.1" /></label><label>Projection<select data-field="projection_preset"><option value="linear">Linear</option><option value="dewarp">Dewarp</option><option value="megaview">MegaView</option><option value="ultrawide">UltraWide</option><option value="tiny_planet">Tiny Planet</option></select></label><label>Projection control<input data-field="projection_control" type="number" min="0" max="1" step="0.01" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
+            <fieldset data-spherical-landmark="singer"><legend>Singer</legend><label><input type="checkbox" data-field="enabled" checked />Use automatically</label><label>Main subject<select data-field="subject"><option value="singer" selected>Singer</option><option value="drummer">Drummer</option><option value="pianist">Pianist</option><option value="guitarist">Guitarist</option><option value="bassist">Bassist</option><option value="full_stage">Full Stage</option><option value="audience">Audience</option><option value="left">Left</option><option value="right">Right</option></select></label><canvas data-spherical-canvas="singer" aria-label="Singer 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="singer">Save as Singer</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Roll<input data-field="roll" type="number" step="0.1" /></label><label>Projection<select data-field="projection_preset"><option value="linear">Linear</option><option value="dewarp">Dewarp</option><option value="megaview">MegaView</option><option value="ultrawide">UltraWide</option><option value="tiny_planet">Tiny Planet</option></select></label><label>Projection control<input data-field="projection_control" type="number" min="0" max="1" step="0.01" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
+            <fieldset data-spherical-landmark="audience"><legend>Audience</legend><label>Main subject<select data-field="subject"><option value="singer">Singer</option><option value="drummer">Drummer</option><option value="pianist">Pianist</option><option value="guitarist">Guitarist</option><option value="bassist">Bassist</option><option value="full_stage">Full Stage</option><option value="audience" selected>Audience</option><option value="left">Left</option><option value="right">Right</option></select></label><canvas data-spherical-canvas="audience" aria-label="Audience 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="audience">Save as Audience</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Roll<input data-field="roll" type="number" step="0.1" /></label><label>Projection<select data-field="projection_preset"><option value="linear">Linear</option><option value="dewarp">Dewarp</option><option value="megaview">MegaView</option><option value="ultrawide">UltraWide</option><option value="tiny_planet">Tiny Planet</option></select></label><label>Projection control<input data-field="projection_control" type="number" min="0" max="1" step="0.01" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
+            <fieldset data-spherical-landmark="left"><legend>Left</legend><label><input type="checkbox" data-field="enabled" checked />Use automatically</label><label>Main subject<select data-field="subject"><option value="singer">Singer</option><option value="drummer">Drummer</option><option value="pianist">Pianist</option><option value="guitarist">Guitarist</option><option value="bassist">Bassist</option><option value="full_stage">Full Stage</option><option value="audience">Audience</option><option value="left" selected>Left</option><option value="right">Right</option></select></label><canvas data-spherical-canvas="left" aria-label="Left 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="left">Save as Left</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Roll<input data-field="roll" type="number" step="0.1" /></label><label>Projection<select data-field="projection_preset"><option value="linear">Linear</option><option value="dewarp">Dewarp</option><option value="megaview">MegaView</option><option value="ultrawide">UltraWide</option><option value="tiny_planet">Tiny Planet</option></select></label><label>Projection control<input data-field="projection_control" type="number" min="0" max="1" step="0.01" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
+            <fieldset data-spherical-landmark="drummer"><legend>Drummer</legend><label><input type="checkbox" data-field="enabled" checked />Use automatically</label><label>Main subject<select data-field="subject"><option value="singer">Singer</option><option value="drummer" selected>Drummer</option><option value="pianist">Pianist</option><option value="guitarist">Guitarist</option><option value="bassist">Bassist</option><option value="full_stage">Whole stage</option><option value="audience">Audience</option><option value="left">Musician on left</option><option value="right">Musician on right</option></select></label><canvas data-spherical-canvas="drummer" aria-label="Drummer 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="drummer">Save as Drummer</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Roll<input data-field="roll" type="number" step="0.1" /></label><label>Projection<select data-field="projection_preset"><option value="linear">Linear</option><option value="dewarp">Dewarp</option><option value="megaview">MegaView</option><option value="ultrawide">UltraWide</option><option value="tiny_planet">Tiny Planet</option></select></label><label>Projection control<input data-field="projection_control" type="number" min="0" max="1" step="0.01" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
+            <fieldset data-spherical-landmark="pianist"><legend>Pianist</legend><label><input type="checkbox" data-field="enabled" checked />Use automatically</label><label>Main subject<select data-field="subject"><option value="singer">Singer</option><option value="drummer">Drummer</option><option value="pianist" selected>Pianist</option><option value="guitarist">Guitarist</option><option value="bassist">Bassist</option><option value="full_stage">Whole stage</option><option value="audience">Audience</option><option value="left">Musician on left</option><option value="right">Musician on right</option></select></label><canvas data-spherical-canvas="pianist" aria-label="Pianist 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="pianist">Save as Pianist</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Roll<input data-field="roll" type="number" step="0.1" /></label><label>Projection<select data-field="projection_preset"><option value="linear">Linear</option><option value="dewarp">Dewarp</option><option value="megaview">MegaView</option><option value="ultrawide">UltraWide</option><option value="tiny_planet">Tiny Planet</option></select></label><label>Projection control<input data-field="projection_control" type="number" min="0" max="1" step="0.01" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
+            <fieldset data-spherical-landmark="right"><legend>Right</legend><label><input type="checkbox" data-field="enabled" checked />Use automatically</label><label>Main subject<select data-field="subject"><option value="singer">Singer</option><option value="drummer">Drummer</option><option value="pianist">Pianist</option><option value="guitarist">Guitarist</option><option value="bassist">Bassist</option><option value="full_stage">Full Stage</option><option value="audience">Audience</option><option value="left">Left</option><option value="right" selected>Right</option></select></label><canvas data-spherical-canvas="right" aria-label="Right 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="right">Save as Right</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Roll<input data-field="roll" type="number" step="0.1" /></label><label>Projection<select data-field="projection_preset"><option value="linear">Linear</option><option value="dewarp">Dewarp</option><option value="megaview">MegaView</option><option value="ultrawide">UltraWide</option><option value="tiny_planet">Tiny Planet</option></select></label><label>Projection control<input data-field="projection_control" type="number" min="0" max="1" step="0.01" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
+            <fieldset data-spherical-landmark="audience_stage_wide"><legend>Audience + stage</legend><label>Main subject<select data-field="subject"><option value="singer">Singer</option><option value="drummer">Drummer</option><option value="pianist">Pianist</option><option value="guitarist">Guitarist</option><option value="bassist">Bassist</option><option value="full_stage">Full Stage</option><option value="audience">Audience</option><option value="left">Left</option><option value="right">Right</option></select></label><canvas data-spherical-canvas="audience_stage_wide" aria-label="Audience and stage 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="audience_stage_wide">Save as Audience + stage</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Roll<input data-field="roll" type="number" step="0.1" /></label><label>Projection<select data-field="projection_preset"><option value="linear">Linear</option><option value="dewarp">Dewarp</option><option value="megaview">MegaView</option><option value="ultrawide">UltraWide</option><option value="tiny_planet">Tiny Planet</option></select></label><label>Projection control<input data-field="projection_control" type="number" min="0" max="1" step="0.01" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
+            <fieldset data-spherical-landmark="planet"><legend>Planet</legend><label>Main subject<select data-field="subject"><option value="singer">Singer</option><option value="drummer">Drummer</option><option value="pianist">Pianist</option><option value="guitarist">Guitarist</option><option value="bassist">Bassist</option><option value="full_stage">Full Stage</option><option value="audience">Audience</option><option value="left">Left</option><option value="right">Right</option></select></label><canvas data-spherical-canvas="planet" aria-label="Planet 360 view"></canvas><button type="button" class="icon-button small" data-save-spherical="planet">Save as Planet</button><details><summary>Advanced angles</summary><label>Yaw<input data-field="yaw" type="number" step="0.1" /></label><label>Pitch<input data-field="pitch" type="number" step="0.1" /></label><label>FOV<input data-field="fov" type="number" step="0.1" /></label><label>Roll<input data-field="roll" type="number" step="0.1" /></label><label>Projection<select data-field="projection_preset"><option value="linear">Linear</option><option value="dewarp">Dewarp</option><option value="megaview">MegaView</option><option value="ultrawide">UltraWide</option><option value="tiny_planet">Tiny Planet</option></select></label><label>Projection control<input data-field="projection_control" type="number" min="0" max="1" step="0.01" /></label><label>Weight<input data-field="weight" type="number" step="0.1" min="0" /></label></details></fieldset>
+          </div>
+        </div>
         <div id="cameraMix" class="camera-mix">
           <div class="setup-heading">
             <h2>Camera Mix</h2>
@@ -131,53 +251,43 @@
             </details>
           </div>
         </div>
-        <div id="sphericalSetup" class="spherical-setup" hidden>
-          <div class="setup-heading">
-            <h2>360° Shot Setup</h2>
-            <button id="reuseSphericalSetup" class="icon-button small" data-icon="retry" type="button">Reuse last setup</button>
-          </div>
-          <p class="setup-hint">Choose whether Zucker Editor should use saved shot angles automatically or follow a live camera move you record.</p>
-          <div class="spherical-mode" id="sphericalMode">
-            <label><input type="radio" name="sphericalMode" value="automatic" checked /> <strong>Automatic</strong><span>Use my saved shot angles</span></label>
-            <label><input type="radio" name="sphericalMode" value="directed" /> <strong>Directed</strong><span>I'll move the camera myself</span></label>
-          </div>
-          <div id="directorEntry" class="director-entry">
-            <div>
-              <strong>Direct the 360 camera live</strong>
-              <span id="directorEntryStatus">Play the synced song, drag the 360 view, and record a camera move take.</span>
-            </div>
-            <button id="openDirector" class="primary icon-button" data-icon="sphere" type="button">Open 360 Director</button>
-          </div>
-          <div id="sphericalWarnings" class="setup-warning" hidden></div>
-          <div class="spherical-fields">
-            <fieldset data-spherical-landmark="full_stage"><legend>Full stage</legend><img class="shot-preview" data-preview alt="" /><label>Direction <span class="range-copy">Left / Center / Right</span><input data-friendly="direction" type="range" min="-180" max="180" step="1" /></label><label>Height <span class="range-copy">Looking down / Eye level / Looking up</span><input data-friendly="height" type="range" min="-45" max="20" step="0.1" /></label><label>Zoom <span class="range-copy">Close-up / Wide shot</span><input data-friendly="zoom" type="range" min="65" max="150" step="0.1" /></label><label>How often<select data-friendly="frequency"><option value="0">Never</option><option value="1">Rarely</option><option value="5">Sometimes</option><option value="15">Often</option><option value="40">A lot</option></select></label><small class="raw-summary"></small><details class="advanced-shot"><summary>Advanced</summary><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>Exact zoom<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="singer"><legend>Singer</legend><img class="shot-preview" data-preview alt="" /><label>Direction <span class="range-copy">Left / Center / Right</span><input data-friendly="direction" type="range" min="-180" max="180" step="1" /></label><label>Height <span class="range-copy">Looking down / Eye level / Looking up</span><input data-friendly="height" type="range" min="-45" max="20" step="0.1" /></label><label>Zoom <span class="range-copy">Close-up / Wide shot</span><input data-friendly="zoom" type="range" min="65" max="150" step="0.1" /></label><label>How often<select data-friendly="frequency"><option value="0">Never</option><option value="1">Rarely</option><option value="5">Sometimes</option><option value="15">Often</option><option value="40">A lot</option></select></label><small class="raw-summary"></small><details class="advanced-shot"><summary>Advanced</summary><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>Exact zoom<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="drummer"><legend>Drummer</legend><img class="shot-preview" data-preview alt="" /><label>Direction <span class="range-copy">Left / Center / Right</span><input data-friendly="direction" type="range" min="-180" max="180" step="1" /></label><label>Height <span class="range-copy">Looking down / Eye level / Looking up</span><input data-friendly="height" type="range" min="-45" max="20" step="0.1" /></label><label>Zoom <span class="range-copy">Close-up / Wide shot</span><input data-friendly="zoom" type="range" min="65" max="150" step="0.1" /></label><label>How often<select data-friendly="frequency"><option value="0">Never</option><option value="1">Rarely</option><option value="5">Sometimes</option><option value="15">Often</option><option value="40">A lot</option></select></label><small class="raw-summary"></small><details class="advanced-shot"><summary>Advanced</summary><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>Exact zoom<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="left"><legend>Left side</legend><img class="shot-preview" data-preview alt="" /><label>Direction <span class="range-copy">Left / Center / Right</span><input data-friendly="direction" type="range" min="-180" max="180" step="1" /></label><label>Height <span class="range-copy">Looking down / Eye level / Looking up</span><input data-friendly="height" type="range" min="-45" max="20" step="0.1" /></label><label>Zoom <span class="range-copy">Close-up / Wide shot</span><input data-friendly="zoom" type="range" min="65" max="150" step="0.1" /></label><label>How often<select data-friendly="frequency"><option value="0">Never</option><option value="1">Rarely</option><option value="5">Sometimes</option><option value="15">Often</option><option value="40">A lot</option></select></label><small class="raw-summary"></small><details class="advanced-shot"><summary>Advanced</summary><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>Exact zoom<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="right"><legend>Right side</legend><img class="shot-preview" data-preview alt="" /><label>Direction <span class="range-copy">Left / Center / Right</span><input data-friendly="direction" type="range" min="-180" max="180" step="1" /></label><label>Height <span class="range-copy">Looking down / Eye level / Looking up</span><input data-friendly="height" type="range" min="-45" max="20" step="0.1" /></label><label>Zoom <span class="range-copy">Close-up / Wide shot</span><input data-friendly="zoom" type="range" min="65" max="150" step="0.1" /></label><label>How often<select data-friendly="frequency"><option value="0">Never</option><option value="1">Rarely</option><option value="5">Sometimes</option><option value="15">Often</option><option value="40">A lot</option></select></label><small class="raw-summary"></small><details class="advanced-shot"><summary>Advanced</summary><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>Exact zoom<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="audience"><legend>Audience</legend><img class="shot-preview" data-preview alt="" /><label>Direction <span class="range-copy">Left / Center / Right</span><input data-friendly="direction" type="range" min="-180" max="180" step="1" /></label><label>Height <span class="range-copy">Looking down / Eye level / Looking up</span><input data-friendly="height" type="range" min="-45" max="20" step="0.1" /></label><label>Zoom <span class="range-copy">Close-up / Wide shot</span><input data-friendly="zoom" type="range" min="65" max="150" step="0.1" /></label><label>How often<select data-friendly="frequency"><option value="0">Never</option><option value="1">Rarely</option><option value="5">Sometimes</option><option value="15">Often</option><option value="40">A lot</option></select></label><small class="raw-summary"></small><details class="advanced-shot"><summary>Advanced</summary><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>Exact zoom<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="audience_stage_wide"><legend>Audience + stage</legend><img class="shot-preview" data-preview alt="" /><label>Direction <span class="range-copy">Left / Center / Right</span><input data-friendly="direction" type="range" min="-180" max="180" step="1" /></label><label>Height <span class="range-copy">Looking down / Eye level / Looking up</span><input data-friendly="height" type="range" min="-45" max="20" step="0.1" /></label><label>Zoom <span class="range-copy">Close-up / Wide shot</span><input data-friendly="zoom" type="range" min="65" max="150" step="0.1" /></label><label>How often<select data-friendly="frequency"><option value="0">Never</option><option value="1">Rarely</option><option value="5">Sometimes</option><option value="15">Often</option><option value="40">A lot</option></select></label><small class="raw-summary"></small><details class="advanced-shot"><summary>Advanced</summary><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>Exact zoom<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></details></fieldset>
-            <fieldset data-spherical-landmark="planet"><legend>Planet</legend><img class="shot-preview" data-preview alt="" /><label>Direction <span class="range-copy">Left / Center / Right</span><input data-friendly="direction" type="range" min="-180" max="180" step="1" /></label><label>Height <span class="range-copy">Looking down / Eye level / Looking up</span><input data-friendly="height" type="range" min="-45" max="20" step="0.1" /></label><label>Zoom <span class="range-copy">Close-up / Wide shot</span><input data-friendly="zoom" type="range" min="65" max="150" step="0.1" /></label><label>How often<select data-friendly="frequency"><option value="0">Never</option><option value="1">Rarely</option><option value="5">Sometimes</option><option value="15">Often</option><option value="40">A lot</option></select></label><small class="raw-summary"></small><details class="advanced-shot"><summary>Advanced</summary><label>Yaw<input data-field="yaw" type="text" inputmode="decimal" /></label><label>Pitch<input data-field="pitch" type="text" inputmode="decimal" /></label><label>Exact zoom<input data-field="fov" type="text" inputmode="decimal" /></label><label>Weight<input data-field="weight" type="text" inputmode="decimal" /></label></details></fieldset>
-          </div>
-        </div>
         <button id="startWizard" class="primary icon-button" data-icon="wand" disabled>Make it</button>
       </section>
 
       <section class="step" id="step3">
         <div class="step-header">
-          <span>Step 3 of 4</span>
+          <span>Step 3 of 5</span>
           <h1 id="progressTitle">Creating your video</h1>
         </div>
+        <div id="stageTransition" class="stage-transition" hidden aria-live="polite">
+          <span id="stageTransitionMode" class="stage-transition-mode"></span>
+          <strong id="stageTransitionTitle"></strong>
+          <p id="stageTransitionDetail"></p>
+        </div>
         <div id="progressBox" class="progress-box">
-          <div class="progress-track"><div id="progressBar"></div></div>
-          <div class="progress-main">
-            <strong id="progressMessage">Working...</strong>
-            <span id="progressPercent">0%</span>
-          </div>
-          <span id="progressDetail"></span>
-          <div class="progress-meta">
-            <span id="elapsedTime">Elapsed: 0 min</span>
-            <span id="etaTime">ETA: estimating…</span>
+          <div class="progress-loading-stage">
+            <img
+              id="progressLoadingGif"
+              class="progress-loading-gif"
+              src="/zucker_loading_fast_interleaved_sequence.gif?v=loading-gif-2"
+              alt=""
+              aria-hidden="true"
+            />
+            <div class="progress-loading-overlay">
+              <div class="progress-track"><div id="progressBar"></div></div>
+              <div class="progress-main">
+                <strong id="progressMessage">Working...</strong>
+                <span id="progressPercent">0%</span>
+              </div>
+              <span id="progressDetail"></span>
+              <div id="progressTasks" class="progress-tasks" aria-live="polite"></div>
+              <span id="progressMeasuredUpdate" class="progress-measured-update"></span>
+              <div class="progress-meta">
+                <span id="elapsedTime">Elapsed: 0 min</span>
+                <span id="etaTime">ETA: estimating…</span>
+              </div>
+              <button id="cancelWizard" class="icon-button danger" data-icon="close" hidden>Cancel</button>
+            </div>
           </div>
           <div class="stage-checks">
             <span data-stage="ingest">Prepare</span>
@@ -190,41 +300,97 @@
             <button id="copyProgressReport" class="icon-button small" data-icon="clipboard">Copy report</button>
             <pre id="progressReport">Loading details...</pre>
           </details>
-          <button id="cancelWizard" class="icon-button danger" data-icon="close">Cancel</button>
         </div>
       </section>
 
       <section class="step" id="step4">
         <div class="step-header">
-          <span>Step 4 of 4</span>
+          <span>Step 4 of 5</span>
+          <h1>Frames</h1>
+        </div>
+        <div id="reviewBox" class="review-box" hidden>
+          <div id="reviewReadyNotice" class="review-ready-notice" role="status" aria-live="assertive" hidden>
+            <strong>Review shots are ready — choose your takes now</strong>
+            <span>The edit finished while you were away. Your synchronized shots are waiting for review.</span>
+          </div>
+          <div class="review-intro">I'm artificial, but not that intelligent — help me check whether these shots are any good.</div>
+          <div id="reviewGrid" class="review-grid"></div>
+          <div id="reviewLargeModal" class="review-large-modal" hidden role="dialog" aria-modal="true" aria-label="Enlarged shot"><button id="closeReviewLarge" class="review-large-close" type="button" aria-label="Close">×</button><img id="reviewLarge" alt="Selected shot" /></div>
+          <div class="review-actions"><button id="replaceRejected" class="icon-button">Replace rejected</button><button id="renderReviewed" class="primary icon-button">Render approved shots</button></div>
+        </div>
+        <div id="paperEditBox" class="review-box paper-edit-box" hidden>
+          <div class="review-ready-notice" role="status"><strong>Backstage paper edit ready</strong><span>Review the written sequence before any video render starts.</span></div>
+          <div id="storyboardBox" class="storyboard-box" hidden>
+            <h3 id="storyboardTitle">Storyboard narrativo</h3>
+            <p id="storyboardLogline" class="storyboard-logline"></p>
+            <div id="storyboardPlan" class="storyboard-plan"></div>
+            <details class="storyboard-music"><summary>Plan de música</summary><div id="storyboardMusic"></div></details>
+          </div>
+          <div id="paperEditSummary" class="review-intro"></div>
+          <div id="paperEditList" class="paper-edit-list"></div>
+          <div class="review-actions"><button id="approvePaperEdit" class="primary icon-button">Approve paper edit and render</button></div>
+        </div>
+      </section>
+
+      <section class="step compose-step" id="step5">
+        <div class="step-header"><span>Step 5 of 6</span><h1>Overlay &amp; Captions</h1><p>Compose everything while the exported video plays. The mode export and caption burn remain separate.</p></div>
+        <div class="compose-workspace">
+          <div class="compose-panel compose-captions-panel">
+            <div class="setup-heading"><h2>Captions</h2><span>Text, timing and caption style</span><button id="captionDisclosure" class="icon-button small" type="button" aria-expanded="true" aria-controls="captionPanelBody">Hide captions</button></div>
+            <div id="captionPanelBody">
+              <div class="caption-text-heading"><label class="field-label" for="captionText">Lyrics or text</label><button id="captionAutoRead" class="icon-button" type="button">Auto Read</button></div><textarea id="captionText" rows="8" placeholder="One block per paragraph&#10;&#10;A second block..."></textarea><div class="caption-auto-read-options"><label class="field-help" for="captionWhisperModel">Model</label><select id="captionWhisperModel"><option value="auto" selected>Auto (large-v3 on the mounted Reel)</option><option value="small">small</option><option value="large-v3">large-v3</option><option value="base">base</option><option value="tiny">tiny</option></select></div><p id="captionAutoReadHelp" class="field-help">Auto Read transcribes the mounted Reel itself, so its timestamps already match the final video. It creates editable captions and leaves the lyrics field alone.</p><p id="captionAutoReadStatus" class="field-help" role="status" aria-live="polite"></p>
+              <div class="srt-controls" aria-labelledby="srtHeading"><h3 id="srtHeading">SRT</h3><div class="srt-actions"><label class="file-button icon-button" title="Import SRT or LRC" aria-label="Import SRT or LRC">⇩ <span>Import</span><input id="captionImport" type="file" accept=".srt,.lrc" hidden /></label><button id="captionExportSrt" class="icon-button" type="button" title="Export SRT" aria-label="Export SRT">⇧ <span>Export</span></button></div></div>
+              <div class="compose-caption-list-actions"><strong>Caption blocks</strong><button id="captionDeleteAll" class="icon-button small" type="button">Delete all captions</button></div>
+              <div id="captionBlocks" class="caption-blocks"></div>
+              <label class="field-label" for="captionStyle">Preset</label><select id="captionStyle"></select>
+              <p id="captionTapStatus" class="field-help">With the video playing, press Space to mark a caption: the first press starts it and the next closes it; new captions close automatically after 1 second.</p><button id="burnCaptions" class="primary icon-button" type="button">Burn captions</button><p id="captionBurnStatus" class="result-summary"></p>
+            </div>
+          </div>
+          <div class="compose-center">
+            <div class="compose-player-wrap">
+              <div id="composeVideoStage" class="compose-video-stage"><video id="composeVideo" controls playsinline preload="metadata"></video><div id="composeOverlayLayer" class="compose-overlay-layer"></div></div>
+              <div class="compose-player-tools"><button id="composePlayPause" class="icon-button" type="button">Play</button><button id="composeFrameBack" class="icon-button small" type="button">◀ frame</button><button id="composeFrameForward" class="icon-button small" type="button">frame ▶</button><span id="composeTime">00:00.00</span><input id="composeScrub" type="range" min="0" max="1" step="0.01" value="0" /><button id="composeExpand" class="icon-button small" type="button" aria-expanded="false" aria-label="Expand player">Expand</button></div>
+            </div>
+          </div>
+          <div class="compose-panel compose-overlays-panel"><div class="setup-heading"><h2>Visual overlays</h2><span>Flyers, images, logos and video clips</span><button id="composeDuplicateOverlay" class="icon-button small" type="button">Duplicate</button></div><div class="compose-overlay-actions"><button id="reuseReelOverlays" type="button" class="icon-button">Reuse last overlays</button><label class="file-button">Import flyer<input id="addReelImage" type="file" accept="image/png,image/webp,image/jpeg" hidden /></label><label class="file-button">Import video<input id="composeAddReelVideo" type="file" accept="video/mp4,video/webm,video/quicktime" hidden /></label></div><div id="reelFlyerLibrary" class="reel-flyer-library" aria-label="Saved flyers"></div><div id="reelImageLines"></div><div id="reelVideoLines"></div><div class="compose-logo-controls"><div class="setup-heading"><h3>Logo</h3><span>Optional for this project</span></div><div class="logo-choice-row"><label><input id="captionLogoCustom" type="radio" name="captionLogoChoice" value="custom" /> Custom logo for this project</label><label><input id="captionLogoDefault" type="radio" name="captionLogoChoice" value="default" /> Use default brand logo</label><label><input id="captionLogoNone" type="radio" name="captionLogoChoice" value="none" checked /> No logo</label></div><div class="logo-file-row"><label class="file-button">Upload logo<input id="composeLogoInput" type="file" accept="image/png,image/jpeg,image/webp" hidden /></label><button id="composeRemoveLogo" class="icon-button" type="button">Remove logo</button></div><div id="composeLogoPreview" class="compose-logo-preview" hidden><img id="composeLogoThumbnail" alt="Current project logo" /><span id="composeLogoName"></span></div><p id="composeLogoStatus" class="field-help"></p></div></div>
+        </div>
+        <div class="compose-timeline-tools"><label for="composeTimelineZoom">Timeline zoom</label><select id="composeTimelineZoom"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option></select><span id="composeTimelineHint">Click to seek · drag overlays to retime</span></div>
+        <div class="compose-timeline"><div class="compose-lane-label">Overlays</div><div class="compose-lane-scroll" data-compose-timeline><div id="composeOverlayLane" class="compose-lane"></div></div><div class="compose-lane-label">Captions</div><div class="compose-lane-scroll" data-compose-timeline><div id="composeCaptionLane" class="compose-lane"></div></div></div>
+        <div class="compose-actions"><button id="composeContinue" class="primary icon-button" type="button">Continue to Result</button></div>
+      </section>
+      <section class="step" id="step6">
+        <div class="step-header">
+          <span>Step 6 of 6</span>
           <h1 id="resultTitle">Result</h1>
         </div>
         <div id="errorBox" class="error-box" hidden>
           <p id="errorText"></p>
           <div class="result-actions">
             <button id="openLogsError" class="icon-button desktop-only" data-icon="doc">Open logs</button>
-            <button id="retryWizard" class="icon-button" data-icon="retry">Retry</button>
+            <button id="startAgain" class="primary icon-button" data-icon="retry">Start Again</button>
           </div>
         </div>
         <div id="resultBox" class="result-box" hidden>
-          <video id="resultVideo" controls></video>
-          <div id="result360Player" class="director-stage" hidden>
-            <canvas id="result360Canvas"></canvas>
-            <video id="result360Video" playsinline preload="metadata" hidden></video>
-            <div id="result360Hud" class="director-hud">Drag to look around</div>
-          </div>
-          <div id="result360Controls" class="director-controls" hidden>
-            <button id="result360Play" class="icon-button" data-icon="play" type="button">Play</button>
-            <label class="director-scrub">
-              <span id="result360Time">00:00</span>
-              <input id="result360Scrub" type="range" min="0" max="1" step="0.01" value="0" />
-            </label>
+          <div id="unifiedResultPlayer" class="result-player">
+            <video id="resultVideo" controls></video>
+            <div id="result360Player" class="director-stage" hidden>
+              <canvas id="result360Canvas"></canvas>
+              <video id="result360Video" playsinline preload="metadata" hidden></video>
+              <div id="result360Hud" class="director-hud">Drag to look around</div>
+            </div>
+            <div id="result360Controls" class="director-controls" hidden>
+              <button id="result360Play" class="icon-button" data-icon="play" type="button">Play</button>
+              <label class="director-scrub">
+                <span id="result360Time">00:00</span>
+                <input id="result360Scrub" type="range" min="0" max="1" step="0.01" value="0" />
+              </label>
+            </div>
           </div>
           <p id="resultPlaybackWarning" class="result-summary" hidden></p>
           <strong id="resultFilename"></strong>
           <p id="resultSummary" class="result-summary"></p>
           <div id="clipFates" class="clip-fates"></div>
-          <div id="rescuePanel" class="rescue-panel" hidden>
+          <div id="rescuePanel" class="rescue-panel" hidden><button id="closeRescue" type="button" aria-label="Close camera rescue" class="feedback-close">×</button>
             <div>
               <strong id="rescueTitle">Rescue camera</strong>
               <p id="rescueMeta"></p>
@@ -234,6 +400,10 @@
               Sync offset (seconds)
               <input id="rescueOffset" type="number" step="0.001" />
             </label>
+            <label>
+              Confirmed clip ranges (optional JSON; leave other parts pending)
+              <textarea id="rescueOffsetRanges" rows="3" spellcheck="false" placeholder='[{"clip_start_sec":184.5,"clip_end_sec":276.7,"offset_sec":386.775}]'></textarea>
+            </label>
             <div class="result-actions">
               <button id="confirmRescue" class="icon-button" data-icon="retry">Use this camera and rerender</button>
             </div>
@@ -242,61 +412,22 @@
             <button id="openLogsSuccess" class="icon-button desktop-only" data-icon="doc">Open logs</button>
             <button id="retryWizardSuccess" class="icon-button" data-icon="retry">Retry</button>
             <button id="copyProgressReportResult" class="icon-button" data-icon="clipboard">Copy report</button>
-            <button id="fullscreenResult" class="icon-button" data-icon="play">Fullscreen</button>
+            <button id="openCaptions" class="icon-button" data-icon="doc">Overlay &amp; Captions</button>
             <button id="showFinder" class="icon-button desktop-only" data-icon="folder">Show in Finder</button>
             <button id="again" class="icon-button" data-icon="play">Make another</button>
           </div>
         </div>
       </section>
     </main>
-    <section id="directorScreen" class="director-screen" hidden>
-      <div class="director-shell">
-        <header class="director-header">
-          <div>
-            <strong>360 Director</strong>
-            <span id="directorStatus">Load the 360 proxy to direct a take.</span>
-          </div>
-          <button id="closeDirector" class="icon-button small" data-icon="arrow" type="button">Back</button>
-        </header>
-        <div class="director-stage">
-          <canvas id="directorCanvas"></canvas>
-          <video id="directorVideo" playsinline muted preload="metadata" hidden></video>
-          <audio id="directorAudio" preload="metadata" hidden></audio>
-          <div id="directorHud" class="director-hud">Yaw 0° · Pitch 0° · Shot width 100°</div>
-        </div>
-        <div id="directorProgress" class="director-progress" hidden>
-          <div class="progress-track"><div id="directorProgressBar"></div></div>
-          <span id="directorProgressText">Preparing preview...</span>
-        </div>
-        <div class="director-controls">
-          <button id="directorPlay" class="icon-button" data-icon="play" type="button">Play</button>
-          <label class="director-scrub">
-            <span id="directorTime">00:00</span>
-            <input id="directorScrub" type="range" min="0" max="1" step="0.01" value="0" />
-          </label>
-          <label>
-            Shot width
-            <input id="directorFov" type="range" min="65" max="150" step="0.1" value="100" />
-          </label>
-          <input id="directorTakeName" placeholder="Take name" />
-          <label>
-            Smoothing
-            <select id="directorSmoothing">
-              <option value="light">Light</option>
-              <option value="medium" selected>Medium</option>
-              <option value="strong">Strong</option>
-            </select>
-          </label>
-          <button id="directorRecord" class="icon-button" data-icon="sphere" type="button">Record camera moves</button>
-          <button id="directorPreviewTake" class="icon-button" data-icon="play" type="button" hidden>Preview smoothed</button>
-          <button id="directorSaveTake" class="icon-button" data-icon="clipboard" type="button" hidden>Save take</button>
-        </div>
-        <div id="directorTakes" class="director-takes"></div>
-      </div>
-    </section>
+    <footer class="app-footer">
+      Built by JM.G (José Manuel García) · Zucker Editor build <span id="buildInfo">development build</span>
+    </footer>
     <div id="toast" class="toast" hidden></div>
+    <div id="flyerPreviewModal" class="flyer-preview-modal" hidden role="dialog" aria-modal="true" aria-label="Flyer preview"><button id="closeFlyerPreview" class="flyer-preview-close" type="button" aria-label="Close">×</button><img id="flyerPreviewImage" alt="Flyer preview" /></div>
     <script src="/strings.js?v=editor-ui-4"></script>
+    <link rel="stylesheet" href="/ui-feedback.css" />
+    <script src="/ui-feedback.js"></script>
     <script src="/native_bridge.js?v=editor-ui-4"></script>
-    <script src="/app.js?v=editor-ui-4"></script>
+    <script src="/app.js?v=editor-ui-8"></script>
   </body>
 </html>

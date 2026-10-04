@@ -6,4 +6,7 @@ llvmlite==0.45.1
 numba==0.62.1
 librosa>=0.11
 opencv-python-headless>=4.9,<5.0
+openai-whisper>=20240930
+faster-whisper>=1.1.0
+openai>=1.0.0
 pytest>=8.0

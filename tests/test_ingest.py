@@ -40,3 +40,24 @@ def test_prepare_videos_runs_two_workers_and_aggregates_progress(tmp_path, monke
     assert max_active == 2
     assert calls[-1][0] == 95
     assert any("Preparing 3 videos..." in detail and "a.mp4" in detail for _, detail in calls)
+
+
+def test_reel_single_source_does_not_run_multicamera_analysis(monkeypatch, tmp_path):
+    from core.stages.ingest import IngestStage
+
+    project = create_project("Single Reel", str(tmp_path / "Single Reel.zuckervid"))
+    source = tmp_path / "take.mp4"
+    source.write_bytes(b"video")
+    record = file_record(str(source))
+    project.data["inputs"]["videos"] = [record]
+    project.data["settings"].setdefault("wizard", {})["platform"] = "reel"
+
+    monkeypatch.setattr("core.stages.ingest.ffprobe", lambda _path: {
+        "format": {"duration": "30"},
+        "streams": [{"codec_type": "video", "codec_name": "h264", "width": 1280, "height": 720, "r_frame_rate": "30/1", "pix_fmt": "yuv420p"}],
+    })
+    monkeypatch.setattr("core.stages.ingest.normalize_video_record", lambda _project, item, _progress: item.setdefault("normalized", {"path": item["path"]}))
+    monkeypatch.setattr("core.stages.ingest.analyze_reel_framing_records", lambda *_args: (_ for _ in ()).throw(AssertionError("single-source framing should be skipped")))
+    monkeypatch.setattr("core.stages.ingest.analyze_operator_presence", lambda *_args: (_ for _ in ()).throw(AssertionError("single-source operator pass should be skipped")))
+
+    IngestStage().run(project, lambda *_args: None)

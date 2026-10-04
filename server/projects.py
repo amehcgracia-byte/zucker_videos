@@ -71,11 +71,11 @@ def project_input_signature(project: Project) -> dict[str, Any] | None:
     inputs = project.data.get("inputs") or {}
     master = inputs.get("master")
     videos = inputs.get("videos") or []
-    if not master or not videos:
+    if not videos:
         return None
     songs = inputs.get("songs")
     return {
-        "master": record_signature(master),
+        "master": record_signature(master) if master else None,
         "songs": record_signature(songs) if songs else None,
         "videos": sorted((record_signature(record) for record in videos), key=lambda item: item["path"]),
     }
@@ -83,10 +83,10 @@ def project_input_signature(project: Project) -> dict[str, Any] | None:
 
 def input_signature(master: str, songs: str | None, videos: list[str]) -> dict[str, Any] | None:
     """Return the current filesystem signature for requested inputs."""
-    if not master or not videos:
+    if not videos:
         return None
     return {
-        "master": path_signature(master),
+        "master": path_signature(master) if master else None,
         "songs": path_signature(songs) if songs else None,
         "videos": sorted((path_signature(path) for path in videos), key=lambda item: item["path"]),
     }

@@ -5,16 +5,19 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import threading
+import logging
 from typing import Any
 
-from core.director_proxy import ensure_director_proxy, is_360_record
 from core.ffmpeg import ffprobe
 from core.media_validation import is_raw_360_path, raw_360_model_fov, validate_camera_video_metadata
 from core.messages import t
-from core.normalization import ensure_normalized_space, normalize_video_record
-from core.operator_avoidance import analyze_and_cache_operator_presence, role_for_record
+from core.normalization import ensure_global_cache_dirs, ensure_normalized_space, normalize_video_record
+from core.operator_avoidance import OPERATOR_AVOIDANCE_VERSION, analyze_and_cache_operator_presence, role_for_record
+from core.reel_framing import REEL_FRAMING_VERSION, analyze_reel_framing_records
 from core.project import Project
-from core.stages.base import ProgressCallback, Stage, stable_fingerprint
+from core.stages.base import ProgressCallback, ProgressDetail, Stage, stable_fingerprint
+
+LOGGER = logging.getLogger(__name__)
 
 
 class IngestStage(Stage):
@@ -25,10 +28,15 @@ class IngestStage(Stage):
 
     def inputs_fingerprint(self, project: Project) -> str:
         """Fingerprint registered input records and ingest settings."""
+        platform = str(project.data.get("settings", {}).get("wizard", {}).get("platform") or "")
         return stable_fingerprint(
             {
                 "videos": project.data["inputs"].get("videos", []),
                 "settings": project.data["settings"].get(self.name, {}),
+                # Detection sampling/threshold changes invalidate the global
+                # presence cache and must trigger a fresh ingest pass.
+                "operator_avoidance_version": OPERATOR_AVOIDANCE_VERSION,
+                "reel_framing_version": REEL_FRAMING_VERSION if platform == "reel" else None,
             }
         )
 
@@ -38,12 +46,16 @@ class IngestStage(Stage):
 
     def run(self, project: Project, progress_callback: ProgressCallback) -> dict[str, Any]:
         """Validate inputs and probe each video with ffprobe."""
+        ensure_global_cache_dirs()
         inputs = project.data["inputs"]
         videos = inputs.get("videos", [])
         if not videos:
             raise ValueError("At least one video must be registered before ingest")
 
         total = len(videos)
+        platform = str(project.data.get("settings", {}).get("wizard", {}).get("platform") or "")
+        passthrough_360 = platform == "360"
+        backstage = platform == "backstage"
         valid_records: list[dict[str, Any]] = []
         for index, record in enumerate(videos, start=1):
             path = record["path"]
@@ -61,6 +73,23 @@ class IngestStage(Stage):
                 record["probe"]["input_projection"] = "dfisheye"
                 record["probe"]["insv_fov"] = int(project.data["settings"].get("ingest", {}).get("insv_fov") or raw_360_model_fov(metadata))
                 record.setdefault("info", "360 stitched automatically — for best quality, export from Insta360 Studio instead")
+            elif not record["probe"].get("projection"):
+                width = record["probe"].get("width")
+                height = record["probe"].get("height")
+                record["projection_warning"] = (
+                    f"No se detectó vídeo 360/equirectangular: {width}×{height} "
+                    f"({(float(width) / float(height)):.3f}:1). Se tratará como cámara plana; "
+                    "si debía ser 360, expórtalo cosido desde Insta360 Studio."
+                    if width and height else
+                    "No se detectó proyección 360/equirectangular; se tratará como cámara plana."
+                )
+            # Persist the resolved role at ingest. Downstream stages must not
+            # have to re-infer a 360 source from a normalized proxy filename.
+            record["camera_role"] = role_for_record(
+                str(record.get("projection") or record["probe"].get("projection") or ""),
+                Path(path).name,
+                record,
+            )
             if validation.valid:
                 record.pop("status", None)
                 record.pop("not_a_video_reason", None)
@@ -72,10 +101,36 @@ class IngestStage(Stage):
             valid_records.append(record)
         if sum(int(record.get("size") or 0) for record in valid_records) > 500 * 1024 * 1024 or len(valid_records) > 3:
             progress_callback(25, t("long_videos_note"))
-        ensure_normalized_space(project, valid_records)
-        prepare_videos(project, valid_records, progress_callback)
-        prepare_director_proxies(valid_records, progress_callback)
-        analyze_operator_presence(valid_records, progress_callback)
+        if backstage:
+            # Backstage is video-led and owns its own analysis. Do not create
+            # music-mode proxies or run operator avoidance here.
+            for record in valid_records:
+                record["normalized"] = {"path": record["path"], "kind": "original"}
+        elif passthrough_360:
+            # A navigable 360 export must retain the original equirectangular
+            # body. MP4 needs no preparation; only raw INSV is normalized to an
+            # equirectangular MP4. Do not build proxies, score cameras, or run
+            # operator avoidance in this mode.
+            raw_records = [record for record in valid_records if record.get("raw_360")]
+            for record in valid_records:
+                if record not in raw_records:
+                    record["normalized"] = {"path": record["path"], "kind": "original"}
+            if raw_records:
+                progress_callback(25, "360 raw source detected — converting to equirectangular video")
+                ensure_normalized_space(project, raw_records)
+                prepare_videos(project, raw_records, progress_callback)
+            else:
+                progress_callback(25, "360 equirectangular source ready — no proxy conversion needed")
+        else:
+            ensure_normalized_space(project, valid_records)
+            prepare_videos(project, valid_records, progress_callback)
+            if platform in {"reel", "youtube", "instagram", "tiktok"}:
+                # Long-form fixed-camera motion and shot review use the same
+                # cached subject trajectory as Reel. Single-source Reel stays
+                # a continuous-take workflow and remains exempt.
+                if len(valid_records) > 1:
+                    analyze_reel_framing_records(valid_records, progress_callback)
+                analyze_operator_presence(valid_records, progress_callback)
         progress_callback(100, "Ingest complete")
         return {}
 
@@ -93,41 +148,31 @@ def prepare_videos(project: Project, records: list[dict[str, Any]], progress_cal
         with lock:
             progresses[index] = max(progresses[index], int(percent))
 
-    def emit() -> None:
+    def emit(index: int) -> None:
         with lock:
             overall = min(95, 25 + int(sum(progresses.values()) / max(1, len(records)) * 70 / 100))
             active = " · ".join(f"{labels[index]} {progresses[index]}%" for index in sorted(progresses) if progresses[index] < 100) or "complete"
-        progress_callback(overall, t("preparing_videos", count=len(records), details=active))
+        progress_callback(overall, ProgressDetail(t("preparing_videos", count=len(records), details=active),
+            task_id=f"proxy-{index}", label=f"Preparing {labels[index]}", percent=progresses[index]))
 
     def run_one(index: int, record: dict[str, Any]) -> None:
+        LOGGER.info("Ingest normalization queued index=%d source=%s", index, record.get("path"))
         def clip_progress(percent: int, message: str) -> None:
             set_progress(index, percent)
-            emit()
-
-        normalize_video_record(project, record, clip_progress)
-        set_progress(index, 100)
-        emit()
+            emit(index)
+        try:
+            normalize_video_record(project, record, clip_progress)
+            set_progress(index, 100)
+            emit(index)
+            LOGGER.info("Ingest normalization finished index=%d source=%s", index, record.get("path"))
+        except Exception:
+            LOGGER.exception("Ingest normalization failed index=%d source=%s", index, record.get("path"))
+            raise
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = [executor.submit(run_one, index, record) for index, record in enumerate(records)]
         for future in as_completed(futures):
             future.result()
-
-
-def prepare_director_proxies(records: list[dict[str, Any]], progress_callback: ProgressCallback) -> None:
-    """Prepare low-cost equirect proxies for 360 Director during ingest."""
-    spherical = [record for record in records if is_360_record(record)]
-    if not spherical:
-        return
-    total = len(spherical)
-    for index, record in enumerate(spherical, start=1):
-        filename = Path(str(record.get("path") or "360 clip")).name
-
-        def clip_progress(percent: int, message: str) -> None:
-            overall = min(99, 95 + int((((index - 1) * 100) + percent) / max(1, total) * 4 / 100))
-            progress_callback(overall, message or f"Preparing lightweight 360 preview for {filename}")
-
-        ensure_director_proxy(record, clip_progress)
 
 
 def analyze_operator_presence(records: list[dict[str, Any]], progress_callback: ProgressCallback) -> None:
@@ -139,7 +184,7 @@ def analyze_operator_presence(records: list[dict[str, Any]], progress_callback: 
     candidates = [
         record
         for record in records
-        if role_for_record(str((record.get("probe") or {}).get("projection") or record.get("projection") or ""), Path(str(record.get("path") or "")).name) != "handheld"
+        if role_for_record(str((record.get("probe") or {}).get("projection") or record.get("projection") or ""), Path(str(record.get("path") or "")).name, record) != "handheld"
     ]
     if not candidates:
         return

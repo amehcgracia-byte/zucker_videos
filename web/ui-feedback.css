@@ -1,0 +1,9 @@
+.feedback-close { float: right; padding: .1rem .5rem; margin: 0 0 .5rem .75rem; font-size: 1.4rem; line-height: 1; border: 0; background: transparent; color: inherit; cursor: pointer; }
+.toast { z-index: 1100; overflow-wrap: anywhere; }
+.feedback-backdrop { position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center; padding: 1rem; background: rgb(0 0 0 / 65%); }
+.feedback-dialog { width: min(440px, 100%); box-sizing: border-box; padding: 1.5rem; border-radius: 14px; background: var(--panel, #fff); color: var(--text, #222); box-shadow: 0 18px 70px rgb(0 0 0 / 45%); }
+.feedback-dialog p { clear: both; white-space: pre-wrap; }
+.feedback-dialog > button:not(.feedback-close) { margin: .5rem .5rem 0 0; }
+.request-feedback { position: fixed; bottom: 1rem; left: 1rem; z-index: 1050; max-width: min(440px, calc(100vw - 2rem)); padding: .75rem; border: 1px solid var(--line, #aaa); border-radius: 10px; background: var(--panel, #fff); color: var(--text, #222); }
+.request-feedback[hidden] { display: none; }
+.rescue-panel { position: relative; }
