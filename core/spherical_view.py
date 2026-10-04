@@ -126,10 +126,9 @@ def view_parameters(
     if projection_hint in {"flat", "sg"}:
         stereographic = projection_hint == "sg"
     if stereographic:
-        if shot_type == "planet" or preset == "tiny_planet":
-            vertical = max(160.0, min(260.0, horizontal / max(0.1, float(aspect_ratio))))
-        else:
-            vertical = math.degrees(4 * math.atan(math.tan(math.radians(horizontal) / 4) / max(.1, float(aspect_ratio))))
+        # Stereographic angles cannot be divided by the image aspect ratio.
+        # Pair the projected radii so a tiny planet remains circular in 16:9.
+        vertical = math.degrees(4 * math.atan(math.tan(math.radians(horizontal) / 4) / max(.1, float(aspect_ratio))))
         projection = "sg"
     else:
         horizontal, vertical = paired_flat_fov(horizontal, aspect_ratio)

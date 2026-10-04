@@ -1,4 +1,5 @@
 import pytest
+import math
 
 from core.music_direction import direction_at, energy_timeline
 from core.stages.edit import _youtube_multicam_plan, _spherical_motion_profile
@@ -53,3 +54,12 @@ def test_native_spherical_motion_can_move_in_short_peak_cut():
     shot["movement"] = "push_in"
     assert motion_pose(shot,1.5,0) != motion_pose(shot,1.5,1.4)
     assert motion_pose(shot,1.5,1.4)[2] >= 55
+
+
+def test_tiny_planet_has_equal_horizontal_and_vertical_pixel_scale():
+    from core.spherical_view import view_parameters
+    for aspect in (16/9, 9/16, 1):
+        view = view_parameters(0, -90, 270, aspect, "planet")
+        sx = math.tan(math.radians(view["h_fov"])/4)/aspect
+        sy = math.tan(math.radians(view["v_fov"])/4)
+        assert sx == pytest.approx(sy)
