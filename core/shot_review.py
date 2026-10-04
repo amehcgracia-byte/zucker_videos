@@ -75,7 +75,7 @@ def _current_spherical_landmarks(project: Project, source_path: str | None = Non
     profiles = settings.get("spherical_landmarks_by_source") or {}
     candidates = []
     if source_path:
-        candidates.extend([str(source_path), str(Path(source_path).expanduser().resolve())])
+        candidates.extend([str(source_path), *_path_aliases(source_path)])
     for key in candidates:
         raw = profiles.get(key)
         if isinstance(raw, dict) and raw:
@@ -631,14 +631,22 @@ def _review_candidate_pool(
     return pool, "coverage.sources+edit_plan.moments"
 
 
-def _candidate_reserve_path(project: Project, coverage: dict[str, Any], segments: list[dict[str, Any]], segment: dict[str, Any], platform: str) -> Path:
-    layout = [(item.get("master_start_sec"), item.get("duration_sec")) for item in segments]
-    payload = {"version": 3, "coverage": coverage, "layout": layout,
-               "landmarks": project.data.get("settings", {}).get("spherical_landmarks_by_source"),
-               "slot": {key: segment.get(key) for key in ("master_start_sec", "duration_sec", "source_path", "projection")},
-               "platform": platform}
-    key = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:24]
-    return project.cache_dir / "review_candidates" / f"{key}.json"
+def _reserve_context(project: Project, coverage: dict[str, Any], segments: list[dict[str, Any]], platform: str):
+    """Hash shared reserve inputs once for a complete status response."""
+    values = {"coverage": coverage,
+              "landmarks": project.data.get("settings", {}).get("spherical_landmarks_by_source"),
+              "layout": [(item.get("master_start_sec"), item.get("duration_sec")) for item in segments],
+              "platform": platform}
+    prefix = json.dumps(values, sort_keys=True, default=str)[:-1] + ', "slot": '
+    return hashlib.sha256(prefix.encode())
+
+
+def _candidate_reserve_path(project: Project, coverage: dict[str, Any], segments: list[dict[str, Any]], segment: dict[str, Any], platform: str, context=None) -> Path:
+    digest = (context or _reserve_context(project, coverage, segments, platform)).copy()
+    slot = {key: segment.get(key) for key in ("master_start_sec", "duration_sec", "source_path", "projection")}
+    digest.update(json.dumps(slot, sort_keys=True, default=str).encode())
+    digest.update(b', "version": 3}')
+    return project.cache_dir / "review_candidates" / f"{digest.hexdigest()[:24]}.json"
 
 
 def _write_reserve_json(path: Path, payload: dict[str, Any]) -> None:
@@ -649,9 +657,9 @@ def _write_reserve_json(path: Path, payload: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
-def _project_candidate_pool(project: Project, coverage: dict[str, Any], segments: list[dict[str, Any]], segment: dict[str, Any], platform: str) -> tuple[list[dict[str, Any]], str]:
+def _project_candidate_pool(project: Project, coverage: dict[str, Any], segments: list[dict[str, Any]], segment: dict[str, Any], platform: str, context=None) -> tuple[list[dict[str, Any]], str]:
     """Persist a slot's reserve; clicking/polling never rebuilds the whole plan."""
-    path = _candidate_reserve_path(project, coverage, segments, segment, platform)
+    path = _candidate_reserve_path(project, coverage, segments, segment, platform, context)
     try:
         saved = json.loads(path.read_text(encoding="utf-8"))
         pool, origin = saved["candidates"], saved["origin"]
@@ -666,13 +674,13 @@ def _project_candidate_pool(project: Project, coverage: dict[str, Any], segments
     return pool, origin
 
 
-def _project_candidate_count(project: Project, coverage: dict[str, Any], segments: list[dict[str, Any]], segment: dict[str, Any], platform: str) -> tuple[int, str]:
+def _project_candidate_count(project: Project, coverage: dict[str, Any], segments: list[dict[str, Any]], segment: dict[str, Any], platform: str, context=None) -> tuple[int, str]:
     """Status requests read tiny summaries, never the full source records."""
-    path = _candidate_reserve_path(project, coverage, segments, segment, platform).with_suffix(".summary.json")
+    path = _candidate_reserve_path(project, coverage, segments, segment, platform, context).with_suffix(".summary.json")
     try:
         summary = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        _project_candidate_pool(project, coverage, segments, segment, platform)
+        _project_candidate_pool(project, coverage, segments, segment, platform, context)
         summary = json.loads(path.read_text(encoding="utf-8"))
     current = _candidate_keys(segment)
     return sum(not (set(keys) & current) for keys in summary["keys"]), summary["origin"]
@@ -785,6 +793,7 @@ def review_items(
     wizard = project.data.get("settings", {}).get("wizard", {}) or {}
     platform = str(coverage.get("platform") or wizard.get("platform") or "generic")
     items: list[dict[str, Any]] = []
+    reserve_context = _reserve_context(project, coverage, segments, platform)
     ffmpeg = locate_executable("ffmpeg") or "ffmpeg"
     # Keep the default review path cheap: color profiling belongs to final
     # export and is optional for a thumbnail. A status-only request must not
@@ -860,7 +869,7 @@ def review_items(
         # the registered source filename.  Otherwise Review shots displays a
         # cache hash (and hides which camera supplied the shot).
         display_source = str(segment.get("filename") or Path(source).name or "Unknown source")
-        candidate_count, pool_origin = _project_candidate_count(project, coverage, segments, segment, platform)
+        candidate_count, pool_origin = _project_candidate_count(project, coverage, segments, segment, platform, reserve_context)
         shot_pose = {
             key: shot.get(key)
             for key in ("type", "shot_id", "yaw", "pitch", "fov")
