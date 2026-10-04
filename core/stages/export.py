@@ -16,6 +16,7 @@ import math
 import threading
 import time
 from pathlib import Path
+from core.storage import data_root
 from typing import Any
 
 from core.build_info import build_info
@@ -4825,7 +4826,7 @@ def _overlay_config(platform: str, first_segment: dict[str, Any]) -> dict[str, A
 
 
 def _global_config() -> dict[str, Any]:
-    path = Path.home() / "ZuckerVideos" / "config.json"
+    path = data_root() / "config.json"
     try:
         import json
 

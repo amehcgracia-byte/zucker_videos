@@ -1,4 +1,4 @@
-# Zucker Editor 2.4.6
+# Zucker Editor 2.4.7
 
 Zucker Editor combines a master audio track and synchronized camera videos into an automatic edit. It supports flat cameras and equirectangular 360 sources.
 
@@ -7,7 +7,7 @@ Zucker Editor combines a master audio track and synchronized camera videos into 
 Packages are published under [GitHub Releases](https://github.com/amehcgracia-byte/zucker_videos/releases).
 
 - macOS: open the normal `Zucker Editor.dmg` and copy `Zucker Editor.app` into Applications. FFmpeg and FFprobe must be installed; the app checks their availability.
-- Windows: extract the complete ZIP, then run `Zucker Editor 2.4.6.exe`. Keep `_internal` and the other resources beside the EXE. The package includes FFmpeg and FFprobe.
+- Windows: extract the complete ZIP, then run `Zucker Editor 2.4.7.exe`. Keep `_internal` and the other resources beside the EXE. The package includes FFmpeg and FFprobe.
 
 Version and source commit appear in the app footer and wizard report. See [README_APP.md](README_APP.md) for more user guidance.
 
@@ -27,6 +27,12 @@ The selected master span starts with the video content; bookends outside that sp
 
 Frame alternatives persist per project and timeline interval. Replacing one frame preserves the others. A changed source, pose, interval or relevant configuration invalidates the affected reserve. Loading and replacement report errors instead of polling indefinitely.
 
+## Storage locations
+
+The desktop app asks for a storage folder before creating media directories on first launch. Imported videos, shared caches, transcription models, temporary media files and logs use that location. A disconnected external disk opens the location chooser; it never silently switches working files to the internal drive. Only the small location preference stays in the user configuration folder.
+
+Creating a new project opens a native folder chooser for its session. The project contains its frames, edit metadata and exports. Projects in previously chosen locations remain listed when those disks are available. Cancelling the chooser creates no project. Re-importing identical bytes reuses the existing import instead of saving another large copy. Logs rotate with bounded future growth. Existing projects are not automatically moved by changing the storage setting; move them with a verified migration and retain their referenced inputs.
+
 ## Development and packaging
 
 Use Python 3.11 with `requirements.txt` and `requirements-build.txt`. Create a virtual environment, install dependencies and run `python app.py --dev`; `--project /absolute/path/project.zuckervid` explicitly reopens a project. FFmpeg/FFprobe are required for analysis and rendering.
@@ -39,4 +45,4 @@ The directed checks for this release cover musical pacing and variation, project
 
 ## Version numbering
 
-The previous 2.1.35 is renumbered as 2.4.5. This release is 2.4.6. Every ten patch revisions increments the middle component: 2.4.9 → 2.5.0.
+The previous 2.1.35 is renumbered as 2.4.5. This release is 2.4.7. Every ten patch revisions increments the middle component: 2.4.9 → 2.5.0.

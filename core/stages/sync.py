@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from core.storage import data_root, project_locations
 from typing import Any
 
 import numpy as np
@@ -131,7 +132,7 @@ def invalidate_stale_sync_artifact(project: Project) -> bool:
 
 
 def sync_diagnostics_root() -> Path:
-    return Path.home() / "ZuckerVideos" / "SyncDiagnostics"
+    return data_root() / "SyncDiagnostics"
 
 
 def _diagnostic_slug(value: str, fallback: str) -> str:
@@ -164,11 +165,8 @@ def clear_sync_diagnostics(project: Project, clip_id: str | None = None, source_
 
 def cleanup_closed_sync_diagnostics() -> int:
     """Delete central diagnostics for projects whose export is complete."""
-    projects_root = Path.home() / "ZuckerVideos" / "Projects"
     removed = 0
-    if not projects_root.exists():
-        return removed
-    for project_folder in projects_root.glob("*.zuckervid"):
+    for project_folder in {p for root in project_locations() for p in root.glob("*.zuckervid")}:
         try:
             project = load_project(str(project_folder))
         except Exception:

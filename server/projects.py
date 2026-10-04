@@ -7,12 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from core.project import Project, ProjectError, load_project
-from server.inbox import app_home
+from server.inbox import app_home, load_global_config
+from core.storage import project_locations, require_available
 
 
 def projects_root() -> Path:
     """Return the global projects directory."""
-    root = app_home() / "Projects"
+    root = require_available(Path(load_global_config().get("project_root") or app_home() / "Projects"))
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -20,7 +21,7 @@ def projects_root() -> Path:
 def list_projects() -> list[dict[str, Any]]:
     """Return lightweight metadata for existing wizard projects."""
     projects: list[dict[str, Any]] = []
-    for project_json in sorted(projects_root().glob("*.zuckervid/project.json")):
+    for project_json in sorted({file.resolve() for root in project_locations() for file in root.glob("*.zuckervid/project.json")}):
         try:
             project = load_project(str(project_json.parent))
         except ProjectError:
@@ -54,7 +55,7 @@ def project_summary(project: Project) -> dict[str, Any]:
 def find_project_by_inputs(master: str, songs: str | None, videos: list[str]) -> Project | None:
     """Find an existing project with the same input paths, sizes, and mtimes."""
     wanted = input_signature(master, songs, videos)
-    for project_json in sorted(projects_root().glob("*.zuckervid/project.json")):
+    for project_json in sorted({file.resolve() for root in project_locations() for file in root.glob("*.zuckervid/project.json")}):
         try:
             project = load_project(str(project_json.parent))
         except ProjectError:

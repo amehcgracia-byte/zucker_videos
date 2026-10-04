@@ -8,11 +8,12 @@ import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from core.storage import data_root
 from typing import Any
 
 
 def feedback_path() -> Path:
-    return Path.home() / "ZuckerVideos" / "Feedback" / "backstage_feedback.json"
+    return data_root() / "Feedback" / "backstage_feedback.json"
 
 
 def content_fingerprint(path: str) -> str:

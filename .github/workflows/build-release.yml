@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - "fix/native-safe-camera-moves"
+      - "fix/external-storage-*"
     tags:
       - "v*"
 
