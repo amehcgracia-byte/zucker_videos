@@ -2249,7 +2249,7 @@ function renderShotReview(items) {
   const previous = new Map(shotReviewItems.map((item) => [Number(item.index), item]));
   shotReviewItems = (items || []).map((item) => {
     const old = previous.get(Number(item.index));
-    const merged = { ...old, keep: true, ...item };
+    const merged = { ...old, ...item, keep: old?.keep ?? item.keep ?? true };
     // Replace returns immediately, while its new JPEG is still rendering.
     // Keep the old frame visible until the new URL is actually available.
     if (!item.thumbnail && old?.thumbnail && item.thumbnail_status !== "failed") {
@@ -2260,7 +2260,13 @@ function renderShotReview(items) {
   });
   const root = document.querySelector("#reviewGrid");
   if (!root) return;
-  root.innerHTML = shotReviewItems.map((item) => {
+  const existing = new Map(Array.from(root.children).map((card) => [card.dataset.reviewIndex, card]));
+  shotReviewItems.forEach((item) => {
+    const key = String(item.index);
+    const card = existing.get(key);
+    existing.delete(key);
+    const signature = JSON.stringify(item);
+    if (card?.dataset.reviewSignature === signature) return;
     const alt = escapeHtml(item.landmark || item.source || `Shot ${item.index + 1}`);
     const thumb = item.thumbnail
       ? `<img class="review-thumb" src="${escapeHtml(item.thumbnail)}" alt="${alt}" />`
@@ -2273,7 +2279,7 @@ function renderShotReview(items) {
       : "";
     const reserve = Number(item.candidate_count);
     const reserveText = Number.isFinite(reserve) ? `${reserve} frames alternativos disponibles` : "";
-    return `<article class="review-card ${item.keep ? "keep" : "reject"}" data-review-index="${item.index}">
+    const html = `<article class="review-card ${item.keep ? "keep" : "reject"}" data-review-index="${item.index}">
     <button class="review-thumb-button" data-review-thumb="${item.index}">${thumb}</button>
     <button type="button" class="review-other-frame" data-review-replace="${item.index}">Otro frame</button>
     <label class="review-keep"><input type="checkbox" data-review-keep="${item.index}" ${item.keep ? "checked" : ""}/> Keep</label>
@@ -2287,13 +2293,22 @@ function renderShotReview(items) {
     ${error}
     ${item.no_alternative ? '<em>No alternative coverage available</em>' : ""}
   </article>`;
-  }).join("");
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    const updated = template.content.firstElementChild;
+    updated.dataset.reviewSignature = signature;
+    if (card) card.replaceWith(updated);
+    else root.append(updated);
+  });
+  existing.forEach((card) => card.remove());
 }
 
 function replaceReviewShot(index, button) {
   if (button) button.disabled = true;
   return api("/wizard/review/replace", { method: "POST", body: JSON.stringify({ rejected: [Number(index)] }) })
     .then((result) => {
+      const changed = new Set((result.replaced || []).map(Number));
+      shotReviewItems.forEach((item) => { if (changed.has(Number(item.index))) item.keep = true; });
       renderShotReview(result.items || []);
       const unavailable = result.replacement_diagnostics?.some((item) => Number(item.index) === Number(index) && item.status === "unavailable");
       if (unavailable) showToast("No hay más frames alternativos para esta toma", true);
@@ -3616,6 +3631,8 @@ document.addEventListener("click", (event) => {
     target.disabled = true;
     api("/wizard/review/replace", { method: "POST", body: JSON.stringify({ rejected }) })
       .then((result) => {
+        const changed = new Set((result.replaced || []).map(Number));
+        shotReviewItems = shotReviewItems.map((item) => changed.has(Number(item.index)) ? { ...item, keep: true } : item);
         renderShotReview(result.items || []);
         const unavailable = result.replacement_diagnostics?.filter((item) => item.status === "unavailable") || [];
         if (unavailable.length) {

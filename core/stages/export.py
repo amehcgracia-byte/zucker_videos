@@ -2942,7 +2942,23 @@ def _mux_continuous_master_audio(
         *(extra_args or []),
         str(output_path),
     ]
-    _run_ffmpeg_progress(command, duration, t("joining_segments"), progress_callback)
+    # Publish only a complete mux. A failed write must never leave a broken
+    # MP4 at the result path, or replace a previous valid result.
+    temporary = output_path.with_name(f".{output_path.stem}.partial.mp4")
+    command[-1] = str(temporary)
+    try:
+        remaining_bytes = video_path.stat().st_size + int(duration * AUDIO_BITRATE / 8) + 256 * 1024 * 1024
+        _check_export_disk_space(output_path, remaining_bytes)
+        _run_ffmpeg_progress(command, duration, t("joining_segments"), progress_callback)
+        streams = _probe_streams(temporary).get("streams", [])
+        if not any(stream.get("codec_type") == "video" for stream in streams) or not any(stream.get("codec_type") == "audio" for stream in streams):
+            raise FFmpegError("La exportación final no contiene vídeo y audio completos")
+        actual_duration = _media_duration(str(temporary))
+        if abs(actual_duration - duration) > max(0.5, duration * 0.001):
+            raise FFmpegError(f"Exportación incompleta: {actual_duration:.3f}s de {duration:.3f}s")
+        temporary.replace(output_path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _base_video_filter(platform: str) -> str:
