@@ -49,7 +49,7 @@ def test_selected_audio_is_delayed_and_trimmed_before_padding(tmp_path, monkeypa
     export._mux_continuous_master_audio(source, 'master.wav', result, start, 24.2, 1000000, None,
                                       content_start=10, content_end=14, audio_delay=delay)
     graph = commands[0][commands[0].index('-filter_complex') + 1]
-    assert graph.startswith('atrim=duration=4.000,asetpts=PTS-STARTPTS,adelay=10000:all=1,apad')
+    assert graph.startswith('[1:a:0]atrim=duration=4.000,asetpts=PTS-STARTPTS,adelay=10000:all=1,apad')
     assert 'afade=t=in:st=10.000' in graph
     assert export._audio_gain_at(5, 24.2, 10, 14) == 0
     assert export._audio_gain_at(18, 24.2, 10, 14) == 0

@@ -2902,7 +2902,7 @@ def _mux_continuous_master_audio(
         filters.append(f"afade=t=in:st={content_start:.3f}:d={CONTENT_FADE_DURATION:.3f}")
     if content_end is not None:
         filters.append(f"afade=t=out:st={max(0.0, content_end - CONTENT_FADE_DURATION):.3f}:d={CONTENT_FADE_DURATION:.3f}")
-    audio_filter = ",".join(filters) + "[a]"
+    audio_filter = "[1:a:0]" + ",".join(filters) + "[a]"
     command = [
         ffmpeg,
         "-y",
