@@ -1904,7 +1904,7 @@ function renderProjects(projects) {
         <div class="project-row">
           <div>
             <strong>${escapeHtml(project.name)}</strong>
-            <span>${escapeHtml(formatProjectDate(project.modified_at))} · ${escapeHtml(project.status || "new")} · ${formatBytes(project.size_bytes || 0)}</span>
+            <span>${escapeHtml(formatProjectDate(project.modified_at))} · ${escapeHtml(project.status || "new")}</span>
           </div>
           ${project.has_export ? `<small>${escapeHtml(S.hasExport || "export")}</small>` : ""}
           <button data-open-project="${escapeHtml(project.path)}">${escapeHtml(S.openProject || "Open")}</button>

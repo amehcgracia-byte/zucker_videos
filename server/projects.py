@@ -46,7 +46,8 @@ def project_summary(project: Project) -> dict[str, Any]:
         "created_at": project.data.get("created_at"),
         "modified_at": project.data.get("modified_at"),
         "status": project_status(project),
-        "size_bytes": directory_size(project.folder),
+        # Full recursive sizes belong to the explicit storage audit, never startup cards.
+        "size_bytes": None,
         "has_export": has_export,
         "export_path": export_path,
     }

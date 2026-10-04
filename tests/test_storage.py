@@ -179,3 +179,14 @@ def test_stage_and_spherical_cache_signatures_preserve_exact_nanoseconds(home,tm
     media.write_bytes(b'changed video')
     assert file_signature(str(media))['path']==str(media)
     assert storage.cache_mtime_ns(media)==media.stat().st_mtime_ns
+
+
+def test_project_cards_never_scan_media_or_cache_sizes(home,tmp_path,monkeypatch):
+    from server import projects
+    root=storage.save_data_root(str(tmp_path/'external'))
+    project=create_project('Fast card',str(root/'Projects'/'Fast.zuckervid'))
+    def forbidden_scan(_):raise AssertionError('Project cards must not walk media or cache files')
+    monkeypatch.setattr(projects,'directory_size',forbidden_scan)
+    cards=projects.list_projects()
+    assert cards[0]['name']=='Fast card'
+    assert cards[0]['size_bytes'] is None
