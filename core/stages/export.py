@@ -2264,7 +2264,7 @@ def _render_segment(
     command_base.extend(SDR_OUTPUT_ARGS)
     def render(command: list[str]) -> None:
         if native_motion:
-            sampler = (lambda seconds: _v360_motion_at(spherical_shot, duration, seconds)) if spherical_shot.get("type") in {"recorded_move", "planet"} or not spherical_shot.get("movement") else None
+            sampler = (lambda seconds: _v360_motion_at(spherical_shot, duration, seconds)) if (spherical_shot.get("type") in {"recorded_move", "planet"} and spherical_shot.get("movement") != "planet_to_stage") or not spherical_shot.get("movement") else None
             run_reprojected_command(command, str(source["source_path"]),
                 (int(segment_probe["width"]), int(segment_probe["height"])),
                 float(segment["clip_start_sec"]), frame_count, spherical_shot, progress_callback,

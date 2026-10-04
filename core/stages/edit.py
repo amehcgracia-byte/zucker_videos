@@ -114,7 +114,7 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 30
+EDIT_PLAN_ALGORITHM_VERSION = 31
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
@@ -1011,10 +1011,22 @@ def _youtube_multicam_plan(
                         and "full_stage" in source_landmarks and segment_start - last_planet_sec >= 40.0
                         and segment_start - start >= 15.0):
                     # A brief wide effect anchored to a calibrated stage, never a musician close-up.
-                    shot = dict(next((pose for pose in _available_spherical_shots(source_landmarks)
-                                      if pose.get("type") == "full_stage"), shot or {}))
-                    shot.update(type="planet", label="Planeta", projection_preset="tiny_planet", pitch=-90., fov=270.)
-                    last_planet_sec = segment_start
+                    stage_shot = dict(next((pose for pose in _available_spherical_shots(source_landmarks)
+                                      if pose.get("type") == "full_stage"), {}))
+                    reveal_end = min(end, segment_start + 3.2)
+                    if stage_shot and reveal_end-segment_start >= 2.5 and _covering_sources([source], segment_start, reveal_end, platform=platform):
+                        shot = stage_shot
+                        target = {key: shot.get(key, default) for key, default in (("yaw",0.),("pitch",0.),("fov",130.))}
+                        chosen_stats["chosen_seconds"] += reveal_end-segment_end
+                        segment_end = reveal_end
+                        next_index = bisect.bisect_left(bar_times, segment_end)
+                        if next_index == len(bar_times) or abs(bar_times[next_index]-segment_end) > 1e-6:
+                            bar_times.insert(next_index, segment_end)
+                        segment.update(_segment_from_source(source, segment_start, segment_end, window.get("title") or t("full_video"), platform=platform))
+                        segment["music_direction"]["accent"] = "planet_to_stage"
+                        shot.update(type="planet", label="Planeta → escenario", projection_preset="tiny_planet", pitch=-90., fov=270.,
+                                    movement="planet_to_stage", reveal_target=target)
+                        last_planet_sec = segment_start
                 segment["spherical_shot"] = _spherical_motion_profile(
                     shot or {}, sum(1 for item in segments if item.get("spherical_shot")),
                     enabled=spherical_motion, hold_motion=hold_motion, style=direction["group"], seed=variation_seed)
@@ -1354,7 +1366,7 @@ def _spherical_motion_profile(shot: dict[str, Any], index: int, enabled: bool = 
         # still held to the same fraction-of-field budget so it reads as a
         # slow rotation rather than a carousel. With motion off it holds still
         # like every other shot.
-        shot["spin_deg_per_sec"] = PLANET_SPIN_DEG_PER_SEC if enabled else 0.0
+        shot["spin_deg_per_sec"] = PLANET_SPIN_DEG_PER_SEC if enabled and shot.get("movement") != "planet_to_stage" else 0.0
         shot["spin_fov_fraction_per_sec"] = 0.0
         if style == "frenetico":
             shot.pop("spin_fov_fraction_per_sec", None)

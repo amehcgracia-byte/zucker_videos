@@ -58,7 +58,7 @@ No borres los vídeos originales para “limpiar” el proyecto.
 
 ## Dirección musical y variaciones — 2.4.6
 
-YouTube adapta cortes y movimientos a la energía suavizada por compás: Tranquilo (5–7 s), Animado (2,5–4 s) y Frenético (1–2 s en picos claros). Los finales y la cobertura pueden requerir duraciones distintas para conservar el tramo completo. Los zooms animados aceleran; paneos y zooms respetan el sujeto y los límites de encuadre. Si no hay evidencia del sujeto, se mantiene un movimiento central conservador. Planeta puede aparecer brevemente en una sección intensa con escenario 360 calibrado, separado al menos 40 s de otro planeta.
+YouTube adapta cortes y movimientos a la energía suavizada por compás: Tranquilo (5–7 s), Animado (2,5–4 s) y Frenético (1–2 s en picos claros). Los finales y la cobertura pueden requerir duraciones distintas para conservar el tramo completo. Los zooms animados aceleran; paneos y zooms respetan el sujeto y los límites de encuadre. Si no hay evidencia del sujeto, se mantiene un movimiento central conservador. Planeta abre con zoom e inclinación continuos hasta el escenario 360 calibrado: hasta 3,2 s para completar el recorrido, separado al menos 40 s de otro planeta.
 
 Hacer otro genera una semilla nueva: varían la colocación de cortes sobre la rejilla musical, los desempates de cámaras y los movimientos. La misma semilla conserva la reproducibilidad del render. Si solo hay una cámara o una vista válida, las alternativas quedan limitadas al material disponible. Las cuotas y la alternancia de músicos siguen activas.
 

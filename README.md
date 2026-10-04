@@ -19,7 +19,7 @@ Load a master audio file and camera videos, choose a format and the audio interv
 - Reel and Backstage have their own short-form and caption/composition flows.
 - 360 supports an equirectangular source, including a source with embedded audio.
 
-YouTube uses measured energy per musical bar to choose Tranquilo (normally 5–7 seconds), Animado (2.5–4 seconds) and Frenético (1–2 seconds at clear peaks). Movements change too: gentle holds and zooms, faster bounded pans and accelerating zooms. Brief planet shots require a calibrated 360 stage view. Missing subject evidence keeps flat-camera framing conservative. Camera quotas, performer rotation and source coverage still constrain the edit.
+YouTube uses measured energy per musical bar to choose Tranquilo (normally 5–7 seconds), Animado (2.5–4 seconds) and Frenético (1–2 seconds at clear peaks). Movements change too: gentle holds and zooms, faster bounded pans and accelerating zooms. Planet reveals continuously zoom and tilt into the calibrated 360 stage view over up to 3.2 seconds, with at least 40 seconds between effects. Missing subject evidence keeps flat-camera framing conservative. Camera quotas, performer rotation and source coverage still constrain the edit.
 
 `Make another` generates a new creative seed. Cut placement, camera tie-breaks and movement choices can change; rerendering the same saved plan remains reproducible. Available footage limits how many distinct alternatives are possible.
 

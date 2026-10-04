@@ -74,3 +74,20 @@ def test_dewarp_closeup_zoom_changes_the_actual_projection_map():
     assert np.abs(wide[0]-close[0]).mean() > 10
     expected = reproject_maps((2560,1280),(640,360),{**shot,"projection_preset":"linear"},(200.,0.,55.))
     assert np.allclose(close[0],expected[0])
+
+
+def test_planet_reveal_moves_continuously_to_calibrated_stage():
+    import numpy as np
+    from core.spherical_motion import reproject_maps
+    shot = _spherical_motion_profile(dict(type="planet",yaw=350,pitch=-90,fov=270,
+        projection_preset="tiny_planet",movement="planet_to_stage",
+        reveal_target=dict(yaw=10,pitch=-12,fov=130)),0,True,style="frenetico")
+    poses = [motion_pose(shot,3.2,t) for t in (0,1.6,3.2)]
+    assert poses[0] == pytest.approx((350,-90,270))
+    assert poses[-1] == pytest.approx((370,-12,130))
+    assert poses[0][2] > poses[1][2] > poses[2][2]
+    maps = [reproject_maps((2560,1280),(320,180),shot,pose) for pose in poses]
+    assert all(np.isfinite(m).all() for pair in maps for m in pair)
+    assert np.abs(maps[0][1]-maps[1][1]).mean() > 20
+    assert np.abs(maps[1][1]-maps[2][1]).mean() > 20
+    assert shot["spin_deg_per_sec"] == 0

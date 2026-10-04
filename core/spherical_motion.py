@@ -14,7 +14,7 @@ import numpy as np
 from core.ffmpeg import FFmpegError
 from core.spherical_view import view_parameters
 
-RECIPE_VERSION = 3
+RECIPE_VERSION = 4
 MOVEMENTS = ("push_in", "pull_out", "pan_left", "pan_right", "close_hold", "reveal", "settle", "hold")
 
 
@@ -25,6 +25,13 @@ def motion_pose(shot: dict[str, Any], duration: float, seconds: float) -> tuple[
         return yaw, pitch, fov
     amount = min(1., max(0., seconds / max(.001, duration - 1 / 30)))
     eased = amount * amount * (3 - 2 * amount)
+    if shot.get("movement") == "planet_to_stage" and isinstance(shot.get("reveal_target"), dict):
+        target = shot["reveal_target"]
+        target_yaw = float(target.get("yaw", yaw))
+        delta_yaw = (target_yaw-yaw+180) % 360-180
+        return (yaw + delta_yaw*eased,
+                pitch + (float(target.get("pitch", 0))-pitch)*eased,
+                fov + (float(target.get("fov", 130))-fov)*eased)
     if shot.get("motion_easing") == "accelerate":
         eased = amount ** 1.8
     movement = str(shot.get("movement") or "pan_right")
@@ -55,6 +62,12 @@ def reproject_maps(source_size: tuple[int, int], output_size: tuple[int, int], s
         preset = "linear"
     view = view_parameters(yaw, pitch, fov, width / height, str(shot.get("type") or ""),
                            projection_preset=preset, roll=float(shot.get("roll") or 0))
+    if pose is not None and shot.get("movement") == "planet_to_stage":
+        # Keep one continuous stereographic lens through the whole reveal.
+        # A static planet's preset floor would freeze the zoom below 220°.
+        horizontal = min(300., max(55., fov))
+        view.update(projection="sg", h_fov=horizontal,
+                    v_fov=math.degrees(4*math.atan(math.tan(math.radians(horizontal)/4)/(width/height))))
     mw, mh = (width, height) if exact else (max(64, width // 3), max(36, height // 3))
     xx, yy = np.meshgrid((np.arange(mw, dtype=np.float32) + .5) * 2 / mw - 1,
                          (np.arange(mh, dtype=np.float32) + .5) * 2 / mh - 1)
