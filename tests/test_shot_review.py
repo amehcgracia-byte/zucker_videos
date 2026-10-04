@@ -218,11 +218,12 @@ def test_replacing_one_pose_keeps_other_project_thumbnails(tmp_path, monkeypatch
     first = review_items(project,render_missing=False)
     root = project.cache_dir / 'shot_review' / 'assets-v2'
     for item in first:(root / item['thumbnail_asset']).write_bytes(b'complete thumbnail')
+    before = review_items(project,render_missing=False)
     segments[0]['clip_start_sec'] = .5
     artifact_path(project,'edit_plan.json').write_text(json.dumps(dict(segments=segments)))
     after = review_items(project,render_missing=False)
     assert after[0]['thumbnail_status'] == 'missing'
-    assert after[1]['thumbnail'] == review_items(project,render_missing=False)[1]['thumbnail']
+    assert after[1]['thumbnail'] == before[1]['thumbnail']
     assert after[1]['thumbnail_status'] == 'ready'
 
 
@@ -236,3 +237,15 @@ def test_project_candidate_reserve_survives_reopen(tmp_path, monkeypatch):
     reopened=load_project(str(project.folder))
     assert module._project_candidate_pool(reopened,{},[segment],segment,'youtube') == first
     assert calls == [1]
+
+
+def test_changing_another_card_keeps_persisted_reserve(tmp_path):
+    from core.shot_review import _candidate_reserve_path
+    project=create_project('Layout',str(tmp_path/'layout.zuckervid'))
+    first=dict(source_path='/tmp/a.mp4',master_start_sec=0,duration_sec=3)
+    other=dict(source_path='/tmp/b.mp4',master_start_sec=3,duration_sec=3)
+    before=_candidate_reserve_path(project,{},[first,other],first,'youtube')
+    other['source_path']='/tmp/c.mp4'
+    assert _candidate_reserve_path(project,{},[first,other],first,'youtube') == before
+    other['duration_sec']=4
+    assert _candidate_reserve_path(project,{},[first,other],first,'youtube') != before
