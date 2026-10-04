@@ -24,7 +24,7 @@ from core.operator_avoidance import count_avoidance_adjustments
 from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.messages import t
 from core.media_validation import record_is_usable_camera_video, record_media_path
-from core.normalization import EVEN_SDR_FILTER, NORMALIZATION_VERSION, SDR_TONEMAP_FILTER, ensure_global_cache_dirs, global_cache_root, global_segment_path, source_cache_key
+from core.normalization import EVEN_SDR_FILTER, NORMALIZATION_VERSION, SDR_TONEMAP_FILTER, global_cache_root, global_segment_path, source_cache_key
 from core.project import Project, atomic_write_json
 from core.spherical_motion import RECIPE_VERSION as NATIVE_SPHERICAL_RECIPE_VERSION, run_reprojected_command
 from core.spherical_metadata import SphericalMetadataError, inject_spherical_metadata
@@ -345,7 +345,8 @@ def _required_export_space_bytes(duration: float, video_bitrate: int, segment_co
 
 
 def _check_export_disk_space(output_path: Path, required_bytes: int) -> None:
-    ensure_global_cache_dirs()
+    # Space checks are read-only; cache retention can scan every project and
+    # must not run in the final mux or against another active export.
     locations = {output_path.parent, global_cache_root()}
     free_values = []
     details = []
