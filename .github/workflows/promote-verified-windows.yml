@@ -1,0 +1,68 @@
+name: Promote verified Windows package
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        required: true
+        type: string
+      source_commit:
+        required: true
+        type: string
+      release_tag:
+        required: true
+        type: string
+permissions:
+  contents: write
+  actions: read
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ inputs.run_id }}
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - name: Check successful source build
+        run: |
+          gh api "repos/$GH_REPO/actions/runs/$RUN_ID" > run.json
+          python3 - <<'PYCODE'
+          import json,os
+          r=json.load(open('run.json'))
+          assert r['head_sha']==os.environ['SOURCE_COMMIT']
+          assert r['conclusion']=='success'
+          assert r['name']=='Build Zucker Editor releases'
+          PYCODE
+      - uses: actions/download-artifact@v4
+        with:
+          name: zucker-editor-windows
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: package
+      - name: Verify package and self-test
+        run: |
+          python3 - <<'PYCODE'
+          import os,json,zipfile,hashlib
+          from pathlib import Path
+          files=list(Path('package').rglob('*-windows.zip'));assert len(files)==1
+          p=files[0]
+          with zipfile.ZipFile(p) as z:
+              assert z.testzip() is None
+              names=z.namelist()
+              info=json.loads(z.read(next(n for n in names if n.replace('\\','/').endswith('_internal/build_info.json'))))
+              assert info['git_commit']==os.environ['SOURCE_COMMIT']
+              assert os.environ['RELEASE_TAG']=='v'+info['version']
+              assert z.read(next(n for n in names if n.endswith('Zucker Editor.exe')))[:2]==b'MZ'
+              for tool in ('ffmpeg.exe','ffprobe.exe'):
+                  assert any(n.endswith(tool) for n in names)
+          log=next(Path('package').rglob('packaged-selftest-windows.log'))
+          result=json.loads(log.read_text().splitlines()[-1])
+          assert all(result.get(k) for k in ('ok','transcription','intro_rendered'))
+          digest=hashlib.sha256(p.read_bytes()).hexdigest()
+          Path('SHA256-Windows.txt').write_text(digest+'  '+p.name+'\n')
+          print('Verified',info,'CRC, PE header, tools and packaged self-test',result)
+          PYCODE
+      - name: Upload verified Windows package
+        run: |
+          gh release upload "$RELEASE_TAG" package/*-windows.zip SHA256-Windows.txt --clobber
