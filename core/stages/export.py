@@ -2026,9 +2026,11 @@ def _spherical_export_source_info(
         insv_fov = float(probe.get("insv_fov") or segment.get("insv_fov") or 190.0)
     except (TypeError, ValueError):
         insv_fov = 190.0
+    from core.storage import cache_file_signature, cache_mtime_ns
+    identity = cache_file_signature(source_path)
     key = hashlib.sha256(
         (
-            f"{source_path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}|"
+            f"{identity['path']}|{stat.st_size}|{cache_mtime_ns(source_path)}|"
             f"{projection}|{insv_fov:.3f}|{SPHERICAL_EXPORT_PROXY_VERSION}|"
             f"{SPHERICAL_EXPORT_PROXY_WIDTH}x{SPHERICAL_EXPORT_PROXY_HEIGHT}"
         ).encode("utf-8")

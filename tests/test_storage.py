@@ -165,3 +165,17 @@ def test_external_cleanup_keeps_recoverable_trash_on_external_volume(home,tmp_pa
     assert target==external/'.ZuckerEditorTrash'/'cache.mp4'
     assert target.read_bytes()==b'cached video'
     assert not (home/'.Trash').exists()
+
+
+def test_stage_and_spherical_cache_signatures_preserve_exact_nanoseconds(home,tmp_path):
+    from core.stages.base import file_signature
+    root=storage.save_data_root(str(tmp_path/'external'))
+    media=root/'take.mp4';media.write_bytes(b'video')
+    old_ns=1790792856288737761
+    old_path='/Users/example/ZuckerVideos/WizardUploads/take.mp4'
+    (root/'migration-signatures.json').write_text(json.dumps({str(media):dict(bytes=media.stat().st_size,destination_mtime_ns=media.stat().st_mtime_ns,source_mtime=old_ns/1e9,source_mtime_ns=old_ns,identity_path=old_path)}))
+    assert file_signature(str(media))==dict(path=old_path,size=5,mtime=old_ns/1e9)
+    assert storage.cache_mtime_ns(media)==old_ns
+    media.write_bytes(b'changed video')
+    assert file_signature(str(media))['path']==str(media)
+    assert storage.cache_mtime_ns(media)==media.stat().st_mtime_ns

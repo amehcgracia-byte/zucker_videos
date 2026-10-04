@@ -77,7 +77,7 @@ def project_locations() -> list[Path]:
     return list(dict.fromkeys(paths))
 
 
-def migrated_identity(path: Path) -> tuple[str, float] | None:
+def _verified_migration_record(path: Path) -> dict | None:
     """Keep verified media cache identities across an exFAT relocation.
 
     exFAT rounds modification times. Trust a migration record only while the
@@ -99,7 +99,22 @@ def migrated_identity(path: Path) -> tuple[str, float] | None:
     stat = resolved.stat()
     if stat.st_size != record['bytes'] or stat.st_mtime_ns != record['destination_mtime_ns']:
         return None
-    return record['identity_path'], record['source_mtime']
+    return record
+
+
+def migrated_identity(path: Path) -> tuple[str, float] | None:
+    record = _verified_migration_record(path)
+    return (record['identity_path'], record['source_mtime']) if record else None
+
+
+def cache_file_signature(path: Path) -> dict:
+    identity = migrated_identity(path)
+    return {'path': identity[0] if identity else str(path.resolve()), **media_signature(path)}
+
+
+def cache_mtime_ns(path: Path) -> int:
+    record = _verified_migration_record(path)
+    return record.get('source_mtime_ns', path.stat().st_mtime_ns) if record else path.stat().st_mtime_ns
 
 
 def media_signature(path: Path) -> dict:

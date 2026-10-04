@@ -62,5 +62,5 @@ def write_artifact_json(path: Path, payload: dict[str, Any]) -> None:
 
 def file_signature(path: str) -> dict[str, Any]:
     """Return a small signature for an existing file."""
-    stat = os.stat(path)
-    return {"path": str(Path(path).resolve()), "size": stat.st_size, "mtime": stat.st_mtime}
+    from core.storage import cache_file_signature
+    return cache_file_signature(Path(path))

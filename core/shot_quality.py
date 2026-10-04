@@ -97,13 +97,11 @@ def _analyze_source_quality(project: Project, source: dict[str, Any]) -> dict[st
     path = Path(str(source.get("source_path") or source.get("path") or "")).expanduser()
     if not path.exists():
         return {"error": "source missing", "windows": [], "summary": {}}
-    stat = path.stat()
+    from core.storage import cache_file_signature
     cache_key = stable_fingerprint(
         {
             "recipe": SHOT_QUALITY_VERSION,
-            "path": str(path.resolve()),
-            "size": stat.st_size,
-            "mtime": stat.st_mtime,
+            **cache_file_signature(path),
         }
     )[:24]
     cache_path = project.cache_dir / "shot_quality" / f"{cache_key}.json"

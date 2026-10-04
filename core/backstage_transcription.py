@@ -113,9 +113,10 @@ def _source_fingerprint(
 ) -> str:
     source = Path(path)
     stat = source.stat()
+    from core.storage import cache_mtime_ns
     return stable_fingerprint({
         "size": stat.st_size,
-        "mtime_ns": stat.st_mtime_ns, "model": model_name,
+        "mtime_ns": cache_mtime_ns(source), "model": model_name,
         "version": WHISPER_TRANSCRIPTION_VERSION, "task": task,
         "forced_language": forced_language or "auto",
         "transcription_options": transcription_options or {},
