@@ -1580,7 +1580,7 @@ function renderChips() {
   const note = document.querySelector("#softRule");
   const button = document.querySelector("#confirmFiles");
   // Backstage is video-led and deliberately has no required master track.
-  button.disabled = !hasVideo;
+  button.disabled = !hasVideo || pendingImports > 0 || confirmingInputs;
   if (!hasVideo) note.textContent = S.missingVideo;
   else if (!hasMaster) note.textContent = "Choose Backstage to edit with the original camera audio (no master required)";
   else if (!hasSongs) note.textContent = S.noSongsContinuous;
@@ -1683,23 +1683,14 @@ function selectedInputs() {
 }
 
 async function registerInputsBeforePreview(inputs) {
-  // A new project only has the files in the browser's detection state. Register
-  // them before rendering 360 previews: the preview API intentionally serves
-  // only sources already present in project.json.
-  await api("/inputs/videos", {
+  const result = await api("/wizard/draft", {
     method: "POST",
-    body: JSON.stringify({ paths: inputs.videos, append: false }),
+    body: JSON.stringify({ name: document.querySelector("#videoName").value || todayName(), project_id: activeProjectId, ...inputs }),
   });
-  if (inputs.master || inputs.songs) {
-    await api("/inputs/master", {
-      method: "POST",
-      body: JSON.stringify({ master: inputs.master, songs: inputs.songs }),
-    });
-  }
+  activeProjectId = result.project_id;
   await api("/settings/camera-subjects", { method: "POST", body: JSON.stringify({ camera_subjects: Object.fromEntries(inputs.videos.filter((path) => cameraSubjects[path]).map((path) => [path, cameraSubjects[path]])) }) });
-  // Reload the canonical project records so projection/raw_360 metadata from
-  // the classifier is available to the source picker and preview endpoint.
   await resumeInputsFromProject();
+  await loadProjects();
 }
 
 function formatDuration(seconds) {
@@ -2075,22 +2066,115 @@ async function browserDropFiles(dataTransfer) {
   return [...dataTransfer.files].filter(supportedDropFile);
 }
 
+const nativeDropWaiters = [];
+window.receiveNativeDrop = (files) => {
+  const signature = files.map((file) => file.name).sort().join("\n");
+  const index = nativeDropWaiters.findIndex((waiter) => waiter.signature === signature);
+  if (index >= 0) nativeDropWaiters.splice(index, 1)[0].finish(files);
+};
+function waitForNativeDrop(files) {
+  if (!window.nativeDropReady) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const waiter = { signature: files.map((file) => file.name).sort().join("\n") };
+    const timer = setTimeout(() => { const index = nativeDropWaiters.indexOf(waiter); if (index >= 0) nativeDropWaiters.splice(index, 1); resolve(null); }, 1500);
+    waiter.finish = (files) => { clearTimeout(timer); resolve(files.length ? files : null); };
+    nativeDropWaiters.push(waiter);
+  });
+}
+
+let pendingImports = 0;
+let confirmingInputs = false;
+
+function updateContinueAvailability() {
+  document.querySelector("#confirmFiles").disabled = !detected.videos.length || pendingImports > 0 || confirmingInputs;
+}
+
+function importRow(file) {
+  const row = document.createElement("div");
+  row.className = "chip import-chip";
+  row.innerHTML = `<strong>${escapeHtml(file.name)}</strong><progress max="100" value="0" aria-label="Import ${escapeHtml(file.name)}"></progress><small>Queued · 0%</small>`;
+  document.querySelector("#importProgress").append(row);
+  return row;
+}
+
+function uploadWithProgress(file, row) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/v1/wizard/upload");
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.setRequestHeader("X-Zucker-Filename", encodeURIComponent(file.name));
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      const percent = Math.min(100, Math.floor(event.loaded / event.total * 100));
+      row.querySelector("progress").value = percent;
+      row.querySelector("small").textContent = percent === 100 ? "Transfer complete · Checking media…" : `Importing · ${percent}% · ${(event.loaded / 1048576).toFixed(1)} / ${(event.total / 1048576).toFixed(1)} MB`;
+    };
+    xhr.upload.onload = () => { row.querySelector("progress").value = 100; row.querySelector("small").textContent = "Transfer complete · Checking media…"; };
+    xhr.onerror = () => reject(new Error("Import connection interrupted. Drop the file again to retry."));
+    xhr.onabort = () => reject(new Error("Import cancelled"));
+    xhr.onload = () => {
+      let result;
+      try { result = JSON.parse(xhr.responseText); } catch (_) { reject(new Error("Invalid import response")); return; }
+      if (xhr.status < 200 || xhr.status >= 300) reject(new Error(result.error?.message || result.message || `Import failed (${xhr.status})`));
+      else resolve(result);
+    };
+    xhr.send(file);
+  });
+}
+
 async function handleDrop(event) {
   event.preventDefault();
   document.querySelector("#dropZone").classList.remove("dragging");
-  const paths = [...event.dataTransfer.files].map((file) => file.path || file.webkitRelativePath).filter(Boolean);
-  if (paths.length) {
-    mergeDetected(await api("/inputs/classify-paths", { method: "POST", body: JSON.stringify({ paths }) }));
-    return;
+  // Reserve rows synchronously; the files are visible before any disk work.
+  const immediate = [...event.dataTransfer.files].filter(supportedDropFile);
+  const rows = new Map();
+  for (const file of immediate) {
+    const existing = rows.get(file.name) || [];
+    existing.push(importRow(file));
+    rows.set(file.name, existing);
   }
-  const files = await browserDropFiles(event.dataTransfer);
-  if (!files.length) {
-    showToast(S.noCompatibleFiles, true);
-    return;
+  pendingImports += 1;
+  updateContinueAvailability();
+  try {
+    // Capture the browser entries while the drop event still owns access.
+    const fallbackFiles = browserDropFiles(event.dataTransfer).catch(() => []);
+    const nativeFiles = await waitForNativeDrop(immediate);
+    const files = nativeFiles || await fallbackFiles;
+    if (!files.length) throw new Error(S.noCompatibleFiles);
+    for (const file of files) {
+      const row = rows.get(file.name)?.shift() || importRow(file);
+      try {
+        row.querySelector("small").textContent = "Checking file…";
+        if (/\.(png|jpe?g|webp)$/i.test(file.name)) {
+          await savePersonalLogo(file);
+          if (activeProjectId) await uploadProjectLogo(file);
+          row.querySelector("progress").value = 100;
+          row.querySelector("small").textContent = "Personal logo saved · 100%";
+        } else if (file.path && file.path.startsWith("/")) {
+          row.querySelector("progress").removeAttribute("value");
+          row.querySelector("small").textContent = "Registering original file · no copy needed";
+          mergeDetected(await api("/inputs/classify-paths", { method: "POST", body: JSON.stringify({ paths: [file.path] }) }));
+          row.remove();
+        } else {
+          mergeDetected(await uploadWithProgress(file, row));
+          row.remove();
+        }
+      } catch (error) {
+        row.classList.add("warning");
+        row.querySelector("small").textContent = error.message;
+        const dismiss = document.createElement("button");
+        dismiss.textContent = "×";
+        dismiss.setAttribute("aria-label", `Dismiss failed import ${file.name}`);
+        dismiss.onclick = () => row.remove();
+        row.append(dismiss);
+        showToast(`${file.name}: ${error.message}`, true);
+      }
+    }
+  } finally {
+    for (const remaining of rows.values()) for (const row of remaining) row.remove();
+    pendingImports -= 1;
+    updateContinueAvailability();
   }
-  const form = new FormData();
-  for (const file of files) form.append("files", file, file.name);
-  mergeDetected(await apiForm("/wizard/upload", form));
 }
 
 async function prepareStep2() {
@@ -2111,13 +2195,24 @@ async function prepareStep2() {
     showToast("This mode needs a master audio file or audio embedded in the selected video.", true);
     return false;
   }
-  setStep(2);
+  if (pendingImports || confirmingInputs) return false;
+  confirmingInputs = true;
+  updateContinueAvailability();
   try {
+    if (appConfig.desktop && !activeProjectId) {
+      const location = await window.NativeBridge.call("pick_project_location", [], "Choose project location");
+      if (!location) return false;
+      appConfig.project_root = location;
+    }
     await registerInputsBeforePreview(inputs);
   } catch (error) {
     showToast(error.message || "Could not register the selected videos", true);
     return false;
+  } finally {
+    confirmingInputs = false;
+    updateContinueAvailability();
   }
+  setStep(2);
   const trimSource = canUseVideoAudio ? detected.videos[0].path : inputs.master;
   if (trimSource) setupTrimControls(trimSource);
   applyEditTypeMode();
@@ -2840,11 +2935,6 @@ async function waitForPreparedProject() {
 
 async function startWizard(options = {}) {
   const waitForPrepare = options.waitForPrepare === true;
-  if (appConfig.desktop && !activeProjectId) {
-    const location = await window.NativeBridge.call("pick_project_location", [], "Choose project location");
-    if (!location) return;
-    appConfig.project_root = location;
-  }
   // Every explicit run is a fresh creative pass.  Keeping the same seed
   // made the edit fingerprint and camera tie-breaks reproduce the prior cut.
   currentVariationSeed = `${Date.now()}-${Math.random()}`;
@@ -2859,6 +2949,7 @@ async function startWizard(options = {}) {
       body: JSON.stringify({
         name: document.querySelector("#videoName").value || todayName(),
         platform: selectedPlatform,
+        project_id: activeProjectId,
         master: inputs.master,
         songs: inputs.songs,
         videos: inputs.videos,

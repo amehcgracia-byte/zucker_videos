@@ -103,6 +103,22 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _enable_native_drop(window) -> None:
+    """Use pywebview's native paths so desktop drops never copy source media."""
+    try:
+        zone = window.dom.get_element("#dropZone")
+        if zone is None:
+            return
+        def dropped(event):
+            files = event.get("dataTransfer", {}).get("files", [])
+            paths = [{"name": item.get("name", ""), "path": item["pywebviewFullPath"]} for item in files if item.get("pywebviewFullPath")]
+            window.evaluate_js("window.receiveNativeDrop && window.receiveNativeDrop(" + json.dumps(paths) + ")")
+        zone.events.drop += dropped
+        window.evaluate_js("window.nativeDropReady = true")
+    except Exception:
+        logging.getLogger(__name__).exception("Native drop unavailable; using streamed imports")
+
+
 def main() -> None:
     """Run Zucker Editor in desktop or dev-server mode."""
     multiprocessing.freeze_support()
@@ -117,7 +133,8 @@ def main() -> None:
         <p>Vídeos importados, cachés y proyectos se guardarán en esta ubicación. Puedes elegir tu disco externo.</p>
         <button id="choose" onclick="choose()">Seleccionar ubicación</button><p id="error"></p>
         <script>async function choose(){const b=document.getElementById('choose');b.disabled=true;try{const url=await window.pywebview.api.choose_storage();if(url)location.href=url;}catch(e){document.getElementById('error').textContent=e.message;}finally{b.disabled=false;}}document.getElementById('choose').disabled=true;window.addEventListener('pywebviewready',()=>document.getElementById('choose').disabled=false);</script></html>"""
-        webview.create_window(APP_NAME, html=html, width=850, height=540, js_api=bridge)
+        window = webview.create_window(APP_NAME, html=html, width=850, height=540, js_api=bridge)
+        window.events.loaded += lambda: _enable_native_drop(window)
         webview.start()
         return
     _configure_logging()
@@ -168,6 +185,7 @@ def main() -> None:
             )
 
     window.events.loaded += on_loaded
+    window.events.loaded += lambda: _enable_native_drop(window)
     webview.start()
 
 

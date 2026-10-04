@@ -48,46 +48,14 @@
           Video name
           <input id="videoName" />
         </label>
-        <div class="inbox-analysis-bar">
-          <div>
-            <strong>Inbox pre-analysis</strong>
-            <span id="inboxAnalysisStatus">Inbox pre-analysis has not run yet</span>
-          </div>
-          <div class="source-folder-settings">
-            <label>
-              Source folders
-              <input id="sourceFolderPath" type="text" placeholder="/Volumes/RAWVideos/…" spellcheck="false" />
-            </label>
-            <button id="addSourceFolder" class="icon-button small" type="button">Add folder</button>
-            <div id="sourceFolderList" class="source-folder-list"></div>
-            <label>
-              Master formats
-              <select id="masterAudioFilter">
-                <option value="mp3">MP3 mixes only</option>
-                <option value="all">All supported audio</option>
-              </select>
-            </label>
-          </div>
-          <label>
-            Master audio
-            <select id="inboxMasterSelect" aria-label="Master audio">
-              <option value="">Scan Inbox to load audio masters…</option>
-            </select>
-          </label>
-          <label>
-            Add your personal logo
-            <input id="personalLogoInput" type="file" accept="image/png,image/jpeg,image/webp" />
-            <small id="personalLogoStatus">The app logo is used by default</small>
-          </label>
-          <button id="addMasterVideos" class="icon-button small" type="button" disabled>Add videos for this master</button>
-          <button id="scanInbox" class="icon-button small" type="button">Scan Inbox</button>
-        </div>
         <div id="dropZone" class="drop-zone">
           <div class="drop-copy">
             <strong>Drop your files here</strong>
-            <span>Videos, the master audio, and songs.json from Zucker Mixer if you have it</span>
+            <span>Videos, master audio, your personal logo, and songs.json from Zucker Mixer</span>
           </div>
+          <div id="importProgress" class="chips" aria-live="polite"></div>
           <div id="chips" class="chips"></div>
+          <small id="personalLogoStatus">Your saved logo or the Zucker logo is used automatically</small>
         </div>
         <div id="insvCallout" class="callout" hidden>
           <strong>Raw 360 file detected</strong>

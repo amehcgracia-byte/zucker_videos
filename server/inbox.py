@@ -8,6 +8,8 @@ import shutil
 import threading
 import time
 import uuid
+from collections import OrderedDict
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -569,7 +571,33 @@ def classify_paths(paths: list[str], inbox_path: str | None = None) -> dict[str,
     return result
 
 
+_CLASSIFICATION_CACHE: OrderedDict[tuple, dict[str, Any]] = OrderedDict()
+_CLASSIFICATION_CACHE_LOCK = threading.Lock()
+
+
 def classify_file(path: Path) -> dict[str, Any]:
+    """Reuse validated metadata while file identity remains unchanged."""
+    # Raw lens pairs depend on an additional file arriving; recheck those.
+    if is_raw_360_path(path):
+        return _classify_file_uncached(path)
+    stat = path.stat()
+    key = (str(path), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, id(ffprobe))
+    with _CLASSIFICATION_CACHE_LOCK:
+        cached = _CLASSIFICATION_CACHE.get(key)
+        if cached is not None:
+            _CLASSIFICATION_CACHE.move_to_end(key)
+            return deepcopy(cached)
+    item = _classify_file_uncached(path)
+    if item.get("kind") in {"videos", "songs"} or (item.get("kind") == "master" and item.get("duration") is not None):
+        with _CLASSIFICATION_CACHE_LOCK:
+            _CLASSIFICATION_CACHE[key] = deepcopy(item)
+            _CLASSIFICATION_CACHE.move_to_end(key)
+            while len(_CLASSIFICATION_CACHE) > 256:
+                _CLASSIFICATION_CACHE.popitem(last=False)
+    return item
+
+
+def _classify_file_uncached(path: Path) -> dict[str, Any]:
     """Classify one file with strict extension and media validation."""
     suffix = path.suffix.lower()
     static_video_rejection = static_rejection_reason(path)

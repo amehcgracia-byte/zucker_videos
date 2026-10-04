@@ -69,3 +69,9 @@ Versiones: la antigua 2.1.35 equivale a 2.4.5; esta entrega es 2.4.6. Cada diez 
 Al arrancar por primera vez se elige dónde guardar los vídeos importados, cachés, modelos de transcripción, temporales y logs. Al crear un proyecto nuevo se abre un selector nativo para elegir la carpeta de su sesión. Cancelar no crea un proyecto. Los proyectos siguen visibles desde las ubicaciones ya elegidas cuando sus discos están conectados. Si el disco elegido está desconectado, se solicita una ubicación: no se vuelve automáticamente al disco interno. Solo queda una pequeña preferencia de ubicación en la configuración del usuario.
 
 Importar de nuevo el mismo contenido reutiliza el archivo ya importado, incluso si el nombre cambia. Los logs tienen rotación para limitar su crecimiento futuro. Cambiar de ubicación no migra por sí solo los proyectos antiguos; deben trasladarse con verificación y conservar sus entradas.
+
+## Importación y guardado — 2.4.8
+
+Suelta vídeos, audio, songs.json y un logo PNG/JPEG/WebP en el cuadro de archivos. Cada archivo aparece inmediatamente y muestra su transferencia real; después indica la comprobación del medio. El logo queda guardado para futuros proyectos y, si no hay uno personal, se utiliza el de Zucker.
+
+Al pulsar Continue en la aplicación de escritorio, elige la carpeta del proyecto. El proyecto se guarda y aparece en Projects antes de pasar a las opciones de edición. Cancelar el selector conserva los archivos y mantiene la pantalla de entrada. Las importaciones del navegador se escriben directamente en el disco de trabajo, evitando una copia temporal completa adicional.

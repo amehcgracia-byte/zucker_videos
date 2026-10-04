@@ -1,4 +1,4 @@
-# Zucker Editor 2.4.7
+# Zucker Editor 2.4.8
 
 Zucker Editor combines a master audio track and synchronized camera videos into an automatic edit. It supports flat cameras and equirectangular 360 sources.
 
@@ -7,7 +7,7 @@ Zucker Editor combines a master audio track and synchronized camera videos into 
 Packages are published under [GitHub Releases](https://github.com/amehcgracia-byte/zucker_videos/releases).
 
 - macOS: open the normal `Zucker Editor.dmg` and copy `Zucker Editor.app` into Applications. FFmpeg and FFprobe must be installed; the app checks their availability.
-- Windows: extract the complete ZIP, then run `Zucker Editor 2.4.7.exe`. Keep `_internal` and the other resources beside the EXE. The package includes FFmpeg and FFprobe.
+- Windows: extract the complete ZIP, then run `Zucker Editor 2.4.8.exe`. Keep `_internal` and the other resources beside the EXE. The package includes FFmpeg and FFprobe.
 
 Version and source commit appear in the app footer and wizard report. See [README_APP.md](README_APP.md) for more user guidance.
 
@@ -45,4 +45,4 @@ The directed checks for this release cover musical pacing and variation, project
 
 ## Version numbering
 
-The previous 2.1.35 is renumbered as 2.4.5. This release is 2.4.7. Every ten patch revisions increments the middle component: 2.4.9 → 2.5.0.
+The previous 2.1.35 is renumbered as 2.4.5. This release is 2.4.8. Every ten patch revisions increments the middle component: 2.4.9 → 2.5.0.
