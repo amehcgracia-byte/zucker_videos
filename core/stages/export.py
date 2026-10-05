@@ -744,11 +744,8 @@ def _render_plan(
             segment_paths.append(intro_path)
             phase_times["intro_sec"] = round(time.perf_counter() - phase_started, 3)
         render_segments = _continuous_spherical_render_segments(segments)
-        spherical_sources: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
-        for segment in render_segments:
-            if _spherical_shot(segment):
-                info = _segment_source_info(project, segment)
-                spherical_sources.setdefault(str(info.get("source_path")), (info, segment))
+        source_prepare_started = time.perf_counter()
+        spherical_sources = _spherical_sources_to_prepare(project, render_segments)
         segment_phase_start = 20 if spherical_sources else 10
         for source_index, (info, segment) in enumerate(spherical_sources.values()):
             def source_progress(_percent: int, detail: str) -> None:
@@ -759,6 +756,8 @@ def _render_plan(
             _spherical_export_source_info(project, info, segment, source_progress)
             progress_callback(10 + 10 * (source_index + 1) / len(spherical_sources),
                               f"360 render source ready: {Path(str(info.get('source_path'))).name}")
+        phase_times["source_prepare_sec"] = round(time.perf_counter() - source_prepare_started, 3)
+        phase_times["source_proxy_count"] = len(spherical_sources)
         segment_workers = _segment_worker_count(project, len(render_segments))
         _append_export_log(
             project,
@@ -1998,6 +1997,31 @@ def _target_size(platform: str) -> tuple[int, int]:
 
 
 
+def _spherical_sources_to_prepare(project: Project, segments: list[dict[str, Any]]) -> dict[str, tuple[dict[str, Any], dict[str, Any]]]:
+    sources: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+    for segment in segments:
+        if _spherical_shot(segment):
+            info = _segment_source_info(project, segment)
+            if not _spherical_uses_original_motion(info, segment):
+                sources.setdefault(str(info.get("source_path")), (info, segment))
+    return sources
+
+
+def _spherical_uses_original_motion(source_info: dict[str, Any], segment: dict[str, Any]) -> bool:
+    """Use the same source policy during preparation and actual rendering.
+
+    Native moving shots read the original for portrait detail. Preparing a
+    full-file proxy for these shots wastes work: the renderer never uses it.
+    """
+    shot = _spherical_shot(segment)
+    probe = source_info.get("probe") or {}
+    return bool(shot and SPHERICAL_EXPORT_MOTION_MODE == "native_remap"
+        and shot.get("runtime_motion_enabled", True)
+        and (shot.get("movement") or _shot_requires_runtime_motion(shot))
+        and probe.get("projection") == "equirect"
+        and not probe.get("hdr") and int(probe.get("bit_depth") or 8) <= 8)
+
+
 def _spherical_export_source_info(
     project: Project,
     source_info: dict[str, Any],
@@ -2035,7 +2059,11 @@ def _spherical_export_source_info(
             f"{SPHERICAL_EXPORT_PROXY_WIDTH}x{SPHERICAL_EXPORT_PROXY_HEIGHT}"
         ).encode("utf-8")
     ).hexdigest()[:24]
-    target = project.cache_dir / "spherical_export" / f"equirect-{key}.mp4"
+    legacy_target = project.cache_dir / "spherical_export" / f"equirect-{key}.mp4"
+    target = global_cache_root() / "spherical_export" / f"equirect-{key}.mp4"
+    # Reuse completed legacy files in place; never move a live export's cache.
+    if legacy_target.is_file() and legacy_target.stat().st_size > 0:
+        target = legacy_target
     target.parent.mkdir(parents=True, exist_ok=True)
 
     if progress_callback and not target.exists():
@@ -2131,12 +2159,7 @@ def _render_segment(
         safe_shot = dict(spherical_shot)
         safe_shot["runtime_motion_enabled"] = False
         render_segment["spherical_shot"] = safe_shot
-    original_probe = base_source.get("probe") or {}
-    original_motion = bool(spherical_shot and SPHERICAL_EXPORT_MOTION_MODE == "native_remap"
-        and spherical_shot.get("runtime_motion_enabled", True)
-        and (spherical_shot.get("movement") or _shot_requires_runtime_motion(spherical_shot))
-        and original_probe.get("projection") == "equirect"
-        and not original_probe.get("hdr") and int(original_probe.get("bit_depth") or 8) <= 8)
+    original_motion = _spherical_uses_original_motion(base_source, segment)
     if original_motion:
         # Portraits retain the camera's pixels instead of magnifying the 2K cache.
         source, using_spherical_proxy = base_source, False

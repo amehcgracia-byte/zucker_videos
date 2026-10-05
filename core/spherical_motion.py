@@ -134,18 +134,26 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
                             if process.poll() is None: process.kill()
                         return
             watcher = threading.Thread(target=monitor, daemon=True); watcher.start()
+            # Reuse one frame buffer. A 5K sphere is tens of MB: read/extend
+            # previously copied that payload twice for every decoded frame.
+            frame = np.empty((sh, sw, 3), dtype=np.uint8)
+            frame_bytes = memoryview(frame).cast("B")
+            previous_pose = None
+            maps = None
             for index in range(frame_count):
-                chunks = bytearray()
-                while len(chunks) < sw * sh * 3:
-                    chunk = decoder.stdout.read(sw * sh * 3 - len(chunks))
-                    if not chunk: break
-                    chunks.extend(chunk)
+                received = 0
+                while received < len(frame_bytes):
+                    count = decoder.stdout.readinto(frame_bytes[received:])
+                    if not count: break
+                    received += count
                 if failures: raise failures[0]
-                if len(chunks) != sw * sh * 3: raise FFmpegError(f"360 decode ended at frame {index}/{frame_count}")
-                frame = np.frombuffer(chunks, np.uint8).reshape(sh, sw, 3)
-                maps = reproject_maps((sw, sh), (1920, 1080), shot, pose_sampler(index / 30) if pose_sampler else motion_pose(shot, duration, index / 30))
+                if received != len(frame_bytes): raise FFmpegError(f"360 decode ended at frame {index}/{frame_count}")
+                pose = pose_sampler(index / 30) if pose_sampler else motion_pose(shot, duration, index / 30)
+                if maps is None or pose != previous_pose:
+                    maps = reproject_maps((sw, sh), (1920, 1080), shot, pose)
+                    previous_pose = pose
                 pixels = cv2.remap(frame, *maps, interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_WRAP)
-                encoder.stdin.write(pixels.tobytes())
+                encoder.stdin.write(memoryview(pixels).cast("B"))
                 completed[0] = index + 1
                 last_frame_at[0] = time.monotonic()
                 notify()
