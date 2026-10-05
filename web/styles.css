@@ -218,9 +218,30 @@ audio {
 }
 
 .new-project {
-  border-color: var(--green-600);
-  background: var(--panel);
+  border-color: var(--green-800);
+  background: var(--green-800);
+  color: var(--green-50);
+}
+
+.new-project:hover {
+  background: var(--green-900);
+  border-color: var(--green-900);
+}
+
+:root[data-theme="dark"] .new-project {
+  background: var(--green-300);
+  border-color: var(--green-300);
   color: var(--green-900);
+}
+
+:root[data-theme="dark"] .new-project:hover {
+  background: var(--green-200);
+  border-color: var(--green-200);
+}
+
+.new-project:focus-visible {
+  outline: 3px solid var(--text);
+  outline-offset: 3px;
 }
 
 .step {

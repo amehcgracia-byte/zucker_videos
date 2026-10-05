@@ -1973,8 +1973,12 @@ async function newProject() {
     }
   }
   stopStatusPolling();
-  activeProjectId = null;
   await api("/wizard/projects/new", { method: "POST", body: JSON.stringify({}) });
+  activeProjectId = null;
+  importGeneration += 1;
+  pendingImports = 0;
+  for (const request of importRequests) request.abort();
+  document.querySelector("#importProgress").replaceChildren();
   latestStatus = null;
   latestResult = null;
   resetProgressTiming();
@@ -1998,9 +2002,12 @@ async function newProject() {
   if (document.querySelector("#captionText")) document.querySelector("#captionText").value = "";
   document.querySelector("#captionLogoNone")?.click();
   clearDetected();
+  setAsideVideos = [];
+  sessionFilterDisabled = false;
+  renderChips();
   sphericalProjectSettings = null;
   resetSphericalSetupToGlobal();
-  document.querySelector("#videoName").value = todayName();
+  document.querySelector("#videoName").value = "New Jam";
   document.querySelector("#errorBox").hidden = true;
   document.querySelector("#resultBox").hidden = true;
   document.querySelector("#progressTitle").textContent = "Creating your video";
@@ -2083,6 +2090,8 @@ function waitForNativeDrop(files) {
 }
 
 let pendingImports = 0;
+let importGeneration = 0;
+const importRequests = new Set();
 let confirmingInputs = false;
 
 function updateContinueAvailability() {
@@ -2100,6 +2109,8 @@ function importRow(file) {
 function uploadWithProgress(file, row) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    importRequests.add(xhr);
+    xhr.addEventListener("loadend", () => importRequests.delete(xhr));
     xhr.open("POST", "/api/v1/wizard/upload");
     xhr.setRequestHeader("Content-Type", "application/octet-stream");
     xhr.setRequestHeader("X-Zucker-Filename", encodeURIComponent(file.name));
@@ -2123,6 +2134,7 @@ function uploadWithProgress(file, row) {
 }
 
 async function handleDrop(event) {
+  const generation = importGeneration;
   event.preventDefault();
   document.querySelector("#dropZone").classList.remove("dragging");
   // Reserve rows synchronously; the files are visible before any disk work.
@@ -2140,26 +2152,34 @@ async function handleDrop(event) {
     const fallbackFiles = browserDropFiles(event.dataTransfer).catch(() => []);
     const nativeFiles = await waitForNativeDrop(immediate);
     const files = nativeFiles || await fallbackFiles;
+    if (generation !== importGeneration) return;
     if (!files.length) throw new Error(S.noCompatibleFiles);
     for (const file of files) {
+      if (generation !== importGeneration) return;
       const row = rows.get(file.name)?.shift() || importRow(file);
       try {
         row.querySelector("small").textContent = "Checking file…";
         if (/\.(png|jpe?g|webp)$/i.test(file.name)) {
           await savePersonalLogo(file);
+          if (generation !== importGeneration) return;
           if (activeProjectId) await uploadProjectLogo(file);
           row.querySelector("progress").value = 100;
           row.querySelector("small").textContent = "Personal logo saved · 100%";
         } else if (file.path && file.path.startsWith("/")) {
           row.querySelector("progress").removeAttribute("value");
           row.querySelector("small").textContent = "Registering original file · no copy needed";
-          mergeDetected(await api("/inputs/classify-paths", { method: "POST", body: JSON.stringify({ paths: [file.path] }) }));
+          const result = await api("/inputs/classify-paths", { method: "POST", body: JSON.stringify({ paths: [file.path] }) });
+          if (generation !== importGeneration) return;
+          mergeDetected(result);
           row.remove();
         } else {
-          mergeDetected(await uploadWithProgress(file, row));
+          const result = await uploadWithProgress(file, row);
+          if (generation !== importGeneration) return;
+          mergeDetected(result);
           row.remove();
         }
       } catch (error) {
+        if (generation !== importGeneration) return;
         row.classList.add("warning");
         row.querySelector("small").textContent = error.message;
         const dismiss = document.createElement("button");
@@ -2172,8 +2192,10 @@ async function handleDrop(event) {
     }
   } finally {
     for (const remaining of rows.values()) for (const row of remaining) row.remove();
-    pendingImports -= 1;
-    updateContinueAvailability();
+    if (generation === importGeneration) {
+      pendingImports -= 1;
+      updateContinueAvailability();
+    }
   }
 }
 
