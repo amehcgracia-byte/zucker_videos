@@ -33,6 +33,7 @@ class IngestStage(Stage):
             {
                 "videos": project.data["inputs"].get("videos", []),
                 "settings": project.data["settings"].get(self.name, {}),
+                "mode": platform,
                 # Detection sampling/threshold changes invalidate the global
                 # presence cache and must trigger a fresh ingest pass.
                 "operator_avoidance_version": OPERATOR_AVOIDANCE_VERSION,

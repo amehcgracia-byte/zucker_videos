@@ -31,6 +31,7 @@ $common = @(
   "--add-data", "$Root\core\vendor;core/vendor",
   "--add-data", "$BuildInfo;.",
   "--add-data", "$Root\README_APP.md;.",
+  "--collect-submodules", "demucs", "--collect-data", "demucs", "--hidden-import", "torchaudio",
   "--collect-data", "faster_whisper", "--collect-data", "whisper",
   "--collect-data", "onnxruntime", "--collect-data", "tokenizers",
   "--hidden-import", "librosa", "--hidden-import", "cv2", "--hidden-import", "scipy.signal",

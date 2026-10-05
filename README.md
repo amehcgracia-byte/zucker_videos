@@ -1,4 +1,4 @@
-# Zucker Editor 2.4.8
+# Zucker Editor 2.4.9
 
 Zucker Editor combines a master audio track and synchronized camera videos into an automatic edit. It supports flat cameras and equirectangular 360 sources.
 
@@ -7,7 +7,7 @@ Zucker Editor combines a master audio track and synchronized camera videos into 
 Packages are published under [GitHub Releases](https://github.com/amehcgracia-byte/zucker_videos/releases).
 
 - macOS: open the normal `Zucker Editor.dmg` and copy `Zucker Editor.app` into Applications. FFmpeg and FFprobe must be installed; the app checks their availability.
-- Windows: extract the complete ZIP, then run `Zucker Editor 2.4.8.exe`. Keep `_internal` and the other resources beside the EXE. The package includes FFmpeg and FFprobe.
+- Windows: extract the complete ZIP, then run `Zucker Editor 2.4.9.exe`. Keep `_internal` and the other resources beside the EXE. The package includes FFmpeg and FFprobe.
 
 Version and source commit appear in the app footer and wizard report. See [README_APP.md](README_APP.md) for more user guidance.
 
@@ -17,9 +17,12 @@ Load a master audio file and camera videos, choose a format and the audio interv
 
 - YouTube renders horizontal 16:9 and goes from frame review to final rendering.
 - Reel and Backstage have their own short-form and caption/composition flows.
-- 360 supports an equirectangular source, including a source with embedded audio.
+- 360 supports an equirectangular source, including a source with embedded audio. Its setup panel starts collapsed.
+- Medley Populi combines highlights from different songs, using embedded audio or an explicitly assigned audio file per video, with adjustable duration, black gaps and matching video/audio fades.
 
 YouTube uses measured energy per musical bar to choose Tranquilo (normally 5–7 seconds), Animado (2.5–4 seconds) and Frenético (1–2 seconds at clear peaks). Movements change too: gentle holds and zooms, faster bounded pans and accelerating zooms. Planet reveals continuously zoom and tilt into the calibrated 360 stage view over up to 3.2 seconds, with at least 40 seconds between effects. Missing subject evidence keeps flat-camera framing conservative. Camera quotas, performer rotation and source coverage still constrain the edit.
+
+YouTube can optionally analyze separated vocals and instruments to prefer the corresponding musician during vocal activity or possible solos and fills. This additional analysis is cached and does not use Whisper. Instrument estimates, especially piano, can be imperfect. See the [loading and rendering audit](docs/AUDIT_RENDIMIENTO_2026-10-05.md). New Project clears the input box and starts with **New Jam**.
 
 `Make another` generates a new creative seed. Cut placement, camera tie-breaks and movement choices can change; rerendering the same saved plan remains reproducible. Available footage limits how many distinct alternatives are possible.
 
@@ -45,4 +48,4 @@ The directed checks for this release cover musical pacing and variation, project
 
 ## Version numbering
 
-The previous 2.1.35 is renumbered as 2.4.5. This release is 2.4.8. Every ten patch revisions increments the middle component: 2.4.9 → 2.5.0.
+The previous 2.1.35 is renumbered as 2.4.5. This release is 2.4.9. Every ten patch revisions increments the middle component: 2.4.9 → 2.5.0.

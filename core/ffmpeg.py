@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import copy
+from functools import lru_cache
 import os
 import shutil
 import subprocess
@@ -118,8 +120,17 @@ def ffprobe(path: str) -> dict[str, Any]:
     status = tool_status()
     if not status["ffprobe_path"]:
         raise FFmpegError("ffprobe is missing. Install it with: brew install ffmpeg")
+    source = Path(path).resolve()
+    stat = source.stat()
+    signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    return copy.deepcopy(_cached_ffprobe(str(source), str(status["ffprobe_path"]), signature))
+
+
+@lru_cache(maxsize=256)
+def _cached_ffprobe(path: str, executable: str, signature: tuple) -> dict[str, Any]:
+    """Cache successful probes only; source identity invalidates a replaced file."""
     command = [
-        str(status["ffprobe_path"]),
+        executable,
         "-v",
         "error",
         "-print_format",
