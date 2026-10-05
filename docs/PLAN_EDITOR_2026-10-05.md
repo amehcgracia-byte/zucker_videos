@@ -47,3 +47,9 @@ Entre canciones: fundido de imagen a negro, breve intervalo negro configurable y
 ## Validación y entregas
 
 Un commit por bloque comprobado; no añadir botones de funcionalidades que todavía no funcionan. Primera entrega: New Project. Siguientes dependencias: highlights y biblioteca → rescate de una cámara y Medley. INSV se puede trabajar de forma independiente con los originales. Mantener los fixes de movimiento, encuadres, reparto de músicos y render atómico.
+
+## Estado de la revisión 2.4.9
+
+Implementados en código: reinicio de proyecto, nombre New Jam, contraste del botón, barras medidas, panel 360 plegado, caché de FFprobe y modo correcto antes de ingestión, análisis rápido de cambios musicales, separación instrumental opcional con caché y preferencia de sujetos en YouTube, y Medley Populi con asignación de audio por vídeo, duración, selección musical y calidad visual, negros y fundidos. La biblioteca Random Frames y la revisión adicional de INSV siguen siendo bloques pendientes de la petición anterior.
+
+La auditoría detallada está en `AUDIT_RENDIMIENTO_2026-10-05.md`. La detección de solos es una estimación de prominencia y novedad, no una identificación musical garantizada.

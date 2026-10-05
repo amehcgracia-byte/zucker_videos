@@ -1834,3 +1834,8 @@ pre {
 .import-chip { position: relative; display: flex; flex-direction: column; align-items: stretch; min-width: min(320px, 100%); gap: 6px; }
 .import-chip progress { width: 100%; height: 7px; accent-color: var(--accent, #89e260); }
 .import-chip small { white-space: normal; }
+
+.task-progress-track { width: 100%; height: 8px; overflow: hidden; border-radius: 5px; background: rgba(255,255,255,.25); box-shadow: inset 0 0 0 1px rgba(255,255,255,.35); }
+.task-progress-fill { display: block; height: 100%; background: #bce6aa; }
+.task-progress-track.pending { background: repeating-linear-gradient(90deg,rgba(255,255,255,.15) 0 8px,rgba(255,255,255,.3) 8px 16px); }
+.spherical-setup > summary { cursor: pointer; font-weight: 800; padding: 10px 0; }

@@ -385,9 +385,59 @@ class WizardRunner:
             thread.start()
             return job
 
+    def start_medley(self, project: Project, entries: list[dict], duration: float, gap: float, fade: float) -> WizardJob:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                raise RuntimeError("A pipeline is already running")
+            job = WizardJob(id="current", message="Preparing Medley Populi", started_at=time.time())
+            _attach_project(job, project)
+            if not _acquire_job_project_lock(job, project):
+                raise RuntimeError("This project's pipeline is already running")
+            self._job = job
+            self._prepared_project = None
+            self._thread = threading.Thread(target=self._run_medley, args=(job, project, entries, duration, gap, fade), daemon=True, name="zucker-medley")
+            self._thread.start()
+            return job
+
+    def _run_medley(self, job, project, entries, duration, gap, fade):
+        from core.medley import render
+        started = time.monotonic()
+        def cancel():
+            if job.cancel_event.is_set():
+                raise WizardCancelled()
+        def progress(value, phase, index, detail, task_percent=None):
+            cancel()
+            job.progress = int(min(99, value))
+            job.stage = "edit" if phase in {"inspect", "highlights"} else "export"
+            job.message = "Medley Populi"
+            job.detail = detail
+            job.progress_updated_at = time.time()
+            key = f"medley-{phase}-{index}"
+            job.tasks[key] = {"id": key, "label": detail, "percent": task_percent, "detail": ""}
+        try:
+            project.data.setdefault("settings", {}).setdefault("wizard", {}).update(platform="medley", medley={"entries": entries, "duration_sec": duration, "gap_sec": gap, "fade_sec": fade})
+            project.save()
+            destination, manifest = render(project, entries, duration, gap, fade, progress, cancel)
+            project.data["stages"]["export"].update(status="done", elapsed_seconds=round(time.monotonic()-started, 3), outputs={"export_manifest": str(project.artifacts_dir / "export_manifest.json")})
+            project.save()
+            job.result = {"project_path": str(project.folder), "filename": destination.name, "path": str(destination), "media_url": "/api/v1/wizard/result", "platform": "medley", "cut_count": len(entries), "warnings": []}
+            job.progress = 100
+            job.status = "done"
+            job.message = "Medley Populi ready"
+        except WizardCancelled:
+            self._mark_cancelled(job)
+        except Exception as exc:
+            LOGGER.exception("Medley failed")
+            job.status = "failed"
+            job.error = str(exc)
+            job.technical_details = traceback.format_exc()
+        finally:
+            _release_job_project_lock(job)
+
     def _run_existing_from_scratch(self, *, job: WizardJob, project: Project, options: dict[str, Any]) -> None:
         try:
             platform = str(options.get("platform") or "youtube")
+            project.data.setdefault("settings", {}).setdefault("wizard", {})["platform"] = platform
             for stage in (project.data.get("stages") or {}).values():
                 stage.update({"status": "pending", "started_at": None, "finished_at": None, "outputs": {}, "error": None, "fingerprint": None})
             register_selected_inputs(
@@ -766,6 +816,7 @@ class WizardRunner:
 
     def _prepare_existing_project(self, *, job: WizardJob, project: Project, platform: str = "youtube") -> None:
         try:
+            project.data.setdefault("settings", {}).setdefault("wizard", {})["platform"] = platform
             _attach_project(job, project)
             if not _acquire_job_project_lock(job, project):
                 # The persisted stage state is the source of truth while the
@@ -775,7 +826,7 @@ class WizardRunner:
                 job.message = "This project is already running; reconnecting to it…"
                 return
             ingest = (project.data.get("stages") or {}).get("ingest") or {}
-            if ingest.get("status") == "done":
+            if ingest.get("status") == "done" and ingest.get("fingerprint") == IngestStage().inputs_fingerprint(project):
                 job.progress = 22
                 _write_stage_log(project, "wizard", "REUSING completed ingest; no re-ingest required")
             else:
@@ -846,6 +897,7 @@ class WizardRunner:
                 "reel_duration_sec": reel_duration_sec,
                 "backstage_target_duration_sec": backstage_target_duration_sec if platform == "backstage" else None,
                 "variation_seed": variation_seed,
+                "instrument_highlights": bool(previous_wizard.get("instrument_highlights")),
                 "reel_aspect": reel_aspect,
                 "reel_mix_vertical_ratio": reel_mix_vertical_ratio,
                 "reel_cuts_per_source": reel_cuts_per_source,

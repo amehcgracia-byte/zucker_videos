@@ -108,3 +108,25 @@ def test_repeated_classification_reuses_probe_and_invalidates_on_file_change(vid
     video.touch()
     assert inbox.classify_file(video)['kind'] == 'videos'
     assert len(calls) == 2
+
+
+def test_draft_keeps_all_audio_choices_for_medley(client, video, tmp_path):
+    first = tmp_path / 'first.wav'; first.write_bytes(b'audio fixture one')
+    second = tmp_path / 'second.wav'; second.write_bytes(b'audio fixture two')
+    response = client.post('/api/v1/wizard/draft', json={'name':'Medley', 'videos':[str(video)], 'audio_paths':[str(first), str(second)]})
+    assert response.status_code == 200
+    audio = client.get('/api/v1/project').json['inputs']['additional_audio']
+    assert [row['path'] for row in audio] == [str(first), str(second)]
+
+
+def test_medley_start_dispatches_without_prepare_or_transcription(client, video, monkeypatch):
+    from server.wizard import WizardRunner, WizardJob
+    assert client.post('/api/v1/wizard/draft', json={'name':'Medley','videos':[str(video)]}).status_code == 200
+    called = []
+    def start(self, project, entries, duration, gap, fade):
+        called.append((entries,duration,gap,fade))
+        return WizardJob(id='fixture')
+    monkeypatch.setattr(WizardRunner,'start_medley',start)
+    response=client.post('/api/v1/wizard/start',json={'platform':'medley','videos':[str(video)],'medley_entries':[{'video':str(video),'audio':''}],'medley_duration_sec':4,'medley_gap_sec':.5,'medley_fade_sec':.25})
+    assert response.status_code == 202, response.json
+    assert called == [([{'video':str(video),'audio':''}],4,.5,.25)]

@@ -75,3 +75,9 @@ Importar de nuevo el mismo contenido reutiliza el archivo ya importado, incluso 
 Suelta vídeos, audio, songs.json y un logo PNG/JPEG/WebP en el cuadro de archivos. Cada archivo aparece inmediatamente y muestra su transferencia real; después indica la comprobación del medio. El logo queda guardado para futuros proyectos y, si no hay uno personal, se utiliza el de Zucker.
 
 Al pulsar Continue en la aplicación de escritorio, elige la carpeta del proyecto. El proyecto se guarda y aparece en Projects antes de pasar a las opciones de edición. Cancelar el selector conserva los archivos y mantiene la pantalla de entrada. Las importaciones del navegador se escriben directamente en el disco de trabajo, evitando una copia temporal completa adicional.
+
+### Medley Populi y Highlights
+
+En **Medley Populi**, añade vídeos de canciones diferentes, elige el audio de cada uno y fija la duración total en segundos. El audio original es la opción inicial. Un audio externo asignado debe empezar en el mismo punto que su vídeo. La duración disponible depende de las fuentes: no se repite material para fabricar una duración mayor. Entre canciones se añade el negro y los fundidos de imagen y sonido configurados. Los extractos se buscan por cambios musicales; no se utiliza Whisper ni se sincronizan cámaras entre canciones.
+
+YouTube puede activar **Detect vocal activity and possible instrumental solos**. Este análisis adicional separa voz, batería, bajo, guitarra y piano; guarda resultados para no repetirlo con el mismo audio e intervalo. La primera ejecución descarga el modelo en el disco de datos elegido. Los solos y rellenos son candidatos, especialmente el piano puede dar falsos positivos. Sin esta opción se usa el análisis rápido de ritmo e intensidad.

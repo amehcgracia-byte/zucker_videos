@@ -225,6 +225,16 @@ def _run_selftest() -> int:
         if card is None:
             raise RuntimeError("intro_card_watermark.png is not present in the packaged assets")
         cache_root = ensure_global_cache_dirs()
+        instrument_model_loaded = False
+        if getattr(sys, "_MEIPASS", None) or os.environ.get("ZUCKER_SELFTEST_INSTRUMENTS") == "1":
+            import torch
+            from demucs.pretrained import get_model
+            torch.hub.set_dir(str(data_root() / "Cache" / "Models" / "Demucs"))
+            model = get_model("htdemucs_6s")
+            if not {"vocals", "drums", "bass", "guitar", "piano"}.issubset(model.sources):
+                raise RuntimeError("Packaged instrument model is incomplete")
+            instrument_model_loaded = True
+            del model
         missing_cache_dirs = [name for name in CACHE_SUBDIRS if not (cache_root / name).is_dir()]
         if missing_cache_dirs:
             raise RuntimeError(f"cache tree was not recreated: {missing_cache_dirs}")
@@ -303,6 +313,7 @@ def _run_selftest() -> int:
             "intro_card": str(card),
             "intro_rendered": rendered_duration > 0.0,
             "transcription": selftest_transcription,
+            "instrument_model_loaded": instrument_model_loaded,
             "backstage_export": backstage_result,
         }, sort_keys=True))
         return 0

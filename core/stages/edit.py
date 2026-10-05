@@ -21,7 +21,7 @@ from core.non_music import NON_MUSIC_VERSION, analyze_non_music_sources
 from core.project import Project
 from core.spherical_view import effective_fov, effective_pitch, effective_projection_control, effective_roll, normalize_projection_preset
 from core.shot_quality import DIRECTOR_SCORE_THRESHOLD, SHOT_QUALITY_VERSION, analyze_handheld_director_quality, director_quality_for_segment
-from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
+from core.stages.base import ProgressCallback, ProgressDetail, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.cut import _clip_master_ranges, load_coverage
 
 
@@ -114,7 +114,7 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 31
+EDIT_PLAN_ALGORITHM_VERSION = 32
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
@@ -163,6 +163,7 @@ class EditStage(Stage):
                 # otherwise the engine can truthfully report a cache hit while
                 # returning the previous camera sequence.
                 "music_direction_version": MUSIC_DIRECTION_VERSION,
+                "instrument_highlights": project.data.get("settings", {}).get("wizard", {}).get("instrument_highlights", False),
                 "variation_seed": (
                     project.data.get("settings", {}).get("wizard", {}).get("variation_seed")
                     or project.data.get("settings", {}).get("edit", {}).get("variation_seed")
@@ -223,7 +224,8 @@ class EditStage(Stage):
         else:
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, t("choosing_cameras"))
-            coverage = {**coverage, "singing_segments": _detect_singing_segments(project, coverage)}
+            events = beats.get("instrument_highlights") or []
+            coverage = {**coverage, "musical_highlights": beats.get("musical_highlights") or [], "instrument_highlights": events, "singing_segments": [event for event in events if event.get("instrument") == "singer"]}
             plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}), recorded_moves=recorded_moves, progress_callback=progress_callback)
         write_artifact_json(artifact_path(project, "beats.json"), beats)
         plan["edit_plan_algorithm_version"] = EDIT_PLAN_ALGORITHM_VERSION
@@ -279,6 +281,13 @@ def _load_or_analyze_beats(project: Project, coverage: dict[str, Any], progress_
         beat_times = _fallback_beats(start, duration)
     bars = estimate_bar_starts(beat_times, start, duration)
     energy_by_bar = _bar_energy_profile(y, sr, bars, start) if "y" in locals() and "sr" in locals() else []
+    from core.highlights import analyze_samples, analyze_instruments
+    musical_highlights = analyze_samples(y, sr, start) if "y" in locals() else []
+    instrument_highlights = []
+    if project.data.get("settings", {}).get("wizard", {}).get("instrument_highlights"):
+        from server.inbox import app_home
+        instrument_highlights = analyze_instruments(audio_path, project.cache_dir / "instrument-highlights.json", app_home() / "Cache" / "Models" / "Demucs", start, duration,
+            lambda value, detail: progress_callback(30 + int(value * .15), ProgressDetail(detail, task_id="instrument-highlights", label="Vocal and instrumental highlights", percent=value)))
     progress_callback(45, t("rhythm_ready"))
     return {
         "stage": "edit",
@@ -291,6 +300,8 @@ def _load_or_analyze_beats(project: Project, coverage: dict[str, Any], progress_
         "bars_sec": bars,
         "sections_sec": section_times,
         "energy_by_bar": energy_by_bar,
+        "musical_highlights": musical_highlights,
+        "instrument_highlights": instrument_highlights,
     }
 
 
@@ -306,7 +317,8 @@ def _bar_energy_profile(y: Any, sr: int, bars: list[float], start: float) -> lis
             if len(chunk) == 0:
                 values.append(0.0)
             else:
-                values.append((sum(float(sample) * float(sample) for sample in chunk) / len(chunk)) ** 0.5)
+                import numpy as np
+                values.append(float(np.sqrt(np.mean(np.asarray(chunk, dtype=np.float64) ** 2))))
         if not values:
             return []
         low, high = min(values), max(values)
@@ -318,44 +330,8 @@ def _bar_energy_profile(y: Any, sr: int, bars: list[float], start: float) -> lis
 
 
 def _detect_singing_segments(project: Project, coverage: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return conservative sung windows using the existing master analysis."""
-    master = project.data.get("inputs", {}).get("master") or {}
-    path = str(master.get("path") or "")
-    window = coverage.get("window") or {}
-    start = float(window.get("start_sec") or 0.0)
-    duration = max(0.0, float(window.get("duration_sec") or 0.0))
-    if not path or not Path(path).exists() or duration <= 0.0:
-        return []
-    try:
-        import librosa
-        import numpy as np
-
-        y, sr = librosa.load(path, sr=11025, mono=True, offset=start, duration=duration)
-        if len(y) < sr:
-            return []
-        harmonic, _percussive = librosa.effects.hpss(y)
-        hop = 512
-        rms = librosa.feature.rms(y=harmonic, hop_length=hop)[0]
-        threshold = max(float(np.percentile(rms, 55)), 0.015)
-        active = rms >= threshold
-        raw: list[tuple[float, float]] = []
-        for index, value in enumerate(active):
-            if not value:
-                continue
-            local_start = index * hop / sr
-            local_end = min(duration, (index + 1) * hop / sr)
-            if raw and local_start <= raw[-1][1] + 0.35:
-                raw[-1] = (raw[-1][0], local_end)
-            else:
-                raw.append((local_start, local_end))
-        return [
-            {"start_sec": round(start + begin, 3), "end_sec": round(start + end, 3), "classification": "singing"}
-            for begin, end in raw
-            if end - begin >= 1.0
-        ]
-    except Exception:
-        LOGGER.warning("Singing analysis unavailable; continuing without singer preference", exc_info=True)
-        return []
+    """Only separated vocal evidence is labelled as singing."""
+    return [event for event in coverage.get("instrument_highlights", []) if event.get("instrument") == "singer"]
 
 
 def _beat_fingerprint(project: Project, coverage: dict[str, Any]) -> str:
@@ -366,7 +342,7 @@ def _beat_fingerprint(project: Project, coverage: dict[str, Any]) -> str:
         source = inputs["videos"][0]
         if (source.get("probe") or {}).get("audio_codec"):
             audio = {"path": source.get("path"), "probe": source.get("probe")}
-    return stable_fingerprint({"version": 2, "audio": audio, "window": coverage.get("window")})
+    return stable_fingerprint({"version": 3, "audio": audio, "window": coverage.get("window"), "instrument_highlights": project.data.get("settings", {}).get("wizard", {}).get("instrument_highlights", False)})
 
 
 def _camera_moves_fingerprint(project: Project) -> str:
@@ -884,9 +860,7 @@ def _youtube_multicam_plan(
             allocation_segment_seconds=max(1.0 / EDIT_FPS, segment_end - segment_start),
             variation_seed=variation_seed,
             prefer_battery_camera=segment_end >= end - 0.001,
-            preferred_camera_ids=_preferred_singing_camera_ids(
-                available, _is_singing_window(coverage, segment_start, segment_end)
-            ),
+            preferred_camera_ids=_preferred_highlight_camera_ids(available, coverage, segment_start, segment_end),
         )
         # Keep the same authored 360 camera as the preview/editor when it is
         # available for this interval; otherwise the normal camera scorer applies.
@@ -932,6 +906,7 @@ def _youtube_multicam_plan(
         segment["music_pacing_target_sec"] = segment_music_target
         segment["camera_id"] = selected_camera
         segment["singing_detected"] = _is_singing_window(coverage, segment_start, segment_end)
+        segment["musical_subject"] = _highlight_subject(coverage, segment_start, segment_end)
         segment["available_camera_ids"] = sorted(available_camera_ids)
         alternative_camera_ids = sorted(camera_id for camera_id in available_camera_ids if camera_id != selected_camera)
         segment["camera_alternative_available"] = bool(alternative_camera_ids)
@@ -988,6 +963,10 @@ def _youtube_multicam_plan(
                                 if subject_seconds.get(_editorial_subject({}, pose), 0.0) <= least_seconds + .001]
                     if balanced:
                         available_shots = balanced
+                musical_subject = _highlight_subject(coverage, segment_start, segment_end)
+                musical_poses = [pose for pose in fresh_shots if _editorial_subject({}, pose) == musical_subject] if musical_subject else []
+                if musical_poses and not scheduled_wide:
+                    available_shots = musical_poses
                 if not any(item.get("spherical_shot") for item in segments):
                     opening_singer = [pose for pose in available_shots if _editorial_subject({}, pose) == "singer"]
                     if opening_singer:
@@ -1086,6 +1065,8 @@ def _youtube_multicam_plan(
         "stage": "edit",
         "platform": coverage.get("platform") or "youtube",
         "singing_segments": coverage.get("singing_segments") or [],
+        "musical_highlights": coverage.get("musical_highlights") or [],
+        "instrument_highlights": coverage.get("instrument_highlights") or [],
         "title": window.get("title") or t("full_video"),
         "master_window_start_sec": round(start, 6),
         "master_window_end_sec": round(end, 6),
@@ -2237,25 +2218,23 @@ def _is_singing_window(coverage: dict[str, Any], start: float, end: float) -> bo
 
 
 def _preferred_singing_camera_ids(sources: list[dict[str, Any]], singing: bool) -> set[str]:
-    # Nikon is the reference image camera in this production: make it a
-    # stable quality tie-breaker for every section, while the musical
-    # preference still gives Sony/360 a small boost when the singer is active.
-    nikon = {_camera_id(source) for source in sources if _is_nikon_source(source)}
-    if nikon:
-        return nikon
     if not singing:
         return set()
-    text_for = lambda source: " ".join(
-        str(source.get(key) or "")
-        for key in ("camera_id", "camera_name", "camera", "camera_label", "filename", "path", "source_path")
-    ).lower()
-    nikon = {_camera_id(source) for source in sources if _source_role(source) == "handheld" and "nikon" in text_for(source)}
-    if nikon:
-        return nikon
-    sony = {_camera_id(source) for source in sources if _source_role(source) == "handheld" and "sony" in text_for(source)}
-    if sony:
-        return sony
-    return {_camera_id(source) for source in sources if _source_role(source) == "360"}
+    return {_camera_id(source) for source in sources if _editorial_subject(source) == "singer" or _source_role(source) == "360"}
+
+
+def _highlight_subject(coverage, start, end):
+    events = [event for event in coverage.get("instrument_highlights", []) if event["start_sec"] < end and event["end_sec"] > start]
+    if not events:
+        return None
+    return max(events, key=lambda event: event.get("score", 0)).get("instrument")
+
+
+def _preferred_highlight_camera_ids(sources, coverage, start, end):
+    subject = _highlight_subject(coverage, start, end)
+    if not subject:
+        return set()
+    return {_camera_id(source) for source in sources if _editorial_subject(source) == subject or _source_role(source) == "360"}
 
 
 def _is_nikon_source(source: dict[str, Any]) -> bool:

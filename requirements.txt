@@ -1,12 +1,14 @@
 flask>=3.0
 pywebview>=5.0
-numpy>=1.26
+numpy>=1.26,<2
 scipy>=1.11
 llvmlite==0.45.1
 numba==0.62.1
 librosa>=0.11
-opencv-python-headless>=4.9,<5.0
+opencv-python-headless>=4.9,<4.12
 openai-whisper>=20240930
 faster-whisper>=1.1.0
 openai>=1.0.0
 pytest>=8.0
+
+demucs==4.0.1

@@ -84,6 +84,9 @@ PY
   --add-data "/System/Library/Fonts/Supplemental/BigCaslon.ttf:assets/fonts" \
   --add-data "$BUILD_INFO:." \
   --add-data "$ROOT/README_APP.md:." \
+  --collect-submodules demucs \
+  --collect-data demucs \
+  --hidden-import torchaudio \
   --collect-data faster_whisper \
   --collect-data whisper \
   --collect-data onnxruntime \

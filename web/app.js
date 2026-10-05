@@ -209,7 +209,7 @@ const icons = {
 };
 
 function todayName() {
-  return `Jam ${new Date().toISOString().slice(0, 10)}`;
+  return "New Jam";
 }
 
 async function api(path, options = {}) {
@@ -266,7 +266,7 @@ function composePlatform() {
 }
 
 function youtubeSkipsComposition(platform = composePlatform()) {
-  return String(platform || "").toLowerCase() === "youtube";
+  return ["youtube", "medley"].includes(String(platform || "").toLowerCase());
 }
 
 function setCaptionPanelExpanded(expanded, platform = composePlatform()) {
@@ -721,7 +721,7 @@ function resetProgressTiming() {
 }
 
 function choosePlatformInUi(platform) {
-  if (!platform || !["youtube", "reel", "360", "backstage"].includes(platform)) return;
+  if (!platform || !["youtube", "reel", "360", "backstage", "medley"].includes(platform)) return;
   selectedPlatform = platform;
   try { sessionStorage.setItem("zucker.selectedPlatform", platform); } catch (_error) { /* private mode */ }
   document.querySelectorAll(".platform-card").forEach((card) => card.classList.toggle("selected", card.dataset.platform === platform));
@@ -916,7 +916,7 @@ function mergeDetected(result, source = "") {
     const existing = new Set(detected[key].map((item) => item.path));
     for (const item of result[key] || []) {
       if (existing.has(item.path)) continue;
-      if (key === "master" && !masterAudioExtensions.includes(`.${filename(item.path).split(".").pop().toLowerCase()}`)) continue;
+      if (source === "inbox" && key === "master" && !masterAudioExtensions.includes(`.${filename(item.path).split(".").pop().toLowerCase()}`)) continue;
       detected[key].push({ ...item, source });
     }
   }
@@ -1341,6 +1341,8 @@ function disposeSphericalSetupViewer(viewer) {
 }
 
 async function renderSphericalSetupViewers() {
+  const panel = document.querySelector("#sphericalSetup");
+  if (!panel?.open || panel.hidden) { stopSphericalSetupAnimation(); return; }
   if (!hasSphericalInput()) {
     for (const viewer of sphericalSetupViewers.values()) disposeSphericalSetupViewer(viewer);
     sphericalSetupViewers.clear();
@@ -1388,7 +1390,7 @@ function renderSphericalSetup() {
   const sphericalMode = ["youtube", "360"].includes(String(selectedPlatform || "").toLowerCase());
 
   panel.hidden = !hasSphericalInput() || !sphericalMode;
-  if (!panel.hidden) { renderSphericalSourceOptions(); applySphericalSetup(lastSphericalSetup); renderSphericalSetupViewers().catch((error) => showToast(error.message, true)); }
+  if (!panel.hidden) { renderSphericalSourceOptions(); applySphericalSetup(lastSphericalSetup); if (panel.open) renderSphericalSetupViewers().catch((error) => showToast(error.message, true)); }
 }
 
 async function saveSphericalSetup(shot = null) {
@@ -1438,6 +1440,10 @@ async function resumeInputsFromProject() {
   const master = recordToDetectedItem(inputs.master, "master");
   const songs = recordToDetectedItem(inputs.songs, "songs");
   if (master) detected.master.push(master);
+  for (const audio of inputs.additional_audio || []) {
+    if (!detected.master.some(item => item.path === audio.path)) detected.master.push(recordToDetectedItem(audio, "master"));
+  }
+  document.querySelector("#instrumentHighlights").checked = Boolean(project.settings?.wizard?.instrument_highlights);
   if (songs) detected.songs.push(songs);
   for (const record of inputs.videos || []) {
     if (record.status === "not_a_video") {
@@ -1470,6 +1476,7 @@ async function resumeInputsFromProject() {
   } else {
     renderSongOptions([]);
   }
+  if (selectedPlatform === "medley") renderMedleySources();
 }
 
 function chooseDefaultMaster() {
@@ -1685,7 +1692,7 @@ function selectedInputs() {
 async function registerInputsBeforePreview(inputs) {
   const result = await api("/wizard/draft", {
     method: "POST",
-    body: JSON.stringify({ name: document.querySelector("#videoName").value || todayName(), project_id: activeProjectId, ...inputs }),
+    body: JSON.stringify({ name: document.querySelector("#videoName").value || todayName(), project_id: activeProjectId, audio_paths: detected.master.map(item => item.path), ...inputs }),
   });
   activeProjectId = result.project_id;
   await api("/settings/camera-subjects", { method: "POST", body: JSON.stringify({ camera_subjects: Object.fromEntries(inputs.videos.filter((path) => cameraSubjects[path]).map((path) => [path, cameraSubjects[path]])) }) });
@@ -2006,6 +2013,11 @@ async function newProject() {
   sessionFilterDisabled = false;
   renderChips();
   sphericalProjectSettings = null;
+  document.querySelector("#sphericalSetup").open = false;
+  document.querySelector("#instrumentHighlights").checked = false;
+  document.querySelector("#medleyDuration").value = 180;
+  document.querySelector("#medleyGap").value = 0.5;
+  document.querySelector("#medleyFade").value = 0.5;
   resetSphericalSetupToGlobal();
   document.querySelector("#videoName").value = "New Jam";
   document.querySelector("#errorBox").hidden = true;
@@ -2538,14 +2550,18 @@ async function openPaperEdit() {
 }
 
 function applyEditTypeMode() {
+  const highlightOption = document.querySelector("#instrumentHighlightsOption");
+  if (highlightOption) highlightOption.hidden = selectedPlatform !== "youtube";
   const passthrough360 = selectedPlatform === "360";
-  const youtubeDirectResult = selectedPlatform === "youtube";
+  const youtubeDirectResult = selectedPlatform === "youtube" || selectedPlatform === "medley";
   const cameraMix = document.querySelector("#cameraMix");
   const songPicker = document.querySelector("#songPicker");
   const reelOptions = document.querySelector("#reelOptions");
   const backstageOptions = document.querySelector("#backstageOptions");
   const trimBox = document.querySelector(".trim-box");
-  if (cameraMix) cameraMix.hidden = passthrough360;
+  if (cameraMix) cameraMix.hidden = passthrough360 || selectedPlatform === "medley";
+  const medley = document.querySelector("#medleyOptions");
+  if (medley) { medley.hidden = selectedPlatform !== "medley"; if (!medley.hidden) renderMedleySources(); }
   if (songPicker && passthrough360) songPicker.hidden = true;
   if (reelOptions) {
     reelOptions.hidden = selectedPlatform !== "reel";
@@ -2556,7 +2572,8 @@ function applyEditTypeMode() {
     backstageOptions.hidden = selectedPlatform !== "backstage";
     backstageOptions.open = selectedPlatform === "backstage";
   }
-  if (trimBox) trimBox.hidden = selectedPlatform === "backstage";
+  if (trimBox) trimBox.hidden = selectedPlatform === "backstage" || selectedPlatform === "medley";
+  if (songPicker && selectedPlatform === "medley") songPicker.hidden = true;
 
   renderSphericalSetup();
   const composeNav = document.querySelector('[data-step-nav="5"]');
@@ -2964,7 +2981,7 @@ async function startWizard(options = {}) {
   lastPipelineStage = null;
   hideStageTransition();
   setStep(3);
-  if (waitForPrepare && selectedPlatform !== "360" && selectedPlatform !== "reel" && selectedPlatform !== "backstage") {
+  if (waitForPrepare && selectedPlatform !== "360" && selectedPlatform !== "reel" && selectedPlatform !== "backstage" && selectedPlatform !== "medley") {
     prepareHandoffInProgress = true;
     const prepared = await api("/wizard/prepare", {
       method: "POST",
@@ -2988,6 +3005,11 @@ async function startWizard(options = {}) {
     body: JSON.stringify({
       name: document.querySelector("#videoName").value || todayName(),
       platform: selectedPlatform,
+      instrument_highlights: selectedPlatform === "youtube" && document.querySelector("#instrumentHighlights").checked,
+      medley_entries: [...document.querySelectorAll("#medleySources select")].map(select => ({video: select.dataset.video, audio: select.value})),
+      medley_duration_sec: Number(document.querySelector("#medleyDuration").value),
+      medley_gap_sec: Number(document.querySelector("#medleyGap").value),
+      medley_fade_sec: Number(document.querySelector("#medleyFade").value),
       song_index: selectedSong,
       trim_start_sec: timeToSeconds(document.querySelector("#trimStart").value),
       trim_end_sec: timeToSeconds(document.querySelector("#trimEnd").value),
@@ -3350,10 +3372,17 @@ function renderWizardStatus(status) {
       const percent = Math.max(0, Math.min(100, Number(task.percent || 0)));
       const detail = String(task.detail || "").replace(/\s*[—–]\s*\d+%\s*$/, "");
       label.textContent = `${task.label}: ${task.percent == null ? "Percentage pending" : `${percent}%`} — ${detail}`;
-      const bar = document.createElement("progress");
-      bar.max = 100;
-      bar.value = percent;
+      const bar = document.createElement("div");
+      bar.className = "task-progress-track";
+      bar.setAttribute("role", "progressbar");
+      bar.setAttribute("aria-valuemin", "0");
+      bar.setAttribute("aria-valuemax", "100");
       bar.setAttribute("aria-label", task.label);
+      const fill = document.createElement("div");
+      fill.className = "task-progress-fill";
+      if (task.percent == null) bar.classList.add("pending");
+      else { bar.setAttribute("aria-valuenow", String(percent)); fill.style.width = `${percent}%`; }
+      bar.append(fill);
       row.append(label, bar);
       taskBox.append(row);
     }
@@ -4586,3 +4615,30 @@ document.querySelector("#closeRescue")?.addEventListener("click", () => {
   document.querySelector("#rescuePanel").hidden = true;
   document.querySelector("#rescuePreview")?.pause();
 });
+
+document.querySelector("#sphericalSetup")?.addEventListener("toggle", (event) => {
+  if (!event.target.open) stopSphericalSetupAnimation();
+  if (event.target.open) { startSphericalSetupAnimation(); renderSphericalSetupViewers().catch(error => showToast(error.message, true)); }
+});
+
+function renderMedleySources() {
+  const root = document.querySelector("#medleySources");
+  const saved = sphericalProjectSettings?.settings?.wizard?.medley;
+  if (saved) {
+    document.querySelector("#medleyDuration").value = saved.duration_sec;
+    document.querySelector("#medleyGap").value = saved.gap_sec;
+    document.querySelector("#medleyFade").value = saved.fade_sec;
+  }
+  const previous = new Map([...root.querySelectorAll("select")].map(el => [el.dataset.video, el.value]));
+  root.replaceChildren();
+  for (const video of detected.videos) {
+    const label = document.createElement("label");
+    label.textContent = filename(video.path) + " · Audio ";
+    const select = document.createElement("select");
+    select.dataset.video = video.path;
+    select.add(new Option("Original video audio", ""));
+    for (const audio of detected.master) select.add(new Option(filename(audio.path), audio.path));
+    select.value = previous.get(video.path) ?? saved?.entries?.find(row => row.video === video.path)?.audio ?? "";
+    label.append(select); root.append(label);
+  }
+}

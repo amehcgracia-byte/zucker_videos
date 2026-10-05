@@ -290,6 +290,8 @@ class AutoReadRunner:
             return self._job.snapshot() if self._job else None
 
     def start(self, project: Project, requested_model: str | None = None) -> AutoReadJob:
+        if (project.data.get("settings", {}).get("wizard") or {}).get("platform") not in {"reel", "backstage"}:
+            raise ValueError("Transcription is available only for Reel and Backstage")
         with self._lock:
             if self._job and self._job.status == "running":
                 raise RuntimeError("Auto Read is already transcribing")
@@ -1607,6 +1609,21 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.post("/api/v1/wizard/start")
     def api_wizard_start() -> Response:
         body = _json_body()
+        if body.get("platform") == "medley":
+            try:
+                if state.project is None:
+                    return error_response("bad_request", "Save the project location first", 400)
+                entries = body.get("medley_entries")
+                if not isinstance(entries, list) or not entries or not all(isinstance(row, dict) and isinstance(row.get("video"), str) and isinstance(row.get("audio", ""), str) for row in entries):
+                    return error_response("bad_request", "Choose videos and their audio for Medley", 400)
+                allowed = set(body.get("videos") or [])
+                if any(row["video"] not in allowed for row in entries):
+                    return error_response("bad_request", "Medley videos must be in this project's inputs", 400)
+                job = state.wizard.start_medley(state.project, entries, float(body.get("medley_duration_sec", 180)), float(body.get("medley_gap_sec", .5)), float(body.get("medley_fade_sec", .5)))
+                state.composition.reset()
+                return jsonify(serialize_wizard_job(job)), 202
+            except (ValueError, TypeError, RuntimeError) as exc:
+                return error_response("bad_request", str(exc), 400)
         name = str(body.get("name") or "").strip()
         platform = str(body.get("platform") or "").strip().lower()
         master = str(body.get("master") or "").strip()
@@ -1652,8 +1669,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not master and platform != "backstage" and not embedded_source_audio:
             return error_response("missing_master", t("missing_master"), 400)
         try:
+            if state.project is not None:
+                state.project.data.setdefault("settings", {}).setdefault("wizard", {})["instrument_highlights"] = bool(body.get("instrument_highlights"))
+                state.project.save()
             options = {
-                "name": name or "Jam",
+                "name": name or "New Jam",
                 "platform": platform,
                 "song_choice": body.get("song_index", body.get("song_choice")),
                 "audio_trim": audio_trim,
@@ -2056,6 +2076,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_wizard_draft() -> Response:
         body = _json_body()
         videos = body.get("videos") or []
+        audio_paths = body.get("audio_paths")
+        if audio_paths is not None and (not isinstance(audio_paths, list) or not all(isinstance(path, str) and Path(path).is_file() for path in audio_paths)):
+            return error_response("bad_request", "Audio files must exist", 400)
         if not isinstance(videos, list) or not videos or not all(isinstance(path, str) for path in videos):
             return error_response("missing_video", t("missing_video"), 400)
         if state.wizard.status().get("status") in {"running", "cancelling"} or (state.composition.status(state.project) or {}).get("status") in {"running", "cancelling"}:
@@ -2080,6 +2103,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                     project.data["inputs"]["master"] = None
                 if not songs:
                     project.data["inputs"]["songs"] = None
+                project.save()
+            if audio_paths is not None:
+                project.data["inputs"]["additional_audio"] = [{"path": path, "filename": Path(path).name, "kind": "master"} for path in dict.fromkeys(audio_paths)]
                 project.save()
             result = project.snapshot()
             if not requested_id:
@@ -2909,6 +2935,9 @@ def _project_can_skip_prepare(project: Project, platform: str | None = None) -> 
         project.save()
     stages = project.data.get("stages") or {}
     selected_platform = platform or str((project.data.get("settings", {}).get("wizard") or {}).get("platform") or "youtube")
+    previous_platform = str((project.data.get("settings", {}).get("wizard") or {}).get("platform") or "youtube")
+    if previous_platform != selected_platform:
+        return False
     if selected_platform in {"reel", "backstage"}:
         return stages.get("ingest", {}).get("status") == "done"
     return stages.get("sync", {}).get("status") == "done" and _project_has_sync_candidates(project)
