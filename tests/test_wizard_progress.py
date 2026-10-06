@@ -67,3 +67,30 @@ def test_stage_records_measured_duration_on_completion_and_failure(tmp_path):
         runner._run_stage(WizardJob(id='failure'), project, FailedStage(), 0, 100, 'Cutting')
     assert project.data['stages']['cut']['status'] == 'failed'
     assert project.data['stages']['cut']['elapsed_seconds'] >= 0
+
+
+def test_medley_retires_previous_phase_tasks(tmp_path, monkeypatch):
+    from core.project import create_project
+    from server.wizard import WizardRunner, WizardJob, serialize_wizard_job
+    snapshots=[]
+    project=create_project('Medley progress',str(tmp_path/'medley.zuckervid'))
+    job=WizardJob(id='current')
+    def render(project, entries, duration, gap, fade, progress, cancel):
+        progress(1,'inspect',0,'Checking first file',100)
+        snapshots.append(serialize_wizard_job(job))
+        progress(5,'music',0,'Decoding song')
+        snapshots.append(serialize_wizard_job(job))
+        progress(20,'visual',0,'Checking pictures',50)
+        snapshots.append(serialize_wizard_job(job))
+        progress(60,'render',0,'Rendering excerpt',50)
+        snapshots.append(serialize_wizard_job(job))
+        output=project.exports_dir/'result.mp4';output.write_bytes(b'fixture')
+        return output,{}
+    monkeypatch.setattr('core.medley.render',render)
+    WizardRunner()._run_medley(job,project,[{'video':'fixture'}],10,0,0)
+    assert job.status=='done',job.error
+    assert all(len(row['tasks'])==1 for row in snapshots)
+    assert snapshots[1]['tasks'][0]['percent'] is None
+    assert snapshots[2]['tasks'][0]['percent']==50
+    assert snapshots[1]['stage']=='edit'
+    assert snapshots[3]['stage']=='export'

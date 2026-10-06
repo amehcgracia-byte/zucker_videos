@@ -380,10 +380,11 @@ function syncCaptionTextArea() {
 
 let autoReadPollTimer = null;
 
-function setAutoReadStatus(text, isError = false) {
+function setAutoReadStatus(text, isError = false, percent = undefined) {
   const status = document.querySelector("#captionAutoReadStatus");
   if (status) {
     status.textContent = text;
+    if (percent !== undefined) status.append(window.MeasuredProgress.create(percent, "Transcribing project audio"));
     status.classList.toggle("error", isError);
   }
 }
@@ -392,14 +393,14 @@ async function autoReadProjectAudio() {
   const button = document.querySelector("#captionAutoRead");
   if (!button) return;
   button.disabled = true;
-  setAutoReadStatus("Transcribing the project's audio locally…");
+  setAutoReadStatus("Transcribing the project's audio locally…", false, null);
   try {
     const model = document.querySelector("#captionWhisperModel")?.value || "auto";
     await api("/captions/auto-read", { method: "POST", body: JSON.stringify({ model }) });
     const poll = async () => {
       const job = await api("/captions/auto-read/status");
       if (job.status === "running") {
-        setAutoReadStatus((job.detail || "Transcribing project audio…") + " " + (job.progress || 0) + "%");
+        setAutoReadStatus((job.detail || "Transcribing project audio…") + " " + (job.progress || 0) + "%", false, job.progress > 0 ? job.progress : null);
         autoReadPollTimer = window.setTimeout(poll, 700);
         return;
       }
@@ -720,12 +721,41 @@ function resetProgressTiming() {
   etaSmoothedSeconds = null;
 }
 
+const EDIT_MODES = {
+  youtube: { title: "YouTube", files: "Videos, master audio, optional songs.json and your logo", audio: "YouTube needs a master audio file." },
+  reel: { title: "Reel", files: "Videos, optional master audio and your logo", audio: "Reel needs master audio, or one video with its own audio." },
+  "360": { title: "360", files: "A 360 video, optional master audio and your logo", audio: "360 needs master audio, or one video with its own audio." },
+  medley: { title: "Medley Populi", files: "Edited videos from different songs; separate audio files are optional", audio: "No external audio: Medley uses each video's audio. Videos without audio remain silent." },
+  backstage: { title: "Backstage", files: "Videos with original camera audio and optional images", audio: "Backstage uses the original camera audio; no master is required." },
+};
+function showEditTypeChooser() {
+  const dialog = document.querySelector("#editTypeDialog");
+  if (!dialog.open) dialog.showModal();
+}
+function updateInputMode() {
+  const mode = EDIT_MODES[selectedPlatform];
+  document.querySelector("#inputModeTitle").textContent = mode?.title || "Choose your edit type first";
+  document.querySelector("#dropZone").hidden = !mode;
+  document.querySelector("#dropZone .drop-copy span").textContent = mode?.files || "";
+  document.querySelector("#editParametersTitle").textContent = mode ? `${mode.title} · Parameters` : "Edit parameters";
+  document.querySelector("#confirmFiles").hidden = !mode;
+}
+function inputAudioError(inputs = selectedInputs()) {
+  if (!selectedPlatform) return "Choose your edit type first.";
+  if (inputs.master || ["medley", "backstage"].includes(selectedPlatform)) return "";
+  const embedded = detected.videos.length === 1 && Boolean(detected.videos[0]?.probe?.audio_codec || detected.videos[0]?.audio_codec);
+  if (["reel", "360"].includes(selectedPlatform) && embedded) return "";
+  return EDIT_MODES[selectedPlatform].audio;
+}
+
 function choosePlatformInUi(platform) {
   if (!platform || !["youtube", "reel", "360", "backstage", "medley"].includes(platform)) return;
   selectedPlatform = platform;
   try { sessionStorage.setItem("zucker.selectedPlatform", platform); } catch (_error) { /* private mode */ }
   document.querySelectorAll(".platform-card").forEach((card) => card.classList.toggle("selected", card.dataset.platform === platform));
   document.querySelector("#startWizard").disabled = false;
+  updateInputMode();
+  renderChips();
   applyEditTypeMode();
 }
 
@@ -753,23 +783,11 @@ function stopAllPreviewAudio() {
 }
 
 function showStageTransition(title, detail, mode, onDone = null) {
-  const box = document.querySelector("#stageTransition");
-  if (!box) return;
+  // A phase notification must not cover the measured bars or delay Review.
   stopAllPreviewAudio();
-  const version = ++transitionVersion;
-  if (transitionTimer) clearTimeout(transitionTimer);
-  document.querySelector("#stageTransitionMode").textContent = mode;
-  document.querySelector("#stageTransitionTitle").textContent = title;
-  document.querySelector("#stageTransitionDetail").textContent = detail;
-  document.querySelector("#progressBox")?.setAttribute("hidden", "");
-  document.querySelector("#reviewBox")?.setAttribute("hidden", "");
-  box.removeAttribute("hidden");
-  transitionTimer = setTimeout(() => {
-    if (transitionVersion !== version) return;
-    box.setAttribute("hidden", "");
-    document.querySelector("#progressBox")?.removeAttribute("hidden");
-    if (onDone) onDone();
-  }, 1800);
+  hideStageTransition();
+  showToast(`${mode} · ${title}. ${detail}`);
+  if (onDone) onDone();
 }
 
 // Keep the transition copy mode-specific. These functions intentionally do
@@ -1511,7 +1529,7 @@ function filename(path) {
 
 function renderChips() {
   const root = document.querySelector("#chips");
-  applyInboxAnalysisFilter();
+  if (!["medley", "backstage"].includes(selectedPlatform)) applyInboxAnalysisFilter();
   applySessionFilter();
   const items = [...detected.videos, ...detected.master, ...detected.songs, ...detected.ignored].sort((a, b) =>
     String(a.source_folder || "￿").localeCompare(String(b.source_folder || "￿"))
@@ -1589,7 +1607,7 @@ function renderChips() {
   // Backstage is video-led and deliberately has no required master track.
   button.disabled = !hasVideo || pendingImports > 0 || confirmingInputs;
   if (!hasVideo) note.textContent = S.missingVideo;
-  else if (!hasMaster) note.textContent = "Choose Backstage to edit with the original camera audio (no master required)";
+  else if (!hasMaster) note.textContent = inputAudioError() || EDIT_MODES[selectedPlatform]?.audio || "Choose your edit type first.";
   else if (!hasSongs) note.textContent = S.noSongsContinuous;
   else note.textContent = S.ready;
 }
@@ -1654,7 +1672,7 @@ function clipsMatchingSession(videos, master) {
 }
 
 function applySessionFilter() {
-  if (sessionFilterDisabled) return;
+  if (sessionFilterDisabled || ["medley", "backstage"].includes(selectedPlatform)) return;
   const master = detected.master.find((item) => item.path === selectedMasterPath) || detected.master[0];
   if (!master) return;
   const split = clipsMatchingSession(detected.videos, master);
@@ -1692,7 +1710,7 @@ function selectedInputs() {
 async function registerInputsBeforePreview(inputs) {
   const result = await api("/wizard/draft", {
     method: "POST",
-    body: JSON.stringify({ name: document.querySelector("#videoName").value || todayName(), project_id: activeProjectId, audio_paths: detected.master.map(item => item.path), ...inputs }),
+    body: JSON.stringify({ name: document.querySelector("#videoName").value || todayName(), project_id: activeProjectId, platform: selectedPlatform, audio_paths: detected.master.map(item => item.path), ...inputs }),
   });
   activeProjectId = result.project_id;
   await api("/settings/camera-subjects", { method: "POST", body: JSON.stringify({ camera_subjects: Object.fromEntries(inputs.videos.filter((path) => cameraSubjects[path]).map((path) => [path, cameraSubjects[path]])) }) });
@@ -1938,6 +1956,8 @@ async function openProject(path) {
   activeProjectId = projectIdFromStatus(status) || path;
   await resumeInputsFromProject().catch(() => {});
   renderWizardStatus(status);
+  updateInputMode();
+  if (status.status === "idle" && !activeProjectId && !selectedPlatform) showEditTypeChooser();
   if (status.status === "running") {
     setStep(3);
     ensureStatusPolling();
@@ -2027,6 +2047,8 @@ async function newProject() {
   document.querySelectorAll(".platform-card").forEach((card) => card.classList.remove("selected"));
   await loadProjects().catch(() => {});
   setStep(1);
+  updateInputMode();
+  showEditTypeChooser();
 }
 
 async function deleteProject(path, name, hasExport) {
@@ -2113,7 +2135,8 @@ function updateContinueAvailability() {
 function importRow(file) {
   const row = document.createElement("div");
   row.className = "chip import-chip";
-  row.innerHTML = `<strong>${escapeHtml(file.name)}</strong><progress max="100" value="0" aria-label="Import ${escapeHtml(file.name)}"></progress><small>Queued · 0%</small>`;
+  row.innerHTML = `<strong>${escapeHtml(file.name)}</strong><small>Queued · 0%</small>`;
+  row.insertBefore(window.MeasuredProgress.create(0, `Import ${file.name}`), row.querySelector("small"));
   document.querySelector("#importProgress").append(row);
   return row;
 }
@@ -2129,10 +2152,10 @@ function uploadWithProgress(file, row) {
     xhr.upload.onprogress = (event) => {
       if (!event.lengthComputable) return;
       const percent = Math.min(100, Math.floor(event.loaded / event.total * 100));
-      row.querySelector("progress").value = percent;
+      window.MeasuredProgress.set(row.querySelector(".task-progress-track"), percent, `Import ${file.name}`);
       row.querySelector("small").textContent = percent === 100 ? "Transfer complete · Checking media…" : `Importing · ${percent}% · ${(event.loaded / 1048576).toFixed(1)} / ${(event.total / 1048576).toFixed(1)} MB`;
     };
-    xhr.upload.onload = () => { row.querySelector("progress").value = 100; row.querySelector("small").textContent = "Transfer complete · Checking media…"; };
+    xhr.upload.onload = () => { window.MeasuredProgress.set(row.querySelector(".task-progress-track"), null, "Checking media"); row.querySelector("small").textContent = "Transfer complete · Checking media…"; };
     xhr.onerror = () => reject(new Error("Import connection interrupted. Drop the file again to retry."));
     xhr.onabort = () => reject(new Error("Import cancelled"));
     xhr.onload = () => {
@@ -2175,10 +2198,10 @@ async function handleDrop(event) {
           await savePersonalLogo(file);
           if (generation !== importGeneration) return;
           if (activeProjectId) await uploadProjectLogo(file);
-          row.querySelector("progress").value = 100;
+          window.MeasuredProgress.set(row.querySelector(".task-progress-track"), 100, "Personal logo saved");
           row.querySelector("small").textContent = "Personal logo saved · 100%";
         } else if (file.path && file.path.startsWith("/")) {
-          row.querySelector("progress").removeAttribute("value");
+          window.MeasuredProgress.set(row.querySelector(".task-progress-track"), null, "Registering file");
           row.querySelector("small").textContent = "Registering original file · no copy needed";
           const result = await api("/inputs/classify-paths", { method: "POST", body: JSON.stringify({ paths: [file.path] }) });
           if (generation !== importGeneration) return;
@@ -2220,15 +2243,12 @@ async function prepareStep2() {
     showToast(S.missingVideo || "Add at least one video before continuing", true);
     return false;
   }
-  if (!selectedPlatform) {
-    selectedPlatform = hasSphericalInput() ? "360" : (inputs.master ? "reel" : "backstage");
-  }
+  if (!selectedPlatform) { showEditTypeChooser(); return false; }
   const singleVideoHasAudio = detected.videos.length === 1 && Boolean(detected.videos[0]?.probe?.audio_codec || detected.videos[0]?.audio_codec);
-  const canUseVideoAudio = ["reel", "360"].includes(selectedPlatform) && selectedReelAudioSource === "video" && singleVideoHasAudio;
-  if (!inputs.master && !["backstage", "360"].includes(selectedPlatform) && !canUseVideoAudio) {
-    showToast("This mode needs a master audio file or audio embedded in the selected video.", true);
-    return false;
-  }
+  const canUseVideoAudio = ["reel", "360"].includes(selectedPlatform) && singleVideoHasAudio && (!inputs.master || selectedReelAudioSource === "video");
+  if (canUseVideoAudio) selectedReelAudioSource = "video";
+  const audioError = inputAudioError(inputs);
+  if (audioError) { showToast(audioError, true); return false; }
   if (pendingImports || confirmingInputs) return false;
   confirmingInputs = true;
   updateContinueAvailability();
@@ -2250,7 +2270,7 @@ async function prepareStep2() {
   const trimSource = canUseVideoAudio ? detected.videos[0].path : inputs.master;
   if (trimSource) setupTrimControls(trimSource);
   applyEditTypeMode();
-  await loadSavedReelOverlays();
+  if (selectedPlatform === "reel") await loadSavedReelOverlays();
   if (inputs.songs) {
     const result = await api("/wizard/songs", { method: "POST", body: JSON.stringify({ songs: inputs.songs }) });
     renderSongOptions(result.songs || []);
@@ -2559,7 +2579,7 @@ function applyEditTypeMode() {
   const reelOptions = document.querySelector("#reelOptions");
   const backstageOptions = document.querySelector("#backstageOptions");
   const trimBox = document.querySelector(".trim-box");
-  if (cameraMix) cameraMix.hidden = passthrough360 || selectedPlatform === "medley";
+  if (cameraMix) cameraMix.hidden = !["youtube", "reel"].includes(selectedPlatform);
   const medley = document.querySelector("#medleyOptions");
   if (medley) { medley.hidden = selectedPlatform !== "medley"; if (!medley.hidden) renderMedleySources(); }
   if (songPicker && passthrough360) songPicker.hidden = true;
@@ -2974,6 +2994,7 @@ async function waitForPreparedProject() {
 
 async function startWizard(options = {}) {
   const waitForPrepare = options.waitForPrepare === true;
+  resetProgressTiming();
   // Every explicit run is a fresh creative pass.  Keeping the same seed
   // made the edit fingerprint and camera tie-breaks reproduce the prior cut.
   currentVariationSeed = `${Date.now()}-${Math.random()}`;
@@ -3125,7 +3146,11 @@ function ensureStatusPolling() {
   }
 }
 
+let statusRequestInFlight = false;
 async function pollStatus(generation = statusPollGeneration) {
+  if (statusRequestInFlight) return;
+  statusRequestInFlight = true;
+  try {
   const projectQuery = activeProjectId ? `?project_id=${encodeURIComponent(activeProjectId)}` : "";
   const status = await api(`/wizard/status${projectQuery}`);
   if (generation !== statusPollGeneration) return;
@@ -3137,6 +3162,7 @@ async function pollStatus(generation = statusPollGeneration) {
   if (details?.open && Date.now() - lastProgressReportAt > 2500) {
     refreshProgressReport().catch((error) => logFrontendError(`progress report failed: ${error.message}`, error.stack || ""));
   }
+  } finally { statusRequestInFlight = false; }
 }
 
 // Playful, rotating variants for the main progress bar's headline message,
@@ -3239,11 +3265,13 @@ function renderWizardStatus(status) {
       showToast(warning, true);
     }
   }
-  if (status.id && status.id !== progressJobId) {
-    progressFloor = 0;
-    progressJobId = status.id;
+  const jobKey = `${status.id || ""}:${status.started_at || ""}:${projectIdFromStatus(status) || ""}`;
+  if (jobKey !== progressJobId) {
+    resetProgressTiming();
+    progressJobId = jobKey;
   }
-  const reportedProgress = Math.max(0, Math.min(100, Number(status.progress || 0)));
+  const rawProgress = Number(status.progress || 0);
+  const reportedProgress = Number.isFinite(rawProgress) ? Math.max(0, Math.min(100, rawProgress)) : 0;
   const progress = Math.max(progressFloor, reportedProgress);
   const progressBar = document.querySelector("#progressBar");
   if (progressBar) {
@@ -3308,7 +3336,7 @@ function renderWizardStatus(status) {
     if (progressBox) progressBox.hidden = true;
     if (reviewBox) reviewBox.hidden = true;
     document.querySelector("#progressTitle").textContent = "Review shots";
-    if (lastPipelineStage !== "review") {
+    if (!["review", "review-loading"].includes(lastPipelineStage)) {
       // Keep the transition and the Frames page hidden until both the API
       // payload and the browser image decoders have completed. This avoids
       // announcing Frames while the user is still staring at empty cards.
@@ -3362,27 +3390,19 @@ function renderWizardStatus(status) {
   const taskBox = document.querySelector("#progressTasks");
   if (taskBox) {
     taskBox.replaceChildren();
-    const tasks = Array.isArray(status.tasks) ? status.tasks : [];
-    const active = tasks.filter((task) => Number(task.percent) < 100);
-    const visible = active.length ? active : tasks.slice(-3);
+    const supplied = Array.isArray(status.tasks) ? status.tasks : [];
+    const tasks = supplied.length ? supplied : status.status === "running" ? [{ id: "current", label: status.message || "Preparing", percent: null, detail: status.detail || "Waiting for the first measured update" }] : [];
+    const active = tasks.filter((task) => task.percent == null || !Number.isFinite(Number(task.percent)) || Number(task.percent) < 100);
+    const visible = active.length ? active : status.status === "running" ? [{ id: "current", label: status.message || "Finalizing", percent: null, detail: status.detail || "Waiting for completion" }] : tasks.slice(-3);
     for (const task of visible) {
       const row = document.createElement("div");
       row.className = "progress-task";
       const label = document.createElement("span");
-      const percent = Math.max(0, Math.min(100, Number(task.percent || 0)));
+      const raw = task.percent == null ? null : Number(task.percent);
+      const percent = raw != null && Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : null;
       const detail = String(task.detail || "").replace(/\s*[—–]\s*\d+%\s*$/, "");
-      label.textContent = `${task.label}: ${task.percent == null ? "Percentage pending" : `${percent}%`} — ${detail}`;
-      const bar = document.createElement("div");
-      bar.className = "task-progress-track";
-      bar.setAttribute("role", "progressbar");
-      bar.setAttribute("aria-valuemin", "0");
-      bar.setAttribute("aria-valuemax", "100");
-      bar.setAttribute("aria-label", task.label);
-      const fill = document.createElement("div");
-      fill.className = "task-progress-fill";
-      if (task.percent == null) bar.classList.add("pending");
-      else { bar.setAttribute("aria-valuenow", String(percent)); fill.style.width = `${percent}%`; }
-      bar.append(fill);
+      label.textContent = `${task.label}: ${percent == null ? "Working · percentage unavailable" : `${percent}%`} — ${detail}`;
+      const bar = window.MeasuredProgress.create(task.percent, task.label);
       row.append(label, bar);
       taskBox.append(row);
     }
@@ -3562,12 +3582,22 @@ function formatEta(seconds) {
 }
 
 function updateStageChecks(progress, status) {
+  const medley = (status.platform || status.result?.platform || selectedPlatform) === "medley";
+  const phase = String(status.tasks?.[0]?.id || "");
   const done = new Set();
-  if (progress >= 22) done.add("ingest");
-  if (progress >= 48 || status.status === "waiting_choice") done.add("sync");
-  if (progress >= 58) done.add("cut");
-  if (status.status === "done") done.add("export");
-  document.querySelectorAll(".stage-checks [data-stage]").forEach((node) => {
+  if (medley) {
+    if (!phase.startsWith("medley-inspect") && phase) done.add("ingest");
+    if (/medley-(render|assemble)/.test(phase)) done.add("sync");
+    if (phase.startsWith("medley-assemble")) done.add("cut");
+  } else {
+    if (progress >= 22) done.add("ingest");
+    if (progress >= 48 || status.status === "waiting_choice") done.add("sync");
+    if (progress >= 58) done.add("cut");
+  }
+  if (status.status === "done") ["ingest", "sync", "cut", "export"].forEach(stage => done.add(stage));
+  const labels = medley ? { ingest: "Check files", sync: "Highlights", cut: "Excerpts", export: "Assemble" } : { ingest: "Prepare", sync: "Sync", cut: "Cut", export: "Export" };
+  document.querySelectorAll(".stage-checks [data-stage]").forEach(node => {
+    node.textContent = labels[node.dataset.stage];
     node.classList.toggle("done", done.has(node.dataset.stage));
   });
 }
@@ -4010,6 +4040,8 @@ document.addEventListener("click", (event) => {
     logFrontendError(`confirm files failed: ${error.message}`, error.stack || "");
     showToast(error.message, true);
   });
+  if (target.id === "chooseEditType") showEditTypeChooser();
+  if (target.id === "closeEditType") document.querySelector("#editTypeDialog").close();
   if (target.id === "newProject") newProject().catch((error) => showToast(error.message, true));
   if (target.id === "refreshProjects") loadProjects().catch((error) => showToast(error.message, true));
   const stepNav = target.closest?.("[data-step-nav]");
@@ -4041,6 +4073,7 @@ document.addEventListener("click", (event) => {
   }
   if (target.classList.contains("platform-card")) {
     choosePlatformInUi(target.dataset.platform);
+    document.querySelector("#editTypeDialog").close();
     if (currentSongs.length > 1) renderSongOptions(currentSongs);
   }
   const flyerPreview = target.closest?.("[data-flyer-preview]");
@@ -4588,6 +4621,11 @@ async function boot() {
     await resumeInputsFromProject().catch(() => {});
   }
   renderWizardStatus(status);
+  if (status.status === "idle" && !activeProjectId) {
+    selectedPlatform = null;
+    updateInputMode();
+    showEditTypeChooser();
+  } else updateInputMode();
   if (status.status === "running") {
     setStep(3);
     ensureStatusPolling();
@@ -4636,9 +4674,16 @@ function renderMedleySources() {
     label.textContent = filename(video.path) + " · Audio ";
     const select = document.createElement("select");
     select.dataset.video = video.path;
-    select.add(new Option("Original video audio", ""));
+    const embedded = Boolean(video.probe?.audio_codec || video.audio_codec);
+    select.add(new Option(embedded ? "Original video audio" : "No video audio · silent", ""));
     for (const audio of detected.master) select.add(new Option(filename(audio.path), audio.path));
     select.value = previous.get(video.path) ?? saved?.entries?.find(row => row.video === video.path)?.audio ?? "";
     label.append(select); root.append(label);
   }
 }
+
+document.querySelector("#editTypeDialog").addEventListener("click", event => {
+  if (event.target !== event.currentTarget) return;
+  const rect = event.currentTarget.getBoundingClientRect();
+  if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) event.currentTarget.close();
+});

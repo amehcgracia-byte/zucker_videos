@@ -4,16 +4,18 @@ La versión y el commit aparecen en la aplicación y en `build_info.json`, dentr
 
 Zucker Editor convierte audio de una sesión y grabaciones de cámara en un vídeo editado. El flujo normal es:
 
-1. Añadir vídeo(s), audio y, cuando corresponda, `songs.json`.
-2. Elegir el modo.
-3. Revisar los frames y dejar que se genere el export.
-4. Abrir el resultado desde la carpeta de exports.
+1. Pulsar New Project y elegir el modo en la ventana de Einstein.
+2. Añadir los archivos que pide ese modo y pulsar Continue.
+3. Elegir la carpeta del proyecto; queda guardado antes de abrir los parámetros.
+4. Configurar solo las opciones de ese modo, revisar los frames cuando corresponda y generar el vídeo.
+5. Abrir el resultado desde la carpeta de exports.
 
 ## Modos
 
 - **YouTube**: export horizontal 16:9 de larga duración. No aplica captions ni flyer.
 - **Reel**: export vertical corto con captions/flyer opcionales.
 - **Backstage**: flujo documental con revisión de cues y captions cuando se solicitan.
+- **Medley Populi**: extractos de varias canciones, con audio original, audio externo opcional o tomas silenciosas.
 - **360**: acepta un vídeo 360 con audio incrustado o un master separado; conserva la relación preview → render y permite controles de encuadre.
 
 Un proyecto nuevo siempre crea una carpeta `.zuckervid` nueva. Abrir un proyecto anterior es una acción explícita desde la bandeja de proyectos; nunca se selecciona automáticamente por coincidir las rutas de entrada.
@@ -62,7 +64,7 @@ YouTube adapta cortes y movimientos a la energía suavizada por compás: Tranqui
 
 Hacer otro genera una semilla nueva: varían la colocación de cortes sobre la rejilla musical, los desempates de cámaras y los movimientos. La misma semilla conserva la reproducibilidad del render. Si solo hay una cámara o una vista válida, las alternativas quedan limitadas al material disponible. Las cuotas y la alternancia de músicos siguen activas.
 
-Versiones: la antigua 2.1.35 equivale a 2.4.5; esta entrega es 2.4.6. Cada diez revisiones aumenta el número central: 2.4.9 → 2.5.0.
+Versiones: la antigua 2.1.35 equivale a 2.4.5; esta entrega es 2.5.1. Cada diez revisiones aumenta el número central: 2.4.9 → 2.5.0 → 2.5.1.
 
 ## Ubicaciones y espacio — 2.4.7
 
@@ -78,6 +80,10 @@ Al pulsar Continue en la aplicación de escritorio, elige la carpeta del proyect
 
 ### Medley Populi y Highlights
 
-En **Medley Populi**, añade vídeos de canciones diferentes, elige el audio de cada uno y fija la duración total en segundos. El audio original es la opción inicial. Un audio externo asignado debe empezar en el mismo punto que su vídeo. La duración disponible depende de las fuentes: no se repite material para fabricar una duración mayor. Entre canciones se añade el negro y los fundidos de imagen y sonido configurados. Los extractos se buscan por cambios musicales; no se utiliza Whisper ni se sincronizan cámaras entre canciones.
+En **Medley Populi**, añade vídeos de canciones diferentes, elige el audio de cada uno y fija la duración total en segundos. No exige un máster externo. El audio original es la opción inicial; si un vídeo no tiene pista de audio, ese extracto queda en silencio y se selecciona por calidad visual. Un audio externo asignado debe empezar en el mismo punto que su vídeo. La duración disponible depende de las fuentes: no se repite material para fabricar una duración mayor. Entre canciones se añade el negro y los fundidos de imagen y sonido configurados. Los extractos se buscan por cambios musicales; no se utiliza Whisper ni se sincronizan cámaras entre canciones.
 
 YouTube puede activar **Detect vocal activity and possible instrumental solos**. Este análisis adicional separa voz, batería, bajo, guitarra y piano; guarda resultados para no repetirlo con el mismo audio e intervalo. La primera ejecución descarga el modelo en el disco de datos elegido. Los solos y rellenos son candidatos, especialmente el piano puede dar falsos positivos. Sin esta opción se usa el análisis rápido de ritmo e intensidad.
+
+### Barras de carga — 2.5.1
+
+Las barras generales y de tareas usan el progreso medido. Una tarea sin porcentaje disponible muestra actividad y lo indica; no se presenta como completada. Los renders nuevos empiezan desde cero. Medley muestra comprobación, highlights, extractos y ensamblado, sin etiquetas de sincronización de cámaras. Las consultas simultáneas idénticas de lectura se comparten mientras están en curso y el sondeo de estado no se solapa.

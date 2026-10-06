@@ -408,11 +408,15 @@ class WizardRunner:
         def progress(value, phase, index, detail, task_percent=None):
             cancel()
             job.progress = int(min(99, value))
-            job.stage = "edit" if phase in {"inspect", "highlights"} else "export"
+            job.stage = "edit" if phase in {"inspect", "music", "visual"} else "export"
             job.message = "Medley Populi"
             job.detail = detail
             job.progress_updated_at = time.time()
             key = f"medley-{phase}-{index}"
+            # Medley is sequential: only the current operation is active.
+            # Do not accumulate unknown tasks that visually outlive their phase.
+            job.tasks = {}
+            job.stage_progress = max(0, min(100, float(task_percent or 0)))
             job.tasks[key] = {"id": key, "label": detail, "percent": task_percent, "detail": ""}
         try:
             project.data.setdefault("settings", {}).setdefault("wizard", {}).update(platform="medley", medley={"entries": entries, "duration_sec": duration, "gap_sec": gap, "fade_sec": fade})
@@ -420,7 +424,7 @@ class WizardRunner:
             destination, manifest = render(project, entries, duration, gap, fade, progress, cancel)
             project.data["stages"]["export"].update(status="done", elapsed_seconds=round(time.monotonic()-started, 3), outputs={"export_manifest": str(project.artifacts_dir / "export_manifest.json")})
             project.save()
-            job.result = {"project_path": str(project.folder), "filename": destination.name, "path": str(destination), "media_url": "/api/v1/wizard/result", "platform": "medley", "cut_count": len(entries), "warnings": []}
+            job.result = {"project_path": str(project.folder), "filename": destination.name, "path": str(destination), "media_url": "/api/v1/wizard/result", "platform": "medley", "cut_count": len(entries), "warnings": manifest.get("warnings", [])}
             job.progress = 100
             job.status = "done"
             job.message = "Medley Populi ready"
@@ -1251,9 +1255,11 @@ class WizardRunner:
                 job.progress = min(job.progress, end - 1)
             job.stage_progress = max(job.stage_progress, safe_percent)
             if not segment_match and not measured_task:
+                if segment_total is None or len(completed_segments) >= segment_total:
+                    job.tasks = {}
                 local_match = re.search(r"^(.*?)\s*[—–]\s*(\d+)%\s*$", str(detail))
                 job.tasks["stage"] = {"id": "stage", "label": local_match.group(1) if local_match else message,
-                    "percent": int(local_match.group(2)) if local_match else 100 if safe_percent == 100 else None,
+                    "percent": int(local_match.group(2)) if local_match else safe_percent,
                     "detail": str(detail)}
             job.detail = detail
             job.progress_updated_at = time.time()

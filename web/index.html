@@ -16,7 +16,7 @@
     <nav class="wizard-nav" aria-label="Wizard navigation">
       <div class="wizard-steps">
         <button class="step-nav active" data-step-nav="1">Inputs</button>
-        <button class="step-nav" data-step-nav="2">Edit type</button>
+        <button class="step-nav" data-step-nav="2">Parameters</button>
         <button class="step-nav" data-step-nav="3">Progress</button>
         <button class="step-nav" data-step-nav="4">Frames</button>
         <button class="step-nav" data-step-nav="5">Overlay &amp; Captions</button>
@@ -27,6 +27,30 @@
         <button id="newProject" class="new-project">New project</button>
       </div>
     </nav>
+<dialog id="editTypeDialog" aria-labelledby="editTypeTitle"><div class="edit-type-dialog-content"><button id="closeEditType" class="feedback-close" type="button" aria-label="Close edit type chooser">×</button><img class="edit-type-einstein" src="/einstein-edit-type.png" alt="Einstein preparing your next edit" /><h2 id="editTypeTitle">Elige tu tipo de edición</h2><p>Primero el modo. Después, añade los archivos de tu proyecto.</p>        <div class="platforms">
+          <button class="platform-card" data-platform="youtube">
+            <span class="platform-glyph" data-glyph="youtube"></span>
+            <strong>YouTube</strong>
+            <span>Full song</span>
+          </button>
+          <button class="platform-card" data-platform="reel">
+            <span class="platform-glyph" data-glyph="instagram"></span>
+            <strong>Reel</strong>
+            <span>Vertical short, for Instagram + TikTok</span>
+          </button>
+          <button class="platform-card" data-platform="360">
+            <span class="platform-glyph" data-glyph="sphere"></span>
+            <strong>360</strong>
+            <span>Full 360 clip</span>
+          </button>
+          <button class="platform-card" data-platform="medley"><span>♫</span><strong>Medley Populi</strong><span>Highlights from different songs</span></button>
+          <button class="platform-card" data-platform="backstage">
+            <span class="platform-glyph" data-glyph="backstage"></span>
+            <strong>Backstage</strong>
+            <span>Documentary diary with original camera audio</span>
+          </button>
+        </div>
+</div></dialog>
     <main class="wizard">
       <div id="backdropFlow" aria-hidden="true"><img id="backdropLogo" src="/logo_watermark.png" alt="" /></div>
       <section class="step active" id="step1">
@@ -44,6 +68,7 @@
           </div>
           <div id="projectList" class="project-list"></div>
         </section>
+        <div class="input-mode-heading"><strong id="inputModeTitle">Choose your edit type first</strong><button id="chooseEditType" type="button">Choose edit type</button></div>
         <label class="name-field">
           Video name
           <input id="videoName" />
@@ -100,30 +125,7 @@
       <section class="step" id="step2">
         <div class="step-header">
           <span>Step 2 of 5</span>
-          <h1>Choose edit type</h1>
-        </div>
-        <div class="platforms">
-          <button class="platform-card" data-platform="youtube">
-            <span class="platform-glyph" data-glyph="youtube"></span>
-            <strong>YouTube</strong>
-            <span>Full song</span>
-          </button>
-          <button class="platform-card" data-platform="reel">
-            <span class="platform-glyph" data-glyph="instagram"></span>
-            <strong>Reel</strong>
-            <span>Vertical short, for Instagram + TikTok</span>
-          </button>
-          <button class="platform-card" data-platform="360">
-            <span class="platform-glyph" data-glyph="sphere"></span>
-            <strong>360</strong>
-            <span>Full 360 clip</span>
-          </button>
-          <button class="platform-card" data-platform="medley"><span>♫</span><strong>Medley Populi</strong><span>Highlights from different songs</span></button>
-          <button class="platform-card" data-platform="backstage">
-            <span class="platform-glyph" data-glyph="backstage"></span>
-            <strong>Backstage</strong>
-            <span>Documentary diary with original camera audio</span>
-          </button>
+          <h1 id="editParametersTitle">Edit parameters</h1>
         </div>
         <label id="instrumentHighlightsOption"><input id="instrumentHighlights" type="checkbox"> Detect vocal activity and possible instrumental solos (extra analysis, cached)</label>
         <div id="medleyOptions" class="song-picker" hidden>
@@ -405,6 +407,7 @@
     <div id="flyerPreviewModal" class="flyer-preview-modal" hidden role="dialog" aria-modal="true" aria-label="Flyer preview"><button id="closeFlyerPreview" class="flyer-preview-close" type="button" aria-label="Close">×</button><img id="flyerPreviewImage" alt="Flyer preview" /></div>
     <script src="/strings.js?v=editor-ui-4"></script>
     <link rel="stylesheet" href="/ui-feedback.css" />
+    <script src="/progress.js"></script>
     <script src="/ui-feedback.js"></script>
     <script src="/native_bridge.js?v=editor-ui-4"></script>
     <script src="/app.js?v=editor-ui-8"></script>

@@ -130,3 +130,11 @@ def test_medley_start_dispatches_without_prepare_or_transcription(client, video,
     response=client.post('/api/v1/wizard/start',json={'platform':'medley','videos':[str(video)],'medley_entries':[{'video':str(video),'audio':''}],'medley_duration_sec':4,'medley_gap_sec':.5,'medley_fade_sec':.25})
     assert response.status_code == 202, response.json
     assert called == [([{'video':str(video),'audio':''}],4,.5,.25)]
+
+
+@pytest.mark.parametrize('mode',['youtube','reel','360','medley','backstage'])
+def test_chosen_mode_is_saved_at_first_continue(client,video,mode):
+    saved=client.post('/api/v1/wizard/draft',json={'name':'Mode first','videos':[str(video)],'master':'','platform':mode})
+    assert saved.status_code==200,saved.json
+    document=json.loads((Path(saved.json['project_id'])/'project.json').read_text())
+    assert document['settings']['wizard']['platform']==mode

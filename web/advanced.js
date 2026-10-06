@@ -62,8 +62,9 @@ function setDropStatus(message, options = {}) {
   root.innerHTML = `
     <strong>${escapeHtml(message)}</strong>
     ${options.detail ? `<span>${escapeHtml(options.detail)}</span>` : ""}
-    ${Number.isFinite(percent) ? `<progress max="100" value="${Math.max(0, Math.min(100, percent))}"></progress>` : ""}
+
   `;
+  root.append(window.MeasuredProgress.create(percent, message));
   if (options.autoHide) {
     dropStatusTimer = setTimeout(() => setDropStatus(null), options.autoHide);
   }

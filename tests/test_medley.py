@@ -73,3 +73,21 @@ def test_instrument_events_require_actual_stems():
     singing = [row for row in events if row['instrument']=='singer']
     assert singing and all(2 <= row['start_sec'] < 5 for row in singing)
     assert not [row for row in events if row['instrument']=='drummer']
+
+
+def test_medley_silent_source_renders_without_external_audio(tmp_path):
+    ffmpeg = tool_status()['ffmpeg_path']
+    if not ffmpeg:
+        pytest.skip('FFmpeg unavailable')
+    source = tmp_path / 'silent.mp4'
+    subprocess.run([ffmpeg, '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=30', '-t', '2', '-c:v', 'libx264', str(source)], check=True)
+    project = create_project('Silent Medley', str(tmp_path/'silent.zuckervid'))
+    updates = []
+    output, manifest = render(project, [{'video':str(source),'audio':''}], 1.5, 0, .1, lambda *args: updates.append(args), lambda:None)
+    duration, video, audio = media_info(output)
+    assert video and audio and abs(duration-1.5) < .1
+    assert manifest['songs'][0]['has_audio'] is False
+    samples = subprocess.check_output([ffmpeg,'-v','error','-i',str(output),'-vn','-ac','1','-ar','8000','-f','f32le','pipe:1'])
+    assert np.max(np.abs(np.frombuffer(samples,dtype='<f4'))) < .001
+    assert any(row[1]=='visual' and row[4]==100 for row in updates)
+    assert any('No audio' in row[3] for row in updates)
