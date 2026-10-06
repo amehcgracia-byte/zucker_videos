@@ -166,10 +166,12 @@ def _detect_clip_presence(path: str, progress_callback: Any = None) -> list[dict
         samples: list[dict[str, float]] = []
         index = 0
         while True:
-            ok, frame = capture.read()
-            if not ok:
+            if not capture.grab():
                 break
             if index % step == 0:
+                ok, frame = capture.retrieve()
+                if not ok:
+                    break
                 blobs = _detect_frame(net, frame)
                 if blobs:
                     ranked = sorted(blobs, key=lambda blob: blob["area_fraction"], reverse=True)

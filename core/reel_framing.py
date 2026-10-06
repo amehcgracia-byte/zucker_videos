@@ -155,12 +155,16 @@ def _analyze_video(path: str, role: str, record: dict[str, Any], progress_callba
         sample_index = 0
         next_sample_frame = 0.0
         while sample_index < sample_count:
-            ok, frame = capture.read()
-            if not ok:
+            if not capture.grab():
                 break
             if frame_index + 0.5 < next_sample_frame:
                 frame_index += 1
                 continue
+            # Decode reference frames, but convert/copy pixels only for the
+            # samples the detector actually uses.
+            ok, frame = capture.retrieve()
+            if not ok:
+                break
             sample_time = sample_index / REEL_FRAMING_FPS
             source_h, source_w = frame.shape[:2]
             scale = min(1.0, REEL_FRAMING_WIDTH / max(1, source_w))

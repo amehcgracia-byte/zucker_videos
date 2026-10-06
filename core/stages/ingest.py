@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import threading
 import logging
+import time
 from typing import Any
 
 from core.ffmpeg import ffprobe
@@ -124,23 +125,23 @@ class IngestStage(Stage):
                 progress_callback(25, "360 equirectangular source ready — no proxy conversion needed")
         else:
             ensure_normalized_space(project, valid_records)
-            prepare_videos(project, valid_records, progress_callback)
-            if platform in {"reel", "youtube", "instagram", "tiktok"}:
-                # Long-form fixed-camera motion and shot review use the same
-                # cached subject trajectory as Reel. Single-source Reel stays
-                # a continuous-take workflow and remains exempt.
-                if len(valid_records) > 1:
-                    analyze_reel_framing_records(valid_records, progress_callback)
-                analyze_operator_presence(valid_records, progress_callback)
+            prepare_videos(project, valid_records, progress_callback,
+                analyze_ready=platform in {"reel", "youtube", "instagram", "tiktok"}
+                    and not (platform == "reel" and len(valid_records) == 1))
         progress_callback(100, "Ingest complete")
         return {}
 
 
-def prepare_videos(project: Project, records: list[dict[str, Any]], progress_callback: ProgressCallback) -> None:
-    """Prepare analysis proxies concurrently and aggregate progress."""
+def prepare_videos(project: Project, records: list[dict[str, Any]], progress_callback: ProgressCallback, *, analyze_ready: bool = False) -> None:
+    """Analyze completed proxies while the remaining sources normalize.
+
+    One analysis consumer bounds CPU/memory pressure; proxy workers stay free
+    to prepare the next files. Each source is analyzed exactly once.
+    """
     if not records:
         return
     workers = max(1, min(len(records), int(project.data["settings"].get("ingest", {}).get("proxy_workers", 2))))
+    proxy_share = 70 if analyze_ready else 100
     progresses: dict[int, int] = {index: 0 for index in range(len(records))}
     labels: dict[int, str] = {index: Path(record["path"]).name for index, record in enumerate(records)}
     lock = threading.Lock()
@@ -149,31 +150,51 @@ def prepare_videos(project: Project, records: list[dict[str, Any]], progress_cal
         with lock:
             progresses[index] = max(progresses[index], int(percent))
 
-    def emit(index: int) -> None:
+    def emit(index: int, local_percent: float, phase: str = "proxy", detail: str = "") -> None:
         with lock:
             overall = min(95, 25 + int(sum(progresses.values()) / max(1, len(records)) * 70 / 100))
             active = " · ".join(f"{labels[index]} {progresses[index]}%" for index in sorted(progresses) if progresses[index] < 100) or "complete"
-        progress_callback(overall, ProgressDetail(t("preparing_videos", count=len(records), details=active),
-            task_id=f"proxy-{index}", label=f"Preparing {labels[index]}", percent=progresses[index]))
+        progress_callback(overall, ProgressDetail(detail or t("preparing_videos", count=len(records), details=active),
+            task_id=f"{phase}-{index}", label=f"{phase.capitalize()}: {labels[index]}", percent=local_percent))
 
     def run_one(index: int, record: dict[str, Any]) -> None:
         LOGGER.info("Ingest normalization queued index=%d source=%s", index, record.get("path"))
         def clip_progress(percent: int, message: str) -> None:
-            set_progress(index, percent)
-            emit(index)
+            set_progress(index, percent * proxy_share / 100)
+            emit(index, percent)
         try:
             normalize_video_record(project, record, clip_progress)
-            set_progress(index, 100)
-            emit(index)
+            set_progress(index, proxy_share)
+            emit(index, 100)
             LOGGER.info("Ingest normalization finished index=%d source=%s", index, record.get("path"))
         except Exception:
             LOGGER.exception("Ingest normalization failed index=%d source=%s", index, record.get("path"))
             raise
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(run_one, index, record) for index, record in enumerate(records)]
+        futures = {executor.submit(run_one, index, record): (index, record)
+                   for index, record in enumerate(records)}
         for future in as_completed(futures):
             future.result()
+            if not analyze_ready:
+                continue
+            index, record = futures[future]
+            analysis_started = time.perf_counter()
+            LOGGER.info("Ingest analysis started source=%s", record.get("path"))
+            def analysis_progress(offset: int, span: int, phase: str):
+                def callback(percent: int, detail: str) -> None:
+                    task = detail.task if isinstance(detail, ProgressDetail) else None
+                    local = float(task["percent"]) if task and task.get("percent") is not None else 0
+                    set_progress(index, offset + span * max(0, min(100, local)) / 100)
+                    emit(index, local, phase, str(detail))
+                return callback
+            if len(records) > 1:
+                analyze_reel_framing_records([record], analysis_progress(70, 20, "framing"))
+            set_progress(index, 90)
+            analyze_operator_presence([record], analysis_progress(90, 10, "operator"))
+            set_progress(index, 100)
+            emit(index, 100, "prepared", f"Prepared and analyzed {labels[index]}")
+            LOGGER.info("Ingest analysis finished source=%s elapsed_sec=%.3f", record.get("path"), time.perf_counter() - analysis_started)
 
 
 def analyze_operator_presence(records: list[dict[str, Any]], progress_callback: ProgressCallback) -> None:
@@ -198,7 +219,8 @@ def analyze_operator_presence(records: list[dict[str, Any]], progress_callback: 
 
         def clip_progress(percent: int, message: str) -> None:
             overall = min(99, 97 + int((((index - 1) * 100) + percent) / max(1, total) * 2 / 100))
-            progress_callback(overall, message or f"Scanning {filename} for camera operator")
+            progress_callback(overall, ProgressDetail(message or f"Scanning {filename} for camera operator",
+                task_id=f"operator-{index}", label=f"Scanning {filename} for camera operator", percent=percent))
 
         try:
             analyze_and_cache_operator_presence(str(analysis_path), clip_progress)
