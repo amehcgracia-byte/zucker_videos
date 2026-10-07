@@ -134,8 +134,7 @@ def configure_working_storage() -> Path:
     """Keep library caches and media scratch files on the selected disk."""
     import tempfile
     root = data_root() / 'Cache'
-    temporary = root / 'temporary' / str(os.getpid())
-    temporary.mkdir(parents=True, exist_ok=True)
+    temporary = working_temporary_directory()
     tempfile.tempdir = str(temporary)
     for key, value in {'TMPDIR': temporary, 'TMP': temporary, 'TEMP': temporary,
                        'HF_HOME': root/'huggingface', 'NUMBA_CACHE_DIR': root/'numba',
@@ -152,3 +151,23 @@ def whisper_model_path(name: str) -> str:
     if all((folder / file).is_file() for file in ('model.bin','config.json','tokenizer.json')) and any(folder.glob('vocabulary.*')):
         return str(folder)
     return download_model(name, output_dir=str(folder), cache_dir=str(data_root()/'Cache'/'huggingface'/'hub'))
+
+
+def working_temporary_directory() -> Path:
+    """Resolve current storage and recreate disposable scratch directories."""
+    directory = data_root() / 'Cache' / 'temporary' / str(os.getpid())
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def working_temporary_file():
+    """Never rely on tempfile's cached directory from a previous storage root."""
+    import tempfile
+    for attempt in range(2):
+        directory = working_temporary_directory()
+        try:
+            return tempfile.TemporaryFile(dir=directory)
+        except FileNotFoundError:
+            if attempt or directory.is_dir():
+                raise
+    raise AssertionError('unreachable')

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import math
 import subprocess
-import tempfile
 import threading
 import time
 from typing import Any, Callable
@@ -12,6 +11,7 @@ import cv2
 import numpy as np
 
 from core.ffmpeg import FFmpegError
+from core.storage import working_temporary_file
 from core.spherical_view import view_parameters
 
 RECIPE_VERSION = 4
@@ -113,7 +113,7 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
     decoder_command = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-threads', '2', '-ss', str(start), '-i', source,
                        '-vf', 'fps=30,format=bgr24', '-an', '-frames:v', str(frame_count), '-f', 'rawvideo', 'pipe:1']
     stopped = threading.Event(); failures: list[BaseException] = []; completed = [0]; last_frame_at = [time.monotonic()]
-    with tempfile.TemporaryFile() as decode_log, tempfile.TemporaryFile() as encode_log:
+    with working_temporary_file() as decode_log, working_temporary_file() as encode_log:
         decoder = subprocess.Popen(decoder_command, stdout=subprocess.PIPE, stderr=decode_log)
         encoder = None
         watcher = None

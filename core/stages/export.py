@@ -327,7 +327,7 @@ def _segment_failure_message(index: int, source_path: str, cause: BaseException,
         return f"Not enough free space to continue (needs ~{estimate}). Export stopped at segment {index}."
     if not source.exists():
         return f"The drive containing {source} is no longer available. Export stopped at segment {index}."
-    if "ffmpeg is missing" in lowered or isinstance(cause, FileNotFoundError):
+    if "ffmpeg is missing" in lowered:
         return f"ffmpeg is missing. Export stopped at segment {index}."
     exit_code = getattr(cause, "exit_code", None)
     code = f" (exit code {exit_code})" if exit_code is not None else ""
@@ -767,8 +767,29 @@ def _render_plan(
         render_started = time.perf_counter()
         render_stats: list[dict[str, Any]] = []
         progress_lock = threading.Lock()
+        render_aborted = threading.Event()
+        failure_lock = threading.Lock()
+        first_failure: list[tuple[int, dict[str, Any], BaseException]] = []
+        def render_worker(index: int, segment: dict[str, Any]) -> dict[str, Any]:
+            if render_aborted.is_set():
+                raise RuntimeError("Segment render stopped after another segment failed")
+            try:
+                return _render_segment_job(
+                    project, index, segment, len(render_segments), temp_dir, master_path,
+                    platform, video_bitrate, segment_overlay_config,
+                    color_profiles.get(str(segment.get("clip_path")), {}), verify_motion,
+                    aggregate_render_progress, progress_lock,
+                )
+            except BaseException as exc:
+                with failure_lock:
+                    if not first_failure:
+                        first_failure.append((index, segment, exc))
+                    render_aborted.set()
+                raise
         worker_fractions: dict[int, float] = {}
         def aggregate_render_progress(percent: int, detail: str) -> None:
+            if render_aborted.is_set():
+                raise RuntimeError("Segment render stopped after another segment failed")
             match = re.search(r"Rendering segment (\d+)/(\d+):\s*(.*)$", str(detail))
             if match:
                 worker_index = int(match.group(1))
@@ -788,13 +809,7 @@ def _render_plan(
         futures: dict[Any, tuple[int, dict[str, Any]]] = {}
         with ThreadPoolExecutor(max_workers=segment_workers) as executor:
             for index, segment in enumerate(render_segments, start=1):
-                future = executor.submit(
-                        _render_segment_job,
-                        project, index, segment, len(render_segments), temp_dir, master_path,
-                        platform, video_bitrate, segment_overlay_config,
-            color_profiles.get(str(segment.get("clip_path")), {}), verify_motion,
-                        aggregate_render_progress, progress_lock,
-                    )
+                future = executor.submit(render_worker, index, segment)
                 futures[future] = (index, segment)
             results = []
             for future in as_completed(futures):
@@ -812,6 +827,11 @@ def _render_plan(
                         f"total_sec={result.get('total_sec', 0)}",
                     )
                 except BaseException as exc:
+                    render_aborted.set()
+                    for pending in futures:
+                        pending.cancel()
+                    if first_failure:
+                        index, completed_segment, exc = first_failure[0]
                     failed_segment = completed_segment
                     source_path = _segment_source_info(project, failed_segment).get("source_path") or failed_segment.get("source_path") or failed_segment.get("clip_path") or "unknown source"
                     _append_export_log(
