@@ -1,19 +1,23 @@
-# Zucker Editor 2.4.9
+# Zucker Editor 2.5.4
 
 Zucker Editor combines a master audio track and synchronized camera videos into an automatic edit. It supports flat cameras and equirectangular 360 sources.
 
 ## Download and install
 
-Packages are published under [GitHub Releases](https://github.com/amehcgracia-byte/zucker_videos/releases).
+Verified packages are published under [GitHub Releases](https://github.com/amehcgracia-byte/zucker_videos/releases).
+
+Direct downloads: [macOS DMG](https://github.com/amehcgracia-byte/zucker_videos/releases/latest/download/Zucker.Editor.dmg) · [Windows ZIP with EXE](https://github.com/amehcgracia-byte/zucker_videos/releases/latest/download/Zucker.Editor-windows.zip).
+
+From 2.5.4, the app checks stable releases at startup and offers a verified update and restart. Older versions need one manual installation to receive the updater.
 
 - macOS: open the normal `Zucker Editor.dmg` and copy `Zucker Editor.app` into Applications. FFmpeg and FFprobe must be installed; the app checks their availability.
-- Windows: extract the complete ZIP, then run `Zucker Editor 2.4.9.exe`. Keep `_internal` and the other resources beside the EXE. The package includes FFmpeg and FFprobe.
+- Windows: extract the complete ZIP, then run `Zucker Editor.exe`. Keep `_internal` and the other resources beside the EXE. The package includes FFmpeg and FFprobe.
 
 Version and source commit appear in the app footer and wizard report. See [README_APP.md](README_APP.md) for more user guidance.
 
 ## Editing
 
-Load a master audio file and camera videos, choose a format and the audio interval, then review the selected frames before export. Recheck the interval after replacing the master audio: its timestamps can differ from the previous file.
+Choose the edit mode in New project, add its media files, and choose the project folder on Continue. Set that mode’s parameters and audio interval, then review the selected frames before export. Medley accepts embedded video audio or silent videos without a separate master. Recheck the interval after replacing the master audio: its timestamps can differ from the previous file.
 
 - YouTube renders horizontal 16:9 and goes from frame review to final rendering.
 - Reel and Backstage have their own short-form and caption/composition flows.
@@ -48,4 +52,4 @@ The directed checks for this release cover musical pacing and variation, project
 
 ## Version numbering
 
-The previous 2.1.35 is renumbered as 2.4.5. This release is 2.4.9. Every ten patch revisions increments the middle component: 2.4.9 → 2.5.0.
+The previous 2.1.35 is renumbered as 2.4.5. This release is 2.5.4. Every ten patch revisions increments the middle component: 2.5.4 → 2.5.0.
