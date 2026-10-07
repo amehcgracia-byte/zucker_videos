@@ -28,7 +28,7 @@ El inicio y el final elegidos limitan el audio del máster. Las cabeceras no añ
 
 ## Windows
 
-El repositorio incluye `tools/build_windows.ps1`, que genera un ZIP con `Zucker Editor <versión>.exe` y sus recursos. El ZIP debe extraerse completo antes de abrir el EXE; no basta con copiar solo el ejecutable. El paquete incluye FFmpeg/FFprobe y sus avisos de distribución. La existencia del script no implica que haya un EXE publicado: cada entrega Windows debe comprobarse por versión y commit.
+El repositorio incluye `tools/build_windows.ps1`, que genera un ZIP con `Zucker Editor.exe` y sus recursos. El ZIP debe extraerse completo antes de abrir el EXE; no basta con copiar solo el ejecutable. El paquete incluye FFmpeg/FFprobe y sus avisos de distribución. La existencia del script no implica que haya un EXE publicado: cada entrega Windows debe comprobarse por versión y commit.
 
 ## Datos y limpieza
 
@@ -87,3 +87,15 @@ YouTube puede activar **Detect vocal activity and possible instrumental solos**.
 ### Barras de carga — 2.5.1
 
 Las barras generales y de tareas usan el progreso medido. Una tarea sin porcentaje disponible muestra actividad y lo indica; no se presenta como completada. Los renders nuevos empiezan desde cero. Medley muestra comprobación, highlights, extractos y ensamblado, sin etiquetas de sincronización de cámaras. Las consultas simultáneas idénticas de lectura se comparten mientras están en curso y el sondeo de estado no se solapa.
+
+## Actualizaciones
+
+Al abrir una versión que incluye el actualizador se comprueba la última release pública estable de `amehcgracia-byte/zucker_videos`. La consulta no bloquea el arranque; sin conexión se puede seguir trabajando. Una actualización requiere pulsar «Update and restart». No se instalan versiones anteriores ni se actualiza durante renders o revisión pendiente.
+
+La descarga se guarda en Cache/Updates del disco seleccionado, se comprueba contra el SHA-256 publicado por GitHub y se prepara antes de cerrar el programa. macOS monta el DMG y verifica su firma; Windows extrae el ZIP completo, conserva la ruta del ejecutable y sus accesos directos. Un proceso externo sustituye el paquete y reabre la aplicación; si falla el reemplazo se restaura el anterior. El backup y la descarga se eliminan cuando arranca la versión nueva. La carpeta de instalación debe ser escribible por el usuario.
+
+Las versiones anteriores sin actualizador necesitan una primera actualización manual. Para publicar una versión actualizable, la release debe contener un único DMG y un único ZIP Windows, con versión interna coincidente y digest SHA-256 en la API de GitHub. Los builds de Windows deben verificarse en Windows antes de publicarlos.
+
+## Color y movimiento
+
+La Sony es la primera referencia de color disponible; no se añade un aclarado global. La 360 se mide usando vistas del montaje y su subida de luminosidad es pequeña para proteger sombras y ruido. La corrección se mantiene fija por cámara durante el montaje. Si está activado el movimiento de cámaras fijas, las tomas no seleccionan una pausa estática; sin evidencia de un sujeto se usa un zoom central leve.

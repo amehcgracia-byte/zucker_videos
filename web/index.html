@@ -238,7 +238,7 @@
       <section class="step" id="step3">
         <div class="step-header">
           <span>Step 3 of 5</span>
-          <h1 id="progressTitle">Creating your video</h1>
+          <h1 id="progressTitle">Rendering New Jam</h1>
         </div>
         <div id="stageTransition" class="stage-transition" hidden aria-live="polite">
           <span id="stageTransitionMode" class="stage-transition-mode"></span>
@@ -295,9 +295,10 @@
             <span>The edit finished while you were away. Your synchronized shots are waiting for review.</span>
           </div>
           <div class="review-intro">I'm artificial, but not that intelligent — help me check whether these shots are any good.</div>
+          <div class="review-actions"><button id="renderReviewedTop" class="primary icon-button" type="button">Render Frames</button></div>
           <div id="reviewGrid" class="review-grid"></div>
           <div id="reviewLargeModal" class="review-large-modal" hidden role="dialog" aria-modal="true" aria-label="Enlarged shot"><button id="closeReviewLarge" class="review-large-close" type="button" aria-label="Close">×</button><img id="reviewLarge" alt="Selected shot" /></div>
-          <div class="review-actions"><button id="replaceRejected" class="icon-button">Replace rejected</button><button id="renderReviewed" class="primary icon-button">Render approved shots</button></div>
+          <div class="review-actions"><button id="replaceRejected" class="icon-button">Replace rejected</button><button id="renderReviewed" class="primary icon-button">Render Frames</button></div>
         </div>
         <div id="paperEditBox" class="review-box paper-edit-box" hidden>
           <div class="review-ready-notice" role="status"><strong>Backstage paper edit ready</strong><span>Review the written sequence before any video render starts.</span></div>
@@ -404,6 +405,14 @@
       Built by JM.G (José Manuel García) · Zucker Editor build <span id="buildInfo">development build</span>
     </footer>
     <div id="toast" class="toast" hidden></div>
+    <dialog id="updateDialog" class="update-dialog" aria-labelledby="updateTitle">
+      <button id="closeUpdate" type="button" aria-label="Close" class="update-close">×</button>
+      <h2 id="updateTitle">Update available</h2>
+      <p id="updateDescription"></p>
+      <div id="updateProgress" hidden></div>
+      <p id="updateDetail" role="status" aria-live="polite"></p>
+      <div class="review-actions"><button id="updateLater" type="button">Later</button><button id="installUpdate" class="primary" type="button">Update and restart</button></div>
+    </dialog>
     <div id="flyerPreviewModal" class="flyer-preview-modal" hidden role="dialog" aria-modal="true" aria-label="Flyer preview"><button id="closeFlyerPreview" class="flyer-preview-close" type="button" aria-label="Close">×</button><img id="flyerPreviewImage" alt="Flyer preview" /></div>
     <script src="/strings.js?v=editor-ui-4"></script>
     <link rel="stylesheet" href="/ui-feedback.css" />

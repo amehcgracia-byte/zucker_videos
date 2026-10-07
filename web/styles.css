@@ -1859,3 +1859,7 @@ pre {
 #editTypeDialog .platform-glyph { width: 32px; height: 32px; }
 .edit-type-einstein { height: 170px; object-position: center 20%; }
 @media (max-width: 620px) { #editTypeDialog .platforms { grid-template-columns: repeat(2, minmax(0,1fr)); } .edit-type-einstein { height: 120px; } #editTypeDialog .platform-card { min-height: 100px; } }
+
+.update-dialog { color: var(--text, #eee); background: var(--panel, #192419); border: 1px solid #68885d; border-radius: 18px; padding: 30px; width: min(520px, 90vw); }
+.update-dialog::backdrop { background: rgb(0 0 0 / 65%); }
+.update-close { position: absolute; right: 12px; top: 10px; font-size: 24px; }

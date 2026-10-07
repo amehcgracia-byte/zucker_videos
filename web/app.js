@@ -231,6 +231,7 @@ async function apiForm(path, formData) {
 
 async function loadAppConfig() {
   appConfig = await api("/app/config");
+  if (appConfig.desktop) checkForUpdates().catch(error => console.info("Update check unavailable", error.message));
   const buildInfo = document.querySelector("#buildInfo");
   if (buildInfo) {
     const version = appConfig.app_version || "development";
@@ -2042,7 +2043,7 @@ async function newProject() {
   document.querySelector("#videoName").value = "New Jam";
   document.querySelector("#errorBox").hidden = true;
   document.querySelector("#resultBox").hidden = true;
-  document.querySelector("#progressTitle").textContent = "Creating your video";
+  document.querySelector("#progressTitle").textContent = `Rendering ${document.querySelector("#videoName").value || "New Jam"}`;
   document.querySelector("#startWizard").disabled = true;
   document.querySelectorAll(".platform-card").forEach((card) => card.classList.remove("selected"));
   await loadProjects().catch(() => {});
@@ -3413,7 +3414,7 @@ function renderWizardStatus(status) {
   if (status.status === "cancelling") {
     document.querySelector("#progressTitle").textContent = stage === "compose" ? "Cancelling final video" : "Cancelling export";
   } else if (status.status === "running") {
-    document.querySelector("#progressTitle").textContent = stage === "compose" ? "Rendering final video" : "Creating your video";
+    document.querySelector("#progressTitle").textContent = stage === "compose" ? `Rendering ${document.querySelector("#videoName").value || "New Jam"}` : `Rendering ${document.querySelector("#videoName").value || "New Jam"}`;
   }
   if (status.status === "failed") {
     stopStatusPolling();
@@ -3824,7 +3825,7 @@ document.addEventListener("click", (event) => {
   if (target.dataset.reviewReplace != null) {
     replaceReviewShot(target.dataset.reviewReplace, target);
   }
-  if (target.id === "renderReviewed") {
+  if (["renderReviewed", "renderReviewedTop"].includes(target.id)) {
     if (shotReviewItems.some((item) => !item.keep)) { showToast("Replace or re-approve rejected shots before rendering", true); return; }
     api("/wizard/review/render", { method: "POST", body: JSON.stringify({ transitions: Object.fromEntries(shotReviewItems.map((item) => [String(item.index), item.transition_type || "auto"])) }) }).then((started) => { activeProjectId = projectIdFromStatus(started) || activeProjectId; document.querySelector("#reviewBox").hidden = true; document.querySelector("#progressBox").hidden = false; setStep(3); ensureStatusPolling(); return pollStatus(statusPollGeneration); }).catch((error) => showToast(error.message, true));
   }
@@ -4123,7 +4124,7 @@ document.addEventListener("click", (event) => {
   if (target.id === "startAgain" || target.id === "retryWizard" || target.id === "retryWizardSuccess") {
     document.querySelector("#errorBox").hidden = true;
     document.querySelector("#resultBox").hidden = true;
-    document.querySelector("#progressTitle").textContent = "Creating your video";
+    document.querySelector("#progressTitle").textContent = `Rendering ${document.querySelector("#videoName").value || "New Jam"}`;
     setStep(3);
     (async () => {
       try {
@@ -4138,7 +4139,7 @@ document.addEventListener("click", (event) => {
     currentVariationSeed = `${Date.now()}-${Math.random()}`;
     document.querySelector("#errorBox").hidden = true;
     document.querySelector("#resultBox").hidden = true;
-    document.querySelector("#progressTitle").textContent = "Creating your video";
+    document.querySelector("#progressTitle").textContent = `Rendering ${document.querySelector("#videoName").value || "New Jam"}`;
     startWizard({ waitForPrepare: false }).catch((error) => showToast(error.message, true));
   }
   if (target.id === "openLogsSuccess" || target.id === "openLogsError") {
@@ -4174,7 +4175,7 @@ document.addEventListener("click", (event) => {
     progressFloor = 0;
     progressStartedAt = Date.now();
     progressSamples = [];
-    document.querySelector("#progressTitle").textContent = "Rendering final video";
+    document.querySelector("#progressTitle").textContent = `Rendering ${document.querySelector("#videoName").value || "New Jam"}`;
     setStep(3);
     ensureStatusPolling();
   }).catch((error) => showToast(error.message, true));
@@ -4617,7 +4618,7 @@ async function boot() {
   const [, status] = await Promise.all([loadAppConfig(), api("/wizard/status")]);
   restoreSelectedPlatform();
   activeProjectId = projectIdFromStatus(status);
-  if (["running", "waiting_choice", "waiting_paper_edit", "done", "failed"].includes(status.status)) {
+  if (["running", "waiting_choice", "waiting_review", "waiting_paper_edit", "done", "failed"].includes(status.status)) {
     await resumeInputsFromProject().catch(() => {});
   }
   renderWizardStatus(status);
@@ -4686,4 +4687,50 @@ document.querySelector("#editTypeDialog").addEventListener("click", event => {
   if (event.target !== event.currentTarget) return;
   const rect = event.currentTarget.getBoundingClientRect();
   if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) event.currentTarget.close();
+});
+
+let updateCheckStarted = false;
+let availableUpdate = null;
+async function checkForUpdates() {
+  if (updateCheckStarted) return;
+  updateCheckStarted = true;
+  let update = await api("/updates/check");
+  for (let attempt = 0; update.status === "checking" && attempt < 15; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    update = await api("/updates/status");
+  }
+  if (update.status !== "available") return;
+  availableUpdate = update;
+  document.querySelector("#updateDescription").textContent = `Zucker Editor ${update.version} is available. Download the verified update, close this version and reopen automatically? Save your project first; finish any current task before updating.`;
+  document.querySelector("#updateDialog").showModal();
+}
+for (const id of ["closeUpdate", "updateLater"]) document.querySelector(`#${id}`).addEventListener("click", () => document.querySelector("#updateDialog").close());
+document.querySelector("#updateDialog").addEventListener("click", event => {
+  if (event.target !== event.currentTarget) return;
+  const r = event.currentTarget.getBoundingClientRect();
+  if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) event.currentTarget.close();
+});
+document.querySelector("#installUpdate").addEventListener("click", async event => {
+  const button = event.currentTarget;
+  if (pendingImports || confirmingInputs) { showToast("Wait for file imports to finish before updating", true); return; }
+  button.disabled = true;
+  const detail = document.querySelector("#updateDetail");
+  const progress = document.querySelector("#updateProgress");
+  try {
+    let update = await api("/updates/download", {method: "POST", body: JSON.stringify({token: availableUpdate.token})});
+    progress.hidden = false;
+    while (["downloading", "preparing"].includes(update.status)) {
+      detail.textContent = update.status === "downloading" ? `Downloading update · ${update.percent}%` : "Verifying and preparing installation…";
+      progress.replaceChildren(window.MeasuredProgress.create(update.percent, "Application update"));
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      update = await api("/updates/status");
+    }
+    if (update.status !== "ready") throw new Error(update.error || "The update could not be prepared");
+    await api("/updates/apply", {method: "POST", body: JSON.stringify({token: availableUpdate.token})});
+    detail.textContent = "Installing update. Zucker Editor will close and reopen automatically.";
+  } catch (error) {
+    detail.textContent = error.message;
+    showToast(error.message, true);
+    button.disabled = false;
+  }
 });

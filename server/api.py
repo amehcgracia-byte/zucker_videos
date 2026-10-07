@@ -1181,6 +1181,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def start_request_timing() -> None:
         g.request_started = time.perf_counter()
 
+    from server.updates import register_update_routes
+    register_update_routes(app, state)
+
     @app.after_request
     def add_no_cache_headers(response: Response) -> Response:
         elapsed_ms = (time.perf_counter() - g.request_started) * 1000

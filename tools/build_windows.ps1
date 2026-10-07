@@ -8,6 +8,7 @@ Set-Location $Root
 $Version = (& $Python -c "from core.build_info import APP_VERSION; print(APP_VERSION)").Trim()
 if ([string]::IsNullOrWhiteSpace($Version) -or $Version -eq "unknown") { throw "Could not determine APP_VERSION" }
 $AppName = "Zucker Editor $Version"
+$BundleName = "Zucker Editor"
 $Commit = if ($env:GITHUB_SHA) { $env:GITHUB_SHA } else { (& git rev-parse HEAD 2>$null).Trim() }
 if ([string]::IsNullOrWhiteSpace($Commit)) { $Commit = "unknown" }
 
@@ -21,7 +22,7 @@ Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $PyInstallerDist, $PyI
 
 @{ version = $Version; git_commit = $Commit } | ConvertTo-Json | Set-Content -Encoding UTF8 $BuildInfo
 $common = @(
-  "--noconfirm", "--clean", "--windowed", "--name", $AppName,
+  "--noconfirm", "--clean", "--windowed", "--name", $BundleName,
   "--distpath", $PyInstallerDist, "--workpath", $PyInstallerBuild, "--specpath", $PyInstallerBuild,
   "--add-data", "$Root\web;web",
   "--add-data", "$Root\assets\models;assets\models",
@@ -57,10 +58,10 @@ foreach ($font in @("arial.ttf", "arialbd.ttf", "verdana.ttf", "verdanab.ttf")) 
 }
 & $Python -m PyInstaller @common
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
-$AppDir = Join-Path $PyInstallerDist $AppName
+$AppDir = Join-Path $PyInstallerDist $BundleName
 if (-not (Test-Path $AppDir)) { throw "PyInstaller output missing: $AppDir" }
 if (-not $env:ZUCKER_SELFTEST_AUDIO -or -not (Test-Path $env:ZUCKER_SELFTEST_AUDIO)) { throw "Set ZUCKER_SELFTEST_AUDIO for the mandatory frozen self-test" }
-$Exe = Join-Path $AppDir "$AppName.exe"
+$Exe = Join-Path $AppDir "$BundleName.exe"
 $env:ZUCKER_WHISPER_BACKEND = "faster-whisper"
 $Log = Join-Path $Root "build\packaged-selftest-windows.log"
 $env:ZUCKER_SELFTEST_REPORT = $Log
