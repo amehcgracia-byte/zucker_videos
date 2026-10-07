@@ -45,6 +45,7 @@ window.UiFeedback = (() => {
     for (const item of active) {
       const row = document.createElement("div");
       row.textContent = `${item.label} · ${((performance.now() - item.started) / 1000).toFixed(1)} s`;
+      row.append(window.MeasuredProgress.create(null, item.label));
       tray.append(row);
     }
   }
@@ -66,7 +67,20 @@ window.UiFeedback = (() => {
     ];
     return labels.find(([pattern]) => pattern.test(route))?.[1] || "Loading application data";
   }
+  const readsInFlight = new Map();
   async function request(url, options) {
+    const route = new URL(url, location.origin).pathname;
+    const shared = (options?.method || "GET").toUpperCase() === "GET" && route.startsWith("/api/") && !/\/(status|frontend-log)$/.test(route);
+    if (!shared) return requestOnce(url, options);
+    const key = JSON.stringify([url, options?.headers || {}]);
+    if (!readsInFlight.has(key)) {
+      const pending = requestOnce(url, options);
+      readsInFlight.set(key, pending);
+      pending.finally(() => { if (readsInFlight.get(key) === pending) readsInFlight.delete(key); }).catch(() => {});
+    }
+    return (await readsInFlight.get(key)).clone();
+  }
+  async function requestOnce(url, options) {
     const route = new URL(url, location.origin).pathname;
     const background = /\/(status|frontend-log)$/.test(route);
     const id = ++sequence;

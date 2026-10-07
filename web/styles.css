@@ -1839,3 +1839,27 @@ pre {
 .task-progress-fill { display: block; height: 100%; background: #bce6aa; }
 .task-progress-track.pending { background: repeating-linear-gradient(90deg,rgba(255,255,255,.15) 0 8px,rgba(255,255,255,.3) 8px 16px); }
 .spherical-setup > summary { cursor: pointer; font-weight: 800; padding: 10px 0; }
+
+.task-progress-fill { width: 0; transition: width .15s linear; }
+.task-progress-track.pending .task-progress-fill { width: 22%; animation: task-activity 1.6s ease-in-out infinite alternate; }
+@keyframes task-activity { from { transform: translateX(0); } to { transform: translateX(350%); } }
+@media (prefers-reduced-motion: reduce) { .task-progress-track.pending .task-progress-fill { animation: none; } }
+#dropZone[hidden] { display: none; }
+#editTypeDialog { width: min(760px, calc(100vw - 32px)); max-height: 90vh; padding: 0; border: 1px solid var(--line); border-radius: 22px; background: var(--panel); color: var(--text); box-shadow: 0 24px 80px #0008; }
+#editTypeDialog::backdrop { background: #000a; backdrop-filter: blur(5px); }
+.edit-type-dialog-content { padding: 24px; }
+.edit-type-einstein { width: 100%; max-height: 210px; object-fit: cover; border-radius: 14px; }
+#editTypeDialog h2 { margin: 18px 0 8px; }
+#editTypeDialog .platforms { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 12px; }
+.input-mode-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+#editTypeDialog .platforms { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+#editTypeDialog .platform-card { min-height: 128px; padding: 14px 8px; gap: 9px; justify-content: flex-start; }
+#editTypeDialog .platform-card strong { font-size: 18px; line-height: 1.25; }
+#editTypeDialog .platform-card > span:last-child { font-size: 12px; line-height: 1.35; }
+#editTypeDialog .platform-glyph { width: 32px; height: 32px; }
+.edit-type-einstein { height: 170px; object-position: center 20%; }
+@media (max-width: 620px) { #editTypeDialog .platforms { grid-template-columns: repeat(2, minmax(0,1fr)); } .edit-type-einstein { height: 120px; } #editTypeDialog .platform-card { min-height: 100px; } }
+
+.update-dialog { color: var(--text, #eee); background: var(--panel, #192419); border: 1px solid #68885d; border-radius: 18px; padding: 30px; width: min(520px, 90vw); }
+.update-dialog::backdrop { background: rgb(0 0 0 / 65%); }
+.update-close { position: absolute; right: 12px; top: 10px; font-size: 24px; }

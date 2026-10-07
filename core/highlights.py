@@ -167,7 +167,7 @@ def analyze_instruments(path: str, cache: Path, models: Path, start: float, dura
     return events
 
 
-def visual_quality(path: str, duration: float, cache: Path, cancel=lambda: None) -> list[dict]:
+def visual_quality(path: str, duration: float, cache: Path, cancel=lambda: None, progress=lambda percent: None) -> list[dict]:
     """Sparse image-quality samples penalize black or badly blurred excerpts."""
     import cv2
     stat = Path(path).stat()
@@ -175,16 +175,20 @@ def visual_quality(path: str, duration: float, cache: Path, cancel=lambda: None)
     try:
         payload = json.loads(cache.read_text())
         if payload.get('signature') == signature:
+            progress(100)
             return payload['samples']
     except (OSError, ValueError, KeyError):
         pass
     capture = cv2.VideoCapture(path)
     samples = []
     try:
-        for second in np.linspace(0, max(0, duration-.05), min(120, max(2, int(duration/5)+1))):
+        times = np.linspace(0, max(0, duration-.05), min(120, max(2, int(duration/5)+1)))
+        progress(0)
+        for index, second in enumerate(times):
             cancel()
             capture.set(cv2.CAP_PROP_POS_MSEC, float(second)*1000)
             ok, frame = capture.read()
+            progress(100 * (index + 1) / len(times))
             if not ok:
                 continue
             gray = cv2.cvtColor(cv2.resize(frame, (320,180)), cv2.COLOR_BGR2GRAY)

@@ -529,6 +529,7 @@ def _reel_promo_plan(
                 fixed_index,
                 target_x,
                 target_y,
+                allow_static=False,
                 duration=seg_duration,
                 variation_seed=stable_fingerprint({"window": window, "sources": [_source_id(item) for item in sources]}),
                 previous_movement=next((item["motion"]["movement"] for item in reversed(segments) if item.get("motion")), ""),
@@ -1019,6 +1020,7 @@ def _youtube_multicam_plan(
             previous_motion = next((item["motion"]["movement"] for item in reversed(segments) if (item.get("motion") or {}).get("type") == "ken_burns"), "")
             segment["motion"] = _ken_burns_motion(
                 fixed_rear_motion_index, target_x, target_y,
+                allow_static=False,
                 duration=segment_end-segment_start,
                 variation_seed=variation_seed,
                 previous_movement=previous_motion, subject_confidence=confidence,
@@ -2105,7 +2107,7 @@ def _flat_motion_camera(source: dict[str, Any]) -> bool:
     """
     if _source_role(source) == "360":
         return False
-    if _source_role(source) == "fixed_rear":
+    if _flat_camera_motion_enabled(source):
         return True
     model = " ".join(str(source.get(key) or "") for key in ("camera_make", "camera_model", "device_type", "camera_type" )).lower()
     if any(word in model for word in ("iphone", "phone", "mobile", "pixel", "samsung")):

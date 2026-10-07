@@ -229,3 +229,44 @@ def test_explicit_cache_endpoint_reports_all_recoverable_cleanup_bytes(home,tmp_
     assert response.status_code==200
     assert result['before_bytes']==120 and result['after_bytes']==70
     assert result['deleted_bytes']==50 and result['deleted_files']==5
+
+
+def test_spherical_scratch_recovers_deleted_directory_and_changed_storage(home, tmp_path, monkeypatch):
+    import tempfile, shutil
+    old = storage.save_data_root(str(tmp_path / 'old'))
+    cached = storage.working_temporary_directory()
+    monkeypatch.setattr(tempfile, 'tempdir', str(cached))
+    shutil.rmtree(cached)
+    with storage.working_temporary_file() as handle:
+        handle.write(b'log')
+    assert cached.is_dir()
+    new = storage.save_data_root(str(tmp_path / 'new'))
+    shutil.rmtree(old)
+    with storage.working_temporary_file() as handle:
+        handle.write(b'new log')
+    assert (new / 'Cache' / 'temporary').is_dir()
+    assert not old.exists()
+
+
+def test_spherical_scratch_retries_directory_deletion_during_open(home, tmp_path, monkeypatch):
+    import tempfile, shutil
+    storage.save_data_root(str(tmp_path / 'external'))
+    original = tempfile.TemporaryFile
+    calls = []
+    def racing_open(*args, **kwargs):
+        calls.append(kwargs['dir'])
+        if len(calls) == 1:
+            shutil.rmtree(kwargs['dir'])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(tempfile, 'TemporaryFile', racing_open)
+    with storage.working_temporary_file() as handle:
+        handle.write(b'log')
+    assert len(calls) == 2
+
+
+def test_spherical_scratch_never_falls_back_to_system_disk(monkeypatch):
+    def offline():
+        raise OSError('Connect the storage disk: RAWVideos')
+    monkeypatch.setattr(storage, 'data_root', offline)
+    with pytest.raises(OSError, match='Connect the storage disk'):
+        storage.working_temporary_file()

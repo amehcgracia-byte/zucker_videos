@@ -2089,3 +2089,50 @@ def test_negative_hold_rate_is_rendered_as_a_real_in_shot_move():
     end = _v360_motion_at(shot, 6.0, 6.0)[0]
     assert end - start == pytest.approx(-4.8)
     assert _v360_motion_commands(shot, 6.0)
+
+
+def test_missing_scratch_is_not_reported_as_missing_ffmpeg(tmp_path):
+    source = tmp_path / 'source.mp4'
+    source.write_bytes(b'video')
+    missing = tmp_path / 'temporary' / 'tmp-log'
+    error = FileNotFoundError(2, 'No such file or directory', str(missing))
+    message = _segment_failure_message(4, str(source), error)
+    assert 'ffmpeg is missing' not in message
+    assert str(missing) in message
+
+
+def test_render_failure_stops_active_and_queued_segments(tmp_path, monkeypatch):
+    import threading
+    project = create_project('Fail fast', str(tmp_path / 'Fail fast.zuckervid'))
+    source = tmp_path / 'source.mp4'; source.write_bytes(b'source')
+    master = tmp_path / 'master.wav'; master.write_bytes(b'master')
+    monkeypatch.setattr('core.stages.export._ffmpeg_path', lambda: 'ffmpeg')
+    monkeypatch.setattr('core.stages.export._color_profiles_for_segments', lambda *args: {})
+    monkeypatch.setattr('core.stages.export._render_logo_clip', lambda output, *args, **kwargs: output.write_bytes(b'logo'))
+    monkeypatch.setattr('core.stages.export._segment_worker_count', lambda *args: 2)
+    active = threading.Event()
+    stopped = threading.Event()
+    calls = []
+    def worker(*args):
+        index, progress = args[1], args[-2]
+        calls.append(index)
+        if index == 1:
+            assert active.wait(2)
+            raise RuntimeError('original failure')
+        active.set()
+        try:
+            for _ in range(100):
+                stopped.wait(.01)
+                progress(10, f'Rendering segment {index}/20: 10%')
+            raise AssertionError('active sibling was not stopped')
+        except RuntimeError:
+            stopped.set()
+            raise
+    monkeypatch.setattr('core.stages.export._render_segment_job', worker)
+    segments = [dict(source_path=str(source), clip_path=str(source), clip_start_sec=i,
+                     master_start_sec=i, duration_sec=1) for i in range(20)]
+    with pytest.raises(SegmentRenderError, match='original failure') as info:
+        _render_plan(project, segments, str(master), tmp_path/'out.mp4', 'youtube', 4_000_000, [], lambda *_: None)
+    assert info.value.segment_index == 1
+    assert stopped.is_set()
+    assert sorted(calls) == [1, 2]

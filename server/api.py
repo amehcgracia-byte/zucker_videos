@@ -162,6 +162,7 @@ class CompositionJob:
     detail: str = "Preparing the final video render"
     stage: str = "compose"
     tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
+    progress_updated_at: float | None = None
     error: str | None = None
     result: dict[str, Any] | None = None
     project_path: str | None = None
@@ -562,6 +563,7 @@ class CompositionRunner:
             logo_overlay = header.get("logo_overlay") if isinstance(header.get("logo_overlay"), dict) else {}
             LOGGER.info("Composition source base=%s overlay_spec=%s cue_track=%s logo=%s", base_path, spec_path, track_path, logo)
             job.progress = 8
+            job.tasks = {}
             job.message = "Rendering final video"
             job.detail = f"Overlay pass: {len(spec.get('images') or [])} flyer(s), {len(spec.get('videos') or [])} video overlay(s), logo={'yes' if logo else 'no'}"
             composed = project.cache_dir / f"{output_stem}_overlay-composed.mp4"
@@ -615,6 +617,7 @@ class CompositionRunner:
             )
             if needs_caption_pass:
                 job.progress = 55
+                job.tasks = {}
                 job.message = "Rendering final video"
                 job.detail = "Caption pass: burning captions onto the rendered video"
                 composition_duration = _media_duration(composed)
@@ -701,6 +704,7 @@ class CompositionRunner:
 def _set_job_progress(job: CompositionJob, progress: int) -> None:
     if job.status == "running":
         job.progress = max(job.progress, min(98, int(progress)))
+        job.progress_updated_at = time.time()
 
 
 def _composition_event(project: Project, job: CompositionJob, event: str, *, input_path: Path | None = None,
@@ -1176,6 +1180,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.before_request
     def start_request_timing() -> None:
         g.request_started = time.perf_counter()
+
+    from server.updates import register_update_routes
+    register_update_routes(app, state)
 
     @app.after_request
     def add_no_cache_headers(response: Response) -> Response:
@@ -2106,12 +2113,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 project.save()
             if audio_paths is not None:
                 project.data["inputs"]["additional_audio"] = [{"path": path, "filename": Path(path).name, "kind": "master"} for path in dict.fromkeys(audio_paths)]
-                project.save()
-            result = project.snapshot()
+            platform = str(body.get("platform") or "")
+            if platform in {"youtube", "reel", "360", "backstage", "medley"}:
+                project.data.setdefault("settings", {}).setdefault("wizard", {})["platform"] = platform
             if not requested_id:
                 project.data.setdefault("settings", {}).setdefault("wizard", {})["reel_logo_mode"] = "default"
-                project.save()
-            return jsonify({"project_id": str(project.folder), "project": result})
+            project.save()
+            return jsonify({"project_id": str(project.folder), "project": project.snapshot()})
         except (OSError, ProjectError) as exc:
             return error_response("input_file_error", str(exc), 400)
 

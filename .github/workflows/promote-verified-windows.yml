@@ -53,14 +53,16 @@ jobs:
               info=json.loads(z.read(next(n for n in names if n.replace('\\','/').endswith('_internal/build_info.json'))))
               assert info['git_commit']==os.environ['SOURCE_COMMIT']
               assert os.environ['RELEASE_TAG']=='v'+info['version']
-              assert z.read(next(n for n in names if n.endswith('Zucker Editor '+info['version']+'.exe')))[:2]==b'MZ'
+              assert z.read(next(n for n in names if n.endswith('Zucker Editor.exe') or n.endswith('Zucker Editor '+info['version']+'.exe')))[:2]==b'MZ'
               for tool in ('ffmpeg.exe','ffprobe.exe'):
                   assert any(n.endswith(tool) for n in names)
           log=next(Path('package').rglob('packaged-selftest-windows.log'))
           result=json.loads(log.read_text().splitlines()[-1])
           assert all(result.get(k) for k in ('ok','transcription','intro_rendered'))
           digest=hashlib.sha256(p.read_bytes()).hexdigest()
-          Path('SHA256-Windows.txt').write_text(digest+'  '+p.name+'\n')
+          published=Path('package/Zucker.Editor-windows.zip')
+          p.rename(published)
+          Path('SHA256-Windows.txt').write_text(digest+'  '+published.name+'\n')
           print('Verified',info,'CRC, PE header, tools and packaged self-test',result)
           PYCODE
       - name: Upload verified Windows package

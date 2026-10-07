@@ -147,7 +147,11 @@ def _spherical_analysis_source(project: Project, segment: dict[str, Any], progre
         f"{identity['path']}|{stat.st_size}|{cache_mtime_ns(source_path)}|{projection}|{insv_fov:.3f}|{SPHERICAL_ANALYSIS_PROXY_VERSION}"
         .encode("utf-8")
     ).hexdigest()[:24]
-    target = project.cache_dir / "spherical_analysis" / f"equirect-{key}.mp4"
+    from core.normalization import global_cache_root
+    legacy_target = project.cache_dir / "spherical_analysis" / f"equirect-{key}.mp4"
+    target = global_cache_root() / "spherical_analysis" / f"equirect-{key}.mp4"
+    if legacy_target.is_file() and legacy_target.stat().st_size > 0:
+        return str(legacy_target)
     target.parent.mkdir(parents=True, exist_ok=True)
     with _SPHERICAL_PROXY_LOCK:
         if target.exists() and target.stat().st_size > 0:

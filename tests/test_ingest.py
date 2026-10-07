@@ -61,3 +61,34 @@ def test_reel_single_source_does_not_run_multicamera_analysis(monkeypatch, tmp_p
     monkeypatch.setattr("core.stages.ingest.analyze_operator_presence", lambda *_args: (_ for _ in ()).throw(AssertionError("single-source operator pass should be skipped")))
 
     IngestStage().run(project, lambda *_args: None)
+
+
+def test_analysis_overlaps_other_proxies_without_duplicate_passes(tmp_path, monkeypatch):
+    project=create_project('Overlap',str(tmp_path/'overlap.zuckervid'))
+    project.data['settings']['ingest']['proxy_workers']=2
+    records=[{'path':str(tmp_path/f'{index}.mp4')} for index in range(2)]
+    slow_proxy_started=threading.Event()
+    analysis_started=threading.Event()
+    observed=[]
+    def normalize(project,record,callback):
+        if record is records[1]:
+            slow_proxy_started.set()
+            assert analysis_started.wait(3),'Analysis waited for every proxy'
+        else:
+            assert slow_proxy_started.wait(3)
+        record['normalized']={'path':record['path']}
+        callback(100,'Proxy ready')
+    def framing(items,callback):
+        assert all('normalized' in item for item in items)
+        observed.append(('framing',items[0]['path']))
+        analysis_started.set()
+    def operator(items,callback):
+        observed.append(('operator',items[0]['path']))
+    monkeypatch.setattr('core.stages.ingest.normalize_video_record',normalize)
+    monkeypatch.setattr('core.stages.ingest.analyze_reel_framing_records',framing)
+    monkeypatch.setattr('core.stages.ingest.analyze_operator_presence',operator)
+    updates=[]
+    prepare_videos(project,records,lambda percent,detail:updates.append((percent,detail)),analyze_ready=True)
+    assert len(observed)==4 and len(set(observed))==4
+    assert updates[-1][0]==95
+    assert all(percent<95 for percent,detail in updates if detail.task['id'].startswith('proxy-'))

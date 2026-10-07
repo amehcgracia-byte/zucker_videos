@@ -94,23 +94,31 @@ def render(project, entries, duration, gap, fade, progress, cancel):
         if audio != source:
             audio_seconds, _, has_audio = media_info(audio)
             seconds = min(seconds, audio_seconds)
+            if not has_audio:
+                raise ValueError("The selected external file has no audio: " + Path(audio).name)
         else:
             has_audio = embedded
-        if not has_audio:
-            raise ValueError("Choose an audio file for: " + Path(source).name)
-        records.append({"video": source, "audio": audio, "available": seconds})
-        progress(5 * (index + 1) / len(entries), "inspect", index, "Checking source duration and audio")
+        records.append({"video": source, "audio": audio, "has_audio": has_audio, "available": seconds})
+        progress(5 * (index + 1) / len(entries), "inspect", index, f"Checked {Path(source).name}: {'original/external audio' if has_audio else 'silent video'}", 100)
     lengths = allocate([r["available"] for r in records], float(duration) - gap * (len(records) - 1))
     for index, (record, length) in enumerate(zip(records, lengths)):
         cancel()
-        progress(5 + 15 * index / len(records), "highlights", index, "Analyzing musical changes")
-        events = analyze_file(record["audio"], project.cache_dir / "medley" / f"highlights-{index}.json", duration=record["available"])
-        pictures = visual_quality(record["video"], record["available"], project.cache_dir / "medley" / f"visual-{index}.json", cancel)
+        base = 5 + 15 * index / len(records)
+        progress(base, "music", index, f"Finding musical highlights: {Path(record['video']).name}")
+        events = analyze_file(record["audio"], project.cache_dir / "medley" / f"highlights-{index}.json", duration=record["available"]) if record["has_audio"] else []
+        progress(base + 6 / len(records), "music", index, "Musical highlights ready" if record["has_audio"] else "No audio: selecting visual highlights", 100)
+        pictures = visual_quality(record["video"], record["available"], project.cache_dir / "medley" / f"visual-{index}.json", cancel,
+            progress=lambda percent: progress(base + (6 + 9 * percent / 100) / len(records), "visual", index, f"Checking visual highlights: {Path(record['video']).name}", percent))
+        if not record["has_audio"]:
+            events = [{"start_sec": row["time_sec"], "score": row["quality"]} for row in pictures]
         if pictures:
             for event in events:
                 image = min(pictures, key=lambda row: abs(row["time_sec"]-event["start_sec"]))
                 event["score"] = .8 * event["score"] + .2 * image["quality"]
-        record.update(start=best_start(events, record["available"], length), duration=length)
+        start = best_start(events, record["available"], length)
+        if not record["has_audio"] and pictures:
+            start = max(0, min(record["available"] - length, max(pictures, key=lambda row: row["quality"])["time_sec"] - length / 2))
+        record.update(start=start, duration=length)
     project.exports_dir.mkdir(parents=True, exist_ok=True)
     destination = project.exports_dir / f"Medley-Populi-{time.time_ns()}.mp4"
     ffmpeg = str(tool_status()["ffmpeg_path"])
@@ -134,7 +142,10 @@ def render(project, entries, duration, gap, fade, progress, cancel):
             af = f"asetpts=PTS-STARTPTS,afade=t=in:st=0:d={f},afade=t=out:st={seconds-f}:d={f},apad" if f else "asetpts=PTS-STARTPTS,apad"
             args = ["-ss", str(record["start"]), "-i", record["video"]]
             audio_index = 0
-            if record["audio"] != record["video"]:
+            if not record["has_audio"]:
+                args += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+                audio_index = 1
+            elif record["audio"] != record["video"]:
                 args += ["-ss", str(record["start"]), "-i", record["audio"]]
                 audio_index = 1
             args += ["-map", "0:v:0", "-map", f"{audio_index}:a:0", "-vf", vf, "-af", af, "-t", str(seconds)]
@@ -150,6 +161,6 @@ def render(project, entries, duration, gap, fade, progress, cancel):
             raise RuntimeError("Medley validation failed; no incomplete video was published")
         cancel()
         final.replace(destination)
-    manifest = {"platform": "medley", "exports": [{"path": str(destination), "platform": "medley", "duration_sec": actual}], "songs": records, "black_gap_sec": gap, "fade_sec": fade}
+    manifest = {"platform": "medley", "exports": [{"path": str(destination), "platform": "medley", "duration_sec": actual}], "songs": records, "black_gap_sec": gap, "fade_sec": fade, "warnings": ["Silent excerpt: " + Path(row["video"]).name for row in records if not row["has_audio"]]}
     (project.artifacts_dir / "export_manifest.json").write_text(json.dumps(manifest, indent=2))
     return destination, manifest
