@@ -4719,6 +4719,7 @@ document.querySelector("#installUpdate").addEventListener("click", async event =
   try {
     let update = await api("/updates/download", {method: "POST", body: JSON.stringify({token: availableUpdate.token})});
     progress.hidden = false;
+    document.querySelector("#updateLater").hidden = true;
     while (["downloading", "preparing"].includes(update.status)) {
       detail.textContent = update.status === "downloading" ? `Downloading update · ${update.percent}%` : "Verifying and preparing installation…";
       progress.replaceChildren(window.MeasuredProgress.create(update.percent, "Application update"));
@@ -4730,6 +4731,7 @@ document.querySelector("#installUpdate").addEventListener("click", async event =
     detail.textContent = "Installing update. Zucker Editor will close and reopen automatically.";
   } catch (error) {
     detail.textContent = error.message;
+    document.querySelector("#updateLater").hidden = false;
     showToast(error.message, true);
     button.disabled = false;
   }

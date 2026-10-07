@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import secrets
 import shutil
@@ -73,7 +73,7 @@ def extract_windows(archive: Path, destination: Path, version: str) -> Path:
     with zipfile.ZipFile(archive) as package:
         for item in package.infolist():
             name = item.filename.replace('\\', '/')
-            path = Path(name)
+            path = PurePosixPath(name)
             if path.is_absolute() or '..' in path.parts or ':' in name or ((item.external_attr >> 16) & 0o170000) == 0o120000:
                 raise ValueError('Unsafe installer archive')
         package.extractall(destination)

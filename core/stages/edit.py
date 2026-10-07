@@ -529,6 +529,7 @@ def _reel_promo_plan(
                 fixed_index,
                 target_x,
                 target_y,
+                allow_static=False,
                 duration=seg_duration,
                 variation_seed=stable_fingerprint({"window": window, "sources": [_source_id(item) for item in sources]}),
                 previous_movement=next((item["motion"]["movement"] for item in reversed(segments) if item.get("motion")), ""),

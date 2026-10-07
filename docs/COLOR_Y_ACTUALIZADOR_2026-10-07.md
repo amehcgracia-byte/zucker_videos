@@ -8,7 +8,7 @@ La corrección anterior añadía 6 unidades al objetivo de todas las cámaras. E
 
 La misma fuente y el mismo proyecto dieron luminancia 360 visible 18,22 y un ajuste nuevo limitado a 0,015. La diferencia entre la esfera completa y las vistas fue pequeña en este caso: el efecto dominante era el aclarado añadido y la intensidad de la corrección. Los balances de color y saturación también quedan acotados. Esto preserva el ambiente oscuro y reduce la amplificación del ruido; no recupera detalle que la cámara no haya grabado ni garantiza igualdad fotométrica entre encuadres de contenido diferente.
 
-El plan tenía 18 tomas de teléfono con `full_static`, además de 39 zooms y 58 tomas Sony sin movimiento artificial. Cuando se activa movimiento de cámaras fijas, el plan ya no selecciona `full_static`. Si el sujeto es incierto, usa zoom central pequeño; las cámaras declaradas estáticas también se reconocen. Las tomas de una cámara handheld no pasan automáticamente a ser estáticas.
+El plan tenía 18 tomas de teléfono con `full_static`, además de 39 zooms y 58 tomas Sony sin movimiento artificial. Cuando se activa movimiento de cámaras fijas, los planes YouTube y Reel ya no seleccionan `full_static`. Si el sujeto es incierto, usa zoom central pequeño; las cámaras declaradas estáticas también se reconocen. Las tomas de una cámara handheld no pasan automáticamente a ser estáticas.
 
 ## Interfaz
 
@@ -30,4 +30,4 @@ Referencias del protocolo: https://docs.github.com/en/rest/releases/releases y h
 
 ## Validación
 
-120 pruebas locales pasaron; dos pruebas específicas del helper Windows se omiten en macOS y se han añadido al workflow de Windows. Las pruebas incluyen descarga dañada, no downgrade, ZIP inseguro/incompleto, consentimiento, trabajo activo, host no permitido, preparación de staging y sustitución/rollback del helper macOS. Se compararon imágenes antes/después de la fuente real 360 y se verificó el botón superior en el navegador. No se ha repetido el montaje completo de la canción para esta comparación.
+121 pruebas locales pasaron; dos pruebas específicas del helper Windows se omiten en macOS y se han añadido al workflow de Windows. Las pruebas incluyen descarga dañada, no downgrade, ZIP inseguro/incompleto, consentimiento, trabajo activo, host no permitido, preparación de staging y sustitución/rollback del helper macOS. Se compararon imágenes antes/después de la fuente real 360 y se verificó el botón superior en el navegador. No se ha repetido el montaje completo de la canción para esta comparación.

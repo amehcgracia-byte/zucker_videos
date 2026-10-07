@@ -139,3 +139,13 @@ def test_enabled_motion_uses_safe_zoom_without_subject_evidence():
         assert motion['zoom_start']!=motion['zoom_end']
         assert max(motion['zoom_start'],motion['zoom_end'])<=1.10
         assert _ken_burns_filter(motion,'youtube',4)
+
+
+def test_reel_enabled_fixed_motion_does_not_select_holds():
+    from core.stages.edit import _reel_promo_plan
+    sources=[{'path':f'/tmp/IMG_{index}.MOV','filename':f'IMG_{index}.MOV','duration_sec':60,'camera_role':'fixed_rear'} for index in range(2)]
+    plan=_reel_promo_plan({'platform':'reel','window':{'title':'Song','start_sec':0,'duration_sec':30},'sources':sources},
+                          {'bars_sec':[]},{'wizard':{'reel_duration_sec':30,'fixed_rear_motion':True}})
+    assert plan['segments']
+    assert all(segment.get('motion',{}).get('movement')!='full_static' for segment in plan['segments'])
+    assert all(segment.get('motion') for segment in plan['segments'])
