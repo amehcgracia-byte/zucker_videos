@@ -129,3 +129,13 @@ def test_motion_is_applied_once_with_constant_output_geometry():
     assert graph.count("zoompan=") == 1
     assert "eval=frame" not in graph
     assert "fade=" not in graph
+
+
+def test_enabled_motion_uses_safe_zoom_without_subject_evidence():
+    from core.stages.edit import _flat_motion_camera, _ken_burns_motion
+    assert _flat_motion_camera({'camera_role':'handheld','is_static_camera':True,'filename':'Sony.mp4'})
+    for index in range(30):
+        motion=_ken_burns_motion(index,subject_confidence=0,allow_static=False)
+        assert motion['zoom_start']!=motion['zoom_end']
+        assert max(motion['zoom_start'],motion['zoom_end'])<=1.10
+        assert _ken_burns_filter(motion,'youtube',4)

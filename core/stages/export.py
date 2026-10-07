@@ -93,7 +93,7 @@ SPHERICAL_NORMAL_FOV_MIN = NORMAL_FOV_MIN
 SPHERICAL_NORMAL_FOV_MAX = NORMAL_FOV_MAX
 SPHERICAL_MAX_HOLD_YAW_DEG = 16.0
 INTRO_DURATION = 10.0
-COLOR_PROFILE_VERSION = 5
+COLOR_PROFILE_VERSION = 6
 REEL_LETTERBOX_CACHE_VERSION = 2
 REEL_LETTERBOX_BLUR_SIGMA = 18.0
 # Reel logos are composed after the base export by Overlay & Captions. Keep
@@ -5012,13 +5012,13 @@ def _concat_file_line(path: Path) -> str:
     return "file '{}'\n".format(path.as_posix().replace("'", "'\\''"))
 
 
-COLOR_REFERENCE_PRIORITY = ("nikon", "360", "sony", "iphone")
+COLOR_REFERENCE_PRIORITY = ("sony", "nikon", "iphone", "360", "other")
 
 
 def _color_camera_kind(record: dict[str, Any]) -> str:
     """Classify a source for the approved, deterministic reference order."""
     text = " ".join(str(record.get(key) or "") for key in (
-        "camera_id", "camera_name", "camera", "camera_label", "filename", "path", "source_path"
+        "camera_id", "camera_name", "camera", "camera_label", "camera_make", "camera_model", "filename", "path", "source_path"
     )).lower()
     projection = str(record.get("projection") or (record.get("probe") or {}).get("projection") or "").lower()
     if "nikon" in text:
@@ -5036,34 +5036,16 @@ def _color_reference_record(
     records: list[dict[str, Any]],
     measured_records: list[tuple[dict[str, Any], dict[str, Any]]] | None = None,
 ) -> dict[str, Any] | None:
-    """Choose the brightest usable camera, with Nikon as the tie-break priority."""
-    priority = {kind: index for index, kind in enumerate(COLOR_REFERENCE_PRIORITY)}
-    if measured_records:
-        candidates = []
-        for record, profile in measured_records:
-            kind = _color_camera_kind(record)
-            if kind == "other" or profile.get("luma") is None:
-                continue
-            candidates.append((record, profile, kind))
-        safe = [
-            item for item in candidates
-            if float(item[1].get("white_clip_ratio") or 0.0) <= 0.05
-            and float(item[1].get("black_clip_ratio") or 0.0) <= 0.05
-        ]
-        pool = safe or candidates
-        if pool:
-            return max(
-                pool,
-                key=lambda item: (
-                    float(item[1].get("luma") or 0.0),
-                    -priority.get(item[2], 99),
-                ),
-            )[0]
-    present = {_color_camera_kind(record): record for record in records if _color_camera_kind(record) != "other"}
+    """Prefer the Sony reference, rather than chasing the brightest camera."""
+    available = [(record, profile) for record, profile in (measured_records or [])
+                 if profile.get("luma") is not None]
+    candidates = [record for record, _ in available] if available else records
     for kind in COLOR_REFERENCE_PRIORITY:
-        if kind in present:
-            return present[kind]
-    return records[0] if records else None
+        for record in candidates:
+            if _color_camera_kind(record) == kind:
+                return record
+    return candidates[0] if candidates else None
+
 
 def _color_profile_artifact(project: Project) -> Path:
     return project.cache_dir / "color_profiles.json"
@@ -5096,7 +5078,9 @@ def _color_profiles_for_segments(project: Project, segments: list[dict[str, Any]
             progress_callback(3 + 4 * index / max(1, len(by_clip)),
                 ProgressDetail(f"Export: measuring fixed colour profile {index + 1}/{len(by_clip)} — {Path(source_path).name}",
                                task_id=f"colour-{index}", label=f"Colour analysis: {Path(source_path).name}", percent=None))
-        profile, warning = cached_or_measure_clip_color(project, source_path, record=record)
+        camera_segments = [item for item in segments if str(item.get("clip_path") or "") == clip_path]
+        samples = _visible_color_samples(project, camera_segments) if _color_camera_kind(record) == "360" else None
+        profile, warning = cached_or_measure_clip_color(project, source_path, record=record, samples=samples)
         if warning:
             warnings.append(warning)
         profile = dict(profile)
@@ -5112,26 +5096,22 @@ def _color_profiles_for_segments(project: Project, segments: list[dict[str, Any]
         return {path: {} for path in measured}
     measured_records = [(record, measured[clip_path]) for clip_path, (record, _source_path) in by_clip.items() if clip_path in measured]
     ref_record = _color_reference_record([record for record, _ in by_clip.values()], measured_records)
-    ref_kind = _color_camera_kind(ref_record or {})
     ref_profile = next(
         (profile for record, profile in measured_records if record is ref_record),
         valid[0],
     )
     reference_for_matching = dict(ref_profile)
-    # Lift all cameras slightly while matching to the brightest usable source.
-    reference_for_matching["luma"] = min(235.0, float(ref_profile.get("luma") or 128.0) + 6.0)
-    if float(ref_profile.get("white_clip_ratio") or 0) > 0.05 or float(ref_profile.get("black_clip_ratio") or 0) > 0.05 or not 35 <= float(ref_profile.get("luma") or 0) <= 220:
-        warnings.append(
-            f"La cámara de referencia de color ({ref_profile.get('camera_id')}) presenta exposición potencialmente defectuosa; se usa por prioridad fija ({ref_kind}), sin sustituirla automáticamente."
-        )
+    # Preserve reference exposure; matching must not brighten every camera.
+    if not 10 <= float(ref_profile.get("luma") or 0) <= 245:
+        warnings.append("La referencia tiene una luminosidad extrema; se limita la corrección de las otras cámaras.")
     corrected: dict[str, dict[str, Any]] = {}
     for path, profile in measured.items():
-        corrected[path] = color_correction_for_profile(profile, reference_for_matching)
+        corrected[path] = {} if profile is ref_profile else color_correction_for_profile(profile, reference_for_matching)
     artifact = {
         "version": COLOR_PROFILE_VERSION,
         "reference_priority": list(COLOR_REFERENCE_PRIORITY),
         "reference_camera": ref_profile.get("camera_id"),
-        "reference_brightness_lift": 6.0,
+        "reference_brightness_lift": 0.0,
         "profiles": {path: profile for path, profile in measured.items()},
         "corrections": corrected,
     }
@@ -5143,10 +5123,25 @@ def _color_profiles_for_segments(project: Project, segments: list[dict[str, Any]
     return corrected
 
 
-def cached_or_measure_clip_color(project: Project, path: str, record: dict[str, Any] | None = None) -> tuple[dict[str, float], str | None]:
+def _visible_color_samples(project: Project, segments: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """Sample the views used on screen, not dark unused parts of the sphere."""
+    views = [item for item in segments if item.get("spherical_shot") and item["spherical_shot"].get("type") != "planet"]
+    if not views:
+        return None
+    selected = [views[index * (len(views) - 1) // 4] for index in range(5)]
+    samples = []
+    for segment in selected:
+        info = _segment_source_info(project, segment)
+        shot = {**segment["spherical_shot"], "runtime_motion_enabled": False}
+        samples.append({"start": float(segment.get("clip_start_sec") or 0) + float(segment.get("duration_sec") or 0) / 2,
+                        "filter": _export_source_filter(info.get("probe") or {}, shot)})
+    return samples
+
+
+def cached_or_measure_clip_color(project: Project, path: str, record: dict[str, Any] | None = None, samples: list[dict[str, Any]] | None = None) -> tuple[dict[str, float], str | None]:
     """Return cached color profile or measure bounded samples."""
     record = record or next((item for item in project.data.get("inputs", {}).get("videos", []) if path in {item.get("path"), (item.get("normalized") or {}).get("path")}), {})
-    key = _color_source_key(project, record, path)
+    key = stable_fingerprint({"source": _color_source_key(project, record, path), "samples": samples})[:32]
     cache_path = global_cache_root() / "color" / f"{key}.json"
     if cache_path.exists():
         try:
@@ -5156,7 +5151,7 @@ def cached_or_measure_clip_color(project: Project, path: str, record: dict[str, 
                 return {key: float(value) for key, value in cached.items() if isinstance(value, (int, float))}, None
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             pass
-    profile, warning = measure_clip_color(path)
+    profile, warning = measure_clip_color(path, samples=samples) if samples else measure_clip_color(path)
     if profile:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         with cache_path.open("w", encoding="utf-8") as fh:
@@ -5173,14 +5168,14 @@ def _color_cache_key(project: Project, path: str) -> str:
     return stable_fingerprint({"path": str(Path(path).expanduser().resolve())})[:24]
 
 
-def measure_clip_color(path: str) -> tuple[dict[str, float], str | None]:
+def measure_clip_color(path: str, *, samples: list[dict[str, Any]] | None = None) -> tuple[dict[str, float], str | None]:
     """Measure luma, contrast and chroma over five fixed samples."""
     try:
         duration = _media_duration(path)
     except Exception as exc:
         return {}, t("color_skipped", filename=Path(path).name, reason=str(exc))
     fields: dict[str, list[float]] = {key: [] for key in ("YAVG", "YMIN", "YMAX", "SATAVG", "UAVG", "VAVG")}
-    for command in color_sample_commands(path, duration):
+    for command in color_sample_commands(path, duration, samples=samples):
         try:
             result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=30)
         except subprocess.TimeoutExpired:
@@ -5202,12 +5197,14 @@ def measure_clip_color(path: str) -> tuple[dict[str, float], str | None]:
     }, None
 
 
-def color_sample_commands(path: str, duration: float) -> list[list[str]]:
+def color_sample_commands(path: str, duration: float, *, samples: list[dict[str, Any]] | None = None) -> list[list[str]]:
     """Build bounded color-sampling ffmpeg commands."""
     window = min(2.0, max(0.25, duration / 5.0))
     commands: list[list[str]] = []
-    for fraction in (0.10, 0.30, 0.50, 0.70, 0.90):
-        start = max(0.0, min(duration - window, duration * fraction))
+    samples = samples or [{"start": max(0.0, min(duration - window, duration * fraction)), "filter": ""}
+                          for fraction in (0.10, 0.30, 0.50, 0.70, 0.90)]
+    for sample in samples:
+        start = max(0.0, min(duration - window, float(sample["start"])))
         commands.append(
             [
                 _ffmpeg_path(),
@@ -5220,7 +5217,7 @@ def color_sample_commands(path: str, duration: float) -> list[list[str]]:
                 "-i",
                 path,
                 "-vf",
-                "signalstats,metadata=print",
+                ",".join(part for part in ("fps=2", sample.get("filter"), "scale=320:-2,signalstats,metadata=print") if part),
                 "-an",
                 "-f",
                 "null",
@@ -5282,16 +5279,16 @@ def color_correction_for_profile(
             "red_balance": 0.0,
             "blue_balance": 0.0,
         }
+    sphere = profile.get("camera_kind") == "360"
+    limit_up = 0.015 if sphere else 0.035
+    limit_down = -0.035 if sphere else -0.05
     return {
-        # Strong enough to be visible across cameras, but still bounded so the
-        # source look and dynamic range remain intact.
-        "brightness_adjust": max(-0.12, min(0.12, (target_luma - luma) / 255.0 * 0.90)),
-        "saturation_adjust": max(0.86, min(1.16, 1.0 + (target_sat - sat) / 255.0 * 1.20)),
-        # U/V are the measured chroma axes.  The wider bound and multiplier
-        # are intentional: white-balance mismatch was previously imperceptible
-        # even when the exposure correction was technically non-zero.
-        "red_balance": max(-0.12, min(0.12, (target_v - float(profile.get("v_mean") or 128.0)) / 128.0 * 0.45)),
-        "blue_balance": max(-0.12, min(0.12, (target_u - float(profile.get("u_mean") or 128.0)) / 128.0 * 0.45)),
+        # Small additive lifts protect shadows and compression noise, especially 360.
+        "brightness_adjust": max(limit_down, min(limit_up, (target_luma - luma) / 255.0 * 0.35)),
+        "saturation_adjust": max(0.95, min(1.05, 1.0 + (target_sat - sat) / 255.0 * 0.60)),
+        # Bound chroma shifts so coloured stage lights retain their appearance.
+        "red_balance": max(-0.025, min(0.025, (target_v - float(profile.get("v_mean") or 128.0)) / 128.0 * 0.20)),
+        "blue_balance": max(-0.025, min(0.025, (target_u - float(profile.get("u_mean") or 128.0)) / 128.0 * 0.20)),
     }
 
 
