@@ -33,7 +33,7 @@ Una muestra de dos segundos del proceso instalado durante Korven-s discussion re
 ## Cambios aplicados
 
 - Publicar segmentos mediante rename en el mismo volumen; copiar únicamente si el sistema devuelve EXDEV. También en reparaciones.
-- Omitir el hash inmediato redundante después de escribir o comprobar el sello: la copia independiente de concat sigue verificándose íntegramente. No memorizar hashes entre exportaciones: exFAT tiene fechas con resolución insuficiente para detectar todas las modificaciones por tamaño/fecha.
+- Omitir el hash inmediato redundante después de escribir o comprobar el sello: la copia independiente de concat sigue verificándose íntegramente. No memorizar hashes entre exportaciones: se observaron archivos con mtime/ctime en segundos enteros, insuficientes para detectar todas las modificaciones por tamaño/fecha. La inspección actual identifica RAWVideos como USB/UFSD_NTFS; no se presupone su tipo a partir de las fechas.
 - Compartir calidad visual por fuente; migrar la caché previa sin analizar otra vez. Recalcular tiempos master desde los tiempos de clip para cada proyecto, evitando reutilizar offsets de otra canción.
 - Temporales de calidad en el almacenamiento seleccionado.
 - Reutilizar rejilla de proyección y array de salida. Comparación contra código anterior en nueve poses: mapas y píxeles idénticos.
