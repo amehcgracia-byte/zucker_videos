@@ -37,20 +37,31 @@ def test_export_proxy_reused_across_projects(tmp_path, monkeypatch):
 
 def test_review_proxy_reused_across_projects(tmp_path, monkeypatch):
     from core import shot_review, normalization
+    from core.storage import cache_file_signature, cache_mtime_ns
+    import hashlib
     source = tmp_path / 'source.mp4'
     source.write_bytes(b'camera')
     monkeypatch.setattr(normalization, 'global_cache_root', lambda: tmp_path/'shared')
-    monkeypatch.setattr(export, '_media_duration', lambda _: 10)
-    calls = []
-    def encode(command, *_):
-        calls.append(command)
-        Path(command[-1]).write_bytes(b'completed proxy')
-    monkeypatch.setattr(export, '_run_ffmpeg_progress', encode)
+    key = hashlib.sha256(f"{cache_file_signature(source)['path']}|{source.stat().st_size}|{cache_mtime_ns(source)}|equirect|190.000|1".encode()).hexdigest()[:24]
+    cached = tmp_path/'shared'/'spherical_analysis'/f'equirect-{key}.mp4'
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(b'completed proxy')
     segment = {'source_path': str(source), 'spherical_shot': {'type': 'singer'}, 'projection': 'equirect'}
     first = shot_review._spherical_analysis_source(Project(tmp_path/'one', {}), segment)
     second = shot_review._spherical_analysis_source(Project(tmp_path/'two', {}), segment)
     assert first == second
-    assert len(calls) == 1
+    assert first == str(cached)
+
+
+def test_cold_review_source_does_not_encode_a_complete_movie(tmp_path, monkeypatch):
+    from core import shot_review, normalization
+    source = tmp_path/'source.mp4'
+    source.write_bytes(b'camera')
+    monkeypatch.setattr(normalization,'global_cache_root',lambda: tmp_path/'shared')
+    monkeypatch.setattr(export,'_run_ffmpeg_progress',lambda *args: (_ for _ in ()).throw(AssertionError('Whole-movie transcode')))
+    segment = {'source_path':str(source),'spherical_shot':{'type':'singer'},'projection':'equirect'}
+    assert shot_review._spherical_analysis_source(Project(tmp_path/'one',{}),segment) == str(source)
+    assert not (tmp_path/'shared').exists()
 
 
 def test_preparation_skips_unused_proxy_and_deduplicates_needed_source(tmp_path, monkeypatch):

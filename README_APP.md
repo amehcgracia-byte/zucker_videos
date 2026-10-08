@@ -105,3 +105,7 @@ Las versiones anteriores sin actualizador necesitan una primera actualización m
 ## Color y movimiento
 
 La Sony es la primera referencia de color disponible; no se añade un aclarado global. La 360 se mide usando vistas del montaje y su subida de luminosidad es pequeña para proteger sombras y ruido. La corrección se mantiene fija por cámara durante el montaje. Si está activado el movimiento de cámaras fijas, las tomas no seleccionan una pausa estática; sin evidencia de un sujeto se usa un zoom central leve.
+
+## Preparación de fotos de revisión
+
+Desde 2.5.8, una grabación 360 sin caché previa no se convierte entera para preparar las fotos de los cortes: se extraen los instantes necesarios del original. Las cachés anteriores válidas se reutilizan. Se preparan hasta dos fotos simultáneas, con bloqueo por archivo para evitar que la revisión y las solicitudes de vista previa repitan trabajo. En macOS se intenta decodificar por VideoToolbox y se vuelve a software si falla. Cada foto terminada actualiza el progreso real; el orden de los cortes y el render final se conservan.

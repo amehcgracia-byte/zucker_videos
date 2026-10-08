@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import subprocess
 import tempfile
 import threading
@@ -25,7 +26,7 @@ from core.spherical_view import (
     normalize_projection_preset,
     view_parameters,
 )
-from core.stages.base import ProgressCallback, ProgressDetail, artifact_path
+from core.stages.base import ProgressCallback, artifact_path
 from core.stages.cut import load_coverage
 from core.stages.edit import IPHONE_CROP_TOP_LIMIT, SPHERICAL_NORMAL_FOV_MIN, _camera_id
 from core.reel_framing import subject_box_for_window
@@ -33,10 +34,7 @@ from core.reel_framing import subject_box_for_window
 
 LOGGER = logging.getLogger(__name__)
 _RENDER_STATUS_LOCK = threading.RLock()
-_SPHERICAL_PROXY_LOCK = threading.RLock()
 SPHERICAL_ANALYSIS_PROXY_VERSION = 1
-SPHERICAL_ANALYSIS_WIDTH = 960
-SPHERICAL_ANALYSIS_HEIGHT = 480
 
 _REVIEW_SHOT_LABELS = {
     "singer": "Cantante",
@@ -121,12 +119,10 @@ def _review_segments(project: Project) -> list[dict[str, Any]]:
 
 
 def _spherical_analysis_source(project: Project, segment: dict[str, Any], progress_callback: ProgressCallback | None = None) -> str:
-    """Return a cached low-resolution equirectangular source for one 360 clip.
+    """Reuse a pre-existing sphere proxy; never transcode a whole clip for photos.
 
-    Decoding a 5K/6K original once per thumbnail is the dominant Review cost.
-    This proxy preserves the sphere (it is deliberately *not* flat), so each
-    thumbnail still applies its own authored yaw/pitch/FOV. Export continues
-    to read the original camera file.
+    Export still uses its own original-source policy. A cold review source is
+    decoded only at the exact requested thumbnail times.
     """
     source = _source_for(segment)
     projection = str(segment.get("projection") or "").lower()
@@ -152,45 +148,12 @@ def _spherical_analysis_source(project: Project, segment: dict[str, Any], progre
     target = global_cache_root() / "spherical_analysis" / f"equirect-{key}.mp4"
     if legacy_target.is_file() and legacy_target.stat().st_size > 0:
         return str(legacy_target)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with _SPHERICAL_PROXY_LOCK:
-        if target.exists() and target.stat().st_size > 0:
-            return str(target)
-        ffmpeg = locate_executable("ffmpeg") or "ffmpeg"
-        tmp = target.with_suffix(".tmp.mp4")
-        if projection == "raw_insv":
-            source_filter = (
-                f"v360=input=dfisheye:output=e:ih_fov={insv_fov:.3f}:iv_fov={insv_fov:.3f}:interp=lanczos,"
-            )
-        else:
-            source_filter = ""
-        filter_graph = (
-            f"{source_filter}scale={SPHERICAL_ANALYSIS_WIDTH}:{SPHERICAL_ANALYSIS_HEIGHT}:"
-            "force_original_aspect_ratio=decrease,"
-            f"pad={SPHERICAL_ANALYSIS_WIDTH}:{SPHERICAL_ANALYSIS_HEIGHT}:(ow-iw)/2:(oh-ih)/2,"
-            "format=yuv420p"
-        )
-        command = [
-            str(ffmpeg), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-            "-i", str(source_path), "-map", "0:v:0", "-an",
-            "-vf", filter_graph,
-            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
-            "-pix_fmt", "yuv420p", "-progress", "pipe:1", "-nostats", str(tmp),
-        ]
-        try:
-            from core.stages.export import _media_duration, _run_ffmpeg_progress
-            def proxy_progress(percent: int, detail: str) -> None:
-                if progress_callback:
-                    progress_callback(0, ProgressDetail(detail, task_id=f"review-source-{key}",
-                        label=f"Preparing 360 review source {source_path.name}", percent=percent))
-            _run_ffmpeg_progress(command, _media_duration(str(source_path)),
-                                 f"Preparing 360 review source {source_path.name}", proxy_progress)
-            if not tmp.exists() or tmp.stat().st_size <= 0:
-                raise ThumbnailRenderError("Could not create the 360 analysis proxy")
-            os.replace(tmp, target)
-        finally:
-            tmp.unlink(missing_ok=True)
-    return str(target)
+    # Existing sphere proxies remain useful, but generating an entire movie
+    # solely to read a few review frames can cost longer than the edit itself.
+    # Cold sources are seeked directly at each requested timestamp instead.
+    if target.is_file() and target.stat().st_size > 0:
+        return str(target)
+    return source
 
 
 def _review_pose_for_cache(segment: dict[str, Any]) -> dict[str, Any]:
@@ -777,6 +740,67 @@ def _legacy_review_assets(root: str) -> dict[str, Path]:
     return {path.name: path for path in Path(root).glob("*/shot-*.jpg") if path.parent.name != "assets-v2"}
 
 
+def _run_thumbnail_command(command: list[str]) -> None:
+    """Prefer Apple's decoder for seeked video frames; retain a CPU fallback."""
+    source = command[command.index("-i") + 1]
+    if sys.platform == "darwin" and Path(source).suffix.lower() in {".mp4", ".mov", ".m4v", ".insv"}:
+        accelerated = list(command)
+        at = accelerated.index("-i")
+        accelerated[at:at] = ["-hwaccel", "videotoolbox"]
+        try:
+            subprocess.run(accelerated, check=True, capture_output=True, text=True, timeout=45)
+            if Path(command[-1]).is_file() and Path(command[-1]).stat().st_size > 0:
+                return
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            Path(command[-1]).unlink(missing_ok=True)
+        LOGGER.info("Hardware thumbnail decode unavailable; retrying with software")
+    subprocess.run(command, check=True, capture_output=True, text=True, timeout=45)
+
+
+_THUMBNAIL_LOCKS = [threading.Lock() for _ in range(64)]
+
+
+def _render_thumbnail_to_path(project, segment, source, timestamp, output, root, ffmpeg, color_profile):
+    # API preview requests and the foreground pipeline can target the same
+    # asset. Check again after acquiring its bounded, process-local lock.
+    with _THUMBNAIL_LOCKS[int(hashlib.sha256(str(output).encode()).hexdigest()[:8], 16) % len(_THUMBNAIL_LOCKS)]:
+        if output.is_file() and output.stat().st_size > 0:
+            return
+        render_source = source
+        render_segment = dict(segment)
+        if segment.get("spherical_shot"):
+            render_source = _spherical_analysis_source(project, segment)
+            if render_source != source:
+                # The cached analysis source is equirectangular even when the
+                # original was raw INSV; never apply the dfisheye step twice.
+                render_segment["source_path"] = render_source
+                render_segment["clip_path"] = render_source
+                render_segment["projection"] = "equirect"
+        if not output.exists():
+            _set_render_status(root, output.name, {"state": "rendering"})
+            temporary_thumbnail = output.with_name(f"{output.stem}.{threading.get_ident()}.tmp.jpg")
+            command = [
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", f"{timestamp:.3f}",
+                "-i", render_source, "-frames:v", "1", "-threads", "1",
+                "-vf", _thumbnail_filter(render_segment, color_profile),
+                "-q:v", "5", "-y", str(temporary_thumbnail),
+            ]
+            try:
+                _run_thumbnail_command(command)
+                if not temporary_thumbnail.exists() or temporary_thumbnail.stat().st_size == 0:
+                    raise ThumbnailRenderError("FFmpeg completed without producing a JPEG")
+                os.replace(temporary_thumbnail, output)
+                _set_render_status(root, output.name, {"state": "ready"})
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ThumbnailRenderError) as exc:
+                temporary_thumbnail.unlink(missing_ok=True)
+                detail = getattr(exc, "stderr", None) or str(exc)
+                thumbnail_error = str(detail).strip() or "FFmpeg failed to render the thumbnail"
+                _set_render_status(root, output.name, {"state": "failed", "error": thumbnail_error})
+                if isinstance(exc, ThumbnailRenderError):
+                    raise
+                raise ThumbnailRenderError(thumbnail_error) from exc
+
+
 def review_items(
     project: Project,
     *,
@@ -809,10 +833,8 @@ def review_items(
         color_profiles = _color_profiles_for_segments(project, segments, [])
     else:
         color_profiles = {}
+    pending = []
     for index, segment in enumerate(segments):
-        if progress_callback:
-            progress_callback(int(100 * index / max(1, len(segments))),
-                              f"Preparing review thumbnail {index + 1}/{len(segments)}")
         source = _source_for(segment)
         duration = max(0.1, float(segment.get("duration_sec") or 0.1))
         clip_start = float(segment.get("clip_start_sec") or 0.0)
@@ -833,40 +855,10 @@ def review_items(
         should_render = render_missing and (render_indices is None or index in render_indices)
         thumbnail_error = None
         thumbnail_state = "ready" if output.exists() else "missing"
-        render_source = source
-        render_segment = dict(segment)
-        if should_render and not output.exists() and segment.get("spherical_shot"):
-            render_source = _spherical_analysis_source(project, segment, progress_callback)
-            if render_source != source:
-                # The cached analysis source is equirectangular even when the
-                # original was raw INSV; never apply the dfisheye step twice.
-                render_segment["source_path"] = render_source
-                render_segment["clip_path"] = render_source
-                render_segment["projection"] = "equirect"
-        if not output.exists() and source and should_render:
-            _set_render_status(root, output.name, {"state": "rendering"})
-            temporary_thumbnail = output.with_name(f"{output.stem}.{threading.get_ident()}.tmp.jpg")
-            command = [
-                ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", f"{timestamp:.3f}",
-                "-i", render_source, "-frames:v", "1", "-threads", "1",
-                "-vf", _thumbnail_filter(render_segment, color_profiles.get(str(segment.get("clip_path")), {})),
-                "-q:v", "5", "-y", str(temporary_thumbnail),
-            ]
-            try:
-                subprocess.run(command, check=True, capture_output=True, text=True, timeout=45)
-                if not temporary_thumbnail.exists() or temporary_thumbnail.stat().st_size == 0:
-                    raise ThumbnailRenderError("FFmpeg completed without producing a JPEG")
-                os.replace(temporary_thumbnail, output)
-                _set_render_status(root, output.name, {"state": "ready"})
-                thumbnail_state = "ready"
-            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ThumbnailRenderError) as exc:
-                temporary_thumbnail.unlink(missing_ok=True)
-                detail = getattr(exc, "stderr", None) or str(exc)
-                thumbnail_error = str(detail).strip() or "FFmpeg failed to render the thumbnail"
-                _set_render_status(root, output.name, {"state": "failed", "error": thumbnail_error})
-                if isinstance(exc, ThumbnailRenderError):
-                    raise
-                raise ThumbnailRenderError(thumbnail_error) from exc
+        if should_render and not output.exists() and source:
+            pending.append((index, segment, source, timestamp, output,
+                            color_profiles.get(str(segment.get("clip_path")), {})))
+            thumbnail_state = "rendering"
         elif not output.exists():
             saved = render_status.get(output.name) or {}
             thumbnail_state = str(saved.get("state") or "missing")
@@ -901,6 +893,37 @@ def review_items(
             "keep": True,
             "no_alternative": index in unavailable,
         })
+    if pending:
+        completed = len(items) - len(pending)
+        def publish_ready(item):
+            nonlocal completed
+            index, segment, source, timestamp, output, profile = item
+            items[index].update(thumbnail=f"/api/v1/wizard/review/thumbnail/{signature}/{output.name}",
+                                thumbnail_status="ready", thumbnail_error=None)
+            completed += 1
+            if progress_callback:
+                progress_callback(int(100 * completed / max(1, len(items))),
+                                  f"Review thumbnails ready: {completed}/{len(items)}")
+        if progress_callback:
+            progress_callback(int(100 * completed / max(1, len(items))),
+                              f"Preparing {len(pending)} review thumbnails")
+        def render_one(item):
+            index, segment, source, timestamp, output, profile = item
+            _render_thumbnail_to_path(project, segment, source, timestamp, output, root, ffmpeg, profile)
+        if len(pending) == 1:
+            render_one(pending[0])
+            publish_ready(pending[0])
+        else:
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="review-frame") as pool:
+                futures = {pool.submit(render_one, item):item for item in pending}
+                try:
+                    for future in as_completed(futures):
+                        future.result()
+                        publish_ready(futures[future])
+                except BaseException:
+                    for future in futures:
+                        future.cancel()
+                    raise
     if progress_callback:
         progress_callback(100, f"Review thumbnails ready: {len(items)}/{len(segments)}")
     return items
