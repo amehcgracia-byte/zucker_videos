@@ -30,6 +30,7 @@ let statusPollGeneration = 0;
 let prepareHandoffInProgress = false;
 let appConfig = { dev: true, desktop: false };
 let sphericalProjectSettings = null;
+let lastSphericalSetup = {};
 let progressStartedAt = null;
 let progressSamples = [];
 let progressFloor = 0;
