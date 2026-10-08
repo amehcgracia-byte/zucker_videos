@@ -99,7 +99,7 @@ def test_retry_budget_is_shared_with_later_repair_of_same_segment(tmp_path):
 
 @pytest.mark.parametrize('spherical',[False,True])
 def test_real_renderer_retry_keeps_recipe_and_forces_cpu_encoder_and_decoder(tmp_path,monkeypatch,spherical):
-    project=SimpleNamespace(data={'settings':{}},artifacts_dir=tmp_path)
+    project=SimpleNamespace(data={'settings':{'export':{'spherical_remap_backend':'metal'}}},artifacts_dir=tmp_path)
     segment={'duration_sec':1,'clip_start_sec':13.731,'source_path':'source.mp4'}
     if spherical:segment['spherical_shot']={'type':'singer','movement':'pan_left','runtime_motion_enabled':True,'yaw':10,'pitch':0,'fov':80}
     source={'source_path':'source.mp4','probe':{'projection':'equirect' if spherical else 'flat','width':3840,'height':1920}}
@@ -125,6 +125,8 @@ def test_real_renderer_retry_keeps_recipe_and_forces_cpu_encoder_and_decoder(tmp
     if spherical:
         assert first[1]==second[1]
         assert second[2]['hardware_decode'] is False
+        assert first[2]['remap_backend'] == 'metal'
+        assert second[2].get('remap_backend', 'cpu') == 'cpu'
 
 
 def test_real_busy_child_without_frames_is_not_timed_out(tmp_path,monkeypatch):
@@ -149,8 +151,11 @@ def test_repeated_stale_frame_messages_do_not_defeat_watchdog(tmp_path,monkeypat
 
 def test_real_frame_progress_without_cpu_change_keeps_child_alive(tmp_path,monkeypatch):
     accelerated_watchdog(monkeypatch);events=[]
+    # Allow interpreter startup/scheduling after the heavy render tests. The
+    # stream still lasts longer than the timeout, so missing progress fails.
+    monkeypatch.setattr(watchdog, 'IDLE_TIMEOUT_SEC', 1.)
     token=watchdog._SCOPE.set({'record':events.append,'index':1,'attempt':0,'source':'frames','output':'frames'})
     try:
-        export._run_ffmpeg_progress([sys.executable,'-c','import time\nfor i in range(15):\n print("frame="+str(i),flush=True)\n time.sleep(.04)',str(tmp_path/'frames')],1,'frames',None)
+        export._run_ffmpeg_progress([sys.executable,'-c','import time\nfor i in range(40):\n print("frame="+str(i),flush=True)\n time.sleep(.04)',str(tmp_path/'frames')],1,'frames',None)
         assert not events
     finally:watchdog._SCOPE.reset(token)

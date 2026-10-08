@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import bisect
 import errno
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from contextlib import ExitStack
 import hashlib
 import os
 import re
@@ -677,6 +678,32 @@ def _segment_worker_count(project: Project, segment_count: int) -> int:
     return max(1, min(workers, segment_count or 1))
 
 
+def _verification_overlap_enabled(project: Project) -> bool:
+    """Opt-in measured pipeline; unknown or small memory retains serial checks."""
+    if not project.data.get("settings", {}).get("export", {}).get("overlap_segment_verification", False):
+        return False
+    try:
+        if sys.platform == "darwin":
+            memory = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], timeout=3))
+            if memory < 16 * 1024 ** 3:
+                return False
+            vm = subprocess.check_output(["vm_stat"], timeout=3, text=True)
+            page_size_match = re.search(r"page size of (\d+) bytes", vm)
+            if not page_size_match:
+                return False
+            pages = sum(int(match.group(1)) for label in ("free", "inactive", "speculative")
+                        if (match := re.search(rf"Pages {label}:\s+(\d+)", vm)))
+            available = pages * int(page_size_match.group(1))
+        else:
+            memory = int(os.sysconf("SC_PAGE_SIZE")) * int(os.sysconf("SC_PHYS_PAGES"))
+            meminfo = Path("/proc/meminfo").read_text()
+            match = re.search(r"MemAvailable:\s+(\d+) kB", meminfo)
+            available = int(match.group(1)) * 1024 if match else 0
+        return memory >= 16 * 1024 ** 3 and available >= 2 * 1024 ** 3
+    except (AttributeError, OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
 def _append_export_log(project: Project, message: str) -> None:
     """Append a compact timing line to the report-visible export log."""
     log_dir = project.cache_dir / "logs"
@@ -784,6 +811,8 @@ def _render_plan(
                     platform, video_bitrate, segment_overlay_config,
                     color_profiles.get(str(segment.get("clip_path")), {}), verify_motion,
                     aggregate_render_progress, progress_lock,
+                    **({"verification_submit": lambda finalize: submit_verification(index, segment, finalize)}
+                       if verification_executor is not None else {}),
                 )
             except BaseException as exc:
                 with failure_lock:
@@ -811,7 +840,35 @@ def _render_plan(
                 detail.aggregate_percent = percent
             progress_callback(percent, detail)
         futures: dict[Any, tuple[int, dict[str, Any]]] = {}
-        with ThreadPoolExecutor(max_workers=segment_workers) as executor:
+        verification_slots = threading.BoundedSemaphore(2)
+        def submit_verification(index, segment, finalize):
+            # At most one active verification and one queued: never retain an
+            # unbounded backlog of decoders or allow it to hide a failed shot.
+            while not verification_slots.acquire(timeout=0.1):
+                if render_aborted.is_set():
+                    raise RuntimeError("Segment verification stopped after another segment failed")
+            def verify():
+                try:
+                    if render_aborted.is_set():
+                        raise RuntimeError("Segment verification stopped after another segment failed")
+                    return finalize()
+                except BaseException as exc:
+                    with failure_lock:
+                        if not first_failure:
+                            first_failure.append((index, segment, exc))
+                        render_aborted.set()
+                    raise
+                finally:
+                    verification_slots.release()
+            try:
+                return verification_executor.submit(verify)
+            except BaseException:
+                verification_slots.release()
+                raise
+        with ExitStack() as stack:
+            verification_executor = (stack.enter_context(ThreadPoolExecutor(max_workers=1))
+                                     if _verification_overlap_enabled(project) else None)
+            executor = stack.enter_context(ThreadPoolExecutor(max_workers=segment_workers))
             # Queue long shots first; completed workers immediately take the
             # next shot. Original indices still determine the final edit order.
             scheduled = sorted(enumerate(render_segments, start=1),
@@ -825,6 +882,8 @@ def _render_plan(
                 index, completed_segment = futures[future]
                 try:
                     result = future.result()
+                    if isinstance(result, Future):
+                        result = result.result()
                     results.append(result)
                     _append_export_log(
                         project,
@@ -2347,7 +2406,8 @@ def _render_segment(
             run_reprojected_command(command, str(source["source_path"]),
                 (int(segment_probe["width"]), int(segment_probe["height"])),
                 float(segment["clip_start_sec"]), frame_count, spherical_shot, progress_callback,
-                pose_sampler=sampler, **({"hardware_decode": False} if force_cpu else {}))
+                pose_sampler=sampler, **({"hardware_decode": False} if force_cpu else {}),
+                **({"remap_backend": "metal"} if not force_cpu and project.data.get("settings", {}).get("export", {}).get("spherical_remap_backend") == "metal" else {}))
         else:
             _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
 
@@ -2449,7 +2509,8 @@ def _render_segment_job(
     verify_motion: bool,
     progress_callback: ProgressCallback,
     progress_lock: threading.Lock,
-) -> dict[str, Any]:
+    verification_submit: Any = None,
+) -> dict[str, Any] | Future:
     """Render and verify one segment; safe to run in an export worker."""
     started = time.perf_counter()
     segment_duration = max(0.1, float(segment["duration_sec"]))
@@ -2530,51 +2591,55 @@ def _render_segment_job(
         if rendered_from == "proxy":
             local_warnings.append(f"Used proxy fallback for {label}")
     ffmpeg_sec = time.perf_counter() - ffmpeg_started
-    verify_started = time.perf_counter()
-    if not cached:
-        # A fresh segment is verified before it enters the reusable cache.
-        # Replaying the expensive frame probes for an already-attested cache
-        # entry made every subsequent export needlessly slow.
-        _verify_segment_frame_duration(segment_path, _segment_frame_count(segment), label)
-        if verify_motion and _segment_requires_motion_verification(segment):
-            command_line = _verify_or_rebuild_segment(
-                project, segment, master_path, segment_path,
-                temp_dir / f"segment-{index:04d}.mp4", platform, video_bitrate,
-                overlay_config, color_profile, segment_progress,
-                intro_fade, outro_fade, False, False, local_warnings,
-                command_line, segment_duration, label,
-                command_recorder=commands,
-            )
-        _write_segment_cache_stamp(segment_path, segment)
-    # Cache hits were attested above; fresh files were hashed when their
-    # stamp was written. Verify the independent concat copy below instead
-    # of reading this entire file a second time immediately.
-    # The global cache is the reusable store; concat receives a per-export
-    # copy so two timeline entries can never alias the same pathname, even if
-    # their recipes are identical. This makes ordering and boundary auditing
-    # unambiguous and prevents a future cache-key regression from producing a
-    # mixed concat input.
-    concat_path = temp_dir / f"segment-{index:04d}-concat.mp4"
-    shutil.copy2(segment_path, concat_path)
-    shutil.copy2(_segment_cache_stamp_path(segment_path), _segment_cache_stamp_path(concat_path))
-    _require_segment_cache_stamp(concat_path, segment)
-    segment_progress(100, "complete")
-    return {
-        "index": index,
-        "path": concat_path,
-        "cache_path": segment_path,
-        "cache_stamp": _segment_cache_stamp_path(segment_path),
-        "sendcmd_path": temp_dir / f"segment-{index:04d}.sendcmd.txt",
-        "ffmpeg_command": commands[-1] if commands else [],
-        "ffmpeg_commands": commands,
-        "spherical_identity": _spherical_cache_identity(segment),
-        "warnings": local_warnings,
-        "cached": cached,
-        "rendered_from": rendered_from if not cached else "cache",
-        "ffmpeg_sec": round(ffmpeg_sec, 3),
-        "verify_sec": round(time.perf_counter() - verify_started, 3),
-        "total_sec": round(time.perf_counter() - started, 3),
-    }
+    def finalize() -> dict[str, Any]:
+        nonlocal command_line
+        verify_started = time.perf_counter()
+        if not cached:
+            # A fresh segment is verified before it enters the reusable cache.
+            # Replaying the expensive frame probes for an already-attested cache
+            # entry made every subsequent export needlessly slow.
+            _verify_segment_frame_duration(segment_path, _segment_frame_count(segment), label)
+            if verify_motion and _segment_requires_motion_verification(segment):
+                command_line = _verify_or_rebuild_segment(
+                    project, segment, master_path, segment_path,
+                    temp_dir / f"segment-{index:04d}.mp4", platform, video_bitrate,
+                    overlay_config, color_profile, segment_progress,
+                    intro_fade, outro_fade, False, False, local_warnings,
+                    command_line, segment_duration, label,
+                    command_recorder=commands,
+                )
+            _write_segment_cache_stamp(segment_path, segment)
+        # Cache hits were attested above; fresh files were hashed when their
+        # stamp was written. Verify the independent concat copy below instead
+        # of reading this entire file a second time immediately.
+        # The global cache is the reusable store; concat receives a per-export
+        # copy so two timeline entries can never alias the same pathname, even if
+        # their recipes are identical. This makes ordering and boundary auditing
+        # unambiguous and prevents a future cache-key regression from producing a
+        # mixed concat input.
+        concat_path = temp_dir / f"segment-{index:04d}-concat.mp4"
+        shutil.copy2(segment_path, concat_path)
+        shutil.copy2(_segment_cache_stamp_path(segment_path), _segment_cache_stamp_path(concat_path))
+        _require_segment_cache_stamp(concat_path, segment)
+        segment_progress(100, "complete")
+        return {
+            "index": index,
+            "path": concat_path,
+            "cache_path": segment_path,
+            "cache_stamp": _segment_cache_stamp_path(segment_path),
+            "sendcmd_path": temp_dir / f"segment-{index:04d}.sendcmd.txt",
+            "ffmpeg_command": commands[-1] if commands else [],
+            "ffmpeg_commands": commands,
+            "spherical_identity": _spherical_cache_identity(segment),
+            "warnings": local_warnings,
+            "cached": cached,
+            "rendered_from": rendered_from if not cached else "cache",
+            "ffmpeg_sec": round(ffmpeg_sec, 3),
+            "verify_sec": round(time.perf_counter() - verify_started, 3),
+            "total_sec": round(time.perf_counter() - started, 3),
+        }
+
+    return verification_submit(finalize) if verification_submit else finalize()
 
 
 def _stream_copy_eligible(
@@ -4277,8 +4342,7 @@ def _verify_moving_frames(path: Path, first_at: float, second_at: float, label: 
     """Compare two decoded frames from one file."""
     if second_at <= first_at:
         return
-    first = _frame_md5(path, first_at)
-    second = _frame_md5(path, second_at)
+    first, second = _frame_md5_pair(path, first_at, second_at)
     if first and second and first == second:
         raise FFmpegError(
             f"Rendered static segment for {label}: frame hashes were identical at {first_at:.2f}s and {second_at:.2f}s. "
@@ -4527,6 +4591,40 @@ def _audio_gain_curve_samples(
         timestamp = min(total_duration, index * step)
         samples.append((round(timestamp, 6), _audio_gain_at(timestamp, total_duration, content_start, content_end)))
     return samples
+
+
+def _frame_md5_pair(path: Path, first_at: float, second_at: float) -> tuple[str | None, str | None]:
+    """Decode two video samples in one session, retaining millisecond seek rounding.
+
+    Keep the first seek on the input. The second trim uses its relative offset,
+    so FFmpeg retains the same source-frame boundary as two independent seeks.
+    Separate output streams make the hashes independent of interleaving order.
+    """
+    first_seek = float(f"{first_at:.3f}")
+    second_seek = float(f"{second_at:.3f}")
+    graph = ("[0:v:0]split=2[first][later];"
+             "[first]trim=end_frame=1[a];"
+             f"[later]trim=start={max(0., second_seek - first_seek):.3f},"
+             "trim=end_frame=1[b]")
+    result = subprocess.run([
+        _ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-ss", f"{first_seek:.3f}", "-i", str(path), "-filter_complex", graph,
+        "-map", "[a]", "-map", "[b]", "-an",
+        "-fps_mode:v:0", "passthrough", "-fps_mode:v:1", "passthrough",
+        "-f", "framemd5", "pipe:1",
+    ], check=False, capture_output=True, text=True, timeout=20)
+    if result.returncode != 0:
+        raise FFmpegError(f"Could not decode both motion verification samples: {path}: {(result.stderr or '').strip()}")
+    hashes: dict[int, str] = {}
+    for line in (result.stdout or "").splitlines():
+        if line.startswith("#") or not line.strip():
+            continue
+        fields = line.split(",")
+        if len(fields) == 6:
+            hashes[int(fields[0])] = fields[-1].strip()
+    if set(hashes) != {0, 1}:
+        raise FFmpegError(f"Could not decode both motion verification samples: {path}")
+    return hashes[0], hashes[1]
 
 
 def _frame_md5(path: Path, timestamp: float) -> str | None:

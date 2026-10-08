@@ -140,7 +140,7 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
                             start: float, frame_count: int, shot: dict[str, Any],
                             progress: Callable | None = None, *,
                             pose_sampler: Callable | None = None,
-                            hardware_decode: bool = True) -> None:
+                            hardware_decode: bool = True, remap_backend: str = "cpu") -> None:
     pixel_format = None
     if hardware_decode and sys.platform == "darwin":
         try:
@@ -152,19 +152,19 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
     if pixel_format:
         try:
             _run_reprojected_command(command, source, source_size, start, frame_count, shot,
-                progress, pose_sampler=pose_sampler, decoder_pixel_format=pixel_format)
+                progress, pose_sampler=pose_sampler, decoder_pixel_format=pixel_format, remap_backend=remap_backend)
             return
         except HardwareDecodeError as exc:
             LOGGER.warning("360 hardware decoder failed; retrying with CPU: %s", exc)
     _run_reprojected_command(command, source, source_size, start, frame_count, shot,
-        progress, pose_sampler=pose_sampler)
+        progress, pose_sampler=pose_sampler, remap_backend=remap_backend)
 
 
 def _run_reprojected_command(command: list[str], source: str, source_size: tuple[int, int],
                             start: float, frame_count: int, shot: dict[str, Any],
                             progress: Callable | None = None, *,
                             pose_sampler: Callable | None = None,
-                            decoder_pixel_format: str | None = None) -> None:
+                            decoder_pixel_format: str | None = None, remap_backend: str = "cpu") -> None:
     """Pipe atomic reprojected BGR frames directly into the final encoder graph."""
     ffmpeg = command[0]; sw, sh = source_size
     if frame_count <= 0:
@@ -227,7 +227,12 @@ def _run_reprojected_command(command: list[str], source: str, source_size: tuple
                 if maps is None or pose != previous_pose:
                     maps = reproject_maps((sw, sh), (1920, 1080), shot, pose)
                     previous_pose = pose
-                cv2.remap(frame, *maps, interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_WRAP, dst=pixels)
+                metal_done = False
+                if remap_backend == "metal":
+                    from core.metal_remap import try_remap
+                    metal_done = try_remap(frame, maps, pixels)
+                if not metal_done:
+                    cv2.remap(frame, *maps, interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_WRAP, dst=pixels)
                 blocked[0] = encoder
                 encoder.stdin.write(memoryview(pixels).cast("B"))
                 guard.touch()

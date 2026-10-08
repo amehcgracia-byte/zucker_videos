@@ -38,6 +38,7 @@ if missing:
 PY
 
 "$PYTHON" tools/make_icon.py
+bash "$ROOT/tools/build_metal.sh"
 # Preserve existing user/local build products, including the hand-edited spec.
 BUILD_BACKUP="$ROOT/build/previous-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BUILD_BACKUP"
@@ -79,6 +80,8 @@ PY
   --add-data "$ROOT/captions/presets.json:captions" \
   --add-data "$ROOT/assets/parchment_full.png:assets" \
   --add-data "$ROOT/core/vendor:core/vendor" \
+  --add-binary "$ROOT/build/native/metal_remap.dylib:core/native" \
+  --add-data "$ROOT/core/native/NOTICE.txt:core/native" \
   --add-data "/System/Library/Fonts/Supplemental/Verdana Bold.ttf:assets/fonts" \
   --add-data "/System/Library/Fonts/Supplemental/Arial.ttf:assets/fonts" \
   --add-data "/System/Library/Fonts/Supplemental/BigCaslon.ttf:assets/fonts" \
