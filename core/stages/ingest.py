@@ -172,8 +172,13 @@ def prepare_videos(project: Project, records: list[dict[str, Any]], progress_cal
             raise
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
+        # Start the longest sources first so a large video is not left as
+        # the only worker after all short clips have finished.
+        scheduled = sorted(enumerate(records),
+                           key=lambda item: float((item[1].get("probe") or {}).get("duration") or 0),
+                           reverse=True)
         futures = {executor.submit(run_one, index, record): (index, record)
-                   for index, record in enumerate(records)}
+                   for index, record in scheduled}
         for future in as_completed(futures):
             future.result()
             if not analyze_ready:

@@ -28,6 +28,8 @@ let currentVariationSeed = String(Date.now());
 let activeProjectId = null;
 let statusPollGeneration = 0;
 let prepareHandoffInProgress = false;
+let backgroundSettingsProjectId = null;
+let backgroundPreparation = null;
 let appConfig = { dev: true, desktop: false };
 let sphericalProjectSettings = null;
 let lastSphericalSetup = {};
@@ -1710,6 +1712,15 @@ function selectedInputs() {
 }
 
 async function registerInputsBeforePreview(inputs) {
+  // Returning to Files may change the inputs or edit type. Stop this project's
+  // speculative worker before registering those changes, retaining its cache.
+  if (backgroundPreparation) await backgroundPreparation;
+  if (backgroundSettingsProjectId && ["running", "cancelling"].includes(latestStatus?.status)) {
+    await api("/wizard/cancel", { method: "POST" });
+    if (!await waitForWizardStop()) throw new Error("Video preparation is still stopping; try Continue again shortly");
+  }
+  backgroundSettingsProjectId = null;
+  backgroundPreparation = null;
   const result = await api("/wizard/draft", {
     method: "POST",
     body: JSON.stringify({ name: document.querySelector("#videoName").value || todayName(), project_id: activeProjectId, platform: selectedPlatform, audio_paths: detected.master.map(item => item.path), ...inputs }),
@@ -1718,6 +1729,41 @@ async function registerInputsBeforePreview(inputs) {
   await api("/settings/camera-subjects", { method: "POST", body: JSON.stringify({ camera_subjects: Object.fromEntries(inputs.videos.filter((path) => cameraSubjects[path]).map((path) => [path, cameraSubjects[path]])) }) });
   await resumeInputsFromProject();
   await loadProjects();
+}
+
+function renderSettingsPreparation(status) {
+  const box = document.querySelector("#settingsPreparation");
+  if (!box) return;
+  box.hidden = false;
+  const ready = status.status === "waiting_choice";
+  const failed = ["failed", "cancelled", "cancelling"].includes(status.status);
+  document.querySelector("#settingsPreparationTitle").textContent = ready
+    ? "Videos prepared — finish your settings and continue"
+    : failed ? "Video preparation stopped" : "Listening to your videos while you finish the settings";
+  document.querySelector("#settingsPreparationDetail").textContent = status.error || status.detail || "Preparing your videos in the background…";
+  document.querySelector("#settingsPreparationBar").replaceChildren(
+    window.MeasuredProgress.create(ready ? 100 : failed ? null : status.stage_progress ?? null, "Video preparation"));
+}
+
+function beginSettingsPreparation() {
+  if (selectedPlatform === "medley") { document.querySelector("#settingsPreparation").hidden = true; return; }
+  const projectId = activeProjectId;
+  const generation = statusPollGeneration;
+  backgroundSettingsProjectId = projectId;
+  renderSettingsPreparation({status: "running"});
+  backgroundPreparation = api("/wizard/prepare-background", {
+    method: "POST", body: JSON.stringify({project_id: projectId}),
+  }).then(status => {
+    if (generation !== statusPollGeneration || !sameProjectId(activeProjectId, projectId)) return;
+    renderWizardStatus(status);
+    ensureStatusPolling();
+    return status;
+  }).catch(error => {
+    if (generation !== statusPollGeneration || !sameProjectId(activeProjectId, projectId)) return;
+    backgroundSettingsProjectId = null;
+    renderSettingsPreparation({status: "failed", error: error.message});
+    logFrontendError(`Background preparation failed: ${error.message}`);
+  });
 }
 
 function formatDuration(seconds) {
@@ -1951,6 +1997,9 @@ function formatBytes(bytes) {
 
 async function openProject(path) {
   stopStatusPolling();
+  backgroundSettingsProjectId = null;
+  backgroundPreparation = null;
+  document.querySelector("#settingsPreparation").hidden = true;
   const requestGeneration = statusPollGeneration;
   activeProjectId = null;
   const status = await api("/wizard/projects/open", { method: "POST", body: JSON.stringify({ path }) });
@@ -1988,6 +2037,7 @@ async function openProject(path) {
 }
 
 async function newProject() {
+  if (backgroundPreparation) await backgroundPreparation;
   if (latestStatus?.status === "running" || latestStatus?.status === "cancelling") {
     if (!await window.UiFeedback.confirm("A job is still running for the current project. Cancel it and start a new project?")) return;
     try {
@@ -2003,6 +2053,9 @@ async function newProject() {
   }
   stopStatusPolling();
   await api("/wizard/projects/new", { method: "POST", body: JSON.stringify({}) });
+  backgroundSettingsProjectId = null;
+  backgroundPreparation = null;
+  document.querySelector("#settingsPreparation").hidden = true;
   activeProjectId = null;
   importGeneration += 1;
   pendingImports = 0;
@@ -2269,6 +2322,7 @@ async function prepareStep2() {
     updateContinueAvailability();
   }
   setStep(2);
+  beginSettingsPreparation();
   const trimSource = canUseVideoAudio ? detected.videos[0].path : inputs.master;
   if (trimSource) setupTrimControls(trimSource);
   applyEditTypeMode();
@@ -2995,8 +3049,15 @@ async function waitForPreparedProject() {
 }
 
 async function startWizard(options = {}) {
+  const requestedProjectId = activeProjectId;
+  if (backgroundPreparation) await backgroundPreparation;
+  if (!sameProjectId(activeProjectId, requestedProjectId)) return;
+  const continuingBackground = backgroundSettingsProjectId && sameProjectId(backgroundSettingsProjectId, activeProjectId);
+  backgroundSettingsProjectId = null;
+  backgroundPreparation = null;
+  prepareHandoffInProgress = Boolean(continuingBackground);
   const waitForPrepare = options.waitForPrepare === true;
-  resetProgressTiming();
+  if (!continuingBackground) resetProgressTiming();
   // Every explicit run is a fresh creative pass.  Keeping the same seed
   // made the edit fingerprint and camera tie-breaks reproduce the prior cut.
   currentVariationSeed = `${Date.now()}-${Math.random()}`;
@@ -3026,6 +3087,7 @@ async function startWizard(options = {}) {
   const started = await api("/wizard/start", {
     method: "POST",
     body: JSON.stringify({
+      project_id: activeProjectId,
       name: document.querySelector("#videoName").value || todayName(),
       platform: selectedPlatform,
       instrument_highlights: selectedPlatform === "youtube" && document.querySelector("#instrumentHighlights").checked,
@@ -3261,6 +3323,10 @@ function playfulProgressMessage(rawMessage) {
 
 function renderWizardStatus(status) {
   latestStatus = status;
+  if (currentStep <= 2 && backgroundSettingsProjectId && sameProjectId(backgroundSettingsProjectId, activeProjectId)) {
+    renderSettingsPreparation(status);
+    return;
+  }
   for (const warning of status.input_warnings || []) {
     if (!inputWarningsShown.has(warning)) {
       inputWarningsShown.add(warning);
@@ -3293,6 +3359,7 @@ function renderWizardStatus(status) {
   const reviewBox = document.querySelector("#reviewBox");
   const platform = status.result?.platform || status.platform || latestResult?.platform || selectedPlatform || "";
   const stage = status.stage || "";
+  if (["cut", "edit", "export"].includes(stage)) prepareHandoffInProgress = false;
   if (status.status === "waiting_choice") {
     // The strip is a live-progress affordance. A terminal sync response must
     // clear it even though this branch intentionally avoids repainting the

@@ -1616,6 +1616,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.post("/api/v1/wizard/start")
     def api_wizard_start() -> Response:
         body = _json_body()
+        requested_id = str(body.get("project_id") or "")
+        if requested_id and (state.project is None or not same_project_path(requested_id, str(state.project.folder))):
+            return error_response("project_mismatch", "The selected project is no longer open", 409)
         if body.get("platform") == "medley":
             try:
                 if state.project is None:
@@ -1706,6 +1709,18 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 "songs_path": songs,
                 "video_paths": videos,
             }
+            background = state.wizard._job
+            if (state.project is not None and background and background.background_ingest
+                    and background.status in {"running", "waiting_choice"}
+                    and same_project_path(background.project_path, str(state.project.folder))):
+                if not _project_matches_inputs(state.project, master, songs, videos):
+                    return error_response("project_mismatch", "Inputs changed; return to the files page before continuing", 409)
+                if str(state.project.data["settings"].get("wizard", {}).get("platform")) != platform:
+                    return error_response("project_mismatch", "Edit type changed; return to the files page before continuing", 409)
+                state.project.data["settings"]["wizard"]["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
+                state.project.save()
+                job = state.wizard.start(**options)
+                return jsonify(serialize_wizard_job(job)), 202
             if state.project is not None and state.wizard._prepared_project is None:
                 if _project_matches_inputs(state.project, master, songs, videos) and _project_can_skip_prepare(state.project, platform):
                     state.project.data.setdefault("settings", {}).setdefault("wizard", {})["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
@@ -2122,6 +2137,23 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return jsonify({"project_id": str(project.folder), "project": project.snapshot()})
         except (OSError, ProjectError) as exc:
             return error_response("input_file_error", str(exc), 400)
+
+    @app.post("/api/v1/wizard/prepare-background")
+    def api_wizard_prepare_background() -> Response:
+        body = _json_body()
+        project = state.project
+        if project is None or not same_project_path(str(body.get("project_id") or ""), str(project.folder)):
+            return error_response("project_mismatch", "The selected project is no longer open", 409)
+        platform = str(project.data.get("settings", {}).get("wizard", {}).get("platform") or "")
+        if platform not in {"youtube", "reel", "360", "backstage"}:
+            return error_response("bad_request", "This mode does not need video ingestion", 400)
+        if (state.composition.status(project) or {}).get("status") in {"running", "cancelling"}:
+            return error_response("wizard_busy", "A final render is active", 409)
+        try:
+            job = state.wizard.prepare_background(project, platform)
+            return jsonify(serialize_wizard_job(job)), 202
+        except RuntimeError as exc:
+            return error_response("wizard_busy", str(exc), 409)
 
     @app.post("/api/v1/wizard/prepare")
     def api_wizard_prepare() -> Response:

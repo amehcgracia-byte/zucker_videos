@@ -65,6 +65,7 @@ class WizardJob:
     project_lock: ProjectPipelineLock | None = field(default=None, repr=False)
     cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
     cancel_requested_at: float | None = None
+    background_ingest: bool = False
 
 
 def serialize_wizard_job(job: WizardJob) -> dict[str, Any]:
@@ -177,7 +178,23 @@ class WizardRunner:
             thread.start()
             return job
 
-    def prepare_existing(self, project: Project, platform: str | None = None) -> WizardJob:
+    def prepare_background(self, project: Project, platform: str) -> WizardJob:
+        """Start input-only preparation once, without cancelling another job."""
+        with self._lock:
+            job = self._job
+            same = job and job.background_ingest and same_project_path(job.project_path, str(project.folder))
+            if job and job.status in {"running", "cancelling"}:
+                if same and job.status == "running" and not self._finish_requested:
+                    return job
+                raise RuntimeError("Another job is active; background preparation was not started")
+            ingest = project.data["stages"]["ingest"]
+            if same and job.status == "waiting_choice" and ingest.get("fingerprint") == IngestStage().inputs_fingerprint(project):
+                return job
+            if not self.reset():
+                raise RuntimeError("The previous job is still stopping")
+            return self.prepare_existing(project, platform=platform, ingest_only=True)
+
+    def prepare_existing(self, project: Project, platform: str | None = None, *, ingest_only: bool = False) -> WizardJob:
         """Run ingest + sync for an existing matching project."""
         previous_thread: threading.Thread | None = None
         with self._lock:
@@ -203,14 +220,16 @@ class WizardRunner:
                 self._job.message = t("cancelled")
                 self._job.error = None
                 self._job.technical_details = None
-            job = WizardJob(id="current", message=t("listening"))
+            job = WizardJob(id="current", message=t("listening"), background_ingest=ingest_only)
+            if ingest_only:
+                job.started_at = time.time()
             _attach_project(job, project)
             self._job = job
             self._prepared_project = None
             self._finish_requested = False
             thread = threading.Thread(
                 target=self._prepare_existing_project,
-                kwargs={"job": job, "project": project, "platform": platform or str((project.data.get("settings", {}).get("wizard") or {}).get("platform") or "youtube")},
+                kwargs={"job": job, "project": project, "platform": platform or str((project.data.get("settings", {}).get("wizard") or {}).get("platform") or "youtube"), "ingest_only": ingest_only},
                 daemon=True,
                 name="zucker-wizard-prepare-existing",
             )
@@ -268,10 +287,12 @@ class WizardRunner:
     ) -> WizardJob:
         """Create/register a project and run the simplified render chain."""
         with self._lock:
+            if self._thread and self._thread.is_alive() and self._job and self._job.background_ingest and self._job.status == "waiting_choice":
+                self._thread.join(timeout=.1)
             if self._thread and self._thread.is_alive() and self._job and self._job.status != "running":
                 raise RuntimeError("A previous wizard job is still stopping")
             if self._job and self._job.status == "running":
-                if self._finish_requested or same_project_path(self._job.project_path, str(self._prepared_project.folder) if self._prepared_project else None):
+                if self._finish_requested or (not self._job.background_ingest and same_project_path(self._job.project_path, str(self._prepared_project.folder) if self._prepared_project else None)):
                     return self._job
                 job = self._job
                 self._finish_requested = True
@@ -313,7 +334,9 @@ class WizardRunner:
                 self._thread = thread
                 thread.start()
                 return job
-            job = WizardJob(id="current")
+            previous_job = self._job
+            job = previous_job if previous_job and previous_job.background_ingest and previous_job.status == "waiting_choice" else WizardJob(id="current")
+            job.status = "running"
             self._job = job
             self._finish_requested = False
             project = self._prepared_project
@@ -818,7 +841,7 @@ class WizardRunner:
             job.message = t("cannot_prepare")
             _release_job_project_lock(job)
 
-    def _prepare_existing_project(self, *, job: WizardJob, project: Project, platform: str = "youtube") -> None:
+    def _prepare_existing_project(self, *, job: WizardJob, project: Project, platform: str = "youtube", ingest_only: bool = False) -> None:
         try:
             project.data.setdefault("settings", {}).setdefault("wizard", {})["platform"] = platform
             _attach_project(job, project)
@@ -835,16 +858,16 @@ class WizardRunner:
                 _write_stage_log(project, "wizard", "REUSING completed ingest; no re-ingest required")
             else:
                 self._run_stage(job, project, IngestStage(), 0, 22, t("listening"))
-            if _platform_needs_sync(platform, project=project):
+            if not ingest_only and _platform_needs_sync(platform, project=project):
                 self._run_stage(job, project, SyncStage(), 22, 48, t("syncing_audio"))
             else:
                 job.progress = 22
             with self._lock:
                 self._prepared_project = project
             job.status = "waiting_choice"
-            job.progress = 48
-            job.message = t("ready_to_edit")
-            job.detail = t("choose_edit_type")
+            job.progress = 22 if ingest_only else 48
+            job.message = "Videos prepared" if ingest_only else t("ready_to_edit")
+            job.detail = "Ready — finish your settings and continue" if ingest_only else t("choose_edit_type")
         except WizardCancelled:
             LOGGER.info("Wizard prepare (existing project) cancelled")
             self._mark_cancelled(job)
@@ -891,6 +914,7 @@ class WizardRunner:
         started_at = time.monotonic()
         try:
             _attach_project(job, project)
+            job.status = "running"
             previous_wizard = project.data["settings"].get("wizard") or {}
             variation_seed = str(previous_wizard.get("variation_seed") or time.time_ns())
             project.data["settings"]["wizard"] = {
@@ -922,7 +946,17 @@ class WizardRunner:
             _store_spherical_sweep(project, spherical_sweep, sweep_speed_deg_per_sec)
             _store_transition_type(project, platform, transition_type)
             project.save()
-            job.started_at = time.time()
+            job.started_at = job.started_at or time.time()
+            if job.background_ingest and _platform_needs_sync(platform, project=project):
+                sync_stage = SyncStage()
+                sync = project.data["stages"]["sync"]
+                if (sync.get("status") == "done" and sync.get("fingerprint") == sync_stage.inputs_fingerprint(project)
+                        and all(Path(path).is_file() for path in sync_stage.outputs(project).values())):
+                    job.progress = max(job.progress, 48)
+                    _write_stage_log(project, "wizard", "REUSING completed sync after background ingest")
+                else:
+                    self._run_stage(job, project, sync_stage, 22, 48, t("syncing_audio"))
+            job.background_ingest = False
             cut_start, cut_end, edit_start, edit_end = ((30, 35, 35, 40) if platform == "360" else (48, 58, 58, 70))
             export_start = edit_end
             cut_stage = BackstageAnalysisStage() if platform == "backstage" else CutStage()
@@ -1055,7 +1089,8 @@ class WizardRunner:
         songs_path: str | None,
         video_paths: list[str],
     ) -> None:
-        job.message = t("waiting_for_sync") if _platform_needs_sync(platform, master_path=master_path) else ("Finding Backstage moments" if platform == "backstage" else ("Preparing 360 source" if platform == "360" else t("building_coverage")))
+        if not job.background_ingest:
+            job.message = t("waiting_for_sync") if _platform_needs_sync(platform, master_path=master_path) else ("Finding Backstage moments" if platform == "backstage" else ("Preparing 360 source" if platform == "360" else t("building_coverage")))
         if prepare_thread:
             prepare_thread.join()
         if job.status in {"failed", "cancelled"}:

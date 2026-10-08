@@ -88,6 +88,10 @@ Medley selecciona hasta tres highlights distintos por canción: uno si dispone d
 
 ### Barras de carga — 2.5.1
 
+Desde 2.5.7, al confirmar los archivos de YouTube, Reel, 360 o Backstage, la ingestión comienza mientras ajustas los parámetros. La pantalla muestra su progreso real. Make it continúa el mismo trabajo, espera si queda preparación pendiente y sincroniza o edita con los ajustes definitivos; no vuelve a ingerir los archivos. Volver a Files y confirmar cambios detiene primero esa preparación y conserva las cachés válidas. Medley conserva su análisis específico de highlights y no genera proxies de ingestión adicionales.
+
+Las colas de proxies y segmentos asignan el siguiente trabajo en cuanto queda un proceso libre. Los vídeos y segmentos más largos se encolan primero para reducir las esperas al final. Esto no reserva una fracción fija de la GPU a cada vídeo ni garantiza una aceleración proporcional al terminar otros archivos.
+
 Las barras generales y de tareas usan el progreso medido. Una tarea sin porcentaje disponible muestra actividad y lo indica; no se presenta como completada. Los renders nuevos empiezan desde cero. Medley muestra comprobación, highlights, extractos y ensamblado, sin etiquetas de sincronización de cámaras. Las consultas simultáneas idénticas de lectura se comparten mientras están en curso y el sondeo de estado no se solapa.
 
 ## Actualizaciones

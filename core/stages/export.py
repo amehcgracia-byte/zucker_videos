@@ -809,7 +809,12 @@ def _render_plan(
             progress_callback(percent, detail)
         futures: dict[Any, tuple[int, dict[str, Any]]] = {}
         with ThreadPoolExecutor(max_workers=segment_workers) as executor:
-            for index, segment in enumerate(render_segments, start=1):
+            # Queue long shots first; completed workers immediately take the
+            # next shot. Original indices still determine the final edit order.
+            scheduled = sorted(enumerate(render_segments, start=1),
+                               key=lambda item: float(item[1].get("duration_sec") or 0),
+                               reverse=True)
+            for index, segment in scheduled:
                 future = executor.submit(render_worker, index, segment)
                 futures[future] = (index, segment)
             results = []

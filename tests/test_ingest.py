@@ -42,6 +42,34 @@ def test_prepare_videos_runs_two_workers_and_aggregates_progress(tmp_path, monke
     assert any("Preparing 3 videos..." in detail and "a.mp4" in detail for _, detail in calls)
 
 
+def test_long_source_starts_first_and_free_worker_does_not_wait_for_it(tmp_path, monkeypatch):
+    project = create_project('Scheduling',str(tmp_path/'scheduling.zuckervid'))
+    project.data['settings']['ingest']['proxy_workers'] = 2
+    records = [{'path':str(tmp_path/f'{duration}.mp4'), 'probe':{'duration':duration}} for duration in (2,3,40)]
+    import concurrent.futures
+    submitted = []
+    class Executor(concurrent.futures.ThreadPoolExecutor):
+        def submit(self, fn, index, record):
+            submitted.append(record['probe']['duration'])
+            return super().submit(fn,index,record)
+    monkeypatch.setattr('core.stages.ingest.ThreadPoolExecutor',Executor)
+    long_started, short_started = threading.Event(),threading.Event()
+    def normalize(project, record, callback):
+        duration = record['probe']['duration']
+        if duration == 40:
+            long_started.set()
+            assert short_started.wait(3), 'Worker waited for the large source instead of starting the queued clip'
+        elif duration == 2:
+            assert long_started.wait(3)
+            short_started.set()
+        callback(100,'Ready')
+    monkeypatch.setattr('core.stages.ingest.normalize_video_record',normalize)
+    prepare_videos(project,records,lambda *args:None)
+    assert submitted == [40,3,2]
+    assert short_started.is_set()
+    assert [row['probe']['duration'] for row in records] == [2,3,40]
+
+
 def test_reel_single_source_does_not_run_multicamera_analysis(monkeypatch, tmp_path):
     from core.stages.ingest import IngestStage
 
