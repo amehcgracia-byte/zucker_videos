@@ -731,7 +731,7 @@ def _render_plan(
         segment_overlay_config["reel_images"] = []
         segment_overlay_config["reel_videos"] = []
     verify_motion = bool(project.data.get("settings", {}).get("export", {}).get("verify_motion", True))
-    phase_times: dict[str, float] = {}
+    phase_times: dict[str, Any] = {}
     export_started = time.perf_counter()
     try:
         include_bookends = platform not in {"reel", "reel_horizontal"}
@@ -908,81 +908,93 @@ def _render_plan(
             concat_path,
             final_path=None,
         )
-        phase_started = time.perf_counter()
-        _run_ffmpeg_progress(
-            [
-                ffmpeg,
-                "-y",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-nostdin",
-                "-progress",
-                "pipe:1",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                str(concat_path),
-                "-c",
-                "copy",
-                str(joined_video),
-            ],
-            total_duration + (INTRO_DURATION + OUTRO_DURATION if include_bookends else 0.0),
-            t("joining_segments"),
-            lambda percent, detail: progress_callback(84 + int(percent * 6 / 100), detail),
-        )
-        phase_times["concat_sec"] = round(time.perf_counter() - phase_started, 3)
-        phase_started = time.perf_counter()
-        cfr_video = _cadence_checked_joined_video(
-            joined_video,
-            temp_dir / "joined-video-cfr.mp4",
-            video_bitrate,
-            lambda percent, detail: progress_callback(89 + int(percent * 1 / 100), detail),
-        )
-        phase_times["cadence_sec"] = round(time.perf_counter() - phase_started, 3)
-        real_duration = _media_duration(str(cfr_video))
-        video_for_mux = cfr_video
-        if platform in {"reel", "reel_horizontal"} and (overlay_config.get("reel_texts") or overlay_config.get("reel_images")):
-            video_for_mux = temp_dir / "reel-overlays.mp4"
-            _render_reel_overlays(
-                cfr_video,
-                video_for_mux,
-                overlay_config,
-                real_duration,
+        direct_master = None
+        audio_anchor = float(master_window_start) if master_window_start is not None else float(segments[0].get("master_start_sec") or 0.0)
+        audio_start, audio_delay = _audio_mux_start_and_delay(segments, first_master_start=audio_anchor) if include_bookends else (audio_anchor, 0.0)
+        has_reel_overlays = platform in {"reel", "reel_horizontal"} and (overlay_config.get("reel_texts") or overlay_config.get("reel_images"))
+        if not boundaries and not has_reel_overlays:
+            expected_frames = sum(_segment_frame_count(segment) for segment in render_segments)
+            if include_bookends:
+                expected_frames += round((INTRO_DURATION + OUTRO_DURATION) * TARGET_EXPORT_FPS)
+            expected_duration = expected_frames / TARGET_EXPORT_FPS
+            direct_master = _try_direct_concat_master_audio(
+                concat_path, segment_paths, master_path, temp_dir / "direct-master.mp4",
+                audio_start, expected_duration, expected_frames, video_bitrate,
+                lambda percent, detail: progress_callback(84 + int(percent * 11 / 100), detail),
+                phase_times, content_start=INTRO_DURATION if include_bookends else 0.0,
+                content_end=max(INTRO_DURATION, expected_duration - OUTRO_DURATION) if include_bookends else expected_duration,
+                audio_delay=audio_delay)
+        if direct_master is None:
+            phase_started = time.perf_counter()
+            _run_ffmpeg_progress(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-nostdin",
+                    "-progress",
+                    "pipe:1",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    str(concat_path),
+                    "-c",
+                    "copy",
+                    str(joined_video),
+                ],
+                total_duration + (INTRO_DURATION + OUTRO_DURATION if include_bookends else 0.0),
+                t("joining_segments"),
+                lambda percent, detail: progress_callback(84 + int(percent * 6 / 100), detail),
+            )
+            phase_times["concat_sec"] = round(time.perf_counter() - phase_started, 3)
+            phase_started = time.perf_counter()
+            cfr_video = _cadence_checked_joined_video(
+                joined_video,
+                temp_dir / "joined-video-cfr.mp4",
                 video_bitrate,
                 lambda percent, detail: progress_callback(89 + int(percent * 1 / 100), detail),
             )
-            real_duration = _media_duration(str(video_for_mux))
-        audio_anchor = float(master_window_start) if master_window_start is not None else float(segments[0].get("master_start_sec") or 0.0)
-        audio_start, audio_delay = _audio_mux_start_and_delay(segments, first_master_start=audio_anchor) if include_bookends else (audio_anchor, 0.0)
-        phase_started = time.perf_counter()
-        _mux_continuous_master_audio(
-            video_for_mux,
-            master_path,
-            output_path,
-            audio_start,
-            real_duration,
-            video_bitrate,
-            lambda percent, detail: progress_callback(90 + int(percent * 5 / 100), detail),
-            content_start=INTRO_DURATION if include_bookends else 0.0,
-            content_end=max(INTRO_DURATION, real_duration - OUTRO_DURATION) if include_bookends else real_duration,
-            audio_delay=audio_delay,
-        )
-        phase_times["mux_sec"] = round(time.perf_counter() - phase_started, 3)
-        _write_export_link_audit(
-            project,
-            output_path,
-            render_segments,
-            results,
-            concat_path,
-            final_path=output_path,
-        )
-        if verify_motion and include_bookends:
-            _verify_joined_output(output_path, segments, timeline_offset=INTRO_DURATION)
-            _verify_final_audio(
+            phase_times["cadence_sec"] = round(time.perf_counter() - phase_started, 3)
+            real_duration = _media_duration(str(cfr_video))
+            video_for_mux = cfr_video
+            if platform in {"reel", "reel_horizontal"} and (overlay_config.get("reel_texts") or overlay_config.get("reel_images")):
+                video_for_mux = temp_dir / "reel-overlays.mp4"
+                _render_reel_overlays(
+                    cfr_video,
+                    video_for_mux,
+                    overlay_config,
+                    real_duration,
+                    video_bitrate,
+                    lambda percent, detail: progress_callback(89 + int(percent * 1 / 100), detail),
+                )
+                real_duration = _media_duration(str(video_for_mux))
+            audio_anchor = float(master_window_start) if master_window_start is not None else float(segments[0].get("master_start_sec") or 0.0)
+            audio_start, audio_delay = _audio_mux_start_and_delay(segments, first_master_start=audio_anchor) if include_bookends else (audio_anchor, 0.0)
+            phase_started = time.perf_counter()
+            _mux_continuous_master_audio(
+                video_for_mux,
+                master_path,
                 output_path,
+                audio_start,
+                real_duration,
+                video_bitrate,
+                lambda percent, detail: progress_callback(90 + int(percent * 5 / 100), detail),
+                content_start=INTRO_DURATION if include_bookends else 0.0,
+                content_end=max(INTRO_DURATION, real_duration - OUTRO_DURATION) if include_bookends else real_duration,
+                audio_delay=audio_delay,
+            )
+            phase_times["mux_sec"] = round(time.perf_counter() - phase_started, 3)
+        else:
+            real_duration = _media_duration(str(direct_master))
+        verification_path = direct_master or output_path
+        if verify_motion and include_bookends:
+            _verify_joined_output(verification_path, segments, timeline_offset=INTRO_DURATION)
+            _verify_final_audio(
+                verification_path,
                 segments,
                 master_path,
                 audio_start,
@@ -992,6 +1004,16 @@ def _render_plan(
                 content_start=INTRO_DURATION if include_bookends else 0.0,
                 content_end=max(INTRO_DURATION, real_duration - OUTRO_DURATION) if include_bookends else real_duration,
             )
+        if direct_master is not None:
+            _publish_rendered_segment(direct_master, output_path)
+        _write_export_link_audit(
+            project,
+            output_path,
+            render_segments,
+            results,
+            concat_path,
+            final_path=output_path,
+        )
         project.data["_export_performance"] = {
             "segment_count": len(render_segments),
             "segment_workers": segment_workers,
@@ -2959,6 +2981,36 @@ def _cadence_checked_joined_video(
         return fallback_output_path
 
 
+def _try_direct_concat_master_audio(
+    concat_path: Path, segment_paths: list[Path], master_path: str, candidate: Path,
+    audio_start: float, duration: float, expected_frames: int, video_bitrate: int,
+    progress_callback: ProgressCallback | None, phases: dict[str, Any], *,
+    content_start: float, content_end: float, audio_delay: float,
+) -> Path | None:
+    """Build a private, verified master in one pass; cadence repair stays available."""
+    started = time.perf_counter()
+    _mux_continuous_master_audio(concat_path, master_path, candidate, audio_start,
+        duration, video_bitrate, progress_callback, content_start=content_start,
+        content_end=content_end, audio_delay=audio_delay, concat_input=True,
+        video_size_bytes=sum(path.stat().st_size for path in segment_paths))
+    phases["mux_sec"] = round(time.perf_counter() - started, 3)
+    cadence_started = time.perf_counter()
+    try:
+        _verify_video_cadence(candidate, "direct concat master", duration=duration)
+        _verify_segment_frame_duration(candidate, expected_frames, "direct concat master")
+    except FFmpegError as exc:
+        LOGGER.warning("Direct concat validation failed; using cadence repair pipeline: %s", exc)
+        candidate.unlink(missing_ok=True)
+        if progress_callback:
+            progress_callback(0, "Direct assembly needs cadence repair; previous result remains protected")
+        phases["direct_attempt_sec"] = round(time.perf_counter() - started, 3)
+        return None
+    phases["cadence_sec"] = round(time.perf_counter() - cadence_started, 3)
+    phases["concat_sec"] = 0.0
+    phases["assembly"] = "direct_concat_audio"
+    return candidate
+
+
 def _mux_continuous_master_audio(
     video_path: Path,
     master_path: str,
@@ -2971,6 +3023,8 @@ def _mux_continuous_master_audio(
     content_start: float | None = None,
     content_end: float | None = None,
     audio_delay: float = 0.0,
+    concat_input: bool = False,
+    video_size_bytes: int | None = None,
 ) -> None:
     """Mux one continuous master-audio span over the already-concatenated video."""
     ffmpeg = _ffmpeg_path()
@@ -2997,6 +3051,7 @@ def _mux_continuous_master_audio(
         "-nostdin",
         "-progress",
         "pipe:1",
+        *(["-f", "concat", "-safe", "0"] if concat_input else []),
         "-i",
         str(video_path),
         "-ss",
@@ -3028,7 +3083,7 @@ def _mux_continuous_master_audio(
     temporary = output_path.with_name(f".{output_path.stem}.partial.mp4")
     command[-1] = str(temporary)
     try:
-        remaining_bytes = video_path.stat().st_size + int(duration * AUDIO_BITRATE / 8) + 256 * 1024 * 1024
+        remaining_bytes = (video_size_bytes if video_size_bytes is not None else video_path.stat().st_size) + int(duration * AUDIO_BITRATE / 8) + 256 * 1024 * 1024
         _check_export_disk_space(output_path, remaining_bytes)
         _run_ffmpeg_progress(command, duration, t("joining_segments"), progress_callback)
         streams = _probe_streams(temporary).get("streams", [])
