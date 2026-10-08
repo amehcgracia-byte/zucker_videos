@@ -27,6 +27,7 @@ from core.ffmpeg import FFmpegError, ffprobe, tool_status
 from core.messages import t
 from core.media_validation import record_is_usable_camera_video, record_media_path
 from core.normalization import EVEN_SDR_FILTER, NORMALIZATION_VERSION, SDR_TONEMAP_FILTER, global_cache_root, global_segment_path, source_cache_key
+from core.render_watchdog import ProcessWatchdog, SegmentInactivityError, guard_segment_render
 from core.project import Project, atomic_write_json
 from core.spherical_motion import RECIPE_VERSION as NATIVE_SPHERICAL_RECIPE_VERSION, run_reprojected_command
 from core.spherical_metadata import SphericalMetadataError, inject_spherical_metadata
@@ -389,6 +390,8 @@ class ExportStage(Stage):
 
     def run(self, project: Project, progress_callback: ProgressCallback) -> dict[str, Any]:
         """Render the wizard export with streamed ffmpeg progress."""
+        project.data["_export_watchdog_events"] = []
+        project._watchdog_retry_keys = set()
         progress_callback(1, t("preparing_export"))
         # A fresh base export invalidates any private composition source.
         (project.cache_dir / "composition-base.mp4").unlink(missing_ok=True)
@@ -540,6 +543,7 @@ class ExportStage(Stage):
                     ] or None
                 ),
                 "performance": project.data.pop("_export_performance", None),
+                "watchdog_events": project.data.pop("_export_watchdog_events", []),
                 "exports": [
                     {
                         "platform": platform,
@@ -2176,6 +2180,7 @@ def _spherical_export_source_info(
     return resolved, True
 
 
+@guard_segment_render
 def _render_segment(
     project: Project,
     segment: dict[str, Any],
@@ -2193,6 +2198,7 @@ def _render_segment(
     warnings: list[str] | None = None,
     command_recorder: list[list[str]] | None = None,
     force_proxy: bool = False,
+    force_cpu: bool = False,
 ) -> str:
     ffmpeg = _ffmpeg_path()
     duration = max(0.1, float(segment["duration_sec"]))
@@ -2341,18 +2347,26 @@ def _render_segment(
             run_reprojected_command(command, str(source["source_path"]),
                 (int(segment_probe["width"]), int(segment_probe["height"])),
                 float(segment["clip_start_sec"]), frame_count, spherical_shot, progress_callback,
-                pose_sampler=sampler)
+                pose_sampler=sampler, **({"hardware_decode": False} if force_cpu else {}))
         else:
             _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
 
     hardware = _video_encode_args("h264_videotoolbox", video_bitrate)
     software = _video_encode_args("libx264", video_bitrate)
+    if force_cpu:
+        command = command_base + software + [str(output_path)]
+        if command_recorder is not None:
+            command_recorder.append(command)
+        render(command)
+        return rendered_from
     try:
         command = command_base + hardware + [str(output_path)]
         if command_recorder is not None:
             command_recorder.append(command)
         render(command)
         return rendered_from
+    except SegmentInactivityError:
+        raise
     except FFmpegError as exc:
         if output_path.exists():
             output_path.unlink()
@@ -2364,6 +2378,8 @@ def _render_segment(
                 command_recorder.append(command)
             render(command)
             return rendered_from
+        except SegmentInactivityError:
+            raise
         except FFmpegError as fallback_exc:
             if output_path.exists():
                 output_path.unlink()
@@ -2883,8 +2899,17 @@ def _run_ffmpeg_progress_logged(command, duration, label, progress, error_log) -
         raise error from exc
     assert process.stdout is not None
     current = -1
+    guard = ProcessWatchdog(process, command[-1],
+        heartbeat=(lambda: progress(max(0, current), f"{label} — {max(0, current)}%")) if progress else None).start()
     try:
         for line in process.stdout:
+            if line.startswith(("frame=", "out_time_ms=")):
+                position = line.strip()
+                # Separate counters: repeating the same frame/time is not activity.
+                key, value = position.split("=", 1)
+                if guard.positions.get(key) != value:
+                    guard.touch()
+                    guard.positions[key] = value
             match = re.match(r"out_time_ms=(\d+)", line.strip())
             if not match or duration <= 0:
                 continue
@@ -2899,6 +2924,11 @@ def _run_ffmpeg_progress_logged(command, duration, label, progress, error_log) -
         process.kill()
         process.wait()
         raise
+    finally:
+        guard.close()
+    if guard.error:
+        process.wait()
+        guard.raise_if_failed()
     process.communicate()
     error_log.seek(0, os.SEEK_END)
     size = error_log.tell()

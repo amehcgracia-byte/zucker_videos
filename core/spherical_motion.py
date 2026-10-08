@@ -14,6 +14,7 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 
+from core.render_watchdog import ProcessWatchdog
 from core.ffmpeg import FFmpegError, ffprobe
 from core.storage import working_temporary_file
 from core.spherical_view import view_parameters
@@ -180,15 +181,18 @@ def _run_reprojected_command(command: list[str], source: str, source_size: tuple
         decoder = subprocess.Popen(decoder_command, stdout=subprocess.PIPE, stderr=decode_log)
         encoder = None
         watcher = None
+        guard = None
+        blocked = [decoder]
         try:
             encoder = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=encode_log)
             assert decoder.stdout and encoder.stdin
+            guard = ProcessWatchdog(encoder, command[-1], peers=(decoder,), blocked_process=lambda: blocked[0]).start()
             def notify() -> None:
                 if progress: progress(min(99, int(completed[0] / frame_count * 100)), f"360 {shot.get('movement') or 'hold'} — {completed[0]}/{frame_count} frames")
             def monitor() -> None:
                 while not stopped.wait(1):
                     try:
-                        if time.monotonic() - last_frame_at[0] > 180:
+                        if not guard.enabled and time.monotonic() - last_frame_at[0] > 180:
                             raise FFmpegError("360 source stopped producing frames for 180 seconds")
                         notify()
                     except BaseException as exc:
@@ -205,35 +209,45 @@ def _run_reprojected_command(command: list[str], source: str, source_size: tuple
             previous_pose = None
             maps = None
             for index in range(frame_count):
+                blocked[0] = decoder
                 received = 0
                 while received < len(frame_bytes):
                     count = decoder.stdout.readinto(frame_bytes[received:])
                     if not count: break
                     received += count
                 if failures: raise failures[0]
+                guard.raise_if_failed()
                 if received != len(frame_bytes):
                     decode_log.seek(0)
                     diagnostics = decode_log.read().decode(errors='replace')[-2000:]
                     error_type = HardwareDecodeError if decoder_pixel_format else FFmpegError
                     raise error_type(f"360 decode ended at frame {index}/{frame_count}: {diagnostics}")
+                blocked[0] = None  # reprojection is active in Python, not waiting on a child
                 pose = pose_sampler(index / 30) if pose_sampler else motion_pose(shot, duration, index / 30)
                 if maps is None or pose != previous_pose:
                     maps = reproject_maps((sw, sh), (1920, 1080), shot, pose)
                     previous_pose = pose
                 cv2.remap(frame, *maps, interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_WRAP, dst=pixels)
+                blocked[0] = encoder
                 encoder.stdin.write(memoryview(pixels).cast("B"))
+                guard.touch()
                 completed[0] = index + 1
                 last_frame_at[0] = time.monotonic()
                 notify()
             encoder.stdin.close(); encoder.stdin = None
-            encoder_code = encoder.wait(timeout=120)
-            decoder_code = decoder.wait(timeout=30)
+            blocked[0] = encoder
+            encoder_code = encoder.wait(timeout=None if guard.enabled else 120)
+            guard.raise_if_failed()
+            blocked[0] = decoder
+            decoder_code = decoder.wait(timeout=None if guard.enabled else 30)
+            guard.raise_if_failed()
             if encoder_code or decoder_code:
                 encode_log.seek(0); decode_log.seek(0)
                 error_type = HardwareDecodeError if decoder_pixel_format and decoder_code and not encoder_code else FFmpegError
                 raise error_type((encode_log.read() + decode_log.read()).decode(errors='replace')[-4000:])
             if failures: raise failures[0]
         except OSError as exc:
+            if guard: guard.raise_if_failed()
             if failures: raise failures[0]
             encode_log.seek(0); decode_log.seek(0)
             raise FFmpegError((encode_log.read() + decode_log.read()).decode(errors='replace')[-4000:] or str(exc)) from exc
@@ -243,6 +257,7 @@ def _run_reprojected_command(command: list[str], source: str, source_size: tuple
             raise
         finally:
             stopped.set()
+            if guard: guard.close()
             if watcher: watcher.join(timeout=2)
             for process in (decoder, encoder):
                 if process is not None:
