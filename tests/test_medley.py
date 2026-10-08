@@ -3,7 +3,64 @@ import subprocess
 import threading
 import pytest
 import numpy as np
-from core.medley import allocate, render, media_info, _run
+from core.medley import allocate, render, media_info, _run, select_highlights
+
+
+def test_multiple_highlights_choose_distinct_musical_regions():
+    events = [{"start_sec": t, "score": 1 if any(a <= t < a+6 for a in (5, 30, 55)) else .05,
+               "rms": .1} for t in range(80)]
+    clips = select_highlights(events, [], 80, 18)
+    assert len(clips) == 3
+    assert [row['start'] for row in clips] == [5, 30, 55]
+    assert sum(row['duration'] for row in clips) == 18
+
+
+def test_highlights_reject_black_and_silence_despite_novelty():
+    events = [{"start_sec": t, "score": 1 if t < 12 else .7,
+               "rms": 0 if 6 <= t < 12 else .1} for t in range(24)]
+    pictures = [{'time_sec':t, 'quality':0 if t < 6 else 1} for t in range(24)]
+    clips = select_highlights(events, pictures, 24, 6)
+    assert clips[0]['start'] >= 12
+
+
+@pytest.mark.parametrize('available,length', [(18,18), (18.1,18), (50,12.7), (5,4), (60,59.9)])
+def test_highlights_preserve_budget_and_never_repeat_footage(available, length):
+    clips = select_highlights([], [], available, length)
+    assert sum(row['duration'] for row in clips) == pytest.approx(length)
+    assert 1 <= len(clips) <= 3
+    for i, row in enumerate(clips):
+        assert row['start'] >= 0
+        assert row['start'] + row['duration'] <= available + 1e-6
+        if i:
+            assert clips[i-1]['start'] + clips[i-1]['duration'] <= row['start'] + 1e-6
+
+
+def test_render_internal_highlights_use_cuts_and_only_song_boundaries_fade(tmp_path, monkeypatch):
+    import core.medley as medley
+    project = create_project('highlight cuts', str(tmp_path/'cuts.zuckervid'))
+    monkeypatch.setattr(medley, 'media_info', lambda p: (36.5 if str(p).endswith('complete.mp4') else 80, True, True))
+    events = [{'start_sec':t, 'score':1 if any(a <= t < a+6 for a in (5,30,55)) else 0} for t in range(80)]
+    monkeypatch.setattr(medley, 'analyze_file', lambda *args, **kwargs: events)
+    monkeypatch.setattr(medley, 'visual_quality', lambda *args, **kwargs: [])
+    commands = []
+    def run(command, duration, progress, cancel):
+        commands.append(command)
+        Path(command[-1]).touch()
+        progress(100)
+    monkeypatch.setattr(medley, '_run', run)
+    output, manifest = render(project, [{'video':str(tmp_path/'a.mp4')}, {'video':str(tmp_path/'b.mp4')}],
+                              36.5, .5, .25, lambda *args: None, lambda: None)
+    songs = [command for command in commands if '-vf' in command]
+    assert len(songs) == 6
+    for index, command in enumerate(songs):
+        vf, af = command[command.index('-vf')+1], command[command.index('-af')+1]
+        assert ('fade=t=in' in vf) == (index % 3 == 0)
+        assert ('afade=t=in' in af) == (index % 3 == 0)
+        assert ('fade=t=out' in vf) == (index % 3 == 2)
+        assert ('afade=t=out' in af) == (index % 3 == 2)
+    assert sum(any('color=c=black' in arg for arg in command) for command in commands) == 1
+    assert all(len(row['highlights']) == 3 for row in manifest['songs'])
+    assert output.exists()
 from core.highlights import analyze_samples, best_start
 from core.project import create_project
 from core.ffmpeg import tool_status
@@ -91,3 +148,25 @@ def test_medley_silent_source_renders_without_external_audio(tmp_path):
     assert np.max(np.abs(np.frombuffer(samples,dtype='<f4'))) < .001
     assert any(row[1]=='visual' and row[4]==100 for row in updates)
     assert any('No audio' in row[3] for row in updates)
+
+
+def test_real_internal_highlight_cut_keeps_picture_and_sound(tmp_path):
+    ffmpeg = tool_status()['ffmpeg_path']
+    if not ffmpeg:
+        pytest.skip('FFmpeg unavailable')
+    source = tmp_path / 'song.mp4'
+    subprocess.run([ffmpeg, '-v', 'error', '-f', 'lavfi', '-i', 'color=red:s=320x180:r=30',
+                    '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '18',
+                    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', str(source)], check=True)
+    project = create_project('Internal cut', str(tmp_path/'internal.zuckervid'))
+    output, manifest = render(project, [{'video':str(source)}], 12, 0, .5, lambda *args:None, lambda:None)
+    assert len(manifest['songs'][0]['highlights']) == 2
+    assert media_info(output)[0] == pytest.approx(12, abs=.15)
+    for second in [5.9, 6.1]:
+        frame = subprocess.check_output([ffmpeg, '-v', 'error', '-ss', str(second), '-i', str(output),
+                                         '-frames:v', '1', '-vf', 'scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'])
+        assert frame[0] > 200
+    sound = subprocess.check_output([ffmpeg, '-v', 'error', '-i', str(output), '-vn', '-ac', '1',
+                                    '-ar', '8000', '-f', 'f32le', 'pipe:1'])
+    samples = np.frombuffer(sound, dtype='<f4')
+    assert np.sqrt(np.mean(samples[int(5.9*8000):int(6.1*8000)]**2)) > .04

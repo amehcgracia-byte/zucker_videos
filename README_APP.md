@@ -84,6 +84,8 @@ En **Medley Populi**, añade vídeos de canciones diferentes, elige el audio de 
 
 YouTube puede activar **Detect vocal activity and possible instrumental solos**. Este análisis adicional separa voz, batería, bajo, guitarra y piano; guarda resultados para no repetirlo con el mismo audio e intervalo. La primera ejecución descarga el modelo en el disco de datos elegido. Los solos y rellenos son candidatos, especialmente el piano puede dar falsos positivos. Sin esta opción se usa el análisis rápido de ritmo e intensidad.
 
+Medley selecciona hasta tres highlights distintos por canción: uno si dispone de menos de 12 segundos, dos a partir de 12 y tres a partir de 18. Evalúa tramos completos combinando cambios musicales, actividad de audio y calidad visual, y favorece momentos separados sin reutilizar el mismo metraje. Los ordena cronológicamente y los une con cortes dentro de la canción; los fundidos de imagen y sonido y el negro separan canciones. Es una selección heurística, no una identificación garantizada de solos o del mejor momento artístico.
+
 ### Barras de carga — 2.5.1
 
 Las barras generales y de tareas usan el progreso medido. Una tarea sin porcentaje disponible muestra actividad y lo indica; no se presenta como completada. Los renders nuevos empiezan desde cero. Medley muestra comprobación, highlights, extractos y ensamblado, sin etiquetas de sincronización de cámaras. Las consultas simultáneas idénticas de lectura se comparten mientras están en curso y el sondeo de estado no se solapa.

@@ -37,14 +37,15 @@ def analyze_samples(y, sr: int, start: float = 0.0) -> list[dict]:
         if row[0] < .003:
             score = 0.0
         events.append({"start_sec": round(start + index, 3), "end_sec": round(start + min(index + 1, len(y) / sr), 3),
-                       "score": round(score, 4), "kind": "musical_change", "instrument": None})
+                       "score": round(score, 4), "rms": round(float(row[0]), 6),
+                       "kind": "musical_change", "instrument": None})
     return events
 
 def analyze_file(path: str, cache: Path, start: float = 0, duration: float | None = None) -> list[dict]:
     from core.ffmpeg import tool_status
     import subprocess
     stat = Path(path).stat()
-    signature = [VERSION, str(Path(path).resolve()), stat.st_size, stat.st_mtime_ns, start, duration]
+    signature = [VERSION, "activity-v2", str(Path(path).resolve()), stat.st_size, stat.st_mtime_ns, start, duration]
     try:
         payload = json.loads(cache.read_text())
         if payload.get("signature") == signature:
