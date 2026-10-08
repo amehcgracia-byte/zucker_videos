@@ -35,7 +35,7 @@ if args.round=='warm' and not any(cache.iterdir()):raise SystemExit('Warm cache 
 module=current
 if args.variant=='before':
  text=subprocess.check_output(['git','show','7ae1d8d:core/stages/export.py'],text=True)
- module=types.ModuleType('core.stages.export_reference');module.__package__='core.stages'
+ module=types.ModuleType('core.stages.export_reference');module.__package__='core.stages';module.__file__=current.__file__
  exec(compile(text,'export_reference','exec'),module.__dict__)
  native=module.run_reprojected_command
  module.run_reprojected_command=lambda *a,**kw:native(*a,**kw,hardware_decode=False)
