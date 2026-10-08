@@ -1,6 +1,6 @@
 # Auditoría de velocidad — 8 de octubre de 2026
 
-Base: `8b6ab54`, aplicación instalada 2.5.4. El render de Korven-s discussion se mantiene funcionando; ninguna tarea del usuario se cancela ni se reinicia para auditar.
+Base: `8b6ab54`, aplicación original 2.5.4; correcciones empaquetadas e instaladas en 2.5.5. El render de Korven-s discussion se mantiene funcionando; ninguna tarea del usuario se cancela ni se reinicia para auditar.
 
 ## Evidencia real
 
@@ -72,3 +72,9 @@ Pruebas dirigidas: 66 pasan, con tres avisos de dependencias obsoletas. Comproba
 Para medir el render entero hace falta el mismo plan, fuentes, calidad, estado de caché y máquina sin otra edición activa. Instalar durante el render alteraría la prueba y arriesgaría el trabajo. Windows hardware necesita medición en Windows; este Mac no demuestra rendimiento NVENC/QSV.
 
 Los siguientes cambios de arquitectura a evaluar son mux directo desde concat (evitar el vídeo intermedio manteniendo reparación de cadencia), compartir decodificación entre análisis con muestras compatibles, procesamiento de proyección por GPU y selección de concurrencia según medidas. No son ahorros ya demostrados ni pueden presentarse como implementados.
+
+## Distribución verificada
+
+2.5.5 instalada en /Applications/Zucker Editor.app, commit de código `38a7b4cfb25d1adda8d727f38819a5753bb5c520`. Self-test empaquetado Mac: HTTP 200, intro, transcripción y carga del modelo instrumental correctos; firma y DMG válidos. Compilación Windows `37753289091` y promoción verificada `37754399651` completadas con éxito. Paquetes publicados juntos en la release v2.5.5 tras comprobar los hashes de ambos assets.
+
+Las cachés válidas de segmentos no dependen del commit Git, sino de la receta explícita: esta revisión sin cambio de píxeles puede reutilizarlas. Se eliminaron las copias temporales de esta compilación y se conservó el spec local del usuario. No se midió un antes/después de canción completa y no se presenta como realizado.
