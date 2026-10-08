@@ -1656,8 +1656,24 @@ def _write_stage_log(project: Project, stage_name: str, line: str) -> None:
 
 
 def _tail_lines(path: Path, limit: int) -> list[str]:
+    if limit <= 0:
+        return []
     try:
-        return path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]
+        # The details panel polls this repeatedly. Reading a growing render
+        # log from its beginning makes each poll more expensive over time.
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            position = stream.tell()
+            blocks = []
+            newlines = 0
+            while position and newlines <= limit:
+                length = min(position, 8192)
+                position -= length
+                stream.seek(position)
+                block = stream.read(length)
+                blocks.append(block)
+                newlines += block.count(b"\n")
+        return b"".join(reversed(blocks)).decode("utf-8", errors="replace").splitlines()[-limit:]
     except OSError:
         return []
 

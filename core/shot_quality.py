@@ -12,7 +12,9 @@ import numpy as np
 from PIL import Image
 
 from core.ffmpeg import tool_status
-from core.project import Project
+from core.project import Project, atomic_write_json
+from core.normalization import global_cache_root
+from core.storage import working_temporary_directory
 from core.stages.base import stable_fingerprint
 
 SHOT_QUALITY_VERSION = 1
@@ -104,14 +106,19 @@ def _analyze_source_quality(project: Project, source: dict[str, Any]) -> dict[st
             **cache_file_signature(path),
         }
     )[:24]
-    cache_path = project.cache_dir / "shot_quality" / f"{cache_key}.json"
+    cache_path = global_cache_root() / "shot_quality" / f"{cache_key}.json"
     if cache_path.exists():
-        return json.loads(cache_path.read_text(encoding="utf-8"))
+        return _retime_quality(json.loads(cache_path.read_text(encoding="utf-8")), float(source.get("offset_sec") or 0.0))
+    legacy = project.cache_dir / "shot_quality" / f"{cache_key}.json"
+    if legacy.exists():
+        quality = _retime_quality(json.loads(legacy.read_text(encoding="utf-8")), 0.0)
+        atomic_write_json(cache_path, quality)
+        return _retime_quality(quality, float(source.get("offset_sec") or 0.0))
     ffmpeg = tool_status().get("ffmpeg_path")
     if not ffmpeg:
         return {"error": "ffmpeg missing", "windows": [], "summary": {}}
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix="zucker-shot-quality-") as tmpdir:
+    with TemporaryDirectory(prefix="zucker-shot-quality-", dir=working_temporary_directory()) as tmpdir:
         pattern = Path(tmpdir) / "frame-%05d.jpg"
         command = [
             str(ffmpeg),
@@ -131,9 +138,19 @@ def _analyze_source_quality(project: Project, source: dict[str, Any]) -> dict[st
         if result.returncode != 0:
             return {"error": result.stderr.strip() or "quality frame extraction failed", "windows": [], "summary": {}}
         frames = sorted(Path(tmpdir).glob("frame-*.jpg"))
-        quality = _quality_from_frames(frames, float(source.get("offset_sec") or 0.0))
-    cache_path.write_text(json.dumps(quality, indent=2) + "\n", encoding="utf-8")
-    return quality
+        quality = _quality_from_frames(frames, 0.0)
+    atomic_write_json(cache_path, quality)
+    return _retime_quality(quality, float(source.get("offset_sec") or 0.0))
+
+
+def _retime_quality(quality: dict[str, Any], offset: float) -> dict[str, Any]:
+    """Source scores are reusable; master timestamps belong to each project."""
+    return {**quality, "windows": [
+        {**window,
+         "master_start_sec": round(offset + float(window["clip_start_sec"]), 3),
+         "master_end_sec": round(offset + float(window["clip_end_sec"]), 3)}
+        for window in quality.get("windows", [])
+    ]}
 
 
 def _quality_from_frames(frames: list[Path], offset_sec: float) -> dict[str, Any]:
