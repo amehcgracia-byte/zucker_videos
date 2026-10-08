@@ -96,3 +96,62 @@ def test_simultaneous_preview_requests_render_same_asset_only_once(tmp_path, mon
         results = [future.result(timeout=5) for future in futures]
     assert len(calls) == 1
     assert results[0][0]['thumbnail'] == results[1][0]['thumbnail']
+
+
+def test_prefetch_starts_before_plan_is_published_and_review_reuses_photos(tmp_path, monkeypatch):
+    import json, threading
+    from core.stages.base import artifact_path
+    project = review_project(tmp_path)
+    plan_path = artifact_path(project, "edit_plan.json")
+    plan = json.loads(plan_path.read_text())
+    plan_path.unlink()
+    started, release = threading.Event(), threading.Event()
+    calls = []
+    def render(command):
+        calls.append(command)
+        started.set()
+        assert release.wait(3)
+        Path(command[-1]).write_bytes(b'JPEG')
+    monkeypatch.setattr(shot_review, '_run_thumbnail_command', render)
+    prefetch = shot_review.ReviewFramePrefetch(project)
+    try:
+        prefetch.submit(0, plan['segments'][0])
+        assert started.wait(2)
+        assert not plan_path.exists(), 'Photos must begin before the plan is finished'
+        for index, segment in enumerate(plan['segments'][1:], 1):
+            prefetch.submit(index, segment)
+        plan_path.write_text(json.dumps(plan))
+        release.set()
+        progress = []
+        prefetch.finish(lambda percent, detail: progress.append(percent))
+        rows = shot_review.review_items(project)
+        assert len(calls) == 3
+        assert all(row['thumbnail_status'] == 'ready' for row in rows)
+        assert progress == sorted(progress) and progress[-1] == 100
+        changed = plan['segments'][0]
+        changed['clip_start_sec'] += 0.3
+        plan_path.write_text(json.dumps(plan))
+        shot_review.review_items(project)
+        assert len(calls) == 4, 'Changed settings must invalidate the exact frame'
+    finally:
+        release.set()
+        prefetch.close()
+
+
+def test_prefetch_closes_workers_after_render_failure(tmp_path, monkeypatch):
+    import json, pytest
+    from core.stages.base import artifact_path
+    project = review_project(tmp_path)
+    segment = json.loads(artifact_path(project, 'edit_plan.json').read_text())['segments'][0]
+    def fail(command):
+        raise subprocess.CalledProcessError(1, command, stderr='bad video')
+    monkeypatch.setattr(shot_review, '_run_thumbnail_command', fail)
+    prefetch = shot_review.ReviewFramePrefetch(project)
+    try:
+        prefetch.submit(0, segment)
+        with pytest.raises(shot_review.ThumbnailRenderError):
+            prefetch.finish()
+    finally:
+        prefetch.close()
+    with pytest.raises(RuntimeError):
+        prefetch.submit(1, segment)

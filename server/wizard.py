@@ -24,7 +24,7 @@ from core.stages.edit import EditStage
 from core.stages.export import ExportStage, TRANSITION_LIBRARY
 from core.stages.ingest import IngestStage
 from core.stages.sync import SyncStage, load_song_boundaries, set_manual_override, set_manual_override_ranges
-from core.shot_review import review_items
+from core.shot_review import ReviewFramePrefetch, review_items
 from core.throughput import estimated_export_seconds, record_export_throughput
 from server.inbox import app_home, load_global_config, register_selected_inputs, save_global_config
 from server.inbox import classify_file
@@ -912,6 +912,7 @@ class WizardRunner:
         video_paths: list[str],
     ) -> None:
         started_at = time.monotonic()
+        review_prefetch = None
         try:
             _attach_project(job, project)
             job.status = "running"
@@ -968,6 +969,13 @@ class WizardRunner:
             # before any rendering, which is the part that actually takes time.
             job.estimated_total_seconds = _predicted_total_seconds(project, platform)
             needs_review = platform in {"reel", "youtube"} and not (platform == "reel" and is_single_source_reel(project))
+            if needs_review:
+                review_prefetch = ReviewFramePrefetch(project)
+                def prefetch_shot(index, segment):
+                    if job.cancel_event.is_set():
+                        raise WizardCancelled()
+                    review_prefetch.submit(index, segment)
+                edit_stage.shot_ready = prefetch_shot
             self._run_stage(job, project, edit_stage, edit_start, edit_end - 5 if needs_review else edit_end, "Building Backstage narrative" if platform == "backstage" else t("building_edit"))
             # This is deliberately after EditStage and before ExportStage: the
             # user must see a concrete reason instead of receiving a silent
@@ -1001,6 +1009,8 @@ class WizardRunner:
                         job.progress = max(job.progress, edit_end - 5 + int(5 * percent / 100))
                     job.detail = str(detail)
                     job.progress_updated_at = time.time()
+                if review_prefetch:
+                    review_prefetch.finish(review_progress)
                 review = review_items(project, progress_callback=review_progress)
                 if any(not item.get("thumbnail") for item in review):
                     raise RuntimeError("Shot review frames were not fully generated")
@@ -1056,6 +1066,8 @@ class WizardRunner:
             job.technical_details = traceback.format_exc()
             job.message = t("cannot_finish")
         finally:
+            if review_prefetch:
+                review_prefetch.close()
             _release_job_project_lock(job)
 
     def _finish_after_prepare(

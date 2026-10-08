@@ -1028,3 +1028,30 @@ def test_automatic_360_motion_keeps_intershot_sweep_opt_in():
     )
     assert shot["sweep_enabled"] is False
     assert shot["intershot_sweep"] is False
+
+
+@pytest.mark.parametrize("platform", ["youtube", "reel"])
+def test_shot_prefetch_is_notified_incrementally_without_changing_plan(platform):
+    import copy
+    coverage = {"platform": platform,
+        "window": {"title": "Song", "start_sec": 0.0, "duration_sec": 30.0},
+        "sources": [{"path": f"/tmp/{name}.mp4", "source_path": f"/tmp/{name}.mp4",
+                     "filename": f"{name}.mp4", "offset_sec": 0.0, "duration_sec": 40.0,
+                     "confidence": 9.0} for name in ['a', 'b']]}
+    beats = {"bars_sec": list(range(0, 32, 2)), "sections_sec": []}
+    settings = {"wizard": {"variation_seed": "prefetch", "reel_duration_sec": 30}}
+    planner = _youtube_multicam_plan if platform == "youtube" else _reel_promo_plan
+    notified, order = [], []
+    def ready(index, segment):
+        notified.append((index, copy.deepcopy(segment)))
+        order.append(f"photo-{index}")
+    kwargs = {"shot_ready": ready}
+    if platform == "youtube":
+        kwargs['progress_callback'] = lambda percent, detail: order.append('choose')
+    result = planner(copy.deepcopy(coverage), copy.deepcopy(beats), settings, **kwargs)
+    baseline = planner(copy.deepcopy(coverage), copy.deepcopy(beats), settings)
+    assert result == baseline
+    assert [index for index, segment in notified] == list(range(len(result['segments'])))
+    assert [segment['clip_start_sec'] for index, segment in notified] == [s['clip_start_sec'] for s in result['segments']]
+    if platform == 'youtube':
+        assert 'choose' in order[order.index('photo-0') + 1:], 'First photo precedes later camera decisions'

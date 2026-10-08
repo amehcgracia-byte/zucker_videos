@@ -217,7 +217,7 @@ class EditStage(Stage):
         if platform == "reel":
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, t("choosing_cameras"))
-            plan = _reel_promo_plan(coverage, beats, project.data.get("settings", {}))
+            plan = _reel_promo_plan(coverage, beats, project.data.get("settings", {}), shot_ready=getattr(self, "shot_ready", None))
         elif not real_multicam:
             plan = _simple_plan(coverage, project.data.get("settings", {}), recorded_moves=recorded_moves)
             beats = {"stage": self.name, "platform": platform, "beats_sec": [], "bars_sec": [], "sections_sec": [], "tempo": None, "placeholder_short_form": platform != "360"}
@@ -226,7 +226,7 @@ class EditStage(Stage):
             progress_callback(55, t("choosing_cameras"))
             events = beats.get("instrument_highlights") or []
             coverage = {**coverage, "musical_highlights": beats.get("musical_highlights") or [], "instrument_highlights": events, "singing_segments": [event for event in events if event.get("instrument") == "singer"]}
-            plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}), recorded_moves=recorded_moves, progress_callback=progress_callback)
+            plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}), recorded_moves=recorded_moves, progress_callback=progress_callback, shot_ready=getattr(self, "shot_ready", None))
         write_artifact_json(artifact_path(project, "beats.json"), beats)
         plan["edit_plan_algorithm_version"] = EDIT_PLAN_ALGORITHM_VERSION
         validate_plan_camera_source_consistency(plan)
@@ -379,6 +379,7 @@ def _reel_promo_plan(
     coverage: dict[str, Any],
     beats: dict[str, Any],
     settings: dict[str, Any] | None = None,
+    shot_ready=None,
 ) -> dict[str, Any]:
     """Build an unsynchronised, beat-cut promo plan.
 
@@ -548,6 +549,8 @@ def _reel_promo_plan(
             target_x, target_y = _reel_target_for_source(source, clip_start, seg_duration)
             segment["reel_subject_center"] = {"x": target_x, "y": target_y}
         segments.append(segment)
+        if shot_ready:
+            shot_ready(len(segments) - 1, segment)
     _assign_reel_mix_treatments(segments, sources, wizard)
     _validate_motion_segments(segments)
     return {
@@ -667,6 +670,7 @@ def _youtube_multicam_plan(
     settings: dict[str, Any] | None = None,
     recorded_moves: list[dict[str, Any]] | None = None,
     progress_callback: ProgressCallback | None = None,
+    shot_ready=None,
 ) -> dict[str, Any]:
     platform = str(coverage.get("platform") or "youtube")
     window = coverage.get("window") or {}
@@ -1043,6 +1047,8 @@ def _youtube_multicam_plan(
         if subject:
             subject_seconds[subject] = subject_seconds.get(subject, 0.0) + segment_end - segment_start
         segments.append(segment)
+        if shot_ready:
+            shot_ready(len(segments) - 1, segment)
         bar_index = next_index
         segment_index += 1
 

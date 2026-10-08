@@ -801,6 +801,45 @@ def _render_thumbnail_to_path(project, segment, source, timestamp, output, root,
                 raise ThumbnailRenderError(thumbnail_error) from exc
 
 
+def _thumbnail_asset(root: Path, index: int, segment: dict[str, Any]) -> tuple[str, float, Path]:
+    source = _source_for(segment)
+    timestamp = float(segment.get("clip_start_sec") or 0.0) + max(0.1, float(segment.get("duration_sec") or 0.1)) / 2.0
+    from core.storage import cache_mtime_ns
+    source_mtime = cache_mtime_ns(Path(source)) if Path(source).exists() else 0
+    pose = json.dumps(_review_pose_for_cache(segment), sort_keys=True)
+    key = hashlib.sha256(f"{source}|{source_mtime}|{timestamp:.4f}|{pose}".encode()).hexdigest()[:20]
+    return source, timestamp, root / f"shot-{index:04d}-{key}.jpg"
+
+
+class ReviewFramePrefetch:
+    """Prepare decided shots while the editor chooses subsequent cuts."""
+    def __init__(self, project: Project):
+        self.project = project
+        self.root = project.cache_dir / "shot_review" / "assets-v2"
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="review-prefetch")
+        self.futures = []
+
+    def submit(self, index: int, segment: dict[str, Any]) -> None:
+        segment = _review_segment(self.project, segment)
+        source, timestamp, output = _thumbnail_asset(self.root, index, segment)
+        if source:
+            self.futures.append(self.pool.submit(_render_thumbnail_to_path, self.project,
+                segment, source, timestamp, output, self.root, locate_executable("ffmpeg") or "ffmpeg", {}))
+
+    def finish(self, progress_callback: ProgressCallback | None = None) -> None:
+        for completed, future in enumerate(as_completed(self.futures), 1):
+            future.result()
+            if progress_callback:
+                progress_callback(int(100 * completed / max(1, len(self.futures))),
+                                  f"Review photos ready: {completed}/{len(self.futures)}")
+
+    def close(self) -> None:
+        for future in self.futures:
+            future.cancel()
+        self.pool.shutdown(wait=True, cancel_futures=True)
+
+
 def review_items(
     project: Project,
     *,
@@ -835,16 +874,8 @@ def review_items(
         color_profiles = {}
     pending = []
     for index, segment in enumerate(segments):
-        source = _source_for(segment)
+        source, timestamp, output = _thumbnail_asset(root, index, segment)
         duration = max(0.1, float(segment.get("duration_sec") or 0.1))
-        clip_start = float(segment.get("clip_start_sec") or 0.0)
-        timestamp = clip_start + duration / 2.0
-        from core.storage import cache_mtime_ns
-        source_mtime = cache_mtime_ns(Path(source)) if Path(source).exists() else 0
-        shot = segment.get("spherical_shot") or {}
-        pose = json.dumps(_review_pose_for_cache(segment), sort_keys=True)
-        key = hashlib.sha256(f"{source}|{source_mtime}|{timestamp:.4f}|{pose}".encode()).hexdigest()[:20]
-        output = root / f"shot-{index:04d}-{key}.jpg"
         if not output.exists():
             legacy = _legacy_review_assets(str(root.parent)).get(output.name)
             if legacy and legacy.exists():

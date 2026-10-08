@@ -109,3 +109,5 @@ La Sony es la primera referencia de color disponible; no se añade un aclarado g
 ## Preparación de fotos de revisión
 
 Desde 2.5.8, una grabación 360 sin caché previa no se convierte entera para preparar las fotos de los cortes: se extraen los instantes necesarios del original. Las cachés anteriores válidas se reutilizan. Se preparan hasta dos fotos simultáneas, con bloqueo por archivo para evitar que la revisión y las solicitudes de vista previa repitan trabajo. En macOS se intenta decodificar por VideoToolbox y se vuelve a software si falla. Cada foto terminada actualiza el progreso real; el orden de los cortes y el render final se conservan.
+
+Desde 2.5.9, las fotos de revisión de YouTube y Reel multicámara empiezan a generarse conforme se decide cada corte, en paralelo con la elección de las tomas siguientes. La revisión espera solo las fotos pendientes y reutiliza exactamente los mismos archivos; no se preparan encuadres especulativos durante la ingestión. Cambiar el instante o el encuadre invalida la foto correspondiente. Las barras de render 360 convierten también los contadores de fotogramas (por ejemplo, 60/120) en su porcentaje real.

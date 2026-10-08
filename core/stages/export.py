@@ -797,8 +797,7 @@ def _render_plan(
                 message = match.group(3)
                 fraction = 0.0
                 if not isinstance(detail, ProgressDetail):
-                    local = re.search(r"(\d+)%\s*$", message)
-                    fraction = 1.0 if message.lower() == "complete" else int(local.group(1)) / 100 if local else 0.0
+                    fraction = _segment_detail_fraction(message)
                 worker_fractions[worker_index] = max(worker_fractions.get(worker_index, 0.0), fraction)
                 percent = segment_phase_start + (80 - segment_phase_start) * sum(worker_fractions.values()) / max(1, len(render_segments))
                 if not isinstance(detail, ProgressDetail):
@@ -2387,6 +2386,15 @@ def _segment_requires_motion_verification(segment: dict[str, Any]) -> bool:
         _spherical_shot(segment)
         and SPHERICAL_EXPORT_MOTION_MODE == "static"
     )
+
+
+def _segment_detail_fraction(message: str) -> float:
+    """Translate a measured percent or native frame count into bar progress."""
+    frames = re.search(r"(\d+)/(\d+) frames\s*$", message)
+    local = re.search(r"(\d+)%\s*$", message)
+    fraction = (int(frames.group(1)) / max(1, int(frames.group(2))) if frames
+                else 1.0 if message.lower() == "complete" else int(local.group(1)) / 100 if local else 0.0)
+    return max(0.0, min(1.0, fraction))
 
 
 def _render_segment_job(
