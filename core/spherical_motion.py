@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import math
+import logging
+import sys
+from pathlib import Path
 from functools import lru_cache
 import subprocess
 import threading
@@ -11,7 +14,7 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 
-from core.ffmpeg import FFmpegError
+from core.ffmpeg import FFmpegError, ffprobe
 from core.storage import working_temporary_file
 from core.spherical_view import view_parameters
 
@@ -110,17 +113,68 @@ def reproject_maps(source_size: tuple[int, int], output_size: tuple[int, int], s
     return mx, my
 
 
+LOGGER = logging.getLogger(__name__)
+
+
+class HardwareDecodeError(FFmpegError):
+    """A hardware decoder failure; encoder and cancellation errors stay separate."""
+
+
+@lru_cache(maxsize=64)
+def _verified_hardware_format(source: str, identity: tuple) -> str | None:
+    # Metadata only, not a cached content hash. Be conservative: this is the
+    # format/range/codec combination validated against the real 360 originals.
+    try:
+        streams = ffprobe(source).get("streams") or []
+        video = next(stream for stream in streams if stream.get("codec_type") == "video")
+    except (OSError, FFmpegError, StopIteration, ValueError):
+        return None
+    if (video.get("codec_name") == "hevc" and video.get("pix_fmt") == "yuvj420p"
+            and video.get("color_range") == "pc" and video.get("color_space") == "bt709"):
+        return "yuvj420p"
+    return None
+
+
 def run_reprojected_command(command: list[str], source: str, source_size: tuple[int, int],
                             start: float, frame_count: int, shot: dict[str, Any],
                             progress: Callable | None = None, *,
-                            pose_sampler: Callable | None = None) -> None:
+                            pose_sampler: Callable | None = None,
+                            hardware_decode: bool = True) -> None:
+    pixel_format = None
+    if hardware_decode and sys.platform == "darwin":
+        try:
+            stat = Path(source).stat()
+            pixel_format = _verified_hardware_format(source,
+                (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+        except OSError:
+            pass
+    if pixel_format:
+        try:
+            _run_reprojected_command(command, source, source_size, start, frame_count, shot,
+                progress, pose_sampler=pose_sampler, decoder_pixel_format=pixel_format)
+            return
+        except HardwareDecodeError as exc:
+            LOGGER.warning("360 hardware decoder failed; retrying with CPU: %s", exc)
+    _run_reprojected_command(command, source, source_size, start, frame_count, shot,
+        progress, pose_sampler=pose_sampler)
+
+
+def _run_reprojected_command(command: list[str], source: str, source_size: tuple[int, int],
+                            start: float, frame_count: int, shot: dict[str, Any],
+                            progress: Callable | None = None, *,
+                            pose_sampler: Callable | None = None,
+                            decoder_pixel_format: str | None = None) -> None:
     """Pipe atomic reprojected BGR frames directly into the final encoder graph."""
     ffmpeg = command[0]; sw, sh = source_size
     if frame_count <= 0:
         raise ValueError("A 360 segment must contain at least one frame")
     duration = frame_count / 30
-    decoder_command = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-threads', '2', '-ss', str(start), '-i', source,
-                       '-vf', 'fps=30,format=bgr24', '-an', '-frames:v', str(frame_count), '-f', 'rawvideo', 'pipe:1']
+    LOGGER.info("360 decoder backend=%s source=%s start=%.6f frames=%d format=%s",
+                "videotoolbox" if decoder_pixel_format else "cpu", source, start, frame_count, decoder_pixel_format)
+    decoder_options = ['-hwaccel', 'videotoolbox'] if decoder_pixel_format else []
+    decoder_filter = f'format={decoder_pixel_format},fps=30,format=bgr24' if decoder_pixel_format else 'fps=30,format=bgr24'
+    decoder_command = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-threads', '2', '-ss', str(start), *decoder_options, '-i', source,
+                       '-vf', decoder_filter, '-an', '-frames:v', str(frame_count), '-f', 'rawvideo', 'pipe:1']
     stopped = threading.Event(); failures: list[BaseException] = []; completed = [0]; last_frame_at = [time.monotonic()]
     with working_temporary_file() as decode_log, working_temporary_file() as encode_log:
         decoder = subprocess.Popen(decoder_command, stdout=subprocess.PIPE, stderr=decode_log)
@@ -157,7 +211,11 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
                     if not count: break
                     received += count
                 if failures: raise failures[0]
-                if received != len(frame_bytes): raise FFmpegError(f"360 decode ended at frame {index}/{frame_count}")
+                if received != len(frame_bytes):
+                    decode_log.seek(0)
+                    diagnostics = decode_log.read().decode(errors='replace')[-2000:]
+                    error_type = HardwareDecodeError if decoder_pixel_format else FFmpegError
+                    raise error_type(f"360 decode ended at frame {index}/{frame_count}: {diagnostics}")
                 pose = pose_sampler(index / 30) if pose_sampler else motion_pose(shot, duration, index / 30)
                 if maps is None or pose != previous_pose:
                     maps = reproject_maps((sw, sh), (1920, 1080), shot, pose)
@@ -168,9 +226,12 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
                 last_frame_at[0] = time.monotonic()
                 notify()
             encoder.stdin.close(); encoder.stdin = None
-            if encoder.wait(timeout=120) or decoder.wait(timeout=30):
+            encoder_code = encoder.wait(timeout=120)
+            decoder_code = decoder.wait(timeout=30)
+            if encoder_code or decoder_code:
                 encode_log.seek(0); decode_log.seek(0)
-                raise FFmpegError((encode_log.read() + decode_log.read()).decode(errors='replace')[-4000:])
+                error_type = HardwareDecodeError if decoder_pixel_format and decoder_code and not encoder_code else FFmpegError
+                raise error_type((encode_log.read() + decode_log.read()).decode(errors='replace')[-4000:])
             if failures: raise failures[0]
         except OSError as exc:
             if failures: raise failures[0]
@@ -187,6 +248,10 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
                 if process is not None:
                     if process.poll() is None: process.kill()
                     process.wait()
-                    if process.stdout: process.stdout.close()
-                    if process.stdin: process.stdin.close()
+                    for stream in (process.stdout, process.stdin):
+                        if stream:
+                            try:
+                                stream.close()
+                            except OSError:
+                                pass
         if progress: progress(100, "360 movement complete")
