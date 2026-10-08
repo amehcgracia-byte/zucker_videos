@@ -1,7 +1,7 @@
 """Isolated full-export A/B: cold rendered caches, warm reverse order.
 
 Run from the repository with PYTHONPATH set. No project or user cache is cleared.
-The reference is the export implementation at 7ae1d8d with native CPU decode.
+The reference defaults to round 2. Use --reference 7ae1d8d to reproduce round 1.
 """
 import argparse,copy,hashlib,json,os,resource,subprocess,threading,time,types,sys
 from pathlib import Path
@@ -15,6 +15,10 @@ parser.add_argument('--source',required=True)
 parser.add_argument('--root',required=True)
 parser.add_argument('--variant',choices=['before','after'],required=True)
 parser.add_argument('--round',choices=['cold','warm'],required=True)
+parser.add_argument('--reference', default='1ffb168')
+parser.add_argument('--overlap-verification', action='store_true')
+parser.add_argument('--metal-remap', action='store_true')
+parser.add_argument('--workers', type=int, default=4)
 args=parser.parse_args()
 root=Path(args.root);root.mkdir(parents=True,exist_ok=True)
 variant_root=root/args.variant;variant_root.mkdir(exist_ok=True)
@@ -25,6 +29,14 @@ planfile=root/'frozen-edit-plan.json'
 if not planfile.exists(): planfile.write_bytes((source.artifacts_dir/'edit_plan.json').read_bytes())
 plan=json.loads(planfile.read_text());data=json.loads(snapshot.read_text())
 project=Project(variant_root/'case',copy.deepcopy(data));project.ensure_dirs();project.save()
+project.data.pop('_export_watchdog_events', None)
+project.data.setdefault('settings', {}).setdefault('export', {})['segment_workers'] = args.workers
+if args.variant == 'after' and args.overlap_verification:
+ project.data.setdefault('settings', {}).setdefault('export', {})['overlap_segment_verification'] = True
+ project.save()
+if args.variant == 'after' and args.metal_remap:
+ project.data.setdefault('settings', {}).setdefault('export', {})['spherical_remap_backend'] = 'metal'
+ project.save()
 (project.artifacts_dir/'edit_plan.json').write_bytes(planfile.read_bytes())
 for name in ['coverage.json','beats.json']:
  target=project.artifacts_dir/name
@@ -34,11 +46,16 @@ if args.round=='cold' and any(cache.iterdir()):raise SystemExit('Cold cache is n
 if args.round=='warm' and not any(cache.iterdir()):raise SystemExit('Warm cache has no rendered segments')
 module=current
 if args.variant=='before':
- text=subprocess.check_output(['git','show','7ae1d8d:core/stages/export.py'],text=True)
+ text=subprocess.check_output(['git','show',f'{args.reference}:core/stages/export.py'],text=True)
  module=types.ModuleType('core.stages.export_reference');module.__package__='core.stages';module.__file__=current.__file__
  exec(compile(text,'export_reference','exec'),module.__dict__)
- native=module.run_reprojected_command
- module.run_reprojected_command=lambda *a,**kw:native(*a,**kw,hardware_decode=False)
+ native_module=types.ModuleType('core.spherical_motion_reference');native_module.__package__='core'
+ from core import spherical_motion
+ native_module.__file__=spherical_motion.__file__
+ native_text=subprocess.check_output(['git','show',f'{args.reference}:core/spherical_motion.py'],text=True)
+ exec(compile(native_text,'spherical_motion_reference','exec'),native_module.__dict__)
+ native=native_module.run_reprojected_command
+ module.run_reprojected_command=(lambda *a,**kw:native(*a,**kw,hardware_decode=False)) if args.reference=='7ae1d8d' else native
 module.global_segment_path=lambda key:cache/f'{key}.mp4'
 segments=module._frame_normalized_segments(module._apply_saved_spherical_landmarks(project,plan['segments']))
 bitrate=json.loads((source.artifacts_dir/'export_manifest.json').read_text())['target_video_bitrate']
@@ -125,7 +142,19 @@ try:
    'python_cpu_sec':round(time.process_time()-self_before,3),'child_cpu_sec':round(usage_after.ru_utime+usage_after.ru_stime-usage_before.ru_utime-usage_before.ru_stime,3),
    'plan_sha256':hashlib.sha256(planfile.read_bytes()).hexdigest(),'bitrate':bitrate,'performance':project.data.get('_export_performance'),
    'warnings':warnings,'cache_definition':'Cold = empty private rendered-segment cache, not cleared OS/source/analysis caches; warm = reuse same private segments',
-   'reference_export_commit':'7ae1d8d','implementation_commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()}
+   'reference_export_commit':args.reference,'overlap_verification':args.variant=='after' and args.overlap_verification,
+   'segment_workers':module._segment_worker_count(project, len(segments)),
+   'watchdog_events':project.data.get('_export_watchdog_events', []),
+   'metal_remap':args.variant=='after' and args.metal_remap,
+   'implementation_commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+   'implementation_diff_sha256':hashlib.sha256(subprocess.check_output(['git','diff','--','core'])).hexdigest()}
+ from core.metal_remap import backend_stats
+ result['metal_backend_stats']=backend_stats()
+ if args.variant=='after' and args.metal_remap:
+  from core.metal_remap import _library
+  library=_library()
+  if library is not None:
+   result['metal_library_sha256']=hashlib.sha256(Path(library._name).read_bytes()).hexdigest()
  (roundroot/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps({k:result[k] for k in ['variant','round','wall_sec','output_bytes']}),flush=True)
 except BaseException as exc:
  (roundroot/'failure.json').write_text(json.dumps({'error':str(exc),'elapsed_sec':time.monotonic()-start,'measurement_valid':False},indent=2))
