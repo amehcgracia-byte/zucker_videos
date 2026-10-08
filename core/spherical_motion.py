@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 import subprocess
 import threading
 import time
@@ -50,6 +51,15 @@ def motion_pose(shot: dict[str, Any], duration: float, seconds: float) -> tuple[
     return yaw, pitch, max(minimum_fov, fov)
 
 
+@lru_cache(maxsize=4)
+def _projection_grid(width: int, height: int) -> tuple[np.ndarray, np.ndarray]:
+    grid = np.meshgrid((np.arange(width, dtype=np.float32) + .5) * 2 / width - 1,
+                       (np.arange(height, dtype=np.float32) + .5) * 2 / height - 1)
+    for item in grid:
+        item.flags.writeable = False
+    return grid[0], grid[1]
+
+
 def reproject_maps(source_size: tuple[int, int], output_size: tuple[int, int], shot: dict[str, Any],
                    pose: tuple[float, float, float] | None = None, *, exact: bool = False) -> tuple[np.ndarray, np.ndarray]:
     """Return continuous longitude/latitude maps; unwrap before interpolation."""
@@ -69,8 +79,7 @@ def reproject_maps(source_size: tuple[int, int], output_size: tuple[int, int], s
         view.update(projection="sg", h_fov=horizontal,
                     v_fov=math.degrees(4*math.atan(math.tan(math.radians(horizontal)/4)/(width/height))))
     mw, mh = (width, height) if exact else (max(64, width // 3), max(36, height // 3))
-    xx, yy = np.meshgrid((np.arange(mw, dtype=np.float32) + .5) * 2 / mw - 1,
-                         (np.arange(mh, dtype=np.float32) + .5) * 2 / mh - 1)
+    xx, yy = _projection_grid(mw, mh)
     if view['projection'] == 'sg':
         x = xx * math.tan(math.radians(float(view['h_fov'])) / 4)
         y = yy * math.tan(math.radians(float(view['v_fov'])) / 4)
@@ -137,6 +146,7 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
             # Reuse one frame buffer. A 5K sphere is tens of MB: read/extend
             # previously copied that payload twice for every decoded frame.
             frame = np.empty((sh, sw, 3), dtype=np.uint8)
+            pixels = np.empty((1080, 1920, 3), dtype=np.uint8)
             frame_bytes = memoryview(frame).cast("B")
             previous_pose = None
             maps = None
@@ -152,7 +162,7 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
                 if maps is None or pose != previous_pose:
                     maps = reproject_maps((sw, sh), (1920, 1080), shot, pose)
                     previous_pose = pose
-                pixels = cv2.remap(frame, *maps, interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_WRAP)
+                cv2.remap(frame, *maps, interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_WRAP, dst=pixels)
                 encoder.stdin.write(memoryview(pixels).cast("B"))
                 completed[0] = index + 1
                 last_frame_at[0] = time.monotonic()

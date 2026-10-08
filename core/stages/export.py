@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+import errno
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import os
@@ -16,7 +17,7 @@ import math
 import threading
 import time
 from pathlib import Path
-from core.storage import data_root
+from core.storage import data_root, working_temporary_file
 from typing import Any
 
 from core.build_info import build_info
@@ -2474,7 +2475,7 @@ def _render_segment_job(
         if commands:
             command_line = " ".join(commands[-1])
         segment_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(tmp_segment, segment_path)
+        _publish_rendered_segment(tmp_segment, segment_path)
         if rendered_from == "proxy":
             local_warnings.append(f"Used proxy fallback for {label}")
     ffmpeg_sec = time.perf_counter() - ffmpeg_started
@@ -2494,7 +2495,9 @@ def _render_segment_job(
                 command_recorder=commands,
             )
         _write_segment_cache_stamp(segment_path, segment)
-    _require_segment_cache_stamp(segment_path, segment)
+    # Cache hits were attested above; fresh files were hashed when their
+    # stamp was written. Verify the independent concat copy below instead
+    # of reading this entire file a second time immediately.
     # The global cache is the reusable store; concat receives a per-export
     # copy so two timeline entries can never alias the same pathname, even if
     # their recipes are identical. This makes ordering and boundary auditing
@@ -2760,7 +2763,7 @@ def _verify_or_rebuild_segment(
         if _spherical_shot(segment):
             LOGGER.info("360 segment repair write path=%s command=%s", tmp_segment, commands[-1] if commands else "missing")
         command_line = " ".join(commands[-1]) if commands else "rerender command unavailable"
-        shutil.copy2(tmp_segment, segment_path)
+        _publish_rendered_segment(tmp_segment, segment_path)
         try:
             _verify_moving_segment(segment_path, segment_duration, label, command_line)
             return command_line
@@ -2792,7 +2795,7 @@ def _verify_or_rebuild_segment(
             if _spherical_shot(segment):
                 LOGGER.info("360 segment proxy-repair write path=%s command=%s", tmp_segment, commands[-1] if commands else "missing")
             command_line = " ".join(commands[-1]) if commands else "proxy fallback command unavailable"
-            shutil.copy2(tmp_segment, segment_path)
+            _publish_rendered_segment(tmp_segment, segment_path)
             _verify_moving_segment(segment_path, segment_duration, label, command_line)
             return command_line
 
@@ -2816,9 +2819,28 @@ def _segment_video_command_base(ffmpeg: str, clip_path: str, segment: dict[str, 
     ]
 
 
-def _run_ffmpeg_progress(command: list[str], duration: float, label: str, progress: ProgressCallback | None) -> None:
+def _publish_rendered_segment(source: Path, destination: Path) -> None:
+    """Move a completed render into cache without copying it on the same disk."""
     try:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        os.replace(source, destination)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        # Custom cache roots can live on a different volume.
+        shutil.copy2(source, destination)
+        source.unlink()
+
+
+def _run_ffmpeg_progress(command: list[str], duration: float, label: str, progress: ProgressCallback | None) -> None:
+    # A pipe that is drained only after stdout reaches EOF can deadlock when
+    # FFmpeg emits enough errors. Spool diagnostics on the selected work disk.
+    with working_temporary_file() as error_log:
+        _run_ffmpeg_progress_logged(command, duration, label, progress, error_log)
+
+
+def _run_ffmpeg_progress_logged(command, duration, label, progress, error_log) -> None:
+    try:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=error_log, text=True)
     except FileNotFoundError as exc:
         error = FFmpegError("ffmpeg is missing")
         error.exit_code = None
@@ -2842,7 +2864,11 @@ def _run_ffmpeg_progress(command: list[str], duration: float, label: str, progre
         process.kill()
         process.wait()
         raise
-    _, stderr = process.communicate()
+    process.communicate()
+    error_log.seek(0, os.SEEK_END)
+    size = error_log.tell()
+    error_log.seek(max(0, size - 65536))
+    stderr = error_log.read().decode("utf-8", errors="replace")
     if process.returncode != 0:
         error = FFmpegError((stderr or "").strip() or "ffmpeg export failed")
         error.exit_code = process.returncode
