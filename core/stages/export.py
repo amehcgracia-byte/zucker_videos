@@ -164,7 +164,7 @@ def _transition_profile(project: Project, platform: str) -> dict[str, Any]:
 
 def _transition_boundaries(segments: list[dict[str, Any]], profile: dict[str, Any]) -> list[int]:
     """Return outgoing joins, respecting each review card selection."""
-    if len(segments) < 2 or float(profile.get("duration") or 0.0) <= 0:
+    if len(segments) < 2:
         return []
     boundaries: list[int] = []
     for index in range(len(segments) - 1):
@@ -183,6 +183,8 @@ def _transition_boundaries(segments: list[dict[str, Any]], profile: dict[str, An
             continue
         if str(explicit or "").lower() in TRANSITION_LIBRARY:
             boundaries.append(index)
+            continue
+        if float(profile.get("duration") or 0.0) <= 0:
             continue
         if profile.get("sections_only"):
             left = segments[index].get("section") or segments[index].get("section_id")
