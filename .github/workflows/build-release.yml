@@ -3,9 +3,6 @@ name: Build Zucker Editor releases
 on:
   workflow_dispatch:
   push:
-    branches:
-      - "fix/native-safe-camera-moves"
-      - "fix/external-storage-*"
     tags:
       - "v*"
 
