@@ -61,17 +61,20 @@ MIN_ACCEPTABLE_VIDEO_BITRATE = 2_500_000
 MAX_VIDEO_BITRATE = 18_000_000
 TARGET_EXPORT_FPS = 30.0
 TARGET_EXPORT_TIMESCALE = 30_000
-# The reframing v360 instance is labelled so sendcmd can drive it per frame.
-# The sendcmd target MUST be this exact label: ffmpeg matches the command target
-# against the filter's instance name ("v360@sphere"), NOT the bare "@id" suffix.
-# Targeting just "sphere" silently matches nothing, freezing all 360 motion.
+# The reframing v360 instance is labelled for the legacy experimental motion
+# path.  Final exports deliberately do not use sendcmd: reconfiguring v360 at
+# command instants can produce mixed/corrupt frames on the packaged FFmpeg.
 SPHERE_V360_LABEL = "v360@sphere"
 EXPORT_SEGMENT_RECIPE_VERSION = 21
 # v17 adds byte-level and full-shot attestation to segment sidecars.  A file
 # with a copied/reused sidecar is no longer accepted if its bytes or authored
 # motion fields differ from the current render.
-SPHERICAL_MOTION_RECIPE_VERSION = 21
-# Emergency diagnostic switch; normal exports use the bounded motion path.
+SPHERICAL_MOTION_RECIPE_VERSION = 22
+# Final 360 exports remain static until a non-sendcmd motion renderer has
+# passed a real-project artifact audit.  Review thumbnails and the interactive
+# preview still use each shot's authored pose; this only gates export motion.
+SPHERICAL_EXPORT_MOTION_MODE = "static"
+# Emergency diagnostic switch retained for backwards-compatible plan logic.
 FORCE_STATIC_360_ISOLATION = False
 SPHERICAL_HOLD_COMMAND_COUNT = 2
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
@@ -1780,9 +1783,10 @@ def _render_segment(
     ffmpeg = _ffmpeg_path()
     duration = max(0.1, float(segment["duration_sec"]))
     frame_count = _segment_frame_count(segment)
+    render_segment = _static_export_segment(segment)
     source = _segment_source_info(project, segment)
-    reel_letterbox_filter = _reel_letterbox_filter(project, segment, platform)
-    mix_horizontal = platform == "reel" and segment.get("reel_mix_treatment") == "horizontal"
+    reel_letterbox_filter = _reel_letterbox_filter(project, render_segment, platform)
+    mix_horizontal = platform == "reel" and render_segment.get("reel_mix_treatment") == "horizontal"
     # Reel's user-selectable logo is applied exactly once by the post-export
     # Overlay & Captions composition. The historical export watermark belongs
     # to the older base-export path and must not be baked into Reel footage;
@@ -1800,7 +1804,7 @@ def _render_segment(
             ffmpeg,
             proxy_path,
             master_path,
-            segment,
+            render_segment,
             output_path,
             platform,
             video_bitrate,
@@ -1818,16 +1822,16 @@ def _render_segment(
             reel_letterbox_filter=reel_letterbox_filter,
             source_filter=_export_source_filter(
                 source.get("probe") or {},
-                _spherical_shot(segment),
+                _spherical_shot(render_segment),
                 duration=duration,
                 command_path=output_path.with_suffix(".sendcmd.txt"),
             ) if _spherical_shot(segment) else None,
         )
     sendcmd_path = output_path.with_suffix(".sendcmd.txt")
     segment_probe = source.get("probe") or {}
-    _warn_if_spherical_framing_was_dropped(segment, segment_probe, warnings)
-    source_filter = _export_source_filter(segment_probe, _spherical_shot(segment), duration=duration, command_path=sendcmd_path)
-    reel_overlay_items = _reel_overlay_items(segment, overlay_config or {}, platform, output_path.parent)
+    _warn_if_spherical_framing_was_dropped(render_segment, segment_probe, warnings)
+    source_filter = _export_source_filter(segment_probe, _spherical_shot(render_segment), duration=duration, command_path=sendcmd_path)
+    reel_overlay_items = _reel_overlay_items(render_segment, overlay_config or {}, platform, output_path.parent)
     filter_complex = _segment_filtergraph(
         platform,
         duration,
@@ -1840,16 +1844,16 @@ def _render_segment(
         intro_logo=intro_logo,
         outro_logo=outro_logo,
         source_filter=source_filter,
-        motion_filter=None if mix_horizontal else _motion_filter(segment, platform, duration),
+        motion_filter=None if mix_horizontal else _motion_filter(render_segment, platform, duration),
         frame_count=frame_count,
-        segment=segment,
+        segment=render_segment,
         reel_overlay_items=reel_overlay_items,
         reel_letterbox_filter=reel_letterbox_filter,
     )
     command_base = _segment_video_command_base(
         ffmpeg,
         source["source_path"],
-        segment,
+        render_segment,
         duration,
     )
     if watermark:
@@ -1916,7 +1920,7 @@ def _render_segment(
                 ffmpeg,
                 proxy_path,
                 master_path,
-                segment,
+                render_segment,
                 output_path,
                 platform,
                 video_bitrate,
@@ -1934,10 +1938,10 @@ def _render_segment(
                 reel_letterbox_filter=reel_letterbox_filter,
                 source_filter=_export_source_filter(
                     source.get("probe") or {},
-                    _spherical_shot(segment),
+                    _spherical_shot(render_segment),
                     duration=duration,
                     command_path=output_path.with_suffix(".sendcmd.txt"),
-                ) if _spherical_shot(segment) else None,
+                ) if _spherical_shot(render_segment) else None,
             )
 
 
@@ -2031,7 +2035,7 @@ def _render_segment_job(
     ffmpeg_sec = time.perf_counter() - ffmpeg_started
     verify_started = time.perf_counter()
     _verify_segment_frame_duration(segment_path, _segment_frame_count(segment), label)
-    if verify_motion:
+    if verify_motion and _segment_requires_motion_verification(segment):
         command_line = _verify_or_rebuild_segment(
             project, segment, master_path, segment_path,
             temp_dir / f"segment-{index:04d}.mp4", platform, video_bitrate,
@@ -2339,6 +2343,29 @@ def _verify_or_rebuild_segment(
             shutil.copy2(tmp_segment, segment_path)
             _verify_moving_segment(segment_path, segment_duration, label, command_line)
             return command_line
+
+
+def _static_export_segment(segment: dict[str, Any]) -> dict[str, Any]:
+    """Return the export-only view of a segment.
+
+    The authored pose is preserved exactly, but runtime v360 motion is
+    disabled.  This is intentionally applied at the renderer boundary so the
+    Review shots and interactive preview can continue to show the saved pose
+    while the final export never reaches the unsafe sendcmd path.
+    """
+    shot = _spherical_shot(segment)
+    if not shot or SPHERICAL_EXPORT_MOTION_MODE != "static":
+        return segment
+    result = dict(segment)
+    safe_shot = dict(shot)
+    safe_shot["runtime_motion_enabled"] = False
+    result["spherical_shot"] = safe_shot
+    return result
+
+
+def _segment_requires_motion_verification(segment: dict[str, Any]) -> bool:
+    """Whether the renderer is expected to create camera motion in a segment."""
+    return not (_spherical_shot(segment) and SPHERICAL_EXPORT_MOTION_MODE == "static")
 
 
 def _segment_video_command_base(ffmpeg: str, clip_path: str, segment: dict[str, Any], duration: float) -> list[str]:
@@ -3551,6 +3578,7 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "automatic_yaw_drift_fraction": SPHERICAL_PRIMARY_DRIFT_FRACTION,
         "automatic_motion_fraction_per_sec": SPHERICAL_MAX_MOTION_FRACTION_PER_SEC,
         "v360_target": SPHERE_V360_LABEL,
+        "export_motion_mode": SPHERICAL_EXPORT_MOTION_MODE,
         "target_fps": TARGET_EXPORT_FPS,
     }
 
