@@ -27,7 +27,7 @@
         <button id="newProject" class="new-project">New project</button>
       </div>
     </nav>
-<dialog id="editTypeDialog" aria-labelledby="editTypeTitle"><div class="edit-type-dialog-content"><button id="closeEditType" class="feedback-close" type="button" aria-label="Close edit type chooser">×</button><img class="edit-type-einstein" src="/einstein-edit-type.png" alt="Einstein preparing your next edit" /><h2 id="editTypeTitle">Elige tu tipo de edición</h2><p>Primero el modo. Después, añade los archivos de tu proyecto.</p>        <div class="platforms">
+<dialog id="editTypeDialog" aria-labelledby="editTypeTitle"><div class="edit-type-dialog-content"><button id="closeEditType" class="feedback-close" type="button" aria-label="Close edit type chooser">×</button><img class="edit-type-einstein" src="/einstein-edit-type.png" alt="Einstein preparing your next edit" /><h2 id="editTypeTitle">Choose your edit type</h2><p>Mode first. Then add your project files.</p>        <div class="platforms">
           <button class="platform-card" data-platform="youtube">
             <span class="platform-glyph" data-glyph="youtube"></span>
             <strong>YouTube</strong>
@@ -133,6 +133,15 @@
           <p id="settingsPreparationDetail"></p>
         </div>
         <label id="instrumentHighlightsOption"><input id="instrumentHighlights" type="checkbox"> Detect vocal activity and possible instrumental solos (extra analysis, cached)</label>
+        <label id="draftExportOption"><input id="draftExport" type="checkbox"> Fast draft: 360 camera moves use a lighter source to review the edit sooner (turn off for the final video)</label>
+        <fieldset id="sceneConditions" class="scene-conditions">
+          <legend>Scene, to choose matching filler shots</legend>
+          <label>Time <select data-scene="time"><option value="auto">Auto</option><option value="day">Day</option><option value="sunset">Sunset</option><option value="night">Night</option></select></label>
+          <label>Place <select data-scene="place"><option value="auto">Auto</option><option value="indoor">Indoor</option><option value="outdoor">Outdoor</option></select></label>
+          <label>Rain <select data-scene="rain"><option value="auto">Auto</option><option value="no">No</option><option value="yes">Yes</option></select></label>
+          <label>Fire <select data-scene="fire"><option value="auto">Auto</option><option value="no">No</option><option value="yes">Yes</option></select></label>
+          <p class="field-help">Auto uses what the cameras show. Filler shots with rain or fire are only used when you set them to Yes.</p>
+        </fieldset>
         <div id="medleyOptions" class="song-picker" hidden>
           <h2>Medley Populi</h2>
           <p>Choose the audio for each song. External audio starts at the same time as its video.</p>
@@ -187,7 +196,7 @@
             <label>Montage duration <output id="backstageDurationValue">180s</output><input id="backstageDuration" type="range" min="30" max="240" step="5" value="180" /></label>
           </div>
           <p class="field-help">Choose the target length, up to 4 minutes. The story-bite selection adapts to it.</p>
-          <label class="field-label">Mensajes de pergamino (uno por campo; se repartirán por el montaje)</label>
+          <label class="field-label">Parchment messages (one per field; spread across the edit)</label>
           <div class="backstage-messages">
             <input id="backstageMessage1" type="text" maxlength="180" placeholder="Mensaje 1" />
             <input id="backstageMessage2" type="text" maxlength="180" placeholder="Mensaje 2" />
@@ -311,7 +320,7 @@
             <h3 id="storyboardTitle">Storyboard narrativo</h3>
             <p id="storyboardLogline" class="storyboard-logline"></p>
             <div id="storyboardPlan" class="storyboard-plan"></div>
-            <details class="storyboard-music"><summary>Plan de música</summary><div id="storyboardMusic"></div></details>
+            <details class="storyboard-music"><summary>Music plan</summary><div id="storyboardMusic"></div></details>
           </div>
           <div id="paperEditSummary" class="review-intro"></div>
           <div id="paperEditList" class="paper-edit-list"></div>

@@ -36,3 +36,8 @@ dist/
 
 # Icon generation intermediates live under build/.
 # Keep assets/icon.icns tracked because it is the app bundle icon.
+
+# CLIP scene tagging: fetched by tools/fetch_clip_model.sh (pinned + SHA-256).
+# Only labels.json (precomputed prompt vectors) is tracked.
+assets/models/clip/*.onnx
+tools/clip_text/

@@ -27,7 +27,7 @@ def test_short_mux_is_not_published(tmp_path, monkeypatch):
     monkeypatch.setattr(export, '_run_ffmpeg_progress', lambda command, *args: Path(command[-1]).write_bytes(b'short'))
     monkeypatch.setattr(export, '_probe_streams', lambda *args: {'streams': [{'codec_type': 'video'}, {'codec_type': 'audio'}]})
     monkeypatch.setattr(export, '_media_duration', lambda *args: 2)
-    with pytest.raises(FFmpegError, match='incompleta'):
+    with pytest.raises(FFmpegError, match='Incomplete export'):
         export._mux_continuous_master_audio(source, 'audio.wav', result, 0, 4, 1000000, None)
     assert not result.exists()
     assert not (tmp_path / '.result.partial.mp4').exists()

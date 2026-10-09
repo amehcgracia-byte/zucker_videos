@@ -128,11 +128,11 @@ def main() -> None:
         import webview
         bridge = DesktopApi()
         bridge._storage_selected = lambda: _start_desktop_server(args)
-        html = """<!doctype html><html lang="es"><meta charset="utf-8">
+        html = """<!doctype html><html lang="en"><meta charset="utf-8">
         <style>body{font:18px system-ui;max-width:650px;margin:70px auto;padding:20px}button{font:inherit;padding:14px;border-radius:12px}#error{color:#a22}</style>
-        <h1>Elige dónde guardar tu trabajo</h1>
-        <p>Vídeos importados, cachés y proyectos se guardarán en esta ubicación. Puedes elegir tu disco externo.</p>
-        <button id="choose" onclick="choose()">Seleccionar ubicación</button><p id="error"></p>
+        <h1>Choose where to save your work</h1>
+        <p>Imported videos, caches and projects will be saved in this location. You can choose your external drive.</p>
+        <button id="choose" onclick="choose()">Choose location</button><p id="error"></p>
         <script>async function choose(){const b=document.getElementById('choose');b.disabled=true;try{const url=await window.pywebview.api.choose_storage();if(url)location.href=url;}catch(e){document.getElementById('error').textContent=e.message;}finally{b.disabled=false;}}document.getElementById('choose').disabled=true;window.addEventListener('pywebviewready',()=>document.getElementById('choose').disabled=false);</script></html>"""
         window = webview.create_window(APP_NAME, html=html, width=850, height=540, js_api=bridge)
         window.events.loaded += lambda: _enable_native_drop(window)
@@ -297,6 +297,19 @@ def _run_selftest() -> int:
                 if not transcription.get("sources"):
                     raise RuntimeError("Packaged transcription returned no source")
                 selftest_transcription = True
+        # Filler scene tagging must load the bundled CLIP encoder and labels and
+        # tell a black frame from daylight; a silent fallback would hide a
+        # broken package.
+        import numpy as np
+        from core import scene_tags
+        scene_tagging = False
+        if scene_tags.available():
+            dark, bright = scene_tags.analyze_frames([np.zeros((256, 256, 3), np.uint8),
+                                                      np.full((256, 256, 3), (135, 190, 235), np.uint8)])
+            scene_tagging = bool(dark.get("model") and dark["time"].get("night", 0) > dark["time"].get("day", 0)
+                                 and bright["time"].get("day", 0) > bright["time"].get("night", 0))
+        if not scene_tagging:
+            raise RuntimeError("Packaged scene tagging (CLIP) is unavailable or not distinguishing night from day")
         backstage_result = None
         backstage_project = os.environ.get("ZUCKER_SELFTEST_BACKSTAGE_PROJECT")
         if backstage_project:
@@ -323,6 +336,7 @@ def _run_selftest() -> int:
             "transcription": selftest_transcription,
             "instrument_model_loaded": instrument_model_loaded,
             "metal_remap_exact": metal_exact,
+            "scene_tagging": scene_tagging,
             "backstage_export": backstage_result,
         }, sort_keys=True))
         return 0

@@ -38,6 +38,8 @@ if missing:
 PY
 
 "$PYTHON" tools/make_icon.py
+# CLIP image encoder for filler scene tagging (not in git): pinned + SHA-256 verified.
+bash "$ROOT/tools/fetch_clip_model.sh"
 bash "$ROOT/tools/build_metal.sh"
 # Preserve existing user/local build products, including the hand-edited spec.
 BUILD_BACKUP="$ROOT/build/previous-$(date +%Y%m%d-%H%M%S)"

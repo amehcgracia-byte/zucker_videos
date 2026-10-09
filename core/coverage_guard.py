@@ -88,7 +88,12 @@ def _sync_related_reason(reason: str) -> bool:
 
 def _coverage_gaps(project: Project) -> tuple[list[dict[str, Any]], bool]:
     """Return missing videos and whether every omission is sync-related."""
-    videos = project.data.get("inputs", {}).get("videos") or []
+    from core.fillers import filler_paths
+    # Filler footage only appears where no camera covers the song; an edit
+    # fully covered by cameras rightly uses none of it.
+    fillers = filler_paths(project)
+    videos = [record for record in project.data.get("inputs", {}).get("videos") or []
+              if str(record.get("path") or "") not in fillers]
     if not videos:
         return [], False
     plan = _load_edit_plan(project)
@@ -123,8 +128,11 @@ def reel_capacity_warning(project: Project, gaps: list[dict[str, Any]] | None = 
     coverage.  This is the only Reel exception: genuine omissions when there
     are enough slots remain a hard export error.
     """
+    from core.fillers import filler_paths
     plan = _load_edit_plan(project)
-    videos = project.data.get("inputs", {}).get("videos") or []
+    fillers = filler_paths(project)
+    videos = [record for record in project.data.get("inputs", {}).get("videos") or []
+              if str(record.get("path") or "") not in fillers]
     segments = plan.get("segments") or []
     missing = gaps if gaps is not None else _coverage_gaps(project)[0]
     if str(plan.get("platform") or "").lower() != "reel" or not missing or len(segments) >= len(videos):

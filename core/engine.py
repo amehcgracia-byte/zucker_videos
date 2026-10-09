@@ -213,6 +213,13 @@ class PipelineEngine:
         with self._lock:
             self._current = {"stage": stage_name, "percent": percent, "message": message}
 
+    def _dependencies(self, name: str, project: Project) -> list[str]:
+        dependencies = list(self._stage_for_project(name, project).dependencies)
+        platform = str(project.data.get("settings", {}).get("wizard", {}).get("platform") or "youtube")
+        if name == "cut" and platform not in {"reel", "backstage"}:
+            return ["sync"]
+        return dependencies
+
     def _plan(self, stage_name: str, project: Project) -> list[str]:
         seen: set[str] = set()
         ordered: list[str] = []
@@ -222,12 +229,7 @@ class PipelineEngine:
                 return
             self._require_stage(name)
             seen.add(name)
-            dependencies = list(self._stage_for_project(name, project).dependencies)
-            # Reel is intentionally unsynchronised. Cut has no static Sync
-            # dependency so this rule cannot leak into the Reel route.
-            if name == "cut" and str(project.data.get("settings", {}).get("wizard", {}).get("platform") or "youtube") not in {"reel", "backstage"}:
-                dependencies = ["sync"]
-            for dependency in dependencies:
+            for dependency in self._dependencies(name, project):
                 visit(dependency)
             ordered.append(name)
 
@@ -290,7 +292,7 @@ class PipelineEngine:
                 inputs = project.data.get("inputs", {})
                 if not inputs.get("songs"):
                     reasons.append("songs.json is not registered")
-            for dependency in stage.dependencies:
+            for dependency in self._dependencies(name, project):
                 status = project.data["stages"][dependency]["status"]
                 if status != "done":
                     reasons.append(f"{dependency} is {status}")
