@@ -4849,11 +4849,14 @@ def _clip_fates(project: Project, plan: dict[str, Any], segments: list[dict[str,
         for value in (diagnostic.get("path"), diagnostic.get("source_path"))
         if value
     }
+    from core.fillers import filler_paths
+    fillers = filler_paths(project)
     for record in project.data.get("inputs", {}).get("videos", []):
         media_path = record_media_path(record)
         if str(media_path) in diagnostic_keys or str(record.get("path")) in diagnostic_keys:
             continue
-        reason = record.get("not_a_video_reason") or "not covering this song"
+        filler = str(record.get("path") or "") in fillers
+        reason = "filler: not needed in this edit" if filler else record.get("not_a_video_reason") or "not covering this song"
         diagnostics.append(
             {
                 "clip_id": None,
@@ -4862,6 +4865,7 @@ def _clip_fates(project: Project, plan: dict[str, Any], segments: list[dict[str,
                 "source_path": record.get("path"),
                 "valid_video": record_is_usable_camera_video(record),
                 "reason": reason,
+                "filler": filler,
             }
         )
 
@@ -4879,7 +4883,9 @@ def _clip_fates(project: Project, plan: dict[str, Any], segments: list[dict[str,
         elif path in used_seconds:
             status = "used"
             used_percent = used_seconds[path] / max(total_duration, 0.1) * 100
-            reason = "using full 360 clip" if plan.get("platform") == "360" else _selection_reason("used in final edit", selection)
+            reason = ("used as filler where no camera recorded" if diagnostic.get("filler")
+                      else "using full 360 clip" if plan.get("platform") == "360"
+                      else _selection_reason("used in final edit", selection))
         elif diagnostic.get("valid_video") is False:
             status = "excluded"
             used_percent = 0.0

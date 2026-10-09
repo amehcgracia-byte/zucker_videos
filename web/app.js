@@ -46,6 +46,8 @@ let captionActiveIndex = null;
 let lastProgressReportAt = 0;
 let trimDefaultsAppliedFor = "";
 let cameraSubjects = {};
+// Videos marked "Filler (not synced)": never cameras, used where no camera recorded.
+let fillerVideos = new Set();
 let progressJobId = null;
 let cameraRoleWeights = { "360": 50, handheld: 30, fixed_rear: 20 };
 let fixedRearMotion = true;
@@ -1476,6 +1478,8 @@ async function resumeInputsFromProject() {
     }
   }
   cameraSubjects = { ...(project.settings?.edit?.camera_subjects || {}) };
+  fillerVideos = new Set(project.settings?.edit?.fillers || []);
+  applySceneConditions(project.settings?.edit?.scene_conditions || {});
   chooseDefaultMaster();
   renderChips();
   document.querySelector("#videoName").value = project.name || document.querySelector("#videoName").value || todayName();
@@ -1554,7 +1558,9 @@ function renderChips() {
       )}">
           ${iconFor(item)} ${escapeHtml(item.filename || filename(item.path))}
           ${isSphericalVideo(item) ? "<small>360°</small>" : ""}
-          ${item.kind === "videos" && !isSphericalVideo(item) ? `<label class="camera-subject-label">Main subject
+          ${item.kind === "videos" && !isSphericalVideo(item) ? `<label class="filler-label" title="Faces, interviews, audience or ambience recorded apart from the music. Used where no camera covers the song.">
+            <input type="checkbox" data-filler-video="${escapeHtml(item.path)}" ${fillerVideos.has(item.path) ? "checked" : ""}/> Filler (not synced)</label>` : ""}
+          ${item.kind === "videos" && !isSphericalVideo(item) && !fillerVideos.has(item.path) ? `<label class="camera-subject-label">Main subject
             <select data-camera-subject="${escapeHtml(item.path)}" aria-label="Main subject in ${escapeHtml(item.filename || filename(item.path))}">
               ${[["unknown", "Not assigned"], ["general", "Whole stage"], ["drummer", "Drummer"], ["singer", "Singer"], ["pianist", "Pianist"], ["guitarist", "Guitarist"], ["bassist", "Bassist"], ["audience", "Audience"]].map(([value, label]) => `<option value="${value}" ${value === (cameraSubjects[item.path] || "unknown") ? "selected" : ""}>${label}</option>`).join("")}
             </select></label>` : ""}
@@ -1573,6 +1579,13 @@ function renderChips() {
     .join("");
   root.querySelectorAll("[data-camera-subject]").forEach((select) => {
     select.addEventListener("change", () => { cameraSubjects[select.dataset.cameraSubject] = select.value; });
+  });
+  root.querySelectorAll("[data-filler-video]").forEach((box) => {
+    box.addEventListener("change", () => {
+      if (box.checked) fillerVideos.add(box.dataset.fillerVideo);
+      else fillerVideos.delete(box.dataset.fillerVideo);
+      renderChips();
+    });
   });
   if (detected.master.length > 1 && !document.querySelector("#inboxMasterSelect")) {
     const selected = selectedMasterPath || detected.master[0].path;
@@ -1680,10 +1693,12 @@ function applySessionFilter() {
   if (sessionFilterDisabled || ["medley", "backstage"].includes(selectedPlatform)) return;
   const master = detected.master.find((item) => item.path === selectedMasterPath) || detected.master[0];
   if (!master) return;
-  const split = clipsMatchingSession(detected.videos, master);
+  // Filler is often recorded on another day (interviews, ambience): never set it aside.
+  const fillers = detected.videos.filter((item) => fillerVideos.has(item.path));
+  const split = clipsMatchingSession(detected.videos.filter((item) => !fillerVideos.has(item.path)), master);
   if (!split) return;
   setAsideVideos = [...setAsideVideos, ...split.setAside];
-  detected.videos = split.keep;
+  detected.videos = [...split.keep, ...fillers];
 }
 
 function restoreSetAsideVideos() {
@@ -1727,7 +1742,8 @@ async function registerInputsBeforePreview(inputs) {
     body: JSON.stringify({ name: document.querySelector("#videoName").value || todayName(), project_id: activeProjectId, platform: selectedPlatform, audio_paths: detected.master.map(item => item.path), ...inputs }),
   });
   activeProjectId = result.project_id;
-  await api("/settings/camera-subjects", { method: "POST", body: JSON.stringify({ camera_subjects: Object.fromEntries(inputs.videos.filter((path) => cameraSubjects[path]).map((path) => [path, cameraSubjects[path]])) }) });
+  await api("/settings/camera-subjects", { method: "POST", body: JSON.stringify({ camera_subjects: Object.fromEntries(inputs.videos.filter((path) => cameraSubjects[path] && !fillerVideos.has(path)).map((path) => [path, cameraSubjects[path]])) }) });
+  await api("/settings/fillers", { method: "POST", body: JSON.stringify({ fillers: inputs.videos.filter((path) => fillerVideos.has(path)) }) });
   await resumeInputsFromProject();
   await loadProjects();
 }
@@ -2092,6 +2108,8 @@ async function newProject() {
   document.querySelector("#sphericalSetup").open = false;
   document.querySelector("#instrumentHighlights").checked = false;
   document.querySelector("#draftExport").checked = false;
+  fillerVideos = new Set();
+  applySceneConditions({});
   document.querySelector("#medleyDuration").value = 180;
   document.querySelector("#medleyGap").value = 0.5;
   document.querySelector("#medleyFade").value = 0.5;
@@ -2485,7 +2503,11 @@ function renderShotReview(items) {
       ? `yaw ${Number(pose.yaw ?? 0).toFixed(1)}° · pitch ${Number(pose.pitch ?? 0).toFixed(1)}° · FOV ${Number(pose.fov ?? 0).toFixed(1)}°`
       : "";
     const reserve = Number(item.candidate_count);
-    const reserveText = Number.isFinite(reserve) ? `${reserve} frames alternativos disponibles` : "";
+    const reserveText = item.filler ? "" : Number.isFinite(reserve) ? `${reserve} alternative frames available` : "";
+    const fillerConditions = Object.entries(item.filler_conditions || {})
+      .filter(([, value]) => value && value !== "unknown")
+      .map(([key, value]) => key === "rain" || key === "fire" ? (value === "yes" ? key : `no ${key}`) : value);
+    const fillerText = item.filler ? `Filler · ${escapeHtml(item.filler_shot || "shot")}${fillerConditions.length ? ` · ${escapeHtml(fillerConditions.join(" · "))}` : ""}` : "";
     const html = `<article class="review-card ${item.keep ? "keep" : "reject"}" data-review-index="${item.index}">
     <button class="review-thumb-button" data-review-thumb="${item.index}">${thumb}</button>
     <button type="button" class="review-other-frame" data-review-replace="${item.index}">Other frame</button>
@@ -2494,6 +2516,7 @@ function renderShotReview(items) {
     <span>${Number(item.duration_sec).toFixed(1)}s${item.landmark ? ` · ${escapeHtml(item.landmark)} frame` : ""}</span>
     ${poseText ? `<small class="review-pose">${poseText}</small>` : ""}
     ${reserveText ? `<small class="review-candidates">${reserveText}</small>` : ""}
+    ${fillerText ? `<small class="review-filler">${fillerText}</small>` : ""}
     <label class="review-transition">Transition to the next shot
       <select data-review-transition="${item.index}">${reviewTransitionOptions(item.transition_type)}</select>
     </label>
@@ -2633,6 +2656,9 @@ function applyEditTypeMode() {
   // 360 mode exports the whole sphere; there are no reprojected camera moves to lighten.
   const draftOption = document.querySelector("#draftExportOption");
   if (draftOption) draftOption.hidden = selectedPlatform === "360";
+  // Filler shots are planned for YouTube edits in this release.
+  const sceneOption = document.querySelector("#sceneConditions");
+  if (sceneOption) sceneOption.hidden = selectedPlatform !== "youtube";
   const passthrough360 = selectedPlatform === "360";
   const youtubeDirectResult = selectedPlatform === "youtube" || selectedPlatform === "medley";
   const cameraMix = document.querySelector("#cameraMix");
@@ -2767,6 +2793,14 @@ function reelOptionsFromForm() {
 
 function backstageMessagesFromForm() {
   return [1, 2, 3, 4].map((index) => String(document.querySelector(`#backstageMessage${index}`)?.value || "").trim()).filter(Boolean);
+}
+
+function sceneConditionsFromForm() {
+  return Object.fromEntries([...document.querySelectorAll("[data-scene]")].map((select) => [select.dataset.scene, select.value]));
+}
+
+function applySceneConditions(conditions) {
+  document.querySelectorAll("[data-scene]").forEach((select) => { select.value = conditions[select.dataset.scene] || "auto"; });
 }
 
 function cameraRoleWeightsFromForm() {
@@ -3090,7 +3124,8 @@ async function startWizard(options = {}) {
     await waitForPreparedProject();
     prepareHandoffInProgress = false;
   }
-  await api("/settings/camera-subjects", { method: "POST", body: JSON.stringify({ camera_subjects: Object.fromEntries(inputs.videos.filter((path) => cameraSubjects[path]).map((path) => [path, cameraSubjects[path]])) }) });
+  await api("/settings/camera-subjects", { method: "POST", body: JSON.stringify({ camera_subjects: Object.fromEntries(inputs.videos.filter((path) => cameraSubjects[path] && !fillerVideos.has(path)).map((path) => [path, cameraSubjects[path]])) }) });
+  await api("/settings/fillers", { method: "POST", body: JSON.stringify({ fillers: inputs.videos.filter((path) => fillerVideos.has(path)) }) });
   const started = await api("/wizard/start", {
     method: "POST",
     body: JSON.stringify({
@@ -3099,6 +3134,7 @@ async function startWizard(options = {}) {
       platform: selectedPlatform,
       instrument_highlights: selectedPlatform === "youtube" && document.querySelector("#instrumentHighlights").checked,
       draft_export: document.querySelector("#draftExport").checked,
+      scene_conditions: sceneConditionsFromForm(),
       medley_entries: [...document.querySelectorAll("#medleySources select")].map(select => ({video: select.dataset.video, audio: select.value})),
       medley_duration_sec: Number(document.querySelector("#medleyDuration").value),
       medley_gap_sec: Number(document.querySelector("#medleyGap").value),

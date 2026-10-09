@@ -1550,6 +1550,7 @@ pre {
 .review-thumb-error { display: block; overflow-wrap: anywhere; color: #a51d2d !important; }
 .review-keep { display: flex; gap: 6px; align-items: center; font-size: .9rem; }
 .review-card span, .review-card em { font-size: .82rem; color: var(--muted, #63727a); }
+.review-filler { justify-self: start; padding: 2px 8px; border-radius: 999px; font-size: .78rem; font-weight: 600; color: var(--accent-strong); background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .review-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
 .review-large-modal { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 5vh 5vw; background: rgb(0 0 0 / 78%); }
 .review-large-modal[hidden] { display: none; }
@@ -1863,3 +1864,10 @@ pre {
 .update-dialog { color: var(--text, #eee); background: var(--panel, #192419); border: 1px solid #68885d; border-radius: 18px; padding: 30px; width: min(520px, 90vw); }
 .update-dialog::backdrop { background: rgb(0 0 0 / 65%); }
 .update-close { position: absolute; right: 12px; top: 10px; font-size: 24px; }
+
+.filler-label { display: inline-flex; gap: 4px; align-items: center; font-size: .82rem; }
+.scene-conditions { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 10px 0; padding: 10px 12px; border: 1px solid var(--line, #d9dedb); border-radius: 10px; }
+.scene-conditions[hidden] { display: none; }
+.scene-conditions legend { padding: 0 4px; font-weight: 600; }
+.scene-conditions label { display: inline-flex; gap: 6px; align-items: center; }
+.scene-conditions .field-help { flex-basis: 100%; margin: 0; }

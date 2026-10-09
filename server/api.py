@@ -2577,6 +2577,25 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         project.save()
         return jsonify({"camera_subjects": edit["camera_subjects"]})
 
+    @app.post("/api/v1/settings/fillers")
+    def api_fillers() -> Response:
+        project = _require_project(state)
+        paths = _json_body().get("fillers")
+        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+            return error_response("bad_request", "fillers must be a list of registered video paths", 400)
+        sources = {str(record.get("path") or "") for record in project.data.get("inputs", {}).get("videos", [])}
+        if any(path not in sources for path in paths):
+            return error_response("bad_request", "Choose registered videos as filler", 400)
+        if state.wizard.status().get("status") in {"running", "cancelling"}:
+            return error_response("wizard_busy", "Wait for the current edit before changing filler videos", 409)
+        edit = project.data.setdefault("settings", {}).setdefault("edit", {})
+        edit["fillers"] = sorted(set(paths))
+        subjects = edit.get("camera_subjects") or {}
+        for path in edit["fillers"]:
+            subjects.pop(path, None)
+        project.save()
+        return jsonify({"fillers": edit["fillers"]})
+
     @app.post("/api/v1/settings/spherical-landmarks")
     def api_spherical_landmarks() -> Response:
         project = _require_project(state)
@@ -2857,6 +2876,13 @@ def _apply_run_options(project: Project, body: dict[str, Any]) -> None:
     settings = project.data.setdefault("settings", {})
     settings.setdefault("wizard", {})["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
     settings.setdefault("export", {})["draft"] = bool(body.get("draft_export"))
+    if isinstance(body.get("scene_conditions"), dict):
+        from core.fillers import CONDITION_CHOICES
+        raw = body["scene_conditions"]
+        # "auto" (or anything else) means: use what the cameras show.
+        settings.setdefault("edit", {})["scene_conditions"] = {
+            key: str(raw[key]) for key in CONDITION_CHOICES if raw.get(key) in CONDITION_CHOICES[key]
+        }
 
 
 def _remember_project(project: Project) -> None:

@@ -23,6 +23,7 @@ from core.normalization import global_cache_root, global_clip_audio_path, global
 from core.project import Project, atomic_write_json, load_project
 from core.spherical_view import spherical_view_filter
 from core.stages.base import ProgressCallback, Stage, artifact_path, file_signature, stable_fingerprint, write_artifact_json
+from core.fillers import filler_paths
 
 SYNC_SAMPLE_RATE = 22050
 SYNC_HOP_LENGTH = 512
@@ -45,6 +46,7 @@ class SyncStage(Stage):
                 "master": project.data["inputs"].get("master"),
                 "videos": project.data["inputs"].get("videos", []),
                 "settings": project.data["settings"].get(self.name, {}),
+                "fillers": sorted(filler_paths(project)),
                 "algorithm": {"sr": SYNC_SAMPLE_RATE, "hop": SYNC_HOP_LENGTH, "version": SYNC_ALGORITHM_VERSION, "hpss": HPSS_SYNC_VERSION, "verify_tolerance_sec": 0.150},
             }
         )
@@ -66,7 +68,9 @@ class SyncStage(Stage):
         master_duration = media_duration(master_record["path"])
         clips: dict[str, Any] = {}
         all_videos = project.data["inputs"].get("videos", [])
-        videos = [record for record in all_videos if record_is_usable_camera_video(record)]
+        # Filler footage is unsynced by definition; it never becomes a camera.
+        fillers = filler_paths(project)
+        videos = [record for record in all_videos if record_is_usable_camera_video(record) and str(record.get("path") or "") not in fillers]
         threshold = sync_confidence_threshold(project)
         total = max(1, len(videos))
 

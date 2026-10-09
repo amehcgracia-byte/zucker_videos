@@ -21,6 +21,17 @@ New-Item -ItemType Directory -Force -Path (Join-Path $Root "build"), $Dist | Out
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $PyInstallerDist, $PyInstallerBuild, $Zip
 
 @{ version = $Version; git_commit = $Commit } | ConvertTo-Json | Set-Content -Encoding UTF8 $BuildInfo
+
+# CLIP image encoder for filler scene tagging (not in git): pinned revision + SHA-256.
+$ClipModel = Join-Path $Root "assets\models\clip\vision_model_quantized.onnx"
+$ClipSha = "583fd1110a514667812fee7d684952aaf82a99b959760c8d7dca7e0ab9839299"
+if (-not (Test-Path $ClipModel) -or (Get-FileHash -Algorithm SHA256 $ClipModel).Hash.ToLower() -ne $ClipSha) {
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ClipModel) | Out-Null
+  Invoke-WebRequest -UseBasicParsing -OutFile "$ClipModel.part" `
+    -Uri "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/d15189d7028b43f1d3e65039190477f6af591c2a/onnx/vision_model_quantized.onnx"
+  if ((Get-FileHash -Algorithm SHA256 "$ClipModel.part").Hash.ToLower() -ne $ClipSha) { throw "CLIP model SHA-256 mismatch" }
+  Move-Item -Force "$ClipModel.part" $ClipModel
+}
 $common = @(
   "--noconfirm", "--clean", "--windowed", "--name", $BundleName,
   "--distpath", $PyInstallerDist, "--workpath", $PyInstallerBuild, "--specpath", $PyInstallerBuild,
