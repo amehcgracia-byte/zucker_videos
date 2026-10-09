@@ -25,7 +25,7 @@ from werkzeug.datastructures import FileStorage
 from urllib.parse import unquote
 
 from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
-from core.ffmpeg import FFmpegError, ffprobe, tool_status
+from core.ffmpeg import FFmpegError, ffprobe, muxer_args_for, tool_status
 from core.messages import t
 from core.project import Project, ProjectError, create_project, load_project
 from core.spherical_view import MAX_SPHERICAL_FOV, spherical_view_filter
@@ -841,7 +841,8 @@ def _remux_shortest(source: Path, destination: Path, process_callback=None) -> P
     command = [
         ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
         "-i", str(source), "-map", "0:v:0", "-map", "0:a:0?",
-        "-c", "copy", "-avoid_negative_ts", "make_zero", "-shortest", str(pending),
+        "-c", "copy", "-avoid_negative_ts", "make_zero", "-shortest",
+        *muxer_args_for(destination), str(pending),
     ]
     process = subprocess.Popen(
         command,
@@ -1031,7 +1032,7 @@ def _compose_visual_overlays(
         # stderr independently can deadlock when one pipe fills during a long
         # H.264 composition, leaving the UI on the last reported percentage.
         pending_destination = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.part")
-        command[-1] = str(pending_destination)
+        command[-1:] = [*muxer_args_for(destination), str(pending_destination)]
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,

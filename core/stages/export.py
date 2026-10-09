@@ -105,6 +105,8 @@ REEL_LETTERBOX_BLUR_SIGMA = 18.0
 REEL_BASE_LOGO_POLICY_VERSION = 1
 OUTRO_DURATION = 10.2
 CONTENT_FADE_DURATION = 1.5
+FINAL_AUDIO_JOIN_WINDOW_SEC = 0.250
+FINAL_AUDIO_JOIN_GUARD_SEC = 0.020
 TRANSITION_PROFILE_VERSION = 7
 # Public transition library. Each preset maps to a filter available in the
 # packaged FFmpeg build.
@@ -2610,17 +2612,18 @@ def _render_segment_job(
                 )
             _write_segment_cache_stamp(segment_path, segment)
         # Cache hits were attested above; fresh files were hashed when their
-        # stamp was written. Verify the independent concat copy below instead
-        # of reading this entire file a second time immediately.
+        # stamp was written. A hard link shares that attested inode; only a
+        # cross-volume byte copy needs its own verification below.
         # The global cache is the reusable store; concat receives a per-export
-        # copy so two timeline entries can never alias the same pathname, even if
+        # pathname so two timeline entries can never alias the same one, even if
         # their recipes are identical. This makes ordering and boundary auditing
         # unambiguous and prevents a future cache-key regression from producing a
         # mixed concat input.
         concat_path = temp_dir / f"segment-{index:04d}-concat.mp4"
-        shutil.copy2(segment_path, concat_path)
+        linked = _link_or_copy_segment(segment_path, concat_path)
         shutil.copy2(_segment_cache_stamp_path(segment_path), _segment_cache_stamp_path(concat_path))
-        _require_segment_cache_stamp(concat_path, segment)
+        if not linked:
+            _require_segment_cache_stamp(concat_path, segment)
         segment_progress(100, "complete")
         return {
             "index": index,
@@ -2933,6 +2936,22 @@ def _segment_video_command_base(ffmpeg: str, clip_path: str, segment: dict[str, 
         "-i",
         str(Path(clip_path)),
     ]
+
+
+def _link_or_copy_segment(source: Path, destination: Path) -> bool:
+    """Give concat its own pathname for a cached segment; True when hard-linked.
+
+    A hard link shares the attested inode, so it needs neither a byte copy nor
+    a second SHA-256 pass. Cache publishes use os.replace (a new inode), so a
+    later re-render can never mutate the linked file under this export.
+    """
+    destination.unlink(missing_ok=True)
+    try:
+        os.link(source, destination)
+        return True
+    except OSError:
+        shutil.copy2(source, destination)
+        return False
 
 
 def _publish_rendered_segment(source: Path, destination: Path) -> None:
@@ -4435,19 +4454,26 @@ def _verify_final_audio(
         boundaries.append(cursor)
         if len(boundaries) >= 3:
             break
+    # The final audio is one continuous master span, so a join can only break
+    # it through misalignment or a gap. Windows must be wide enough that a
+    # musical attack landing on a beat-aligned cut (plus the few milliseconds of
+    # AAC/MP3 decoder skew between final and master) is not read as a jump:
+    # 60 ms windows failed real exports on a drum hit right at the cut.
+    window = FINAL_AUDIO_JOIN_WINDOW_SEC
+    guard = FINAL_AUDIO_JOIN_GUARD_SEC
     for boundary in boundaries:
         if boundary < audio_delay:
             continue
-        if _time_overlaps_audio_fade(boundary - 0.080, 0.160, duration, content_start, content_end):
+        if _time_overlaps_audio_fade(boundary - window - guard, 2 * (window + guard), duration, content_start, content_end):
             LOGGER.info("Skipping final audio join RMS jump check inside intentional fade window at %.3fs", boundary)
             continue
         source_time = audio_start + boundary - audio_delay
-        if source_audio_duration and source_time + 0.080 >= source_audio_duration:
+        if source_audio_duration and source_time + window + guard >= source_audio_duration:
             continue
-        before = _audio_rms(path, max(0.0, boundary - 0.080), 0.060)
-        after = _audio_rms(path, boundary + 0.020, 0.060)
-        expected_before = _expected_master_rms(master_path, source_time - 0.080, 0.060, boundary - 0.080, duration, content_start, content_end)
-        expected_after = _expected_master_rms(master_path, source_time + 0.020, 0.060, boundary + 0.020, duration, content_start, content_end)
+        before = _audio_rms(path, max(0.0, boundary - window - guard), window)
+        after = _audio_rms(path, boundary + guard, window)
+        expected_before = _expected_master_rms(master_path, source_time - window - guard, window, boundary - window - guard, duration, content_start, content_end)
+        expected_after = _expected_master_rms(master_path, source_time + guard, window, boundary + guard, duration, content_start, content_end)
         if before <= 0.0005 or after <= 0.0005:
             if min(expected_before, expected_after) <= 0.0005:
                 continue
