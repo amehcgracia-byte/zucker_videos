@@ -2256,6 +2256,36 @@ def _spherical_export_source_info(
     return resolved, True
 
 
+def _spherical_export_proxy_target(project: Project, source_info: dict[str, Any], segment: dict[str, Any]) -> Path | None:
+    """Where _spherical_export_source_info keeps a source's proxy; never creates it."""
+    probe = source_info.get("probe") or {}
+    projection = str(probe.get("projection") or segment.get("projection") or "").lower()
+    if projection not in {"equirect", "raw_insv"}:
+        return None
+    source_path = Path(str(source_info.get("source_path") or "")).expanduser()
+    try:
+        stat = source_path.stat()
+    except OSError:
+        return None
+    try:
+        insv_fov = float(probe.get("insv_fov") or segment.get("insv_fov") or 190.0)
+    except (TypeError, ValueError):
+        insv_fov = 190.0
+    from core.storage import cache_file_signature, cache_mtime_ns
+    identity = cache_file_signature(source_path)
+    key = hashlib.sha256(
+        (
+            f"{identity['path']}|{stat.st_size}|{cache_mtime_ns(source_path)}|"
+            f"{projection}|{insv_fov:.3f}|{SPHERICAL_EXPORT_PROXY_VERSION}|"
+            f"{SPHERICAL_EXPORT_PROXY_WIDTH}x{SPHERICAL_EXPORT_PROXY_HEIGHT}"
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    legacy_target = project.cache_dir / "spherical_export" / f"equirect-{key}.mp4"
+    if legacy_target.is_file() and legacy_target.stat().st_size > 0:
+        return legacy_target
+    return global_cache_root() / "spherical_export" / f"equirect-{key}.mp4"
+
+
 @guard_segment_render
 def _render_segment(
     project: Project,

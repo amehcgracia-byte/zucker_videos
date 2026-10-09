@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from core.project import Project
+from core import review_previews
 from core.ffmpeg import locate_executable
 from core.spherical_view import spherical_view_filter
 from core.spherical_view import (
@@ -923,6 +924,7 @@ def review_items(
             "subject_safe": _candidate_has_subject(segment, segment),
             "keep": True,
             "no_alternative": index in unavailable,
+            "preview": f"/api/v1/wizard/review/preview/{index}?v={review_previews.preview_path(project, index, segment).stem[-8:]}",
             "filler": bool(segment.get("filler")),
             "filler_shot": segment.get("filler_shot"),
             "filler_conditions": segment.get("filler_conditions") or {},

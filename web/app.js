@@ -2509,7 +2509,7 @@ function renderShotReview(items) {
       .map(([key, value]) => key === "rain" || key === "fire" ? (value === "yes" ? key : `no ${key}`) : value);
     const fillerText = item.filler ? `Filler · ${escapeHtml(item.filler_shot || "shot")}${fillerConditions.length ? ` · ${escapeHtml(fillerConditions.join(" · "))}` : ""}` : "";
     const html = `<article class="review-card ${item.keep ? "keep" : "reject"}" data-review-index="${item.index}">
-    <button class="review-thumb-button" data-review-thumb="${item.index}">${thumb}</button>
+    <button class="review-thumb-button" data-review-thumb="${item.index}" data-preview="${escapeHtml(item.preview || "")}">${thumb}</button>
     <button type="button" class="review-other-frame" data-review-replace="${item.index}">Other frame</button>
     <label class="review-keep"><input type="checkbox" data-review-keep="${item.index}" ${item.keep ? "checked" : ""}/> Keep</label>
     <strong>#${item.index + 1} · ${escapeHtml(item.source)}${item.camera_id ? ` · camera ${escapeHtml(item.camera_id)}` : ""}</strong>
@@ -2531,7 +2531,60 @@ function renderShotReview(items) {
     else root.append(updated);
   });
   existing.forEach((card) => card.remove());
+  if (reviewPreview && !reviewPreview.button.isConnected) stopReviewPreview();
 }
+
+// Hover previews in Frames: one short silent clip of the planned shot at a
+// time, loaded only while its photo is hovered and released on leave.
+let reviewPreview = null;
+let reviewPreviewTimer = null;
+
+function stopReviewPreview() {
+  clearTimeout(reviewPreviewTimer);
+  if (!reviewPreview) return;
+  const { button, video } = reviewPreview;
+  reviewPreview = null;
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+  video.remove();
+  button.classList.remove("previewing", "preview-loading");
+}
+
+function startReviewPreview(button) {
+  if (reviewPreview?.button === button) return;
+  stopReviewPreview();
+  if (!button.dataset.preview || !button.querySelector("img")) return;
+  const video = document.createElement("video");
+  video.className = "review-preview";
+  video.muted = true;
+  video.loop = true;
+  video.playsInline = true;
+  video.autoplay = true;
+  video.setAttribute("aria-hidden", "true");
+  video.addEventListener("playing", () => button.classList.remove("preview-loading"));
+  // A preview that cannot be made simply leaves the photo in place.
+  video.addEventListener("error", () => { if (reviewPreview?.video === video) stopReviewPreview(); });
+  button.classList.add("previewing", "preview-loading");
+  button.append(video);
+  video.src = button.dataset.preview;
+  reviewPreview = { button, video };
+}
+
+document.addEventListener("mouseover", (event) => {
+  const button = event.target instanceof Element ? event.target.closest(".review-thumb-button[data-preview]") : null;
+  if (!button || reviewPreview?.button === button) return;
+  clearTimeout(reviewPreviewTimer);
+  // A short pause so sweeping the pointer across the grid starts nothing.
+  reviewPreviewTimer = setTimeout(() => { if (button.matches(":hover")) startReviewPreview(button); }, 250);
+});
+
+document.addEventListener("mouseout", (event) => {
+  const button = event.target instanceof Element ? event.target.closest(".review-thumb-button[data-preview]") : null;
+  if (!button || (event.relatedTarget instanceof Node && button.contains(event.relatedTarget))) return;
+  if (reviewPreview?.button === button) stopReviewPreview();
+  else clearTimeout(reviewPreviewTimer);
+});
 
 function replaceReviewShot(index, button) {
   if (button) button.disabled = true;

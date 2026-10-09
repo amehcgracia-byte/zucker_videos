@@ -51,6 +51,7 @@ from core.shot_review import (
     review_items,
 )
 from core.shot_review import mark_review_render_failed, replace_slots, review_items, set_review_transition_types
+from core import review_previews
 from core.stages.export import TRANSITION_LIBRARY
 from core.backstage_feedback import record_feedback
 from core.stages.backstage import update_backstage_cue_text
@@ -1772,6 +1773,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                     if item.get("thumbnail_status") == "missing"
                 }
                 _queue_review_thumbnail_render(project, pending)
+                if state.wizard.status().get("status") == "waiting_review":
+                    review_previews.PREFETCH.start(project)
             return jsonify({
                 "items": items,
                 "platform": project.data.get("settings", {}).get("wizard", {}).get("platform"),
@@ -1933,10 +1936,32 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             body = _json_body()
             if body.get("transitions") is not None:
                 set_review_transition_types(state.project, body.get("transitions"))
+            # Hover previews are a convenience; the final render gets the CPU.
+            review_previews.PREFETCH.stop()
             job = state.wizard.render_review(state.project)
             return jsonify(serialize_wizard_job(job)), 202
         except (RuntimeError, ValueError) as exc:
             return error_response("review_render_failed", str(exc), 409)
+
+    @app.get("/api/v1/wizard/review/preview/<int:index>")
+    def api_wizard_review_preview(index: int) -> Response:
+        project = state.project or _active_wizard_project(state)
+        if not project:
+            return error_response("not_ready", "No project is active", 404)
+        from core.shot_review import _review_segments
+        segments = _review_segments(project)
+        if index < 0 or index >= len(segments):
+            return error_response("not_found", "No such review shot", 404)
+        path = review_previews.preview_path(project, index, segments[index])
+        if not path.is_file():
+            if state.wizard.status().get("status") != "waiting_review":
+                return error_response("wizard_busy", "Previews are made while reviewing shots", 409)
+            try:
+                path = review_previews.render_preview(project, index, segments[index])
+            except Exception as exc:
+                LOGGER.warning("Review preview %s failed: %s", index, exc)
+                return error_response("preview_failed", "This shot preview could not be made", 500)
+        return send_file_with_range(str(path))
 
     @app.get("/api/v1/wizard/review/thumbnail/<signature>/<path:filename>")
     def api_wizard_review_thumbnail(signature: str, filename: str) -> Response:
