@@ -128,11 +128,11 @@ def main() -> None:
         import webview
         bridge = DesktopApi()
         bridge._storage_selected = lambda: _start_desktop_server(args)
-        html = """<!doctype html><html lang="es"><meta charset="utf-8">
+        html = """<!doctype html><html lang="en"><meta charset="utf-8">
         <style>body{font:18px system-ui;max-width:650px;margin:70px auto;padding:20px}button{font:inherit;padding:14px;border-radius:12px}#error{color:#a22}</style>
-        <h1>Elige dónde guardar tu trabajo</h1>
-        <p>Vídeos importados, cachés y proyectos se guardarán en esta ubicación. Puedes elegir tu disco externo.</p>
-        <button id="choose" onclick="choose()">Seleccionar ubicación</button><p id="error"></p>
+        <h1>Choose where to save your work</h1>
+        <p>Imported videos, caches and projects will be saved in this location. You can choose your external drive.</p>
+        <button id="choose" onclick="choose()">Choose location</button><p id="error"></p>
         <script>async function choose(){const b=document.getElementById('choose');b.disabled=true;try{const url=await window.pywebview.api.choose_storage();if(url)location.href=url;}catch(e){document.getElementById('error').textContent=e.message;}finally{b.disabled=false;}}document.getElementById('choose').disabled=true;window.addEventListener('pywebviewready',()=>document.getElementById('choose').disabled=false);</script></html>"""
         window = webview.create_window(APP_NAME, html=html, width=850, height=540, js_api=bridge)
         window.events.loaded += lambda: _enable_native_drop(window)

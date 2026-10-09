@@ -24,3 +24,13 @@ def test_invalid_answer_does_not_overwrite_preference(tmp_path, monkeypatch):
     client.post('/api/v1/tutorial', json={'answer': 'no'})
     assert client.post('/api/v1/tutorial', json={'answer': 'maybe'}).status_code == 400
     assert client.get('/api/v1/tutorial').json == {'answer': 'no'}
+
+
+def test_tutorial_and_menus_are_in_english():
+    import re
+    from pathlib import Path
+    from core.desktop_menu import MENU_ITEMS
+    root = Path(__file__).parents[1]
+    spanish = re.compile(r"[áéíóúñ¿¡]|\b(Siguiente|Anterior|Terminar|Herramientas|Ayuda|Archivo|Montaje)\b")
+    assert not spanish.search((root / "web" / "tutorial.js").read_text(encoding="utf-8"))
+    assert not spanish.search(repr(MENU_ITEMS))

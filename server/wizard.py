@@ -796,6 +796,7 @@ class WizardRunner:
                 master_path=master_path,
                 songs_path=songs_path,
                 video_paths=video_paths,
+                transition_type=transition_type,
             )
         except WizardCancelled:
             LOGGER.info("Wizard job cancelled")
