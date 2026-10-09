@@ -1993,7 +1993,9 @@ def test_reel_scale_overlay_expression_runs_with_ffmpeg(tmp_path: Path) -> None:
         }],
     )
     source = ["-f", "lavfi", "-i", "color=c=blue:s=320x240:r=30:d=0.5"]
-    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", *source, "-loop", "1", "-i", str(overlay), "-filter_complex", graph, "-map", "[v]", "-t", "0.5", "-f", "null", "-"]
+    # Match the export runner's libavfilter scheduling workaround (7db05b5).
+    # The dynamic scale/pad graph can crash FFmpeg when filters run in parallel.
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", *source, "-loop", "1", "-i", str(overlay), "-filter_threads", "1", "-filter_complex_threads", "1", "-filter_complex", graph, "-map", "[v]", "-t", "0.5", "-f", "null", "-"]
     result = subprocess.run(command, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
