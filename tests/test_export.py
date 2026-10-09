@@ -2113,7 +2113,7 @@ def test_render_failure_stops_active_and_queued_segments(tmp_path, monkeypatch):
     active = threading.Event()
     stopped = threading.Event()
     calls = []
-    def worker(*args):
+    def worker(*args, **kwargs):
         index, progress = args[1], args[-2]
         calls.append(index)
         if index == 1:

@@ -1,6 +1,6 @@
 """Optional exact 8-bit cubic Metal remap, with verified CPU fallback.
 
-No runtime compiler or downloads: the native library is built with the app.
+No command-line compiler or downloads: the native library is built with the app.
 Every rendering thread owns its buffers. A qualification failure or GPU error
 disables that thread's GPU route; cancellation exceptions are not intercepted.
 """

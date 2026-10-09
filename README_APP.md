@@ -96,6 +96,8 @@ Las barras generales y de tareas usan el progreso medido. Una tarea sin porcenta
 
 ## Actualizaciones
 
+Desde 2.6.0, macOS utiliza Metal para la reproyección cúbica 360 cuando la comprobación local produce exactamente los mismos píxeles que OpenCV; si no está disponible o falla, continúa por CPU. Las dos muestras de movimiento se verifican en una sola lectura. Con al menos 16 GiB de RAM y 2 GiB disponibles se solapa una verificación con los renders, con una cola acotada. No cambian resolución, bitrate, encuadres ni trayectorias. La comparación completa de «Is cold outside» pasó de 32 min 23 s a 25 min 13 s en frío, con masters idénticos; no es una garantía de tiempo para otros proyectos. Véase `docs/AUDITORIA_VELOCIDAD_RONDA3.md`.
+
 Al abrir una versión que incluye el actualizador se comprueba la última release pública estable de `amehcgracia-byte/zucker_videos`. La consulta no bloquea el arranque; sin conexión se puede seguir trabajando. Una actualización requiere pulsar «Update and restart». No se instalan versiones anteriores ni se actualiza durante renders o revisión pendiente.
 
 La descarga se guarda en Cache/Updates del disco seleccionado, se comprueba contra el SHA-256 publicado por GitHub y se prepara antes de cerrar el programa. macOS monta el DMG y verifica su firma; Windows extrae el ZIP completo, conserva la ruta del ejecutable y sus accesos directos. Un proceso externo sustituye el paquete y reabre la aplicación; si falla el reemplazo se restaura el anterior. El backup y la descarga se eliminan cuando arranca la versión nueva. La carpeta de instalación debe ser escribible por el usuario.

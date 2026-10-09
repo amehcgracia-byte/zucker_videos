@@ -1,6 +1,6 @@
 # Ronda 3 — movimiento y reproyección
 
-Estado: experimentos y validación en curso. **Todavía no hay una medición nueva del master completo ni se ha demostrado la meta de 420 s.**
+Estado: cuatro exportaciones completas medidas y masters validados. **Frío: 1.942,755 → 1.512,506 s (−22,15%). La meta de 420 s no se cumple.**
 
 ## Perfil principal: cuatro workers reales
 
@@ -49,15 +49,15 @@ Datos: `render-round3-20261008-incremental-valid` y `render-round3-20261008-incr
 
 ## Decisión sobre GPU (separada)
 
-Prototipo Metal de laboratorio: `tools/benchmarks/metal_remap.mm` y `.py`, seleccionable únicamente mediante `movement_costs.py --metal-library`. Conserva los mapas y el kernel cúbico, la trayectoria, el FOV y las dimensiones. Usa cuantización de coordenadas a 1/32 como OpenCV; el cálculo de coeficientes y redondeo en GPU puede diferir de las tablas enteras de CPU. Por ello no se presupone igualdad de píxeles.
+Se probaron dos variantes Metal, conservando mapas, trayectoria, FOV, dimensiones e interpolación cúbica. La variante flotante inicial usa coordenadas cuantizadas a 1/32 pero no reproduce el redondeo entero de OpenCV. La variante final sí reproduce sus tablas y redondeo.
 
-No hay importación desde producción ni activación automática. Se compila la biblioteca fuera del bundle. La herramienta `metal` no está instalada; el prototipo utiliza compilación de shaders en ejecución a través de Metal, con el puente construido mediante `clang++` y los frameworks del sistema.
+La integración final se activa por defecto en macOS tras el A/B completo exacto; `settings.export.spherical_remap_backend="cpu"` permite conservar la ruta CPU. `tools/build_metal.sh` compila el puente nativo con `clang++`; `tools/build_app.sh` lo incluye junto con su licencia en el bundle. La aplicación no invoca compiladores de línea de comandos ni descarga dependencias: crea el shader mediante la API de Metal. Biblioteca ausente, plataforma incompatible, cualificación no exacta o error de GPU conservan la ruta CPU.
 
 La primera variante flotante tardó 154,023 s, pero cambió los píxeles. Se conserva como experimento rechazado, con SSIM/VMAF por frame en `render-round3-20261008-metal/quality`.
 
-La segunda variante reproduce las tablas enteras de OpenCV (incluyendo su corrección de suma y redondeo): **143,701 s y los 19 MP4 idénticos byte a byte**, 1.999 frames. Datos y hashes: `render-round3-20261008-metal-integer`. Se está integrando en `core/metal_remap.py` y `core/native/metal_remap.mm`, con prueba de equivalencia antes de usar la GPU y fallback a CPU. El aviso de licencia original del archivo de OpenCV se conserva en el código y en `NOTICE.txt`.
+La segunda variante reproduce las tablas enteras de OpenCV (incluyendo su corrección de suma y redondeo): **143,701 s y los 19 MP4 idénticos byte a byte**, 1.999 frames. Datos y hashes: `render-round3-20261008-metal-integer`. Está integrado en `core/metal_remap.py` y `core/native/metal_remap.mm`, con prueba de equivalencia antes de usar la GPU y fallback a CPU. El aviso de licencia original del archivo de OpenCV se conserva en el código y en `NOTICE.txt`.
 
-Todavía no se ha cambiado el backend predeterminado. Falta el A/B completo de la integración; la igualdad de esta muestra no se presenta como validación del master entero.
+El A/B completo confirma la igualdad de los cuatro masters (sección D). Se activa la variante entera en macOS; la variante flotante queda rechazada. La cualificación de igualdad se ejecuta también en cada proceso antes de usar Metal: si no coincide, conserva CPU. No se activa ninguna aproximación visual, por lo que no se requiere aprobación para aceptar diferencias de imagen.
 
 ## B — recorte previo y zooms planos
 
@@ -65,12 +65,12 @@ El plan contiene 55 movimientos de móvil. **Los 55 empiezan o terminan con zoom
 
 `tools/benchmarks/zoom_quality.py` prueba por separado reducir el escalado intermedio a 1080p, con dos zooms reales de mayor amplitud y dos controles de Sony con movimiento añadido. La Sony no tiene movimiento en el plan congelado original. Conserva bitrate y dimensiones finales. **Se rechaza la reducción temprana.**
 
-| Toma | Fuente | SSIM medio / mínimo | VMAF medio / mínimo |
-|---|---|---|---|
-| 2 | Móvil | 0,980436 / 0,940249 | 71,61 / 39,81 |
-| 232 | Móvil | 0,981376 / 0,947920 | 74,12 / 45,99 |
-| 116 | Sony, movimiento añadido | 0,990533 / 0,978554 | 88,41 / 66,95 |
-| 156 | Sony, movimiento añadido | 0,990656 / 0,980736 | 88,16 / 75,32 |
+| Toma | Fuente | Pared anterior / reducida (s) | SSIM medio / mínimo | VMAF medio / mínimo |
+|---|---|---|---|---|
+| 2 | Móvil | 15,489 / 6,753 | 0,980436 / 0,940249 | 71,61 / 39,81 |
+| 232 | Móvil | 14,342 / 6,391 | 0,981376 / 0,947920 | 74,12 / 45,99 |
+| 116 | Sony, movimiento añadido | 11,055 / 5,420 | 0,990533 / 0,978554 | 88,41 / 66,95 |
+| 156 | Sony, movimiento añadido | 9,507 / 4,398 | 0,990656 / 0,980736 | 88,16 / 75,32 |
 
 Se revisaron el frame 45 de la toma 2 y su recorte ampliado del teclado. El encuadre general se conserva, pero cambian bordes y detalles; no se acredita una diferencia imperceptible. Además del doble remuestreo, trabajar en una rejilla más pequeña cambia la cuantización espacial del zoom. Se mantiene íntegra la ruta 4K actual.
 
@@ -80,14 +80,52 @@ Datos válidos: `render-round3-20261009-zoom-valid`, con métricas por frame y c
 
 `_frame_md5_pair` abre el archivo una vez y obtiene dos muestras mediante ramas `split/trim`, con hashes independientes identificados por stream. Mantiene el redondeo de los seeks a milisegundos. No impone un límite de frames global que pueda cortar la segunda rama prematuramente. Falla si falta una muestra. Compara vídeo explícitamente: el audio distinto no debe hacer pasar una imagen congelada como movimiento.
 
-Solapamiento experimental mediante `settings.export.overlap_segment_verification`: un verificador activo y como máximo otro pendiente, mientras los workers siguen renderizando. Memoria desconocida, inferior a 16 GiB o con menos de 2 GiB disponibles conserva la secuencia anterior. Cualquier fallo del verificador activa inmediatamente el mismo abort de los renders, incluso antes de que el hilo principal recoja su futuro. Todas las verificaciones deben terminar antes de ensamblar/publicar. Reparación, stamps de contenido, copias de concat y watchdog permanecen activos.
+Solapamiento mediante `settings.export.overlap_segment_verification`: un verificador activo y como máximo otro pendiente, mientras los workers siguen renderizando. Memoria desconocida, inferior a 16 GiB o con menos de 2 GiB disponibles conserva la secuencia anterior. Cualquier fallo del verificador activa inmediatamente el mismo abort de los renders, incluso antes de que el hilo principal recoja su futuro. Todas las verificaciones deben terminar antes de ensamblar/publicar. Reparación, stamps de contenido, copias de concat y watchdog permanecen activos.
 
-La opción todavía está desactivada por defecto, a la espera del A/B. No se interpretan los antiguos 640–663 s agregados de `verify_sec` como tiempo exclusivo de los dos probes: ese campo incluye también copias y hashes.
+La opción se activa por defecto tras el A/B; `settings.export.overlap_segment_verification=false` la desactiva. Los límites de memoria se evalúan al comenzar cada exportación. No se interpretan los antiguos 640–663 s agregados de `verify_sec` como tiempo exclusivo de los dos probes: ese campo incluye también copias y hashes.
 
 ## D — master completo
 
-Pendiente. `render_ab.py` permite fijar la referencia a `1ffb168` y carga también su módulo nativo, evitando comparar accidentalmente con el baseline anterior a las prioridades 1–2. Conserva el modo reproducible `--reference 7ae1d8d` de la auditoría anterior. Registrará cuatro rondas frío/caliente con orden invertido, recursos, fases, escrituras, cachés y eventos del watchdog.
+Referencia `1ffb168`; candidato `23c8513`, sin modificaciones de `core` durante las cuatro rondas. `render_ab.py` carga tanto export como spherical_motion de la referencia. Orden: anterior frío → nuevo frío → nuevo caliente → anterior caliente. Plan congelado, 233 segmentos, cuatro workers, 18 Mbps, 1080p y fuentes idénticas. Aplicación cerrada, sin otras exportaciones. Frío significa caché privada de segmentos vacía; no se vacía la caché del sistema operativo, de análisis ni del usuario. Caliente reutiliza los segmentos de la misma variante.
+
+Datos completos: `/Volumes/RAWVideos/ZZSesions/benchmarks/render-round3-full-20261009-retry/summary.json`. Cada carpeta conserva `result.json`, recursos muestreados cada cinco segundos, VM antes/después y progreso. No se ha cambiado el runner durante estas rondas.
+
+| Medida (s salvo indicación) | Anterior frío | Nuevo frío | Nuevo caliente | Anterior caliente |
+|---|---:|---:|---:|---:|
+| Pared completa | 1.942,755 | 1.512,506 | 313,773 | 381,440 |
+| Fase de segmentos | 1.719,919 | 1.311,598 | 170,681 | 184,991 |
+| Unión + audio directa | 177,511 | 164,004 | 122,697 | 173,736 |
+| Comprobación de cadencia | 5,326 | 4,696 | 4,361 | 4,311 |
+| Intro / outro | 0,370 / 0,291 | 0,298 / 0,277 | 0,328 / 0,193 | 0,095 / 0,044 |
+| Preparación de fuente | 0,002 | 0,001 | 0,001 | 0,001 |
+| Cachés de segmentos reutilizadas | 0/233 | 0/233 | 233/233 | 233/233 |
+| Suma render por segmento | 6.230,547 | 5.224,483 | 0 | 0 |
+| Suma verificación por segmento | 638,941 | 551,430 | 167,685 | 383,198 |
+| CPU Python | 2.399,695 | 1.176,590 | 15,406 | 17,311 |
+| CPU de hijos | 7.150,331 | 6.998,787 | 63,961 | 63,787 |
+| CPU media muestreada, % (100 = un núcleo) | 444,2 | 488,0 | 22,3 | 17,3 |
+| Pico RSS agregado del árbol, GiB | 4,923 | 5,829 | 0,307 | 0,345 |
+| Escrituras lógicas de medios, bytes | 4.599.939.415 | 4.599.939.415 | 3.076.588.370 | 3.076.588.370 |
+| Eventos watchdog | 0 | 0 | 0 | 0 |
+
+Las fases no suman toda la pared: hay preparación de color previa, hashes y verificaciones finales fuera de ellas. Las sumas por segmento se solapan y no son pared exclusiva; `verify_sec` también incluye copias y hashes. El contador de bytes incluye salidas completas y copy2; excluye escrituras internas de faststart, parciales, JSON y journaling. El RSS agregado puede contar páginas compartidas más de una vez; no mide memoria GPU por separado.
+
+No hubo incremento de swap-in ni swap-out en ninguna ronda. En frío, pageouts: 40.315 → 26.212 páginas; compresiones: 265.253 → 198.388; descompresiones: 156.296 → 84.371. Son contadores del sistema completo, no una atribución exclusiva al render ni una medición directa del indicador de presión de memoria. Se conservan los archivos vm_stat para auditoría.
+
+Metal procesó **10.004 frames** del montaje completo, con cinco contextos incluyendo cualificación, cero fallbacks y cero indisponibilidades. En caliente no se invocó: se reutilizaron los 233 segmentos. Los cuatro masters ocupan **1.546.590.978 bytes** y son idénticos byte a byte: SHA-256 `09df8abf2b1ab69f2d8a1bc33255ebb6c70feec16385bccde5a2d31ece5a2bbc`. Se decodificaron completos los dos fríos con `-xerror`, vídeo y audio: **20.256 frames de vídeo y 29.079 bloques de audio**, mismo framemd5 `a61f6b036d68ced4c49f3f9bca751fd9f4520ba656b27c4ef5ececd2504a1eac`. Los calientes heredan esa prueba por igualdad binaria, sin repetir innecesariamente la decodificación. Duración de ambos streams 675,2 s; H.264, 1920×1080, 30/1 fps, yuv420p, rango TV y BT.709; AAC estéreo 44.100 Hz. Todos los metadatos comparados coinciden. La identidad completa conserva los cortes y el color sin necesitar una métrica perceptual aproximada. Pruebas en `quality/validation.json`, `metadata-comparison.json`, probes y framemd5; herramienta reproducible `tools/benchmarks/validate_round3.py`.
+
+Ahorro observado frío: **430,249 s (22,15%)**; caliente: **67,667 s (17,74%)**. Es una pareja por temperatura de caché, no un intervalo estadístico. En caliente la mayor parte de la diferencia procede del mux (51 s), cuyo código no cambió en esta ronda: no se atribuye todo ese ahorro a Metal ni al solapamiento. En frío la fase de segmentos aporta 408,321 s del ahorro.
+
+### Distancia a la meta y siguiente palanca
+
+Faltan **1.092,506 s** para 420 s: todavía haría falta aproximadamente **3,60×** sobre esta pared completa. Los segmentos son el 86,7% de la pared fría nueva. Incluso eliminando toda la unión y comprobación de cadencia, sus 1.311,598 s siguen por encima de 420 s. No se promete que un cambio adicional alcance la meta.
+
+La siguiente investigación propuesta es fusionar **generación de mapas y reproyección en GPU**, reduciendo también las transferencias del vídeo BGR completo entre decoder, Python y GPU. La evidencia es el coste de mapas de la muestra concurrente y la reducción observada de CPU Python al trasladar el remap; esta ronda no permite repartir con exactitud la pared restante entre mapas, copias, decoder y encode. Primero habría que instrumentar esa ruta nueva en el master completo, conservando la trayectoria y las tablas enteras. **No se implementa esa siguiente palanca en esta ronda.** Los zooms planos requieren otra solución que preserve el detalle 4K: el downsample probado se ha rechazado.
+
+La primera tentativa completa `render-round3-full-20261009` quedó interrumpida sin resultado final: último progreso, segmento 152 y 1.204,02 s. Al revisarla ya no existían los procesos del benchmark ni un registro de excepción; no se ha establecido la causa. La aplicación estaba procesando otro proyecto al comprobarlo. La tentativa se marca inválida y se conservan sus cachés. El usuario autorizó cancelar el trabajo de la aplicación y cerrarla para repetir en una carpeta nueva.
 
 ## Tests
 
 Referencia heredada: 116 pasan y 10 fallos conocidos de expectativas de hold/proyección/filtros. Pruebas nuevas de igualdad de muestras, falta de frames, imagen estática con audio variable y cancelación; pruebas de solapamiento con fallo de verificación, parada del siguiente render y conservación del master previo. Suite completa: **133 pasan / los mismos 10 fallos conocidos**, sin fallos nuevos. Comparación automática de nombres guardada en `work/render-round3/test-comparison.json`. El primer pase expuso la sensibilidad de una prueba sintética del watchdog al arranque de Python con timeout de 0,15 s: se estabilizó esa prueba con 1 s y un flujo que dura 1,6 s, sin cambiar los 120 s de producción; se repitió la suite completa.
+
+Validación de la configuración predeterminada de 2.6.0: **135 pasan / los mismos 10 fallos**, incluyendo las dos pruebas de inicio de proyecto y versión. Sin fallos nuevos respecto a la referencia; comparación en `work/render-round3/release-test-comparison.json`. El A/B usó flags explícitos para las mismas rutas ahora activadas por defecto; no se cambió su implementación entre la medición y la activación. La prueba del bundle comprueba también la equivalencia Metal mediante `ZUCKER_SELFTEST_REQUIRE_METAL=1`.

@@ -221,6 +221,11 @@ def _run_selftest() -> int:
         from core.normalization import CACHE_SUBDIRS, ensure_global_cache_dirs
         from core.project import create_project
 
+        from core.metal_remap import _qualified
+        metal_exact = _qualified() if sys.platform == "darwin" else False
+        if os.environ.get("ZUCKER_SELFTEST_REQUIRE_METAL") == "1" and not metal_exact:
+            raise RuntimeError("Packaged Metal remap is missing or differs from OpenCV")
+
         card = _intro_card_path()
         if card is None:
             raise RuntimeError("intro_card_watermark.png is not present in the packaged assets")
@@ -314,6 +319,7 @@ def _run_selftest() -> int:
             "intro_rendered": rendered_duration > 0.0,
             "transcription": selftest_transcription,
             "instrument_model_loaded": instrument_model_loaded,
+            "metal_remap_exact": metal_exact,
             "backstage_export": backstage_result,
         }, sort_keys=True))
         return 0

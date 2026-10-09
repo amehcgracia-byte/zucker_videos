@@ -679,8 +679,8 @@ def _segment_worker_count(project: Project, segment_count: int) -> int:
 
 
 def _verification_overlap_enabled(project: Project) -> bool:
-    """Opt-in measured pipeline; unknown or small memory retains serial checks."""
-    if not project.data.get("settings", {}).get("export", {}).get("overlap_segment_verification", False):
+    """Measured pipeline; unknown or small memory retains serial checks."""
+    if not project.data.get("settings", {}).get("export", {}).get("overlap_segment_verification", True):
         return False
     try:
         if sys.platform == "darwin":
@@ -2407,7 +2407,7 @@ def _render_segment(
                 (int(segment_probe["width"]), int(segment_probe["height"])),
                 float(segment["clip_start_sec"]), frame_count, spherical_shot, progress_callback,
                 pose_sampler=sampler, **({"hardware_decode": False} if force_cpu else {}),
-                **({"remap_backend": "metal"} if not force_cpu and project.data.get("settings", {}).get("export", {}).get("spherical_remap_backend") == "metal" else {}))
+                **({"remap_backend": "metal"} if not force_cpu and project.data.get("settings", {}).get("export", {}).get("spherical_remap_backend", "metal" if sys.platform == "darwin" else "cpu") == "metal" else {}))
         else:
             _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
 

@@ -66,7 +66,6 @@ def test_overlap_stays_off_when_memory_is_unknown_or_insufficient(tmp_path, monk
 
 def test_overlap_requires_available_memory_not_just_installed_ram(tmp_path, monkeypatch):
     project = create_project('Available', str(tmp_path / 'Available.zuckervid'))
-    project.data['settings']['export']['overlap_segment_verification'] = True
     monkeypatch.setattr(export.sys, 'platform', 'darwin')
     free_pages = [100]
     def memory(command, **kwargs):
@@ -77,3 +76,5 @@ def test_overlap_requires_available_memory_not_just_installed_ram(tmp_path, monk
     assert not export._verification_overlap_enabled(project)
     free_pages[0] = 700000
     assert export._verification_overlap_enabled(project)
+    project.data['settings']['export']['overlap_segment_verification'] = False
+    assert not export._verification_overlap_enabled(project)
