@@ -47,6 +47,7 @@ from core.stages.edit import (
     SPHERICAL_PRIMARY_DRIFT_FRACTION,
     SPHERICAL_SWEEP_SPEED_DEG_PER_SEC,
     IPHONE_CROP_TOP_LIMIT,
+    FIXED_CAMERA_SAFE_ZOOM_MAX,
     _valid_motion_recipe,
     load_edit_plan,
 )
@@ -2685,8 +2686,12 @@ def _ken_burns_filter(motion: dict[str, Any], platform: str, duration: float) ->
         pan_y = 0.5
     except (TypeError, ValueError):
         return None
-    zoom_start = max(1.0, min(4.0, zoom_start))
-    zoom_end = max(1.0, min(4.0, zoom_end))
+    # Clamp even stale plans. The new editor recipes stay below 1.38x; the
+    # small headroom here lets an older cached recipe be rendered safely while
+    # its cache is being invalidated by the new edit-plan version.
+    safe_zoom_max = FIXED_CAMERA_SAFE_ZOOM_MAX + 0.12
+    zoom_start = max(1.0, min(safe_zoom_max, zoom_start))
+    zoom_end = max(1.0, min(safe_zoom_max, zoom_end))
     pan_x_start = max(0.0, min(1.0, pan_x_start))
     pan_x_end = max(0.0, min(1.0, pan_x_end))
     pan_y_start = max(0.0, min(1.0, float(motion.get("pan_y_start", pan_y))))
@@ -2704,11 +2709,14 @@ def _ken_burns_filter(motion: dict[str, Any], platform: str, duration: float) ->
     if motion.get("lock_target"):
         target_x = max(0.05, min(0.95, float(motion.get("target_x", 0.5))))
         target_y = max(0.05, min(0.95, float(motion.get("target_y", 0.5))))
-        pan_x_expr = f"min(1,max(0,(({zoom_expr})*{target_x:.6f}-0.5)/(({zoom_expr})-1)))"
-        if motion.get("vertical_motion") in {"down", "up"}:
+        pan_x_expr = f"if(gt(({zoom_expr}),1.001),min(1,max(0,(({zoom_expr})*{target_x:.6f}-0.5)/(({zoom_expr})-1))),0.5)"
+        enforce_top_edge = motion.get("enforce_top_edge", True) is not False
+        if enforce_top_edge and motion.get("vertical_motion") in {"down", "up"}:
             pan_y_expr = f"max(({IPHONE_CROP_TOP_LIMIT:.6f}+0.5/({zoom_expr})),({pan_y_start:.6f}+({pan_y_end:.6f}-{pan_y_start:.6f})*{progress}))"
+        elif enforce_top_edge:
+            pan_y_expr = f"max(({IPHONE_CROP_TOP_LIMIT:.6f}+0.5/({zoom_expr})),if(gt(({zoom_expr}),1.001),min(1,max(0,(({zoom_expr})*{target_y:.6f}-0.5)/(({zoom_expr})-1))),0.5))"
         else:
-            pan_y_expr = f"max(({IPHONE_CROP_TOP_LIMIT:.6f}+0.5/({zoom_expr})),min(1,max(0,(({zoom_expr})*{target_y:.6f}-0.5)/(({zoom_expr})-1))))"
+            pan_y_expr = f"if(gt(({zoom_expr}),1.001),min(1,max(0,(({zoom_expr})*{target_y:.6f}-0.5)/(({zoom_expr})-1))),0.5)"
     else:
         pan_x_expr = f"({pan_x_start:.6f}+({pan_x_end:.6f}-{pan_x_start:.6f})*{progress})"
         # A centred gentle fixed-camera move is already guaranteed to keep
@@ -3557,7 +3565,7 @@ def _spherical_motion_cache_recipe() -> dict[str, Any]:
         "landmark_hold_target_sec": 8.0,
         "landmark_hold_max_sec": 12.0,
         "landmark_selection_policy": "weighted_deficit_primary_recency_penalty_yaw_tiebreak_v2",
-        "fixed_camera_motion_policy": "half_of_fixed_rear_cuts_gentle_ken_burns_v2",
+        "fixed_camera_motion_policy": "subject_anchored_safe_zoom_v3",
         "recorded_yaw_max_rate_deg_per_sec": 40.0,
         "short_segment_static_sec": SPHERICAL_SHORT_SEGMENT_STATIC_SEC,
         "normal_fov_min": SPHERICAL_NORMAL_FOV_MIN,

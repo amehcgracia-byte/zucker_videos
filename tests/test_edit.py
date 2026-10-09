@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from core.stages.edit import IPHONE_CROP_TOP_LIMIT, MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, MOTION_CATALOG, REEL_MAX_CUT_SEC, REEL_MIN_CUT_SEC, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _available_spherical_shots, _ken_burns_motion, _motion_active_axes, _spherical_motion_profile, _youtube_multicam_plan, _reel_promo_plan, _framing_nearly_identical, _valid_motion_recipe, _sony_non_music_filler, _choose_source_avoiding_identical_framing, validate_plan_camera_source_consistency, _visible_iphone_target
+from core.stages.edit import FIXED_CAMERA_SAFE_ZOOM_MAX, FIXED_CAMERA_SAFE_TARGET_X, FIXED_CAMERA_SAFE_TARGET_Y, IPHONE_CROP_TOP_LIMIT, MAX_SEGMENT_SEC, MIN_SEGMENT_SEC, MOTION_CATALOG, REEL_MAX_CUT_SEC, REEL_MIN_CUT_SEC, SPHERICAL_MAX_MOTION_FRACTION_PER_SEC, build_spherical_shot_segments, estimate_bar_starts, migrate_spherical_landmarks, _available_spherical_shots, _ken_burns_motion, _motion_active_axes, _spherical_motion_profile, _youtube_multicam_plan, _reel_promo_plan, _framing_nearly_identical, _valid_motion_recipe, _sony_non_music_filler, _choose_source_avoiding_identical_framing, validate_plan_camera_source_consistency, _visible_iphone_target
 from core.stages.cut import _pick_energetic_window, _segment_for_360, _select_360_clip, _tighten_window_to_video_coverage
 from core.stages.edit import _covering_sources, _segment_from_source
 
@@ -33,20 +33,26 @@ def test_visible_iphone_target_inherits_previous_subject_but_never_ceiling():
     assert y == 0.65
 
 
-def test_fixed_camera_crop_top_edge_is_hard_limited_even_for_full_zoom():
+def test_fixed_camera_motion_stays_inside_safe_zoom_and_subject_envelope():
     for index in range(100):
         motion = _ken_burns_motion(index, force_full_zoom=index % 2 == 0, force_close=index % 2 == 1, allow_static=False)
-        for zoom, pan_y in ((motion["zoom_start"], motion["pan_y_start"]), (motion["zoom_end"], motion["pan_y_end"])):
-            assert pan_y - 0.5 / zoom >= IPHONE_CROP_TOP_LIMIT - 0.002
+        assert max(float(motion["zoom_start"]), float(motion["zoom_end"])) <= FIXED_CAMERA_SAFE_ZOOM_MAX
+        assert FIXED_CAMERA_SAFE_TARGET_X[0] <= float(motion["target_x"]) <= FIXED_CAMERA_SAFE_TARGET_X[1]
+        assert FIXED_CAMERA_SAFE_TARGET_Y[0] <= float(motion["target_y"]) <= FIXED_CAMERA_SAFE_TARGET_Y[1]
+        assert 0.25 <= float(motion["pan_x_start"]) <= 0.75
+        assert 0.25 <= float(motion["pan_x_end"]) <= 0.75
+        assert 0.35 <= float(motion["pan_y_start"]) <= 0.65
+        assert 0.35 <= float(motion["pan_y_end"]) <= 0.65
 
 
-def test_fixed_camera_vertical_motion_never_rises_from_center():
+def test_fixed_camera_vertical_motion_stays_small_and_directional():
     for index in range(200):
         motion = _ken_burns_motion(index, allow_static=False)
         start = float(motion["pan_y_start"])
         end = float(motion["pan_y_end"])
+        assert 0.35 <= start <= 0.65
+        assert 0.35 <= end <= 0.65
         if motion.get("vertical_motion") == "up":
-            assert start >= 0.9
             assert end <= start
         elif motion.get("vertical_motion") == "down":
             assert end >= start
@@ -564,9 +570,7 @@ def test_fixed_camera_motion_uses_one_movement_axis_at_a_time():
     for motion in motions:
         assert _valid_motion_recipe(motion)
         assert len(_motion_active_axes(motion)) in {0, 1, 2}
-        if motion["movement"] != "full_static":
-            assert motion["zoom_start"] >= 2.35
-            assert motion["zoom_end"] >= 2.35
+        assert max(float(motion["zoom_start"]), float(motion["zoom_end"])) <= FIXED_CAMERA_SAFE_ZOOM_MAX
 
 
 def test_youtube_plan_segment_lengths_stay_within_bounds():
@@ -801,8 +805,8 @@ def test_fixed_rear_keeps_close_up_when_synced_coverage_is_sparse():
     fixed = [segment for segment in plan["segments"] if segment["camera_id"] == "iphone"]
     assert fixed
     assert all(segment["fixed_camera_alternative_count"] == 0 for segment in fixed)
-    assert all(segment["fixed_camera_zoom_policy"] == "close_up_motion_low_coverage" for segment in fixed)
-    assert all(float(segment["motion"]["zoom_start"]) >= 3.0 for segment in fixed)
+    assert all(segment["fixed_camera_zoom_policy"] == "safe_subject_motion_low_coverage" for segment in fixed)
+    assert all(max(float(segment["motion"]["zoom_start"]), float(segment["motion"]["zoom_end"])) <= FIXED_CAMERA_SAFE_ZOOM_MAX for segment in fixed)
 
 
 def test_fixed_rear_uses_gentle_center_motion_when_coverage_is_available():
@@ -834,11 +838,11 @@ def test_fixed_rear_uses_gentle_center_motion_when_coverage_is_available():
     assert fixed
     assert all(segment["fixed_camera_alternative_count"] == 2 for segment in fixed)
     assert all(segment["fixed_camera_zoom_coverage_threshold"] == 2 for segment in fixed)
-    assert all(segment["fixed_camera_zoom_policy"] == "gentle_center_motion_sufficient_coverage" for segment in fixed)
+    assert all(segment["fixed_camera_zoom_policy"] == "gentle_subject_motion_sufficient_coverage" for segment in fixed)
     assert all(abs(float(segment["motion"]["zoom_end"]) - float(segment["motion"]["zoom_start"])) <= 0.15 for segment in fixed)
     assert all(1.0 <= float(segment["motion"]["zoom_start"]) <= 1.15 for segment in fixed)
     assert all(1.0 <= float(segment["motion"]["zoom_end"]) <= 1.15 for segment in fixed)
-    assert all(segment["motion"].get("centered") is True for segment in fixed)
+    assert all(segment["motion"].get("lock_target") is True for segment in fixed)
 
 
 def test_fixed_camera_coverage_threshold_is_configurable():
