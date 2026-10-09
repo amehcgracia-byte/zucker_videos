@@ -1183,6 +1183,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     from server.updates import register_update_routes
     register_update_routes(app, state)
+    from server.tutorial import register_tutorial_routes
+    register_tutorial_routes(app)
 
     @app.after_request
     def add_no_cache_headers(response: Response) -> Response:

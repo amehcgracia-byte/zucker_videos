@@ -19,6 +19,7 @@ MENU_ITEMS = [
     ('Reproducción', [('Reproducir / pausar en el editor', 'play'), ('Fotograma anterior', 'previousFrame'),
                       ('Fotograma siguiente', 'nextFrame'), ('Ampliar previsualización', 'expand')]),
     ('Resultado', [('Ver resultado', 'result'), ('Mostrar vídeo en el ordenador', 'finder')]),
+    ('Ayuda', [('Tutorial con Einstein…', 'tutorial')]),
     ('Herramientas', [('Buscar actualizaciones…', 'updates'), ('Cambiar tema claro / oscuro', 'theme'),
                      ('Detalles del proceso', 'details'), ('Copiar informe', 'report'), ('Abrir registros', 'logs')]),
 ]

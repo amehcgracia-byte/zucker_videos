@@ -4716,7 +4716,7 @@ async function boot() {
   }
 }
 
-boot().catch((error) => showToast(error.message, true));
+boot().then(() => window.EditorTutorial.offer()).catch((error) => showToast(error.message, true));
 
 document.querySelector("#closeRescue")?.addEventListener("click", () => {
   document.querySelector("#rescuePanel").hidden = true;
@@ -4781,7 +4781,9 @@ async function checkForUpdates(manual = false) {
   document.querySelector("#updateDetail").textContent = "";
   availableUpdate = update;
   document.querySelector("#updateDescription").textContent = `Zucker Editor ${update.version} is available. Download the verified update, close this version and reopen automatically? Save your project first; finish any current task before updating.`;
-  document.querySelector("#updateDialog").showModal();
+  const showUpdate = () => document.querySelector("#updateDialog").showModal();
+  if (window.EditorTutorial?.isOpen()) window.addEventListener("tutorialclosed", showUpdate, {once: true});
+  else showUpdate();
 }
 for (const id of ["closeUpdate", "updateLater"]) document.querySelector(`#${id}`).addEventListener("click", () => document.querySelector("#updateDialog").close());
 document.querySelector("#updateDialog").addEventListener("click", event => {
@@ -4832,6 +4834,7 @@ window.EditorMenu = {
       button.click();
     };
     try {
+      if (action === 'tutorial') return window.EditorTutorial.start();
       if (action === 'updates') return await checkForUpdates(true);
       if (action === 'theme') return click('themeToggle');
       if (action === 'new') return await newProject();
