@@ -297,6 +297,19 @@ def _run_selftest() -> int:
                 if not transcription.get("sources"):
                     raise RuntimeError("Packaged transcription returned no source")
                 selftest_transcription = True
+        # Filler scene tagging must load the bundled CLIP encoder and labels and
+        # tell a black frame from daylight; a silent fallback would hide a
+        # broken package.
+        import numpy as np
+        from core import scene_tags
+        scene_tagging = False
+        if scene_tags.available():
+            dark, bright = scene_tags.analyze_frames([np.zeros((256, 256, 3), np.uint8),
+                                                      np.full((256, 256, 3), (135, 190, 235), np.uint8)])
+            scene_tagging = bool(dark.get("model") and dark["time"].get("night", 0) > dark["time"].get("day", 0)
+                                 and bright["time"].get("day", 0) > bright["time"].get("night", 0))
+        if not scene_tagging:
+            raise RuntimeError("Packaged scene tagging (CLIP) is unavailable or not distinguishing night from day")
         backstage_result = None
         backstage_project = os.environ.get("ZUCKER_SELFTEST_BACKSTAGE_PROJECT")
         if backstage_project:
@@ -323,6 +336,7 @@ def _run_selftest() -> int:
             "transcription": selftest_transcription,
             "instrument_model_loaded": instrument_model_loaded,
             "metal_remap_exact": metal_exact,
+            "scene_tagging": scene_tagging,
             "backstage_export": backstage_result,
         }, sort_keys=True))
         return 0
