@@ -117,7 +117,7 @@ TRANSITION_LIBRARY = {
     "wipeleft": {"label": "Barrido izquierda", "xfade": "wipeleft"},
     "wiperight": {"label": "Barrido derecha", "xfade": "wiperight"},
     "slideright": {"label": "Deslizamiento", "xfade": "slideright"},
-    "dissolve": {"label": "Disolución", "xfade": "dissolve"},
+    "dissolve": {"label": "Dissolve", "xfade": "dissolve"},
     "distance": {"label": "Distancia", "xfade": "distance"},
     # Retained as explicit choices for users who want the original named
     # treatments; automatic mode uses only the native xfade transitions above.
@@ -3202,10 +3202,10 @@ def _mux_continuous_master_audio(
         _run_ffmpeg_progress(command, duration, t("joining_segments"), progress_callback)
         streams = _probe_streams(temporary).get("streams", [])
         if not any(stream.get("codec_type") == "video" for stream in streams) or not any(stream.get("codec_type") == "audio" for stream in streams):
-            raise FFmpegError("La exportación final no contiene vídeo y audio completos")
+            raise FFmpegError("The final export does not contain complete video and audio")
         actual_duration = _media_duration(str(temporary))
         if abs(actual_duration - duration) > max(0.5, duration * 0.001):
-            raise FFmpegError(f"Exportación incompleta: {actual_duration:.3f}s de {duration:.3f}s")
+            raise FFmpegError(f"Incomplete export: {actual_duration:.3f}s of {duration:.3f}s")
         temporary.replace(output_path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -5351,7 +5351,7 @@ def _color_profiles_for_segments(project: Project, segments: list[dict[str, Any]
     reference_for_matching = dict(ref_profile)
     # Preserve reference exposure; matching must not brighten every camera.
     if not 10 <= float(ref_profile.get("luma") or 0) <= 245:
-        warnings.append("La referencia tiene una luminosidad extrema; se limita la corrección de las otras cámaras.")
+        warnings.append("The reference camera has extreme brightness; correction of the other cameras is limited.")
     corrected: dict[str, dict[str, Any]] = {}
     for path, profile in measured.items():
         corrected[path] = {} if profile is ref_profile else color_correction_for_profile(profile, reference_for_matching)

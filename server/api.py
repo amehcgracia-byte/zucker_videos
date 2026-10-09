@@ -1254,7 +1254,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except ProjectError as exc:
             return error_response(
                 "project_unrecoverable",
-                "Este proyecto no se puede recuperar. Los vídeos del Drop Here siguen disponibles; crea un proyecto nuevo.",
+                "This project cannot be recovered. The videos in Drop Here are still available; create a new project.",
                 409,
             )
 
@@ -1908,7 +1908,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not project or not isinstance(rejected, list) or not all(isinstance(value, int) for value in rejected):
             return error_response("bad_request", "rejected must be a list of shot indexes", 400)
         if state.wizard.status().get("status") in {"running", "cancelling"}:
-            return error_response("wizard_busy", "Espera o cancela la exportación antes de cambiar frames", 409)
+            return error_response("wizard_busy", "Wait for or cancel the export before changing frames", 409)
         try:
             result = replace_slots(project, rejected)
             replaced = {int(value) for value in result.get("replaced", [])}
@@ -2245,7 +2245,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except ProjectError as exc:
             return error_response(
                 "project_unrecoverable",
-                "Este proyecto no se puede recuperar. Los vídeos del Drop Here siguen disponibles; crea un proyecto nuevo.",
+                "This project cannot be recovered. The videos in Drop Here are still available; create a new project.",
                 409,
             )
 

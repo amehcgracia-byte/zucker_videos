@@ -643,8 +643,8 @@ async function openCaptions() {
   const select = document.querySelector("#captionStyle");
   const styleLabels = {
     autoread_fixed_white: "Auto Read — Color fijo blanco",
-    autoread_phrase_color: "Auto Read — Cambio de frase",
-    autoread_karaoke_yellow: "Auto Read — Karaoke por palabra",
+    autoread_phrase_color: "Auto Read — Phrase change",
+    autoread_karaoke_yellow: "Auto Read — Word-by-word karaoke",
     autoread_green_glow: "Auto Read — Glow verde",
     autoread_solid_box: "Auto Read — Caja sobria",
   };
@@ -682,7 +682,7 @@ function exportCaptionSrt() {
 
 async function burnCaptionTrack() {
   if (composePlatform() === "youtube") {
-    showToast("YouTube no usa captions; se conserva únicamente el flyer.", false);
+    showToast("YouTube does not use captions; only the flyer is kept.", false);
     return;
   }
   const blocks = captionBlocksFromText();
@@ -2431,18 +2431,18 @@ function addFlyerReference(path, url) {
 function reviewTransitionOptions(selected) {
   const value = String(selected || "auto").toLowerCase();
   const options = [
-    ["auto", "Automática (nativa)"],
-    ["none", "Sin transición"],
-    ["crossfade", "Fundido cruzado"],
-    ["fadeblack", "Fundido a negro"],
-    ["fadewhite", "Fundido a blanco"],
-    ["wipeleft", "Barrido izquierda"],
-    ["wiperight", "Barrido derecha"],
-    ["slideright", "Deslizamiento"],
-    ["dissolve", "Disolución"],
-    ["distance", "Distancia"],
-    ["additive", "Fundido aditivo"],
-    ["stretch", "Estiro"],
+    ["auto", "Automatic (native)"],
+    ["none", "No transition"],
+    ["crossfade", "Crossfade"],
+    ["fadeblack", "Fade to black"],
+    ["fadewhite", "Fade to white"],
+    ["wipeleft", "Wipe left"],
+    ["wiperight", "Wipe right"],
+    ["slideright", "Slide"],
+    ["dissolve", "Dissolve"],
+    ["distance", "Distance"],
+    ["additive", "Additive fade"],
+    ["stretch", "Stretch"],
     ["blurry", "Blurry"],
   ];
   return options.map(([key, label]) =>
@@ -2486,13 +2486,13 @@ function renderShotReview(items) {
     const reserveText = Number.isFinite(reserve) ? `${reserve} frames alternativos disponibles` : "";
     const html = `<article class="review-card ${item.keep ? "keep" : "reject"}" data-review-index="${item.index}">
     <button class="review-thumb-button" data-review-thumb="${item.index}">${thumb}</button>
-    <button type="button" class="review-other-frame" data-review-replace="${item.index}">Otro frame</button>
+    <button type="button" class="review-other-frame" data-review-replace="${item.index}">Other frame</button>
     <label class="review-keep"><input type="checkbox" data-review-keep="${item.index}" ${item.keep ? "checked" : ""}/> Keep</label>
-    <strong>#${item.index + 1} · ${escapeHtml(item.source)}${item.camera_id ? ` · cámara ${escapeHtml(item.camera_id)}` : ""}</strong>
+    <strong>#${item.index + 1} · ${escapeHtml(item.source)}${item.camera_id ? ` · camera ${escapeHtml(item.camera_id)}` : ""}</strong>
     <span>${Number(item.duration_sec).toFixed(1)}s${item.landmark ? ` · ${escapeHtml(item.landmark)} frame` : ""}</span>
     ${poseText ? `<small class="review-pose">${poseText}</small>` : ""}
     ${reserveText ? `<small class="review-candidates">${reserveText}</small>` : ""}
-    <label class="review-transition">Transición hacia la siguiente toma
+    <label class="review-transition">Transition to the next shot
       <select data-review-transition="${item.index}">${reviewTransitionOptions(item.transition_type)}</select>
     </label>
     ${error}
@@ -2516,7 +2516,7 @@ function replaceReviewShot(index, button) {
       shotReviewItems.forEach((item) => { if (changed.has(Number(item.index))) item.keep = true; });
       renderShotReview(result.items || []);
       const unavailable = result.replacement_diagnostics?.some((item) => Number(item.index) === Number(index) && item.status === "unavailable");
-      if (unavailable) showToast("No hay más frames alternativos para esta toma", true);
+      if (unavailable) showToast("There are no more alternative frames for this shot", true);
       else refreshShotReviewAfterReplace(0, result.replaced || [Number(index)]);
     })
     .catch((error) => showToast(error.message, true))
@@ -2525,7 +2525,7 @@ function replaceReviewShot(index, button) {
 
 function refreshShotReviewAfterReplace(attempt = 0, indices = null, startedAt = Date.now()) {
   if (Date.now() - startedAt > 180000) {
-    showToast("La miniatura ha tardado demasiado. Reabre Frames para reintentar; el montaje está guardado.", true);
+    showToast("The thumbnail took too long. Reopen Frames to retry; the edit is saved.", true);
     return;
   }
   // Rendering time depends heavily on the source (especially 360 footage).
@@ -2551,7 +2551,7 @@ function refreshShotReviewAfterReplace(attempt = 0, indices = null, startedAt = 
 
 function refreshShotReviewAfterInitialLoad(attempt = 0, startedAt = Date.now()) {
   if (Date.now() - startedAt > 300000) {
-    showToast("La preparación de miniaturas sigue pendiente. Reabre Frames para reintentar.", true);
+    showToast("Thumbnails are still being prepared. Reopen Frames to retry.", true);
     return;
   }
   const delay = Math.min(3000, 400 + attempt * 250);
@@ -2586,11 +2586,11 @@ function renderPaperEdit(paper) {
   paperEditCuts = paper.cuts || [];
   const list = document.querySelector("#paperEditList");
   const summary = document.querySelector("#paperEditSummary");
-  if (summary) summary.textContent = `${paperEditCuts.length} cortes · texto editable y criterio keep/drop/closing por corte.`;
+  if (summary) summary.textContent = `${paperEditCuts.length} cuts · editable text and keep/drop/closing choice per cut.`;
   if (!list) return;
   list.innerHTML = paperEditCuts.map((cut) => `
     <div class="paper-edit-row">
-      ${cut.thumbnail ? `<img class="paper-edit-thumb" src="${escapeHtml(cut.thumbnail)}" alt="Miniatura de ${escapeHtml(cut.source)}" />` : `<span class="paper-edit-thumb review-thumb-placeholder">—</span>`}
+      ${cut.thumbnail ? `<img class="paper-edit-thumb" src="${escapeHtml(cut.thumbnail)}" alt="Thumbnail of ${escapeHtml(cut.source)}" />` : `<span class="paper-edit-thumb review-thumb-placeholder">—</span>`}
       <span class="paper-edit-order">${cut.order}</span>
       <span class="paper-edit-main"><strong>${escapeHtml(cut.source)} · ${escapeHtml(cut.section)}</strong><span>${Number(cut.in_sec).toFixed(1)}–${Number(cut.out_sec).toFixed(1)} s · ${Number(cut.duration_sec).toFixed(1)} s · ${escapeHtml(cut.language || "—")}</span><span class="paper-edit-original">${cut.text_original ? escapeHtml(cut.text_original) : "no dialogue"}</span>${cut.english_text ? `<span class="paper-edit-english">${escapeHtml(cut.english_text)}</span>` : ""}<em>score ${Number(cut.narrative_score ?? cut.interest_score ?? 0).toFixed(2)} · ${escapeHtml(cut.selection_reason || "")}</em>${cut.narrative_scores && Object.keys(cut.narrative_scores).length ? `<small>LLM: ${escapeHtml(JSON.stringify(cut.narrative_scores))}</small>` : ""}<input class="paper-edit-subtitle" data-paper-subtitle="${escapeHtml(cut.id)}" value="${escapeHtml(cut.subtitle_text || cut.english_text || "")}" aria-label="English subtitle for ${escapeHtml(cut.source)}" /></span><select data-paper-mark="${escapeHtml(cut.id)}" aria-label="Mark ${escapeHtml(cut.source)}"><option value="keep" ${cut.mark === "keep" ? "selected" : ""}>keep</option><option value="drop" ${cut.mark === "drop" ? "selected" : ""}>drop</option><option value="closing" ${cut.mark === "closing" ? "selected" : ""}>closing</option></select>
     </div>`).join("");
@@ -3060,7 +3060,9 @@ async function startWizard(options = {}) {
   if (!continuingBackground) resetProgressTiming();
   // Every explicit run is a fresh creative pass.  Keeping the same seed
   // made the edit fingerprint and camera tie-breaks reproduce the prior cut.
-  currentVariationSeed = `${Date.now()}-${Math.random()}`;
+  // Retrying a failed run is not: it keeps the cut so every segment already
+  // rendered is reused from cache instead of re-rendering the whole video.
+  if (!options.reuseVariation) currentVariationSeed = `${Date.now()}-${Math.random()}`;
   const inputs = selectedInputs();
   lastPipelineStage = null;
   hideStageTransition();
@@ -4197,7 +4199,7 @@ document.addEventListener("click", (event) => {
     (async () => {
       try {
         await api("/wizard/reset");
-        await startWizard({ waitForPrepare: false });
+        await startWizard({ waitForPrepare: false, reuseVariation: target.id === "startAgain" });
       } catch (error) {
         showToast(error.message, true);
       }
@@ -4769,10 +4771,10 @@ async function checkForUpdates(manual = false) {
     update = await api("/updates/status");
   }
   if (update.status !== "available") {
-    if (manual) showToast(update.status === "up_to_date" ? "Ya tienes la última versión disponible." :
-      update.status === "unavailable" ? "No se pudo comprobar la actualización. Revisa la conexión y vuelve a intentarlo." :
-      update.status === "disabled" ? "Las actualizaciones están disponibles en la aplicación instalada." :
-      "La comprobación o actualización sigue en curso. Puedes volver a consultarla.", update.status === "unavailable");
+    if (manual) showToast(update.status === "up_to_date" ? "You already have the latest version." :
+      update.status === "unavailable" ? "Could not check for updates. Check your connection and try again." :
+      update.status === "disabled" ? "Updates are available in the installed app." :
+      "The update check is still in progress. You can check again later.", update.status === "unavailable");
     return;
   }
   document.querySelector("#installUpdate").disabled = false;
@@ -4824,13 +4826,13 @@ window.EditorMenu = {
     const navigate = step => document.querySelector(`[data-step-nav="${step}"]`)?.click();
     const focus = selector => {
       const element = document.querySelector(selector);
-      if (!element || element.hidden || element.closest('[hidden]')) throw new Error('Esta opción no está disponible para el modo o estado actual del proyecto.');
+      if (!element || element.hidden || element.closest('[hidden]')) throw new Error('This option is not available for the current mode or project state.');
       for (let parent = element; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true;
       element.scrollIntoView({block: 'center', behavior: 'smooth'});
     };
     const click = id => {
       const button = document.getElementById(id);
-      if (!button || button.disabled || button.hidden || button.closest('[hidden]')) throw new Error('Esta acción todavía no está disponible. Revisa el estado del proyecto.');
+      if (!button || button.disabled || button.hidden || button.closest('[hidden]')) throw new Error('This action is not available yet. Check the project state.');
       button.click();
     };
     try {
@@ -4845,14 +4847,14 @@ window.EditorMenu = {
         return;
       }
       if (action === 'mode') {
-        if (activeProjectId || pendingImports || confirmingInputs || latestStatus?.status === 'running') throw new Error('Crea un nuevo proyecto para elegir otro tipo de edición.');
+        if (activeProjectId || pendingImports || confirmingInputs || latestStatus?.status === 'running') throw new Error('Create a new project to choose another edit type.');
         navigate(1); return showEditTypeChooser();
       }
       const panels = {spherical: '#sphericalSetup', reel: '#reelOptions', backstage: '#backstageOptions', medley: '#medleyOptions'};
       if (action in panels) { navigate(2); return focus(panels[action]); }
       if (['composition', 'captions', 'overlays'].includes(action)) {
-        if (!latestResult && latestStatus?.status !== 'done') throw new Error('Termina primero el montaje para abrir el editor de subtítulos y superposiciones.');
-        if (youtubeSkipsComposition()) throw new Error('El editor de subtítulos y superposiciones está disponible en los modos Reel, Backstage y 360.');
+        if (!latestResult && latestStatus?.status !== 'done') throw new Error('Finish the edit first to open the captions and overlays editor.');
+        if (youtubeSkipsComposition()) throw new Error('The captions and overlays editor is available in Reel, Backstage and 360 modes.');
         await openCaptions(); navigate(5);
         if (action === 'captions') { setCaptionPanelExpanded(true); focus('#captionDisclosure'); }
         if (action === 'overlays') focus('.compose-overlays-panel');
@@ -4869,7 +4871,7 @@ window.EditorMenu = {
       };
       if (action === 'details') { navigate(3); return focus('#progressDetails'); }
       if (action in buttons) { const [step, id] = buttons[action]; navigate(step); return click(id); }
-      throw new Error('Opción de menú desconocida.');
+      throw new Error('Unknown menu option.');
     } catch (error) { showToast(error.message, true); }
   }
 };
