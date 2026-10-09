@@ -1720,19 +1720,19 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                     return error_response("project_mismatch", "Inputs changed; return to the files page before continuing", 409)
                 if str(state.project.data["settings"].get("wizard", {}).get("platform")) != platform:
                     return error_response("project_mismatch", "Edit type changed; return to the files page before continuing", 409)
-                state.project.data["settings"]["wizard"]["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
+                _apply_run_options(state.project, body)
                 state.project.save()
                 job = state.wizard.start(**options)
                 return jsonify(serialize_wizard_job(job)), 202
             if state.project is not None and state.wizard._prepared_project is None:
                 if _project_matches_inputs(state.project, master, songs, videos) and _project_can_skip_prepare(state.project, platform):
-                    state.project.data.setdefault("settings", {}).setdefault("wizard", {})["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
+                    _apply_run_options(state.project, body)
                     state.project.save()
                     state.wizard.adopt_prepared_project(state.project)
                     job = state.wizard.start(**options)
                     return jsonify(serialize_wizard_job(job)), 202
                 else:
-                    state.project.data.setdefault("settings", {}).setdefault("wizard", {})["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
+                    _apply_run_options(state.project, body)
                     state.project.save()
                     job = state.wizard.start_existing(state.project, **options)
                     return jsonify(serialize_wizard_job(job)), 202
@@ -1745,7 +1745,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 state.wizard.prepare_existing(matching_project, platform=platform)
             seed_project = state.wizard._prepared_project or state.project
             if seed_project is not None:
-                seed_project.data.setdefault("settings", {}).setdefault("wizard", {})["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
+                _apply_run_options(seed_project, body)
                 seed_project.save()
             job = state.wizard.start(**options)
             return jsonify(serialize_wizard_job(job)), 202
@@ -2850,6 +2850,13 @@ def _require_project(state: AppState) -> Project:
     if state.project is None:
         raise ProjectError("No project is open")
     return state.project
+
+
+def _apply_run_options(project: Project, body: dict[str, Any]) -> None:
+    """Store per-run choices on the project that will actually render."""
+    settings = project.data.setdefault("settings", {})
+    settings.setdefault("wizard", {})["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
+    settings.setdefault("export", {})["draft"] = bool(body.get("draft_export"))
 
 
 def _remember_project(project: Project) -> None:

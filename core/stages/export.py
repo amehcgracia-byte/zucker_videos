@@ -554,6 +554,7 @@ class ExportStage(Stage):
                         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                         "path": str(output_path),
                         "filename": output_path.name,
+                        "draft": _export_draft(project),
                         "duration_sec": duration,
                         "warnings": warnings,
                         "cut_count": int(plan["cut_count"] if plan.get("cut_count") is not None else max(0, len(segments) - 1)),
@@ -626,7 +627,17 @@ def _export_run_id() -> str:
 def _output_path(project: Project, platform: str, run_id: str | None = None) -> Path:
     safe_name = "".join(ch if ch.isalnum() or ch in " ._-" else "-" for ch in project.data["name"]).strip() or "video"
     suffix = f"-{run_id}" if run_id else ""
-    return project.exports_dir / f"{safe_name}-{platform}{suffix}.mp4"
+    draft = "-draft" if _export_draft(project) else ""
+    return project.exports_dir / f"{safe_name}-{platform}{draft}{suffix}.mp4"
+
+
+def _export_draft(project: Project) -> bool:
+    """Fast review export: 360 camera moves read the 2560x1280 export proxy.
+
+    Only the source of native moving 360 shots changes. Flat cameras and 360
+    holds render exactly as in a final export and share its segment cache.
+    """
+    return bool(project.data.get("settings", {}).get("export", {}).get("draft"))
 
 
 def _frame_normalized_segments(segments: list[dict[str, Any]], fps: float = TARGET_EXPORT_FPS) -> list[dict[str, Any]]:
@@ -2114,17 +2125,21 @@ def _spherical_sources_to_prepare(project: Project, segments: list[dict[str, Any
     for segment in segments:
         if _spherical_shot(segment):
             info = _segment_source_info(project, segment)
-            if not _spherical_uses_original_motion(info, segment):
+            if not _spherical_uses_original_motion(info, segment, _export_draft(project)):
                 sources.setdefault(str(info.get("source_path")), (info, segment))
     return sources
 
 
-def _spherical_uses_original_motion(source_info: dict[str, Any], segment: dict[str, Any]) -> bool:
+def _spherical_uses_original_motion(source_info: dict[str, Any], segment: dict[str, Any], draft: bool = False) -> bool:
     """Use the same source policy during preparation and actual rendering.
 
     Native moving shots read the original for portrait detail. Preparing a
     full-file proxy for these shots wastes work: the renderer never uses it.
+    A draft reads the proxy instead: the same exact reprojection over ~2.25x
+    fewer source pixels, which is where moving shots spend their time.
     """
+    if draft:
+        return False
     shot = _spherical_shot(segment)
     probe = source_info.get("probe") or {}
     return bool(shot and SPHERICAL_EXPORT_MOTION_MODE == "native_remap"
@@ -2273,7 +2288,7 @@ def _render_segment(
         safe_shot = dict(spherical_shot)
         safe_shot["runtime_motion_enabled"] = False
         render_segment["spherical_shot"] = safe_shot
-    original_motion = _spherical_uses_original_motion(base_source, segment)
+    original_motion = _spherical_uses_original_motion(base_source, segment, _export_draft(project))
     if original_motion:
         # Portraits retain the camera's pixels instead of magnifying the 2K cache.
         source, using_spherical_proxy = base_source, False
@@ -4117,6 +4132,8 @@ def cached_segment_path(
     """Return the global cache path for a rendered segment recipe."""
     source = _segment_source_info(project, segment)
     spherical_motion_recipe = _spherical_motion_cache_recipe()
+    # Draft and final pixels differ only for moves that would read the original.
+    draft_source = _export_draft(project) and _spherical_uses_original_motion(source, segment)
     reel_aspect_mode = str(project.data.get("settings", {}).get("wizard", {}).get("reel_aspect") or "9:16")
     recipe = stable_fingerprint(
         {
@@ -4150,6 +4167,7 @@ def cached_segment_path(
             # semantics can change while the plan stays byte-for-byte equal.
             "spherical_motion_recipe": spherical_motion_recipe,
             "spherical_motion_recipe_hash": stable_fingerprint(spherical_motion_recipe),
+            **({"draft_motion_source": f"proxy-{SPHERICAL_EXPORT_PROXY_VERSION}"} if draft_source else {}),
         }
     )[:24]
     return global_segment_path(recipe)

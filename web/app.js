@@ -1466,6 +1466,7 @@ async function resumeInputsFromProject() {
     if (!detected.master.some(item => item.path === audio.path)) detected.master.push(recordToDetectedItem(audio, "master"));
   }
   document.querySelector("#instrumentHighlights").checked = Boolean(project.settings?.wizard?.instrument_highlights);
+  document.querySelector("#draftExport").checked = Boolean(project.settings?.export?.draft);
   if (songs) detected.songs.push(songs);
   for (const record of inputs.videos || []) {
     if (record.status === "not_a_video") {
@@ -2090,6 +2091,7 @@ async function newProject() {
   sphericalProjectSettings = null;
   document.querySelector("#sphericalSetup").open = false;
   document.querySelector("#instrumentHighlights").checked = false;
+  document.querySelector("#draftExport").checked = false;
   document.querySelector("#medleyDuration").value = 180;
   document.querySelector("#medleyGap").value = 0.5;
   document.querySelector("#medleyFade").value = 0.5;
@@ -2628,6 +2630,9 @@ async function openPaperEdit() {
 function applyEditTypeMode() {
   const highlightOption = document.querySelector("#instrumentHighlightsOption");
   if (highlightOption) highlightOption.hidden = selectedPlatform !== "youtube";
+  // 360 mode exports the whole sphere; there are no reprojected camera moves to lighten.
+  const draftOption = document.querySelector("#draftExportOption");
+  if (draftOption) draftOption.hidden = selectedPlatform === "360";
   const passthrough360 = selectedPlatform === "360";
   const youtubeDirectResult = selectedPlatform === "youtube" || selectedPlatform === "medley";
   const cameraMix = document.querySelector("#cameraMix");
@@ -3093,6 +3098,7 @@ async function startWizard(options = {}) {
       name: document.querySelector("#videoName").value || todayName(),
       platform: selectedPlatform,
       instrument_highlights: selectedPlatform === "youtube" && document.querySelector("#instrumentHighlights").checked,
+      draft_export: document.querySelector("#draftExport").checked,
       medley_entries: [...document.querySelectorAll("#medleySources select")].map(select => ({video: select.dataset.video, audio: select.value})),
       medley_duration_sec: Number(document.querySelector("#medleyDuration").value),
       medley_gap_sec: Number(document.querySelector("#medleyGap").value),
