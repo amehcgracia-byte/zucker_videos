@@ -4759,15 +4759,26 @@ document.querySelector("#editTypeDialog").addEventListener("click", event => {
 
 let updateCheckStarted = false;
 let availableUpdate = null;
-async function checkForUpdates() {
-  if (updateCheckStarted) return;
+async function checkForUpdates(manual = false) {
+  if (updateCheckStarted && !manual) return;
   updateCheckStarted = true;
-  let update = await api("/updates/check");
+  if (manual) showToast("Buscando actualizaciones…");
+  let update = await api("/updates/check" + (manual ? "?force=1" : ""));
   for (let attempt = 0; update.status === "checking" && attempt < 15; attempt++) {
     await new Promise(resolve => setTimeout(resolve, 1000));
     update = await api("/updates/status");
   }
-  if (update.status !== "available") return;
+  if (update.status !== "available") {
+    if (manual) showToast(update.status === "up_to_date" ? "Ya tienes la última versión disponible." :
+      update.status === "unavailable" ? "No se pudo comprobar la actualización. Revisa la conexión y vuelve a intentarlo." :
+      update.status === "disabled" ? "Las actualizaciones están disponibles en la aplicación instalada." :
+      "La comprobación o actualización sigue en curso. Puedes volver a consultarla.", update.status === "unavailable");
+    return;
+  }
+  document.querySelector("#installUpdate").disabled = false;
+  document.querySelector("#updateLater").hidden = false;
+  document.querySelector("#updateProgress").hidden = true;
+  document.querySelector("#updateDetail").textContent = "";
   availableUpdate = update;
   document.querySelector("#updateDescription").textContent = `Zucker Editor ${update.version} is available. Download the verified update, close this version and reopen automatically? Save your project first; finish any current task before updating.`;
   document.querySelector("#updateDialog").showModal();
@@ -4804,3 +4815,58 @@ document.querySelector("#installUpdate").addEventListener("click", async event =
     button.disabled = false;
   }
 });
+
+// Native menu commands reuse the same controls and confirmations as the wizard.
+window.EditorMenu = {
+  async run(action) {
+    const navigate = step => document.querySelector(`[data-step-nav="${step}"]`)?.click();
+    const focus = selector => {
+      const element = document.querySelector(selector);
+      if (!element || element.hidden || element.closest('[hidden]')) throw new Error('Esta opción no está disponible para el modo o estado actual del proyecto.');
+      for (let parent = element; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true;
+      element.scrollIntoView({block: 'center', behavior: 'smooth'});
+    };
+    const click = id => {
+      const button = document.getElementById(id);
+      if (!button || button.disabled || button.hidden || button.closest('[hidden]')) throw new Error('Esta acción todavía no está disponible. Revisa el estado del proyecto.');
+      button.click();
+    };
+    try {
+      if (action === 'updates') return await checkForUpdates(true);
+      if (action === 'theme') return click('themeToggle');
+      if (action === 'new') return await newProject();
+      const pages = {projects: 1, inputs: 1, settings: 2, progress: 3, review: 4, result: 6};
+      if (action in pages) {
+        navigate(pages[action]);
+        if (action === 'projects') await loadProjects();
+        return;
+      }
+      if (action === 'mode') {
+        if (activeProjectId || pendingImports || confirmingInputs || latestStatus?.status === 'running') throw new Error('Crea un nuevo proyecto para elegir otro tipo de edición.');
+        navigate(1); return showEditTypeChooser();
+      }
+      const panels = {spherical: '#sphericalSetup', reel: '#reelOptions', backstage: '#backstageOptions', medley: '#medleyOptions'};
+      if (action in panels) { navigate(2); return focus(panels[action]); }
+      if (['composition', 'captions', 'overlays'].includes(action)) {
+        if (!latestResult && latestStatus?.status !== 'done') throw new Error('Termina primero el montaje para abrir el editor de subtítulos y superposiciones.');
+        if (youtubeSkipsComposition()) throw new Error('El editor de subtítulos y superposiciones está disponible en los modos Reel, Backstage y 360.');
+        await openCaptions(); navigate(5);
+        if (action === 'captions') { setCaptionPanelExpanded(true); focus('#captionDisclosure'); }
+        if (action === 'overlays') focus('.compose-overlays-panel');
+        return;
+      }
+      const buttons = {
+        play: [5, 'composePlayPause'], previousFrame: [5, 'composeFrameBack'], nextFrame: [5, 'composeFrameForward'],
+        expand: [5, 'composeExpand'], approve: [4, 'approvePaperEdit'],
+        start: [2, 'startWizard'], replace: [4, 'replaceRejected'], render: [4, 'renderReviewedTop'],
+        cancel: [3, 'cancelWizard'], transcribe: [5, 'captionAutoRead'], srt: [5, 'captionExportSrt'],
+        burn: [5, 'burnCaptions'], reuse: [5, 'reuseReelOverlays'], duplicate: [5, 'composeDuplicateOverlay'],
+        finder: [6, 'showFinder'], report: [3, 'copyProgressReport'],
+        logs: [6, latestStatus?.status === 'failed' ? 'openLogsError' : 'openLogsSuccess']
+      };
+      if (action === 'details') { navigate(3); return focus('#progressDetails'); }
+      if (action in buttons) { const [step, id] = buttons[action]; navigate(step); return click(id); }
+      throw new Error('Opción de menú desconocida.');
+    } catch (error) { showToast(error.message, true); }
+  }
+};

@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from core.storage import data_root, configure_working_storage
 
+from core.desktop_menu import build_desktop_menu, hide_external_services
 from core.build_info import startup_label
 from server.api import create_app
 from server.inbox import load_global_config, save_global_config
@@ -135,7 +136,8 @@ def main() -> None:
         <script>async function choose(){const b=document.getElementById('choose');b.disabled=true;try{const url=await window.pywebview.api.choose_storage();if(url)location.href=url;}catch(e){document.getElementById('error').textContent=e.message;}finally{b.disabled=false;}}document.getElementById('choose').disabled=true;window.addEventListener('pywebviewready',()=>document.getElementById('choose').disabled=false);</script></html>"""
         window = webview.create_window(APP_NAME, html=html, width=850, height=540, js_api=bridge)
         window.events.loaded += lambda: _enable_native_drop(window)
-        webview.start()
+        window.events.loaded += hide_external_services
+        webview.start(menu=build_desktop_menu(window))
         return
     _configure_logging()
     logging.getLogger(__name__).info("Starting %s", startup_label())
@@ -186,7 +188,8 @@ def main() -> None:
 
     window.events.loaded += on_loaded
     window.events.loaded += lambda: _enable_native_drop(window)
-    webview.start()
+    window.events.loaded += hide_external_services
+    webview.start(menu=build_desktop_menu(window))
 
 
 def _start_desktop_server(args: argparse.Namespace) -> str:

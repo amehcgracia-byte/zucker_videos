@@ -156,3 +156,32 @@ def test_windows_helper_replaces_and_rolls_back(tmp_path,launch_ok):
     result=subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(path)],capture_output=True,text=True)
     assert (installed/'version').read_text()==('new' if launch_ok else 'old')
     assert (result.returncode==0)==launch_ok
+
+@pytest.mark.parametrize('status', ['up_to_date', 'unavailable', 'available', 'failed'])
+def test_manual_check_retries_completed_checks(monkeypatch, status):
+    calls = []
+    class Thread:
+        def __init__(self, **kwargs): calls.append(kwargs)
+        def start(self): pass
+    monkeypatch.setattr(updater.threading, 'Thread', Thread)
+    manager = updater.UpdateManager()
+    manager.set_state(status=status, error='old failure', version='old')
+    manager.asset = {'old': True}
+    assert manager.check()['status'] == status
+    assert not calls
+    assert manager.check(force=True)['status'] == 'checking'
+    assert manager.asset is None
+    assert manager.snapshot()['error'] is None
+    assert len(calls) == 1
+    manager.check(force=True)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('status', ['checking', 'downloading', 'preparing', 'ready', 'installing'])
+def test_manual_check_preserves_active_update(status):
+    manager = updater.UpdateManager()
+    manager.set_state(status=status, percent=42)
+    manager.asset = {'version': '9.0.0'}
+    assert manager.check(force=True)['status'] == status
+    assert manager.snapshot()['percent'] == 42
+    assert manager.asset == {'version': '9.0.0'}

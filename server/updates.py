@@ -30,7 +30,7 @@ def register_update_routes(app, state):
     @app.get('/api/v1/updates/check')
     def check_update():
         if state.dev: return jsonify(status='disabled')
-        return jsonify(manager.check())
+        return jsonify(manager.check(force=request.args.get('force') == '1'))
 
     @app.get('/api/v1/updates/status')
     def update_status():

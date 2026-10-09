@@ -138,10 +138,13 @@ class UpdateManager:
     def set_state(self, **values):
         with self.lock: self.state.update(values)
 
-    def check(self):
+    def check(self, force=False):
         with self.lock:
-            if self.state['status'] != 'idle': return self.snapshot()
-            self.state['status'] = 'checking'
+            retryable = {'idle', 'up_to_date', 'unavailable', 'available', 'failed'}
+            if self.state['status'] != 'idle' and not (force and self.state['status'] in retryable):
+                return self.snapshot()
+            self.asset = None
+            self.state.update(status='checking', error=None, version=None, percent=None)
         threading.Thread(target=self._check, daemon=True, name='zucker-update-check').start()
         return self.snapshot()
 
