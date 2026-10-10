@@ -35,7 +35,7 @@ def test_highlights_preserve_budget_and_never_repeat_footage(available, length):
             assert clips[i-1]['start'] + clips[i-1]['duration'] <= row['start'] + 1e-6
 
 
-def test_render_internal_highlights_use_cuts_and_only_song_boundaries_fade(tmp_path, monkeypatch):
+def test_render_internal_highlights_blend_and_song_boundaries_fade(tmp_path, monkeypatch):
     import core.medley as medley
     project = create_project('highlight cuts', str(tmp_path/'cuts.zuckervid'))
     monkeypatch.setattr(medley, 'media_info', lambda p: (36.5 if str(p).endswith('complete.mp4') else 80, True, True))
@@ -50,14 +50,18 @@ def test_render_internal_highlights_use_cuts_and_only_song_boundaries_fade(tmp_p
     monkeypatch.setattr(medley, '_run', run)
     output, manifest = render(project, [{'video':str(tmp_path/'a.mp4')}, {'video':str(tmp_path/'b.mp4')}],
                               36.5, .5, .25, lambda *args: None, lambda: None)
-    songs = [command for command in commands if '-vf' in command]
-    assert len(songs) == 6
-    for index, command in enumerate(songs):
-        vf, af = command[command.index('-vf')+1], command[command.index('-af')+1]
-        assert ('fade=t=in' in vf) == (index % 3 == 0)
-        assert ('afade=t=in' in af) == (index % 3 == 0)
-        assert ('fade=t=out' in vf) == (index % 3 == 2)
-        assert ('afade=t=out' in af) == (index % 3 == 2)
+    songs = [command for command in commands if '-filter_complex' in command]
+    assert len(songs) == 2
+    for command in songs:
+        graph = command[command.index('-filter_complex')+1]
+        assert graph.count('xfade=transition=fade:') == 2
+        assert graph.count('acrossfade=') == 2
+        assert graph.count(',fade=t=in:') == 1
+        assert graph.count(',fade=t=out:') == 1
+        assert graph.count(',afade=t=in:') == 1
+        assert graph.count(',afade=t=out:') == 1
+    for row in manifest['songs']:
+        assert sum(h['duration'] for h in row['highlights']) - 2*row['internal_blend_sec'] == pytest.approx(row['duration'])
     assert sum(any('color=c=black' in arg for arg in command) for command in commands) == 1
     assert all(len(row['highlights']) == 3 for row in manifest['songs'])
     assert output.exists()
@@ -150,23 +154,45 @@ def test_medley_silent_source_renders_without_external_audio(tmp_path):
     assert any('No audio' in row[3] for row in updates)
 
 
-def test_real_internal_highlight_cut_keeps_picture_and_sound(tmp_path):
+def test_real_internal_highlight_blend_keeps_picture_and_sound(tmp_path, monkeypatch):
     ffmpeg = tool_status()['ffmpeg_path']
     if not ffmpeg:
         pytest.skip('FFmpeg unavailable')
     source = tmp_path / 'song.mp4'
     subprocess.run([ffmpeg, '-v', 'error', '-f', 'lavfi', '-i', 'color=red:s=320x180:r=30',
                     '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '18',
-                    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', str(source)], check=True)
+                    '-vf', "drawbox=color=blue:t=fill:enable='gte(t,8)'", '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', str(source)], check=True)
     project = create_project('Internal cut', str(tmp_path/'internal.zuckervid'))
+    monkeypatch.setattr('core.medley.select_highlights', lambda events, pictures, available, length, count=None: [{'start': 0, 'duration': length/2}, {'start': 10, 'duration': length/2}])
     output, manifest = render(project, [{'video':str(source)}], 12, 0, .5, lambda *args:None, lambda:None)
     assert len(manifest['songs'][0]['highlights']) == 2
     assert media_info(output)[0] == pytest.approx(12, abs=.15)
-    for second in [5.9, 6.1]:
+    for second, channel in [(5.5, 0), (6.5, 2)]:
         frame = subprocess.check_output([ffmpeg, '-v', 'error', '-ss', str(second), '-i', str(output),
                                          '-frames:v', '1', '-vf', 'scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'])
-        assert frame[0] > 200
+        assert frame[channel] > 200
+    middle = subprocess.check_output([ffmpeg, '-v', 'error', '-ss', '6', '-i', str(output),
+                                      '-frames:v', '1', '-vf', 'scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'])
+    assert 40 < middle[0] < 220 and 40 < middle[2] < 220  # actual red/blue overlap, not black
     sound = subprocess.check_output([ffmpeg, '-v', 'error', '-i', str(output), '-vn', '-ac', '1',
                                     '-ar', '8000', '-f', 'f32le', 'pipe:1'])
     samples = np.frombuffer(sound, dtype='<f4')
     assert np.sqrt(np.mean(samples[int(5.9*8000):int(6.1*8000)]**2)) > .04
+
+
+def test_highlight_boundaries_prefer_nearby_musical_cues():
+    events = [{"start_sec": t, "score": .5, "rms": .1} for t in range(30)]
+    events[12]["cut_boundaries"] = [{"time_sec": 12.35, "strength": 1}]
+    events[18]["cut_boundaries"] = [{"time_sec": 18.35, "strength": 1}]
+    selected = select_highlights(events, [], 30, 6)
+    assert selected[0]["start"] == pytest.approx(12.35)
+    assert selected[0]["duration"] == 6
+
+
+def test_analysis_records_subsecond_attack_cues():
+    sr = 8000
+    samples = np.zeros(sr*5)
+    start = int(2.35*sr)
+    samples[start:] = .15*np.sin(2*np.pi*440*np.arange(len(samples)-start)/sr)
+    cues = [cue for event in analyze_samples(samples, sr) for cue in event.get("cut_boundaries", [])]
+    assert any(abs(cue['time_sec']-2.35) <= .051 and cue['strength'] > .5 for cue in cues)
