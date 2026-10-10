@@ -227,7 +227,14 @@ def _run_reprojected_command(command: list[str], source: str, source_size: tuple
                     received += count
                 if failures: raise failures[0]
                 guard.raise_if_failed()
-                if received != len(frame_bytes):
+                # fps conversion at the physical end of a clip may round down
+                # by one frame. Reuse only the last complete source frame, only
+                # for the final requested frame and a clean decoder EOF.
+                clean_final_eof = (received == 0 and index > 0 and index == frame_count - 1
+                                   and decoder.wait(timeout=10) == 0)
+                if clean_final_eof:
+                    LOGGER.info("360 final-frame rounding: reusing source frame %d for %d", index - 1, index)
+                if received != len(frame_bytes) and not clean_final_eof:
                     decode_log.seek(0)
                     diagnostics = decode_log.read().decode(errors='replace')[-2000:]
                     error_type = HardwareDecodeError if decoder_pixel_format else FFmpegError
