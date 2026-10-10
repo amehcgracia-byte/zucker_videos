@@ -33,7 +33,7 @@ if (-not (Test-Path $ClipModel) -or (Get-FileHash -Algorithm SHA256 $ClipModel).
   Move-Item -Force "$ClipModel.part" $ClipModel
 }
 $common = @(
-  "--noconfirm", "--clean", "--windowed", "--name", $BundleName,
+  "--noconfirm", "--clean", "--noupx", "--windowed", "--name", $BundleName,
   "--distpath", $PyInstallerDist, "--workpath", $PyInstallerBuild, "--specpath", $PyInstallerBuild,
   "--add-data", "$Root\web;web",
   "--add-data", "$Root\assets\models;assets\models",
@@ -50,6 +50,9 @@ $common = @(
   "--hidden-import", "soundfile", "--hidden-import", "audioread", "--hidden-import", "numba", "--hidden-import", "llvmlite",
   "--hidden-import", "server.api", "--hidden-import", "faster_whisper",
   "--hidden-import", "ctranslate2", "--hidden-import", "onnxruntime", "--hidden-import", "tokenizers",
+  "--hidden-import", "webview.platforms.winforms", "--hidden-import", "clr",
+  "--collect-data", "pythonnet", "--collect-binaries", "pythonnet",
+  "--collect-submodules", "clr_loader",
   "--collect-submodules", "server", "--collect-submodules", "core",
   "--exclude-module", "pytest", "--exclude-module", "tests",
   "$Root\app.py"
@@ -72,6 +75,11 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 $AppDir = Join-Path $PyInstallerDist $BundleName
 if (-not (Test-Path $AppDir)) { throw "PyInstaller output missing: $AppDir" }
 if (-not $env:ZUCKER_SELFTEST_AUDIO -or -not (Test-Path $env:ZUCKER_SELFTEST_AUDIO)) { throw "Set ZUCKER_SELFTEST_AUDIO for the mandatory frozen self-test" }
+# A stale/mismatched managed assembly must never be released.
+$RuntimeSource = (& $Python -c "import importlib.util; from pathlib import Path; print(Path(importlib.util.find_spec('pythonnet').origin).parent / 'runtime' / 'Python.Runtime.dll')").Trim()
+$RuntimeBundled = Join-Path $AppDir "_internal\pythonnet\runtime\Python.Runtime.dll"
+if (-not (Test-Path $RuntimeBundled)) { throw "Packaged Python.Runtime.dll missing" }
+if ((Get-FileHash $RuntimeSource).Hash -ne (Get-FileHash $RuntimeBundled).Hash) { throw "Packaged Python.Runtime.dll differs from installed pythonnet" }
 $Exe = Join-Path $AppDir "$BundleName.exe"
 $env:ZUCKER_WHISPER_BACKEND = "faster-whisper"
 $Log = Join-Path $Root "build\packaged-selftest-windows.log"
@@ -79,7 +87,7 @@ $env:ZUCKER_SELFTEST_REPORT = $Log
 $test = Start-Process -FilePath $Exe -ArgumentList "--selftest" -Wait -PassThru
 if ($test.ExitCode -ne 0) { Get-Content $Log; throw "Frozen Windows self-test failed" }
 $result = Get-Content $Log | Select-Object -Last 1 | ConvertFrom-Json
-if (-not $result.ok -or -not $result.transcription -or -not $result.intro_rendered) { throw "Incomplete frozen self-test" }
+if (-not $result.ok -or -not $result.transcription -or -not $result.intro_rendered -or -not $result.windows_ui) { throw "Incomplete frozen self-test" }
 $infoPath = Join-Path $AppDir "_internal\build_info.json"
 $info = Get-Content $infoPath | ConvertFrom-Json
 if ($info.version -ne $Version -or $info.git_commit -ne $Commit) { throw "Packaged build metadata mismatch" }

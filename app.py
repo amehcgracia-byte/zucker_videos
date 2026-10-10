@@ -211,6 +211,12 @@ def _start_desktop_server(args: argparse.Namespace) -> str:
 def _run_selftest() -> int:
     """Initialize the packaged app and exercise bundle-sensitive invariants."""
     try:
+        windows_ui = None
+        if sys.platform == "win32":
+            # The media/API test alone missed failures in Python.Runtime.dll.
+            # Import the real backend used by first-launch and normal windows.
+            import webview.platforms.winforms
+            windows_ui = True
         app = create_app(project_path=None, dev=False)
         with app.test_client() as client:
             response = client.get("/")
@@ -337,6 +343,7 @@ def _run_selftest() -> int:
             "instrument_model_loaded": instrument_model_loaded,
             "metal_remap_exact": metal_exact,
             "scene_tagging": scene_tagging,
+            "windows_ui": windows_ui,
             "backstage_export": backstage_result,
         }, sort_keys=True))
         return 0
