@@ -17,7 +17,8 @@ import time
 from pathlib import Path
 from core.storage import data_root, configure_working_storage
 
-from core.desktop_menu import build_desktop_menu, hide_external_services
+from core.desktop_menu import build_desktop_menu, hide_external_services, apply_menu_mode
+from core.desktop_text import enable_native_text_menu
 from core.build_info import startup_label
 from server.api import create_app
 from server.inbox import load_global_config, save_global_config
@@ -28,6 +29,11 @@ APP_NAME = "Zucker Editor"
 
 class DesktopApi:
     """pywebview JavaScript bridge for native desktop-only actions."""
+
+    def set_edit_mode(self, mode: str | None = None) -> None:
+        import webview
+        if webview.windows:
+            apply_menu_mode(webview.windows[0], mode)
 
     def pick_master(self) -> list[str]:
         """Open a native file dialog for master audio."""
@@ -128,15 +134,16 @@ def main() -> None:
         import webview
         bridge = DesktopApi()
         bridge._storage_selected = lambda: _start_desktop_server(args)
-        html = """<!doctype html><html lang="es"><meta charset="utf-8">
+        html = """<!doctype html><html lang="en"><meta charset="utf-8">
         <style>body{font:18px system-ui;max-width:650px;margin:70px auto;padding:20px}button{font:inherit;padding:14px;border-radius:12px}#error{color:#a22}</style>
-        <h1>Elige dónde guardar tu trabajo</h1>
-        <p>Vídeos importados, cachés y proyectos se guardarán en esta ubicación. Puedes elegir tu disco externo.</p>
-        <button id="choose" onclick="choose()">Seleccionar ubicación</button><p id="error"></p>
+        <h1>Choose where to save your work</h1>
+        <p>Imported videos, caches and projects will be saved in this location. You can choose your external drive.</p>
+        <button id="choose" onclick="choose()">Choose location</button><p id="error"></p>
         <script>async function choose(){const b=document.getElementById('choose');b.disabled=true;try{const url=await window.pywebview.api.choose_storage();if(url)location.href=url;}catch(e){document.getElementById('error').textContent=e.message;}finally{b.disabled=false;}}document.getElementById('choose').disabled=true;window.addEventListener('pywebviewready',()=>document.getElementById('choose').disabled=false);</script></html>"""
-        window = webview.create_window(APP_NAME, html=html, width=850, height=540, js_api=bridge)
+        window = webview.create_window(APP_NAME, html=html, width=850, height=540, js_api=bridge, text_select=True)
         window.events.loaded += lambda: _enable_native_drop(window)
         window.events.loaded += hide_external_services
+        window.events.loaded += lambda: enable_native_text_menu(window)
         webview.start(menu=build_desktop_menu(window))
         return
     _configure_logging()
@@ -176,7 +183,7 @@ def main() -> None:
     server.start()
     js_api = DesktopApi()
     logging.getLogger(__name__).info("js_api bridge attached: yes")
-    window = webview.create_window(APP_NAME, url, width=1200, height=820, js_api=js_api, background_color="#ffffff")
+    window = webview.create_window(APP_NAME, url, width=1200, height=820, js_api=js_api, background_color="#ffffff", text_select=True)
 
     def on_loaded() -> None:
         config = load_global_config()
@@ -189,6 +196,7 @@ def main() -> None:
     window.events.loaded += on_loaded
     window.events.loaded += lambda: _enable_native_drop(window)
     window.events.loaded += hide_external_services
+    window.events.loaded += lambda: enable_native_text_menu(window)
     webview.start(menu=build_desktop_menu(window))
 
 
@@ -208,9 +216,36 @@ def _start_desktop_server(args: argparse.Namespace) -> str:
     raise RuntimeError("The application server could not start.")
 
 
+def _windows_ui_selftest() -> bool:
+    """Open the actual Windows backend and execute JavaScript, then close it."""
+    import webview
+    loaded = threading.Event()
+    result = []
+    window = webview.create_window("Zucker Editor startup test", html="<html><body>Startup test</body></html>", hidden=True)
+    window.events.loaded += loaded.set
+
+    def probe():
+        try:
+            if loaded.wait(30):
+                result.append(window.evaluate_js("6 * 7") == 42)
+        finally:
+            window.destroy()
+
+    webview.start(probe, gui="edgechromium")
+    if result != [True]:
+        raise RuntimeError("Windows UI did not load or execute JavaScript")
+    return True
+
+
 def _run_selftest() -> int:
     """Initialize the packaged app and exercise bundle-sensitive invariants."""
     try:
+        windows_ui = None
+        if sys.platform == "win32":
+            # The media/API test alone missed failures in Python.Runtime.dll.
+            # Import the real backend used by first-launch and normal windows.
+            import webview.platforms.winforms
+            windows_ui = _windows_ui_selftest()
         app = create_app(project_path=None, dev=False)
         with app.test_client() as client:
             response = client.get("/")
@@ -297,6 +332,19 @@ def _run_selftest() -> int:
                 if not transcription.get("sources"):
                     raise RuntimeError("Packaged transcription returned no source")
                 selftest_transcription = True
+        # Filler scene tagging must load the bundled CLIP encoder and labels and
+        # tell a black frame from daylight; a silent fallback would hide a
+        # broken package.
+        import numpy as np
+        from core import scene_tags
+        scene_tagging = False
+        if scene_tags.available():
+            dark, bright = scene_tags.analyze_frames([np.zeros((256, 256, 3), np.uint8),
+                                                      np.full((256, 256, 3), (135, 190, 235), np.uint8)])
+            scene_tagging = bool(dark.get("model") and dark["time"].get("night", 0) > dark["time"].get("day", 0)
+                                 and bright["time"].get("day", 0) > bright["time"].get("night", 0))
+        if not scene_tagging:
+            raise RuntimeError("Packaged scene tagging (CLIP) is unavailable or not distinguishing night from day")
         backstage_result = None
         backstage_project = os.environ.get("ZUCKER_SELFTEST_BACKSTAGE_PROJECT")
         if backstage_project:
@@ -323,6 +371,8 @@ def _run_selftest() -> int:
             "transcription": selftest_transcription,
             "instrument_model_loaded": instrument_model_loaded,
             "metal_remap_exact": metal_exact,
+            "scene_tagging": scene_tagging,
+            "windows_ui": windows_ui,
             "backstage_export": backstage_result,
         }, sort_keys=True))
         return 0

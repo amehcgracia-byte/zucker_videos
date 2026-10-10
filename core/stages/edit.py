@@ -18,6 +18,8 @@ from core.messages import t
 from core.operator_avoidance import OPERATOR_AVOIDANCE_VERSION, avoidance_for_segment, load_cached_operator_presence
 from core.reel_framing import REEL_FRAMING_VERSION, subject_box_for_window
 from core.non_music import NON_MUSIC_VERSION, analyze_non_music_sources
+from core import fillers as filler_library
+from core import scene_tags
 from core.project import Project
 from core.spherical_view import effective_fov, effective_pitch, effective_projection_control, effective_roll, normalize_projection_preset
 from core.shot_quality import DIRECTOR_SCORE_THRESHOLD, SHOT_QUALITY_VERSION, analyze_handheld_director_quality, director_quality_for_segment
@@ -188,6 +190,9 @@ class EditStage(Stage):
                     "360": SPHERICAL_MOTION_PLAN_VERSION if platform == "360" else None,
                 },
                 "non_music_version": NON_MUSIC_VERSION,
+                # Filler choice depends on the tagger as well as on settings.
+                "filler_version": filler_library.FILLER_VERSION,
+                "scene_tags": [scene_tags.SCENE_TAGS_VERSION, scene_tags.prompts_fingerprint(), scene_tags.available()],
                 "algorithm_version": EDIT_PLAN_ALGORITHM_VERSION,
             }
         )
@@ -225,8 +230,12 @@ class EditStage(Stage):
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, t("choosing_cameras"))
             events = beats.get("instrument_highlights") or []
+            filler_bank = None
+            if filler_library.filler_paths(project):
+                progress_callback(52, "Analysing filler footage")
+                filler_bank = filler_library.build_filler_bank(project, coverage.get("sources") or [])
             coverage = {**coverage, "musical_highlights": beats.get("musical_highlights") or [], "instrument_highlights": events, "singing_segments": [event for event in events if event.get("instrument") == "singer"]}
-            plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}), recorded_moves=recorded_moves, progress_callback=progress_callback, shot_ready=getattr(self, "shot_ready", None))
+            plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}), recorded_moves=recorded_moves, progress_callback=progress_callback, shot_ready=getattr(self, "shot_ready", None), filler_bank=filler_bank)
         write_artifact_json(artifact_path(project, "beats.json"), beats)
         plan["edit_plan_algorithm_version"] = EDIT_PLAN_ALGORITHM_VERSION
         validate_plan_camera_source_consistency(plan)
@@ -671,6 +680,7 @@ def _youtube_multicam_plan(
     recorded_moves: list[dict[str, Any]] | None = None,
     progress_callback: ProgressCallback | None = None,
     shot_ready=None,
+    filler_bank: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     platform = str(coverage.get("platform") or "youtube")
     window = coverage.get("window") or {}
@@ -697,6 +707,7 @@ def _youtube_multicam_plan(
         sources = coverage["segments"]
     segments: list[dict[str, Any]] = []
     non_music_fill_history: list[dict[str, Any]] = []
+    filler_history: list[dict[str, Any]] = []
     gaps: list[dict[str, float]] = []
     previous_source: str | None = None
     previous_camera: str | None = None
@@ -821,8 +832,31 @@ def _youtube_multicam_plan(
             break
         available = _quality_filtered_sources(_covering_sources(sources, segment_start, segment_end, platform=platform), segment_start, segment_end, selection_stats)
         if not available:
-            gaps.append({"start_sec": round(segment_start, 3), "end_sec": round(segment_end, 3)})
+            filler = (filler_library.choose_filler(filler_bank, segment_start, segment_end - segment_start,
+                                                   filler_history, variation_seed, segment_index)
+                      if filler_bank and filler_bank.get("windows") else None)
+            if filler is None:
+                gaps.append({"start_sec": round(segment_start, 3), "end_sec": round(segment_end, 3)})
+                bar_index = next_index
+                continue
+            usable = float(filler["end_sec"]) - float(filler["start_sec"])
+            # Hand back to a camera as soon as one covers the song again.
+            resume = _next_camera_start(sources, segment_start, segment_end, platform)
+            if resume is not None and resume - segment_start >= filler_library.MIN_WINDOW_SEC:
+                usable = min(usable, resume - segment_start)
+            if segment_end - segment_start > usable:
+                # Cut where the filler window ends; the next pass covers the rest.
+                segment_end = _round_to_frame(segment_start + usable)
+                next_index = bisect.bisect_left(bar_times, segment_end)
+                if next_index == len(bar_times) or bar_times[next_index] != segment_end:
+                    bar_times.insert(next_index, segment_end)
+            segment = _filler_plan_segment(filler, segment_start, segment_end, window.get("title") or t("full_video"))
+            segment["variation_seed"] = variation_seed
+            segments.append(segment)
+            if shot_ready:
+                shot_ready(len(segments) - 1, segment)
             bar_index = next_index
+            segment_index += 1
             continue
         for source in available:
             stats = selection_stats.setdefault(_source_id(source), _selection_stats_for_source(source, start, end))
@@ -1100,6 +1134,7 @@ def _youtube_multicam_plan(
             if int(source.get("non_music_audio_rejected") or 0) > 0
         },
         "gaps": gaps,
+        "fillers": _filler_plan_summary(filler_bank, segments),
         "cut_count": max(0, len(segments) - 1),
         "camera_usage": usage,
         "spherical_shot_usage": _spherical_shot_usage(segments),
@@ -1749,6 +1784,17 @@ def _short_form_segments_from_best_coverage(coverage: dict[str, Any]) -> list[di
     ]
 
 
+def _next_camera_start(sources: list[dict[str, Any]], start: float, end: float, platform: str = "youtube") -> float | None:
+    """Earliest time inside (start, end) from which some camera covers up to ``end``."""
+    starts = [
+        range_start
+        for source in sources
+        for range_start, range_end, _offset in _clip_master_ranges(source, platform)
+        if start < range_start < end and range_end >= end
+    ]
+    return min(starts) if starts else None
+
+
 def _covering_sources(
     sources: list[dict[str, Any]], start: float, end: float, *, platform: str = "youtube"
 ) -> list[dict[str, Any]]:
@@ -2003,6 +2049,48 @@ def _framing_nearly_identical(a: dict[str, Any], b: dict[str, Any]) -> bool:
     # Same non-360 source back-to-back (the _choose_source candidate filter already
     # mostly prevents this; this catches edge cases where only one source is available).
     return role_a == role_b
+
+
+def _filler_plan_segment(window: dict[str, Any], start: float, end: float, title: str) -> dict[str, Any]:
+    """A plan segment showing an unsynced filler window over the music."""
+    start = _round_to_frame(start)
+    end = max(start + 1.0 / EDIT_FPS, _round_to_frame(end))
+    conditions = window.get("conditions") or {}
+    return {
+        "title": title,
+        "clip_path": window["clip_path"],
+        "source_path": window["source_path"],
+        "clip_start_sec": float(window["start_sec"]),
+        "master_start_sec": start,
+        "duration_sec": max(1.0 / EDIT_FPS, end - start),
+        "clip_offset_sec": start - float(window["start_sec"]),
+        "confidence": 0.0,
+        "filename": window["filename"],
+        "projection": None,
+        "camera_id": _camera_id({"source_path": window["source_path"], "filename": window["filename"], "projection": None}),
+        "available_camera_ids": [],
+        "camera_alternative_available": False,
+        "editorial_subject": str(window.get("shot") or "filler"),
+        "filler": True,
+        "filler_shot": window.get("shot"),
+        "filler_conditions": {key: conditions.get(key) for key in ("time", "place", "rain", "fire")},
+        "filler_score": window.get("score"),
+        "filler_key": window.get("key"),
+    }
+
+
+def _filler_plan_summary(bank: dict[str, Any] | None, segments: list[dict[str, Any]]) -> dict[str, Any]:
+    if not bank:
+        return {"enabled": False}
+    return {
+        "enabled": bool(bank.get("enabled")),
+        "model": bool(bank.get("model")),
+        "conditions": bank.get("conditions") or {},
+        "compatible_windows": len(bank.get("windows") or []),
+        "rejected_windows": bank.get("rejected") or {},
+        "used_segments": sum(1 for segment in segments if segment.get("filler")),
+        "used_seconds": round(sum(float(segment.get("duration_sec") or 0.0) for segment in segments if segment.get("filler")), 3),
+    }
 
 
 def _segment_from_source(

@@ -1993,7 +1993,9 @@ def test_reel_scale_overlay_expression_runs_with_ffmpeg(tmp_path: Path) -> None:
         }],
     )
     source = ["-f", "lavfi", "-i", "color=c=blue:s=320x240:r=30:d=0.5"]
-    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", *source, "-loop", "1", "-i", str(overlay), "-filter_complex", graph, "-map", "[v]", "-t", "0.5", "-f", "null", "-"]
+    # Match the export runner's libavfilter scheduling workaround (7db05b5).
+    # The dynamic scale/pad graph can crash FFmpeg when filters run in parallel.
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", *source, "-loop", "1", "-i", str(overlay), "-filter_threads", "1", "-filter_complex_threads", "1", "-filter_complex", graph, "-map", "[v]", "-t", "0.5", "-f", "null", "-"]
     result = subprocess.run(command, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
@@ -2136,3 +2138,63 @@ def test_render_failure_stops_active_and_queued_segments(tmp_path, monkeypatch):
     assert info.value.segment_index == 1
     assert stopped.is_set()
     assert sorted(calls) == [1, 2]
+
+
+def _envelope_rms(envelope, start: float, duration: float) -> float:
+    steps = 400
+    values = [envelope(start + duration * (index + 0.5) / steps) for index in range(steps)]
+    return (sum(value * value for value in values) / steps) ** 0.5
+
+
+def _patch_final_audio_probe(monkeypatch, master: str, master_envelope, final_envelope) -> None:
+    monkeypatch.setattr("core.stages.export._probe_streams", lambda _path: {"streams": [{"codec_type": "audio"}]})
+    monkeypatch.setattr("core.stages.export._media_duration", lambda _path: 600.0)
+    monkeypatch.setattr(
+        "core.stages.export._audio_rms",
+        lambda path, start, duration: _envelope_rms(master_envelope if str(path) == master else final_envelope, start, duration),
+    )
+
+
+def test_final_audio_verifier_allows_musical_attack_on_cut(tmp_path, monkeypatch):
+    # Regression: a drum hit landing on a beat-aligned cut plus ~15 ms of
+    # decoder skew between the AAC final and the MP3 master (master ratio
+    # ~5.8, final ~11.7) was rejected as a
+    # "level jump" by 60 ms RMS windows (real export, join 27.167s).
+    boundary = 27.167
+    audio_start = 248.755
+
+    def attack(timeline: float) -> float:
+        if boundary - 0.018 <= timeline < boundary + 0.023:
+            return 0.20
+        return 0.008 if timeline < boundary else 0.012
+
+    def master_envelope(t: float) -> float:
+        return attack(t - audio_start + 10.0)
+
+    def final_envelope(t: float) -> float:
+        return attack(t - 0.010)
+
+    master = str(tmp_path / "master.mp3")
+    _patch_final_audio_probe(monkeypatch, master, master_envelope, final_envelope)
+    segments = [{"duration_sec": 5.067}, {"duration_sec": 6.7}, {"duration_sec": 5.4}, {"duration_sec": 4.0}]
+    _verify_final_audio(
+        tmp_path / "final.mp4", segments, master, audio_start,
+        timeline_offset=10.0, audio_delay=10.0, duration=600.0, content_start=10.0, content_end=590.0,
+    )
+
+
+def test_final_audio_verifier_still_rejects_silence_gap_at_join(tmp_path, monkeypatch):
+    from core.ffmpeg import FFmpegError
+
+    boundary = 15.0
+    master = str(tmp_path / "master.wav")
+    _patch_final_audio_probe(
+        monkeypatch, master,
+        lambda _t: 0.1,
+        lambda t: 0.0 if boundary <= t < boundary + 0.5 else 0.1,
+    )
+    with pytest.raises(FFmpegError, match="silence gap"):
+        _verify_final_audio(
+            tmp_path / "final.mp4", [{"duration_sec": 5.0}, {"duration_sec": 5.0}], master, 0.0,
+            timeline_offset=10.0, audio_delay=10.0, duration=600.0, content_start=10.0, content_end=590.0,
+        )

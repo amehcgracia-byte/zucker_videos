@@ -47,9 +47,3 @@ def test_thumbnail_and_export_use_the_same_view_parameters() -> None:
         assert needle in export
     assert f"output={expected['projection']}" in thumbnail
     assert f"output={expected['projection']}" in export
-
-
-def test_thumbnail_render_budget_uses_an_equirectangular_proxy() -> None:
-    from core.shot_review import SPHERICAL_ANALYSIS_HEIGHT, SPHERICAL_ANALYSIS_WIDTH
-
-    assert (SPHERICAL_ANALYSIS_WIDTH, SPHERICAL_ANALYSIS_HEIGHT) == (960, 480)

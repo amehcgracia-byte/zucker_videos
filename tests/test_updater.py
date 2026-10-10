@@ -163,6 +163,9 @@ def test_manual_check_retries_completed_checks(monkeypatch, status):
     class Thread:
         def __init__(self, **kwargs): calls.append(kwargs)
         def start(self): pass
+    # Isolate metadata too: Windows subprocess uses threading.Thread to read
+    # git output, so this test's fake must not intercept those reader threads.
+    monkeypatch.setattr(updater, 'build_info', lambda: {'version': '2.6.1', 'git_commit': 'test'})
     monkeypatch.setattr(updater.threading, 'Thread', Thread)
     manager = updater.UpdateManager()
     manager.set_state(status=status, error='old failure', version='old')

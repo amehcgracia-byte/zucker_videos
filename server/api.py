@@ -25,7 +25,7 @@ from werkzeug.datastructures import FileStorage
 from urllib.parse import unquote
 
 from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
-from core.ffmpeg import FFmpegError, ffprobe, tool_status
+from core.ffmpeg import FFmpegError, ffprobe, muxer_args_for, tool_status
 from core.messages import t
 from core.project import Project, ProjectError, create_project, load_project
 from core.spherical_view import MAX_SPHERICAL_FOV, spherical_view_filter
@@ -51,6 +51,7 @@ from core.shot_review import (
     review_items,
 )
 from core.shot_review import mark_review_render_failed, replace_slots, review_items, set_review_transition_types
+from core import review_previews
 from core.stages.export import TRANSITION_LIBRARY
 from core.backstage_feedback import record_feedback
 from core.stages.backstage import update_backstage_cue_text
@@ -290,7 +291,7 @@ class AutoReadRunner:
         with self._lock:
             return self._job.snapshot() if self._job else None
 
-    def start(self, project: Project, requested_model: str | None = None) -> AutoReadJob:
+    def start(self, project: Project, requested_model: str | None = None, *, recording: dict | None = None) -> AutoReadJob:
         if (project.data.get("settings", {}).get("wizard") or {}).get("platform") not in {"reel", "backstage"}:
             raise ValueError("Transcription is available only for Reel and Backstage")
         with self._lock:
@@ -298,13 +299,13 @@ class AutoReadRunner:
                 raise RuntimeError("Auto Read is already transcribing")
             job = AutoReadJob(id=f"auto-read-{uuid.uuid4().hex[:10]}", project_path=str(project.folder))
             self._job = job
-            self._thread = threading.Thread(target=self._run, args=(job, project, requested_model), daemon=True, name="zucker-auto-read")
+            self._thread = threading.Thread(target=self._run, args=(job, project, requested_model, recording), daemon=True, name="zucker-auto-read")
             self._thread.start()
             return job
 
-    def _run(self, job: AutoReadJob, project: Project, requested_model: str | None) -> None:
+    def _run(self, job: AutoReadJob, project: Project, requested_model: str | None, recording: dict | None = None) -> None:
         try:
-            source = _caption_montage_source(
+            source = recording or _caption_montage_source(
                 project,
                 lambda value, detail: self._set_progress(job, value, detail),
             )
@@ -315,7 +316,7 @@ class AutoReadRunner:
             duration = float(source.get("duration_sec") or 0.0)
             model_name = "large-v3" if requested_model == "auto" else requested_model
             language_overrides = wizard.get("backstage_whisper_language_overrides") or {}
-            artifact = project.cache_dir / "captions" / CAPTIONS_VERSION / "auto_read.json"
+            artifact = project.cache_dir / "captions" / CAPTIONS_VERSION / (f"dictation-{job.id}.json" if recording else "auto_read.json")
 
             def progress(value: int, detail: str) -> None:
                 with self._lock:
@@ -364,13 +365,16 @@ class AutoReadRunner:
                     "transcription_options": payload.get("transcription_options") or {},
                     "style": "autoread_fixed_white",
                     "source_kind": source.get("source_kind"),
-                    "provenance": "project_audio_transcription",
+                    "provenance": "microphone_dictation" if recording else "project_audio_transcription",
                 }
         except Exception as exc:
             with self._lock:
                 job.status = "failed"
                 job.error = str(exc)
                 job.detail = "Auto Read failed"
+        finally:
+            if recording:
+                Path(recording["path"]).unlink(missing_ok=True)
 
     def _set_progress(self, job: AutoReadJob, value: int, detail: str) -> None:
         with self._lock:
@@ -841,7 +845,8 @@ def _remux_shortest(source: Path, destination: Path, process_callback=None) -> P
     command = [
         ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
         "-i", str(source), "-map", "0:v:0", "-map", "0:a:0?",
-        "-c", "copy", "-avoid_negative_ts", "make_zero", "-shortest", str(pending),
+        "-c", "copy", "-avoid_negative_ts", "make_zero", "-shortest",
+        *muxer_args_for(destination), str(pending),
     ]
     process = subprocess.Popen(
         command,
@@ -1031,7 +1036,7 @@ def _compose_visual_overlays(
         # stderr independently can deadlock when one pipe fills during a long
         # H.264 composition, leaving the UI on the last reported percentage.
         pending_destination = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.part")
-        command[-1] = str(pending_destination)
+        command[-1:] = [*muxer_args_for(destination), str(pending_destination)]
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -1253,7 +1258,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except ProjectError as exc:
             return error_response(
                 "project_unrecoverable",
-                "Este proyecto no se puede recuperar. Los vídeos del Drop Here siguen disponibles; crea un proyecto nuevo.",
+                "This project cannot be recovered. The videos in Drop Here are still available; create a new project.",
                 409,
             )
 
@@ -1719,19 +1724,19 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                     return error_response("project_mismatch", "Inputs changed; return to the files page before continuing", 409)
                 if str(state.project.data["settings"].get("wizard", {}).get("platform")) != platform:
                     return error_response("project_mismatch", "Edit type changed; return to the files page before continuing", 409)
-                state.project.data["settings"]["wizard"]["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
+                _apply_run_options(state.project, body)
                 state.project.save()
                 job = state.wizard.start(**options)
                 return jsonify(serialize_wizard_job(job)), 202
             if state.project is not None and state.wizard._prepared_project is None:
                 if _project_matches_inputs(state.project, master, songs, videos) and _project_can_skip_prepare(state.project, platform):
-                    state.project.data.setdefault("settings", {}).setdefault("wizard", {})["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
+                    _apply_run_options(state.project, body)
                     state.project.save()
                     state.wizard.adopt_prepared_project(state.project)
                     job = state.wizard.start(**options)
                     return jsonify(serialize_wizard_job(job)), 202
                 else:
-                    state.project.data.setdefault("settings", {}).setdefault("wizard", {})["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
+                    _apply_run_options(state.project, body)
                     state.project.save()
                     job = state.wizard.start_existing(state.project, **options)
                     return jsonify(serialize_wizard_job(job)), 202
@@ -1744,7 +1749,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 state.wizard.prepare_existing(matching_project, platform=platform)
             seed_project = state.wizard._prepared_project or state.project
             if seed_project is not None:
-                seed_project.data.setdefault("settings", {}).setdefault("wizard", {})["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
+                _apply_run_options(seed_project, body)
                 seed_project.save()
             job = state.wizard.start(**options)
             return jsonify(serialize_wizard_job(job)), 202
@@ -1771,6 +1776,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                     if item.get("thumbnail_status") == "missing"
                 }
                 _queue_review_thumbnail_render(project, pending)
+                if state.wizard.status().get("status") == "waiting_review":
+                    review_previews.PREFETCH.start(project)
             return jsonify({
                 "items": items,
                 "platform": project.data.get("settings", {}).get("wizard", {}).get("platform"),
@@ -1907,7 +1914,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not project or not isinstance(rejected, list) or not all(isinstance(value, int) for value in rejected):
             return error_response("bad_request", "rejected must be a list of shot indexes", 400)
         if state.wizard.status().get("status") in {"running", "cancelling"}:
-            return error_response("wizard_busy", "Espera o cancela la exportación antes de cambiar frames", 409)
+            return error_response("wizard_busy", "Wait for or cancel the export before changing frames", 409)
         try:
             result = replace_slots(project, rejected)
             replaced = {int(value) for value in result.get("replaced", [])}
@@ -1932,10 +1939,32 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             body = _json_body()
             if body.get("transitions") is not None:
                 set_review_transition_types(state.project, body.get("transitions"))
+            # Hover previews are a convenience; the final render gets the CPU.
+            review_previews.PREFETCH.stop()
             job = state.wizard.render_review(state.project)
             return jsonify(serialize_wizard_job(job)), 202
         except (RuntimeError, ValueError) as exc:
             return error_response("review_render_failed", str(exc), 409)
+
+    @app.get("/api/v1/wizard/review/preview/<int:index>")
+    def api_wizard_review_preview(index: int) -> Response:
+        project = state.project or _active_wizard_project(state)
+        if not project:
+            return error_response("not_ready", "No project is active", 404)
+        from core.shot_review import _review_segments
+        segments = _review_segments(project)
+        if index < 0 or index >= len(segments):
+            return error_response("not_found", "No such review shot", 404)
+        path = review_previews.preview_path(project, index, segments[index])
+        if not path.is_file():
+            if state.wizard.status().get("status") != "waiting_review":
+                return error_response("wizard_busy", "Previews are made while reviewing shots", 409)
+            try:
+                path = review_previews.render_preview(project, index, segments[index])
+            except Exception as exc:
+                LOGGER.warning("Review preview %s failed: %s", index, exc)
+                return error_response("preview_failed", "This shot preview could not be made", 500)
+        return send_file_with_range(str(path))
 
     @app.get("/api/v1/wizard/review/thumbnail/<signature>/<path:filename>")
     def api_wizard_review_thumbnail(signature: str, filename: str) -> Response:
@@ -2244,7 +2273,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except ProjectError as exc:
             return error_response(
                 "project_unrecoverable",
-                "Este proyecto no se puede recuperar. Los vídeos del Drop Here siguen disponibles; crea un proyecto nuevo.",
+                "This project cannot be recovered. The videos in Drop Here are still available; create a new project.",
                 409,
             )
 
@@ -2387,6 +2416,49 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("auto_read_busy", str(exc), 409)
         except ValueError as exc:
             return error_response("auto_read_unavailable", str(exc), 409)
+
+    @app.post("/api/v1/captions/dictation")
+    def api_caption_dictation() -> Response:
+        project = _require_project(state)
+        if (project.data.get("settings", {}).get("wizard") or {}).get("platform") != "reel":
+            return error_response("wrong_mode", "Microphone captions are available in Reel mode", 409)
+        upload = request.files.get("audio")
+        if upload is None:
+            return error_response("missing_audio", "Record or choose an audio clip first", 400)
+        suffix = Path(upload.filename or "").suffix.lower()
+        if suffix not in {".wav", ".mp4", ".m4a", ".webm", ".ogg", ".mp3"}:
+            return error_response("invalid_audio", "Unsupported recording format", 400)
+        data = upload.stream.read(10 * 1024 * 1024 + 1)
+        if not data or len(data) > 10 * 1024 * 1024:
+            return error_response("invalid_audio", "Recordings must be between 1 byte and 10 MB", 400)
+        folder = project.cache_dir / "captions" / "dictation"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / (uuid.uuid4().hex + suffix)
+        path.write_bytes(data)
+        try:
+            probe = ffprobe(str(path))
+            duration = float((probe.get("format") or {}).get("duration") or 0)
+            # Browser WebM recordings often omit container duration. Decode a
+            # bounded sample to WAV so validation uses actual audio duration.
+            if duration <= 0 and any(stream.get("codec_type") == "audio" for stream in probe.get("streams", [])):
+                normalized = path.with_suffix(".normalized.wav")
+                try:
+                    subprocess.run([tool_status().get("ffmpeg_path") or "ffmpeg", "-y", "-v", "error", "-i", str(path), "-t", "181", "-vn", "-ac", "1", "-ar", "16000", str(normalized)], check=True, capture_output=True, timeout=30)
+                    probe = ffprobe(str(normalized))
+                    duration = float((probe.get("format") or {}).get("duration") or 0)
+                    path.unlink(missing_ok=True)
+                    path = normalized
+                except Exception:
+                    normalized.unlink(missing_ok=True)
+                    raise
+            if not any(stream.get("codec_type") == "audio" for stream in probe.get("streams", [])) or not 0 < duration <= 180:
+                raise ValueError("Use an audio recording of at most three minutes")
+            recording = {"path": str(path), "filename": "Microphone recording", "duration_sec": duration, "source_kind": "dictation"}
+            job = state.auto_read.start(project, "small", recording=recording)
+            return jsonify(job.snapshot()), 202
+        except Exception as exc:
+            path.unlink(missing_ok=True)
+            return error_response("dictation_unavailable", str(exc), 409)
 
     @app.get("/api/v1/captions/auto-read/status")
     def api_captions_auto_read_status() -> Response:
@@ -2575,6 +2647,25 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         edit["camera_subjects"] = dict(assignments)
         project.save()
         return jsonify({"camera_subjects": edit["camera_subjects"]})
+
+    @app.post("/api/v1/settings/fillers")
+    def api_fillers() -> Response:
+        project = _require_project(state)
+        paths = _json_body().get("fillers")
+        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+            return error_response("bad_request", "fillers must be a list of registered video paths", 400)
+        sources = {str(record.get("path") or "") for record in project.data.get("inputs", {}).get("videos", [])}
+        if any(path not in sources for path in paths):
+            return error_response("bad_request", "Choose registered videos as filler", 400)
+        if state.wizard.status().get("status") in {"running", "cancelling"}:
+            return error_response("wizard_busy", "Wait for the current edit before changing filler videos", 409)
+        edit = project.data.setdefault("settings", {}).setdefault("edit", {})
+        edit["fillers"] = sorted(set(paths))
+        subjects = edit.get("camera_subjects") or {}
+        for path in edit["fillers"]:
+            subjects.pop(path, None)
+        project.save()
+        return jsonify({"fillers": edit["fillers"]})
 
     @app.post("/api/v1/settings/spherical-landmarks")
     def api_spherical_landmarks() -> Response:
@@ -2849,6 +2940,20 @@ def _require_project(state: AppState) -> Project:
     if state.project is None:
         raise ProjectError("No project is open")
     return state.project
+
+
+def _apply_run_options(project: Project, body: dict[str, Any]) -> None:
+    """Store per-run choices on the project that will actually render."""
+    settings = project.data.setdefault("settings", {})
+    settings.setdefault("wizard", {})["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
+    settings.setdefault("export", {})["draft"] = bool(body.get("draft_export"))
+    if isinstance(body.get("scene_conditions"), dict):
+        from core.fillers import CONDITION_CHOICES
+        raw = body["scene_conditions"]
+        # "auto" (or anything else) means: use what the cameras show.
+        settings.setdefault("edit", {})["scene_conditions"] = {
+            key: str(raw[key]) for key in CONDITION_CHOICES if raw.get(key) in CONDITION_CHOICES[key]
+        }
 
 
 def _remember_project(project: Project) -> None:

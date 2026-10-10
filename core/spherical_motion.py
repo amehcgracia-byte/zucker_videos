@@ -140,7 +140,11 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
                             start: float, frame_count: int, shot: dict[str, Any],
                             progress: Callable | None = None, *,
                             pose_sampler: Callable | None = None,
-                            hardware_decode: bool = True, remap_backend: str = "cpu") -> None:
+                            hardware_decode: bool = True, remap_backend: str = "cpu",
+                            output_size: tuple[int, int] = (1920, 1080), fps: int = 30,
+                            decode_size: tuple[int, int] | None = None) -> None:
+    """Export defaults to 1080p30 from full-resolution frames; review previews
+    pass a small output, a lower rate and a reduced ``decode_size``."""
     pixel_format = None
     if hardware_decode and sys.platform == "darwin":
         try:
@@ -152,28 +156,34 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
     if pixel_format:
         try:
             _run_reprojected_command(command, source, source_size, start, frame_count, shot,
-                progress, pose_sampler=pose_sampler, decoder_pixel_format=pixel_format, remap_backend=remap_backend)
+                progress, pose_sampler=pose_sampler, decoder_pixel_format=pixel_format, remap_backend=remap_backend,
+                output_size=output_size, fps=fps, decode_size=decode_size)
             return
         except HardwareDecodeError as exc:
             LOGGER.warning("360 hardware decoder failed; retrying with CPU: %s", exc)
     _run_reprojected_command(command, source, source_size, start, frame_count, shot,
-        progress, pose_sampler=pose_sampler, remap_backend=remap_backend)
+        progress, pose_sampler=pose_sampler, remap_backend=remap_backend, output_size=output_size, fps=fps,
+        decode_size=decode_size)
 
 
 def _run_reprojected_command(command: list[str], source: str, source_size: tuple[int, int],
                             start: float, frame_count: int, shot: dict[str, Any],
                             progress: Callable | None = None, *,
                             pose_sampler: Callable | None = None,
-                            decoder_pixel_format: str | None = None, remap_backend: str = "cpu") -> None:
+                            decoder_pixel_format: str | None = None, remap_backend: str = "cpu",
+                            output_size: tuple[int, int] = (1920, 1080), fps: int = 30,
+                            decode_size: tuple[int, int] | None = None) -> None:
     """Pipe atomic reprojected BGR frames directly into the final encoder graph."""
-    ffmpeg = command[0]; sw, sh = source_size
+    ffmpeg = command[0]; sw, sh = decode_size or source_size; ow, oh = output_size
     if frame_count <= 0:
         raise ValueError("A 360 segment must contain at least one frame")
-    duration = frame_count / 30
+    duration = frame_count / fps
     LOGGER.info("360 decoder backend=%s source=%s start=%.6f frames=%d format=%s",
                 "videotoolbox" if decoder_pixel_format else "cpu", source, start, frame_count, decoder_pixel_format)
     decoder_options = ['-hwaccel', 'videotoolbox'] if decoder_pixel_format else []
-    decoder_filter = f'format={decoder_pixel_format},fps=30,format=bgr24' if decoder_pixel_format else 'fps=30,format=bgr24'
+    # Scaling before the BGR conversion keeps a reduced decode cheap.
+    scale = f'scale={sw}:{sh},' if decode_size else ''
+    decoder_filter = f'format={decoder_pixel_format},fps={fps},{scale}format=bgr24' if decoder_pixel_format else f'fps={fps},{scale}format=bgr24'
     decoder_command = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-threads', '2', '-ss', str(start), *decoder_options, '-i', source,
                        '-vf', decoder_filter, '-an', '-frames:v', str(frame_count), '-f', 'rawvideo', 'pipe:1']
     stopped = threading.Event(); failures: list[BaseException] = []; completed = [0]; last_frame_at = [time.monotonic()]
@@ -204,7 +214,7 @@ def _run_reprojected_command(command: list[str], source: str, source_size: tuple
             # Reuse one frame buffer. A 5K sphere is tens of MB: read/extend
             # previously copied that payload twice for every decoded frame.
             frame = np.empty((sh, sw, 3), dtype=np.uint8)
-            pixels = np.empty((1080, 1920, 3), dtype=np.uint8)
+            pixels = np.empty((oh, ow, 3), dtype=np.uint8)
             frame_bytes = memoryview(frame).cast("B")
             previous_pose = None
             maps = None
@@ -217,15 +227,22 @@ def _run_reprojected_command(command: list[str], source: str, source_size: tuple
                     received += count
                 if failures: raise failures[0]
                 guard.raise_if_failed()
-                if received != len(frame_bytes):
+                # fps conversion at the physical end of a clip may round down
+                # by one frame. Reuse only the last complete source frame, only
+                # for the final requested frame and a clean decoder EOF.
+                clean_final_eof = (received == 0 and index > 0 and index == frame_count - 1
+                                   and decoder.wait(timeout=10) == 0)
+                if clean_final_eof:
+                    LOGGER.info("360 final-frame rounding: reusing source frame %d for %d", index - 1, index)
+                if received != len(frame_bytes) and not clean_final_eof:
                     decode_log.seek(0)
                     diagnostics = decode_log.read().decode(errors='replace')[-2000:]
                     error_type = HardwareDecodeError if decoder_pixel_format else FFmpegError
                     raise error_type(f"360 decode ended at frame {index}/{frame_count}: {diagnostics}")
                 blocked[0] = None  # reprojection is active in Python, not waiting on a child
-                pose = pose_sampler(index / 30) if pose_sampler else motion_pose(shot, duration, index / 30)
+                pose = pose_sampler(index / fps) if pose_sampler else motion_pose(shot, duration, index / fps)
                 if maps is None or pose != previous_pose:
-                    maps = reproject_maps((sw, sh), (1920, 1080), shot, pose)
+                    maps = reproject_maps((sw, sh), (ow, oh), shot, pose)
                     previous_pose = pose
                 metal_done = False
                 if remap_backend == "metal":
