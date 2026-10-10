@@ -1,3 +1,7 @@
+/* Mode visibility must win over grid/flex component display rules. */
+[hidden] { display: none !important; }
+body { -webkit-user-select: text; user-select: text; }
+
 :root {
   color-scheme: light;
   --green-900: #1e3f17;

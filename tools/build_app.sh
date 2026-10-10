@@ -133,6 +133,9 @@ PLIST="$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $VERSION" "$PLIST"
 
+/usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string Record spoken phrases for editable Reel captions." "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription Record spoken phrases for editable Reel captions." "$PLIST"
+
 codesign --force --deep -s - "$APP_BUNDLE"
 
 # A successful PyInstaller invocation is not enough: import the app and

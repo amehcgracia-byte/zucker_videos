@@ -45,6 +45,11 @@ SHOT_PREFERENCE = {"audience": 1.0, "face": 0.95, "ambient": 0.9, "interview": 0
 
 
 def filler_paths(project: Any) -> set[str]:
+    # Filler is a YouTube coverage role, never an exclusion switch for a Reel
+    # compilation. Old projects may still carry those marks after changing mode.
+    mode = ((project.data.get("settings") or {}).get("wizard") or {}).get("platform")
+    if mode in {"reel", "medley", "backstage", "360"}:
+        return set()
     edit = (project.data.get("settings") or {}).get("edit") or {}
     return {str(path) for path in edit.get("fillers") or []}
 

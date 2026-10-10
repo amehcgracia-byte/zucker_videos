@@ -291,7 +291,7 @@ class AutoReadRunner:
         with self._lock:
             return self._job.snapshot() if self._job else None
 
-    def start(self, project: Project, requested_model: str | None = None) -> AutoReadJob:
+    def start(self, project: Project, requested_model: str | None = None, *, recording: dict | None = None) -> AutoReadJob:
         if (project.data.get("settings", {}).get("wizard") or {}).get("platform") not in {"reel", "backstage"}:
             raise ValueError("Transcription is available only for Reel and Backstage")
         with self._lock:
@@ -299,13 +299,13 @@ class AutoReadRunner:
                 raise RuntimeError("Auto Read is already transcribing")
             job = AutoReadJob(id=f"auto-read-{uuid.uuid4().hex[:10]}", project_path=str(project.folder))
             self._job = job
-            self._thread = threading.Thread(target=self._run, args=(job, project, requested_model), daemon=True, name="zucker-auto-read")
+            self._thread = threading.Thread(target=self._run, args=(job, project, requested_model, recording), daemon=True, name="zucker-auto-read")
             self._thread.start()
             return job
 
-    def _run(self, job: AutoReadJob, project: Project, requested_model: str | None) -> None:
+    def _run(self, job: AutoReadJob, project: Project, requested_model: str | None, recording: dict | None = None) -> None:
         try:
-            source = _caption_montage_source(
+            source = recording or _caption_montage_source(
                 project,
                 lambda value, detail: self._set_progress(job, value, detail),
             )
@@ -316,7 +316,7 @@ class AutoReadRunner:
             duration = float(source.get("duration_sec") or 0.0)
             model_name = "large-v3" if requested_model == "auto" else requested_model
             language_overrides = wizard.get("backstage_whisper_language_overrides") or {}
-            artifact = project.cache_dir / "captions" / CAPTIONS_VERSION / "auto_read.json"
+            artifact = project.cache_dir / "captions" / CAPTIONS_VERSION / (f"dictation-{job.id}.json" if recording else "auto_read.json")
 
             def progress(value: int, detail: str) -> None:
                 with self._lock:
@@ -365,13 +365,16 @@ class AutoReadRunner:
                     "transcription_options": payload.get("transcription_options") or {},
                     "style": "autoread_fixed_white",
                     "source_kind": source.get("source_kind"),
-                    "provenance": "project_audio_transcription",
+                    "provenance": "microphone_dictation" if recording else "project_audio_transcription",
                 }
         except Exception as exc:
             with self._lock:
                 job.status = "failed"
                 job.error = str(exc)
                 job.detail = "Auto Read failed"
+        finally:
+            if recording:
+                Path(recording["path"]).unlink(missing_ok=True)
 
     def _set_progress(self, job: AutoReadJob, value: int, detail: str) -> None:
         with self._lock:
@@ -2413,6 +2416,49 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("auto_read_busy", str(exc), 409)
         except ValueError as exc:
             return error_response("auto_read_unavailable", str(exc), 409)
+
+    @app.post("/api/v1/captions/dictation")
+    def api_caption_dictation() -> Response:
+        project = _require_project(state)
+        if (project.data.get("settings", {}).get("wizard") or {}).get("platform") != "reel":
+            return error_response("wrong_mode", "Microphone captions are available in Reel mode", 409)
+        upload = request.files.get("audio")
+        if upload is None:
+            return error_response("missing_audio", "Record or choose an audio clip first", 400)
+        suffix = Path(upload.filename or "").suffix.lower()
+        if suffix not in {".wav", ".mp4", ".m4a", ".webm", ".ogg", ".mp3"}:
+            return error_response("invalid_audio", "Unsupported recording format", 400)
+        data = upload.stream.read(10 * 1024 * 1024 + 1)
+        if not data or len(data) > 10 * 1024 * 1024:
+            return error_response("invalid_audio", "Recordings must be between 1 byte and 10 MB", 400)
+        folder = project.cache_dir / "captions" / "dictation"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / (uuid.uuid4().hex + suffix)
+        path.write_bytes(data)
+        try:
+            probe = ffprobe(str(path))
+            duration = float((probe.get("format") or {}).get("duration") or 0)
+            # Browser WebM recordings often omit container duration. Decode a
+            # bounded sample to WAV so validation uses actual audio duration.
+            if duration <= 0 and any(stream.get("codec_type") == "audio" for stream in probe.get("streams", [])):
+                normalized = path.with_suffix(".normalized.wav")
+                try:
+                    subprocess.run([tool_status().get("ffmpeg_path") or "ffmpeg", "-y", "-v", "error", "-i", str(path), "-t", "181", "-vn", "-ac", "1", "-ar", "16000", str(normalized)], check=True, capture_output=True, timeout=30)
+                    probe = ffprobe(str(normalized))
+                    duration = float((probe.get("format") or {}).get("duration") or 0)
+                    path.unlink(missing_ok=True)
+                    path = normalized
+                except Exception:
+                    normalized.unlink(missing_ok=True)
+                    raise
+            if not any(stream.get("codec_type") == "audio" for stream in probe.get("streams", [])) or not 0 < duration <= 180:
+                raise ValueError("Use an audio recording of at most three minutes")
+            recording = {"path": str(path), "filename": "Microphone recording", "duration_sec": duration, "source_kind": "dictation"}
+            job = state.auto_read.start(project, "small", recording=recording)
+            return jsonify(job.snapshot()), 202
+        except Exception as exc:
+            path.unlink(missing_ok=True)
+            return error_response("dictation_unavailable", str(exc), 409)
 
     @app.get("/api/v1/captions/auto-read/status")
     def api_captions_auto_read_status() -> Response:

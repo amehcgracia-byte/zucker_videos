@@ -17,7 +17,8 @@ import time
 from pathlib import Path
 from core.storage import data_root, configure_working_storage
 
-from core.desktop_menu import build_desktop_menu, hide_external_services
+from core.desktop_menu import build_desktop_menu, hide_external_services, apply_menu_mode
+from core.desktop_text import enable_native_text_menu
 from core.build_info import startup_label
 from server.api import create_app
 from server.inbox import load_global_config, save_global_config
@@ -28,6 +29,11 @@ APP_NAME = "Zucker Editor"
 
 class DesktopApi:
     """pywebview JavaScript bridge for native desktop-only actions."""
+
+    def set_edit_mode(self, mode: str | None = None) -> None:
+        import webview
+        if webview.windows:
+            apply_menu_mode(webview.windows[0], mode)
 
     def pick_master(self) -> list[str]:
         """Open a native file dialog for master audio."""
@@ -134,9 +140,10 @@ def main() -> None:
         <p>Imported videos, caches and projects will be saved in this location. You can choose your external drive.</p>
         <button id="choose" onclick="choose()">Choose location</button><p id="error"></p>
         <script>async function choose(){const b=document.getElementById('choose');b.disabled=true;try{const url=await window.pywebview.api.choose_storage();if(url)location.href=url;}catch(e){document.getElementById('error').textContent=e.message;}finally{b.disabled=false;}}document.getElementById('choose').disabled=true;window.addEventListener('pywebviewready',()=>document.getElementById('choose').disabled=false);</script></html>"""
-        window = webview.create_window(APP_NAME, html=html, width=850, height=540, js_api=bridge)
+        window = webview.create_window(APP_NAME, html=html, width=850, height=540, js_api=bridge, text_select=True)
         window.events.loaded += lambda: _enable_native_drop(window)
         window.events.loaded += hide_external_services
+        window.events.loaded += lambda: enable_native_text_menu(window)
         webview.start(menu=build_desktop_menu(window))
         return
     _configure_logging()
@@ -176,7 +183,7 @@ def main() -> None:
     server.start()
     js_api = DesktopApi()
     logging.getLogger(__name__).info("js_api bridge attached: yes")
-    window = webview.create_window(APP_NAME, url, width=1200, height=820, js_api=js_api, background_color="#ffffff")
+    window = webview.create_window(APP_NAME, url, width=1200, height=820, js_api=js_api, background_color="#ffffff", text_select=True)
 
     def on_loaded() -> None:
         config = load_global_config()
@@ -189,6 +196,7 @@ def main() -> None:
     window.events.loaded += on_loaded
     window.events.loaded += lambda: _enable_native_drop(window)
     window.events.loaded += hide_external_services
+    window.events.loaded += lambda: enable_native_text_menu(window)
     webview.start(menu=build_desktop_menu(window))
 
 

@@ -56,3 +56,54 @@ def hide_external_services():
             if item.submenu() and item.submenu() == app.servicesMenu():
                 menu.removeItem_(item)
     callAfter(remove)
+
+
+MODE_ACTIONS = {
+    'spherical': {'youtube', '360'}, 'reel': {'reel'},
+    'backstage': {'backstage'}, 'medley': {'medley'},
+    'approve': {'backstage'}, 'review': {'youtube', 'reel', '360'},
+    'replace': {'youtube', 'reel', '360'}, 'render': {'youtube', 'reel', '360'},
+    **{action: {'reel', 'backstage', '360'} for action in
+       ('composition', 'captions', 'srt', 'burn', 'overlays', 'reuse', 'duplicate',
+        'play', 'previousFrame', 'nextFrame', 'expand')},
+    'transcribe': {'reel', 'backstage'},
+}
+
+
+def apply_menu_mode(window, mode):
+    """Hide inapplicable native actions, preserving the OS Edit menu."""
+    allowed = {label: mode in MODE_ACTIONS[action] for _, items in MENU_ITEMS
+               for label, action in items if action in MODE_ACTIONS}
+    try:
+        if sys.platform == 'darwin':
+            from PyObjCTools.AppHelper import callAfter
+            from AppKit import NSApplication
+            def update():
+                def visit(menu):
+                    if menu is None:
+                        return
+                    for item in menu.itemArray():
+                        if item.title() in allowed:
+                            item.setHidden_(not allowed[item.title()])
+                        if item.submenu():
+                            visit(item.submenu())
+                            if item.title() in {'Captions and Overlays', 'Playback'}:
+                                item.setHidden_(mode not in {'reel', 'backstage', '360'})
+                visit(NSApplication.sharedApplication().mainMenu())
+            callAfter(update)
+        elif sys.platform == 'win32':
+            from System import Action
+            def update():
+                def visit(items):
+                    for item in items:
+                        if str(item.Text) in allowed:
+                            item.Available = allowed[str(item.Text)]
+                        if hasattr(item, 'DropDownItems'):
+                            visit(item.DropDownItems)
+                            if str(item.Text) in {'Captions and Overlays', 'Playback'}:
+                                item.Available = mode in {'reel', 'backstage', '360'}
+                if window.native.MainMenuStrip:
+                    visit(window.native.MainMenuStrip.Items)
+            window.native.Invoke(Action(update))
+    except Exception:
+        logging.getLogger(__name__).exception('Could not apply desktop menu mode')

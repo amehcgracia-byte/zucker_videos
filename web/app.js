@@ -384,6 +384,95 @@ function syncCaptionTextArea() {
   if (textarea) textarea.value = captionCues.map((cue) => cue.lines.join("\n")).join("\n\n");
 }
 
+function arrangeCaptionPhrases(phrases, duration, random = Math.random) {
+  if (!Number.isFinite(duration) || duration <= 0) throw new Error("Open the rendered Reel first.");
+  if (!phrases.length) throw new Error("Record or enter some phrases first.");
+  const slot = duration / phrases.length;
+  if (slot < 1.2) throw new Error("There are too many phrases for this Reel. Combine or remove some first.");
+  const colors = ["#ffffff", "#fff176", "#80deea", "#ffb3d9", "#b9f6ca"];
+  return phrases.map((phrase, index) => {
+    const length = Math.min(slot * .70, Math.max(1.2, phrase.split(/\s+/).length * .35));
+    const margin = slot - length;
+    const start = index * slot + margin * (.25 + random() * .5);
+    const color = colors[Math.min(colors.length-1, Math.floor(random()*colors.length))];
+    return {lines: phrase.split(/\r?\n/), start, end: start+length, style_override: {
+      color, size: 54, vertical: 72, outline_color: "#101010", outline_width: 2,
+      glow_color: color, glow_blur: 4 + Math.floor(random()*5), glow_layers: 1, glow_intensity: .22,
+      animation_in: ["fade", "slide", "scale"][Math.min(2, Math.floor(random()*3))], animation_out: "fade"
+    }};
+  });
+}
+
+let captionRecorder = null, captionMicStream = null, captionMicTimer = null, discardCaptionRecording = false;
+function stopCaptionRecording(discard = false) {
+  discardCaptionRecording = discard;
+  if (captionMicTimer) clearTimeout(captionMicTimer);
+  captionMicTimer = null;
+  if (captionRecorder && captionRecorder.state !== "inactive") captionRecorder.stop();
+  captionMicStream?.getTracks().forEach(track => track.stop());
+  captionMicStream = null;
+}
+window.addEventListener("beforeunload", () => stopCaptionRecording(true));
+
+async function transcribeCaptionRecording(blob, filename) {
+  const project = activeProjectId;
+  const status = document.querySelector("#captionMicStatus");
+  const button = document.querySelector("#captionMic");
+  button.disabled = true;
+  status.textContent = "Transcribing your voice locally…";
+  try {
+    const form = new FormData(); form.append("audio", blob, filename);
+    const started = await apiForm("/captions/dictation", form);
+    let job = started;
+    while (job.status === "running") {
+      await new Promise(resolve => setTimeout(resolve, 700));
+      if (!sameProjectId(project, activeProjectId)) return;
+      job = await api("/captions/auto-read/status");
+      if (job.id !== started.id) throw new Error("The transcription session changed. Try again.");
+      status.textContent = job.detail || "Transcribing…";
+    }
+    if (job.status !== "done") throw new Error(job.error || "Transcription failed");
+    if (!sameProjectId(project, activeProjectId)) return;
+    const text = String(job.result?.text || "").trim();
+    if (!text) throw new Error("No speech detected. Try again or type your phrases.");
+    const area = document.querySelector("#captionText");
+    area.value = [area.value.trim(), text].filter(Boolean).join("\n\n");
+    status.textContent = "Voice text added below. Review it, then choose Distribute text as captions.";
+  } catch(error) { status.textContent = error.message; }
+  finally { button.disabled = false; button.textContent = "🎙 Record phrases"; }
+}
+
+async function toggleCaptionRecording() {
+  if (captionRecorder?.state === "recording") { stopCaptionRecording(); return; }
+  const button = document.querySelector("#captionMic");
+  const recordingProject = activeProjectId;
+  button.disabled = true;
+  try {
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error("Microphone capture is unavailable here. Use Import voice clip instead.");
+    captionMicStream = await navigator.mediaDevices.getUserMedia({audio: true});
+    if (!sameProjectId(recordingProject, activeProjectId)) { stopCaptionRecording(true); return; }
+    const mimeType = ["audio/mp4", "audio/webm", "audio/ogg"].find(type => MediaRecorder.isTypeSupported(type));
+    captionRecorder = new MediaRecorder(captionMicStream, mimeType ? {mimeType} : {});
+    const chunks = []; discardCaptionRecording = false;
+    captionRecorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+    captionRecorder.onstop = () => {
+      captionMicStream?.getTracks().forEach(track => track.stop()); captionMicStream = null;
+      button.textContent = "🎙 Record phrases";
+      if (discardCaptionRecording) return;
+      const mime = captionRecorder.mimeType || mimeType || "audio/webm";
+      transcribeCaptionRecording(new Blob(chunks, {type: mime}), "voice." + (mime.includes("mp4") ? "m4a" : mime.includes("ogg") ? "ogg" : "webm"));
+    };
+    captionRecorder.onerror = () => { stopCaptionRecording(true); document.querySelector("#captionMicStatus").textContent = "Recording failed. Try again or import a voice clip."; };
+    captionRecorder.start();
+    captionMicTimer = setTimeout(() => stopCaptionRecording(), 180000);
+    button.textContent = "■ Stop and transcribe";
+    document.querySelector("#captionMicStatus").textContent = "Recording… Say each phrase clearly, with a pause between phrases (up to 3 minutes).";
+  } catch(error) {
+    stopCaptionRecording(true);
+    document.querySelector("#captionMicStatus").textContent = "Microphone: " + error.message + " You can also import a voice clip.";
+  } finally { button.disabled = false; }
+}
+
 let autoReadPollTimer = null;
 
 function setAutoReadStatus(text, isError = false, percent = undefined) {
@@ -603,6 +692,7 @@ function renderComposeOverlayLayer() {
 }
 
 async function openCaptions() {
+  document.querySelector("#captionDictation").hidden = composePlatform() !== "reel";
   if (youtubeSkipsComposition()) {
     setStep(6);
     return;
@@ -1414,6 +1504,7 @@ function renderSphericalSetup() {
   const sphericalMode = ["youtube", "360"].includes(String(selectedPlatform || "").toLowerCase());
 
   panel.hidden = !hasSphericalInput() || !sphericalMode;
+  if (panel.hidden) { panel.open = false; stopSphericalSetupAnimation(); }
   if (!panel.hidden) { renderSphericalSourceOptions(); applySphericalSetup(lastSphericalSetup); if (panel.open) renderSphericalSetupViewers().catch((error) => showToast(error.message, true)); }
 }
 
@@ -1538,7 +1629,7 @@ function filename(path) {
 
 function renderChips() {
   const root = document.querySelector("#chips");
-  if (!["medley", "backstage"].includes(selectedPlatform)) applyInboxAnalysisFilter();
+  if (!["medley", "backstage", "reel"].includes(selectedPlatform)) applyInboxAnalysisFilter();
   applySessionFilter();
   const items = [...detected.videos, ...detected.master, ...detected.songs, ...detected.ignored].sort((a, b) =>
     String(a.source_folder || "￿").localeCompare(String(b.source_folder || "￿"))
@@ -1558,9 +1649,9 @@ function renderChips() {
       )}">
           ${iconFor(item)} ${escapeHtml(item.filename || filename(item.path))}
           ${isSphericalVideo(item) ? "<small>360°</small>" : ""}
-          ${item.kind === "videos" && !isSphericalVideo(item) ? `<label class="filler-label" title="Faces, interviews, audience or ambience recorded apart from the music. Used where no camera covers the song.">
+          ${selectedPlatform === "youtube" && item.kind === "videos" && !isSphericalVideo(item) ? `<label class="filler-label" title="Faces, interviews, audience or ambience recorded apart from the music. Used where no camera covers the song.">
             <input type="checkbox" data-filler-video="${escapeHtml(item.path)}" ${fillerVideos.has(item.path) ? "checked" : ""}/> Filler (not synced)</label>` : ""}
-          ${item.kind === "videos" && !isSphericalVideo(item) && !fillerVideos.has(item.path) ? `<label class="camera-subject-label">Main subject
+          ${selectedPlatform === "youtube" && item.kind === "videos" && !isSphericalVideo(item) && !fillerVideos.has(item.path) ? `<label class="camera-subject-label">Main subject
             <select data-camera-subject="${escapeHtml(item.path)}" aria-label="Main subject in ${escapeHtml(item.filename || filename(item.path))}">
               ${[["unknown", "Not assigned"], ["general", "Whole stage"], ["drummer", "Drummer"], ["singer", "Singer"], ["pianist", "Pianist"], ["guitarist", "Guitarist"], ["bassist", "Bassist"], ["audience", "Audience"]].map(([value, label]) => `<option value="${value}" ${value === (cameraSubjects[item.path] || "unknown") ? "selected" : ""}>${label}</option>`).join("")}
             </select></label>` : ""}
@@ -1690,7 +1781,7 @@ function clipsMatchingSession(videos, master) {
 }
 
 function applySessionFilter() {
-  if (sessionFilterDisabled || ["medley", "backstage"].includes(selectedPlatform)) return;
+  if (sessionFilterDisabled || ["medley", "backstage", "reel"].includes(selectedPlatform)) return;
   const master = detected.master.find((item) => item.path === selectedMasterPath) || detected.master[0];
   if (!master) return;
   // Filler is often recorded on another day (interviews, ambience): never set it aside.
@@ -1743,7 +1834,7 @@ async function registerInputsBeforePreview(inputs) {
   });
   activeProjectId = result.project_id;
   await api("/settings/camera-subjects", { method: "POST", body: JSON.stringify({ camera_subjects: Object.fromEntries(inputs.videos.filter((path) => cameraSubjects[path] && !fillerVideos.has(path)).map((path) => [path, cameraSubjects[path]])) }) });
-  await api("/settings/fillers", { method: "POST", body: JSON.stringify({ fillers: inputs.videos.filter((path) => fillerVideos.has(path)) }) });
+  await api("/settings/fillers", { method: "POST", body: JSON.stringify({ fillers: selectedPlatform === "youtube" ? inputs.videos.filter((path) => fillerVideos.has(path)) : [] }) });
   await resumeInputsFromProject();
   await loadProjects();
 }
@@ -2013,6 +2104,7 @@ function formatBytes(bytes) {
 }
 
 async function openProject(path) {
+  stopCaptionRecording(true);
   stopStatusPolling();
   backgroundSettingsProjectId = null;
   backgroundPreparation = null;
@@ -2054,6 +2146,7 @@ async function openProject(path) {
 }
 
 async function newProject() {
+  stopCaptionRecording(true);
   if (backgroundPreparation) await backgroundPreparation;
   if (latestStatus?.status === "running" || latestStatus?.status === "cancelling") {
     if (!await window.UiFeedback.confirm("A job is still running for the current project. Cancel it and start a new project?")) return;
@@ -2703,12 +2796,18 @@ async function openPaperEdit() {
   return paper;
 }
 
+function syncDesktopEditMode() {
+  window.pywebview?.api?.set_edit_mode?.(selectedPlatform)?.catch(error => logFrontendError(error.message));
+}
+window.addEventListener("pywebviewready", syncDesktopEditMode);
+
 function applyEditTypeMode() {
+  syncDesktopEditMode();
   const highlightOption = document.querySelector("#instrumentHighlightsOption");
   if (highlightOption) highlightOption.hidden = selectedPlatform !== "youtube";
   // 360 mode exports the whole sphere; there are no reprojected camera moves to lighten.
   const draftOption = document.querySelector("#draftExportOption");
-  if (draftOption) draftOption.hidden = selectedPlatform === "360";
+  if (draftOption) draftOption.hidden = selectedPlatform !== "youtube";
   // Filler shots are planned for YouTube edits in this release.
   const sceneOption = document.querySelector("#sceneConditions");
   if (sceneOption) sceneOption.hidden = selectedPlatform !== "youtube";
@@ -3178,7 +3277,7 @@ async function startWizard(options = {}) {
     prepareHandoffInProgress = false;
   }
   await api("/settings/camera-subjects", { method: "POST", body: JSON.stringify({ camera_subjects: Object.fromEntries(inputs.videos.filter((path) => cameraSubjects[path] && !fillerVideos.has(path)).map((path) => [path, cameraSubjects[path]])) }) });
-  await api("/settings/fillers", { method: "POST", body: JSON.stringify({ fillers: inputs.videos.filter((path) => fillerVideos.has(path)) }) });
+  await api("/settings/fillers", { method: "POST", body: JSON.stringify({ fillers: selectedPlatform === "youtube" ? inputs.videos.filter((path) => fillerVideos.has(path)) : [] }) });
   const started = await api("/wizard/start", {
     method: "POST",
     body: JSON.stringify({
@@ -4293,8 +4392,13 @@ document.addEventListener("click", (event) => {
     setStep(3);
     (async () => {
       try {
-        await api("/wizard/reset");
-        await startWizard({ waitForPrepare: false, reuseVariation: target.id === "startAgain" });
+        await api("/wizard/reset", { method: "POST" });
+        activeProjectId = activeProjectId || projectIdFromStatus(latestStatus);
+        if (!activeProjectId) throw new Error("Open the saved project before starting again.");
+        await api("/project/open", { method: "POST", body: JSON.stringify({folder: activeProjectId}) });
+        backgroundSettingsProjectId = null;
+        backgroundPreparation = null;
+        await startWizard({ waitForPrepare: false, reuseVariation: target.id !== "startAgain" });
       } catch (error) {
         showToast(error.message, true);
       }
@@ -4522,6 +4626,19 @@ document.addEventListener("input", (event) => {
 
 document.addEventListener("click", (event) => {
   const target = event.target;
+  if (target?.id === "captionMic") { toggleCaptionRecording(); return; }
+  if (target?.id === "captionDictationImport") { document.querySelector("#captionVoiceFile").click(); return; }
+  if (target?.id === "captionAutoArrange") {
+    try {
+      const phrases = document.querySelector("#captionText").value.split(/(?:\r?\n){2,}/).map(text => text.trim()).filter(Boolean);
+      const duration = composeTimelineDuration();
+      captionCues = arrangeCaptionPhrases(phrases, duration);
+      captionActiveIndex = null; captionPendingStart = null; captionMarkIndex = captionCues.length;
+      renderCaptionBlocks(); renderComposeOverlayLayer(); saveComposition().catch(error => showToast(error.message, true));
+      document.querySelector("#captionMicStatus").textContent = "Captions distributed with gaps. You can adjust every phrase in the timeline.";
+    } catch(error) { showToast(error.message, true); }
+    return;
+  }
   if (target?.id === "captionAutoRead") {
     autoReadProjectAudio().catch((error) => setAutoReadStatus(error.message, true));
     return;
@@ -4916,6 +5033,12 @@ document.querySelector("#installUpdate").addEventListener("click", async event =
 });
 
 // Native menu commands reuse the same controls and confirmations as the wizard.
+document.querySelector("#captionVoiceFile").addEventListener("change", event => {
+  const file = event.target.files?.[0];
+  if (file) transcribeCaptionRecording(file, file.name);
+  event.target.value = "";
+});
+
 window.EditorMenu = {
   async run(action) {
     const navigate = step => document.querySelector(`[data-step-nav="${step}"]`)?.click();
