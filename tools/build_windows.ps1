@@ -35,6 +35,7 @@ if (-not (Test-Path $ClipModel) -or (Get-FileHash -Algorithm SHA256 $ClipModel).
 $common = @(
   "--noconfirm", "--clean", "--noupx", "--windowed", "--name", $BundleName,
   "--distpath", $PyInstallerDist, "--workpath", $PyInstallerBuild, "--specpath", $PyInstallerBuild,
+  "--runtime-hook", "$Root\tools\windows_runtime_hook.py",
   "--add-data", "$Root\web;web",
   "--add-data", "$Root\assets\models;assets\models",
   "--add-data", "$Root\captions\presets.json;captions",
@@ -84,8 +85,11 @@ $Exe = Join-Path $AppDir "$BundleName.exe"
 $env:ZUCKER_WHISPER_BACKEND = "faster-whisper"
 $Log = Join-Path $Root "build\packaged-selftest-windows.log"
 $env:ZUCKER_SELFTEST_REPORT = $Log
+# Simulate Explorer's downloaded-ZIP extraction on NTFS, not just a clean build.
+Set-Content -LiteralPath $RuntimeBundled -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
 $test = Start-Process -FilePath $Exe -ArgumentList "--selftest" -Wait -PassThru
 if ($test.ExitCode -ne 0) { Get-Content $Log; throw "Frozen Windows self-test failed" }
+if (Get-Item -LiteralPath $RuntimeBundled -Stream Zone.Identifier -ErrorAction SilentlyContinue) { throw "Download-zone marker was not removed" }
 $result = Get-Content $Log | Select-Object -Last 1 | ConvertFrom-Json
 if (-not $result.ok -or -not $result.transcription -or -not $result.intro_rendered -or -not $result.windows_ui) { throw "Incomplete frozen self-test" }
 $infoPath = Join-Path $AppDir "_internal\build_info.json"

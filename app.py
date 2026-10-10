@@ -208,6 +208,27 @@ def _start_desktop_server(args: argparse.Namespace) -> str:
     raise RuntimeError("The application server could not start.")
 
 
+def _windows_ui_selftest() -> bool:
+    """Open the actual Windows backend and execute JavaScript, then close it."""
+    import webview
+    loaded = threading.Event()
+    result = []
+    window = webview.create_window("Zucker Editor startup test", html="<html><body>Startup test</body></html>", hidden=True)
+    window.events.loaded += loaded.set
+
+    def probe():
+        try:
+            if loaded.wait(30):
+                result.append(window.evaluate_js("6 * 7") == 42)
+        finally:
+            window.destroy()
+
+    webview.start(probe, gui="edgechromium")
+    if result != [True]:
+        raise RuntimeError("Windows UI did not load or execute JavaScript")
+    return True
+
+
 def _run_selftest() -> int:
     """Initialize the packaged app and exercise bundle-sensitive invariants."""
     try:
@@ -216,7 +237,7 @@ def _run_selftest() -> int:
             # The media/API test alone missed failures in Python.Runtime.dll.
             # Import the real backend used by first-launch and normal windows.
             import webview.platforms.winforms
-            windows_ui = True
+            windows_ui = _windows_ui_selftest()
         app = create_app(project_path=None, dev=False)
         with app.test_client() as client:
             response = client.get("/")
