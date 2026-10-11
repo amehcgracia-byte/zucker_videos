@@ -66,6 +66,9 @@ let composePreviewDrag = null;
 // caption is moved and resized directly on the picture.
 let captionEditIndex = null;
 let captionScreenDrag = null;
+// Thumbnail polls belong to the Frames screen that started them: opening
+// Frames again, another project or a new one ends the older poll chains.
+let reviewPollGeneration = 0;
 let copiedComposeOverlay = null;
 let copiedCaption = null;
 let copiedCaptionStyle = null;
@@ -2608,6 +2611,7 @@ function formatBytes(bytes) {
 
 async function openProject(path) {
   stopCaptionRecording(true);
+  reviewPollGeneration += 1;
   stopStatusPolling();
   backgroundSettingsProjectId = null;
   backgroundPreparation = null;
@@ -2650,11 +2654,13 @@ async function openProject(path) {
 
 async function newProject() {
   stopCaptionRecording(true);
+  reviewPollGeneration += 1;
   if (backgroundPreparation) await backgroundPreparation;
   if (latestStatus?.status === "running" || latestStatus?.status === "cancelling") {
     if (!await window.UiFeedback.confirm("A job is still running for the current project. Cancel it and start a new project?")) return;
     try {
-      if (latestStatus.status === "running") await api("/wizard/cancel", { method: "POST" });
+      // The job may finish while the confirmation is open: already stopped is fine.
+      if (latestStatus.status === "running") await api("/wizard/cancel", { method: "POST", body: JSON.stringify({ if_idle: true }) });
       if (!await waitForWizardStop()) {
         showToast("The previous export is still stopping. Please wait before starting a new project.", true);
         return;
@@ -3197,7 +3203,8 @@ function replaceReviewShot(index, button) {
     .finally(() => { if (button) button.disabled = false; });
 }
 
-function refreshShotReviewAfterReplace(attempt = 0, indices = null, startedAt = Date.now()) {
+function refreshShotReviewAfterReplace(attempt = 0, indices = null, startedAt = Date.now(), generation = reviewPollGeneration) {
+  if (generation !== reviewPollGeneration) return;
   if (Date.now() - startedAt > 180000) {
     showToast("The thumbnail took too long. Reopen Frames to retry; the edit is saved.", true);
     return;
@@ -3207,44 +3214,52 @@ function refreshShotReviewAfterReplace(attempt = 0, indices = null, startedAt = 
   // 10-second cutoff that can turn an in-flight render into a grey card.
   const delay = Math.min(3000, 500 + attempt * 250);
   setTimeout(() => {
+    if (generation !== reviewPollGeneration) return;
     api("/wizard/review?render=0")
       .then((result) => {
+        if (generation !== reviewPollGeneration) return;
         const items = result.items || [];
         renderShotReview(items);
         const pending = items.some((item) => (!indices || indices.includes(Number(item.index))) && ["missing", "rendering", "generating"].includes(item.thumbnail_status) && !item.thumbnail_error);
-        if (pending) refreshShotReviewAfterReplace(attempt + 1, indices, startedAt);
+        if (pending) refreshShotReviewAfterReplace(attempt + 1, indices, startedAt, generation);
       })
       .catch((error) => {
+        if (generation !== reviewPollGeneration) return;
         // A transient HTTP failure is still a pending render. Keep the old
         // thumbnail in place and retry with the same adaptive backoff.
         logFrontendError(`review thumbnail poll failed: ${error.message}`, error.stack || "");
-        refreshShotReviewAfterReplace(attempt + 1, indices, startedAt);
+        refreshShotReviewAfterReplace(attempt + 1, indices, startedAt, generation);
       });
   }, delay);
 }
 
-function refreshShotReviewAfterInitialLoad(attempt = 0, startedAt = Date.now()) {
+function refreshShotReviewAfterInitialLoad(attempt = 0, startedAt = Date.now(), generation = reviewPollGeneration) {
+  if (generation !== reviewPollGeneration) return;
   if (Date.now() - startedAt > 300000) {
     showToast("Thumbnails are still being prepared. Reopen Frames to retry.", true);
     return;
   }
   const delay = Math.min(3000, 400 + attempt * 250);
   setTimeout(() => {
+    if (generation !== reviewPollGeneration) return;
     api("/wizard/review?render=0")
       .then((result) => {
+        if (generation !== reviewPollGeneration) return;
         const items = result.items || [];
         renderShotReview(items);
         const pending = items.some((item) => ["missing", "rendering", "generating"].includes(item.thumbnail_status) && !item.thumbnail_error);
-        if (pending) refreshShotReviewAfterInitialLoad(attempt + 1, startedAt);
+        if (pending) refreshShotReviewAfterInitialLoad(attempt + 1, startedAt, generation);
       })
       .catch((error) => {
+        if (generation !== reviewPollGeneration) return;
         logFrontendError(`review thumbnail poll failed: ${error.message}`, error.stack || "");
-        refreshShotReviewAfterInitialLoad(attempt + 1, startedAt);
+        refreshShotReviewAfterInitialLoad(attempt + 1, startedAt, generation);
       });
   }, delay);
 }
 
 async function openShotReview() {
+  reviewPollGeneration += 1;
   const result = await api("/wizard/review");
   renderShotReview(result.items || []);
   const pending = (result.items || []).some((item) =>
@@ -3846,7 +3861,13 @@ async function cancelWizard() {
     button.textContent = "Cancelling…";
   }
   try {
-    await api("/wizard/cancel", { method: "POST" });
+    // The export may finish while the confirmation is open: then keep it.
+    const cancelled = await api("/wizard/cancel", { method: "POST", body: JSON.stringify({ if_idle: true }) });
+    if (cancelled?.status === "done") {
+      showToast("The export had already finished; it was kept.");
+      await pollStatus().catch(() => {});
+      return;
+    }
     const stopped = await waitForWizardStop();
     if (!stopped) {
       showToast("The export is still stopping. Please wait before starting again.", true);

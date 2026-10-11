@@ -154,6 +154,19 @@ def _cached_ffprobe(path: str, executable: str, signature: tuple) -> dict[str, A
     return json.loads(result.stdout or "{}")
 
 
+def filter_option_value(value: str) -> str:
+    """A literal option value inside an FFmpeg filtergraph, unquoted.
+
+    Escaped twice, as FFmpeg parses twice: once per option (\\ ' :) and once
+    per graph (\\ ' [ ] , ;). Quoting instead cannot hold an apostrophe:
+    "Don't Stop" ended the quote early and the whole graph failed to parse.
+    """
+    value = str(value).replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
+    for character in "\\'[],;":
+        value = value.replace(character, "\\" + character)
+    return value
+
+
 def muxer_args_for(destination: str | Path) -> list[str]:
     """Explicit muxer for a temporary output whose name hides the real suffix.
 

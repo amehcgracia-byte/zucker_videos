@@ -1902,6 +1902,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_wizard_review_render() -> Response:
         try:
             state.project = state.project or _active_wizard_project(state)
+            if state.project is None:
+                # A Frames screen left open after "New project" can still ask.
+                return error_response("not_ready", "No project is active; open the project again to render its shots", 409)
             body = _json_body()
             if body.get("transitions") is not None:
                 set_review_transition_types(state.project, body.get("transitions"))
