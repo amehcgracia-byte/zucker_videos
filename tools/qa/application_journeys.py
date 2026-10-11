@@ -144,8 +144,8 @@ def journey(browser, mode, media, output):
                 page.wait_for_timeout(1000)
             else: raise TimeoutError('Caption composition did not finish')
             shutil.copy2(final['result']['path'],folder/'captioned.mp4')
-        report.update(passed=True,duration=probe['format']['duration'],result=result,review_actions=sorted(actions))
         assert not errors,errors
+        report.update(passed=True,duration=probe['format']['duration'],result=result,review_actions=sorted(actions))
     except Exception:
         report['error']=traceback.format_exc(); capture('failure')
     finally:
