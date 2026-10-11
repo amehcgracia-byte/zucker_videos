@@ -165,16 +165,19 @@ def journey(browser, mode, media, output):
 
 
 def main():
-    parser=argparse.ArgumentParser(); parser.add_argument('--output',type=Path,required=True);args=parser.parse_args()
+    parser=argparse.ArgumentParser(); parser.add_argument('--output',type=Path,required=True); parser.add_argument('--mode',choices=['youtube','reel','medley','360','backstage']); args=parser.parse_args()
     output=args.output.resolve(); output.mkdir(parents=True,exist_ok=True)
-    media=fixtures(output/'fixtures')
+    media=output/'fixtures'
+    if not (media/'ready').exists():
+        fixtures(media)
+        (media/'ready').write_text('ready', encoding='utf-8')
     from playwright.sync_api import sync_playwright
     with sync_playwright() as pw:
         browser=pw.chromium.launch(); reports=[]
-        for mode in ['youtube','reel','medley','360','backstage']:
+        for mode in ([args.mode] if args.mode else ['youtube','reel','medley','360','backstage']):
             reports.append(journey(browser,mode,media,output))
         browser.close()
-    (output/'summary.json').write_text(json.dumps(reports,indent=2),encoding='utf-8')
+    (output/(f'{args.mode}-summary.json' if args.mode else 'summary.json')).write_text(json.dumps(reports,indent=2),encoding='utf-8')
     print(json.dumps(reports,indent=2),flush=True)
     return 0 if all(r['passed'] for r in reports) else 1
 

@@ -26,3 +26,17 @@ def test_identical_settings_are_read_only_while_busy(tmp_path, monkeypatch, stat
     assert client.post("/api/v1/settings/fillers", json={"fillers": fillers + fillers}).status_code == 200
     assert client.post("/api/v1/settings/camera-subjects", json={"camera_subjects": {camera: "drummer"}}).status_code == 409
     assert client.post("/api/v1/settings/fillers", json={"fillers": [camera]}).status_code == 409
+
+
+@pytest.mark.parametrize("status", ["waiting_choice", "done", "failed", "cancelled", "idle"])
+def test_navigation_cancel_accepts_already_finished_preparation(tmp_path, monkeypatch, status):
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path / "data"))
+    app = create_app()
+    wizard = app.config["ZUCKER_STATE"].wizard
+    monkeypatch.setattr(wizard, "cancel", lambda: False)
+    monkeypatch.setattr(wizard, "status", lambda: {"status": status})
+    client = app.test_client()
+    response = client.post("/api/v1/wizard/cancel", json={"if_idle": True})
+    assert response.status_code == 200
+    assert response.get_json() == {"ok": True, "status": status}
+    assert client.post("/api/v1/wizard/cancel", json={}).status_code == 409

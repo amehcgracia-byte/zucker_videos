@@ -2335,6 +2335,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return jsonify({"ok": True, "status": "cancelling"})
         cancelled = state.wizard.cancel()
         if not cancelled:
+            # Preparation can finish between the UI status poll and this request.
+            # Navigation only needs the worker stopped; already idle is success.
+            if _json_body().get("if_idle") is True:
+                return jsonify({"ok": True, "status": state.wizard.status().get("status")})
             return error_response("not_running", "No job is currently running", 409)
         return jsonify({"ok": True, "status": state.wizard.status().get("status")})
 
