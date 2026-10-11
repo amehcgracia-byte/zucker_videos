@@ -106,6 +106,7 @@ def journey(browser, mode, media, output):
         while time.monotonic()<deadline:
             status=json_get(url+'/api/v1/wizard/status')
             current=status.get('status')
+            assert not failures, f'API requests failed: {failures}'
             if current!=last:
                 print(mode,current,status.get('message'),flush=True); last=current
                 (folder/'status.json').write_text(json.dumps(status,indent=2),encoding='utf-8')

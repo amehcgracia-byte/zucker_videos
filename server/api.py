@@ -2649,6 +2649,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         sources = {str(record.get("path") or "") for record in project.data.get("inputs", {}).get("videos", [])}
         if any(path not in sources or subject not in allowed for path, subject in assignments.items()):
             return error_response("bad_request", "Choose a registered camera and supported subject", 400)
+        # Continue resubmits these settings while speculative ingest is active.
+        # An identical request is read-only and must not block the handoff.
+        current = project.data.get("settings", {}).get("edit", {}).get("camera_subjects") or {}
+        if assignments == current:
+            return jsonify({"camera_subjects": current})
         if state.wizard.status().get("status") in {"running", "cancelling"}:
             return error_response("wizard_busy", "Wait for the current edit before changing camera subjects", 409)
         edit = project.data.setdefault("settings", {}).setdefault("edit", {})
@@ -2665,6 +2670,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         sources = {str(record.get("path") or "") for record in project.data.get("inputs", {}).get("videos", [])}
         if any(path not in sources for path in paths):
             return error_response("bad_request", "Choose registered videos as filler", 400)
+        current_edit = project.data.get("settings", {}).get("edit", {})
+        current = sorted(set(current_edit.get("fillers") or []))
+        subjects = current_edit.get("camera_subjects") or {}
+        if sorted(set(paths)) == current and not any(path in subjects for path in current):
+            return jsonify({"fillers": current})
         if state.wizard.status().get("status") in {"running", "cancelling"}:
             return error_response("wizard_busy", "Wait for the current edit before changing filler videos", 409)
         edit = project.data.setdefault("settings", {}).setdefault("edit", {})
