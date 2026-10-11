@@ -66,7 +66,11 @@ def journey(browser, mode, media, output):
                 if process.poll() is not None or time.monotonic()>deadline: raise RuntimeError('Server did not start')
                 time.sleep(1)
         page.goto(url)
-        page.get_by_role('button',name='No',exact=True).click()
+        tutorial=json_get(url+'/api/v1/tutorial')
+        if not tutorial.get('answer'):
+            page.get_by_role('button',name='No',exact=True).click()
+        page.locator('#editTypeDialog').wait_for(state='visible')
+        page.locator('#closeEditType').click()
         page.locator('#newProject').click()
         # Click the child label, not just card padding (regression coverage).
         page.locator(f'[data-platform="{mode}"] strong').click()
@@ -93,7 +97,8 @@ def journey(browser, mode, media, output):
         page.locator('#step2.active').wait_for(timeout=120000)
         if mode=='medley': page.locator('#medleyDuration').fill('10')
         if mode=='reel':
-            page.locator('#reelOptions summary').click()
+            if not page.locator('#reelDuration').is_visible():
+                page.locator('#reelOptions summary').click()
             page.locator('#reelDuration').fill('20')
         capture('02-settings')
         page.locator('#startWizard').click()
