@@ -4336,8 +4336,9 @@ document.addEventListener("click", (event) => {
       showToast(error.message, true)
     );
   }
-  if (target.classList.contains("platform-card")) {
-    choosePlatformInUi(target.dataset.platform);
+  const platformCard = target.closest?.(".platform-card[data-platform]");
+  if (platformCard) {
+    choosePlatformInUi(platformCard.dataset.platform);
     document.querySelector("#editTypeDialog").close();
     if (currentSongs.length > 1) renderSongOptions(currentSongs);
   }
