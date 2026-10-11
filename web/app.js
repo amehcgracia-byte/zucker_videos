@@ -2326,7 +2326,7 @@ async function registerInputsBeforePreview(inputs) {
   // speculative worker before registering those changes, retaining its cache.
   if (backgroundPreparation) await backgroundPreparation;
   if (backgroundSettingsProjectId && ["running", "cancelling"].includes(latestStatus?.status)) {
-    await api("/wizard/cancel", { method: "POST" });
+    await api("/wizard/cancel", { method: "POST", body: JSON.stringify({ if_idle: true }) });
     if (!await waitForWizardStop()) throw new Error("Video preparation is still stopping; try Continue again shortly");
   }
   backgroundSettingsProjectId = null;
