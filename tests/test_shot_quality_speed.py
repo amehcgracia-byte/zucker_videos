@@ -104,3 +104,31 @@ def test_background_scoring_moves_the_bar_and_the_update_clock(project, monkeypa
     assert [stage for stage, _, _ in seen] == [0.0, 50.0, 100.0]
     assert all(updated and updated >= started for _, _, updated in seen)
     assert "saved and reused by the edit" in job.detail
+
+
+def test_large_decoder_error_output_cannot_block_jpeg_pipe(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+    import threading
+    original_popen = subprocess.Popen
+    children = []
+    def noisy_child(*args, **kwargs):
+        child = original_popen([sys.executable, '-c',
+            'import sys;sys.stderr.buffer.write(b"damaged packet\\n"*30000);sys.stderr.flush();sys.stdout.buffer.write(b"\\xff\\xd8sample\\xff\\xd9");sys.stdout.flush()'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        children.append(child)
+        return child
+    monkeypatch.setattr(shot_quality, '_keyframe_interval', lambda path: None)
+    monkeypatch.setattr(shot_quality.subprocess, 'Popen', noisy_child)
+    result = []
+    thread = threading.Thread(target=lambda: result.append(shot_quality._extract_quality_frames('ffmpeg', tmp_path/'broken.mp4', 1, None)), daemon=True)
+    thread.start()
+    thread.join(timeout=10)
+    try:
+        assert not thread.is_alive(), 'FFmpeg error pipe blocked JPEG extraction'
+        assert result == [([b'\xff\xd8sample\xff\xd9'], None)]
+    finally:
+        for child in children:
+            if child.poll() is None: child.kill()
+            child.wait()
+        thread.join(timeout=5)

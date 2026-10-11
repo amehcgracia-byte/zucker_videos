@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 import json
 import statistics
+import threading
+from collections import deque
 import subprocess
 import time
 from pathlib import Path
@@ -193,6 +195,15 @@ def _extract_quality_frames(ffmpeg: str, path: Path, duration: float,
     command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", *decode, "-i", str(path),
                "-vf", f"fps={SAMPLE_FPS},scale=320:-1", "-c:v", "mjpeg", "-q:v", "5", "-f", "image2pipe", "pipe:1"]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # Drain stderr concurrently: damaged media can fill its pipe before
+    # stdout has another JPEG, otherwise both parent and FFmpeg deadlock.
+    errors = deque(maxlen=16)
+    def drain_errors():
+        if process.stderr:
+            while chunk := process.stderr.read(4096):
+                errors.append(chunk)
+    error_reader = threading.Thread(target=drain_errors, daemon=True)
+    error_reader.start()
     frames: list[bytes] = []
     buffer = b""
     last_report = 0.0
@@ -209,14 +220,17 @@ def _extract_quality_frames(ffmpeg: str, path: Path, duration: float,
             if report and time.monotonic() - last_report >= 1.0:
                 last_report = time.monotonic()
                 report(len(frames) / SAMPLE_FPS / duration if duration else 0.0)
-        stderr = process.stderr.read().decode(errors="replace") if process.stderr else ""
-        if process.wait() != 0:
+        returncode = process.wait()
+        error_reader.join()
+        stderr = b"".join(errors).decode(errors="replace")
+        if returncode != 0:
             return [], stderr.strip() or "quality frame extraction failed"
     except BaseException:
         process.kill()
         process.wait()
         raise
     finally:
+        error_reader.join(timeout=5)
         for stream in (process.stdout, process.stderr):
             if stream:
                 stream.close()
