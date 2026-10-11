@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from .effects import DEFAULT_EFFECT, ass_tags as effect_tags, effect_phases, normalise as normalise_effect
+from .effects import (DEFAULT_EFFECT, FLY_EFFECTS, ass_tags as effect_tags, effect_phases, fly_start,
+                      normalise as normalise_effect, normalise_fun, resolve as resolve_effects)
 from .layout import caption_layout
 from .model import CueTrack, Style
 
@@ -53,7 +54,9 @@ def _usable_words(cue) -> tuple:
     return tuple(words)
 
 
-def _effects(cue) -> tuple[str, str]:
+def _effects(cue) -> tuple[str, str, str]:
+    """Entrance, exit and fun effect, with entrance/exit resolved for the
+    fun effect (see captions.effects.resolve)."""
     override = cue.style_override or {}
     # The editor's Enter/Exit menus show "fade" until another effect is
     # chosen; an unset effect is that fade, so the menu matches the burn.
@@ -64,7 +67,9 @@ def _effects(cue) -> tuple[str, str]:
         enter = "fade"
     if exit_ == "none" and float(override.get("_fade_out_ms") or 0) > 0:
         exit_ = "fade"
-    return enter, exit_
+    fun = normalise_fun(override.get("fun_effect"))
+    enter, exit_ = resolve_effects(enter, exit_, fun, float(cue.end) - float(cue.start))
+    return enter, exit_, fun
 
 
 def _placement(cue, style: Style, *, width: int, height: int) -> tuple[int, float, float, bool]:
@@ -85,11 +90,18 @@ def _placement(cue, style: Style, *, width: int, height: int) -> tuple[int, floa
     return alignment, float(x), float(y), False
 
 
-def _position_tags(cue, style: Style, *, width: int, height: int, duration: float, enter: str, exit_: str) -> list[str]:
+def _position_tags(cue, style: Style, *, width: int, height: int, duration: float, enter: str, exit_: str,
+                   fun: str = "none", offset: float = 0.0) -> list[str]:
     alignment, x, y, explicit = _placement(cue, style, width=width, height=height)
     tags = [f"\\an{alignment}"]
-    if explicit or enter != "none" or exit_ != "none":
-        tags.extend(effect_tags(duration, enter, exit_, x=x, y=y, width=width))
+    if explicit or enter != "none" or exit_ != "none" or fun != "none":
+        fly_from = None
+        if fun in FLY_EFFECTS:
+            lines, fitted_size, _requested = _layout(cue, style, width=width)
+            fly_from = fly_start(fun, x=x, y=y, width=width, height=height, lines=len(lines),
+                                 longest=max((len(line) for line in lines), default=0), size=fitted_size)
+        tags.extend(effect_tags(duration, enter, exit_, x=x, y=y, width=width, height=height,
+                                fun=fun, offset=offset, fly_from=fly_from))
     return tags
 
 
@@ -197,12 +209,13 @@ def _glow_tags(cue, style: Style, *, width: int) -> tuple[list[str], int] | None
 def _cue_events(cue, style: Style, *, width: int, height: int) -> list[str]:
     """Glow layers and the caption itself, sharing placement and effects so
     the glow enters, moves and leaves with its text."""
-    enter, exit_ = _effects(cue)
+    enter, exit_, fun = _effects(cue)
     glow = _glow_tags(cue, style, width=width)
     events = []
-    phases = effect_phases(float(cue.start), float(cue.end), enter, exit_)
+    phases = effect_phases(float(cue.start), float(cue.end), enter, exit_, fun)
     for index, (start, end, phase_in, phase_out) in enumerate(phases):
-        position = _position_tags(cue, style, width=width, height=height, duration=end - start, enter=phase_in, exit_=phase_out)
+        position = _position_tags(cue, style, width=width, height=height, duration=end - start, enter=phase_in, exit_=phase_out,
+                                  fun=fun, offset=start - float(cue.start))
         if glow:
             glow_tags, layers = glow
             lines, _fitted, _requested = _layout(cue, style, width=width)

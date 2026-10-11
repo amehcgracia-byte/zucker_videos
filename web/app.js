@@ -331,7 +331,9 @@ function renderCaptionBlocks() {
     const active = captionActiveIndex === index ? " active" : "";
     const override = cue.style_override || {};
     const animationOptions = (value) => ["none", "fade", "slide", "scale"].map((name) => `<option value="${name}" ${String(value || "none") === name ? "selected" : ""}>${name}</option>`).join("");
-    return `<div class="caption-block${active}" data-caption-seek="${index}" role="button" tabindex="0"><div class="caption-block-main"><strong>${index + 1}.</strong><input class="caption-row-text" data-caption-text="${index}" value="${escapeHtml(cue.lines.join("\n"))}" aria-label="Caption ${index + 1} text" /><div class="caption-time-fields"><label>Start <input data-caption-start="${index}" type="number" min="0" step="0.01" value="${Number(cue.start).toFixed(2)}" /></label><label>End <input data-caption-end="${index}" type="number" min="0" step="0.01" value="${end.toFixed(2)}" /></label><label>Duration <input data-caption-duration="${index}" type="number" min="0.05" step="0.01" value="${Math.max(0.05, end - Number(cue.start)).toFixed(2)}" /></label></div><div class="caption-style-overrides"><label>Color <input data-caption-color="${index}" type="color" value="${override.color || "#ffffff"}" /></label><label>Size <input data-caption-size="${index}" type="number" min="8" max="180" step="1" value="${override.size ?? ""}" /></label><label>Vertical % <input data-caption-vertical="${index}" type="number" min="0" max="100" step="1" value="${override.vertical ?? ""}" /></label><label>Outline <input data-caption-outline-color="${index}" type="color" value="${override.outline_color || "#101010"}" /></label><label>Stroke <input data-caption-outline-width="${index}" type="number" min="0" max="20" step="0.5" value="${override.outline_width ?? ""}" /></label><label>Shadow distance <input data-caption-shadow-distance="${index}" type="number" min="0" max="30" step="1" value="${override.shadow_distance ?? ""}" /></label><label>Shadow opacity <input data-caption-shadow-opacity="${index}" type="number" min="0" max="1" step="0.05" value="${override.shadow_opacity ?? ""}" /></label><label>Glow color <input data-caption-glow-color="${index}" type="color" value="${override.glow_color || "#ffff00"}" /></label><label>Glow blur <input data-caption-glow-blur="${index}" type="number" min="0" max="40" step="1" value="${override.glow_blur ?? ""}" /></label><label>Glow layers <input data-caption-glow-layers="${index}" type="number" min="0" max="8" step="1" value="${override.glow_layers ?? ""}" /></label><label>Glow intensity <input data-caption-glow-intensity="${index}" type="number" min="0" max="1" step="0.05" value="${override.glow_intensity ?? ""}" /></label><label>Enter <select data-caption-animation-in="${index}">${animationOptions(override.animation_in || "fade")}</select></label><label>Exit <select data-caption-animation-out="${index}">${animationOptions(override.animation_out || "fade")}</select></label></div></div><div class="caption-block-actions"><button type="button" class="icon-button small" data-caption-copy-style="${index}">Copy style</button>${copiedCaptionStyle ? `<button type="button" class="icon-button small" data-caption-paste-style="${index}">Paste style</button>` : ""}<button type="button" class="icon-button small" data-caption-edit="${index}">Edit</button><button type="button" class="icon-button small" data-caption-delete="${index}">Delete</button></div></div>`;
+    const funOption = (name) => `<option value="${name}" ${String(override.fun_effect || "none") === name ? "selected" : ""}>${CAPTION_FUN_LABELS[name]}</option>`;
+    const funOptions = `${funOption("none")}<optgroup label="All the time">${Object.keys(CAPTION_FUN_LOOPS).map(funOption).join("")}</optgroup><optgroup label="Big entrance">${Object.keys(CAPTION_FUN_ONCE).map(funOption).join("")}</optgroup>`;
+    return `<div class="caption-block${active}" data-caption-seek="${index}" role="button" tabindex="0"><div class="caption-block-main"><strong>${index + 1}.</strong><input class="caption-row-text" data-caption-text="${index}" value="${escapeHtml(cue.lines.join("\n"))}" aria-label="Caption ${index + 1} text" /><div class="caption-time-fields"><label>Start <input data-caption-start="${index}" type="number" min="0" step="0.01" value="${Number(cue.start).toFixed(2)}" /></label><label>End <input data-caption-end="${index}" type="number" min="0" step="0.01" value="${end.toFixed(2)}" /></label><label>Duration <input data-caption-duration="${index}" type="number" min="0.05" step="0.01" value="${Math.max(0.05, end - Number(cue.start)).toFixed(2)}" /></label></div><div class="caption-style-overrides"><label>Color <input data-caption-color="${index}" type="color" value="${override.color || "#ffffff"}" /></label><label>Size <input data-caption-size="${index}" type="number" min="8" max="180" step="1" value="${override.size ?? ""}" /></label><label>Vertical % <input data-caption-vertical="${index}" type="number" min="0" max="100" step="1" value="${override.vertical ?? ""}" /></label><label>Outline <input data-caption-outline-color="${index}" type="color" value="${override.outline_color || "#101010"}" /></label><label>Stroke <input data-caption-outline-width="${index}" type="number" min="0" max="20" step="0.5" value="${override.outline_width ?? ""}" /></label><label>Shadow distance <input data-caption-shadow-distance="${index}" type="number" min="0" max="30" step="1" value="${override.shadow_distance ?? ""}" /></label><label>Shadow opacity <input data-caption-shadow-opacity="${index}" type="number" min="0" max="1" step="0.05" value="${override.shadow_opacity ?? ""}" /></label><label>Glow color <input data-caption-glow-color="${index}" type="color" value="${override.glow_color || "#ffff00"}" /></label><label>Glow blur <input data-caption-glow-blur="${index}" type="number" min="0" max="40" step="1" value="${override.glow_blur ?? ""}" /></label><label>Glow layers <input data-caption-glow-layers="${index}" type="number" min="0" max="8" step="1" value="${override.glow_layers ?? ""}" /></label><label>Glow intensity <input data-caption-glow-intensity="${index}" type="number" min="0" max="1" step="0.05" value="${override.glow_intensity ?? ""}" /></label><label class="caption-fun-effect">Effect <select data-caption-fun-effect="${index}" aria-label="Caption ${index + 1} fun effect">${funOptions}</select></label><label>Enter <select data-caption-animation-in="${index}">${animationOptions(override.animation_in || "fade")}</select></label><label>Exit <select data-caption-animation-out="${index}">${animationOptions(override.animation_out || "fade")}</select></label></div></div><div class="caption-block-actions"><button type="button" class="icon-button small" data-caption-copy-style="${index}">Copy style</button>${copiedCaptionStyle ? `<button type="button" class="icon-button small" data-caption-paste-style="${index}">Paste style</button>` : ""}<button type="button" class="icon-button small" data-caption-edit="${index}">Edit</button><button type="button" class="icon-button small" data-caption-delete="${index}">Delete</button></div></div>`;
   }).join("");
   root.querySelectorAll('input[type="number"][data-caption-start], input[type="number"][data-caption-end], input[type="number"][data-caption-duration], input[type="number"][data-caption-size], input[type="number"][data-caption-vertical], input[type="number"][data-caption-outline-width], input[type="number"][data-caption-shadow-distance], input[type="number"][data-caption-shadow-opacity], input[type="number"][data-caption-glow-blur], input[type="number"][data-caption-glow-layers], input[type="number"][data-caption-glow-intensity]').forEach((input) => {
     const key = Object.keys(input.dataset).find((name) => name.startsWith("caption"));
@@ -562,6 +564,114 @@ function addCaptionFromPlayback() {
   if (status) status.textContent = `Caption ${index + 1} starts at ${now.toFixed(2)}s. Type it, then press Enter or play.`;
 }
 
+// "Auto caption": a small, fixed library of short philosophical lines about
+// music, all verified on Wikiquote and by public-domain authors (classics,
+// not lyrics). It is presented as if composed on the spot, one at a time;
+// the user keeps it or asks for another. Twenty, never more.
+const CAPTION_PHRASES = [
+  { text: "Without music, life would be a mistake.", author: "Friedrich Nietzsche", source: "Twilight of the Idols, 1889" },
+  { text: "Music expresses that which cannot be said and on which it is impossible to be silent.", author: "Victor Hugo", source: "William Shakespeare, 1864" },
+  { text: "Music is the universal language of mankind.", author: "Henry Wadsworth Longfellow", source: "Outre-Mer, 1835" },
+  { text: "Music is well said to be the speech of angels.", author: "Thomas Carlyle", source: "The Opera, 1852" },
+  { text: "There's music in all things, if men had ears.", author: "Lord Byron", source: "Don Juan, Canto XV" },
+  { text: "Heard melodies are sweet, but those unheard are sweeter.", author: "John Keats", source: "Ode on a Grecian Urn, 1819" },
+  { text: "Music is a hidden arithmetic exercise of the soul, which does not know that it is counting.", author: "Gottfried Wilhelm Leibniz", source: "Letter to Goldbach, 1712" },
+  { text: "Rhythm and harmony find their way into the inward places of the soul.", author: "Plato", source: "The Republic, Book III" },
+  { text: "If music be the food of love, play on.", author: "William Shakespeare", source: "Twelfth Night" },
+  { text: "Music is mere beauty; it is beauty in the abstract, beauty in solution.", author: "G. K. Chesterton", source: "George Bernard Shaw, 1909" },
+  { text: "Music moves us, and we know not why.", author: "Letitia Elizabeth Landon", source: "The Golden Violet, 1827" },
+  { text: "There is music wherever there is harmony, order, or proportion.", author: "Sir Thomas Browne", source: "Religio Medici, 1642" },
+  { text: "Discords make the sweetest airs.", author: "Samuel Butler", source: "Hudibras, 1678" },
+  { text: "Music resembles poetry: in each are nameless graces which no methods teach.", author: "Alexander Pope", source: "An Essay on Criticism, 1711" },
+  { text: "Such sweet compulsion doth in music lie.", author: "John Milton", source: "Arcades" },
+  { text: "Sweetest melodies are those that are by distance made more sweet.", author: "William Wordsworth", source: "Personal Talk" },
+  { text: "Music is the voice of love.", author: "Robert G. Ingersoll", source: "Orthodoxy, 1884" },
+  { text: "Music: the language of the immortals.", author: "Mary Shelley", source: "The Last Man, 1826" },
+  { text: "Elected Silence, sing to me.", author: "Gerard Manley Hopkins", source: "The Habit of Perfection" },
+  { text: "Architecture is frozen music.", author: "Johann Wolfgang von Goethe", source: "to Eckermann, 1829" },
+];
+let captionPhraseBag = [];
+let captionPhraseOffer = null;
+let captionPhraseTimer = null;
+
+function nextCaptionPhrase() {
+  const used = new Set(captionCues.map((cue) => (cue.lines || []).join(" ").trim()));
+  if (!captionPhraseBag.length) {
+    // A fresh shuffle of all twenty; the last one offered never comes first.
+    captionPhraseBag = CAPTION_PHRASES.map((_, index) => index).sort(() => Math.random() - 0.5);
+    if (captionPhraseOffer && captionPhraseBag[0] === captionPhraseOffer.index) captionPhraseBag.push(captionPhraseBag.shift());
+  }
+  const fresh = captionPhraseBag.findIndex((index) => !used.has(CAPTION_PHRASES[index].text));
+  const index = captionPhraseBag.splice(Math.max(0, fresh), 1)[0];
+  return { index, ...CAPTION_PHRASES[index] };
+}
+
+function composeAutoCaption() {
+  const card = document.querySelector("#captionComposeCard");
+  const status = document.querySelector("#captionComposeStatus");
+  const phrase = document.querySelector("#captionComposePhrase");
+  const author = document.querySelector("#captionComposeAuthor");
+  const actions = document.querySelector("#captionComposeActions");
+  if (!card || !status || !phrase || !author || !actions) return;
+  clearTimeout(captionPhraseTimer);
+  captionPhraseOffer = nextCaptionPhrase();
+  const offer = captionPhraseOffer;
+  card.hidden = false;
+  card.classList.add("composing");
+  status.textContent = "Composing a line about music";
+  phrase.textContent = "";
+  author.textContent = "";
+  actions.hidden = true;
+  const quiet = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  const reveal = (shown) => {
+    if (captionPhraseOffer !== offer) return;
+    phrase.textContent = offer.text.slice(0, shown);
+    if (shown < offer.text.length) { captionPhraseTimer = setTimeout(() => reveal(shown + 1), 22); return; }
+    card.classList.remove("composing");
+    status.textContent = "Keep this caption?";
+    author.textContent = `${offer.author}, ${offer.source}`;
+    actions.hidden = false;
+  };
+  captionPhraseTimer = setTimeout(() => reveal(quiet ? offer.text.length : 1), quiet ? 0 : 900 + Math.random() * 700);
+}
+
+// The kept line becomes a caption at the playhead, or in the first free
+// stretch after it, long enough to be read.
+function useAutoCaption() {
+  const offer = captionPhraseOffer;
+  const video = document.querySelector("#composeVideo");
+  if (!offer || !video) return;
+  exitCaptionEdit();
+  const duration = composeTimelineDuration();
+  const words = offer.text.split(/\s+/).length;
+  const wanted = Math.max(2.5, Math.min(6, 1.2 + words * 0.38));
+  const taken = captionCues.map((cue) => [Number(cue.start), cue.end == null ? duration : Number(cue.end)]).sort((a, b) => a[0] - b[0]);
+  const freeFrom = (time) => {
+    for (const [start, end] of taken) if (time >= start && time < end) return end + 0.05;
+    return time;
+  };
+  let start = freeFrom(Number(video.currentTime || 0));
+  const roomAt = (time) => Math.min(duration, ...taken.map(([begin]) => begin).filter((begin) => begin > time)) - time;
+  if (roomAt(start) < 1.5) {
+    const gap = [0, ...taken.map(([, end]) => end + 0.05)].map(freeFrom).find((time) => roomAt(time) >= 1.5);
+    if (gap != null) start = gap;
+  }
+  start = Math.max(0, Math.min(start, duration - 1));
+  const end = Math.max(start + 1, Math.min(start + wanted, start + Math.max(1, roomAt(start))));
+  const previousStyle = captionCues.length ? { ...(captionCues[captionCues.length - 1].style_override || {}) } : {};
+  captionCues.push({ lines: [offer.text], start: Math.round(start * 100) / 100, end: Math.round(end * 100) / 100, style_override: previousStyle });
+  captionActiveIndex = captionCues.length - 1;
+  captionMarkIndex = captionCues.length;
+  video.pause();
+  video.currentTime = captionVisibleTime(captionCues[captionActiveIndex]);
+  syncCaptionTextArea();
+  renderCaptionBlocks();
+  document.querySelector("#captionComposeCard").hidden = true;
+  captionPhraseOffer = null;
+  const status = document.querySelector("#captionTapStatus");
+  if (status) status.textContent = `Caption ${captionCues.length} added at ${start.toFixed(2)}s. Drag it on the timeline or on the video to place it.`;
+}
+
 function composeTimelineDuration() {
   return Math.max(1, Number(document.querySelector("#composeVideo")?.duration || document.querySelector("#reelDuration")?.value || 30));
 }
@@ -652,16 +762,67 @@ const CAPTION_EFFECTS = ["fade", "slide", "scale"];
 const CAPTION_DEFAULT_EFFECT = "fade";
 const CAPTION_SCALE_FROM = 0.72;
 const CAPTION_SLIDE_SHARE = 0.06;
+// Fun effects: the same tables as captions/effects.py (FUN_LOOPS, FUN_ONCE).
+// Segments are [t1, t2, accel, targets] with libass \t semantics; loop
+// segments are shares of the period, one-shot segments are seconds.
+const CAPTION_FUN_LOOPS = {
+  pulse: [0.6, [[0, 0.5, 1, { sx: 1.2, sy: 1.2 }], [0.5, 1, 1, { sx: 1, sy: 1 }]]],
+  jelly: [0.6, [[0, 0.5, 1, { sx: 1.2, sy: 0.85 }], [0.5, 1, 1, { sx: 1, sy: 1 }]]],
+  blink: [0.5, [[0.6, 0.6, 1, { sx: 0, sy: 0 }], [1, 1, 1, { sx: 1, sy: 1 }]]],
+  bounce: [0.5, [[0, 0.5, 0.5, { dy: -1 }], [0.5, 1, 2, { dy: 0 }]]],
+  wobble: [0.8, [[0, 0.25, 1, { rot: 8 }], [0.25, 0.75, 1, { rot: -8 }], [0.75, 1, 1, { rot: 0 }]]],
+  shake: [0.16, [[0, 0.25, 1, { rot: 4 }], [0.25, 0.75, 1, { rot: -4 }], [0.75, 1, 1, { rot: 0 }]]],
+};
+const CAPTION_LANDING_SQUASH = [[0.45, 0.55, 1, { sx: 1.25, sy: 0.75 }], [0.55, 0.7, 1, { sx: 1, sy: 1 }]];
+const CAPTION_SIDE_SQUASH = [[0.45, 0.55, 1, { sx: 0.8, sy: 1.15 }], [0.55, 0.7, 1, { sx: 1, sy: 1 }]];
+const CAPTION_FUN_ONCE = {
+  pop: [{ sx: 0, sy: 0 }, [[0, 0.18, 0.5, { sx: 1.25, sy: 1.25 }], [0.18, 0.3, 1, { sx: 1, sy: 1 }]]],
+  spin: [{ sx: 0, sy: 0, rot: 360 }, [[0, 0.5, 0.5, { sx: 1, sy: 1, rot: 0 }]]],
+  drop: [{}, CAPTION_LANDING_SQUASH],
+  rise: [{}, CAPTION_LANDING_SQUASH],
+  fly_right: [{}, CAPTION_SIDE_SQUASH],
+  fly_left: [{}, CAPTION_SIDE_SQUASH],
+};
+const CAPTION_FUN_EFFECTS = [...Object.keys(CAPTION_FUN_LOOPS), ...Object.keys(CAPTION_FUN_ONCE)];
+const CAPTION_FUN_LABELS = {
+  none: "none", pulse: "Pulse: grow and shrink", jelly: "Jelly: squash and stretch", blink: "Blink",
+  bounce: "Bounce: up and down", wobble: "Wobble: tilt side to side", shake: "Shake",
+  pop: "Pop in", spin: "Spin in", drop: "Drop from the top", rise: "Rise from the bottom",
+  fly_right: "Fly in from the right", fly_left: "Fly in from the left",
+};
+const CAPTION_FLY_EFFECTS = ["drop", "rise", "fly_right", "fly_left"];
+const CAPTION_SCALING_FUN = ["pulse", "jelly", "blink", "pop", "spin", ...CAPTION_FLY_EFFECTS];
+const CAPTION_FLY_SEC = 0.45;
+const CAPTION_FLY_LANDED_SEC = 0.7;
+const CAPTION_BOUNCE_SHARE = 0.04;
 
-function captionEffectState(cue, now, frameWidth) {
+// Entrance, exit and fun effect, resolved like captions/effects.py resolve():
+// a scaling fun effect turns a scale entrance/exit into a fade, a fly-in
+// turns a slide entrance (and a too-early slide exit) into a fade.
+function captionResolvedEffects(cue) {
   const override = cue?.style_override || {};
   // Unset effects are the "fade" the Enter/Exit menus show (CAPTION_DEFAULT_EFFECT).
-  const enter = CAPTION_EFFECTS.includes(override.animation_in ?? CAPTION_DEFAULT_EFFECT) ? (override.animation_in ?? CAPTION_DEFAULT_EFFECT) : "none";
-  const exit = CAPTION_EFFECTS.includes(override.animation_out ?? CAPTION_DEFAULT_EFFECT) ? (override.animation_out ?? CAPTION_DEFAULT_EFFECT) : "none";
+  let enter = CAPTION_EFFECTS.includes(override.animation_in ?? CAPTION_DEFAULT_EFFECT) ? (override.animation_in ?? CAPTION_DEFAULT_EFFECT) : "none";
+  let exit = CAPTION_EFFECTS.includes(override.animation_out ?? CAPTION_DEFAULT_EFFECT) ? (override.animation_out ?? CAPTION_DEFAULT_EFFECT) : "none";
+  const fun = CAPTION_FUN_EFFECTS.includes(override.fun_effect) ? override.fun_effect : "none";
+  const duration = (cue?.end == null ? Infinity : Number(cue.end)) - Number(cue?.start || 0);
+  if (CAPTION_SCALING_FUN.includes(fun)) {
+    if (enter === "scale") enter = "fade";
+    if (exit === "scale") exit = "fade";
+  }
+  if (CAPTION_FLY_EFFECTS.includes(fun)) {
+    if (enter === "slide") enter = "fade";
+    if (exit === "slide" && duration - CAPTION_EFFECT_SEC < CAPTION_FLY_LANDED_SEC) exit = "fade";
+  }
+  return { enter, exit, fun };
+}
+
+function captionEffectState(cue, now, frameWidth) {
+  const { enter, exit, fun } = captionResolvedEffects(cue);
   const start = Number(cue.start);
   const end = cue.end == null ? Infinity : Number(cue.end);
   const duration = end - start;
-  const splitSlide = enter === "slide" && exit === "slide" && duration > 2 * CAPTION_EFFECT_SEC;
+  const splitSlide = (enter === "slide" || CAPTION_FLY_EFFECTS.includes(fun)) && exit === "slide" && duration > 2 * CAPTION_EFFECT_SEC;
   const both = enter !== "none" && exit !== "none" && !splitSlide;
   const effect = Math.max(0.001, Math.min(CAPTION_EFFECT_SEC, both ? duration / 2 : duration));
   const entered = enter === "none" ? 1 : Math.max(0, Math.min(1, (now - start) / effect));
@@ -676,6 +837,40 @@ function captionEffectState(cue, now, frameWidth) {
   return { opacity: entered * (1 - leaving), scale, dx };
 }
 
+function captionApplySegments(state, segments, t, scale = 1) {
+  for (const [t1, t2, accel, targets] of segments) {
+    const start = t1 * scale;
+    const end = t2 * scale;
+    if (t < start) break;
+    const k = t >= end ? 1 : Math.pow((t - start) / (end - start), accel);
+    for (const [key, target] of Object.entries(targets)) state[key] += (target - state[key]) * k;
+  }
+  return state;
+}
+
+// sx, sy, rot (ASS \frz degrees, counter-clockwise) and dy (bounce, in
+// CAPTION_BOUNCE_SHARE of the frame height) of a fun effect t seconds in.
+function captionFunState(fun, t) {
+  const state = { sx: 1, sy: 1, rot: 0, dy: 0 };
+  if (CAPTION_FUN_LOOPS[fun]) {
+    const [period, segments] = CAPTION_FUN_LOOPS[fun];
+    return captionApplySegments(state, segments, Math.max(0, t) % period, period);
+  }
+  if (CAPTION_FUN_ONCE[fun]) {
+    const [base, segments] = CAPTION_FUN_ONCE[fun];
+    Object.assign(state, base);
+    return captionApplySegments(state, segments, t);
+  }
+  return state;
+}
+
+// Where a fly-in starts, in frame pixels (captions/effects.py fly_start).
+function captionFlyStart(fun, x, y, width, height, lines, longest, size) {
+  const across = longest * size * 0.55 * 1.1 + 20;
+  const down = Math.max(1, lines) * size * 1.3 + 20;
+  return { drop: [x, -down], rise: [x, height + down], fly_right: [width + across, y], fly_left: [-across, y] }[fun];
+}
+
 function captionAnchor(override, styleDefinition, frameHeight) {
   // A chosen height centres the text there (ASS \an5\pos); otherwise the
   // preset's alignment row and vertical margin place it, like the burn.
@@ -686,6 +881,17 @@ function captionAnchor(override, styleDefinition, frameHeight) {
   if (alignment >= 7) return { top: `${(100 * margin) / frameHeight}%`, shiftY: "0%", left: "" };
   if (alignment >= 4) return { top: "50%", shiftY: "-50%", left: "" };
   return { top: `${(100 * (frameHeight - margin)) / frameHeight}%`, shiftY: "-100%", left: "" };
+}
+
+// The caption's anchor in frame pixels, like captions/render.py _placement.
+function captionFramePoint(override, styleDefinition, width, height) {
+  if (override.vertical != null) return [override.horizontal != null ? width * Number(override.horizontal) / 100 : width / 2, height * Number(override.vertical) / 100];
+  const alignment = Math.max(1, Math.min(9, Number(styleDefinition.alignment || 2)));
+  const column = (alignment - 1) % 3;
+  const row = Math.floor((alignment - 1) / 3);
+  const x = column === 0 ? Number(styleDefinition.margin_l ?? 65) : column === 1 ? width / 2 : width - Number(styleDefinition.margin_r ?? 65);
+  const y = row === 0 ? height - Number(styleDefinition.margin_v ?? 100) : row === 1 ? height / 2 : Number(styleDefinition.margin_v ?? 100);
+  return [x, y];
 }
 
 // The picture inside the <video> box: object-fit: contain letterboxes it, so
@@ -770,9 +976,31 @@ function renderComposeOverlayLayer() {
       ? `<span style="color:${now >= Number(caption.start) + 0.25 ? captionSecondary : captionColor}">${escapeHtml(captionLayoutResult.lines.join("\n"))}</span>`
     : escapeHtml(captionLayoutResult.lines.join("\n"));
   const cornerPreset = Number(styleDefinition.alignment || 2) % 3 !== 2 && override.vertical == null;
+  // Fun effect (pulse, bounce, fly-in...): the curves of captions/effects.py,
+  // in frame pixels scaled to the preview. Rotation and scale turn around
+  // the caption's anchor, like ASS (\an row: top, middle or bottom).
+  const fun = caption && !captionEditing ? captionResolvedEffects(caption).fun : "none";
+  const funState = captionFunState(fun, now - Number(caption?.start || 0));
+  let flyX = 0;
+  let flyY = 0;
+  if (caption && CAPTION_FLY_EFFECTS.includes(fun)) {
+    const [anchorX, anchorY] = captionFramePoint(override, styleDefinition, frameWidth, frameHeight);
+    const lines = captionLayoutResult.lines;
+    const [fromX, fromY] = captionFlyStart(fun, anchorX, anchorY, frameWidth, frameHeight, lines.length, Math.max(0, ...lines.map((line) => line.length)), captionLayoutResult.size);
+    const span = (caption.end == null ? Infinity : Number(caption.end)) - Number(caption.start);
+    const landed = Math.max(0, Math.min(1, (now - Number(caption.start)) / Math.max(0.001, Math.min(CAPTION_FLY_SEC, span))));
+    flyX = (fromX - anchorX) * (1 - landed);
+    flyY = (fromY - anchorY) * (1 - landed);
+  }
+  const moveX = effect.dx + flyX * previewScale;
+  const moveY = (funState.dy * CAPTION_BOUNCE_SHARE * frameHeight + flyY) * previewScale;
+  const turnAndScale = `rotate(${(-funState.rot).toFixed(3)}deg) scale(${(effect.scale * funState.sx).toFixed(4)}, ${(effect.scale * funState.sy).toFixed(4)})`;
+  const captionTransform = cornerPreset
+    ? `transform:translate(${moveX.toFixed(1)}px, calc(-50% + ${moveY.toFixed(1)}px)) ${turnAndScale};transform-origin:100% 50%`
+    : `transform:translate(calc(-50% + ${moveX.toFixed(1)}px), calc(${anchor.shiftY} + ${moveY.toFixed(1)}px)) ${turnAndScale};transform-origin:50% ${-parseFloat(anchor.shiftY)}%`;
   const captionInline = [`color:${captionColor}`, `font-size:${captionLayoutResult.size * previewScale}px`, cornerPreset ? "" : `top:${anchor.top}`, cornerPreset || !anchor.left ? "" : `left:${anchor.left}`, `width:${captionWidth}%`,
     `opacity:${effect.opacity.toFixed(3)}`,
-    cornerPreset ? "" : `transform:translate(calc(-50% + ${effect.dx.toFixed(1)}px), ${anchor.shiftY}) scale(${effect.scale.toFixed(3)})`, override.outline_width != null ? `-webkit-text-stroke:${Number(override.outline_width) * previewScale}px ${override.outline_color || "#101010"}` : "", glow || shadow ? `text-shadow:${[glow, shadow].filter(Boolean).join(",")}` : ""].filter(Boolean).join(";");
+    captionTransform, override.outline_width != null ? `-webkit-text-stroke:${Number(override.outline_width) * previewScale}px ${override.outline_color || "#101010"}` : "", glow || shadow ? `text-shadow:${[glow, shadow].filter(Boolean).join(",")}` : ""].filter(Boolean).join(";");
   const captionAnimation = "";
   const logoSource = selectedLogoSource();
   const logo = logoSource === "custom" ? projectLogo.url : logoSource === "default" ? projectLogo.defaultUrl : "";
@@ -4724,6 +4952,7 @@ document.addEventListener("input", (event) => {
     captionGlowColor: "glow_color", captionGlowBlur: "glow_blur",
     captionGlowLayers: "glow_layers", captionGlowIntensity: "glow_intensity",
     captionAnimationIn: "animation_in", captionAnimationOut: "animation_out",
+    captionFunEffect: "fun_effect",
   };
   const captionStyleKey = Object.keys(captionStyleFields).find((name) => input.dataset[name] != null);
   if (captionStyleKey) {
@@ -4763,6 +4992,14 @@ document.addEventListener("click", (event) => {
       renderCaptionBlocks(); renderComposeOverlayLayer(); saveComposition().catch(error => showToast(error.message, true));
       document.querySelector("#captionMicStatus").textContent = "Captions distributed with gaps. You can adjust every phrase in the timeline.";
     } catch(error) { showToast(error.message, true); }
+    return;
+  }
+  if (target?.id === "captionAutoCompose" || target?.id === "captionComposeAnother") { composeAutoCaption(); return; }
+  if (target?.id === "captionComposeUse") { useAutoCaption(); return; }
+  if (target?.id === "captionComposeDismiss") {
+    clearTimeout(captionPhraseTimer);
+    captionPhraseOffer = null;
+    document.querySelector("#captionComposeCard").hidden = true;
     return;
   }
   if (target?.id === "captionAutoRead") {

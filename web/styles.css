@@ -1686,6 +1686,16 @@ pre {
 .caption-text-heading { display: flex; align-items: center; justify-content: space-between; gap: .6rem; margin-bottom: .35rem; }
 .caption-text-heading .field-label { margin: 0; }
 #captionAutoRead { flex: 0 0 auto; min-height: 34px; }
+#captionAutoCompose { flex: 0 0 auto; min-height: 34px; margin-left: auto; }
+.caption-compose-card { margin: .5rem 0 .75rem; padding: .75rem .85rem; border: 1px solid color-mix(in srgb, var(--caption-accent,#9be37a) 60%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--caption-accent,#9be37a) 10%, var(--panel,#fff)); }
+.caption-compose-card[hidden] { display: none; }
+.caption-compose-status { margin: 0 0 .35rem; font-size: .8rem; color: var(--muted,#63727a); }
+.caption-compose-card.composing .caption-compose-status::after { content: ""; display: inline-block; width: 1.2em; text-align: left; animation: caption-compose-dots 1.2s steps(4, end) infinite; }
+@keyframes caption-compose-dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+.caption-compose-card blockquote { min-height: 1.4em; margin: 0; font: italic 600 1.05rem/1.35 Georgia, serif; color: var(--text,#17242b); }
+.caption-compose-card.composing blockquote::after { content: "▍"; margin-left: 1px; animation: caption-compose-caret .8s steps(2, start) infinite; }
+@keyframes caption-compose-caret { to { visibility: hidden; } }
+.caption-compose-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .5rem; }
 #captionAutoReadStatus { min-height: 1.2em; }
 .caption-blocks { max-height: none; overflow: visible; }
 .caption-block { grid-template-columns: minmax(0,1fr) auto; align-items: center; cursor: pointer; }
@@ -1712,6 +1722,9 @@ pre {
 .compose-overlays-panel .reel-text-line { overflow: visible; }
 .compose-video-import { margin: .6rem 0; }
 .caption-style-overrides select { min-width: 4.5rem; padding: .25rem .35rem; }
+/* Its own row, just above Enter/Exit. */
+.caption-style-overrides .caption-fun-effect { flex-basis: 100%; }
+.caption-style-overrides .caption-fun-effect select { min-width: 13rem; }
 .srt-controls { display: grid; gap: .4rem; margin: .7rem 0; padding: .6rem .7rem; border: 1px solid var(--line,#ccd5d9); border-radius: 8px; }
 .srt-controls h3 { margin: 0; font-size: .9rem; }
 .srt-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
