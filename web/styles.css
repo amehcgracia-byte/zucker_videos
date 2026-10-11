@@ -1671,6 +1671,9 @@ pre {
 .compose-lane-label { align-self: center; font-size: .8rem; color: var(--muted,#63727a); }
 .compose-timeline-block { position: absolute; top: 3px; bottom: 3px; min-width: 8px; padding: 2px 4px; overflow: hidden; border-radius: 4px; background: #8dcf75; color: #142016; font-size: .7rem; }
 .compose-timeline-block.caption { background: #79aee6; }
+.compose-timeline-block.caption.stacked { bottom: auto; height: calc(50% - 4px); }
+.compose-timeline-block.caption.stacked.row-1 { top: auto; bottom: 3px; background: #a7c7ee; }
+#composeCaptionLane { height: 32px; }
 .compose-timeline-block.overlay, .compose-timeline-block.caption { display: flex; align-items: center; justify-content: space-between; min-width: 18px; padding: 0; cursor: grab; user-select: none; touch-action: none; }
 .compose-timeline-block.overlay.selected, .compose-timeline-block.caption.selected { outline: 2px solid var(--caption-accent); z-index: 2; }
 .compose-timeline-block.overlay.image { background: #83d6c5; }

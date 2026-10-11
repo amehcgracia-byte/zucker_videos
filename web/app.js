@@ -389,23 +389,129 @@ function syncCaptionTextArea() {
   if (textarea) textarea.value = captionCues.map((cue) => cue.lines.join("\n")).join("\n\n");
 }
 
-function arrangeCaptionPhrases(phrases, duration, random = Math.random) {
+// "Distribute text as captions": every phrase gets its own loud look
+// (colour, size, outline, shadow, glow, place and fun effect), drawn so two
+// phrases in a row never look alike. A long phrase, or one typed on several
+// lines, is chained: its parts appear one under the other, each before the
+// previous one leaves, sharing one look and related effects.
+function arrangeCaptionPhrases(phrases, duration, random = Math.random, frameWidth = 1080, frameHeight = 1920) {
   if (!Number.isFinite(duration) || duration <= 0) throw new Error("Open the rendered Reel first.");
   if (!phrases.length) throw new Error("Record or enter some phrases first.");
   const slot = duration / phrases.length;
   if (slot < 1.2) throw new Error("There are too many phrases for this Reel. Combine or remove some first.");
-  const colors = ["#ffffff", "#fff176", "#80deea", "#ffb3d9", "#b9f6ca"];
-  return phrases.map((phrase, index) => {
-    const length = Math.min(slot * .70, Math.max(1.2, phrase.split(/\s+/).length * .35));
-    const margin = slot - length;
-    const start = index * slot + margin * (.25 + random() * .5);
-    const color = colors[Math.min(colors.length-1, Math.floor(random()*colors.length))];
-    return {lines: phrase.split(/\r?\n/), start, end: start+length, style_override: {
-      color, size: [48, 54, 64, 72][Math.min(3, Math.floor(random()*4))], vertical: [25, 48, 72][index % 3], outline_color: "#101010", outline_width: 2,
-      glow_color: color, glow_blur: 4 + Math.floor(random()*5), glow_layers: 1, glow_intensity: .22,
-      animation_in: ["fade", "slide", "scale"][Math.min(2, Math.floor(random()*3))], animation_out: "fade"
-    }};
+  const textRoom = frameWidth - 130;
+  const cues = [];
+  let previous = { color: null, fun: null, vertical: null };
+  phrases.forEach((phrase, index) => {
+    const parts = arrangeParts(phrase);
+    const words = parts.map((part) => part.split(/\s+/).length);
+    // Timing: one phrase keeps the classic reading time; a chain starts each
+    // part when the previous one is half read, so they overlap.
+    let reads = parts.length === 1
+      ? [Math.min(slot * .70, Math.max(1.2, words[0] * .35))]
+      : words.map((count) => Math.max(1.2, Math.min(4, .8 + count * .36)));
+    let offsets = reads.map((_, part) => reads.slice(0, part).reduce((total, read) => total + read * .55, 0));
+    let total = offsets.at(-1) + reads.at(-1);
+    const room = slot * (parts.length === 1 ? 1 : .82);
+    if (total > room) {
+      const squeeze = room / total;
+      reads = reads.map((read) => Math.max(.6, read * squeeze));
+      offsets = offsets.map((offset) => offset * squeeze);
+      total = offsets.at(-1) + reads.at(-1);
+    }
+    const blockStart = index * slot + Math.max(0, slot - total) * (.25 + random() * .5);
+    // The look, shared by the parts of a chain.
+    const longest = Math.max(...words);
+    const sizes = longest <= 2 ? [84, 96, 110] : longest <= 4 ? [66, 76, 88] : longest <= 7 ? [54, 60, 68] : [46, 52, 58];
+    const size = arrangePick(sizes, random);
+    const color = arrangePick(ARRANGE_COLORS, random, previous.color);
+    const partner = random() < .5 ? color : arrangePick(ARRANGE_COLORS, random, color);
+    const vividOutline = random() < .15;
+    const outline = {
+      outline_color: vividOutline ? arrangePick(ARRANGE_COLORS, random, color) : arrangePick(ARRANGE_DARK, random),
+      outline_width: arrangePick([0, 1.5, 3, 5, 8], random),
+      shadow_distance: arrangePick([0, 3, 6, 10, 16], random),
+      shadow_opacity: arrangePick([.3, .6, .85, 1], random),
+      shadow_color: random() < .2 ? arrangePick(ARRANGE_COLORS, random, color) : "#000000",
+    };
+    const glow = random() < .45
+      ? { glow_color: random() < .5 ? color : arrangePick(ARRANGE_COLORS, random, color), glow_blur: 5 + Math.floor(random() * 12), glow_layers: 1 + Math.floor(random() * 3), glow_intensity: Math.round((.25 + random() * .35) * 100) / 100 }
+      : { glow_layers: 0, glow_intensity: 0 };
+    const effects = parts.length > 1
+      ? arrangePick(ARRANGE_CHAINS, random)
+      : [arrangePick(random() < .5 ? ARRANGE_LOOPS : ARRANGE_ENTRANCES, random, previous.fun)];
+    // Place: parts stacked top to bottom, the whole block inside the frame
+    // and away from the previous phrase's height.
+    const partSizes = parts.map((_, part) => (part > 0 && partner !== color ? Math.round(size * .9) : size));
+    const lineCount = (text, partSize) => (text.length * partSize * .55 > textRoom ? 2 : 1);
+    const heights = parts.map((text, part) => lineCount(text, partSizes[part]) * partSizes[part] * 1.25);
+    const blockHeight = heights.reduce((sum, height) => sum + height, 0) + ARRANGE_GAP_PX * (parts.length - 1);
+    const topMin = frameHeight * .1;
+    const topMax = Math.max(topMin, frameHeight * .88 - blockHeight);
+    let top = topMin + random() * (topMax - topMin);
+    if (previous.vertical != null && Math.abs((top + blockHeight / 2) / frameHeight * 100 - previous.vertical) < 15) {
+      top = (top + blockHeight / 2) / frameHeight * 100 > 50 ? topMin + random() * (topMax - topMin) * .35 : topMax - random() * (topMax - topMin) * .35;
+    }
+    const stagger = random() < .5 ? -1 : 1;
+    let cursor = top;
+    parts.forEach((text, part) => {
+      const partSize = partSizes[part];
+      const width = Math.min(textRoom, text.length * partSize * .55);
+      const shift = Math.max(0, (textRoom - width) / 2) / frameWidth * 100;
+      const horizontal = parts.length > 1 ? 50 + stagger * (part % 2 ? 1 : -1) * shift * .6 : 50 + (random() * 2 - 1) * shift;
+      const vertical = (cursor + heights[part] / 2) / frameHeight * 100;
+      cursor += heights[part] + ARRANGE_GAP_PX;
+      const start = Math.round((blockStart + offsets[part]) * 100) / 100;
+      cues.push({ lines: [text], start, end: Math.round((start + reads[part]) * 100) / 100, style_override: {
+        color: part % 2 ? partner : color, size: partSize,
+        vertical: Math.round(vertical * 10) / 10, horizontal: Math.round(horizontal * 10) / 10,
+        ...outline, ...glow,
+        fun_effect: effects[Math.min(part, effects.length - 1)],
+        animation_in: arrangePick(["fade", "slide", "scale"], random), animation_out: arrangePick(["fade", "slide", "scale"], random),
+      } });
+    });
+    previous = { color, fun: effects[Math.min(parts.length, effects.length) - 1], vertical: (top + blockHeight / 2) / frameHeight * 100 };
   });
+  return cues;
+}
+
+const ARRANGE_COLORS = ["#ffffff", "#fff176", "#ffd54f", "#80deea", "#ff8a80", "#ffb3d9", "#b9f6ca", "#ea80fc", "#ffab40", "#69f0ae", "#84ffff", "#ff4081"];
+const ARRANGE_DARK = ["#000000", "#101010", "#1a0033", "#002b36", "#3b0018"];
+const ARRANGE_LOOPS = ["pulse", "jelly", "blink", "bounce", "wobble", "shake"];
+const ARRANGE_ENTRANCES = ["pop", "spin", "drop", "rise", "fly_right", "fly_left"];
+// Effects for the parts of a chained phrase, in order.
+const ARRANGE_CHAINS = [["drop", "rise", "pop"], ["fly_left", "fly_right", "fly_left"], ["fly_right", "fly_left", "fly_right"], ["pop", "pop", "pop"], ["spin", "pop", "spin"], ["drop", "drop", "drop"], ["bounce", "bounce", "bounce"], ["pulse", "jelly", "pulse"], ["wobble", "wobble", "wobble"]];
+const ARRANGE_GAP_PX = 24;
+
+function arrangePick(list, random, avoid) {
+  const options = list.length > 1 && avoid != null ? list.filter((item) => item !== avoid) : list;
+  return options[Math.min(options.length - 1, Math.floor(random() * options.length))];
+}
+
+// A long phrase is cut into two (or three) parts, at punctuation near the
+// even split when there is some; lines typed by the user are kept as parts.
+function arrangeParts(phrase) {
+  const typed = phrase.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (typed.length > 1) {
+    if (typed.length <= 3) return typed;
+    const size = Math.ceil(typed.length / 3);
+    return [0, 1, 2].map((part) => typed.slice(part * size, (part + 1) * size).join(" ")).filter(Boolean);
+  }
+  const words = phrase.trim().split(/\s+/).filter(Boolean);
+  if (words.length <= 7) return [words.join(" ")];
+  const count = words.length > 16 ? 3 : 2;
+  const cuts = [];
+  for (let part = 1; part < count; part += 1) {
+    const target = Math.round(words.length * part / count);
+    const reach = Math.max(1, Math.floor(words.length / (count * 3)));
+    let cut = target;
+    for (let distance = 0; distance <= reach; distance += 1) {
+      const found = [target - distance, target + distance].find((index) => index > (cuts.at(-1) ?? 0) && index < words.length && /[,;:.!?—-]$/.test(words[index - 1]));
+      if (found != null) { cut = found; break; }
+    }
+    cuts.push(cut);
+  }
+  return [0, ...cuts].map((from, part) => words.slice(from, cuts[part] ?? words.length).join(" ")).filter(Boolean);
 }
 
 let captionRecorder = null, captionMicStream = null, captionMicTimer = null, discardCaptionRecording = false;
@@ -690,12 +796,22 @@ function renderComposeTimeline() {
   };
   if (overlayLane) overlayLane.innerHTML = `${overlayItems.map(block).join("")}<span class="compose-timeline-playhead"></span>`;
   if (captionLane) {
+    // Overlapping captions (a chained phrase) take the upper and lower half.
+    const spans = captionCues.map((cue, index) => ({ index, start: Math.max(0, Number(cue.start) || 0), end: cue.end == null ? duration : Number(cue.end) }));
+    const rows = new Map();
+    const rowEnds = [-Infinity, -Infinity];
+    [...spans].sort((a, b) => a.start - b.start).forEach((span) => {
+      const row = rowEnds[0] <= span.start + 1e-6 ? 0 : rowEnds[1] <= span.start + 1e-6 ? 1 : (rowEnds[0] <= rowEnds[1] ? 0 : 1);
+      rowEnds[row] = Math.max(rowEnds[row], span.end);
+      rows.set(span.index, row);
+    });
+    const overlaps = (span) => spans.some((other) => other.index !== span.index && other.start < span.end - 1e-6 && other.end > span.start + 1e-6);
     const captions = captionCues.map((cue, index) => {
-      const start = Math.max(0, Number(cue.start) || 0);
-      const end = cue.end == null ? duration : Number(cue.end);
+      const { start, end } = spans[index];
       const selected = captionActiveIndex === index ? " selected" : "";
+      const stacked = overlaps(spans[index]) ? ` stacked row-${rows.get(index)}` : "";
       const label = escapeHtml(`${index + 1}. ${(cue.lines || []).join(" ")}`);
-      return `<span class="compose-timeline-block caption${selected}" data-caption-seek="${index}" tabindex="0" title="${label}" style="left:${start / duration * 100}%;width:${Math.max(0.1, (end - start) / duration * 100)}%"><span class="timeline-handle left" data-timeline-resize="left"></span><span class="timeline-block-label">${label}</span><span class="timeline-handle right" data-timeline-resize="right"></span></span>`;
+      return `<span class="compose-timeline-block caption${selected}${stacked}" data-caption-seek="${index}" tabindex="0" title="${label}" style="left:${start / duration * 100}%;width:${Math.max(0.1, (end - start) / duration * 100)}%"><span class="timeline-handle left" data-timeline-resize="left"></span><span class="timeline-block-label">${label}</span><span class="timeline-handle right" data-timeline-resize="right"></span></span>`;
     }).join("");
     captionLane.innerHTML = `${captions}<span class="compose-timeline-playhead"></span>`;
   }
@@ -918,51 +1034,38 @@ function captionVisibleTime(cue) {
   return Math.min(end, start + Math.min(CAPTION_EFFECT_SEC, Math.max(0, (end - start) / 2)));
 }
 
-function renderComposeOverlayLayer() {
-  const layer = document.querySelector("#composeOverlayLayer");
-  const video = document.querySelector("#composeVideo");
-  if (!layer || !video) return;
-  const now = Number(video.currentTime || 0);
-  const picture = composePictureRect(video);
-  if (picture.width && picture.height) Object.assign(layer.style, { inset: "auto", left: `${picture.left}px`, top: `${picture.top}px`, width: `${picture.width}px`, height: `${picture.height}px` });
-  if (captionEditIndex != null && !captionCues[captionEditIndex]) captionEditIndex = null;
-  // While the burned result is shown, its captions are in the pixels: drawing
-  // the live layer on top showed every caption twice. The caption being
-  // edited stays on screen; a selected one wins over an overlapping one.
-  const preferredCaption = [captionActiveIndex].map((index) => (index == null ? null : captionCues[index])).find((cue) => captionCoversTime(cue, now, video.duration));
-  const caption = captionBurnPreview ? null
-    : captionEditIndex != null ? captionCues[captionEditIndex]
-    : preferredCaption || captionCues.find((cue) => captionCoversTime(cue, now, video.duration));
-  const captionIndex = caption ? captionCues.indexOf(caption) : -1;
-  const captionEditing = captionIndex >= 0 && captionEditIndex === captionIndex;
-  const captionSelected = captionIndex >= 0 && (captionEditing || captionActiveIndex === captionIndex);
-  const captionStyle = document.querySelector("#captionStyle")?.value || "karaoke_word";
-  const texts = reelTextOverlays.filter((item) => now >= Number(item.start_sec || 0) && now <= Number(item.start_sec || 0) + Number(item.duration_sec || 0));
-  const images = reelImageOverlays.map((item, index) => ({ ...item, _index: index })).filter((item) => now >= Number(item.start_sec || 0) && now <= Number(item.start_sec || 0) + Number(item.duration_sec || 0));
-  const videos = reelVideoOverlays.map((item, index) => ({ ...item, _index: index })).filter((item) => now >= Number(item.start_sec || 0) && now <= Number(item.start_sec || 0) + Number(item.duration_sec || 0));
-  const override = caption?.style_override || {};
-  const styleDefinition = captionStyleCatalog[captionStyle] || {};
-  // Sizes and margins are frame pixels (ASS PlayRes is the frame size).
-  const frameWidth = video.videoWidth || 1080;
-  const frameHeight = video.videoHeight || 1920;
-  const previewScale = (picture.width || video.clientWidth || frameWidth) / frameWidth;
+function cssColorWithAlpha(color, alpha) {
+  const hex = String(color || "").replace("#", "");
+  const value = Math.max(0, Math.min(1, Number(alpha ?? 1)));
+  if (!/^[0-9a-f]{6}$/i.test(hex) || value >= 1) return color;
+  return `rgba(${parseInt(hex.slice(0, 2), 16)},${parseInt(hex.slice(2, 4), 16)},${parseInt(hex.slice(4, 6), 16)},${value})`;
+}
+
+// One caption on the live picture: layout, colours, entrance/exit and fun
+// effect at the playhead, exactly as captions/render.py burns it.
+function liveCaptionMarkup(caption, captionIndex, view) {
+  const { now, picture, frameWidth, frameHeight, previewScale, styleDefinition, captionStyle } = view;
+  const captionEditing = captionEditIndex === captionIndex;
+  const captionSelected = captionEditing || captionActiveIndex === captionIndex;
+  const override = caption.style_override || {};
   const shadowDistance = Number(override.shadow_distance ?? 3);
   const glowLayers = Math.max(0, Math.min(8, Number(override.glow_layers || 0)));
   const glowBlur = Math.max(0, Number(override.glow_blur || 0));
-  const glow = glowLayers && glowBlur ? Array.from({ length: glowLayers }, () => `0 0 ${glowBlur}px ${override.glow_color || "#ffff00"}`).join(",") : "";
-  const shadow = shadowDistance > 0 ? `${shadowDistance}px ${shadowDistance}px ${override.shadow_color || "#000"}` : "";
+  const glowColor = cssColorWithAlpha(override.glow_color || "#ffff00", override.glow_intensity ?? 1);
+  const glow = glowLayers && glowBlur ? Array.from({ length: glowLayers }, () => `0 0 ${glowBlur * previewScale * 2.5}px ${glowColor}`).join(",") : "";
+  const shadow = shadowDistance > 0 ? `${shadowDistance * previewScale}px ${shadowDistance * previewScale}px ${cssColorWithAlpha(override.shadow_color || "#000000", override.shadow_opacity ?? 1)}` : "";
   const captionSize = Number(override.size ?? styleDefinition.size ?? 54);
   const anchor = captionAnchor(override, styleDefinition, frameHeight);
   // While a caption is edited it is shown whole, without its entrance/exit.
-  const effect = caption && !captionEditing ? captionEffectState(caption, now, picture.width || frameWidth) : { opacity: 1, scale: 1, dx: 0 };
-  const captionLayoutResult = captionLayout(caption?.lines?.join(" ") || "", frameWidth, captionSize, styleDefinition.margin_l ?? 65, styleDefinition.margin_r ?? 65);
+  const effect = !captionEditing ? captionEffectState(caption, now, picture.width || frameWidth) : { opacity: 1, scale: 1, dx: 0 };
+  const captionLayoutResult = captionLayout(caption.lines?.join(" ") || "", frameWidth, captionSize, styleDefinition.margin_l ?? 65, styleDefinition.margin_r ?? 65);
   const captionMarginLeft = Number(styleDefinition.margin_l ?? 65);
   const captionMarginRight = Number(styleDefinition.margin_r ?? 65);
   const captionWidth = Math.max(1, (100 * (frameWidth - captionMarginLeft - captionMarginRight)) / frameWidth);
   const captionColor = override.color || assColorToCss(styleDefinition.color, "#fff");
   const captionSecondary = assColorToCss(styleDefinition.secondary, "#00ff00");
-  const usableCaptionWords = (caption?.words || []).filter((word) => String(word.text || word.word || "").trim() && Number(word.end ?? word.end_sec) > Number(word.start ?? word.start_sec));
-  const captionMarkup = caption && styleDefinition.animation === "word" && usableCaptionWords.length
+  const usableCaptionWords = (caption.words || []).filter((word) => String(word.text || word.word || "").trim() && Number(word.end ?? word.end_sec) > Number(word.start ?? word.start_sec));
+  const captionMarkup = styleDefinition.animation === "word" && usableCaptionWords.length
     ? (() => {
       let wordCursor = 0;
       return captionLayoutResult.lines.map((line) => {
@@ -972,18 +1075,18 @@ function renderComposeOverlayLayer() {
         return lineWords.map((word) => `<span style="color:${now >= Number(word.start ?? word.start_sec) && now <= Number(word.end ?? word.end_sec) ? captionColor : captionSecondary}">${escapeHtml(String(word.text || word.word || "").trim())}</span>`).join(" ");
       }).join("\n");
     })()
-    : caption && styleDefinition.animation === "phrase"
+    : styleDefinition.animation === "phrase"
       ? `<span style="color:${now >= Number(caption.start) + 0.25 ? captionSecondary : captionColor}">${escapeHtml(captionLayoutResult.lines.join("\n"))}</span>`
     : escapeHtml(captionLayoutResult.lines.join("\n"));
   const cornerPreset = Number(styleDefinition.alignment || 2) % 3 !== 2 && override.vertical == null;
   // Fun effect (pulse, bounce, fly-in...): the curves of captions/effects.py,
   // in frame pixels scaled to the preview. Rotation and scale turn around
   // the caption's anchor, like ASS (\an row: top, middle or bottom).
-  const fun = caption && !captionEditing ? captionResolvedEffects(caption).fun : "none";
-  const funState = captionFunState(fun, now - Number(caption?.start || 0));
+  const fun = !captionEditing ? captionResolvedEffects(caption).fun : "none";
+  const funState = captionFunState(fun, now - Number(caption.start || 0));
   let flyX = 0;
   let flyY = 0;
-  if (caption && CAPTION_FLY_EFFECTS.includes(fun)) {
+  if (CAPTION_FLY_EFFECTS.includes(fun)) {
     const [anchorX, anchorY] = captionFramePoint(override, styleDefinition, frameWidth, frameHeight);
     const lines = captionLayoutResult.lines;
     const [fromX, fromY] = captionFlyStart(fun, anchorX, anchorY, frameWidth, frameHeight, lines.length, Math.max(0, ...lines.map((line) => line.length)), captionLayoutResult.size);
@@ -1001,7 +1104,38 @@ function renderComposeOverlayLayer() {
   const captionInline = [`color:${captionColor}`, `font-size:${captionLayoutResult.size * previewScale}px`, cornerPreset ? "" : `top:${anchor.top}`, cornerPreset || !anchor.left ? "" : `left:${anchor.left}`, `width:${captionWidth}%`,
     `opacity:${effect.opacity.toFixed(3)}`,
     captionTransform, override.outline_width != null ? `-webkit-text-stroke:${Number(override.outline_width) * previewScale}px ${override.outline_color || "#101010"}` : "", glow || shadow ? `text-shadow:${[glow, shadow].filter(Boolean).join(",")}` : ""].filter(Boolean).join(";");
-  const captionAnimation = "";
+  const captionHandles = ["nw", "ne", "sw", "se"].map((corner) => `<i class="compose-overlay-handle ${corner}" data-caption-resize="${corner}" aria-hidden="true"></i>`).join("");
+  const captionState = `${override.vertical != null ? " positioned" : ""}${captionSelected ? " selected" : ""}${captionEditing ? " editing" : ""}`;
+  return `<span class="compose-live-caption caption-style-${escapeHtml(captionStyle)}${captionState}" data-caption-preview-index="${captionIndex}" data-caption-fitted-size="${captionLayoutResult.size}" style="${captionInline}"><span class="compose-caption-box" tabindex="0" title="Click to select · drag to move · drag a corner to resize · right-click: Edit caption">${captionMarkup}${captionHandles}</span></span>`;
+}
+
+function renderComposeOverlayLayer() {
+  const layer = document.querySelector("#composeOverlayLayer");
+  const video = document.querySelector("#composeVideo");
+  if (!layer || !video) return;
+  const now = Number(video.currentTime || 0);
+  const picture = composePictureRect(video);
+  if (picture.width && picture.height) Object.assign(layer.style, { inset: "auto", left: `${picture.left}px`, top: `${picture.top}px`, width: `${picture.width}px`, height: `${picture.height}px` });
+  if (captionEditIndex != null && !captionCues[captionEditIndex]) captionEditIndex = null;
+  // While the burned result is shown, its captions are in the pixels: drawing
+  // the live layer on top showed every caption twice. Every caption on screen
+  // at the playhead is drawn (chained phrases overlap); the one being edited
+  // always is, and the selected one is drawn last, on top.
+  const shownCaptions = captionBurnPreview ? [] : captionCues
+    .map((cue, index) => ({ cue, index }))
+    .filter(({ cue, index }) => index === captionEditIndex || captionCoversTime(cue, now, video.duration))
+    .sort((a, b) => Number(a.index === captionActiveIndex || a.index === captionEditIndex) - Number(b.index === captionActiveIndex || b.index === captionEditIndex));
+  const captionStyle = document.querySelector("#captionStyle")?.value || "karaoke_word";
+  const images = reelImageOverlays.map((item, index) => ({ ...item, _index: index })).filter((item) => now >= Number(item.start_sec || 0) && now <= Number(item.start_sec || 0) + Number(item.duration_sec || 0));
+  const videos = reelVideoOverlays.map((item, index) => ({ ...item, _index: index })).filter((item) => now >= Number(item.start_sec || 0) && now <= Number(item.start_sec || 0) + Number(item.duration_sec || 0));
+  // Sizes and margins are frame pixels (ASS PlayRes is the frame size).
+  const frameWidth = video.videoWidth || 1080;
+  const frameHeight = video.videoHeight || 1920;
+  const view = {
+    now, picture, frameWidth, frameHeight, captionStyle,
+    previewScale: (picture.width || video.clientWidth || frameWidth) / frameWidth,
+    styleDefinition: captionStyleCatalog[captionStyle] || {},
+  };
   const logoSource = selectedLogoSource();
   const logo = logoSource === "custom" ? projectLogo.url : logoSource === "default" ? projectLogo.defaultUrl : "";
   const logoOverlay = projectLogo.overlay || { x: .5, y: .08, width: .22 };
@@ -1011,9 +1145,7 @@ function renderComposeOverlayLayer() {
     return editableOverlayMarkup("image", item, item._index, selectedComposeOverlay?.kind === "image" && selectedComposeOverlay.index === item._index, imageEffectMarkup(item, image));
   }).join("");
   const videoMarkup = videos.map((item) => editableOverlayMarkup("video", item, item._index, selectedComposeOverlay?.kind === "video" && selectedComposeOverlay.index === item._index, `<video class="compose-live-video" src="${escapeHtml(item.preview_url || item.path || '')}" autoplay muted loop playsinline aria-label="Video overlay"></video>`)).join("");
-  const captionHandles = ["nw", "ne", "sw", "se"].map((corner) => `<i class="compose-overlay-handle ${corner}" data-caption-resize="${corner}" aria-hidden="true"></i>`).join("");
-  const captionState = `${override.vertical != null ? " positioned" : ""}${captionSelected ? " selected" : ""}${captionEditing ? " editing" : ""}`;
-  layer.innerHTML = logoMarkup + imageMarkup + videoMarkup + (caption ? `<span class="compose-live-caption caption-style-${escapeHtml(captionStyle)}${captionAnimation}${captionState}" data-caption-preview-index="${captionIndex}" data-caption-fitted-size="${captionLayoutResult.size}" style="${captionInline}"><span class="compose-caption-box" tabindex="0" title="Click to select · drag to move · drag a corner to resize · right-click: Edit caption">${captionMarkup}${captionHandles}</span></span>` : "");
+  layer.innerHTML = logoMarkup + imageMarkup + videoMarkup + shownCaptions.map(({ cue, index }) => liveCaptionMarkup(cue, index, view)).join("");
   const editing = Boolean(selectedComposeLogo || selectedComposeOverlay || captionActiveIndex != null || captionEditIndex != null);
   const wrap = document.querySelector(".compose-player-wrap");
   wrap?.classList.toggle("overlay-editing", editing);
@@ -4512,13 +4644,11 @@ document.addEventListener("click", (event) => {
   }
   if (target.dataset.captionDelete != null) {
     const index = Number(target.dataset.captionDelete);
-    const blocks = captionBlocksFromText();
     if (Number.isInteger(index) && index >= 0 && index < captionCues.length) {
       captionEditIndex = null;
       captionCues.splice(index, 1);
-      blocks.splice(index, 1);
-      const textarea = document.querySelector("#captionText");
-      if (textarea) textarea.value = blocks.join("\n\n");
+      // Rebuilt from the captions: a chained phrase is several captions.
+      syncCaptionTextArea();
       captionMarkIndex = Math.min(captionMarkIndex, captionCues.length);
       captionPendingStart = null;
       if (captionActiveIndex === index) captionActiveIndex = null;
@@ -4987,10 +5117,11 @@ document.addEventListener("click", (event) => {
     try {
       const phrases = document.querySelector("#captionText").value.split(/(?:\r?\n){2,}/).map(text => text.trim()).filter(Boolean);
       const duration = composeTimelineDuration();
-      captionCues = arrangeCaptionPhrases(phrases, duration);
+      const frame = document.querySelector("#composeVideo");
+      captionCues = arrangeCaptionPhrases(phrases, duration, Math.random, frame?.videoWidth || 1080, frame?.videoHeight || 1920);
       captionActiveIndex = null; captionPendingStart = null; captionMarkIndex = captionCues.length;
       renderCaptionBlocks(); renderComposeOverlayLayer(); saveComposition().catch(error => showToast(error.message, true));
-      document.querySelector("#captionMicStatus").textContent = "Captions distributed with gaps. You can adjust every phrase in the timeline.";
+      document.querySelector("#captionMicStatus").textContent = "Captions distributed, each with its own look; long phrases are chained. Adjust anything on the video or in the timeline.";
     } catch(error) { showToast(error.message, true); }
     return;
   }
@@ -5346,12 +5477,10 @@ document.addEventListener("pointerdown", (event) => {
     if (!cue) return;
     const start = Number(cue.start) || 0;
     const end = cue.end == null ? duration : Number(cue.end);
-    // The neighbouring captions bound the drag: two never share the screen.
-    const others = captionCues.filter((_, other) => other !== index);
-    const previousEnd = Math.max(0, ...others.filter((other) => Number(other.start) < start).map((other) => (other.end == null ? duration : Number(other.end))));
-    const nextStart = Math.min(duration, ...others.filter((other) => Number(other.start) >= start).map((other) => Number(other.start)));
+    // Captions may overlap (chained phrases share the screen): only the
+    // video's own length bounds the drag.
     const words = (cue.words || []).map((word) => ({ word, start: Number(word.start ?? word.start_sec), end: Number(word.end ?? word.end_sec) }));
-    Object.assign(drag, { kind: "caption", index, start, end, previousEnd: Math.min(previousEnd, start), nextStart: Math.max(nextStart, end), words });
+    Object.assign(drag, { kind: "caption", index, start, end, previousEnd: 0, nextStart: Math.max(duration, end), words });
     captionActiveIndex = index;
     selectedComposeOverlay = null;
     selectedComposeLogo = false;
