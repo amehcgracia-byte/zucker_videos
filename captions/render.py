@@ -68,12 +68,16 @@ def _effects(cue) -> tuple[str, str]:
 
 
 def _placement(cue, style: Style, *, width: int, height: int) -> tuple[int, float, float, bool]:
-    """Alignment and anchor point. A chosen height centres the text on that
+    """Alignment and anchor point. A chosen position (percent of the frame,
+    set by dragging the caption in the editor) centres the text on that
     point, exactly like the editor preview (translate -50%/-50%)."""
     override = cue.style_override or {}
     if override.get("vertical") is not None:
         y = max(0.0, min(float(height), height * float(override["vertical"]) / 100.0))
-        return 5, width / 2, y, True
+        x = width / 2
+        if override.get("horizontal") is not None:
+            x = max(0.0, min(float(width), width * float(override["horizontal"]) / 100.0))
+        return 5, x, y, True
     alignment = max(1, min(9, int(override.get("alignment", style.alignment))))
     column, row = (alignment - 1) % 3, (alignment - 1) // 3
     x = style.margin_l if column == 0 else width / 2 if column == 1 else width - style.margin_r

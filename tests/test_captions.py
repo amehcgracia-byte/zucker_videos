@@ -234,3 +234,25 @@ def test_unset_effects_are_the_fade_the_menus_show() -> None:
     assert r"\fad(250,250)" in ass
     explicit = render_ass(CueTrack((Cue(("Still",), 0, 2, style_override={"animation_in": "none", "animation_out": "none"}),)), get_style("autoread_fixed_white"))
     assert r"\fad" not in explicit
+
+
+def test_caption_dragged_on_the_picture_burns_centred_there() -> None:
+    moved = Cue(("Moved",), 0, 2, style_override={"vertical": 25, "horizontal": 30, "animation_in": "none", "animation_out": "none"})
+    ass = render_ass(CueTrack((moved,)), get_style("autoread_fixed_white"), width=1080, height=1920)
+    assert r"\an5\pos(324,480)" in ass
+    # Only a chosen height (the Vertical slider): centred horizontally.
+    height_only = Cue(("High",), 0, 2, style_override={"vertical": 25, "animation_in": "none", "animation_out": "none"})
+    assert r"\an5\pos(540,480)" in render_ass(CueTrack((height_only,)), get_style("autoread_fixed_white"), width=1080, height=1920)
+    # The slide effect moves from the dragged position, not the centre.
+    sliding = Cue(("Slide",), 0, 2, style_override={"vertical": 50, "horizontal": 20, "animation_in": "slide", "animation_out": "none"})
+    assert r"\move(151.2,960,216,960,0,250)" in render_ass(CueTrack((sliding,)), get_style("autoread_fixed_white"), width=1080, height=1920)
+
+
+def test_editor_offers_on_picture_caption_editing() -> None:
+    root = Path(__file__).parents[1] / "web"
+    app = (root / "app.js").read_text(encoding="utf-8")
+    page = (root / "index.html").read_text(encoding="utf-8")
+    assert 'label: "Edit caption"' in app and 'addEventListener("contextmenu"' in app
+    assert 'id="composeCaptionEditExit"' in page and "Exit caption edition" in page
+    # Caption blocks on the timeline carry the same resize handles as overlays.
+    assert 'compose-timeline-block caption${selected}' in app and 'data-timeline-resize="left"' in app

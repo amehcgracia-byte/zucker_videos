@@ -1630,6 +1630,23 @@ pre {
 .compose-live-caption.caption-style-lyric_serif { font-family: Georgia, serif; font-weight: 500; font-style: italic; }
 .compose-live-caption.caption-style-corner_comment { left: auto; right: 5%; top: 5%; width: 42%; transform: translateY(-50%); font-size: .9rem; text-align: right; }
 .compose-live-caption.caption-style-neon_glow { color: #00ffff; text-shadow: 0 0 8px #00ffff, 0 0 18px #00ffff, 0 0 32px #00ffff; }
+/* The text itself takes clicks (the wide wrap box does not): press to select
+   and drag, corners resize, right-click offers Edit caption. */
+.compose-caption-box { position: relative; display: inline-block; pointer-events: auto; cursor: pointer; }
+.compose-live-caption.selected .compose-caption-box { outline: 2px solid #4dd4ff; outline-offset: 6px; cursor: move; }
+.compose-live-caption.editing .compose-caption-box { outline: 2px dashed #ffd166; }
+.compose-live-caption:not(.selected) .compose-overlay-handle { display: none; }
+.compose-caption-box .compose-overlay-handle { -webkit-text-stroke: 0; }
+/* Placed by a chosen position: centred on it, like ASS \an5\pos. */
+.compose-live-caption.positioned { left: 50%; right: auto; text-align: center; }
+.compose-video-stage video { cursor: pointer; }
+.compose-caption-edit-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; padding: .65rem .8rem; border: 1px solid #ffd166; border-radius: 10px; background: color-mix(in srgb, #ffd166 14%, var(--panel,#fff)); color: var(--text,#17242b); }
+.compose-caption-edit-bar[hidden] { display: none; }
+.compose-caption-edit-bar span { flex: 1 1 14rem; font-size: .9rem; }
+.compose-player-wrap.caption-editing .compose-player-tools { display: none; }
+.compose-context-menu { position: fixed; z-index: 1000; min-width: 190px; padding: 4px; border: 1px solid var(--line,#ccd5d9); border-radius: 8px; background: var(--panel,#fff); color: var(--text,#17242b); box-shadow: 0 12px 32px rgb(0 0 0 / 28%); }
+.compose-context-menu button { display: block; width: 100%; min-height: 0; padding: .45rem .7rem; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.compose-context-menu button:hover, .compose-context-menu button:focus-visible { background: color-mix(in srgb, var(--caption-accent,#4dd4ff) 22%, transparent); outline: none; }
 .compose-player-tools { display: flex; gap: .6rem; align-items: center; padding: .65rem 0; }
 .compose-player-tools input[type="range"] { flex: 1; }
 .compose-player-tools #composeExpand { margin-left: auto; }
@@ -1644,7 +1661,6 @@ pre {
 .compose-add-caption { min-height: 44px; padding: .7rem 1rem; font-size: 1rem; }
 .compose-add-caption kbd { margin-left: .35rem; padding: .1rem .35rem; border: 1px solid currentColor; border-radius: 4px; font-size: .75em; opacity: .8; }
 .compose-player-tools #composeEndCaption { min-height: 44px; }
-.compose-player-wrap.overlay-editing .compose-player-tools { visibility: hidden; pointer-events: none; }
 .compose-player-wrap.overlay-editing .compose-video-stage { cursor: default; }
 .compose-timeline { display: grid; grid-column: 1 / -1; grid-template-columns: 80px minmax(0,1fr); gap: .35rem .7rem; width: 100%; margin: 1.25rem 0; }
 .compose-timeline-tools { display: flex; align-items: center; gap: .55rem; margin-top: .9rem; color: var(--muted,#63727a); font-size: .85rem; }
@@ -1655,8 +1671,8 @@ pre {
 .compose-lane-label { align-self: center; font-size: .8rem; color: var(--muted,#63727a); }
 .compose-timeline-block { position: absolute; top: 3px; bottom: 3px; min-width: 8px; padding: 2px 4px; overflow: hidden; border-radius: 4px; background: #8dcf75; color: #142016; font-size: .7rem; }
 .compose-timeline-block.caption { background: #79aee6; }
-.compose-timeline-block.overlay { display: flex; align-items: center; justify-content: space-between; min-width: 18px; padding: 0; cursor: grab; user-select: none; }
-.compose-timeline-block.overlay.selected { outline: 2px solid var(--caption-accent); z-index: 2; }
+.compose-timeline-block.overlay, .compose-timeline-block.caption { display: flex; align-items: center; justify-content: space-between; min-width: 18px; padding: 0; cursor: grab; user-select: none; touch-action: none; }
+.compose-timeline-block.overlay.selected, .compose-timeline-block.caption.selected { outline: 2px solid var(--caption-accent); z-index: 2; }
 .compose-timeline-block.overlay.image { background: #83d6c5; }
 .compose-timeline-block.overlay.text { background: #ffd166; }
 .timeline-block-label { min-width: 0; padding: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
