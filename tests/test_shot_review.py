@@ -47,7 +47,7 @@ def test_review_thumbnails_are_cached_and_replacement_marks_unavailable(tmp_path
     assert result["items"][0]["no_alternative"] is True
 
 
-def test_review_thumbnail_render_failure_is_propagated_and_visible(tmp_path: Path) -> None:
+def test_review_thumbnail_render_failure_is_visible_without_stopping_review(tmp_path: Path) -> None:
     clip = tmp_path / "broken.mp4"
     clip.write_bytes(b"not media")
     project = create_project("Review failure", str(tmp_path / "Review failure.zuckervid"))
@@ -56,8 +56,8 @@ def test_review_thumbnail_render_failure_is_propagated_and_visible(tmp_path: Pat
         "duration_sec": 1.0, "filename": clip.name,
     }]}), encoding="utf-8")
 
-    with pytest.raises(ThumbnailRenderError):
-        review_items(project)
+    rendered = review_items(project)[0]
+    assert rendered["thumbnail_status"] == "failed" and rendered["thumbnail_error"]
 
     failed = review_items(project, render_missing=False)[0]
     assert failed["thumbnail"] is None

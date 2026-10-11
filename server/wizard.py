@@ -1018,8 +1018,13 @@ class WizardRunner:
                 if review_prefetch:
                     review_prefetch.finish(review_progress)
                 review = review_items(project, progress_callback=review_progress)
-                if any(not item.get("thumbnail") for item in review):
+                # A failed photo (e.g. damaged source) is shown as such; the
+                # reviewer replaces that shot with Other frame.
+                if any(not item.get("thumbnail") and item.get("thumbnail_status") != "failed" for item in review):
                     raise RuntimeError("Shot review frames were not fully generated")
+                failed_photos = [item["index"] + 1 for item in review if item.get("thumbnail_status") == "failed"]
+                if failed_photos:
+                    _write_stage_log(project, "wizard", f"REVIEW PHOTOS FAILED for shots {failed_photos}; offered for replacement")
                 job.status = "waiting_review"
                 job.stage = "review"
                 job.progress = edit_end

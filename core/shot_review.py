@@ -795,7 +795,9 @@ def _render_thumbnail_to_path(project, segment, source, timestamp, output, root,
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ThumbnailRenderError) as exc:
                 temporary_thumbnail.unlink(missing_ok=True)
                 detail = getattr(exc, "stderr", None) or str(exc)
-                thumbnail_error = str(detail).strip() or "FFmpeg failed to render the thumbnail"
+                from core.media_integrity import DAMAGE_MESSAGE, looks_like_damage
+                thumbnail_error = (DAMAGE_MESSAGE if looks_like_damage(str(detail))
+                                   else str(detail).strip()[-600:] or "FFmpeg failed to render the thumbnail")
                 _set_render_status(root, output.name, {"state": "failed", "error": thumbnail_error})
                 if isinstance(exc, ThumbnailRenderError):
                     raise
@@ -830,7 +832,12 @@ class ReviewFramePrefetch:
 
     def finish(self, progress_callback: ProgressCallback | None = None) -> None:
         for completed, future in enumerate(as_completed(self.futures), 1):
-            future.result()
+            try:
+                future.result()
+            except ThumbnailRenderError as exc:
+                # Recorded as failed in the render status; the card offers
+                # Other frame. One unreadable shot must not stop the edit.
+                LOGGER.warning("Review photo prefetch failed: %s", str(exc)[:300])
             if progress_callback:
                 progress_callback(int(100 * completed / max(1, len(self.futures))),
                                   f"Review photos ready: {completed}/{len(self.futures)}")
@@ -945,17 +952,22 @@ def review_items(
                               f"Preparing {len(pending)} review thumbnails")
         def render_one(item):
             index, segment, source, timestamp, output, profile = item
-            _render_thumbnail_to_path(project, segment, source, timestamp, output, root, ffmpeg, profile)
+            try:
+                _render_thumbnail_to_path(project, segment, source, timestamp, output, root, ffmpeg, profile)
+                return True
+            except ThumbnailRenderError as exc:
+                items[index].update(thumbnail_status="failed", thumbnail_error=str(exc)[-600:])
+                return False
         if len(pending) == 1:
-            render_one(pending[0])
-            publish_ready(pending[0])
+            if render_one(pending[0]):
+                publish_ready(pending[0])
         else:
             with ThreadPoolExecutor(max_workers=2, thread_name_prefix="review-frame") as pool:
                 futures = {pool.submit(render_one, item):item for item in pending}
                 try:
                     for future in as_completed(futures):
-                        future.result()
-                        publish_ready(futures[future])
+                        if future.result():
+                            publish_ready(futures[future])
                 except BaseException:
                     for future in futures:
                         future.cancel()
