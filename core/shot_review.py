@@ -283,14 +283,18 @@ def _candidate_key(candidate: dict[str, Any]) -> str:
     return f"{path}|{start:.6f}{_spherical_pose_suffix(candidate)}"
 
 
-def _candidate_keys(candidate: dict[str, Any]) -> set[str]:
-    """Return current and legacy spellings of a candidate identity."""
+def _candidate_keys(candidate: dict[str, Any], synced: bool = True) -> set[str]:
+    """Return current and legacy spellings of a candidate identity.
+
+    In synced edits a coverage camera is identified by its sync offset, so
+    the offset spellings are part of the identity. An unsynchronised Reel has
+    offset 0 everywhere: counting it made every window of a file look
+    "already tried", so Other frame always jumped to a different file.
+    """
     path = candidate.get("path") or candidate.get("clip_path") or candidate.get("source_path") or ""
-    starts = {
-        candidate.get("clip_start_sec"),
-        candidate.get("offset_sec"),
-        candidate.get("clip_offset_sec"),
-    }
+    starts = {candidate.get("clip_start_sec")}
+    if synced or candidate.get("clip_start_sec") is None:
+        starts |= {candidate.get("offset_sec"), candidate.get("clip_offset_sec")}
     keys = set()
     pose_suffix = _spherical_pose_suffix(candidate)
     for raw_start in starts:
@@ -648,7 +652,7 @@ def _project_candidate_pool(project: Project, coverage: dict[str, Any], segments
         _write_reserve_json(path, {"candidates": pool, "origin": origin})
     summary = path.with_suffix(".summary.json")
     if not summary.exists():
-        eligible = [_candidate_keys(candidate) for candidate in pool
+        eligible = [_candidate_keys(candidate, platform != "reel") for candidate in pool
                     if _candidate_covers_slot(candidate, segment, platform) and _candidate_has_subject(candidate, segment)]
         _write_reserve_json(summary, {"keys": [sorted(keys) for keys in eligible], "origin": origin})
     return pool, origin
@@ -662,7 +666,7 @@ def _project_candidate_count(project: Project, coverage: dict[str, Any], segment
     except (OSError, ValueError):
         _project_candidate_pool(project, coverage, segments, segment, platform, context)
         summary = json.loads(path.read_text(encoding="utf-8"))
-    current = _candidate_keys(segment)
+    current = _candidate_keys(segment, platform != "reel")
     return sum(not (set(keys) & current) for keys in summary["keys"]), summary["origin"]
 
 
@@ -739,7 +743,7 @@ def _replacement_candidates(
         counts["covers_slot"] += 1
         if require_subject and not _candidate_has_subject(candidate, segment):
             continue
-        if _candidate_keys(candidate) & tried:
+        if _candidate_keys(candidate, platform != "reel") & tried:
             continue
         counts["unused"] += 1
         candidates.append((float(candidate.get("shot_quality_score") or candidate.get("motion_score") or 0.0), candidate, _candidate_key(candidate)))
@@ -1084,7 +1088,7 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         slot_key = str(slot)
         tried.update(attempts.get(slot_key) or attempts.get(slot) or [])
         tried.update(exclusions.get(slot_key) or exclusions.get(slot) or [])
-        tried.update(_candidate_keys(segment))
+        tried.update(_candidate_keys(segment, platform != "reel"))
         if segment.get("filler"):
             # A filler covers a stretch no camera recorded: offer another
             # compatible filler window, never a camera that is not there.
