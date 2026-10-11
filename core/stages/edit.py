@@ -2951,7 +2951,7 @@ def validate_plan_camera_source_consistency(plan: dict[str, Any]) -> None:
         # the invariant applies whenever a camera_id is present.
         if not camera_id:
             continue
-        render_camera = _camera_id_from_render_path(segment)
+        render_camera = _camera_id_from_render_path(segment).strip().lower()
         if camera_id != render_camera:
             raise ValueError(
                 f"Edit plan camera/source mismatch at segment {index}: "
@@ -3007,7 +3007,9 @@ def _camera_id(source: dict[str, Any]) -> str:
         return family
     if role == "360":
         return "360"
-    return path.stem.lower() or _source_id(source).lower()
+    # "Watching you .mp4" names the camera "watching you", like every other
+    # branch above, which already strips: the plan check compared the two.
+    return path.stem.strip().lower() or _source_id(source).strip().lower()
 
 
 def _camera_family(value: str) -> str:
