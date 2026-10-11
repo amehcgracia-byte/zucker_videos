@@ -9,7 +9,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from core.ffmpeg import muxer_args_for
+from core.ffmpeg import filter_option_value, muxer_args_for
 
 from .model import CueTrack, Style
 from .render import render_ass
@@ -37,6 +37,8 @@ def _video_dimensions(video_path: Path, ffmpeg: str) -> tuple[int, int]:
 
 
 def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_path: str | Path | None = None, ffmpeg: str = "ffmpeg", header: dict | None = None, logo_path: str | Path | None = None, letterbox: dict | None = None, progress_callback=None, process_callback=None) -> Path:
+    if Path(ffmpeg).parent != Path("."):
+        ffmpeg = str(Path(ffmpeg).resolve())
     source = Path(video_path).resolve()
     destination = Path(output_path).resolve() if output_path else source.with_name(f"{source.stem}_captions.mp4")
     if destination == source:
@@ -54,8 +56,10 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
         ) or bool(letterbox and letterbox.get("enabled"))
         if caption_enabled:
             ass.write_text(render_ass(cue_track, style, width=width, height=height, header=header), encoding="utf-8")
-            escaped = str(ass).replace("\\", r"\\").replace(":", r"\:").replace("'", r"\'")
-            vf = "subtitles=filename=%s" % escaped
+            # Keep drive letters, spaces and filter metacharacters out of the
+            # filter grammar. Only this child runs in the temporary directory;
+            # source, logo and output paths remain absolute.
+            vf = "subtitles=filename=captions.ass"
         else:
             # A YouTube logo-only composition must not pass through an empty
             # ASS filter; some FFmpeg builds turn that no-op subtitle graph
@@ -66,8 +70,8 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
             sigma = max(1, float(letterbox.get("blur", 18)))
             vf = f"split=2[bg][fg];[bg]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},gblur=sigma={sigma}[blur];[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[main];[blur][main]overlay=(W-w)/2:(H-h)/2,{vf}"
         if header and header.get("title_enabled") and header.get("title"):
-            title = str(header["title"]).upper().replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("\n", r"\\n")
-            vf += f",drawbox=x=0.12*iw:y=40:w=0.76*iw:h=110:color=white:t=fill,drawtext=fontcolor=black:fontsize=42:text='{title}':x=(w-text_w)/2:y=70"
+            title = filter_option_value(" ".join(str(header["title"]).upper().split()))
+            vf += f",drawbox=x=0.12*iw:y=40:w=0.76*iw:h=110:color=white:t=fill,drawtext=fontcolor=black:fontsize=42:expansion=none:text={title}:x=(w-text_w)/2:y=70"
         command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin"]
         if progress_callback is not None:
             command += ["-progress", "pipe:1", "-nostats"]
@@ -106,10 +110,11 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
         command[-1:] = [*muxer_args_for(destination), str(pending)]
         try:
             if progress_callback is None:
-                subprocess.run(command, check=True)
+                subprocess.run(command, check=True, cwd=directory)
             else:
                 process = subprocess.Popen(
                     command,
+                    cwd=directory,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
