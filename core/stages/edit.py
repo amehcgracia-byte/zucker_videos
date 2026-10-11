@@ -221,7 +221,9 @@ class EditStage(Stage):
             coverage = _with_director_quality(project, coverage, progress_callback)
         if platform == "reel":
             progress_callback(40, "Scoring Reel source shots (cached when available)")
-            coverage = {**coverage, "sources": analyze_handheld_director_quality(project, coverage.get("sources") or [])}
+            coverage = {**coverage, "sources": analyze_handheld_director_quality(
+                project, coverage.get("sources") or [],
+                lambda fraction, detail: progress_callback(40 + int(14 * fraction), f"Scoring Reel source shots {detail}"))}
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, t("choosing_cameras"))
             plan = _reel_promo_plan(coverage, beats, project.data.get("settings", {}), shot_ready=getattr(self, "shot_ready", None))
@@ -380,8 +382,9 @@ def _with_director_quality(project: Project, coverage: dict[str, Any], progress_
     sources = coverage.get("sources") or []
     if not sources:
         return coverage
-    progress_callback(50, "Scoring Sony director camera")
-    scored = analyze_handheld_director_quality(project, sources)
+    progress_callback(45, "Scoring Sony director camera")
+    scored = analyze_handheld_director_quality(
+        project, sources, lambda fraction, detail: progress_callback(45 + int(5 * fraction), f"Scoring Sony director camera {detail}"))
     scored = analyze_non_music_sources(project, scored)
     return {**coverage, "sources": scored}
 
