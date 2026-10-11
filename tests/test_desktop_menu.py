@@ -17,8 +17,8 @@ def test_native_menu_callbacks_dispatch_their_own_action():
             assert item.title == label
             item.function()
             assert window.scripts[-1].endswith('run(' + json.dumps(action) + ')')
-    assert any(label == 'Buscar actualizaciones…' for title, entries in MENU_ITEMS
-               if title == 'Herramientas' for label, _ in entries)
+    assert any(label == 'Check for Updates…' for title, entries in MENU_ITEMS
+               if title == 'Tools' for label, _ in entries)
 
 
 def test_frontend_menu_guards_and_dispatch():
@@ -46,10 +46,15 @@ vm.runInContext(source.slice(source.indexOf('window.EditorMenu = {')),context);
  await context.window.EditorMenu.run('render');assert(clicks.includes('renderReviewedTop'));
  node('renderReviewedTop').disabled=true;const count=clicks.filter(x=>x==='renderReviewedTop').length;
  await context.window.EditorMenu.run('render');assert.equal(clicks.filter(x=>x==='renderReviewedTop').length,count);
- await context.window.EditorMenu.run('mode');assert(errors.at(-1).includes('nuevo proyecto'));
- await context.window.EditorMenu.run('composition');assert(errors.at(-1).includes('Termina primero'));
+ await context.window.EditorMenu.run('mode');assert(errors.at(-1).includes('new project'));
+ await context.window.EditorMenu.run('composition');assert(errors.at(-1).includes('Finish the edit first'));
  await context.window.EditorMenu.run('new');assert(clicks.includes('newProject'));
- await context.window.EditorMenu.run('not-a-command');assert(errors.at(-1).includes('desconocida'));
+ await context.window.EditorMenu.run('not-a-command');assert(errors.at(-1).includes('Unknown menu option'));
 })().catch(e=>{console.error(e);process.exitCode=1});
 '''
     subprocess.run([node, '-e', script, str(source)], check=True, capture_output=True, text=True)
+
+
+def test_desktop_menu_does_not_duplicate_the_native_edit_menu():
+    # pywebview's Cocoa backend already installs Edit (cut/copy/paste).
+    assert 'Edit' not in [title for title, _ in MENU_ITEMS]

@@ -438,10 +438,10 @@ class BackstageEditStage(Stage):
 def _paper_description(segment: dict[str, Any]) -> str:
     kind = str(segment.get("kind") or "moment")
     if kind == "spoken_scene":
-        return "Tramo hablado potencialmente completo (pendiente de transcripción semántica)."
+        return "Potentially complete spoken passage (semantic transcription pending)."
     if kind == "reaction":
-        return "Reacción/exclamación o energía alta detectada en el audio."
-    return "Momento de actividad o ambiente con audio utilizable; contenido semántico pendiente."
+        return "Reaction/exclamation or high energy detected in the audio."
+    return "Activity or ambience moment with usable audio; semantic content pending."
 
 
 def _paper_selection_reason(segment: dict[str, Any]) -> str:
@@ -449,13 +449,13 @@ def _paper_selection_reason(segment: dict[str, Any]) -> str:
     score = float(segment.get("interest_score") or 0.0)
     spoken = _paper_text(segment, "original")
     if not spoken:
-        kind = str(segment.get("kind") or "actividad")
-        return f"{section.capitalize()}: sin diálogo; seleccionado por {kind}, energía/movimiento y variedad de fuentes."
+        kind = str(segment.get("kind") or "activity")
+        return f"{section.capitalize()}: no dialogue; selected for {kind}, energy/motion and source variety."
     if section == "opening":
-        return f"Apertura: puntuación {score:.2f}, elegida para enganchar al inicio."
+        return f"Opening: score {score:.2f}, chosen to hook at the start."
     if section == "closing":
-        return f"Cierre: puntuación {score:.2f}, elegida como remate cronológico."
-    return f"Cuerpo: puntuación {score:.2f}, mantiene variedad y cobertura de fuentes."
+        return f"Closing: score {score:.2f}, chosen as the chronological ending."
+    return f"Body: score {score:.2f}, keeps variety and source coverage."
 
 
 def _paper_text(segment: dict[str, Any], language: str) -> str:

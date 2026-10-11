@@ -1,26 +1,26 @@
 /* Read-only guided tour: no project mutation, media loading or pipeline actions. */
 (() => {
   const steps = [
-    ['Tu próximo montaje', '#newProject', 'Nuevo proyecto empieza con los archivos vacíos y el nombre New Jam. Tus proyectos anteriores siguen disponibles en el historial.'],
-    ['Una edición para cada idea', '#editTypeDialog .platforms', 'YouTube monta una canción; Reel prepara un clip corto; 360 conserva la vista navegable; Medley combina canciones; Backstage cuenta lo que ocurre entre bastidores.'],
-    ['Ponle nombre', '#videoName', 'Escribe el título de la canción. Se usará para identificar el proyecto y el vídeo que estás renderizando.'],
-    ['Arrastra tus archivos', '#dropZone', 'Añade vídeos, audio y, si quieres, tu logotipo. Cada archivo muestra su importación. Medley puede usar el audio integrado de los vídeos; los requisitos cambian según el modo.'],
-    ['Guarda antes de seguir', '#confirmFiles', 'Al continuar eliges la ubicación del proyecto, por ejemplo en tu disco externo. Allí se guardan los archivos de trabajo y podrás volver a abrirlo desde el historial.'],
-    ['El fragmento exacto', '.trim-box', 'Escucha el audio y fija inicio y final. Revisa estos tiempos si cambias de pista: pertenecen al audio que has elegido ahora.'],
-    ['Preparación en segundo plano', '#settingsPreparation', 'Mientras ajustas los parámetros, el programa puede preparar los vídeos. El mensaje y las barras te muestran el trabajo ya realizado.'],
-    ['Momentos musicales', '#instrumentHighlightsOption', 'Activa este análisis para buscar actividad vocal y posibles solos instrumentales. Añade tiempo de análisis y reutiliza resultados guardados; revisa después las tomas propuestas.'],
-    ['Reparte las cámaras', '#cameraMix', 'Los pesos orientan cuánto aparece cada cámara. No necesitan sumar 100. La cámara fija también puede incorporar un movimiento de zoom suave.'],
-    ['Enseña dónde está cada músico', '[data-spherical-landmark="singer"]', 'En 360, encuadra al cantante y asigna el sujeto correcto. Guarda el ángulo. “Use automatically” permite incluir o excluir esa vista del montaje.'],
-    ['Fine tune: afina el encuadre', '[data-spherical-landmark="singer"] details', 'En Advanced angles puedes afinar yaw (giro), pitch (altura), FOV (amplitud) y roll (inclinación). La proyección cambia la curvatura: revisa los rostros y los bordes antes de guardar.'],
-    ['Un Reel a tu medida', '#reelOptions', 'Ajusta duración, formato vertical u horizontal y densidad de cortes. Con una sola fuente, el recorrido disponible puede ser una toma continua.'],
-    ['Historias entre canciones', '#backstageOptions', 'En Backstage eliges la duración y puedes añadir mensajes. Después revisas la propuesta de montaje antes de renderizar.'],
-    ['Medley Populi', '#medleyOptions', 'Combina vídeos de canciones diferentes y elige su audio. Ajusta duración total, negro entre canciones y fundidos para que cada cambio musical se entienda.'],
-    ['Pon el montaje en marcha', '#startWizard', 'Make it inicia el proceso con los parámetros elegidos. Las fases de preparación, edición y exportación tienen su propio progreso.'],
-    ['Sigue el trabajo real', '#progressDetails', 'Abre los detalles para ver qué está haciendo el programa. Puedes copiar el informe si algo falla. Cancelar detiene el trabajo; no necesitas cerrar la aplicación.'],
-    ['Revisa antes de renderizar', '#renderReviewedTop', 'En Frames revisas las tomas propuestas, ajustas las que lo necesiten y reemplazas las rechazadas. Render Frames está también arriba para continuar sin bajar al final.'],
-    ['Texto que acompaña al vídeo', '.compose-captions-panel', 'En los modos con editor de composición puedes transcribir voz, importar SRT o LRC, corregir texto y tiempos, exportar SRT e incrustar los subtítulos.'],
-    ['Tu identidad visual', '.compose-overlays-panel', 'Añade imágenes, vídeos y logotipo. Ajusta su posición y duración en la línea de tiempo. También puedes reutilizar superposiciones anteriores.'],
-    ['El resultado y las herramientas', '.wizard-nav', 'Revisa el vídeo y abre su ubicación desde Resultado. El menú superior reúne las acciones del programa. En Herramientas puedes buscar actualizaciones; en Ayuda puedes repetir este tutorial.']
+    ['Your next edit', '#newProject', 'New project starts with no files and the name New Jam. Your previous projects stay available under Existing projects.'],
+    ['One edit for every idea', '#editTypeDialog .platforms', 'YouTube edits one song; Reel makes a short clip; 360 keeps the view explorable; Medley combines songs; Backstage tells what happens behind the scenes.'],
+    ['Give it a name', '#videoName', 'Type the song title. It identifies the project and the video you are rendering.'],
+    ['Drop your files', '#dropZone', 'Add videos, audio and, if you like, your logo. Each file shows its import progress. Medley can use the audio built into the videos; requirements change with the mode.'],
+    ['Save before you continue', '#confirmFiles', 'When you continue, you choose where the project lives, for example on your external drive. Working files are stored there and you can reopen it from Existing projects.'],
+    ['The exact excerpt', '.trim-box', 'Listen to the audio and set the start and end. Check these times if you change track: they belong to the audio you have chosen now.'],
+    ['Background preparation', '#settingsPreparation', 'While you adjust the parameters, the app can prepare the videos. The message and bars show the work already done.'],
+    ['Musical moments', '#instrumentHighlightsOption', 'Turn on this analysis to look for vocal activity and possible instrumental solos. It adds analysis time and reuses saved results; review the proposed shots afterwards.'],
+    ['Balance the cameras', '#cameraMix', 'The weights guide how much each camera appears. They do not need to add up to 100. The fixed camera can also add a gentle zoom movement.'],
+    ['Show where each musician is', '[data-spherical-landmark="singer"]', 'In 360, frame the singer and assign the right subject. Save the angle. “Use automatically” includes or excludes that view from the edit.'],
+    ['Fine tune the framing', '[data-spherical-landmark="singer"] details', 'In Advanced angles you can fine-tune yaw (turn), pitch (height), FOV (width) and roll (tilt). The projection changes the curvature: check faces and edges before saving.'],
+    ['A Reel made to measure', '#reelOptions', 'Set the length, vertical or horizontal format and cut density. With a single source, the available footage may be one continuous take.'],
+    ['Stories between songs', '#backstageOptions', 'In Backstage you choose the length and can add messages. Then you review the proposed edit before rendering.'],
+    ['Medley Populi', '#medleyOptions', 'Combine videos of different songs and choose their audio. Set the total length, black between songs and fades so every musical change is clear.'],
+    ['Start the edit', '#startWizard', 'Make it starts the process with the chosen parameters. Preparation, editing and export each show their own progress.'],
+    ['Follow the real work', '#progressDetails', 'Open the details to see what the app is doing. You can copy the report if something fails. Cancel stops the work; you do not need to close the app.'],
+    ['Review before rendering', '#renderReviewedTop', 'In Frames you review the proposed shots, adjust the ones that need it and replace the rejected ones. Render Frames is also at the top so you can continue without scrolling down.'],
+    ['Text that goes with the video', '.compose-captions-panel', 'In the modes with the composition editor you can transcribe speech, import SRT or LRC, fix text and timing, export SRT and burn in the captions.'],
+    ['Your visual identity', '.compose-overlays-panel', 'Add images, videos and your logo. Adjust their position and duration on the timeline. You can also reuse previous overlays.'],
+    ['The result and the tools', '.wizard-nav', 'Watch the video and open its location from Result. The top menu gathers the app actions. In Tools you can check for updates; in Help you can replay this tutorial.']
   ];
   let dialog, index = -1, previousFocus, pending = false, spotlight = null;
   const el = (tag, cls, text) => { const n = document.createElement(tag); n.className = cls; if (text) n.textContent = text; return n; };
@@ -28,7 +28,7 @@
     if (dialog) return;
     dialog = el('dialog', 'einstein-tour');
     dialog.setAttribute('aria-labelledby', 'tourTitle');
-    dialog.innerHTML = `<svg class="tour-shade" aria-hidden="true"><defs><mask id="tourMask"><rect width="100%" height="100%" fill="white"/><ellipse id="tourHole" fill="black"/></mask></defs><rect width="100%" height="100%" fill="rgba(0,0,0,.82)" mask="url(#tourMask)"/><ellipse id="tourRing" fill="none" stroke="#f7d776" stroke-width="3"/></svg><div class="tour-demo" aria-hidden="true" inert></div><div class="tour-guide"><img src="/tutorial-einstein.png" alt="Einstein te acompaña en el tutorial"/><section class="tour-bubble"><span class="tour-count"></span><h2 id="tourTitle"></h2><p class="tour-copy"></p><p class="tour-error" role="status"></p><div class="tour-actions"></div></section></div><button class="tour-close" aria-label="Cerrar tutorial">×</button>`;
+    dialog.innerHTML = `<svg class="tour-shade" aria-hidden="true"><defs><mask id="tourMask"><rect width="100%" height="100%" fill="white"/><ellipse id="tourHole" fill="black"/></mask></defs><rect width="100%" height="100%" fill="rgba(0,0,0,.82)" mask="url(#tourMask)"/><ellipse id="tourRing" fill="none" stroke="#f7d776" stroke-width="3"/></svg><div class="tour-demo" aria-hidden="true" inert></div><div class="tour-guide"><img src="/tutorial-einstein.png" alt="Einstein guides you through the tutorial"/><section class="tour-bubble"><span class="tour-count"></span><h2 id="tourTitle"></h2><p class="tour-copy"></p><p class="tour-error" role="status"></p><div class="tour-actions"></div></section></div><button class="tour-close" aria-label="Close tutorial">×</button>`;
     document.body.append(dialog);
     dialog.querySelector('.tour-close').onclick = dismiss;
     dialog.addEventListener('cancel', e => { e.preventDefault(); dismiss(); });
@@ -51,7 +51,7 @@
     dialog.querySelectorAll('button').forEach(b => b.disabled = true);
     try {
       const r = await fetch('/api/v1/tutorial', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({answer: value})});
-      if (!r.ok) throw new Error('No se pudo guardar tu respuesta. Vuelve a intentarlo.');
+      if (!r.ok) throw new Error('Your answer could not be saved. Please try again.');
       return true;
     } catch (error) { dialog.querySelector('.tour-error').textContent = error.message; return false; }
     finally { pending = false; dialog.querySelectorAll('button').forEach(b => b.disabled = false); }
@@ -75,7 +75,7 @@
     dialog.querySelector('.tour-count').textContent = `${index + 1} / ${steps.length} · ZUCKER EDITOR`;
     dialog.querySelector('.tour-copy').textContent = copy;
     dialog.querySelector('.tour-error').textContent = '';
-    const demo = dialog.querySelector('.tour-demo'); demo.hidden = false; spotlight = null; demo.replaceChildren(el('span', 'tour-preview-label', 'VISTA DE DEMOSTRACIÓN · ' + title));
+    const demo = dialog.querySelector('.tour-demo'); demo.hidden = false; spotlight = null; demo.replaceChildren(el('span', 'tour-preview-label', 'DEMO VIEW · ' + title));
     const source = document.querySelector(selector);
     const bounds = source?.getBoundingClientRect();
     if (bounds?.width && bounds.height && bounds.top >= 0 && bounds.bottom < window.innerHeight * .45 && !source.closest('dialog')) {
@@ -93,8 +93,8 @@
       demo.append(clone);
     }
     const actions = dialog.querySelector('.tour-actions'); actions.replaceChildren();
-    const back = button('Anterior', () => { index--; show(); }); back.disabled = index === 0;
-    button(index === steps.length - 1 ? 'Terminar' : 'Siguiente →', () => { if (index === steps.length - 1) close(); else { index++; show(); } }, true).focus();
+    const back = button('Back', () => { index--; show(); }); back.disabled = index === 0;
+    button(index === steps.length - 1 ? 'Finish' : 'Next →', () => { if (index === steps.length - 1) close(); else { index++; show(); } }, true).focus();
     position();
   }
   function start() { open(); index = 0; show(); }
@@ -104,12 +104,12 @@
     const state = await response.json();
     if (state.answer) return;
     open(); index = -1; dialog.classList.add('tour-welcome');
-    dialog.querySelector('#tourTitle').textContent = '¿Quieres aprender lo que puede hacer Sugar Mixer?';
-    dialog.querySelector('.tour-count').textContent = 'BIENVENIDO · TU GUÍA CON EINSTEIN';
-    dialog.querySelector('.tour-copy').textContent = 'Te acompaño por las herramientas de Zucker Editor, paso a paso. Tú marcas el ritmo.';
+    dialog.querySelector('#tourTitle').textContent = 'Want to learn what Zucker Editor can do?';
+    dialog.querySelector('.tour-count').textContent = 'WELCOME · YOUR GUIDE, EINSTEIN';
+    dialog.querySelector('.tour-copy').textContent = 'I will walk you through the tools in Zucker Editor, step by step. You set the pace.';
     dialog.querySelector('.tour-actions').replaceChildren();
     button('No', async () => { if (await answer('no')) close(); });
-    button('Sí, enséñame', async () => { if (await answer('yes')) { index = 0; show(); } }, true).focus();
+    button('Yes, show me', async () => { if (await answer('yes')) { index = 0; show(); } }, true).focus();
     position();
   }
   window.EditorTutorial = {start, offer, isOpen: () => Boolean(dialog?.open)};

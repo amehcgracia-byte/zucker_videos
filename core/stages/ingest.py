@@ -79,11 +79,11 @@ class IngestStage(Stage):
                 width = record["probe"].get("width")
                 height = record["probe"].get("height")
                 record["projection_warning"] = (
-                    f"No se detectó vídeo 360/equirectangular: {width}×{height} "
-                    f"({(float(width) / float(height)):.3f}:1). Se tratará como cámara plana; "
-                    "si debía ser 360, expórtalo cosido desde Insta360 Studio."
+                    f"No 360/equirectangular video detected: {width}×{height} "
+                    f"({(float(width) / float(height)):.3f}:1). It will be treated as a flat camera; "
+                    "if it should be 360, export it stitched from Insta360 Studio."
                     if width and height else
-                    "No se detectó proyección 360/equirectangular; se tratará como cámara plana."
+                    "No 360/equirectangular projection detected; it will be treated as a flat camera."
                 )
             # Persist the resolved role at ingest. Downstream stages must not
             # have to re-infer a 360 source from a normalized proxy filename.

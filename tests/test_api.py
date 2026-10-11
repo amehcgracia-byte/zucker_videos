@@ -54,7 +54,8 @@ def test_new_project_uses_global_spherical_landmarks_when_form_is_blank(tmp_path
     assert config["spherical_landmarks"] == defaults
 
 
-def test_caption_auto_read_uses_registered_project_audio_and_returns_editable_text(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform", ["reel", "backstage"])
+def test_caption_auto_read_uses_registered_project_audio_and_returns_editable_text(tmp_path, monkeypatch, platform):
     import server.api as api_module
 
     audio = tmp_path / "project-song.wav"
@@ -62,6 +63,7 @@ def test_caption_auto_read_uses_registered_project_audio_and_returns_editable_te
     folder = tmp_path / "AutoRead.zuckervid"
     project = create_project("Auto Read", str(folder))
     project.data["settings"].setdefault("wizard", {})["master_path"] = str(audio)
+    project.data["settings"]["wizard"]["platform"] = platform
     project.save()
 
     observed = {}
@@ -98,7 +100,8 @@ def test_caption_auto_read_uses_registered_project_audio_and_returns_editable_te
     assert "initial_prompt" not in observed["kwargs"]
 
 
-def test_caption_auto_read_returns_timestamped_cues_and_selects_large_for_short_audio(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform", ["reel", "backstage"])
+def test_caption_auto_read_returns_timestamped_cues_and_selects_large_for_short_audio(tmp_path, monkeypatch, platform):
     import server.api as api_module
 
     audio = tmp_path / "short.wav"
@@ -106,6 +109,7 @@ def test_caption_auto_read_returns_timestamped_cues_and_selects_large_for_short_
     folder = tmp_path / "AutoReadCues.zuckervid"
     project = create_project("Auto Read cues", str(folder))
     project.data["settings"].setdefault("wizard", {})["master_path"] = str(audio)
+    project.data["settings"]["wizard"]["platform"] = platform
     project.save()
     observed = {}
 
@@ -705,7 +709,7 @@ def test_wizard_orchestration_exports_tiny_media(tmp_path, monkeypatch):
             "sine=frequency=440:duration=3",
             "-vf",
             "select='not(eq(mod(n,5),0))'",
-            "-vsync",
+            "-fps_mode",
             "vfr",
             "-c:v",
             "libx264",
@@ -858,7 +862,7 @@ def test_wizard_cancel_stops_a_running_job(tmp_path, monkeypatch):
             "sine=frequency=440:duration=3",
             "-vf",
             "select='not(eq(mod(n,5),0))'",
-            "-vsync",
+            "-fps_mode",
             "vfr",
             "-c:v",
             "libx264",

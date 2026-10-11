@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from core.project import Project
+from core import review_previews
 from core.ffmpeg import locate_executable
 from core.spherical_view import spherical_view_filter
 from core.spherical_view import (
@@ -923,6 +924,10 @@ def review_items(
             "subject_safe": _candidate_has_subject(segment, segment),
             "keep": True,
             "no_alternative": index in unavailable,
+            "preview": f"/api/v1/wizard/review/preview/{index}?v={review_previews.preview_path(project, index, segment).stem[-8:]}",
+            "filler": bool(segment.get("filler")),
+            "filler_shot": segment.get("filler_shot"),
+            "filler_conditions": segment.get("filler_conditions") or {},
         })
     if pending:
         completed = len(items) - len(pending)
@@ -1007,6 +1012,29 @@ def set_review_transition_types(project: Project, transitions: dict[str, Any] | 
     return plan
 
 
+def _alternative_filler(project: Project, coverage: dict[str, Any], segment: dict[str, Any], tried: set[str],
+                        index: int, seed: str) -> dict[str, Any] | None:
+    """Another compatible filler window at least as long as the reviewed slot."""
+    from core import fillers
+    from core.stages.edit import _filler_plan_segment
+    bank = fillers.build_filler_bank(project, coverage.get("sources") or [])
+    duration = float(segment.get("duration_sec") or 0.0)
+    windows = [
+        window for window in bank.get("windows") or []
+        if f"{window['source_path']}|{float(window['start_sec']):.3f}" not in tried
+        and float(window["end_sec"]) - float(window["start_sec"]) >= duration - 1e-3
+    ]
+    master_start = float(segment.get("master_start_sec") or 0.0)
+    choice = fillers.choose_filler({"windows": windows}, master_start, duration, [], seed, index + len(tried))
+    if choice is None:
+        return None
+    replacement = {**segment, **_filler_plan_segment(choice, master_start, master_start + duration,
+                                                     str(segment.get("title") or ""))}
+    for stale_key in ("proxy_path", "spherical_source_path", "spherical_shot", "reel_framing", "motion"):
+        replacement.pop(stale_key, None)
+    return replacement
+
+
 def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
     """Replace rejected slots with unused source/moment candidates."""
     plan = _plan(project)
@@ -1034,6 +1062,25 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         tried.update(attempts.get(slot_key) or attempts.get(slot) or [])
         tried.update(exclusions.get(slot_key) or exclusions.get(slot) or [])
         tried.update(_candidate_keys(segment))
+        if segment.get("filler"):
+            # A filler covers a stretch no camera recorded: offer another
+            # compatible filler window, never a camera that is not there.
+            tried.add(str(segment.get("filler_key") or ""))
+            alternative = _alternative_filler(project, coverage, segment, tried, index, str(wizard.get("variation_seed") or ""))
+            if alternative is None:
+                unavailable.add(index)
+                diagnostics.append({"index": index, "status": "unavailable", "current": segment.get("filler_key"),
+                                    "reason": "no_other_compatible_filler"})
+                continue
+            tried.add(str(alternative["filler_key"]))
+            exclusions[slot_key] = sorted(tried)
+            attempts[slot_key] = sorted(tried)
+            segments[index] = alternative
+            unavailable.discard(index)
+            replaced.append(index)
+            diagnostics.append({"index": index, "status": "replaced", "current": segment.get("filler_key"),
+                                "candidate": alternative["filler_key"], "source": alternative.get("filename")})
+            continue
         pool, pool_origin = _project_candidate_pool(project, coverage, segments, segment, platform)
         candidates, counts = _replacement_candidates(pool, segment, tried, platform)
         if not candidates:

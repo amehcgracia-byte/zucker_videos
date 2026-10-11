@@ -12,14 +12,16 @@ import numpy as np
 from core.ffmpeg import ffprobe, tool_status
 from core.highlights import analyze_file, visual_quality
 
-def select_highlights(events, pictures, available, length):
+INTERNAL_BLEND_SEC = 8 / 30
+
+def select_highlights(events, pictures, available, length, count=None):
     """Select up to three disjoint, chronological excerpts, preserving the budget.
 
     Score complete windows rather than isolated attacks. Image quality gates
     musical novelty so black/blurred footage cannot win just by being louder.
     Very short budgets retain one coherent excerpt instead of tiny fragments.
     """
-    count = min(3, max(1, int(length // 6)))
+    count = min(3, max(1, int(length // 6))) if count is None else count
     seconds = length / count
     size = max(1, int(np.ceil(available)))
     novelty = np.zeros(size)
@@ -39,10 +41,20 @@ def select_highlights(events, pictures, available, length):
     values = activity * quality * (.85 * novelty + .15)
     prefix = np.concatenate(([0.0], np.cumsum(values)))
     timeline = np.arange(size + 1)
+    boundaries = sorted((float(cue["time_sec"]), float(cue["strength"]))
+                        for event in events for cue in event.get("cut_boundaries", [])
+                        if 0 <= float(cue["time_sec"]) <= available)
+    boundary_times = np.array([row[0] for row in boundaries])
+    def boundary_score(second):
+        left, right = np.searchsorted(boundary_times, [second-.20, second+.20])
+        return max((strength * max(0, 1 - abs(second-time)/.20)
+                    for time, strength in boundaries[left:right]), default=0)
     def integral(second):
         return float(np.interp(second, timeline, prefix))
     def score(start):
-        return (integral(start + seconds) - integral(start)) / seconds
+        content = (integral(start + seconds) - integral(start)) / seconds
+        # Boundary quality can break close choices, never rescue silence/black.
+        return content * (1 + .12 * (boundary_score(start) + boundary_score(start + seconds)))
     # Keep enough footage on each side to fit the remaining excerpts. This
     # avoids greedy choices stranding unused duration on short sources.
     selected = []
@@ -54,6 +66,8 @@ def select_highlights(events, pictures, available, length):
                 continue
             starts = {left, max(left, right - seconds)}
             starts.update(float(t) for t in range(int(np.ceil(left)), int(np.floor(right - seconds)) + 1))
+            starts.update(t for boundary, _ in boundaries for t in (boundary, boundary-seconds)
+                          if left <= t <= right-seconds)
             # Capacity boundaries matter when the selected content nearly fills
             # a source; integer timestamps alone would prevent exact allocation.
             starts.update(left + k * seconds for k in range(remaining)
@@ -174,8 +188,14 @@ def render(project, entries, duration, gap, fade, progress, cancel):
             progress=lambda percent: progress(base + (6 + 9 * percent / 100) / len(records), "visual", index, f"Checking visual highlights: {Path(record['video']).name}", percent))
         if not record["has_audio"]:
             events = [{"start_sec": row["time_sec"], "score": row["quality"]} for row in pictures]
-        highlights = select_highlights(events, pictures, record["available"], length)
-        record.update(start=highlights[0]["start"], duration=length, highlights=highlights)
+        count = min(3, max(1, int(length // 6)))
+        # Reserve real source handles for each overlap: no repeated/frozen
+        # frames and no shortening the requested output to pay for a dissolve.
+        while count > 1 and length + INTERNAL_BLEND_SEC * (count-1) > record["available"]:
+            count -= 1
+        blend = INTERNAL_BLEND_SEC if count > 1 else 0.0
+        highlights = select_highlights(events, pictures, record["available"], length + blend * (count-1), count=count)
+        record.update(start=highlights[0]["start"], duration=length, highlights=highlights, internal_blend_sec=blend)
     project.exports_dir.mkdir(parents=True, exist_ok=True)
     destination = project.exports_dir / f"Medley-Populi-{time.time_ns()}.mp4"
     ffmpeg = str(tool_status()["ffmpeg_path"])
@@ -184,7 +204,7 @@ def render(project, entries, duration, gap, fade, progress, cancel):
     with tempfile.TemporaryDirectory(prefix="medley-", dir=project.cache_dir) as temporary:
         root = Path(temporary)
         pieces = []
-        units = sum(len(row["highlights"]) for row in records) + (len(records) - 1 if gap > 0 else 0) + 1
+        units = len(records) + (len(records) - 1 if gap > 0 else 0) + 1
         completed = 0
         def encode(args, seconds, output, label):
             nonlocal completed
@@ -194,31 +214,42 @@ def render(project, entries, duration, gap, fade, progress, cancel):
             pieces.append(output)
         for index, record in enumerate(records):
             highlights = record["highlights"]
+            args, graph = [], []
+            input_index = 0
             for highlight_index, highlight in enumerate(highlights):
                 seconds = highlight["duration"]
-                f = min(float(fade), seconds / 2)
-                vf = "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30"
-                af = "asetpts=PTS-STARTPTS"
-                # Internal highlights have hard cuts. Only song boundaries fade
-                # to/from black and silence, including the first/last song.
-                if f and highlight_index == 0:
-                    vf += f",fade=t=in:st=0:d={f}"
-                    af += f",afade=t=in:st=0:d={f}"
-                if f and highlight_index == len(highlights) - 1:
-                    vf += f",fade=t=out:st={seconds-f}:d={f}"
-                    af += f",afade=t=out:st={seconds-f}:d={f}"
-                af += ",apad"
-                args = ["-ss", str(highlight["start"]), "-i", record["video"]]
-                audio_index = 0
+                args += ["-ss", str(highlight["start"]), "-t", str(seconds), "-i", record["video"]]
+                video_index = audio_index = input_index
+                input_index += 1
                 if not record["has_audio"]:
-                    args += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
-                    audio_index = 1
+                    args += ["-f", "lavfi", "-t", str(seconds), "-i", "anullsrc=r=48000:cl=stereo"]
+                    audio_index = input_index
+                    input_index += 1
                 elif record["audio"] != record["video"]:
-                    args += ["-ss", str(highlight["start"]), "-i", record["audio"]]
-                    audio_index = 1
-                args += ["-map", "0:v:0", "-map", f"{audio_index}:a:0", "-vf", vf, "-af", af, "-t", str(seconds)]
-                encode(args, seconds, root / f"song-{index}-highlight-{highlight_index}.mp4",
-                       f"Rendering song {index+1}/{len(records)} · highlight {highlight_index+1}/{len(highlights)}")
+                    args += ["-ss", str(highlight["start"]), "-t", str(seconds), "-i", record["audio"]]
+                    audio_index = input_index
+                    input_index += 1
+                graph.append(f"[{video_index}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p,settb=AVTB,setpts=PTS-STARTPTS[v{highlight_index}]")
+                graph.append(f"[{audio_index}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,apad,atrim=duration={seconds},asetpts=PTS-STARTPTS[a{highlight_index}]")
+            video_label, audio_label = "v0", "a0"
+            elapsed = highlights[0]["duration"]
+            blend = record["internal_blend_sec"]
+            for j in range(1, len(highlights)):
+                graph.append(f"[{video_label}][v{j}]xfade=transition=fade:duration={blend}:offset={elapsed-blend}[mixv{j}]")
+                graph.append(f"[{audio_label}][a{j}]acrossfade=d={blend}:c1=tri:c2=tri[mixa{j}]")
+                elapsed += highlights[j]["duration"] - blend
+                video_label, audio_label = f"mixv{j}", f"mixa{j}"
+            seconds = record["duration"]
+            f = min(float(fade), seconds / 2)
+            vf = f"trim=duration={seconds},setpts=PTS-STARTPTS"
+            af = f"atrim=duration={seconds},asetpts=PTS-STARTPTS"
+            if f:
+                vf += f",fade=t=in:st=0:d={f},fade=t=out:st={seconds-f}:d={f}"
+                af += f",afade=t=in:st=0:d={f},afade=t=out:st={seconds-f}:d={f}"
+            graph += [f"[{video_label}]{vf}[vout]", f"[{audio_label}]{af}[aout]"]
+            args += ["-filter_complex_threads", "1", "-filter_complex", ";".join(graph), "-map", "[vout]", "-map", "[aout]", "-t", str(seconds)]
+            encode(args, seconds, root / f"song-{index}.mp4",
+                   f"Rendering song {index+1}/{len(records)} · blending {len(highlights)} highlights")
             if gap > 0 and index < len(records) - 1:
                 encode(["-f", "lavfi", "-i", "color=c=black:s=1920x1080:r=30", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", str(gap)], gap, root / f"gap-{index}.mp4", "Rendering black separation")
         listing = root / "concat.txt"

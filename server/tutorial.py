@@ -2,8 +2,23 @@
 import json
 import os
 import tempfile
+import sys
+from pathlib import Path
 from flask import jsonify, request
 from core.storage import preference_path
+
+
+def installation_id():
+    """Persist an answer for this installation, not for every future install.
+
+    Copying/replacing the bundle changes its inode/ctime, even for a reinstall
+    of the same build. Development retains a stable identity.
+    """
+    if not getattr(sys, 'frozen', False):
+        return 'development'
+    executable = Path(sys.executable)
+    stat = executable.stat()
+    return f'{executable}:{stat.st_ino}:{stat.st_ctime_ns}'
 
 
 def register_tutorial_routes(app):
@@ -17,7 +32,7 @@ def register_tutorial_routes(app):
         except (OSError, ValueError):
             value = {}
         if not isinstance(value, dict): value = {}
-        return jsonify(answer=value.get('answer') if value.get('answer') in {'yes', 'no'} else None)
+        return jsonify(answer=value.get('answer') if value.get('installation') == installation_id() and value.get('answer') in {'yes', 'no'} else None)
 
     @app.post('/api/v1/tutorial')
     def tutorial_answer():
@@ -30,7 +45,7 @@ def register_tutorial_routes(app):
         fd, name = tempfile.mkstemp(prefix='.tutorial-', dir=target.parent)
         try:
             with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-                json.dump({'answer': answer}, stream)
+                json.dump({'answer': answer, 'installation': installation_id()}, stream)
             os.replace(name, target)
         finally:
             if os.path.exists(name): os.unlink(name)

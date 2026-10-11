@@ -19,4 +19,10 @@ def test_new_project_registers_inputs_before_360_preview():
 
 def test_build_version_is_current():
     build_info = (Path(__file__).parents[1] / "core" / "build_info.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "2.6.0"' in build_info
+    assert 'APP_VERSION = "2.6.1"' in build_info
+
+
+def test_retry_after_failure_keeps_the_cut_so_rendered_segments_are_reused():
+    source = APP_JS.read_text(encoding="utf-8")
+    assert "if (!options.reuseVariation) currentVariationSeed =" in source
+    assert 'startWizard({ waitForPrepare: false, reuseVariation: target.id === "startAgain" })' in source

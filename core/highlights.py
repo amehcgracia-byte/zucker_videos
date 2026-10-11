@@ -6,6 +6,27 @@ import numpy as np
 
 VERSION = 1
 
+def _cut_boundaries(y, sr, start):
+    """Cheap 50 ms pause/attack cues, not a claim of phrase or solo recognition."""
+    hop = max(1, sr // 20)
+    envelope = np.array([np.sqrt(np.mean(y[i:i+hop] ** 2)) for i in range(0, len(y), hop)])
+    if len(envelope) < 3:
+        return []
+    level = max(.003, float(np.percentile(envelope, 75)))
+    cues = []
+    for i in range(1, len(envelope)-1):
+        attack = max(0.0, float(envelope[i] - envelope[i-1])) / level
+        quiet = max(0.0, 1 - float(envelope[i]) / (level * .25))
+        if (attack >= .15 and envelope[i] >= envelope[i+1]) or (quiet > .4 and envelope[i] <= min(envelope[i-1], envelope[i+1])):
+            cue = {"time_sec": round(start + i * hop / sr, 4),
+                   "strength": round(min(1.0, max(attack, quiet)), 4)}
+            if cues and cue["time_sec"] - cues[-1]["time_sec"] < .20:
+                if cue["strength"] > cues[-1]["strength"]:
+                    cues[-1] = cue
+            else:
+                cues.append(cue)
+    return cues
+
 def analyze_samples(y, sr: int, start: float = 0.0) -> list[dict]:
     """Compare one-second texture and attack patterns with their local baseline."""
     y = np.asarray(y, dtype=np.float32)
@@ -39,13 +60,18 @@ def analyze_samples(y, sr: int, start: float = 0.0) -> list[dict]:
         events.append({"start_sec": round(start + index, 3), "end_sec": round(start + min(index + 1, len(y) / sr), 3),
                        "score": round(score, 4), "rms": round(float(row[0]), 6),
                        "kind": "musical_change", "instrument": None})
+    # Store cues alongside the already cached analysis. This adds no decoder,
+    # model download or second audio pass to Medley.
+    for cue in _cut_boundaries(y, sr, start):
+        index = min(len(events)-1, max(0, int(cue["time_sec"] - start)))
+        events[index].setdefault("cut_boundaries", []).append(cue)
     return events
 
 def analyze_file(path: str, cache: Path, start: float = 0, duration: float | None = None) -> list[dict]:
     from core.ffmpeg import tool_status
     import subprocess
     stat = Path(path).stat()
-    signature = [VERSION, "activity-v2", str(Path(path).resolve()), stat.st_size, stat.st_mtime_ns, start, duration]
+    signature = [VERSION, "activity-v3-cut-boundaries", str(Path(path).resolve()), stat.st_size, stat.st_mtime_ns, start, duration]
     try:
         payload = json.loads(cache.read_text())
         if payload.get("signature") == signature:

@@ -38,6 +38,8 @@ if missing:
 PY
 
 "$PYTHON" tools/make_icon.py
+# CLIP image encoder for filler scene tagging (not in git): pinned + SHA-256 verified.
+bash "$ROOT/tools/fetch_clip_model.sh"
 bash "$ROOT/tools/build_metal.sh"
 # Preserve existing user/local build products, including the hand-edited spec.
 BUILD_BACKUP="$ROOT/build/previous-$(date +%Y%m%d-%H%M%S)"
@@ -130,6 +132,9 @@ PLIST="$APP_BUNDLE/Contents/Info.plist"
   || /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $VERSION" "$PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $VERSION" "$PLIST"
+
+/usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string Record spoken phrases for editable Reel captions." "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription Record spoken phrases for editable Reel captions." "$PLIST"
 
 codesign --force --deep -s - "$APP_BUNDLE"
 

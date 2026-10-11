@@ -81,3 +81,12 @@ def test_reel_still_blocks_omission_when_there_are_enough_slots(tmp_path):
     (project.artifacts_dir / "edit_plan.json").write_text(json.dumps(plan), encoding="utf-8")
     with pytest.raises(CoverageInvariantError):
         assert_all_dropbox_videos_used(project)
+
+
+def test_unused_filler_video_does_not_block_export(tmp_path, monkeypatch):
+    # Regression: a filler marked "not synced" is absent from sync_map/edit_plan
+    # whenever cameras cover the whole song; that must not block the render.
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path / "data"))
+    project = _project(tmp_path, used_second=False)
+    project.data["settings"].setdefault("edit", {})["fillers"] = [project.data["inputs"]["videos"][1]["path"]]
+    assert_all_dropbox_videos_used(project)

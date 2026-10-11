@@ -154,6 +154,15 @@ def _cached_ffprobe(path: str, executable: str, signature: tuple) -> dict[str, A
     return json.loads(result.stdout or "{}")
 
 
+def muxer_args_for(destination: str | Path) -> list[str]:
+    """Explicit muxer for a temporary output whose name hides the real suffix.
+
+    Atomic publishes render to ``.<name>.<hex>.part``; FFmpeg cannot infer a
+    container from ``.part`` and refuses to open the output at all.
+    """
+    return ["-f", "mov" if Path(destination).suffix.lower() == ".mov" else "mp4"]
+
+
 def extract_audio(video_path: str, output_path: str) -> None:
     """Extract mono 48 kHz WAV audio from a video file."""
     status = tool_status()

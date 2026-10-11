@@ -26,6 +26,7 @@ from core.stages.ingest import IngestStage
 from core.stages.sync import SyncStage, load_song_boundaries, set_manual_override, set_manual_override_ranges
 from core.shot_review import ReviewFramePrefetch, review_items
 from core.throughput import estimated_export_seconds, record_export_throughput
+from core.fillers import filler_paths, warm_filler_analysis
 from server.inbox import app_home, load_global_config, register_selected_inputs, save_global_config
 from server.inbox import classify_file
 
@@ -796,6 +797,7 @@ class WizardRunner:
                 master_path=master_path,
                 songs_path=songs_path,
                 video_paths=video_paths,
+                transition_type=transition_type,
             )
         except WizardCancelled:
             LOGGER.info("Wizard job cancelled")
@@ -823,6 +825,7 @@ class WizardRunner:
                 self._run_stage(job, project, SyncStage(), 22, 48, t("syncing_audio"))
             else:
                 job.progress = 22
+            _warm_fillers(job, project, platform)
             with self._lock:
                 self._prepared_project = project
             job.status = "waiting_choice"
@@ -862,6 +865,8 @@ class WizardRunner:
                 self._run_stage(job, project, SyncStage(), 22, 48, t("syncing_audio"))
             else:
                 job.progress = 22
+            if not ingest_only:
+                _warm_fillers(job, project, platform)
             with self._lock:
                 self._prepared_project = project
             job.status = "waiting_choice"
@@ -1488,6 +1493,19 @@ def same_project_path(left: str | None, right: str | None) -> bool:
     if not left or not right:
         return False
     return str(Path(left).expanduser().resolve()) == str(Path(right).expanduser().resolve())
+
+
+def _warm_fillers(job: WizardJob, project: Project, platform: str) -> None:
+    """Tag filler footage while the user is still on Parameters (cached for Edit)."""
+    if platform != "youtube" or not filler_paths(project):
+        return
+    job.message = "Analysing filler footage"
+    job.detail = "Faces, interviews and ambience are tagged once and reused"
+    try:
+        count = warm_filler_analysis(project)
+        _write_stage_log(project, "wizard", f"FILLERS analysed ahead of edit: {count}")
+    except Exception:  # Edit repeats the analysis; preparation must not fail here.
+        LOGGER.exception("Filler warm-up failed; the edit stage will analyse filler footage")
 
 
 def _store_transition_type(project: Project, platform: str, transition_type: str | None) -> None:

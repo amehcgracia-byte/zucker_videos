@@ -9,6 +9,8 @@ import threading
 import uuid
 from pathlib import Path
 
+from core.ffmpeg import muxer_args_for
+
 from .model import CueTrack, Style
 from .render import render_ass
 
@@ -101,7 +103,7 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
             source_duration = 0.0
         duration_args = ["-t", f"{source_duration:.3f}"] if source_duration > 0 else []
         command += duration_args + ["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "copy", "-shortest", str(destination)]
-        command[-1] = str(pending)
+        command[-1:] = [*muxer_args_for(destination), str(pending)]
         try:
             if progress_callback is None:
                 subprocess.run(command, check=True)

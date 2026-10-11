@@ -14,6 +14,7 @@ from core.project import Project
 from core.operator_avoidance import role_for_record
 from core.stages.base import ProgressCallback, Stage, artifact_path, stable_fingerprint, write_artifact_json
 from core.stages.sync import load_song_boundaries, load_sync_map, sync_confidence_threshold
+from core.fillers import filler_paths
 
 LOGGER = logging.getLogger(__name__)
 
@@ -421,7 +422,10 @@ def _selectable_reel_clips(project: Project) -> dict[str, Any]:
     selected: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
     diagnostics: list[dict[str, Any]] = []
+    fillers = filler_paths(project)
     for record in project.data.get("inputs", {}).get("videos", []):
+        if str(record.get("path") or "") in fillers:
+            continue
         path = str((record.get("normalized") or {}).get("path") or record.get("path") or "")
         if not path or not record_is_usable_camera_video(record):
             excluded.append({"filename": record.get("filename") or Path(path).name, "reason": t("not_usable_camera_video")})
