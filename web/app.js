@@ -631,12 +631,56 @@ function assColorToCss(value, fallback = "#ffffff") {
   return `#${text.slice(6, 8)}${text.slice(4, 6)}${text.slice(2, 4)}`;
 }
 
+// Caption entrance/exit effects: the same constants and curves as
+// captions/effects.py, so the editor shows exactly what is burned. Computed
+// from the playhead (not CSS keyframes): the overlay is rebuilt on every
+// frame, which restarted keyframe animations and made entrances loop.
+const CAPTION_EFFECT_SEC = 0.25;
+const CAPTION_EFFECTS = ["fade", "slide", "scale"];
+const CAPTION_SCALE_FROM = 0.72;
+const CAPTION_SLIDE_SHARE = 0.06;
+
+function captionEffectState(cue, now, frameWidth) {
+  const override = cue?.style_override || {};
+  const enter = CAPTION_EFFECTS.includes(override.animation_in) ? override.animation_in : "none";
+  const exit = CAPTION_EFFECTS.includes(override.animation_out) ? override.animation_out : "none";
+  const start = Number(cue.start);
+  const end = cue.end == null ? Infinity : Number(cue.end);
+  const duration = end - start;
+  const splitSlide = enter === "slide" && exit === "slide" && duration > 2 * CAPTION_EFFECT_SEC;
+  const both = enter !== "none" && exit !== "none" && !splitSlide;
+  const effect = Math.max(0.001, Math.min(CAPTION_EFFECT_SEC, both ? duration / 2 : duration));
+  const entered = enter === "none" ? 1 : Math.max(0, Math.min(1, (now - start) / effect));
+  const leaving = exit === "none" || !Number.isFinite(end) ? 0 : Math.max(0, Math.min(1, 1 - (end - now) / effect));
+  let scale = 1;
+  if (enter === "scale") scale = CAPTION_SCALE_FROM + (1 - CAPTION_SCALE_FROM) * Math.sqrt(entered);
+  if (exit === "scale") scale -= (1 - CAPTION_SCALE_FROM) * leaving * leaving;
+  const offset = CAPTION_SLIDE_SHARE * frameWidth;
+  let dx = 0;
+  if (enter === "slide" && entered < 1) dx = -offset * (1 - entered);
+  else if (exit === "slide" && (splitSlide || enter !== "slide")) dx = offset * leaving;
+  return { opacity: entered * (1 - leaving), scale, dx };
+}
+
+function captionAnchor(override, styleDefinition, frameHeight) {
+  // A chosen height centres the text there (ASS \an5\pos); otherwise the
+  // preset's alignment row and vertical margin place it, like the burn.
+  if (override.vertical != null) return { top: `${Number(override.vertical)}%`, shiftY: "-50%" };
+  const alignment = Number(styleDefinition.alignment || 2);
+  const margin = Number(styleDefinition.margin_v ?? 100);
+  if (alignment >= 7) return { top: `${(100 * margin) / frameHeight}%`, shiftY: "0%" };
+  if (alignment >= 4) return { top: "50%", shiftY: "-50%" };
+  return { top: `${(100 * (frameHeight - margin)) / frameHeight}%`, shiftY: "-100%" };
+}
+
 function renderComposeOverlayLayer() {
   const layer = document.querySelector("#composeOverlayLayer");
   const video = document.querySelector("#composeVideo");
   if (!layer || !video) return;
   const now = Number(video.currentTime || 0);
-  const caption = captionCues.find((cue) => now >= Number(cue.start) && now <= (cue.end == null ? Number(video.duration || Infinity) : Number(cue.end)));
+  // While the burned result is shown, its captions are in the pixels: drawing
+  // the live layer on top showed every caption twice.
+  const caption = captionBurnPreview ? null : captionCues.find((cue) => now >= Number(cue.start) && now <= (cue.end == null ? Number(video.duration || Infinity) : Number(cue.end)));
   const captionStyle = document.querySelector("#captionStyle")?.value || "karaoke_word";
   const texts = reelTextOverlays.filter((item) => now >= Number(item.start_sec || 0) && now <= Number(item.start_sec || 0) + Number(item.duration_sec || 0));
   const images = reelImageOverlays.map((item, index) => ({ ...item, _index: index })).filter((item) => now >= Number(item.start_sec || 0) && now <= Number(item.start_sec || 0) + Number(item.duration_sec || 0));
@@ -650,7 +694,10 @@ function renderComposeOverlayLayer() {
   const glow = glowLayers && glowBlur ? Array.from({ length: glowLayers }, () => `0 0 ${glowBlur}px ${override.glow_color || "#ffff00"}`).join(",") : "";
   const shadow = shadowDistance > 0 ? `${shadowDistance}px ${shadowDistance}px ${override.shadow_color || "#000"}` : "";
   const captionSize = Number(override.size ?? styleDefinition.size ?? 54);
-  const captionVertical = override.vertical != null ? Number(override.vertical) : 68;
+  const frameWidth = video.videoWidth || 1080;
+  const frameHeight = video.videoHeight || 1920;
+  const anchor = captionAnchor(override, styleDefinition, frameHeight);
+  const effect = caption ? captionEffectState(caption, now, video.clientWidth || frameWidth) : { opacity: 1, scale: 1, dx: 0 };
   const captionLayoutResult = captionLayout(caption?.lines?.join(" ") || "", 1080, captionSize, styleDefinition.margin_l ?? 65, styleDefinition.margin_r ?? 65);
   const captionMarginLeft = Number(styleDefinition.margin_l ?? 65);
   const captionMarginRight = Number(styleDefinition.margin_r ?? 65);
@@ -671,9 +718,11 @@ function renderComposeOverlayLayer() {
     : caption && styleDefinition.animation === "phrase"
       ? `<span style="color:${now >= Number(caption.start) + 0.25 ? captionSecondary : captionColor}">${escapeHtml(captionLayoutResult.lines.join("\n"))}</span>`
     : escapeHtml(captionLayoutResult.lines.join("\n"));
-  const captionInline = [`color:${captionColor}`, `font-size:${captionLayoutResult.size * previewScale}px`, `top:${captionVertical}%`, `width:${captionWidth}%`, override.outline_width != null ? `-webkit-text-stroke:${Number(override.outline_width) * previewScale}px ${override.outline_color || "#101010"}` : "", glow || shadow ? `text-shadow:${[glow, shadow].filter(Boolean).join(",")}` : ""].filter(Boolean).join(";");
-  const captionOverride = caption?.style_override || {};
-  const captionAnimation = ` caption-animation-in-${escapeHtml(captionOverride.animation_in || "none")} caption-animation-out-${escapeHtml(captionOverride.animation_out || "none")}`;
+  const cornerPreset = Number(styleDefinition.alignment || 2) % 3 !== 2 && override.vertical == null;
+  const captionInline = [`color:${captionColor}`, `font-size:${captionLayoutResult.size * previewScale}px`, cornerPreset ? "" : `top:${anchor.top}`, `width:${captionWidth}%`,
+    `opacity:${effect.opacity.toFixed(3)}`,
+    cornerPreset ? "" : `transform:translate(calc(-50% + ${effect.dx.toFixed(1)}px), ${anchor.shiftY}) scale(${effect.scale.toFixed(3)})`, override.outline_width != null ? `-webkit-text-stroke:${Number(override.outline_width) * previewScale}px ${override.outline_color || "#101010"}` : "", glow || shadow ? `text-shadow:${[glow, shadow].filter(Boolean).join(",")}` : ""].filter(Boolean).join(";");
+  const captionAnimation = "";
   const logoSource = selectedLogoSource();
   const logo = logoSource === "custom" ? projectLogo.url : logoSource === "default" ? projectLogo.defaultUrl : "";
   const logoOverlay = projectLogo.overlay || { x: .5, y: .08, width: .22 };
@@ -702,7 +751,10 @@ async function openCaptions() {
   setCaptionPanelExpanded(!youtubeMode && composePlatform() === "reel", composePlatform());
   const video = document.querySelector("#composeVideo");
   if (video) {
-    video.src = latestResult?.media_url ? `${latestResult.media_url}?t=${Date.now()}` : "/api/v1/wizard/result";
+    // Always the caption-free base: the last result may already carry burned
+    // captions, and the live layer would draw them a second time.
+    captionBurnPreview = false;
+    video.src = `/api/v1/wizard/compose-base?t=${Date.now()}`;
     video.load();
     video.onplay = () => { const button = document.querySelector("#composePlayPause"); if (button) button.textContent = "Pause"; };
     video.onpause = () => { const button = document.querySelector("#composePlayPause"); if (button) button.textContent = "Play"; };
@@ -772,6 +824,27 @@ function exportCaptionSrt() {
   const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([text], { type: "text/srt" })); link.download = "captions.srt"; link.click(); URL.revokeObjectURL(link.href);
 }
 
+let captionBurnPreview = false;
+
+// Any caption or caption-style edit returns from the burned result to the
+// live, editable preview.
+for (const type of ["input", "change"]) {
+  document.addEventListener(type, (event) => {
+    const target = event.target;
+    if (target instanceof HTMLElement && (target.id === "captionStyle" || Object.keys(target.dataset).some((key) => key.startsWith("caption")))) {
+      leaveCaptionBurnPreview();
+    }
+  }, true);
+}
+
+function leaveCaptionBurnPreview() {
+  if (!captionBurnPreview) return;
+  captionBurnPreview = false;
+  const video = document.querySelector("#composeVideo");
+  if (video) { const at = video.currentTime; video.src = `/api/v1/wizard/compose-base?t=${Date.now()}`; video.load(); video.currentTime = at; }
+  const status = document.querySelector("#captionBurnStatus"); if (status) status.textContent = "";
+}
+
 async function burnCaptionTrack() {
   if (composePlatform() === "youtube") {
     showToast("YouTube does not use captions; only the flyer is kept.", false);
@@ -783,7 +856,8 @@ async function burnCaptionTrack() {
   const cues = captionCues.map((cue) => ({ ...cue, end: cue.end == null ? composeTimelineDuration() : cue.end }));
   const result = await api("/captions/burn", { method: "POST", body: JSON.stringify({ style, cues, header: { title_enabled: false, title: "", logo_source: selectedLogoSource(), logo_height: 120, logo_overlay: projectLogo.overlay || { x: .5, y: .08, width: .22 } }, letterbox: { enabled: composePlatform() === "reel", blur: 18 } }) });
   const video = document.querySelector("#composeVideo"); if (video) { video.src = `${result.media_url}?t=${Date.now()}`; video.load(); }
-  document.querySelector("#captionBurnStatus").textContent = `Created ${result.filename}`;
+  captionBurnPreview = true;
+  document.querySelector("#captionBurnStatus").textContent = `Showing the burned result (${result.filename}). Edit any caption to return to the live preview.`;
 }
 
 async function saveComposition() {

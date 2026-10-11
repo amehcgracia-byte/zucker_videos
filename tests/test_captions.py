@@ -105,12 +105,79 @@ def test_phrase_transition_has_initial_colour_and_delayed_whole_phrase_change() 
 
 
 def test_caption_fade_override_is_emitted_as_ass_fade() -> None:
-    from server.api import _expand_caption_animations
     track = CueTrack((Cue(("Fade",), 0, 2, style_override={"color": "#00ff00", "animation_in": "fade", "animation_out": "fade"}),))
-    expanded = _expand_caption_animations(track)
-    ass = render_ass(expanded, get_style("autoread_fixed_white"))
+    ass = render_ass(track, get_style("autoread_fixed_white"))
     assert r"\fad(250,250)" in ass
     assert r"\c&H0000FF00&" in ass
+
+
+def test_scale_enters_once_and_exits_once_with_native_transforms() -> None:
+    track = CueTrack((Cue(("Pop",), 0, 2, style_override={"vertical": 50, "animation_in": "scale", "animation_out": "scale"}),))
+    events = [line for line in render_ass(track, get_style("autoread_fixed_white"), width=1080, height=1920).splitlines() if line.startswith("Dialogue")]
+    assert len(events) == 1
+    assert r"\fscx72\fscy72\t(0,250,0.5,\fscx100\fscy100)" in events[0]
+    assert r"\t(1750,2000,2,\fscx72\fscy72)" in events[0]
+    assert r"\an5" in events[0] and r"\pos(540,960)" in events[0]
+
+
+def test_slide_in_and_out_moves_text_and_glow_together() -> None:
+    track = CueTrack((Cue(("Slide",), 4, 7.5, style_override={"vertical": 72, "glow_color": "#80DEEA", "glow_blur": 7, "glow_layers": 1, "animation_in": "slide", "animation_out": "slide"}),))
+    events = [line for line in render_ass(track, get_style("autoread_fixed_white"), width=1080, height=1920).splitlines() if line.startswith("Dialogue")]
+    assert len(events) == 4  # entrance part and exit part, each glow + text
+    entrance = [event for event in events if "0:00:04.00,0:00:07.25" in event]
+    exit_ = [event for event in events if "0:00:07.25,0:00:07.50" in event]
+    assert all(r"\move(475.2,1382.4,540,1382.4,0,250)" in event and r"\fad(250,0)" in event for event in entrance)
+    assert all(r"\move(540,1382.4,604.8,1382.4,0,250)" in event and r"\fad(0,250)" in event for event in exit_)
+    assert not any(r"\pos(" in event for event in events)
+
+
+def test_chosen_colour_beats_the_word_style_fallback_colour() -> None:
+    # Regression: karaoke_word without word timings burned every caption in
+    # its green fallback although the editor showed the colour the user chose.
+    track = CueTrack((Cue(("It was beautiful",), 1, 3, style_override={"color": "#FFF176"}),))
+    ass = render_ass(track, get_style("karaoke_word"), width=1080, height=1920)
+    assert r"\c&H0076F1FF&" in ass
+    assert r"\c&H0000FF00&" not in ass
+
+
+def test_karaoke_keeps_pauses_between_words() -> None:
+    words = (Word("one", 1.0, 1.4), Word("two", 2.0, 2.3))
+    ass = render_ass(CueTrack((Cue(("one two",), 1.0, 3.0, words),)), get_style("karaoke_word"))
+    assert r"{\k40}one {\k60}{\k30}two" in ass
+
+
+def test_editor_preview_follows_the_burned_effect_curves() -> None:
+    import json
+    import shutil
+    import subprocess
+    from captions import effects
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node unavailable")
+    source = (Path(__file__).parents[1] / "web" / "app.js").read_text(encoding="utf-8")
+    code = source[source.index("const CAPTION_EFFECT_SEC"):source.index("function captionAnchor")]
+    script = code + """
+const out = [];
+for (const [enter, exit] of [["scale","scale"],["slide","slide"],["fade","none"]]) {
+  for (const now of [0, 0.1, 0.25, 1.0, 1.85, 2.0]) {
+    out.push([enter, exit, now, captionEffectState({start: 0, end: 2, style_override: {animation_in: enter, animation_out: exit}}, now, 1000)]);
+  }
+}
+console.log(JSON.stringify(out));"""
+    states = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
+    assert effects.EFFECT_SEC == 0.25 and effects.SCALE_FROM == 72 and effects.SLIDE_SHARE == 0.06
+    for enter, exit_, now, state in states:
+        entered = min(1.0, now / 0.25) if enter != "none" else 1.0
+        leaving = max(0.0, min(1.0, 1 - (2 - now) / 0.25)) if exit_ != "none" else 0.0
+        assert state["opacity"] == pytest.approx(entered * (1 - leaving), abs=1e-6)
+        if enter == "scale":
+            expected = 0.72 + 0.28 * entered ** effects.ENTRANCE_ACCEL - 0.28 * leaving ** effects.EXIT_ACCEL
+            assert state["scale"] == pytest.approx(expected, abs=1e-6)
+        if enter == "slide":
+            expected = -60 * (1 - entered) if entered < 1 else 60 * leaving
+            assert state["dx"] == pytest.approx(expected, abs=1e-6)
+    # Mid-cue the caption is still: no looping entrance.
+    assert [state for _, _, now, state in states if now == 1.0] == [{"opacity": 1, "scale": 1, "dx": 0}] * 3
 
 
 def test_lyrics_preserves_exact_lines() -> None:

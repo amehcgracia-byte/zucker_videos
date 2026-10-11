@@ -633,7 +633,7 @@ class CompositionRunner:
                     _set_job_progress(job, 55 + round(min(1.0, seconds / duration if duration else 0.0) * 40))
                 output = burn_captions(
                     composed,
-                    _expand_caption_animations(track),
+                    track,
                     style,
                     output_path=final,
                     header=header,
@@ -1101,49 +1101,6 @@ def _compose_visual_overlays(
                 process_callback(None)
             pending_destination.unlink(missing_ok=True)
     return destination
-
-def _expand_caption_animations(track: CueTrack) -> CueTrack:
-    """Encode per-cue slide/scale motion as short ASS cue segments.
-
-    The captions package remains deliberately pure; this adapter translates
-    UI-only animation overrides into ordinary position/size overrides before
-    the package's single-pass burn is invoked.
-    """
-    expanded: list[Cue] = []
-    for cue in track.cues:
-        override = dict(cue.style_override or {})
-        enter = str(override.pop("animation_in", "none") or "none")
-        exit_ = str(override.pop("animation_out", "none") or "none")
-        if enter == "fade":
-            override["_fade_in_ms"] = 250
-        if exit_ == "fade":
-            override["_fade_out_ms"] = 250
-        base_vertical = float(override.get("vertical", 68))
-        base_size = float(override.get("size", 54))
-        cuts = {float(cue.start), float(cue.end)}
-        if enter in {"slide", "scale"}:
-            cuts.update(float(cue.start) + step for step in (0.08, 0.16, 0.24) if float(cue.start) + step < float(cue.end))
-        if exit_ in {"slide", "scale"}:
-            cuts.update(float(cue.end) - step for step in (0.24, 0.16, 0.08) if float(cue.end) - step > float(cue.start))
-        points = sorted(cuts)
-        for index, (start, end) in enumerate(zip(points, points[1:])):
-            local = dict(override)
-            progress_in = min(1.0, max(0.0, (start - float(cue.start)) / 0.24))
-            progress_out = min(1.0, max(0.0, (float(cue.end) - end) / 0.24))
-            if enter == "slide" and start < float(cue.start) + 0.24:
-                # Stay inside the frame while approaching the preset's
-                # position. Horizontal centering remains controlled by the
-                # preset's explicit ASS alignment.
-                local["vertical"] = max(5.0, min(95.0, base_vertical + 12.0 * (1.0 - progress_in)))
-            elif exit_ == "slide" and end > float(cue.end) - 0.24:
-                local["vertical"] = max(5.0, min(95.0, base_vertical + 12.0 * progress_out))
-            if enter == "scale" and start < float(cue.start) + 0.24:
-                local["size"] = base_size * (0.72 + 0.28 * progress_in)
-            elif exit_ == "scale" and end > float(cue.end) - 0.24:
-                local["size"] = base_size * (0.72 + 0.28 * progress_out)
-            expanded.append(Cue(cue.lines, start, end, cue.words, local))
-    return CueTrack(tuple(expanded), track.lang)
-
 
 def _invalidate_stale_sync_on_open(project: Project) -> None:
     if invalidate_stale_sync_artifact(project):
@@ -2394,6 +2351,15 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_sync_diagnostics_cleanup() -> Response:
         return jsonify({"ok": True, "removed_projects": cleanup_closed_sync_diagnostics()})
 
+    @app.get("/api/v1/wizard/compose-base")
+    def api_wizard_compose_base() -> Response:
+        """The clean export the caption/overlay editor previews on."""
+        project = state.project or _active_wizard_project(state)
+        result = _composition_base_result(project) if project else None
+        if not result or not Path(str(result.get("path") or "")).is_file():
+            return error_response("not_found", "No exported video yet", 404)
+        return send_file_with_range(str(result["path"]))
+
     @app.get("/api/v1/wizard/result")
     def api_wizard_result() -> Response:
         status = state.composition.status() or state.wizard.status()
@@ -2518,7 +2484,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.post("/api/v1/captions/burn")
     def api_captions_burn() -> Response:
         project = _require_project(state)
-        result = _latest_media_result(state, project)
+        # Burn onto the caption-free base; the latest result may already carry
+        # burned captions, which produced doubled captions.
+        result = _composition_base_result(project)
         if not result:
             return error_response("not_found", "No exported video yet", 404)
         body = request.get_json(silent=True) or {}
@@ -2545,7 +2513,6 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             elif header and header.get("logo_source") == "default":
                 candidate = Path(str(load_global_config().get("personal_logo_path") or ""))
                 if candidate.is_file(): logo = candidate
-            track = _expand_caption_animations(track)
             output = burn_captions(result["path"], track, style, output_path=destination, header=header, logo_path=logo, letterbox=letterbox)
             return jsonify({"path": str(output), "filename": output.name, "media_url": "/api/v1/captions/result", "version": CAPTIONS_VERSION})
         except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError) as exc:
