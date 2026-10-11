@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .effects import ass_tags as effect_tags, effect_phases, normalise as normalise_effect
+from .effects import DEFAULT_EFFECT, ass_tags as effect_tags, effect_phases, normalise as normalise_effect
 from .layout import caption_layout
 from .model import CueTrack, Style
 
@@ -55,8 +55,10 @@ def _usable_words(cue) -> tuple:
 
 def _effects(cue) -> tuple[str, str]:
     override = cue.style_override or {}
-    enter = normalise_effect(override.get("animation_in"))
-    exit_ = normalise_effect(override.get("animation_out"))
+    # The editor's Enter/Exit menus show "fade" until another effect is
+    # chosen; an unset effect is that fade, so the menu matches the burn.
+    enter = normalise_effect(override.get("animation_in", DEFAULT_EFFECT))
+    exit_ = normalise_effect(override.get("animation_out", DEFAULT_EFFECT))
     # Plans saved by older builds carried fades as private millisecond keys.
     if enter == "none" and float(override.get("_fade_in_ms") or 0) > 0:
         enter = "fade"

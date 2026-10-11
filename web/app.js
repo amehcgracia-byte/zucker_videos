@@ -637,13 +637,15 @@ function assColorToCss(value, fallback = "#ffffff") {
 // frame, which restarted keyframe animations and made entrances loop.
 const CAPTION_EFFECT_SEC = 0.25;
 const CAPTION_EFFECTS = ["fade", "slide", "scale"];
+const CAPTION_DEFAULT_EFFECT = "fade";
 const CAPTION_SCALE_FROM = 0.72;
 const CAPTION_SLIDE_SHARE = 0.06;
 
 function captionEffectState(cue, now, frameWidth) {
   const override = cue?.style_override || {};
-  const enter = CAPTION_EFFECTS.includes(override.animation_in) ? override.animation_in : "none";
-  const exit = CAPTION_EFFECTS.includes(override.animation_out) ? override.animation_out : "none";
+  // Unset effects are the "fade" the Enter/Exit menus show (CAPTION_DEFAULT_EFFECT).
+  const enter = CAPTION_EFFECTS.includes(override.animation_in ?? CAPTION_DEFAULT_EFFECT) ? (override.animation_in ?? CAPTION_DEFAULT_EFFECT) : "none";
+  const exit = CAPTION_EFFECTS.includes(override.animation_out ?? CAPTION_DEFAULT_EFFECT) ? (override.animation_out ?? CAPTION_DEFAULT_EFFECT) : "none";
   const start = Number(cue.start);
   const end = cue.end == null ? Infinity : Number(cue.end);
   const duration = end - start;

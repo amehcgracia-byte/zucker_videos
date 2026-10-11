@@ -18,6 +18,7 @@ from __future__ import annotations
 
 EFFECT_SEC = 0.25
 EFFECTS = ("none", "fade", "slide", "scale")
+DEFAULT_EFFECT = "fade"
 SCALE_FROM = 72
 SLIDE_SHARE = 0.06
 ENTRANCE_ACCEL = 0.5

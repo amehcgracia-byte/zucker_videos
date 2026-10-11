@@ -227,3 +227,10 @@ def test_burn_smoke(tmp_path: Path) -> None:
     from PIL import Image
     pixels = list(Image.open(frame).convert("RGB").getdata())
     assert sum(1 for r, g, b in pixels if r > 210 and g > 210 and b > 210) > 20
+
+
+def test_unset_effects_are_the_fade_the_menus_show() -> None:
+    ass = render_ass(CueTrack((Cue(("Plain",), 0, 2),)), get_style("autoread_fixed_white"))
+    assert r"\fad(250,250)" in ass
+    explicit = render_ass(CueTrack((Cue(("Still",), 0, 2, style_override={"animation_in": "none", "animation_out": "none"}),)), get_style("autoread_fixed_white"))
+    assert r"\fad" not in explicit
