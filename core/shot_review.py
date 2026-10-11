@@ -479,6 +479,16 @@ def _path_aliases(raw: Any) -> set[str]:
     return aliases
 
 
+def _same_source_file(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Same Drop box file (proxy aliases included); unlike _same_source_identity,
+    two files from one camera folder are different videos here."""
+    left_paths, right_paths = set(), set()
+    for key in ("path", "clip_path", "source_path", "proxy_path"):
+        left_paths.update(_path_aliases(left.get(key)))
+        right_paths.update(_path_aliases(right.get(key)))
+    return bool(left_paths & right_paths)
+
+
 def _same_source_identity(left: dict[str, Any], right: dict[str, Any]) -> bool:
     """Match a camera even when coverage uses its proxy path."""
     left_paths = set()
@@ -710,6 +720,7 @@ def _replacement_candidates(
     segment: dict[str, Any],
     tried: set[str],
     platform: str,
+    require_subject: bool = True,
 ) -> tuple[list[tuple[float, dict[str, Any], str]], dict[str, int]]:
     """Return eligible candidates and counts used in Replace diagnostics.
 
@@ -726,7 +737,7 @@ def _replacement_candidates(
         if not _candidate_covers_slot(candidate, segment, platform):
             continue
         counts["covers_slot"] += 1
-        if not _candidate_has_subject(candidate, segment):
+        if require_subject and not _candidate_has_subject(candidate, segment):
             continue
         if _candidate_keys(candidate) & tried:
             continue
@@ -1095,9 +1106,22 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
             continue
         pool, pool_origin = _project_candidate_pool(project, coverage, segments, segment, platform)
         candidates, counts = _replacement_candidates(pool, segment, tried, platform)
+        sole_shot = not any(other_index != index and _same_source_file(other, segment)
+                            for other_index, other in enumerate(segments))
+        if sole_shot:
+            # Every Drop box video must stay in the edit (coverage guard). The
+            # only shot of a video may move to another moment, never to another
+            # camera: replacing Conteint.mp4's only shot with a second
+            # 360ZZSession shot blocked a real Reel export at step 6.
+            candidates = [item for item in candidates if _same_source_file(item[1], segment)]
+            if not candidates:
+                candidates, _ = _replacement_candidates(
+                    [item for item in pool if _same_source_file(item, segment)], segment, tried, platform,
+                    require_subject=False)
         if not candidates:
             unavailable.add(index)
-            reason = "pool_empty" if counts["pool"] == 0 else "no_unused_candidate_covers_slot"
+            reason = ("only_shot_of_this_video" if sole_shot else
+                      "pool_empty" if counts["pool"] == 0 else "no_unused_candidate_covers_slot")
             LOGGER.info(
                 "Review replace slot=%s unavailable current=%s pool_origin=%s counts=%s",
                 index, _candidate_key(segment), pool_origin, counts,
