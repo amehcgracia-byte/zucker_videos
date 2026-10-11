@@ -350,6 +350,16 @@ h1 {
   min-width: 0;
 }
 
+/* Same columns in every row, so the export chip and Open line up. */
+.project-list .project-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 6rem auto auto;
+}
+
+.project-list .project-row > small {
+  justify-self: center;
+}
+
 .project-row span,
 .project-row small {
   color: var(--muted);
@@ -1605,6 +1615,8 @@ pre {
 .compose-video-stage { position: relative; display: grid; place-items: center; min-height: 300px; overflow: hidden; border-radius: 14px; background: #101619; }
 .compose-video-stage video { display: block; width: 100%; max-height: 68vh; object-fit: contain; background: #101619; }
 .compose-overlay-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; }
+.compose-video-missing { position: absolute; inset: auto 1rem; z-index: 3; margin: 0; padding: .8rem 1rem; border-radius: 10px; background: rgb(16 22 25 / 88%); color: #f5f7f6; text-align: center; font-size: .9rem; }
+.compose-video-missing[hidden] { display: none; }
 .compose-live-overlay { position: absolute; transform: translate(-50%, -50%); box-sizing: border-box; pointer-events: auto; cursor: move; }
 .compose-live-overlay.selected { outline: 2px solid #4dd4ff; outline-offset: 2px; }
 .compose-live-overlay > img, .compose-live-overlay > video { display: block; width: 100%; height: auto; max-width: none; pointer-events: none; }
@@ -1663,6 +1675,20 @@ pre {
 .compose-player-tools #composeEndCaption { min-height: 44px; }
 .compose-player-wrap.overlay-editing .compose-video-stage { cursor: default; }
 .compose-timeline { display: grid; grid-column: 1 / -1; grid-template-columns: 80px minmax(0,1fr); gap: .35rem .7rem; width: 100%; margin: 1.25rem 0; }
+/* While captions are edited the picture stays in view (sticky player) and
+   the timeline stays docked at the bottom of the window. */
+.compose-timeline-dock { position: sticky; bottom: 0; z-index: 5; margin: 0 -.25rem; padding: .1rem .75rem .35rem; border-top: 1px solid var(--line,#ccd5d9); border-radius: 12px 12px 0 0; background: var(--panel,#fff); box-shadow: 0 -10px 28px rgb(0 0 0 / 22%); }
+.compose-timeline-dock .compose-timeline { margin: .45rem 0 .2rem; }
+.compose-timeline-dock .compose-timeline-tools { margin-top: .4rem; }
+.compose-center { position: sticky; top: 64px; z-index: 3; }
+.compose-center .compose-video-stage video { max-height: min(68vh, calc(100vh - 300px)); }
+.compose-captions-panel .caption-blocks { max-height: none; overflow: visible; }
+/* One column: the actions sit under the fields instead of over them. */
+.compose-captions-panel .caption-blocks .caption-block { grid-template-columns: minmax(0, 1fr); }
+.compose-captions-panel .caption-block-actions { justify-content: flex-start; }
+/* Only the selected caption shows its style controls; the rest stay compact. */
+.compose-captions-panel .caption-block:not(.active) .caption-style-overrides { display: none; }
+.compose-captions-panel .caption-block:not(.active) .caption-block-main::after { content: "Select it to change its look and effects"; font-size: .72rem; color: var(--muted,#63727a); }
 .compose-timeline-tools { display: flex; align-items: center; gap: .55rem; margin-top: .9rem; color: var(--muted,#63727a); font-size: .85rem; }
 .compose-timeline-tools select { min-width: 4.5rem; }
 .compose-timeline-tools span { opacity: .8; }
@@ -1686,10 +1712,11 @@ pre {
 .compose-panel, .compose-player-wrap, .compose-timeline { position: relative; z-index: 1; }
 .compose-overlay-layer { z-index: 2; }
 .compose-caption-list-actions { display: flex; align-items: center; justify-content: space-between; gap: .6rem; margin: .75rem 0 .5rem; }
-.caption-text-heading { display: flex; align-items: center; justify-content: space-between; gap: .6rem; margin-bottom: .35rem; }
+.caption-text-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .5rem; margin-bottom: .35rem; }
+.caption-text-heading .field-label { flex: 1 1 100%; }
 .caption-text-heading .field-label { margin: 0; }
 #captionAutoRead { flex: 0 0 auto; min-height: 34px; }
-#captionAutoCompose { flex: 0 0 auto; min-height: 34px; margin-left: auto; }
+#captionAutoCompose { flex: 0 0 auto; min-height: 34px; }
 .caption-compose-card { margin: .5rem 0 .75rem; padding: .75rem .85rem; border: 1px solid color-mix(in srgb, var(--caption-accent,#9be37a) 60%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--caption-accent,#9be37a) 10%, var(--panel,#fff)); }
 .caption-compose-card[hidden] { display: none; }
 .caption-compose-status { margin: 0 0 .35rem; font-size: .8rem; color: var(--muted,#63727a); }
@@ -1738,7 +1765,8 @@ pre {
 .logo-choice-row { display: grid; gap: .4rem; }
 .logo-file-row { display: flex; flex-wrap: wrap; gap: .55rem; align-items: center; }
 .compose-logo-preview { display: flex; align-items: center; gap: .6rem; min-height: 56px; }
-.compose-logo-preview img { width: 56px; height: 56px; object-fit: contain; border: 1px solid var(--line,#ccd5d9); border-radius: 8px; background: #fff; }
+/* A checkerboard shows white and dark logos alike. */
+.compose-logo-preview img { width: 56px; height: 56px; object-fit: contain; border: 1px solid var(--line,#ccd5d9); border-radius: 8px; background: repeating-conic-gradient(#8a9590 0 25%, #5d6863 0 50%) 0 0 / 14px 14px; }
 .compose-actions { display: flex; justify-content: flex-end; margin-top: 1rem; }
 
 @media (max-width: 1099px) {
@@ -1749,6 +1777,8 @@ pre {
   .compose-captions-panel { order: 2; width: 100%; }
   .compose-overlays-panel { order: 3; width: 100%; }
   .compose-timeline { order: 4; }
+  .compose-center { position: static; }
+  .compose-timeline-dock { position: static; box-shadow: none; }
 }
 
 .captions-step { padding-bottom: 4rem; }
@@ -1907,3 +1937,12 @@ pre {
 .scene-conditions legend { padding: 0 4px; font-weight: 600; }
 .scene-conditions label { display: inline-flex; gap: 6px; align-items: center; }
 .scene-conditions .field-help { flex-basis: 100%; margin: 0; }
+
+/* Scrolled to after choosing an edit type: clear of the sticky top bar. */
+.input-mode-heading { scroll-margin-top: 84px; }
+
+/* Frames with nothing to review explains itself instead of a blank page. */
+.review-empty { display: none; max-width: 46rem; padding: 1.1rem 1.25rem; border: 1px solid var(--line,#ccd5d9); border-radius: 14px; background: var(--panel,#fff); }
+.review-empty strong { display: block; margin-bottom: .35rem; font-size: 1.05rem; }
+.review-empty span { color: var(--muted,#63727a); }
+#step4:not(:has(> .review-box:not([hidden]))) .review-empty { display: block; }

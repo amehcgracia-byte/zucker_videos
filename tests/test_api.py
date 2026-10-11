@@ -1178,7 +1178,14 @@ def test_missing_video_is_dropped_on_project_refresh(tmp_path, monkeypatch):
 
     assert [Path(record["path"]).name for record in payload["inputs"]["videos"]] == ["a.mp4", "b.mp4"]
     assert payload["inputs"]["videos"][1]["missing"] is True
-    assert payload["stages"]["ingest"]["status"] == "stale"
+    # Noting a missing file (unplugged drive, moved file) keeps finished work;
+    # the next run plans the stages again (see the engine test below).
+    assert payload["stages"]["ingest"]["status"] == "done"
+    project = load_project(str(folder))
+    assert project.refresh_input_records() is False  # already noted
+    video_b.write_bytes(b"bb")  # back, but a different file
+    assert project.refresh_input_records() is True
+    assert project.data["stages"]["ingest"]["status"] == "stale"
 
 
 def test_ingest_demotes_registered_invalid_clip(tmp_path, monkeypatch):

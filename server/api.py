@@ -1201,7 +1201,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.get("/api/v1/project")
     def api_get_project() -> Response:
         project = _require_project(state)
-        if project.refresh_input_records():
+        if project.refresh_input_records(missing_invalidates=False):
             project.save()
         return jsonify(project.snapshot())
 
@@ -2219,7 +2219,15 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.get("/api/v1/wizard/projects")
     def api_wizard_projects() -> Response:
-        return jsonify({"projects": list_projects()})
+        projects = list_projects()
+        # A saved "running" stage outlives a quit or crash; only the job
+        # running now is really running.
+        current = state.wizard.status()
+        active = str(current.get("project_path") or "") if current.get("status") in {"running", "cancelling"} else ""
+        for project in projects:
+            if project.get("status") == "running" and not (active and Path(active).resolve() == Path(project["path"]).resolve()):
+                project["status"] = "interrupted"
+        return jsonify({"projects": projects})
 
     @app.post("/api/v1/wizard/projects/open")
     def api_wizard_project_open() -> Response:
@@ -2777,7 +2785,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.get("/api/v1/stages/status")
     def api_stage_status() -> Response:
-        if state.project and state.project.refresh_input_records():
+        if state.project and state.project.refresh_input_records(missing_invalidates=False):
             state.project.save()
         return jsonify(state.engine.status(state.project))
 

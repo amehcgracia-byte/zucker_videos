@@ -122,8 +122,70 @@ def ffprobe(path: str) -> dict[str, Any]:
         raise FFmpegError("ffprobe is missing. Install it with: brew install ffmpeg")
     source = Path(path).resolve()
     stat = source.stat()
-    signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-    return copy.deepcopy(_cached_ffprobe(str(source), str(status["ffprobe_path"]), signature))
+    stored_key = (str(source), str(status["ffprobe_path"]), stat.st_size, stat.st_mtime_ns)
+    stored = _stored_probe(stored_key)
+    if stored is None:
+        signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        stored = _cached_ffprobe(str(source), str(status["ffprobe_path"]), signature)
+        _store_probe(stored_key, stored)
+    return copy.deepcopy(stored)
+
+
+# Probes of unchanged files survive restarts: opening a project re-validated
+# every camera file with ffprobe, seconds on an external disk. Kept on the
+# local disk (not the data root, which may be that external disk), keyed by
+# path, size and modification time; tests keep to the in-process cache.
+_PROBE_MEMORY: dict[tuple, dict[str, Any]] = {}
+
+
+def _probe_store_dir() -> Path | None:
+    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("ZUCKER_NO_PROBE_STORE"):
+        return None
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "ZuckerEditor" / "probes"
+    if os.name == "nt":
+        return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "ZuckerEditor" / "probes"
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "zucker-editor" / "probes"
+
+
+def _probe_store_file(key: tuple) -> Path | None:
+    directory = _probe_store_dir()
+    if directory is None:
+        return None
+    import hashlib
+    return directory / f"{hashlib.sha1(json.dumps(key).encode('utf-8')).hexdigest()}.json"
+
+
+def _stored_probe(key: tuple) -> dict[str, Any] | None:
+    path = _probe_store_file(key)
+    if path is None:
+        return None
+    if key in _PROBE_MEMORY:
+        return _PROBE_MEMORY[key]
+    try:
+        probe = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(probe, dict):
+        return None
+    _PROBE_MEMORY[key] = probe
+    return probe
+
+
+def _store_probe(key: tuple, probe: dict[str, Any]) -> None:
+    path = _probe_store_file(key)
+    if path is None:
+        return
+    if len(_PROBE_MEMORY) > 2048:
+        _PROBE_MEMORY.clear()
+    _PROBE_MEMORY[key] = probe
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pending = path.with_suffix(f".{os.getpid()}.tmp")
+        pending.write_text(json.dumps(probe), encoding="utf-8")
+        pending.replace(path)
+    except OSError:
+        pass
 
 
 @lru_cache(maxsize=256)

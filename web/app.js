@@ -216,6 +216,7 @@ const icons = {
   youtube: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="6" width="18" height="12" rx="4"></rect><path d="m10 9 5 3-5 3Z"></path></svg>',
   instagram: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="4" y="4" width="16" height="16" rx="5"></rect><circle cx="12" cy="12" r="3"></circle><path d="M17 7h.01"></path></svg>',
   tiktok: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 4v10.5a3.5 3.5 0 1 1-3-3.46"></path><path d="M14 4c1 3 2.7 4.7 5 5"></path></svg>',
+  backstage: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="9" width="18" height="11" rx="2"></rect><path d="m3 9 2.5-5 15.5 3-1 2"></path><path d="m8 5 2 3.5M13 6l2 3.5"></path></svg>',
   sphere: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"></circle><path d="M3 12h18"></path><path d="M12 3c3 2.4 4.5 5.4 4.5 9S15 18.6 12 21"></path><path d="M12 3c-3 2.4-4.5 5.4-4.5 9S9 18.6 12 21"></path></svg>',
   close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 6l12 12M18 6 6 18"></path></svg>',
 };
@@ -271,7 +272,7 @@ function showToast(message, isError = false) {
 function setStep(number) {
   currentStep = Math.max(1, Math.min(6, Number(number) || 1));
   document.querySelectorAll(".step").forEach((step, index) => step.classList.toggle("active", index === currentStep - 1));
-  document.querySelectorAll("[data-step-nav]").forEach((button) => button.classList.toggle("active", Number(button.dataset.stepNav) === currentStep));
+  document.querySelectorAll(".step-nav[data-step-nav]").forEach((button) => button.classList.toggle("active", Number(button.dataset.stepNav) === currentStep));
 }
 
 function composePlatform() {
@@ -343,7 +344,7 @@ function renderCaptionBlocks() {
     const style = ["captionSize", "captionVertical", "captionOutlineWidth", "captionShadowDistance", "captionShadowOpacity", "captionGlowBlur", "captionGlowLayers", "captionGlowIntensity"].includes(key);
     const label = input.closest("label");
     const labelText = label?.textContent?.trim() || key || "Value";
-    if (label) { label.title = labelText; label.setAttribute("aria-label", labelText); const first = label.firstChild; if (first?.nodeType === Node.TEXT_NODE) first.textContent = `${style ? "◈" : labelText} `; }
+    if (label) { label.title = labelText; label.setAttribute("aria-label", labelText); const first = label.firstChild; if (first?.nodeType === Node.TEXT_NODE) first.textContent = `${labelText} `; }
     const oldValue = input.value;
     input.type = "range";
     if (["captionStart", "captionEnd", "captionDuration"].includes(key)) input.max = String(Math.max(1, videoDuration || 600));
@@ -1190,7 +1191,11 @@ async function openCaptions() {
       const button = document.querySelector("#composePlayPause"); if (button) button.textContent = "Pause";
     };
     video.onpause = () => { const button = document.querySelector("#composePlayPause"); if (button) button.textContent = "Play"; };
-    video.onloadedmetadata = () => { const scrub = document.querySelector("#composeScrub"); if (scrub) scrub.max = String(video.duration || 1); updateComposeVideoLayout(); renderCaptionBlocks(); renderComposeOverlayLayer(); };
+    const missing = document.querySelector("#composeVideoMissing");
+    if (missing) missing.hidden = true;
+    // Without its exported video the editor was an empty black box.
+    video.onerror = () => { if (missing) missing.hidden = false; };
+    video.onloadedmetadata = () => { if (missing) missing.hidden = true; const scrub = document.querySelector("#composeScrub"); if (scrub) scrub.max = String(video.duration || 1); updateComposeVideoLayout(); renderCaptionBlocks(); renderComposeOverlayLayer(); };
     video.ontimeupdate = () => { renderComposeOverlayLayer(); updateComposeTimelinePlayhead(); };
   }
   if (!youtubeMode) migrateTextOverlaysToCaptions();
@@ -1218,11 +1223,11 @@ async function openCaptions() {
   captionStyleCatalog = Object.fromEntries((styles.styles || []).map((style) => [style.name, style]));
   const select = document.querySelector("#captionStyle");
   const styleLabels = {
-    autoread_fixed_white: "Auto Read — Color fijo blanco",
-    autoread_phrase_color: "Auto Read — Phrase change",
+    autoread_fixed_white: "Auto Read — Plain white",
+    autoread_phrase_color: "Auto Read — Phrase colour change",
     autoread_karaoke_yellow: "Auto Read — Word-by-word karaoke",
-    autoread_green_glow: "Auto Read — Glow verde",
-    autoread_solid_box: "Auto Read — Caja sobria",
+    autoread_green_glow: "Auto Read — Green glow",
+    autoread_solid_box: "Auto Read — Dark box",
   };
   if (select && !select.options.length) select.innerHTML = (styles.styles || []).map((style) => `<option value="${escapeHtml(style.name)}">${escapeHtml(styleLabels[style.name] || style.name.replaceAll("_", " "))}</option>`).join("");
   if (select) select.onchange = () => document.querySelector("#captionPreview")?.setAttribute("data-style", select.value);
@@ -2074,6 +2079,14 @@ async function resumeInputsFromProject() {
       detected.videos.push(recordToDetectedItem(record, "videos"));
     }
   }
+  // A moved or deleted source (or an unplugged drive) is named once, not
+  // discovered later as a failed edit.
+  const missing = (inputs.videos || []).filter((record) => record.missing).map((record) => filename(record.path));
+  const missingNotice = missing.length ? `${missing.length === 1 ? "1 video of this project is" : `${missing.length} videos of this project are`} not on disk: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? "…" : ""}. Reconnect its drive, or remove it before making a new edit; finished videos are kept.` : "";
+  if (missingNotice && !inputWarningsShown.has(missingNotice)) {
+    inputWarningsShown.add(missingNotice);
+    showToast(missingNotice, true);
+  }
   cameraSubjects = { ...(project.settings?.edit?.camera_subjects || {}) };
   fillerVideos = new Set(project.settings?.edit?.fillers || []);
   applySceneConditions(project.settings?.edit?.scene_conditions || {});
@@ -2166,6 +2179,7 @@ function renderChips() {
           ${item.sync_confidence != null ? `<small>sync ${Number(item.sync_confidence).toFixed(1)} · offset ${formatDuration(item.sync_offset_sec || 0)}</small>` : ""}
           ${isRaw360(item) ? `<small>${escapeHtml(item.info || "360 stitched automatically")}</small>` : ""}
           ${item.projection_warning ? `<small class="warning-text">${escapeHtml(item.projection_warning)}</small>` : ""}
+          ${item.missing ? `<small class="warning-text" title="${escapeHtml(item.path)}">Not on disk: reconnect its drive or remove it</small>` : ""}
           ${item.kind === "ignored" ? `<small>${escapeHtml(item.note || S.ignored)}</small>` : ""}
           <button class="chip-remove" data-remove-kind="${escapeHtml(item.kind)}" data-remove-path="${escapeHtml(item.path)}" aria-label="Remove ${escapeHtml(
         item.filename || filename(item.path)
@@ -2580,11 +2594,11 @@ function renderProjects(projects) {
     .map(
       (project) => `
         <div class="project-row">
-          <div>
+          <div title="${escapeHtml(project.path)}">
             <strong>${escapeHtml(project.name)}</strong>
-            <span>${escapeHtml(formatProjectDate(project.modified_at))} · ${escapeHtml(project.status || "new")}</span>
+            <span>${escapeHtml(formatProjectDate(project.modified_at))} · ${escapeHtml(projectStatusLabel(project.status))}</span>
           </div>
-          ${project.has_export ? `<small>${escapeHtml(S.hasExport || "export")}</small>` : ""}
+          ${project.has_export ? `<small>${escapeHtml(S.hasExport || "export")}</small>` : `<span aria-hidden="true"></span>`}
           <button data-open-project="${escapeHtml(project.path)}">${escapeHtml(S.openProject || "Open")}</button>
           <button class="danger" data-delete-project="${escapeHtml(project.path)}" data-has-export="${project.has_export ? "1" : ""}" data-name="${escapeHtml(
         project.name
@@ -2593,6 +2607,21 @@ function renderProjects(projects) {
     )
     .join("");
   injectIcons();
+}
+
+// Stage states in words a user reads ("export stale" meant the settings or
+// shots changed after the last export).
+function projectStatusLabel(status) {
+  const text = String(status || "new");
+  const fixed = { new: "Not started", running: "Working now", interrupted: "Interrupted: open it to continue" };
+  if (fixed[text]) return fixed[text];
+  const [stage, state] = text.split(" ");
+  const step = { ingest: "Files", sync: "Sync", cut: "Song selection", edit: "Edit", export: "Export" }[stage] || stage;
+  if (state === "done") return stage === "export" ? "Exported" : `${step} ready`;
+  if (state === "stale") return stage === "export" ? "Changed since the last export" : `${step} needs updating`;
+  if (state === "failed") return `${step} failed`;
+  if (state === "blocked") return `${step} blocked`;
+  return text;
 }
 
 function formatProjectDate(value) {
@@ -4800,6 +4829,10 @@ document.addEventListener("click", (event) => {
     // Re-entering Review after wizard navigation must restore the persisted
     // cards.  Keeping the old in-memory array made Replace operate on stale
     // frames after a back/forward navigation.
+    // Result keeps showing the finished video after a visit to the editor.
+    if (requestedStep === 6 && latestResult?.media_url && document.querySelector("#errorBox")?.hidden) {
+      document.querySelector("#resultBox")?.removeAttribute("hidden");
+    }
     if (requestedStep === 4 && latestStatus?.status === "waiting_review") {
       document.querySelector("#progressBox")?.setAttribute("hidden", "");
       document.querySelector("#reviewBox")?.removeAttribute("hidden");
@@ -4820,10 +4853,14 @@ document.addEventListener("click", (event) => {
       showToast(error.message, true)
     );
   }
-  if (target.classList.contains("platform-card")) {
-    choosePlatformInUi(target.dataset.platform);
+  // The card's icon, title and text are children: clicking them chooses too.
+  const platformCard = target.closest?.(".platform-card[data-platform]");
+  if (platformCard) {
+    choosePlatformInUi(platformCard.dataset.platform);
     document.querySelector("#editTypeDialog").close();
     if (currentSongs.length > 1) renderSongOptions(currentSongs);
+    // A new project starts below the project shelf: bring its files area in view.
+    if (!activeProjectId) document.querySelector(".input-mode-heading")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   const flyerPreview = target.closest?.("[data-flyer-preview]");
   if (flyerPreview instanceof HTMLElement) {
@@ -5670,7 +5707,15 @@ async function boot() {
   }
 }
 
-boot().then(() => window.EditorTutorial.offer()).catch((error) => showToast(error.message, true));
+boot().then(async () => {
+  // On a first run Einstein's welcome and the edit type chooser both opened,
+  // one over the other: the chooser waits until the welcome or tour closes.
+  const chooser = document.querySelector("#editTypeDialog");
+  const offered = await window.EditorTutorial.offer();
+  if (!offered || !chooser?.open) return;
+  chooser.close();
+  window.addEventListener("tutorialclosed", () => { if (!selectedPlatform && !activeProjectId) showEditTypeChooser(); }, { once: true });
+}).catch((error) => showToast(error.message, true));
 
 document.querySelector("#closeRescue")?.addEventListener("click", () => {
   document.querySelector("#rescuePanel").hidden = true;
