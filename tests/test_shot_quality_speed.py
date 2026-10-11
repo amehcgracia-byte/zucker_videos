@@ -82,3 +82,25 @@ def test_unreadable_clip_is_recorded_not_fatal(tmp_path, project):
     broken.write_bytes(b"not a video")
     scored = shot_quality.analyze_handheld_director_quality(project, [{"path": str(broken), "filename": broken.name}])
     assert scored[0]["director_quality"]["error"]
+
+
+def test_background_scoring_moves_the_bar_and_the_update_clock(project, monkeypatch):
+    import time
+    from server import wizard
+    project.data["inputs"]["videos"] = [{"path": "/v/C0001.MP4"}, {"path": "/v/C0002.MP4"}]
+    monkeypatch.setattr("core.media_validation.record_is_usable_camera_video", lambda record: True)
+    seen = []
+
+    def fake_scoring(project, sources, progress):
+        for fraction in (0.0, 0.5, 1.0):
+            progress(fraction, f"{int(fraction * 2) + 1}/2 · clip")
+            seen.append((job.stage_progress, job.tasks["reel-scoring"]["percent"], job.progress_updated_at))
+        return sources
+
+    monkeypatch.setattr(shot_quality, "analyze_handheld_director_quality", fake_scoring)
+    job = wizard.WizardJob(id="t")
+    started = time.time()
+    wizard._warm_reel_scoring(job, project, "reel")
+    assert [stage for stage, _, _ in seen] == [0.0, 50.0, 100.0]
+    assert all(updated and updated >= started for _, _, updated in seen)
+    assert "saved and reused by the edit" in job.detail

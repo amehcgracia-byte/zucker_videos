@@ -1528,7 +1528,14 @@ def _warm_reel_scoring(job: WizardJob, project: Project, platform: str) -> None:
     def progress(fraction: float, detail: str) -> None:
         if job.cancel_event.is_set():
             raise WizardCancelled()
+        percent = round(100 * fraction, 1)
+        # Move the bar and the "last measured update" clock too; a changing
+        # text alone looked frozen ("Last measured update 13 min ago").
         job.detail = f"{detail} · saved and reused by the edit"
+        job.stage_progress = percent
+        job.tasks["reel-scoring"] = {"id": "reel-scoring", "label": "Scoring Reel source shots",
+                                     "percent": percent, "detail": detail}
+        job.progress_updated_at = time.time()
 
     try:
         analyze_handheld_director_quality(project, sources, progress)
