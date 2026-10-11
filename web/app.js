@@ -4635,7 +4635,7 @@ document.addEventListener("click", (event) => {
       const duration = composeTimelineDuration();
       captionCues = arrangeCaptionPhrases(phrases, duration);
       captionActiveIndex = null; captionPendingStart = null; captionMarkIndex = captionCues.length;
-      renderCaptionBlocks(); renderComposeOverlayLayer(); saveComposition().catch(error => showToast(error.message, true));
+      renderCaptionBlocks(); renderComposeOverlayLayer();
       document.querySelector("#captionMicStatus").textContent = "Captions distributed with gaps. You can adjust every phrase in the timeline.";
     } catch(error) { showToast(error.message, true); }
     return;

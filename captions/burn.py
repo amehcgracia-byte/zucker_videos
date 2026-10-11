@@ -37,6 +37,8 @@ def _video_dimensions(video_path: Path, ffmpeg: str) -> tuple[int, int]:
 
 
 def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_path: str | Path | None = None, ffmpeg: str = "ffmpeg", header: dict | None = None, logo_path: str | Path | None = None, letterbox: dict | None = None, progress_callback=None, process_callback=None) -> Path:
+    if Path(ffmpeg).parent != Path("."):
+        ffmpeg = str(Path(ffmpeg).resolve())
     source = Path(video_path).resolve()
     destination = Path(output_path).resolve() if output_path else source.with_name(f"{source.stem}_captions.mp4")
     if destination == source:
@@ -54,8 +56,10 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
         ) or bool(letterbox and letterbox.get("enabled"))
         if caption_enabled:
             ass.write_text(render_ass(cue_track, style, width=width, height=height, header=header), encoding="utf-8")
-            escaped = str(ass).replace("\\", r"\\").replace(":", r"\:").replace("'", r"\'")
-            vf = "subtitles=filename=%s" % escaped
+            # Keep drive letters, spaces and filter metacharacters out of the
+            # filter grammar. Only this child runs in the temporary directory;
+            # source, logo and output paths remain absolute.
+            vf = "subtitles=filename=captions.ass"
         else:
             # A YouTube logo-only composition must not pass through an empty
             # ASS filter; some FFmpeg builds turn that no-op subtitle graph
@@ -106,10 +110,11 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
         command[-1:] = [*muxer_args_for(destination), str(pending)]
         try:
             if progress_callback is None:
-                subprocess.run(command, check=True)
+                subprocess.run(command, check=True, cwd=directory)
             else:
                 process = subprocess.Popen(
                     command,
+                    cwd=directory,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,

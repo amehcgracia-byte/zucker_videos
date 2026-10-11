@@ -131,7 +131,11 @@ def journey(browser, mode, media, output):
         if mode=='reel':
             if not page.locator('#captionText').is_visible(): page.locator('[data-step-nav="5"]').click()
             page.locator('#captionText').fill('A first phrase\n\nA second phrase')
+            compositions=[]
+            page.on('request', lambda request: compositions.append(request.url) if request.method == 'POST' and request.url.endswith('/wizard/compose') else None)
             page.locator('#captionAutoArrange').click()
+            page.wait_for_timeout(500)
+            assert not compositions, 'Arranging captions must not start a render'
             page.locator('#burnCaptions').click()
             page.wait_for_function("document.querySelector('#captionBurnStatus').textContent.includes('Created')",timeout=180000)
             page.wait_for_function("document.querySelector('#composeVideo').readyState >= 2",timeout=60000)
