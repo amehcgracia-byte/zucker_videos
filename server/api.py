@@ -813,9 +813,17 @@ def _validate_composition_output(base: Path, output: Path, spec: dict[str, Any])
         if overlay_end + 0.5 >= base_duration:
             samples = [min(base_duration - 0.05, base_duration / 2.0)]
         for timestamp in sorted(set(round(max(0.0, value), 3) for value in samples)):
-            command = [str(tool_status().get("ffmpeg_path") or "ffmpeg"), "-hide_banner", "-loglevel", "error", "-ss", str(timestamp), "-i", str(output), "-frames:v", "1", "-vf", "scale=1:1,format=gray", "-f", "rawvideo", "-"]
+            command = [str(tool_status().get("ffmpeg_path") or "ffmpeg"), "-hide_banner", "-loglevel", "error", "-ss", str(timestamp), "-i", str(output), "-frames:v", "1", "-vf", "scale=32:18,format=gray", "-f", "rawvideo", "-"]
             result = subprocess.run(command, capture_output=True, check=False)
-            if not result.stdout or max(result.stdout) <= 1:
+            if result.returncode or len(result.stdout) != 576:
+                return {"ok": False, "reason": "composition_validation:frame_decode_failed", "duration": duration, "timestamp": timestamp}
+            if max(result.stdout) <= 3:
+                base_command = list(command)
+                base_command[base_command.index("-i") + 1] = str(base)
+                original = subprocess.run(base_command, capture_output=True, check=False)
+                if original.returncode == 0 and len(original.stdout) == 576 and max(original.stdout) <= 3:
+                    continue  # Preserve intentional source blacks/fades.
+
                 return {"ok": False, "reason": f"composition_validation:black_frame_at_{timestamp:.3f}", "duration": duration, "timestamp": timestamp}
         return {
             "ok": True,
@@ -881,7 +889,7 @@ def _default_brand_logo() -> Path:
     if personal.is_file():
         return personal
     root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
-    return root / "web" / "logo_editor_green.png"
+    return root / "web" / "logo_editor_white.png"
 
 
 def _composition_logo(project: Project, mode: str) -> Path | None:
@@ -2548,7 +2556,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         project = _require_project(state)
         exports = sorted((project.cache_dir / "captions").glob("*_captions.mp4"), key=lambda path: path.stat().st_mtime, reverse=True)
         if not exports:
-            return error_response("not_found", "No captioned export yet", 404)
+            return error_response("not_found", "Burn Captions first.", 404)
         return send_file_with_range(str(exports[0]))
 
     @app.post("/api/v1/wizard/compose")

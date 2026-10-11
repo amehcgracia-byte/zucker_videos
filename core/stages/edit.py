@@ -48,7 +48,7 @@ REEL_MAX_CUT_SEC = 2.0
 REEL_DEFAULT_CUT_TARGET_SEC = 1.75
 REEL_DEFAULT_CUTS_PER_SOURCE = 1.0
 REEL_SINGLE_SOURCE_MIX_INTERVAL_SEC = 5.0
-REEL_PLAN_VERSION = 5
+REEL_PLAN_VERSION = 6
 MOTION_CATALOG = CATALOG
 MOTION_WEIGHTS = {name: 1.0 for name in MOTION_CATALOG}
 # The previous 1.32x fast setting was too abrupt.  Normal is now the fastest
@@ -220,6 +220,8 @@ class EditStage(Stage):
         if real_multicam:
             coverage = _with_director_quality(project, coverage, progress_callback)
         if platform == "reel":
+            progress_callback(40, "Scoring Reel source shots (cached when available)")
+            coverage = {**coverage, "sources": analyze_handheld_director_quality(project, coverage.get("sources") or [])}
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, t("choosing_cameras"))
             plan = _reel_promo_plan(coverage, beats, project.data.get("settings", {}), shot_ready=getattr(self, "shot_ready", None))
@@ -384,6 +386,23 @@ def _with_director_quality(project: Project, coverage: dict[str, Any], progress_
     return {**coverage, "sources": scored}
 
 
+def _reel_quality_start(source, duration, used, fallback):
+    """Choose a complete source window; avoid reusing the same highlight."""
+    limit = max(0.0, float(source.get("duration_sec") or duration) - duration)
+    windows = (source.get("director_quality") or {}).get("windows") or []
+    candidates = sorted({min(limit, max(0.0, float(w.get("clip_start_sec") or 0))) for w in windows})
+    if not candidates:
+        return min(limit, fallback)
+    offset = float(source.get("offset_sec") or 0)
+    def rank(start):
+        # Unknown/unmeasured tails must not receive the default perfect score.
+        measured = sum(max(0.0, min(start+duration, float(w.get("clip_end_sec") or 0)) - max(start, float(w.get("clip_start_sec") or 0))) for w in windows)
+        quality = director_quality_for_segment(source, start+offset, start+duration+offset)
+        overlap = max([0.0] + [max(0.0, min(start+duration, end)-max(start, begin))/duration for begin,end in used])
+        return (measured >= duration * .95, float(quality["score"]) - .65*overlap, -abs(start-fallback))
+    return max(candidates, key=rank)
+
+
 def _reel_promo_plan(
     coverage: dict[str, Any],
     beats: dict[str, Any],
@@ -503,6 +522,7 @@ def _reel_promo_plan(
     spherical_shots = _available_spherical_shots(landmarks, sweep_enabled=False)
     segments: list[dict[str, Any]] = []
     previous_source = None
+    used_highlights = {}
     fixed_index = 0
     for index, (master_start, master_end) in enumerate(zip(boundaries, boundaries[1:])):
         seg_duration = max(0.1, master_end - master_start)
@@ -515,6 +535,9 @@ def _reel_promo_plan(
         source_duration = max(seg_duration, float(source.get("duration_sec") or seg_duration))
         # Deterministic spread over each source, independent of master time.
         clip_start = max(0.0, ((index * 1.37) % max(0.1, source_duration - seg_duration))) if source_duration > seg_duration else 0.0
+        used = used_highlights.setdefault(_source_id(source), [])
+        clip_start = _reel_quality_start(source, seg_duration, used, clip_start)
+        used.append((clip_start, clip_start + seg_duration))
         segment = {
             "title": window.get("title") or t("full_video"),
             "clip_path": source.get("path") or source.get("clip_path"),

@@ -396,7 +396,7 @@ function arrangeCaptionPhrases(phrases, duration, random = Math.random) {
     const start = index * slot + margin * (.25 + random() * .5);
     const color = colors[Math.min(colors.length-1, Math.floor(random()*colors.length))];
     return {lines: phrase.split(/\r?\n/), start, end: start+length, style_override: {
-      color, size: 54, vertical: 72, outline_color: "#101010", outline_width: 2,
+      color, size: [48, 54, 64, 72][Math.min(3, Math.floor(random()*4))], vertical: [25, 48, 72][index % 3], outline_color: "#101010", outline_width: 2,
       glow_color: color, glow_blur: 4 + Math.floor(random()*5), glow_layers: 1, glow_intensity: .22,
       animation_in: ["fade", "slide", "scale"][Math.min(2, Math.floor(random()*3))], animation_out: "fade"
     }};

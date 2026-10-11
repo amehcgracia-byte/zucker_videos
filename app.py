@@ -18,7 +18,7 @@ from pathlib import Path
 from core.storage import data_root, configure_working_storage
 
 from core.desktop_menu import build_desktop_menu, hide_external_services, apply_menu_mode
-from core.desktop_text import enable_native_text_menu
+from core.desktop_text import enable_native_text_menu, enable_named_microphone_permission
 from core.build_info import startup_label
 from server.api import create_app
 from server.inbox import load_global_config, save_global_config
@@ -144,6 +144,7 @@ def main() -> None:
         window.events.loaded += lambda: _enable_native_drop(window)
         window.events.loaded += hide_external_services
         window.events.loaded += lambda: enable_native_text_menu(window)
+        window.events.loaded += lambda: enable_named_microphone_permission(window)
         webview.start(menu=build_desktop_menu(window))
         return
     _configure_logging()
@@ -197,6 +198,7 @@ def main() -> None:
     window.events.loaded += lambda: _enable_native_drop(window)
     window.events.loaded += hide_external_services
     window.events.loaded += lambda: enable_native_text_menu(window)
+    window.events.loaded += lambda: enable_named_microphone_permission(window)
     webview.start(menu=build_desktop_menu(window))
 
 
