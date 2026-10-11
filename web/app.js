@@ -5120,7 +5120,8 @@ document.addEventListener("click", (event) => {
       const frame = document.querySelector("#composeVideo");
       captionCues = arrangeCaptionPhrases(phrases, duration, Math.random, frame?.videoWidth || 1080, frame?.videoHeight || 1920);
       captionActiveIndex = null; captionPendingStart = null; captionMarkIndex = captionCues.length;
-      renderCaptionBlocks(); renderComposeOverlayLayer(); saveComposition().catch(error => showToast(error.message, true));
+      // Arranging only edits the captions; the render starts from Continue/Burn.
+      renderCaptionBlocks(); renderComposeOverlayLayer();
       document.querySelector("#captionMicStatus").textContent = "Captions distributed, each with its own look; long phrases are chained. Adjust anything on the video or in the timeline.";
     } catch(error) { showToast(error.message, true); }
     return;

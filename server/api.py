@@ -636,6 +636,7 @@ class CompositionRunner:
                     track,
                     style,
                     output_path=final,
+                    ffmpeg=str(tool_status().get("ffmpeg_path") or "ffmpeg"),
                     header=header,
                     # Flyer and logo are already in the first composition pass.
                     logo_path=None,
@@ -2517,7 +2518,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             elif header and header.get("logo_source") == "default":
                 candidate = Path(str(load_global_config().get("personal_logo_path") or ""))
                 if candidate.is_file(): logo = candidate
-            output = burn_captions(result["path"], track, style, output_path=destination, header=header, logo_path=logo, letterbox=letterbox)
+            output = burn_captions(result["path"], track, style, output_path=destination, ffmpeg=str(tool_status().get("ffmpeg_path") or "ffmpeg"), header=header, logo_path=logo, letterbox=letterbox)
             return jsonify({"path": str(output), "filename": output.name, "media_url": "/api/v1/captions/result", "version": CAPTIONS_VERSION})
         except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError) as exc:
             return error_response("caption_burn_failed", str(exc), 400)
