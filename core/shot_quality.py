@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import json
+import statistics
 import subprocess
+import time
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 from PIL import Image
@@ -14,10 +16,20 @@ from PIL import Image
 from core.ffmpeg import tool_status
 from core.project import Project, atomic_write_json
 from core.normalization import global_cache_root
-from core.storage import working_temporary_directory
 from core.stages.base import stable_fingerprint
 
 SHOT_QUALITY_VERSION = 1
+SAMPLE_FPS = 2
+# Sampling at 2 fps only needs decoded keyframes when a camera writes one at
+# least every half second (Sony a6000: every 0.48 s). Decoding only those is
+# ~4x faster on long footage; sparser GOPs keep the full decode.
+KEYFRAME_SAMPLING_MAX_GOP_SEC = 0.55
+# progress(fraction_of_all_sources, detail); it may raise to cancel.
+QualityProgress = Callable[[float, str], None]
+
+
+class _ProgressInterrupted(Exception):
+    """Carries an exception raised by the progress callback (e.g. cancel)."""
 DIRECTOR_SCORE_THRESHOLD = 0.46
 
 
@@ -81,21 +93,39 @@ def director_quality_for_segment(source: dict[str, Any], master_start: float, ma
     }
 
 
-def analyze_handheld_director_quality(project: Project, sources: list[dict[str, Any]], progress: Any | None = None) -> list[dict[str, Any]]:
+def analyze_handheld_director_quality(project: Project, sources: list[dict[str, Any]], progress: QualityProgress | None = None) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
+    handheld = [source for source in sources if _source_role(source) == "handheld"]
+    done = 0
     for source in sources:
         if _source_role(source) != "handheld":
             output.append(source)
             continue
+        name = str(source.get("filename") or Path(str(source.get("source_path") or source.get("path") or "")).name)
+
+        def report(fraction: float, done: int = done, name: str = name) -> None:
+            if not progress:
+                return
+            try:
+                progress((done + min(1.0, max(0.0, fraction))) / max(1, len(handheld)),
+                         f"{done + 1}/{len(handheld)} · {name}" + (f" {int(fraction * 100)}%" if 0 < fraction < 1 else ""))
+            except Exception as exc:
+                raise _ProgressInterrupted() from exc
+
         try:
-            quality = _analyze_source_quality(project, source)
+            report(0.0)
+            quality = _analyze_source_quality(project, source, report)
             output.append({**source, "director_quality": quality})
+        except _ProgressInterrupted as interrupted:
+            # Cancellation must stop the stage, not be recorded as a bad clip.
+            raise interrupted.__cause__ from None
         except Exception as exc:
             output.append({**source, "director_quality": {"error": str(exc), "windows": [], "summary": {}}})
+        done += 1
     return output
 
 
-def _analyze_source_quality(project: Project, source: dict[str, Any]) -> dict[str, Any]:
+def _analyze_source_quality(project: Project, source: dict[str, Any], report: Callable[[float], None] | None = None) -> dict[str, Any]:
     path = Path(str(source.get("source_path") or source.get("path") or "")).expanduser()
     if not path.exists():
         return {"error": "source missing", "windows": [], "summary": {}}
@@ -118,29 +148,79 @@ def _analyze_source_quality(project: Project, source: dict[str, Any]) -> dict[st
     if not ffmpeg:
         return {"error": "ffmpeg missing", "windows": [], "summary": {}}
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix="zucker-shot-quality-", dir=working_temporary_directory()) as tmpdir:
-        pattern = Path(tmpdir) / "frame-%05d.jpg"
-        command = [
-            str(ffmpeg),
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            str(path),
-            "-vf",
-            "fps=2,scale=320:-1",
-            "-q:v",
-            "5",
-            str(pattern),
-        ]
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-        if result.returncode != 0:
-            return {"error": result.stderr.strip() or "quality frame extraction failed", "windows": [], "summary": {}}
-        frames = sorted(Path(tmpdir).glob("frame-*.jpg"))
-        quality = _quality_from_frames(frames, 0.0)
+    duration = _source_duration(source)
+    frames, error = _extract_quality_frames(str(ffmpeg), path, duration, report)
+    if error:
+        return {"error": error, "windows": [], "summary": {}}
+    quality = _quality_from_frames(frames, 0.0)
     atomic_write_json(cache_path, quality)
     return _retime_quality(quality, float(source.get("offset_sec") or 0.0))
+
+
+def _source_duration(source: dict[str, Any]) -> float:
+    probe = source.get("probe") or {}
+    for value in (source.get("duration_sec"), probe.get("duration"), probe.get("duration_sec")):
+        try:
+            if value and float(value) > 0:
+                return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def _keyframe_interval(path: Path) -> float | None:
+    """Median keyframe spacing over the first seconds, or None when unknown."""
+    ffprobe = tool_status().get("ffprobe_path") or "ffprobe"
+    try:
+        result = subprocess.run(
+            [str(ffprobe), "-v", "error", "-select_streams", "v:0", "-skip_frame", "nokey",
+             "-show_entries", "frame=pts_time", "-of", "csv=p=0", "-read_intervals", "%+8", str(path)],
+            capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    times = sorted(float(line.strip().strip(",")) for line in result.stdout.splitlines()
+                   if line.strip().strip(",").replace(".", "", 1).isdigit())
+    gaps = [later - earlier for earlier, later in zip(times, times[1:]) if later > earlier]
+    return statistics.median(gaps) if len(gaps) >= 3 else None
+
+
+def _extract_quality_frames(ffmpeg: str, path: Path, duration: float,
+                            report: Callable[[float], None] | None) -> tuple[list[bytes], str | None]:
+    """2 fps 320 px JPEG samples (the same encoder settings as the cached
+    scores), streamed in memory instead of written to the work disk."""
+    gop = _keyframe_interval(path)
+    decode = ["-skip_frame", "nokey"] if gop is not None and gop <= KEYFRAME_SAMPLING_MAX_GOP_SEC else []
+    command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", *decode, "-i", str(path),
+               "-vf", f"fps={SAMPLE_FPS},scale=320:-1", "-c:v", "mjpeg", "-q:v", "5", "-f", "image2pipe", "pipe:1"]
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    frames: list[bytes] = []
+    buffer = b""
+    last_report = 0.0
+    try:
+        assert process.stdout is not None
+        while chunk := process.stdout.read(1 << 16):
+            buffer += chunk
+            # 0xFFD9 never occurs inside JPEG entropy data (0xFF is stuffed).
+            while (end := buffer.find(b"\xff\xd9")) >= 0:
+                start = buffer.find(b"\xff\xd8")
+                if 0 <= start < end:
+                    frames.append(buffer[start:end + 2])
+                buffer = buffer[end + 2:]
+            if report and time.monotonic() - last_report >= 1.0:
+                last_report = time.monotonic()
+                report(len(frames) / SAMPLE_FPS / duration if duration else 0.0)
+        stderr = process.stderr.read().decode(errors="replace") if process.stderr else ""
+        if process.wait() != 0:
+            return [], stderr.strip() or "quality frame extraction failed"
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        for stream in (process.stdout, process.stderr):
+            if stream:
+                stream.close()
+    return frames, None
 
 
 def _retime_quality(quality: dict[str, Any], offset: float) -> dict[str, Any]:
@@ -153,11 +233,11 @@ def _retime_quality(quality: dict[str, Any], offset: float) -> dict[str, Any]:
     ]}
 
 
-def _quality_from_frames(frames: list[Path], offset_sec: float) -> dict[str, Any]:
+def _quality_from_frames(frames: list[Path | bytes], offset_sec: float) -> dict[str, Any]:
     samples: list[dict[str, Any]] = []
     previous: np.ndarray | None = None
     for index, frame in enumerate(frames):
-        image = Image.open(frame).convert("RGB")
+        image = Image.open(io.BytesIO(frame) if isinstance(frame, bytes) else frame).convert("RGB")
         array = np.asarray(image, dtype=np.float32)
         gray = array.mean(axis=2)
         motion = 0.0 if previous is None else float(np.mean(np.abs(gray - previous)) / 255.0)

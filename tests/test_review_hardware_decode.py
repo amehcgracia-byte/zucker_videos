@@ -149,8 +149,8 @@ def test_prefetch_closes_workers_after_render_failure(tmp_path, monkeypatch):
     prefetch = shot_review.ReviewFramePrefetch(project)
     try:
         prefetch.submit(0, segment)
-        with pytest.raises(shot_review.ThumbnailRenderError):
-            prefetch.finish()
+        # A failed photo is recorded for its card; it does not stop the edit.
+        prefetch.finish()
     finally:
         prefetch.close()
     with pytest.raises(RuntimeError):

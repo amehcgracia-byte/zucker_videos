@@ -867,6 +867,7 @@ class WizardRunner:
                 job.progress = 22
             if not ingest_only:
                 _warm_fillers(job, project, platform)
+            _warm_reel_scoring(job, project, platform)
             with self._lock:
                 self._prepared_project = project
             job.status = "waiting_choice"
@@ -1017,8 +1018,13 @@ class WizardRunner:
                 if review_prefetch:
                     review_prefetch.finish(review_progress)
                 review = review_items(project, progress_callback=review_progress)
-                if any(not item.get("thumbnail") for item in review):
+                # A failed photo (e.g. damaged source) is shown as such; the
+                # reviewer replaces that shot with Other frame.
+                if any(not item.get("thumbnail") and item.get("thumbnail_status") != "failed" for item in review):
                     raise RuntimeError("Shot review frames were not fully generated")
+                failed_photos = [item["index"] + 1 for item in review if item.get("thumbnail_status") == "failed"]
+                if failed_photos:
+                    _write_stage_log(project, "wizard", f"REVIEW PHOTOS FAILED for shots {failed_photos}; offered for replacement")
                 job.status = "waiting_review"
                 job.stage = "review"
                 job.progress = edit_end
@@ -1493,6 +1499,51 @@ def same_project_path(left: str | None, right: str | None) -> bool:
     if not left or not right:
         return False
     return str(Path(left).expanduser().resolve()) == str(Path(right).expanduser().resolve())
+
+
+def _warm_reel_scoring(job: WizardJob, project: Project, platform: str) -> None:
+    """Score Reel sources while the user is still on Parameters (cached for Edit).
+
+    A Reel scores every handheld source at 2 fps. Seventy-four long clips
+    took over an hour on a USB disk, all of it inside "Building the edit"
+    with no visible progress. Done here, the edit finds every score cached.
+    """
+    if platform != "reel":
+        return
+    from core.media_validation import record_is_usable_camera_video
+    from core.shot_quality import analyze_handheld_director_quality
+    fillers = filler_paths(project)
+    sources = [
+        {"path": str(record["path"]), "source_path": str(record["path"]),
+         "filename": record.get("filename") or Path(str(record["path"])).name,
+         "projection": record.get("projection") or (record.get("probe") or {}).get("projection"),
+         "probe": record.get("probe") or {}}
+        for record in project.data.get("inputs", {}).get("videos") or []
+        if record.get("path") and str(record["path"]) not in fillers and record_is_usable_camera_video(record)
+    ]
+    if not sources:
+        return
+    job.message = "Scoring Reel source shots"
+
+    def progress(fraction: float, detail: str) -> None:
+        if job.cancel_event.is_set():
+            raise WizardCancelled()
+        percent = round(100 * fraction, 1)
+        # Move the bar and the "last measured update" clock too; a changing
+        # text alone looked frozen ("Last measured update 13 min ago").
+        job.detail = f"{detail} · saved and reused by the edit"
+        job.stage_progress = percent
+        job.tasks["reel-scoring"] = {"id": "reel-scoring", "label": "Scoring Reel source shots",
+                                     "percent": percent, "detail": detail}
+        job.progress_updated_at = time.time()
+
+    try:
+        analyze_handheld_director_quality(project, sources, progress)
+        _write_stage_log(project, "wizard", f"REEL SCORING cached ahead of edit: {len(sources)} sources")
+    except WizardCancelled:
+        raise
+    except Exception:  # The edit stage scores anything still missing.
+        LOGGER.exception("Reel scoring warm-up failed; the edit stage will score the sources")
 
 
 def _warm_fillers(job: WizardJob, project: Project, platform: str) -> None:
