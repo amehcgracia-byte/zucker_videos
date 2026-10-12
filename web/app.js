@@ -236,6 +236,64 @@ async function api(path, options = {}) {
   return data;
 }
 
+let showGagPoll = null;
+
+function gigabytes(bytes) {
+  return (Number(bytes || 0) / 1e9).toFixed(1);
+}
+
+// Claude plans the gags with the person's own subscription (local Claude
+// Code); the painter draws them on this computer. Both are optional: without
+// Claude the keyword director plans, without the painter only words appear.
+async function refreshShowGagStatus() {
+  const status = await api("/gags/status");
+  const claude = status.claude || {};
+  const painter = status.painter || {};
+  const claudeText = document.querySelector("#showClaudeStatus");
+  const signIn = document.querySelector("#showClaudeSignIn");
+  if (claudeText) claudeText.textContent = !claude.installed
+    ? "Claude Code is not installed: gags will be chosen from keywords."
+    : claude.signed_in ? "Your Claude is connected: it plans the gags with your subscription." : "Your Claude is not connected: gags will be chosen from keywords until you connect it.";
+  if (signIn) signIn.hidden = !claude.installed || Boolean(claude.signed_in);
+  const painterText = document.querySelector("#showPainterStatus");
+  const download = document.querySelector("#showPainterDownload");
+  const running = painter.status === "running";
+  if (painterText) painterText.textContent = painter.ready
+    ? "The drawing painter is ready (it paints on this computer, about 30 s per drawing)."
+    : running ? `Downloading the drawing painter: ${gigabytes(painter.received)} of ${gigabytes(painter.total)} GB…`
+    : painter.status === "failed" ? `The painter download failed: ${painter.error}` : "Drawings need the painter, downloaded once. Without it only words appear.";
+  if (download) download.hidden = Boolean(painter.ready) || running;
+  clearTimeout(showGagPoll);
+  if (running && selectedPlatform === "show") showGagPoll = setTimeout(() => refreshShowGagStatus().catch(() => {}), 2000);
+}
+
+document.addEventListener("click", async (event) => {
+  const target = event.target instanceof Element ? event.target.closest("#showClaudeSignIn, #showPainterDownload, #showOpenLibrary") : null;
+  if (!target) return;
+  try {
+    if (target.id === "showClaudeSignIn") {
+      await api("/gags/claude/sign-in", { method: "POST", body: "{}" });
+      const text = document.querySelector("#showClaudeStatus");
+      if (text) text.textContent = "Sign in in the browser window that opened, then come back here.";
+      // Notice the sign-in when it completes.
+      for (let attempt = 0; attempt < 36; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        const status = await api("/gags/status");
+        if (status.claude?.signed_in) break;
+      }
+      await refreshShowGagStatus();
+    } else if (target.id === "showPainterDownload") {
+      await api("/gags/painter/download", { method: "POST", body: "{}" });
+      await refreshShowGagStatus();
+    } else {
+      await api("/gags/library/open", { method: "POST", body: "{}" });
+    }
+  } catch (error) {
+    const text = document.querySelector(target.id === "showPainterDownload" ? "#showPainterStatus" : "#showClaudeStatus");
+    if (text) text.textContent = error.message;
+  }
+});
+
 async function apiForm(path, formData) {
   const response = await window.UiFeedback.request(`/api/v1${path}`, { method: "POST", body: formData });
   const data = await response.json().catch(() => ({}));
@@ -3372,6 +3430,7 @@ function applyEditTypeMode() {
   if (medley) { medley.hidden = selectedPlatform !== "medley"; if (!medley.hidden) renderMedleySources(); }
   const showOptions = document.querySelector("#showOptions");
   if (showOptions) showOptions.hidden = selectedPlatform !== "show";
+  if (selectedPlatform === "show") refreshShowGagStatus().catch(() => {});
   if (songPicker && passthrough360) songPicker.hidden = true;
   if (reelOptions) {
     reelOptions.hidden = selectedPlatform !== "reel";
@@ -3844,6 +3903,7 @@ async function startWizard(options = {}) {
       medley_fade_sec: Number(document.querySelector("#medleyFade").value),
       show_style: document.querySelector("#showStyle")?.value || "choe",
       show_language: document.querySelector("#showLanguage")?.value || "",
+      show_gags: document.querySelector("#showGags")?.value || "claude",
       song_index: selectedSong,
       trim_start_sec: timeToSeconds(document.querySelector("#trimStart").value),
       trim_end_sec: timeToSeconds(document.querySelector("#trimEnd").value),

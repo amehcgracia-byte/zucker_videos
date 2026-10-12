@@ -22,6 +22,8 @@ from core.show_render import render_show
 DISFLUENT_PROMPT = {
     "es": "Eh, mmm, o sea... este, bueno, eh. Hola.",
     "en": "Um, uh, like... so, um, you know. Hello.",
+    # Language unknown: hesitations only, so the prompt does not pick it.
+    "auto": "Um, eh... mmm, uh. Hmm.",
 }
 DEFAULT_MODEL = "small"
 CAPTION_WORDS = 4
@@ -38,8 +40,8 @@ def _duration(path: Path) -> float:
     return float((ffprobe(str(path)).get("format") or {}).get("duration") or 0.0)
 
 
-def edited_captions(plan: dict[str, Any], style: str) -> list[dict[str, Any]]:
-    """Short caption cues from the kept words, on the edited timeline."""
+def edited_words(plan: dict[str, Any]) -> list[tuple[str, float, float]]:
+    """The kept words with their times on the edited video."""
     fps = int(plan.get("fps") or 30)
     words = plan["words"]
     timed: list[tuple[str, float, float]] = []
@@ -52,6 +54,12 @@ def edited_captions(plan: dict[str, Any], style: str) -> list[dict[str, Any]]:
             b = offset + min(end - start, word["end"] - start)
             timed.append((str(word["text"]).strip(), round(a, 3), round(max(b, a + 0.05), 3)))
         offset += end - start
+    return timed
+
+
+def edited_captions(plan: dict[str, Any], style: str) -> list[dict[str, Any]]:
+    """Short caption cues from the kept words, on the edited timeline."""
+    timed = edited_words(plan)
     cues: list[dict[str, Any]] = []
     group: list[tuple[str, float, float]] = []
     loud = style == "choe"
@@ -85,7 +93,33 @@ def edited_captions(plan: dict[str, Any], style: str) -> list[dict[str, Any]]:
     return cues
 
 
-def run_show(project, source: str, *, style_name: str = "choe", language: str | None = None,
+def add_gags(project, cut: Path, plan: dict[str, Any], destination: Path, *, director: str, language: str,
+             ffmpeg: str, progress: Callable[[int, str], None], cancel: Callable[[], None]) -> dict[str, Any]:
+    """Plan, paint and draw the gags on the edited video; a summary for the manifest."""
+    from core import gags
+    from core.gag_library import index_library
+    from core.gag_render import render_gags
+    progress(75, "Looking for your face in the picture")
+    face = gags.face_side(cut, ffmpeg)
+    try:
+        library = index_library()
+    except Exception:  # an unreadable library never stops the show
+        library = []
+    progress(76, "Asking your Claude for gags" if director == "claude" else "Choosing gags from the words")
+    plan_gags, used, note = gags.plan_gags(edited_words(plan), float(plan["edited_duration"]), director=director,
+                                           language=language, face=face, library=library)
+    cancel()
+    folder = project.folder / "gags"
+    items, notes = gags.make_items(plan_gags, folder, face=face, library=library, cancel=cancel,
+                                   progress=lambda share, text: progress(77 + int(share * 16), text))
+    progress(94, f"Drawing {len(items)} gags on the video")
+    render_gags(cut, items, destination, ffmpeg=ffmpeg, cancel=cancel,
+                progress=lambda share: progress(94 + int(share * 5), "Drawing the gags on the video"))
+    return {"director": used, "planned": len(plan_gags), "drawn": len(items), "face_side": face,
+            "notes": [text for text in (note, *notes) if text]}
+
+
+def run_show(project, source: str, *, style_name: str = "choe", language: str | None = None, gags: str = "claude",
              model_name: str = DEFAULT_MODEL, progress: Callable[[int, str], None], cancel: Callable[[], None]) -> tuple[Path, dict[str, Any]]:
     from core.backstage_transcription import transcribe_sources
     style = STYLES.get(style_name, STYLES["choe"])
@@ -102,7 +136,7 @@ def run_show(project, source: str, *, style_name: str = "choe", language: str | 
         project.artifacts_dir / "show_transcript.json",
         progress_callback=lambda value, detail: progress(3 + int(value * 0.5), detail or "Transcribing"),
         model_name=model_name,
-        initial_prompt=DISFLUENT_PROMPT.get(language or "es"),
+        initial_prompt=DISFLUENT_PROMPT.get(language or "", DISFLUENT_PROMPT["auto"]),
         vad_filter=False,
     )
     sources = transcript.get("sources") or []
@@ -120,8 +154,16 @@ def run_show(project, source: str, *, style_name: str = "choe", language: str | 
 
     name = re.sub(r"[^\w.-]+", "-", str(project.data.get("name") or "Show")).strip("-") or "Show"
     destination = project.exports_dir / f"{name}-show-{time.strftime('%Y%m%d-%H%M%S')}.mp4"
+    with_gags = gags in {"claude", "keywords"}
+    cut = project.cache_dir / "show-cut.mp4" if with_gags else destination
+    span = 14 if with_gags else 38
     progress(60, f"Rendering {plan['cuts']} cuts")
-    render_show(path, plan, destination, ffmpeg=ffmpeg, progress=lambda value: (cancel(), progress(60 + int(value * 38), "Rendering the show")))
+    render_show(path, plan, cut, ffmpeg=ffmpeg, progress=lambda value: (cancel(), progress(60 + int(value * span), "Rendering the show")))
+    gag_summary: dict[str, Any] = {}
+    if with_gags:
+        gag_summary = add_gags(project, cut, plan, destination, director=gags, language=str(plan.get("language") or language or ""),
+                               ffmpeg=ffmpeg, progress=progress, cancel=cancel)
+        cut.unlink(missing_ok=True)
 
     cues = edited_captions(plan, style_name)
     (project.folder / "cue_track.json").write_text(json.dumps({
@@ -133,8 +175,8 @@ def run_show(project, source: str, *, style_name: str = "choe", language: str | 
         "exports": [{"path": str(destination), "platform": "show", "duration_sec": plan["edited_duration"]}],
         "show": {"source_duration_sec": plan["source_duration"], "edited_duration_sec": plan["edited_duration"],
                  "cuts": plan["cuts"], "removed_words": plan["removed_words"], "captions": len(cues),
-                 "elapsed_sec": round(time.monotonic() - started, 1)},
-        "warnings": [],
+                 "elapsed_sec": round(time.monotonic() - started, 1), "gags": gag_summary},
+        "warnings": list(gag_summary.get("notes") or []),
     }
     (project.artifacts_dir / "export_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     progress(100, "Show ready")

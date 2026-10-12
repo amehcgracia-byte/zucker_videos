@@ -85,3 +85,15 @@ def test_rendered_show_lasts_exactly_its_planned_frames(tmp_path):
     durations = {s["codec_type"]: float(s["duration"]) for s in probe["streams"]}
     assert durations["video"] == pytest.approx((47 + 39 + 40) / FPS, abs=1 / FPS)
     assert durations["audio"] == pytest.approx(durations["video"], abs=0.03)
+
+
+def test_a_long_show_with_hundreds_of_cuts_is_accepted_by_ffmpeg():
+    # A 10-minute talk gives ~150 kept ranges; FFmpeg refuses flat sums of
+    # more than 100 terms, so the expressions must stay shallow.
+    from core.show_render import video_filter
+    ffmpeg = _ffmpeg()
+    shots = [(i * 10, i * 10 + 6, (1.0, 1.18, 1.32)[i % 3]) for i in range(400)]
+    graph = video_filter(_plan(shots), 160, 90)
+    result = subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-f", "lavfi", "-i", f"testsrc2=s=160x90:r={FPS}:d=3",
+                             "-vf", graph, "-f", "null", "-"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr[-300:]

@@ -40,6 +40,14 @@ def test_the_last_take_of_a_repeated_phrase_is_kept():
     assert kept_text == "lo más importante de la música es el ritmo"
 
 
+def test_a_short_echo_does_not_erase_the_longer_phrase_it_starts_like():
+    full, t = _speak("let's put it here with some magnet on the head")
+    echo, t = _speak("let's put it here", start=t + 1.0)
+    plan = plan_show(_transcript(full + echo), duration=t + 0.3)
+    assert plan["removed_words"]["retake"] == 0
+    assert "magnet" in {w["text"] for w in plan["words"] if not w["removed"]}
+
+
 def test_long_speech_is_cut_into_fast_shots_with_changing_framing():
     words, t = _speak(" ".join(["palabra"] * 60))  # 24 s without a pause
     plan = plan_show(_transcript(words), duration=t)
@@ -86,3 +94,20 @@ def test_captions_follow_the_edited_timeline_and_never_end_on_a_little_word():
     endings = [cue["lines"][0].split()[-1].strip(",.").lower() for cue in cues[:-1]]
     assert not set(endings) & {"el", "la", "de", "es", "te"}
     assert all(cue["style_override"]["fun_effect"] == "pop" for cue in cues)
+
+
+def test_source_moments_map_onto_the_edited_video():
+    from core.show_edit import edited_time
+    plan = {"fps": 30, "shots": [{"start_frame": 30, "end_frame": 90}, {"start_frame": 150, "end_frame": 210}]}
+    assert edited_time(plan, 1.5) == 0.5     # inside the first shot
+    assert edited_time(plan, 4.0) == 2.0     # cut pause: where the next shot starts
+    assert edited_time(plan, 6.0) == 3.0     # inside the second shot
+    assert edited_time(plan, 99.0) == 4.0    # after the end
+
+
+def test_whisper_dots_over_silence_are_not_speech():
+    dots = [("...", 0.0, 1.4), ("...", 1.4, 4.1)]
+    words, end = _speak("good morning everybody", start=6.0)
+    plan = plan_show(_transcript(dots + words), duration=end + 0.3)
+    assert all(w["text"] != "..." for w in plan["words"])
+    assert plan["shots"][0]["start"] >= 5.8   # the silent start is cut

@@ -24,6 +24,15 @@ CROSSFADE_SEC = 0.008
 FACE_HEIGHT = 0.42   # framing centre, share of the picture height
 
 
+def _sum(terms: list[str]) -> str:
+    """terms joined by + as a balanced tree: FFmpeg's expression parser
+    refuses a flat sum of more than 100 terms ("Cannot allocate memory")."""
+    if len(terms) <= 1:
+        return terms[0] if terms else "0"
+    middle = len(terms) // 2
+    return f"({_sum(terms[:middle])}+{_sum(terms[middle:])})"
+
+
 def kept_ranges(plan: dict[str, Any]) -> list[tuple[int, int]]:
     """Frame ranges of the edit; shots that touch are one range (no cut)."""
     ranges: list[list[int]] = []
@@ -48,13 +57,13 @@ def zoom_expression(plan: dict[str, Any]) -> str:
         position += length
     expression = "1"
     for zoom, parts in terms.items():
-        expression += f"+{zoom - 1:.4f}*({'+'.join(parts)})"
+        expression += f"+{zoom - 1:.4f}*{_sum(parts)}"
     return expression
 
 
 def video_filter(plan: dict[str, Any], width: int = 1920, height: int = 1080) -> str:
     fps = int(plan.get("fps") or 30)
-    selection = "+".join(f"between(n,{a},{b - 1})" for a, b in kept_ranges(plan)) or "0"
+    selection = _sum([f"between(n,{a},{b - 1})" for a, b in kept_ranges(plan)])
     zoom = zoom_expression(plan)
     # Work at 4/3 of the output so a 1.32 punch-in keeps its detail.
     work_w, work_h = width * 4 // 3 // 2 * 2, height * 4 // 3 // 2 * 2
@@ -126,8 +135,11 @@ def render_show(source: str | Path, plan: dict[str, Any], output: str | Path, *,
                         pass
         reader = threading.Thread(target=read_progress, daemon=True)
         reader.start()
-        process.stdin.write(audio.astype(np.float32).tobytes())
-        process.stdin.close()
+        try:
+            process.stdin.write(audio.astype(np.float32).tobytes())
+            process.stdin.close()
+        except BrokenPipeError:
+            pass  # FFmpeg stopped early: its own error is reported below
         code = process.wait()
         reader.join(timeout=5)
         if code != 0:

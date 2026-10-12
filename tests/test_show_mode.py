@@ -47,3 +47,31 @@ def test_editor_offers_the_show_mode():
     assert 'data-platform="show"' in page and 'id="showStyle"' in page and 'id="showLanguage"' in page
     assert 'show_style: document.querySelector("#showStyle")' in app
     assert '"medley", "show"].includes(platform)' in app or '"backstage", "medley", "show"].includes(platform)' in app
+
+
+def test_show_captions_survive_the_final_composition(tmp_path, monkeypatch):
+    # A "show" export used to be treated as long-form YouTube when composing,
+    # which silently dropped every caption made from the talk.
+    import json
+    from types import SimpleNamespace
+
+    import server.api as api_module
+    from core.project import create_project
+
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path / "data"))
+    folder = tmp_path / "Show.zuckervid"
+    project = create_project("Show", str(folder))
+    video = project.exports_dir / "Show-show.mp4"
+    video.write_bytes(b"not empty")
+    manifest = project.artifacts_dir / "export_manifest.json"
+    manifest.write_text(json.dumps({"platform": "show", "exports": [{"path": str(video), "platform": "show"}]}))
+    project.data["stages"]["export"]["outputs"] = {"export_manifest": str(manifest)}
+    project.save()
+    app = api_module.create_app(project_path=str(folder))
+    monkeypatch.setattr(app.config["ZUCKER_STATE"].composition, "start", lambda _project: SimpleNamespace(snapshot=lambda: {}))
+    cue = {"lines": ["Good morning"], "start": 0.5, "end": 1.4, "words": []}
+    response = app.test_client().post("/api/v1/wizard/compose", json={"cues": [cue], "style": "autoread_fixed_white"})
+    assert response.status_code == 202
+    track = json.loads((folder / "cue_track.json").read_text())
+    assert track["platform"] == "show"
+    assert [c["lines"] for c in track["cues"]] == [["Good morning"]]

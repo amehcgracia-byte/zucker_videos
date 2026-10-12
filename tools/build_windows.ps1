@@ -51,6 +51,8 @@ $common = @(
   "--hidden-import", "soundfile", "--hidden-import", "audioread", "--hidden-import", "numba", "--hidden-import", "llvmlite",
   "--hidden-import", "server.api", "--hidden-import", "faster_whisper",
   "--hidden-import", "ctranslate2", "--hidden-import", "onnxruntime", "--hidden-import", "tokenizers",
+  "--collect-submodules", "diffusers", "--copy-metadata", "diffusers",
+  "--hidden-import", "transformers", "--collect-submodules", "transformers.models.clip",
   "--hidden-import", "webview.platforms.winforms", "--hidden-import", "clr",
   "--collect-data", "pythonnet", "--collect-binaries", "pythonnet",
   "--collect-submodules", "clr_loader",

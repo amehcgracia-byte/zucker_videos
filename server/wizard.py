@@ -462,7 +462,7 @@ class WizardRunner:
         finally:
             _release_job_project_lock(job)
 
-    def start_show(self, project: Project, source: str, style: str, language: str | None) -> WizardJob:
+    def start_show(self, project: Project, source: str, style: str, language: str | None, gags: str = "claude") -> WizardJob:
         with self._lock:
             if self._thread and self._thread.is_alive():
                 raise RuntimeError("A pipeline is already running")
@@ -472,11 +472,11 @@ class WizardRunner:
                 raise RuntimeError("This project's pipeline is already running")
             self._job = job
             self._prepared_project = None
-            self._thread = threading.Thread(target=self._run_show, args=(job, project, source, style, language), daemon=True, name="zucker-show")
+            self._thread = threading.Thread(target=self._run_show, args=(job, project, source, style, language, gags), daemon=True, name="zucker-show")
             self._thread.start()
             return job
 
-    def _run_show(self, job, project, source, style, language):
+    def _run_show(self, job, project, source, style, language, gags="claude"):
         from core.show import run_show
         started = time.monotonic()
 
@@ -494,9 +494,9 @@ class WizardRunner:
             job.progress_updated_at = time.time()
             job.tasks = {"show": {"id": "show", "label": detail, "percent": int(min(100, value)), "detail": ""}}
         try:
-            project.data.setdefault("settings", {}).setdefault("wizard", {}).update(platform="show", show={"source": source, "style": style, "language": language or ""})
+            project.data.setdefault("settings", {}).setdefault("wizard", {}).update(platform="show", show={"source": source, "style": style, "language": language or "", "gags": gags})
             project.save()
-            destination, manifest = run_show(project, source, style_name=style, language=language, progress=progress, cancel=cancel)
+            destination, manifest = run_show(project, source, style_name=style, language=language, gags=gags, progress=progress, cancel=cancel)
             project.data["stages"]["export"].update(status="done", elapsed_seconds=round(time.monotonic() - started, 3), outputs={"export_manifest": str(project.artifacts_dir / "export_manifest.json")})
             project.save()
             summary = manifest.get("show") or {}

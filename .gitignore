@@ -40,4 +40,5 @@ dist/
 # CLIP scene tagging: fetched by tools/fetch_clip_model.sh (pinned + SHA-256).
 # Only labels.json (precomputed prompt vectors) is tracked.
 assets/models/clip/*.onnx
+assets/models/clip/tokenizer.json
 tools/clip_text/

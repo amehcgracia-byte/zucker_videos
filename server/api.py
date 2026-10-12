@@ -1602,8 +1602,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             source = next((path for path in videos if path in registered), videos[0])
             style = str(body.get("show_style") or "choe")
             language = str(body.get("show_language") or "").strip().lower() or None
+            gags = str(body.get("show_gags") or "claude")
             try:
-                job = state.wizard.start_show(state.project, source, style if style in {"choe", "calm"} else "choe", language)
+                job = state.wizard.start_show(state.project, source, style if style in {"choe", "calm"} else "choe", language,
+                                              gags if gags in {"claude", "keywords", "off"} else "claude")
             except RuntimeError as exc:
                 return error_response("wizard_busy", str(exc), 409)
             state.composition.reset()
@@ -1957,6 +1959,31 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not project:
             return error_response("not_ready", "No project is active", 404)
         return send_from_directory(project.cache_dir / "shot_review" / signature, Path(filename).name)
+
+    @app.get("/api/v1/gags/status")
+    def api_gags_status() -> Response:
+        from core.gag_director import claude_status
+        from core.gag_paint import download_status
+        return jsonify({"claude": claude_status(), "painter": download_status()})
+
+    @app.post("/api/v1/gags/painter/download")
+    def api_gags_painter_download() -> Response:
+        from core.gag_paint import start_download
+        return jsonify({"painter": start_download()}), 202
+
+    @app.post("/api/v1/gags/claude/sign-in")
+    def api_gags_claude_sign_in() -> Response:
+        from core.gag_director import DirectorError, open_sign_in
+        try:
+            open_sign_in()
+        except (DirectorError, OSError, subprocess.SubprocessError) as exc:
+            return error_response("claude_sign_in_failed", str(exc), 409)
+        return jsonify({"opened": True})
+
+    @app.post("/api/v1/gags/library/open")
+    def api_gags_library_open() -> Response:
+        from core.gag_library import reveal
+        return jsonify({"path": str(reveal())})
 
     @app.get("/api/v1/wizard/overlays")
     def api_wizard_overlays() -> Response:
@@ -2575,7 +2602,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         # turn a YouTube result into a vertical Reel composition.
         base_result = _export_result(project)
         compose_platform = str((base_result or {}).get("platform") or wizard.get("platform") or "youtube").strip().lower()
-        if compose_platform not in {"youtube", "reel", "reel_horizontal", "360", "backstage"}:
+        if compose_platform not in {"youtube", "reel", "reel_horizontal", "360", "backstage", "show"}:
             compose_platform = "youtube"
         if compose_platform == "youtube":
             # YouTube is one horizontal flyer/base composition. Captions and

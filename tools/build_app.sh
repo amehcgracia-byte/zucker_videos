@@ -111,6 +111,10 @@ PY
   --hidden-import ctranslate2 \
   --collect-submodules server \
   --collect-submodules core \
+  --collect-submodules diffusers \
+  --copy-metadata diffusers \
+  --hidden-import transformers \
+  --collect-submodules transformers.models.clip \
   --exclude-module pytest \
   --exclude-module tests \
   --exclude-module scipy.tests \

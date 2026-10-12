@@ -83,7 +83,8 @@ def words_from_transcript(transcript: dict[str, Any]) -> list[Word]:
             text = str(item.get("word") or item.get("text") or "").strip()
             start = float(item.get("start_sec", item.get("start", 0.0)))
             end = float(item.get("end_sec", item.get("end", start)))
-            if not text or end < start:
+            # Whisper writes "..." over silences and noises: not speech, never kept.
+            if not re.search(r"\w", text) or end < start:
                 continue
             words.append(Word(text, start, max(end, start + 0.02), len(words), normalise(text)))
     return words
@@ -112,7 +113,9 @@ def _is_retake(first: list[Word], later: list[Word]) -> bool:
     if len(a) < 2 or len(b) < 2:
         return False
     opening = min(3, len(a), len(b))
-    if a[:opening] == b[:opening]:
+    # A new take says about as much; a short echo ("let's put it here") of a
+    # longer phrase is not one, and dropping the long phrase would lose words.
+    if a[:opening] == b[:opening] and len(b) >= 0.6 * len(a):
         return True
     # An abandoned start: most of the first phrase reappears at the start of the next.
     head = b[:len(a) + 1]
@@ -224,3 +227,16 @@ def plan_show(transcript: dict[str, Any], duration: float, style: ShowStyle = CH
         "shots": [{"start_frame": round(s.start * style.fps), "end_frame": round(s.end * style.fps),
                    "start": round(s.start, 6), "end": round(s.end, 6), "zoom": s.zoom, "words": s.words, "cut_before": s.cut_before} for s in shots],
     }
+
+
+def edited_time(plan: dict[str, Any], seconds: float) -> float:
+    """Where a moment of the source lands on the edited video. A moment that
+    was cut lands where the edit resumes."""
+    fps = int(plan.get("fps") or 30)
+    offset = 0.0
+    for shot in plan["shots"]:
+        start, end = shot["start_frame"] / fps, shot["end_frame"] / fps
+        if seconds < end:
+            return round(offset + max(0.0, seconds - start), 3)
+        offset += end - start
+    return round(offset, 3)
