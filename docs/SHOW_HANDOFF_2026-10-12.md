@@ -121,3 +121,21 @@ The advanced editor opens in a dialog but adjustments are NOT transferred into t
 storyboard; integration remains pending. Browser checked identity and greeting views.
 Local sample: http://127.0.0.1:8792/storyboard.html?demo=1 . Private demo media/assets
 stay outside git. For repository use, import local resources without demo query.
+
+## Scene-specific element animation
+Storyboard context menu now separates Animate element from mouth editing. Added
+up/down, hop, grow, grow-and-return, looping scale and sway with intensity, in-place
+preview and video-clock playback. Settings belong to each scene and enter decision
+JSON. Removed the incorrect route that opened an unrelated demo video when editing
+an overlay. Mouth integration is explicitly unavailable rather than opening the wrong
+source. Scenes without overlays do not receive overlay motion tools.
+
+Production analysis contract: transcribe main and resource audio with word timing;
+separate spoken instructions from character dialogue; identify references and comedic
+beats; match entity appearances with resource footage and voice intervals; propose
+camera crop/cut and effect with evidence and confidence. Example: “this guy could
+talk” should suggest the referenced character closeup and recorded voice, not coffee
+steam. Ask for review when matching is uncertain. Emit a per-scene intervention plan
+(entity/asset IDs, source/voice intervals, action, parameters, rationale, status).
+Tools are determined by selected asset/action capabilities. Analysis is NOT implemented
+in this prototype; no claims of automatic Whisper contextual direction.
