@@ -136,9 +136,13 @@ def journey(browser, mode, media, output):
             page.locator('#captionAutoArrange').click()
             page.wait_for_timeout(500)
             assert not compositions, 'Arranging captions must not start a render'
-            page.locator('#burnCaptions').click()
-            page.wait_for_function("document.querySelector('#captionBurnStatus').textContent.includes('Created')",timeout=180000)
-            page.wait_for_function("document.querySelector('#composeVideo').readyState >= 2",timeout=60000)
+            with page.expect_response(lambda response: response.request.method == 'POST' and response.url.endswith('/api/v1/captions/burn'), timeout=180000) as burn_pending:
+                page.locator('#burnCaptions').click()
+            burn_response = burn_pending.value
+            assert burn_response.ok, f'Caption burn failed: {burn_response.status} {burn_response.text()}'
+            burned = burn_response.json()
+            assert burned.get('media_url'), burned
+            page.wait_for_function("media => { const video = document.querySelector('#composeVideo'); return video.readyState >= 2 && new URL(video.currentSrc).pathname === new URL(media, location.href).pathname; }",arg=burned['media_url'],timeout=60000)
             capture('05-captions')
             page.locator('#composeContinue').click()
             deadline=time.monotonic()+240

@@ -49,3 +49,16 @@ round remains pending and requires private transport, without public media
 artifacts. Native microphone permission dialogs are not established by browser
 journeys; packaged Windows startup is a separate, narrower check. No user render,
 project or installed application was interrupted by this follow-up.
+
+## Follow-up run 38215928111: test failures diagnosed
+
+At fa24e231, macOS targeted checks and four mode journeys passed. Reel's burn
+endpoint returned HTTP 200, but the harness waited for the obsolete word
+“Created”; the UI now says “Showing the burned result”. The harness now verifies
+the actual burn response and that the player loads the returned media URL.
+
+Windows stopped in targeted checks (68 passed, 1 failed, 6 existing skips), before
+any mode journey. The failing test tried to create a directory named `drive C:`,
+which Windows forbids. It now exercises the actual drive colon in the absolute
+temporary path, while retaining literal directory-colon coverage on POSIX.
+Neither failure establishes a product regression. A fresh remote round is required.
