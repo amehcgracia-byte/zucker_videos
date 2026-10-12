@@ -151,3 +151,14 @@ Contains manifest.json with source path/time, index.html gallery with source fil
 manual selection and JSON download, and extract.py. Photos remain local, excluded
 from this PR. Next capture guidance should ask for photos of mentioned surroundings
 and optional voice/video resources, not mandatory video for every object.
+
+## Additional user-supplied Claude context
+Claude reports a local crayon LoRA experiment (nine drawings), style improvements
+but subject drift and paper backgrounds. These are reported results, not independently
+validated here. A proposed Codex subscription-backed image generator integration is
+UNVERIFIED: generating images in this conversation does not prove Zucker can invoke
+it unattended, nor establish billing/usage guarantees. Validate supported invocation,
+file delivery, transparency and failure behavior before advertising it. Keep local
+painting/manual drawing import as explicit alternatives; no silent provider fallback.
+Local transition comparison at /transitions.html offers cut, zoom and whole-photo
+bounce, using private media. It is a timing/style demo, not semantic alignment proof.
