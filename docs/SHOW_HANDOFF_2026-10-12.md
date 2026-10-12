@@ -139,3 +139,15 @@ steam. Ask for review when matching is uncertain. Emit a per-scene intervention 
 (entity/asset IDs, source/voice intervals, action, parameters, rationale, status).
 Tools are determined by selected asset/action capabilities. Analysis is NOT implemented
 in this prototype; no claims of automatic Whisper contextual direction.
+
+## Local original photo collection
+Extracted 97 full-frame 1920x1080 JPEGs from the four resource clips: C0272 (22),
+C0273 (14), C0274 (46), C0277 (15). Eight-second sampling plus extra character frames;
+not exhaustive object detection or a curated sharpness selection. Some frames contain
+hands/blur/transitions. RGB appearance is decoded from originals and JPEG encoded;
+no generative reconstruction. Original videos/audio are untouched.
+Local folder: /Users/macbookair/zucker_videos/work/show-motion-sample/photo-library
+Contains manifest.json with source path/time, index.html gallery with source filter,
+manual selection and JSON download, and extract.py. Photos remain local, excluded
+from this PR. Next capture guidance should ask for photos of mentioned surroundings
+and optional voice/video resources, not mandatory video for every object.
