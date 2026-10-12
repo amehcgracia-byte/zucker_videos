@@ -106,3 +106,18 @@ reports failure. Demo's independent JPEG cannot be overwritten by media events.
 Browser verified visible wire figurine after reload and fixed-preview selection;
 JavaScript syntax checked. Near-black rejection is a prototype heuristic and can
 reject intentionally dark frames; production should offer an explicit override.
+
+## Guided storyboard visualization
+`tools/qa/show_storyboard_demo.html` is a new standalone interactive walkthrough:
+identity/logo/title → optional imported intro → greeting → frozen character with
+source audio → continuation → review. Example suggestions are authored, not AI
+analysis. Accept/plain decisions are recorded per scene. Local images can be added
+to the session library; overlays can be dragged/resized and edited/removed through
+a context menu. Import source videos/images; prepare an editable drawing prompt
+without sending it. Review plays the example sequence and downloads decision JSON.
+Media use object URLs for the current session only; JSON excludes media and is not
+project persistence. No video export. Logo is optional and no intro asset is fabricated.
+The advanced editor opens in a dialog but adjustments are NOT transferred into the
+storyboard; integration remains pending. Browser checked identity and greeting views.
+Local sample: http://127.0.0.1:8792/storyboard.html?demo=1 . Private demo media/assets
+stay outside git. For repository use, import local resources without demo query.
