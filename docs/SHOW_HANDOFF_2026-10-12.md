@@ -75,3 +75,14 @@ Rainbow steam is a procedural translucent particle preview on the main shot with
 manual placement. No cup detection/tracking. No production renderer integration.
 A short local excerpt of C0273 supplies the sample voice; its wording has not been
 independently transcribed/approved in this demo. No media added to GitHub.
+
+## Polygon tools and playback handling
+Added unlimited polygon vertices, close/undo/reset, original-pixel masked patch
+movement (mouth, nod, sideways, rotation), X/Y offsets and browser-local settings.
+Black is exposed behind moved regions: background reconstruction is not provided.
+Coordinates remain output-space and depend on zoom. Only one selection/resource
+is supported; a per-shot approval queue remains a requested production feature.
+Playback now primes the secondary media from the user gesture and reports rejected
+play/decode errors instead of silently pausing. This addresses an observed code
+failure path; the user's exact stall was not independently reproduced. Prototype
+still has no video export. Do not present playback as a render.
