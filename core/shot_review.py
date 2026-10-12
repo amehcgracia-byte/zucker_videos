@@ -283,14 +283,18 @@ def _candidate_key(candidate: dict[str, Any]) -> str:
     return f"{path}|{start:.6f}{_spherical_pose_suffix(candidate)}"
 
 
-def _candidate_keys(candidate: dict[str, Any]) -> set[str]:
-    """Return current and legacy spellings of a candidate identity."""
+def _candidate_keys(candidate: dict[str, Any], synced: bool = True) -> set[str]:
+    """Return current and legacy spellings of a candidate identity.
+
+    In synced edits a coverage camera is identified by its sync offset, so
+    the offset spellings are part of the identity. An unsynchronised Reel has
+    offset 0 everywhere: counting it made every window of a file look
+    "already tried", so Other frame always jumped to a different file.
+    """
     path = candidate.get("path") or candidate.get("clip_path") or candidate.get("source_path") or ""
-    starts = {
-        candidate.get("clip_start_sec"),
-        candidate.get("offset_sec"),
-        candidate.get("clip_offset_sec"),
-    }
+    starts = {candidate.get("clip_start_sec")}
+    if synced or candidate.get("clip_start_sec") is None:
+        starts |= {candidate.get("offset_sec"), candidate.get("clip_offset_sec")}
     keys = set()
     pose_suffix = _spherical_pose_suffix(candidate)
     for raw_start in starts:
@@ -479,6 +483,16 @@ def _path_aliases(raw: Any) -> set[str]:
     return aliases
 
 
+def _same_source_file(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Same Drop box file (proxy aliases included); unlike _same_source_identity,
+    two files from one camera folder are different videos here."""
+    left_paths, right_paths = set(), set()
+    for key in ("path", "clip_path", "source_path", "proxy_path"):
+        left_paths.update(_path_aliases(left.get(key)))
+        right_paths.update(_path_aliases(right.get(key)))
+    return bool(left_paths & right_paths)
+
+
 def _same_source_identity(left: dict[str, Any], right: dict[str, Any]) -> bool:
     """Match a camera even when coverage uses its proxy path."""
     left_paths = set()
@@ -638,7 +652,7 @@ def _project_candidate_pool(project: Project, coverage: dict[str, Any], segments
         _write_reserve_json(path, {"candidates": pool, "origin": origin})
     summary = path.with_suffix(".summary.json")
     if not summary.exists():
-        eligible = [_candidate_keys(candidate) for candidate in pool
+        eligible = [_candidate_keys(candidate, platform != "reel") for candidate in pool
                     if _candidate_covers_slot(candidate, segment, platform) and _candidate_has_subject(candidate, segment)]
         _write_reserve_json(summary, {"keys": [sorted(keys) for keys in eligible], "origin": origin})
     return pool, origin
@@ -652,7 +666,7 @@ def _project_candidate_count(project: Project, coverage: dict[str, Any], segment
     except (OSError, ValueError):
         _project_candidate_pool(project, coverage, segments, segment, platform, context)
         summary = json.loads(path.read_text(encoding="utf-8"))
-    current = _candidate_keys(segment)
+    current = _candidate_keys(segment, platform != "reel")
     return sum(not (set(keys) & current) for keys in summary["keys"]), summary["origin"]
 
 
@@ -710,6 +724,7 @@ def _replacement_candidates(
     segment: dict[str, Any],
     tried: set[str],
     platform: str,
+    require_subject: bool = True,
 ) -> tuple[list[tuple[float, dict[str, Any], str]], dict[str, int]]:
     """Return eligible candidates and counts used in Replace diagnostics.
 
@@ -726,9 +741,9 @@ def _replacement_candidates(
         if not _candidate_covers_slot(candidate, segment, platform):
             continue
         counts["covers_slot"] += 1
-        if not _candidate_has_subject(candidate, segment):
+        if require_subject and not _candidate_has_subject(candidate, segment):
             continue
-        if _candidate_keys(candidate) & tried:
+        if _candidate_keys(candidate, platform != "reel") & tried:
             continue
         counts["unused"] += 1
         candidates.append((float(candidate.get("shot_quality_score") or candidate.get("motion_score") or 0.0), candidate, _candidate_key(candidate)))
@@ -1073,7 +1088,7 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         slot_key = str(slot)
         tried.update(attempts.get(slot_key) or attempts.get(slot) or [])
         tried.update(exclusions.get(slot_key) or exclusions.get(slot) or [])
-        tried.update(_candidate_keys(segment))
+        tried.update(_candidate_keys(segment, platform != "reel"))
         if segment.get("filler"):
             # A filler covers a stretch no camera recorded: offer another
             # compatible filler window, never a camera that is not there.
@@ -1095,9 +1110,22 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
             continue
         pool, pool_origin = _project_candidate_pool(project, coverage, segments, segment, platform)
         candidates, counts = _replacement_candidates(pool, segment, tried, platform)
+        sole_shot = not any(other_index != index and _same_source_file(other, segment)
+                            for other_index, other in enumerate(segments))
+        if sole_shot:
+            # Every Drop box video must stay in the edit (coverage guard). The
+            # only shot of a video may move to another moment, never to another
+            # camera: replacing Conteint.mp4's only shot with a second
+            # 360ZZSession shot blocked a real Reel export at step 6.
+            candidates = [item for item in candidates if _same_source_file(item[1], segment)]
+            if not candidates:
+                candidates, _ = _replacement_candidates(
+                    [item for item in pool if _same_source_file(item, segment)], segment, tried, platform,
+                    require_subject=False)
         if not candidates:
             unavailable.add(index)
-            reason = "pool_empty" if counts["pool"] == 0 else "no_unused_candidate_covers_slot"
+            reason = ("only_shot_of_this_video" if sole_shot else
+                      "pool_empty" if counts["pool"] == 0 else "no_unused_candidate_covers_slot")
             LOGGER.info(
                 "Review replace slot=%s unavailable current=%s pool_origin=%s counts=%s",
                 index, _candidate_key(segment), pool_origin, counts,

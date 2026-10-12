@@ -56,3 +56,30 @@ def test_backstage_subtitle_path_does_not_call_common_burn(monkeypatch, tmp_path
         ass_path=ass_path,
     )
     assert calls == []
+
+
+def test_backstage_burns_subtitles_in_a_project_named_with_an_apostrophe(tmp_path) -> None:
+    import pytest
+    from core.ffmpeg import tool_status
+    from core.stages.backstage import _backstage_single_pass_filtergraph, _run_backstage_ffmpeg, _write_backstage_ass
+
+    ffmpeg = str(tool_status().get("ffmpeg_path") or "")
+    filters = subprocess.run([ffmpeg, "-hide_banner", "-filters"], capture_output=True, text=True).stdout if ffmpeg else ""
+    if " subtitles " not in filters:
+        pytest.skip("FFmpeg without libass")
+    cache = tmp_path / "Singer's Live [take 1].zuckervid" / "cache" / "zucker-backstage-x"
+    cache.mkdir(parents=True)
+    clip = cache.parent / "clip.mp4"
+    subprocess.run([ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=navy:s=320x240:d=2:r=30", "-f", "lavfi", "-i", "sine=d=2",
+                    "-c:v", "libx264", "-c:a", "aac", "-shortest", str(clip)], check=True)
+    ass_path = cache / "backstage-en.ass"
+    _write_backstage_ass(ass_path, [(0.0, 1.8, "HELLO THERE")])
+    inputs, graph, _label, duration, _muted = _backstage_single_pass_filtergraph(
+        [{"source_path": str(clip), "duration_sec": 2.0}], ass_path=ass_path, width=320, height=240, fps=30)
+    assert "subtitles=filename=backstage-en.ass" in graph
+    output = cache.parent / "out.mp4"
+    _run_backstage_ffmpeg([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:1", *inputs,
+                           "-filter_complex", graph, "-map", "[vout]", "-map", "[aout]", "-t", f"{duration:.3f}", str(output)], cwd=cache)
+    frame = subprocess.run([ffmpeg, "-v", "error", "-ss", "1", "-i", str(output), "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"],
+                           check=True, capture_output=True).stdout
+    assert sum(1 for r, g, b in zip(frame[::3], frame[1::3], frame[2::3]) if min(r, g, b) > 210) > 20

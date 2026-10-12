@@ -18,15 +18,33 @@ def projects_root() -> Path:
     return root
 
 
+# project.json path -> (mtime_ns, size, summary). Large project files on an
+# external disk made the project shelf take seconds to appear; only projects
+# whose file changed are read again, and listing never writes folders.
+_SUMMARY_CACHE: dict[Path, tuple[int, int, dict[str, Any]]] = {}
+
+
 def list_projects() -> list[dict[str, Any]]:
     """Return lightweight metadata for existing wizard projects."""
     projects: list[dict[str, Any]] = []
     for project_json in sorted({file.resolve() for root in project_locations() for file in root.glob("*.zuckervid/project.json")}):
         try:
-            project = load_project(str(project_json.parent))
-        except ProjectError:
+            stat = project_json.stat()
+        except OSError:
             continue
-        projects.append(project_summary(project))
+        cached = _SUMMARY_CACHE.get(project_json)
+        if cached and cached[:2] == (stat.st_mtime_ns, stat.st_size):
+            summary = dict(cached[2])
+            # The export may have been moved or deleted without a project save.
+            if summary.get("export_path") and not Path(summary["export_path"]).exists():
+                summary.update({"has_export": False, "export_path": None})
+        else:
+            try:
+                summary = project_summary(load_project(str(project_json.parent), ensure_dirs=False))
+            except (ProjectError, OSError, ValueError):
+                continue
+            _SUMMARY_CACHE[project_json] = (stat.st_mtime_ns, stat.st_size, dict(summary))
+        projects.append(summary)
     return sorted(projects, key=lambda item: item.get("modified_at") or "", reverse=True)
 
 
@@ -61,9 +79,12 @@ def find_project_by_inputs(master: str, songs: str | None, videos: list[str]) ->
             project = load_project(str(project_json.parent))
         except ProjectError:
             continue
-        if project.refresh_input_records():
-            project.save()
+        # Refreshed in memory only: looking for a match must not rewrite
+        # (and mark stale) every other project, e.g. one on an unplugged drive.
+        refreshed = project.refresh_input_records(missing_invalidates=False)
         if project_input_signature(project) == wanted:
+            if refreshed:
+                project.save()
             return project
     return None
 

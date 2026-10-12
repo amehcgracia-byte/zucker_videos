@@ -40,3 +40,11 @@ def test_navigation_cancel_accepts_already_finished_preparation(tmp_path, monkey
     assert response.status_code == 200
     assert response.get_json() == {"ok": True, "status": status}
     assert client.post("/api/v1/wizard/cancel", json={}).status_code == 409
+
+
+def test_rendering_shots_without_an_active_project_is_refused_not_a_crash(tmp_path, monkeypatch):
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path / "data"))
+    client = create_app().test_client()
+    response = client.post("/api/v1/wizard/review/render", json={"transitions": {}})
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "not_ready"

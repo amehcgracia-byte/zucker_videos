@@ -710,8 +710,16 @@ def register_selected_inputs(
 
 
 def reconcile_registered_inputs(project: Project) -> bool:
-    """Reclassify registered project inputs and demote stale invalid video records."""
+    """Reclassify registered project inputs and demote stale invalid video records.
+
+    Only a change of what the edit is made of (a video that stopped or started
+    being a usable video, or a duplicate removed) makes finished stages stale.
+    Noting a missing file (an unplugged drive, a moved file) or refreshing
+    probe details is bookkeeping: it used to mark a finished, exported project
+    as needing everything again just by opening it.
+    """
     changed = False
+    invalidated = False
     kept_videos: list[dict[str, Any]] = []
     for record in project.data.get("inputs", {}).get("videos", []):
         path = Path(record.get("path") or "").expanduser()
@@ -726,6 +734,13 @@ def reconcile_registered_inputs(project: Project) -> bool:
         if record.get("missing"):
             record.pop("missing", None)
             changed = True
+        # A different file at the same path (another size or date) is a real change.
+        if record.get("size") is not None or record.get("mtime") is not None:
+            from core.storage import media_signature
+            signature = media_signature(path)
+            if record.get("size") != signature["size"] or record.get("mtime") != signature["mtime"]:
+                record["size"], record["mtime"] = signature["size"], signature["mtime"]
+                changed = invalidated = True
         item = classify_file(path)
         if item["kind"] == "videos":
             for key, value in video_classification_metadata(path).items():
@@ -735,10 +750,11 @@ def reconcile_registered_inputs(project: Project) -> bool:
             if record.get("status") == "not_a_video":
                 record.pop("status", None)
                 record.pop("not_a_video_reason", None)
-                changed = True
+                changed = invalidated = True
             kept_videos.append(record)
             continue
         if record.get("status") != "not_a_video" or record.get("not_a_video_reason") != item["note"]:
+            invalidated = invalidated or record.get("status") != "not_a_video"
             record["status"] = "not_a_video"
             record["not_a_video_reason"] = item["note"]
             record.pop("normalized", None)
@@ -746,12 +762,14 @@ def reconcile_registered_inputs(project: Project) -> bool:
         kept_videos.append(record)
     deduped_videos, duplicate_warnings = _dedupe_video_records(kept_videos)
     if deduped_videos != kept_videos or duplicate_warnings != (project.data.get("inputs", {}).get("warnings") or []):
+        invalidated = invalidated or len(deduped_videos) != len(kept_videos)
         kept_videos = deduped_videos
         project.data["inputs"]["warnings"] = duplicate_warnings
         changed = True
     if changed:
         project.data["inputs"]["videos"] = kept_videos
-        project.mark_all_stale_from("ingest")
+        if invalidated:
+            project.mark_all_stale_from("ingest")
         project.save()
     return changed
 

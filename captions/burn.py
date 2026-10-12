@@ -9,7 +9,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from core.ffmpeg import muxer_args_for
+from core.ffmpeg import filter_option_value, muxer_args_for
 
 from .model import CueTrack, Style
 from .render import render_ass
@@ -70,8 +70,8 @@ def burn(video_path: str | Path, cue_track: CueTrack, style: Style, *, output_pa
             sigma = max(1, float(letterbox.get("blur", 18)))
             vf = f"split=2[bg][fg];[bg]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},gblur=sigma={sigma}[blur];[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[main];[blur][main]overlay=(W-w)/2:(H-h)/2,{vf}"
         if header and header.get("title_enabled") and header.get("title"):
-            title = str(header["title"]).upper().replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("\n", r"\\n")
-            vf += f",drawbox=x=0.12*iw:y=40:w=0.76*iw:h=110:color=white:t=fill,drawtext=fontcolor=black:fontsize=42:text='{title}':x=(w-text_w)/2:y=70"
+            title = filter_option_value(" ".join(str(header["title"]).upper().split()))
+            vf += f",drawbox=x=0.12*iw:y=40:w=0.76*iw:h=110:color=white:t=fill,drawtext=fontcolor=black:fontsize=42:expansion=none:text={title}:x=(w-text_w)/2:y=70"
         command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-nostdin"]
         if progress_callback is not None:
             command += ["-progress", "pipe:1", "-nostats"]

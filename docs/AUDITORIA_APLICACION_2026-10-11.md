@@ -1,44 +1,51 @@
-# Application audit — 2026-10-11
+# Application audit — 11–12 October 2026
 
-## Revision under review
+## Completed synthetic round
 
-The audit branch includes PR #31 through f46d1714 (faster Reel scoring,
-damaged-source interval avoidance, and measured background scoring progress).
-The installed 2.6.3 application was built from 25314b3c; it predates the final
-progress update. No installation or user render was interrupted for this audit.
+Revision a967731d, including PR #31 through f46d1714, passed all ten browser and
+real-pipeline journeys: YouTube, Reel, Medley, 360 and Backstage on hosted macOS
+and Windows. Run 38163170602 succeeded. Each OS also passed 26 targeted tests.
+Windows package build and packaged startup checks passed in run 38163609156.
+These are scoped results, not a claim that the historical full suite is green.
 
-## Findings and corrections
+Corrections established in this round:
+- Mode cards accept clicks on their child labels/icons.
+- Continue accepts unchanged camera/filler settings while preparation runs.
+- Decoder stderr is drained concurrently to prevent pipe deadlocks.
+- Back navigation accepts preparation finishing before the cancellation request.
+- Caption burning avoids Windows drive-letter parsing in subtitle filter paths.
+- Arranging captions no longer starts an unsolicited composition render.
 
-- Clicking a mode card's child label did not select the mode. The handler now
-  resolves the enclosing card with `closest`; the UI journey clicks the label.
-- The first audit harness tried to click New Project behind the automatically
-  opened mode dialog, then expected the tutorial prompt after its answer was
-  already saved. The revised journey observes tutorial state and closes the
-  initial chooser before exercising New Project. These were harness failures.
-- PR #31's JPEG extraction read stderr only after stdout completed. A damaged
-  decoder can fill the stderr pipe and block both processes. Commit 56025ca9
-  drains stderr concurrently, retaining a bounded diagnostic tail. A child
-  process emitting more than pipe capacity exercises this regression.
-- A UI report must only set `passed` after its JavaScript error assertions pass.
+The macOS audit environment now installs ffmpeg-full for subtitle support. The
+harness collects evidence per mode and requires every journey to pass; failed
+steps cannot be hidden by continuing to the remaining modes.
 
-## Validation and remaining work
+## Follow-up on 12 October
 
-GitHub-hosted macOS and Windows execute real browser navigation and the real
-pipeline for YouTube, Reel, Medley, 360 and Backstage. The journey preserves
-screenshots, browser recordings, traces, server logs and output videos for seven
-days. It checks complete video decoding, duration and audio/video streams; Reel
-also exercises caption arrangement, burning and final composition.
+The installed 2.6.3 application now reports revision 841d7a46. PR #31 includes
+cherry-picked audit corrections plus new caption effects, direct caption editing,
+Reel replacement safeguards, FFmpeg escaping, persistent probe caching, and safer
+opening/listing of saved projects. The older local a967731d DMG was built but was
+not installed over this newer application.
 
-Run 38142633156 contains the decoder-pipe fix. The focused regression step passed
-on macOS; full journeys and Windows validation were still running when this
-record was written. This is not a completed all-mode validation report.
+The audit branch merges the complete PR #31 head 841d7a46, retaining its new
+caption renderer (including removal of the old animation expansion), its new
+handoff regression test, and the newer mode-card handling. Remote validation of
+this combined revision is being started; previous green results do not certify
+these newly integrated features. Targeted checks now include filter escaping,
+probe persistence and caption tests in addition to the existing regressions.
 
-The older packaged Windows build smoke test succeeded in run 38121532007, before
-the PR #31 merge; it is not evidence for the current revision's packaged build.
-Browser journeys do not exercise native microphone permission dialogs.
+## Scope and remaining work
 
-Only synthetic media has been used remotely so far. The user authorized short
-real-recording fragments for a second round, but none has been uploaded. That
-round, visual review of the rendered evidence, and any failures found by the
-ongoing journeys remain outstanding. Existing full-suite failures are not
-silenced or treated as successes by this audit.
+Journeys exercise new project, mode choice, import, mode-specific options,
+back/forward navigation, shot or paper review where applicable, and export.
+Outputs are decoded completely and checked for duration and audio/video streams.
+Reel also exercises caption distribution, burning and final composition, and
+asserts distribution does not start a render. Artifacts retain screenshots,
+traces, reports and synthetic videos for seven days per mode and OS.
+
+Only synthetic media has been uploaded so far. The authorized short real-recording
+round remains pending and requires private transport, without public media
+artifacts. Native microphone permission dialogs are not established by browser
+journeys; packaged Windows startup is a separate, narrower check. No user render,
+project or installed application was interrupted by this follow-up.
