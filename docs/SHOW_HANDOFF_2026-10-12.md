@@ -96,3 +96,13 @@ Undo/redo cover selection edits, closing, clearing, cut and paste. Text inputs k
 native shortcuts. Focused canvas supports clipboard JSON copy/cut/paste via native
 events; no global clipboard interception or HTML clipboard execution. No custom
 right-click menu replaces the browser menu. Ctrl/Cmd+Z and shifted redo supported.
+
+## Secondary black frame fix
+Observed black secondary canvas in browser. Removed unconditional capture on
+loadeddata/seeked (audio preparation could overwrite the frozen image). Capture is
+now explicit, waits for current-frame readiness, uses a candidate canvas and rejects
+near-black candidates while preserving the previous still. Four-second timeout
+reports failure. Demo's independent JPEG cannot be overwritten by media events.
+Browser verified visible wire figurine after reload and fixed-preview selection;
+JavaScript syntax checked. Near-black rejection is a prototype heuristic and can
+reject intentionally dark frames; production should offer an explicit override.
