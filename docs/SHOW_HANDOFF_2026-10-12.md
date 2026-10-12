@@ -86,3 +86,13 @@ Playback now primes the secondary media from the user gesture and reports reject
 play/decode errors instead of silently pausing. This addresses an observed code
 failure path; the user's exact stall was not independently reproduced. Prototype
 still has no video export. Do not present playback as a render.
+
+## Simple selection restored
+Rectangle drag is the default. Advanced points are explicitly selected from a
+selector; click the first vertex or press Enter to close. Closure uses a convex
+outer hull, removing interior vertices and crossings. This intentionally bridges
+concavities: it is not precise concave segmentation. Source pixels are preserved.
+Undo/redo cover selection edits, closing, clearing, cut and paste. Text inputs keep
+native shortcuts. Focused canvas supports clipboard JSON copy/cut/paste via native
+events; no global clipboard interception or HTML clipboard execution. No custom
+right-click menu replaces the browser menu. Ctrl/Cmd+Z and shifted redo supported.
