@@ -162,3 +162,12 @@ file delivery, transparency and failure behavior before advertising it. Keep loc
 painting/manual drawing import as explicit alternatives; no silent provider fallback.
 Local transition comparison at /transitions.html offers cut, zoom and whole-photo
 bounce, using private media. It is a timing/style demo, not semantic alignment proof.
+
+## Character mouth restored in storyboard
+Integrated same-scene still-image mouth canvas with rectangle selection, original
+pixel patch movement, aperture slider, remove, demo motion and audio-amplitude
+reaction. Per-scene coordinates survive scene navigation and enter decision JSON.
+Browser manually verified Character → Edit mouth → drag rectangle → next → previous:
+region still visible on original character. This replaces the disabled mouth action
+for still scenes. Overlay mouths and polygon tools remain separate/unintegrated;
+reload persistence, full project storage and real export remain unverified/pending.
