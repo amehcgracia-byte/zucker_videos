@@ -63,3 +63,15 @@ PR #32 at fc106448 contains Show phase 1. The main checkout has additional uncom
 Claude changes (gag modules, UI and Show fixes). This work does not overwrite or
 commit those changes. Audit PR #30 remains separate. No private footage, thumbnails,
 transcripts or voice recordings should be added to public git/Actions artifacts.
+
+## Follow-up: frozen image, recorded voice and rainbow steam
+The demo now freezes a selected resource frame, zooms into it for 1.2s, then plays
+an adjustable interval of the resource's original audio while main narration is
+paused. Main narration resumes afterwards. Mouth displacement follows an RMS audio
+amplitude envelope with a silence threshold (not phoneme lip sync). Images are also
+accepted as resources, with no voice attached. Frame time, voice start/length and
+mouth region remain manual; freeze and voice are separate controls.
+Rainbow steam is a procedural translucent particle preview on the main shot with
+manual placement. No cup detection/tracking. No production renderer integration.
+A short local excerpt of C0273 supplies the sample voice; its wording has not been
+independently transcribed/approved in this demo. No media added to GitHub.
