@@ -48,43 +48,29 @@ MODEL_FILES: dict[str, tuple[str, int]] = {
     "safety_checker/config.json": ("a476c773d57fd2acc712cf1878eb1e23295331190d631e47e82771370cd3312f", 692),
 }
 MODEL_BYTES = sum(size for _, size in MODEL_FILES.values())
-STEPS = 4
 SIZE = 512
 
 
 @dataclass(frozen=True)
 class Style:
     label: str
-    prompt: str          # "{subject}" is replaced by what to draw
-    guidance: float = 1.0  # above 1 the negative prompt applies, at twice the time
+    prompt: str            # "{subject}" is replaced by what to draw
+    guidance: float = 1.8  # above 1 the negative prompt applies (at twice the time)
+    steps: int = 5
 
 
-NEGATIVE = ("3d render, realistic photo, photograph, cgi, plastic, glossy reflections, vector clipart, "
-            "text, letters, watermark, signature, frame, border, table, pen, pencil, paper sheet")
+# The approved look: rough, imperfect, silly hand drawings - pencil, crayon
+# and marker - never glossy, never a photo of paper on a desk. "on white
+# paper" made the model paint the sheet, the desk and the pencils, so the
+# drawing floats on white and the negative prompt names those things.
+NEGATIVE = ("photo, photograph, photo of paper, paper at an angle, paper sheet, notebook, desk, table, pencils, pens, markers, crayons, perspective, cast shadow, "
+            "3d render, realistic, smooth shading, gradient, glossy, plush, sticker, vector art, clean perfect lines, "
+            "digital painting, frame, border, text, watermark")
 
 STYLES: dict[str, Style] = {
-    "caricature": Style("Caricatura pintada", "hand-painted gouache caricature of {subject}, big head, thick visible brush strokes, white background"),
-    "ink_splatter": Style("Tinta con salpicaduras", "expressive ink and watercolor illustration of {subject}, ink splatter, scratchy pen lines, white background"),
-    "marker": Style("Garabato a rotulador", "rough black marker doodle of {subject}, flat 2d, thick wobbly hand-drawn outlines, white background"),
-    "pencil": Style("Lápiz", "graphite pencil sketch of {subject}, rough hand-drawn lines, cross hatching, white background"),
-    "watercolour": Style("Acuarela", "loose watercolor painting of {subject}, ink outlines, paint splashes, bleeding colors, white background"),
-    "crayon": Style("Ceras", "wax crayon children's drawing of {subject}, colorful scribbles, naive, white background"),
-    "oil": Style("Óleo", "thick impasto oil painting of {subject}, bold palette knife strokes, expressive colors, white background"),
-    "ballpoint": Style("Boli", "blue ballpoint pen sketch of {subject}, notebook doodle, hatching, white background"),
-    "charcoal": Style("Carboncillo", "charcoal drawing of {subject}, smudged black strokes, rough, dramatic, white background"),
-    "pop_comic": Style("Cómic pop", "vintage pop art comic illustration of {subject}, halftone dots, bold black outlines, flat bright colors, white background"),
-    "engraving": Style("Grabado antiguo", "antique engraving of {subject}, fine black line hatching, 19th century book illustration, white background"),
-    "linocut": Style("Linograbado", "linocut print of {subject}, bold carved black shapes, red and black, rough texture, white background"),
-    "chalk": Style("Tiza pastel", "colorful chalk pastel drawing of {subject}, soft rough strokes, white background"),
-    "graffiti": Style("Grafiti", "spray paint graffiti of {subject}, paint drips, bold outlines, vivid colors, white background"),
-    "collage": Style("Collage", "paper cut-out collage of {subject}, torn magazine paper pieces, white background"),
-    "sumi_e": Style("Tinta japonesa", "japanese sumi-e ink wash painting of {subject}, black brush strokes, minimal, white background"),
-    "naive": Style("Naíf", "naive folk art painting of {subject}, flat bright colors, childlike, white background"),
-    "rubber_hose": Style("Dibujo animado años 30", "1930s rubber hose cartoon of {subject}, black and white, vintage animation, white background"),
-    "psychedelic": Style("Psicodélico", "1960s psychedelic poster illustration of {subject}, swirling bright colors, white background"),
-    "risograph": Style("Risografía", "risograph print of {subject}, grainy two-color pink and blue, misregistered, white background"),
-    "tattoo": Style("Tatuaje clásico", "old school tattoo flash of {subject}, bold black outlines, flat red yellow green colors, white background"),
-    "stipple": Style("Puntillismo", "stippling ink drawing of {subject}, thousands of black dots, white background"),
+    "pencil": Style("Lápiz", "rough graphite pencil sketch of {subject}, messy imperfect wobbly lines, unfinished doodle, childlike and funny, flat scan, isolated on white background"),
+    "crayon": Style("Ceras", "wax crayon drawing of {subject} by a child, scribbly uneven colouring with white gaps, naive and silly, flat scan, isolated on white background"),
+    "marker": Style("Rotulador", "felt-tip marker doodle of {subject}, thick wobbly black outlines, flat uneven colouring with gaps, silly cartoon, flat scan, isolated on white background"),
 }
 
 
@@ -203,12 +189,34 @@ def paint(subject: str, style: str, *, seed: int = 0, size: int = SIZE,
         callback = None
         if step:
             def callback(_pipe, index, _timestep, kwargs):  # noqa: ANN001 - diffusers signature
-                step(index + 1, STEPS)
+                step(index + 1, recipe.steps)
                 return kwargs
         result = pipe(prompt_for(subject, style), negative_prompt=NEGATIVE if recipe.guidance > 1 else None,
-                      num_inference_steps=STEPS, guidance_scale=recipe.guidance, width=size, height=size,
+                      num_inference_steps=recipe.steps, guidance_scale=recipe.guidance, width=size, height=size,
                       generator=torch.Generator().manual_seed(int(seed)), callback_on_step_end=callback)
     return result.images[0]
+
+
+def clean_background(image: Image.Image) -> bool:
+    """The drawing floats on white: at least three sides of the picture are plain
+    light paper colour (a bust may touch the bottom); a sheet lying on a desk,
+    or a pencil beside it, fails. Calibrated on DreamShaper's own output."""
+    rgb = np.asarray(image.convert("RGB")).astype(np.int16)
+    sides = [rgb[:8].reshape(-1, 3), rgb[-8:].reshape(-1, 3), rgb[:, :8].reshape(-1, 3), rgb[:, -8:].reshape(-1, 3)]
+    clean = [float(((side.min(axis=1) > 185) & ((side.max(axis=1) - side.min(axis=1)) < 40)).mean()) >= 0.85 for side in sides]
+    light = float(np.median(np.concatenate(sides).min(axis=1))) >= 210
+    return sum(clean) >= 3 and light
+
+
+def paint_clean(subject: str, style: str, *, seed: int = 0, tries: int = 3, step: Callable[[int, int], None] | None = None) -> Image.Image:
+    """Paint until the drawing floats on white (the model sometimes paints the
+    sheet on a desk); the last try is kept if none is clean."""
+    image = None
+    for attempt in range(max(1, tries)):
+        image = paint(subject, style, seed=seed + attempt * 101, step=step)
+        if clean_background(image):
+            return image
+    return image
 
 
 def cut_out(image: Image.Image, tolerance: int = 38) -> Image.Image:

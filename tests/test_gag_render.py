@@ -81,3 +81,46 @@ def test_a_sticker_runs_along_its_path_and_shrinks_away_at_the_end(tmp_path):
     assert sticker_pose(sticker, 1.25, 1000, 1000)[1] < 500   # mid-hop: in the air
     assert sticker_pose(sticker, 2.99, 1000, 1000)[2] < 0.3   # leaving: shrinking
     assert isinstance(sticker, Sticker)
+
+
+def _still_with_voice(ffmpeg: str, folder, seconds: float = 2.0):
+    """A textured still picture; silence for 1 s, then a loud voice."""
+    subprocess.run([ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=s={W}x{H}:r=1:d=1", "-frames:v", "1",
+                    str(folder / "still.png")], check=True)
+    subprocess.run([ffmpeg, "-v", "error", "-y", "-loop", "1", "-framerate", str(FPS), "-i", str(folder / "still.png"),
+                    "-f", "lavfi", "-i", f"aevalsrc='if(lt(t,1),0,0.6*sin(2*PI*220*t))':s=48000:d={seconds}",
+                    "-t", str(seconds), "-c:v", "libx264", "-crf", "8", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+                    str(folder / "in.mp4")], check=True)
+
+
+def test_a_filmed_mouth_drops_with_the_voice_and_shows_black_behind(tmp_path):
+    ffmpeg = _ffmpeg()
+    _still_with_voice(ffmpeg, tmp_path)
+    mouth = [0.4, 0.5, 0.2, 0.15]
+    render_gags(tmp_path / "in.mp4", [{"mouth": mouth, "at": 0.0, "duration": 2.0, "open": 0.06}], tmp_path / "out.mp4", ffmpeg=ffmpeg)
+    before, after = _frames(ffmpeg, tmp_path / "in.mp4"), _frames(ffmpeg, tmp_path / "out.mp4")
+    x0, y0, x1, y1 = int(0.4 * W), int(0.5 * H), int(0.6 * W), int(0.65 * H)
+    quiet, loud = int(0.5 * FPS), int(1.5 * FPS)
+    assert np.abs(after[quiet].astype(int) - before[quiet].astype(int)).mean() < 3      # silent: untouched
+    region_after, region_before = after[loud][:, x0:x1].astype(int), before[loud][:, x0:x1].astype(int)
+    # The patch's own pixels, moved down by some drop; black above them.
+    errors = {d: np.abs(region_after[y0 + d:y1 - 2] - region_before[y0:y1 - 2 - d]).mean() for d in range(3, 13)}
+    drop = min(errors, key=errors.get)
+    assert errors[drop] < 8 and drop >= 5
+    assert region_after[y0 + 2:y0 + drop - 2].mean() < 30          # black behind (compression blurs its edges)
+    assert np.abs(after[loud][:, :x0 - 2].astype(int) - before[loud][:, :x0 - 2].astype(int)).mean() < 3   # nothing else moves
+
+
+def test_a_lost_mouth_stops_instead_of_moving_the_wrong_pixels(tmp_path):
+    from core.gag_render import Mouth, move_mouth
+    rng = np.random.default_rng(1)
+    first = rng.integers(0, 255, (H, W, 3), dtype=np.uint8)
+    mouth = Mouth(at=0, duration=1, rect=[100.0, 80.0, 40.0, 20.0], open_px=10, envelope=np.ones(30, dtype=np.float32))
+    move_mouth(first.copy(), mouth, 0.0, FPS)                     # learns the mouth's surroundings
+    shifted = np.roll(first, 6, axis=1)                           # the camera moves a little: followed
+    move_mouth(shifted.copy(), mouth, 1 / FPS, FPS)
+    assert mouth.rect[0] == pytest.approx(106, abs=1) and not mouth.lost
+    other = rng.integers(0, 255, (H, W, 3), dtype=np.uint8)      # a different picture: lost
+    untouched = other.copy()
+    move_mouth(other, mouth, 2 / FPS, FPS)
+    assert mouth.lost and np.array_equal(other, untouched)

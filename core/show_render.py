@@ -45,34 +45,56 @@ def kept_ranges(plan: dict[str, Any]) -> list[tuple[int, int]]:
     return [(a, b) for a, b in ranges]
 
 
-def zoom_expression(plan: dict[str, Any]) -> str:
-    """zoompan z(on): the zoom of the shot each output frame belongs to."""
-    terms: dict[float, list[str]] = {}
+def _per_shot(plan: dict[str, Any], value: Callable[[dict[str, Any], int, int], str | None], default: str) -> str:
+    """An expression of the output frame number ``on``: ``value(shot, first, length)``
+    during each shot (shots returning None keep ``default``)."""
+    terms: list[str] = []
     position = 0
     for shot in plan["shots"]:
         length = int(shot["end_frame"]) - int(shot["start_frame"])
-        zoom = float(shot.get("zoom") or 1.0)
-        if zoom != 1.0:
-            terms.setdefault(zoom, []).append(f"between(on,{position},{position + length - 1})")
+        part = value(shot, position, length)
+        if part is not None:
+            terms.append(f"between(on,{position},{position + length - 1})*({part}-({default}))")
         position += length
-    expression = "1"
-    for zoom, parts in terms.items():
-        expression += f"+{zoom - 1:.4f}*{_sum(parts)}"
-    return expression
+    return f"{default}+{_sum(terms)}" if terms else default
+
+
+def zoom_expression(plan: dict[str, Any]) -> str:
+    """zoompan z(on): each shot's zoom, moving linearly to ``zoom_end`` if it has one."""
+    def value(shot: dict[str, Any], first: int, length: int) -> str | None:
+        start = float(shot.get("zoom") or 1.0)
+        end = float(shot.get("zoom_end") or start)
+        if start == 1.0 and end == 1.0:
+            return None
+        if end == start:
+            return f"{start:.4f}"
+        return f"({start:.4f}+{(end - start) / max(1, length - 1):.6f}*(on-{first}))"
+    return _per_shot(plan, value, "1")
+
+
+def focus_expressions(plan: dict[str, Any]) -> tuple[str, str]:
+    """zoompan x and y: the crop window centred on each shot's ``focus`` (shares
+    of the picture), kept inside it."""
+    def axis(index: int, default: float) -> str:
+        centre = _per_shot(plan, lambda shot, *_: f"{shot['focus'][index]:.4f}" if shot.get("focus") else None, f"{default:.4f}")
+        size = "iw" if index == 0 else "ih"
+        return f"max(0,min({size}-{size}/zoom,{size}*({centre})-{size}/zoom/2))"
+    return axis(0, 0.5), axis(1, FACE_HEIGHT)
 
 
 def video_filter(plan: dict[str, Any], width: int = 1920, height: int = 1080) -> str:
     fps = int(plan.get("fps") or 30)
     selection = _sum([f"between(n,{a},{b - 1})" for a, b in kept_ranges(plan)])
     zoom = zoom_expression(plan)
-    # Work at 4/3 of the output so a 1.32 punch-in keeps its detail.
+    x, y = focus_expressions(plan)
+    # Work at 4/3 of the output so a punch-in keeps its detail.
     work_w, work_h = width * 4 // 3 // 2 * 2, height * 4 // 3 // 2 * 2
     return (
         f"fps={fps},setpts=N/{fps}/TB,"
         f"scale={work_w}:{work_h}:force_original_aspect_ratio=increase,crop={work_w}:{work_h},"
         f"select='{selection}',setpts=N/{fps}/TB,"
         f"zoompan=z='{zoom}':d=1:s={width}x{height}:fps={fps}"
-        f":x='iw/2-iw/zoom/2':y='max(0,min(ih-ih/zoom,ih*{FACE_HEIGHT}-ih/zoom/2))',"
+        f":x='{x}':y='{y}',"
         "format=yuv420p"
     )
 
@@ -103,46 +125,98 @@ def edit_audio(samples: np.ndarray, plan: dict[str, Any]) -> np.ndarray:
     return np.vstack(pieces) if pieces else np.zeros((0, 2), dtype=np.float32)
 
 
+def cutaway_filters(plan: dict[str, Any], first_input: int, width: int, height: int) -> tuple[list[str], list[str], str]:
+    """Inputs and filter chains putting each cutaway (another video: a close-up
+    of a thing the host talks about) over the edited picture during its time.
+    The sound stays the host's: cutaways bring only their picture."""
+    fps = int(plan.get("fps") or 30)
+    inputs: list[str] = []
+    chains: list[str] = []
+    current = "v"
+    for index, cut in enumerate(plan.get("cutaways") or []):
+        at, duration = float(cut["at"]), max(1.0 / fps, float(cut["duration"]))
+        inputs += ["-ss", f"{float(cut.get('source_start') or 0):.3f}", "-t", f"{duration + 0.5:.3f}", "-i", str(cut["source"])]
+        zoom = max(1.0, float(cut.get("zoom") or 1.0))
+        fx, fy = cut.get("focus") or (0.5, 0.5)
+        z = f"{zoom:.4f}"
+        frame = (f"crop=w=iw/{z}:h=ih/{z}:x='max(0,min(iw-iw/{z},iw*{fx:.4f}-iw/{z}/2))'"
+                 f":y='max(0,min(ih-ih/{z},ih*{fy:.4f}-ih/{z}/2))',") if zoom > 1.0 else ""
+        label = f"cut{index}"
+        chains.append(f"[{first_input + index}:v]fps={fps},trim=duration={duration:.4f},setpts=PTS-STARTPTS,{frame}"
+                      f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,format=yuv420p,"
+                      f"setpts=PTS+{at:.4f}/TB[{label}]")
+        chains.append(f"[{current}][{label}]overlay=enable='between(t,{at:.4f},{at + duration - 0.5 / fps:.4f})':eof_action=pass[{label}o]")
+        current = f"{label}o"
+    return inputs, chains, current
+
+
 def render_show(source: str | Path, plan: dict[str, Any], output: str | Path, *, ffmpeg: str = "ffmpeg",
-                width: int = 1920, height: int = 1080, progress: Callable[[float], None] | None = None) -> Path:
+                width: int = 1920, height: int = 1080, progress: Callable[[float], None] | None = None,
+                cancel: Callable[[], None] | None = None) -> Path:
+    """Render the plan. ``cancel`` raises to stop: FFmpeg is stopped at once."""
+    import threading
     source, output = Path(source), Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     audio = edit_audio(_decode_audio(ffmpeg, source), plan)
+    if cancel:
+        cancel()
     pending = output.with_name(f".{output.stem}.part{output.suffix}")
     frames = sum(b - a for a, b in kept_ranges(plan))
+    extra_inputs, chains, last = cutaway_filters(plan, 2, width, height)
+    graph = ";".join([f"[0:v]{video_filter(plan, width, height)}[v]", *chains])
     command = [
         ffmpeg, "-y", "-v", "error", "-nostdin", "-progress", "pipe:2",
         "-i", str(source),
         "-f", "f32le", "-ar", str(SAMPLE_RATE), "-ac", "2", "-i", "pipe:0",
-        "-filter_complex", f"[0:v]{video_filter(plan, width, height)}[v]",
-        "-map", "[v]", "-map", "1:a", "-frames:v", str(frames),
+        *extra_inputs,
+        "-filter_complex", graph,
+        "-map", f"[{last}]", "-map", "1:a", "-frames:v", str(frames),
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
         "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(pending),
     ]
     process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.PIPE, text=False)
-    try:
-        assert process.stdin is not None and process.stderr is not None
-        import threading
-        errors: list[bytes] = []
+    errors: list[bytes] = []
+    failures: list[BaseException] = []
 
-        def read_progress() -> None:
-            for line in process.stderr:
-                errors.append(line)
-                if progress and line.startswith(b"frame="):
-                    try:
-                        progress(min(1.0, int(line.split(b"=")[1]) / max(1, frames)))
-                    except ValueError:
-                        pass
-        reader = threading.Thread(target=read_progress, daemon=True)
-        reader.start()
+    def read_progress() -> None:
+        assert process.stderr is not None
+        for line in process.stderr:
+            errors.append(line)
+            if progress and line.startswith(b"frame=") and not failures:
+                try:
+                    progress(min(1.0, int(line.split(b"=")[1]) / max(1, frames)))
+                except ValueError:
+                    pass
+                except BaseException as exc:  # a progress callback that cancels
+                    failures.append(exc)
+
+    def write_audio() -> None:
+        assert process.stdin is not None
         try:
             process.stdin.write(audio.astype(np.float32).tobytes())
             process.stdin.close()
-        except BrokenPipeError:
+        except (BrokenPipeError, ValueError, OSError):
             pass  # FFmpeg stopped early: its own error is reported below
-        code = process.wait()
+
+    reader = threading.Thread(target=read_progress, daemon=True)
+    writer = threading.Thread(target=write_audio, daemon=True)
+    reader.start()
+    writer.start()
+    try:
+        while process.poll() is None:
+            if failures:
+                raise failures[0]
+            if cancel:
+                cancel()
+            try:
+                process.wait(timeout=0.25)
+            except subprocess.TimeoutExpired:
+                pass
         reader.join(timeout=5)
-        if code != 0:
+        writer.join(timeout=5)
+        if failures:
+            raise failures[0]
+        if process.returncode != 0:
             detail = b"".join(line for line in errors[-40:] if not line.startswith((b"frame=", b"fps=", b"out_", b"progress=", b"bitrate=", b"total_size=", b"speed=", b"dup_", b"drop_", b"stream_")))
             raise RuntimeError(f"Show render failed: {detail.decode(errors='replace').strip()[-2000:]}")
         pending.replace(output)
@@ -150,4 +224,5 @@ def render_show(source: str | Path, plan: dict[str, Any], output: str | Path, *,
     finally:
         if process.poll() is None:
             process.kill()
+            process.wait()
         pending.unlink(missing_ok=True)

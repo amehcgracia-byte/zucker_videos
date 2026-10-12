@@ -158,6 +158,12 @@
         <div id="showOptions" class="song-picker" hidden>
           <h2>Show</h2>
           <p>Your talking video is cleaned and cut automatically: long pauses, "eh"/"um" and phrases you said twice are removed (the last take stays), then it is cut into short shots with punch-in zooms. Captions from what you say are ready in Overlay &amp; Captions.</p>
+          <ol class="show-assistant">
+            <li><strong>Your talking video.</strong> <select id="showMain"></select> <span class="show-hint">The one where you talk to the camera (up to ten minutes works well).</span></li>
+            <li><strong>Close-ups of what you mention</strong> (optional): every other video or photo of the project. <span id="showResourceList" class="show-hint"></span> Film the things you talk about, close and steady, a few seconds each.</li>
+            <li><strong>Their voices</strong> (optional): while filming a thing, say its lines in its voice. In the review you choose which recorded line each character says.</li>
+          </ol>
+          <label><input type="checkbox" id="showReview" checked> Review every effect before rendering (preview, adjust, approve or discard)</label>
           <label>Pace <select id="showStyle"><option value="choe" selected>Fast: a cut every ~1.5 s with zooms (David Choe style)</option><option value="calm">Calm: longer shots, softer zooms</option></select></label>
           <label>Language <select id="showLanguage"><option value="" selected>Detect automatically</option><option value="es">Spanish</option><option value="en">English</option></select></label>
           <label>Gags <select id="showGags"><option value="claude" selected>Drawings, characters and words planned by your Claude</option><option value="keywords">Drawings and words from keywords (offline)</option><option value="off">No gags</option></select></label>
@@ -332,6 +338,34 @@
           <div id="reviewLargeModal" class="review-large-modal" hidden role="dialog" aria-modal="true" aria-label="Enlarged shot"><button id="closeReviewLarge" class="review-large-close" type="button" aria-label="Close">×</button><img id="reviewLarge" alt="Selected shot" /></div>
           <div class="review-actions"><button id="replaceRejected" class="icon-button">Replace rejected</button><button id="renderReviewed" class="primary icon-button">Render Frames</button></div>
         </div>
+        <div id="showReviewBox" class="review-box show-review" hidden>
+          <div class="review-ready-notice" role="status"><strong>Your show, scene by scene</strong><span>Each scene explains what it proposes. Watch it, then accept it, modify it or leave it without effect; not every moment needs decorating. The next scenes are prepared while you look at this one. Nothing is rendered until the last step.</span></div>
+          <nav id="showSteps" class="show-steps" aria-label="Show storyboard"></nav>
+          <div class="show-board">
+            <div class="show-stage" id="showStage">
+              <video id="showStageVideo" controls playsinline></video>
+              <canvas id="showStageCard" width="1280" height="720" hidden></canvas>
+              <div id="showStageLayer" class="show-stage-layer"></div>
+              <p id="showStageStatus" class="show-stage-status" role="status"></p>
+            </div>
+            <aside id="showPanel" class="show-panel"></aside>
+          </div>
+          <div class="show-step-buttons"><button id="showBack" class="icon-button small" type="button">Back</button><span id="showStepCount"></span><button id="showNext" class="primary icon-button small" type="button">Next</button></div>
+          <div id="showCharacterStudio" class="show-studio" role="dialog" aria-modal="true" aria-label="New character from a photo" hidden>
+            <div class="show-studio-card">
+              <header><strong>New character from a photo</strong><button type="button" class="icon-button small" data-studio="close">Close</button></header>
+              <ol class="show-studio-steps"><li data-studio-step="1">Photo</li><li data-studio-step="2">Cut out</li><li data-studio-step="3">Mouth, pivot, voice</li></ol>
+              <div id="showStudioBody"></div>
+            </div>
+          </div>
+          <div id="showContextMenu" class="show-context-menu" role="dialog" aria-label="Element tools" hidden>
+            <strong>Animate</strong>
+            <div class="show-actions-grid" id="showActionButtons"></div>
+            <label class="show-field"><span>Intensity</span><input type="range" id="showIntensity" min="0.2" max="3" step="0.1" value="1"></label>
+            <div class="show-fields"><label class="show-field"><span>Enters at (s)</span><input type="number" id="showOverlayAt" step="0.1"></label><label class="show-field"><span>Lasts (s)</span><input type="number" id="showOverlayDuration" step="0.1" min="0.5"></label></div>
+            <div class="show-actions"><button type="button" data-menu="bigger">Bigger</button><button type="button" data-menu="smaller">Smaller</button><button type="button" data-menu="remove">Remove</button></div>
+          </div>
+        </div>
         <div id="paperEditBox" class="review-box paper-edit-box" hidden>
           <div class="review-ready-notice" role="status"><strong>Backstage paper edit ready</strong><span>Review the written sequence before any video render starts.</span></div>
           <div id="storyboardBox" class="storyboard-box" hidden>
@@ -457,5 +491,7 @@
     <link rel="stylesheet" href="/tutorial.css" />
     <script src="/tutorial.js"></script>
     <script src="/app.js?v=editor-ui-9"></script>
+    <script src="/show_review.js?v=2"></script>
+    <script src="/show_characters.js?v=1"></script>
   </body>
 </html>

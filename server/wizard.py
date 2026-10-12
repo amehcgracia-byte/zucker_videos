@@ -462,7 +462,9 @@ class WizardRunner:
         finally:
             _release_job_project_lock(job)
 
-    def start_show(self, project: Project, source: str, style: str, language: str | None, gags: str = "claude") -> WizardJob:
+    def start_show(self, project: Project, source: str, style: str, language: str | None, gags: str = "claude",
+                   review: bool = False, resources: list[str] | None = None) -> WizardJob:
+        """Show in one go, or (``review``) prepared for a shot-by-shot review first."""
         with self._lock:
             if self._thread and self._thread.is_alive():
                 raise RuntimeError("A pipeline is already running")
@@ -472,43 +474,131 @@ class WizardRunner:
                 raise RuntimeError("This project's pipeline is already running")
             self._job = job
             self._prepared_project = None
-            self._thread = threading.Thread(target=self._run_show, args=(job, project, source, style, language, gags), daemon=True, name="zucker-show")
+            target, args = ((self._run_show_prepare, (job, project, source, style, language, gags, list(resources or [])))
+                            if review else (self._run_show, (job, project, source, style, language, gags)))
+            self._thread = threading.Thread(target=target, args=args, daemon=True, name="zucker-show")
             self._thread.start()
             return job
 
-    def _run_show(self, job, project, source, style, language, gags="claude"):
-        from core.show import run_show
-        started = time.monotonic()
-
+    @staticmethod
+    def _show_hooks(job):
         def cancel():
             if job.cancel_event.is_set():
                 raise WizardCancelled()
 
-        def progress(value, detail):
+        def progress(value, detail, *, stage=None):
             cancel()
             job.progress = int(min(99, value))
-            job.stage = "edit" if value < 60 else "export"
+            job.stage = stage or ("edit" if value < 60 else "export")
             job.message = "Show"
             job.detail = detail
             job.stage_progress = float(min(100, value))
             job.progress_updated_at = time.time()
             job.tasks = {"show": {"id": "show", "label": detail, "percent": int(min(100, value)), "detail": ""}}
+        return cancel, progress
+
+    def _finish_show(self, job, project, destination, manifest, started):
+        project.data["stages"]["export"].update(status="done", elapsed_seconds=round(time.monotonic() - started, 3), outputs={"export_manifest": str(project.artifacts_dir / "export_manifest.json")})
+        project.save()
+        summary = manifest.get("show") or {}
+        job.result = {"project_path": str(project.folder), "filename": destination.name, "path": str(destination), "media_url": "/api/v1/wizard/result",
+                      "platform": "show", "cut_count": summary.get("cuts", 0), "show": summary, "warnings": manifest.get("warnings", [])}
+        job.progress = 100
+        job.status = "done"
+        job.message = "Show ready"
+
+    def _run_show(self, job, project, source, style, language, gags="claude"):
+        from core.show import run_show
+        started = time.monotonic()
+        cancel, progress = self._show_hooks(job)
         try:
             project.data.setdefault("settings", {}).setdefault("wizard", {}).update(platform="show", show={"source": source, "style": style, "language": language or "", "gags": gags})
             project.save()
             destination, manifest = run_show(project, source, style_name=style, language=language, gags=gags, progress=progress, cancel=cancel)
-            project.data["stages"]["export"].update(status="done", elapsed_seconds=round(time.monotonic() - started, 3), outputs={"export_manifest": str(project.artifacts_dir / "export_manifest.json")})
-            project.save()
-            summary = manifest.get("show") or {}
-            job.result = {"project_path": str(project.folder), "filename": destination.name, "path": str(destination), "media_url": "/api/v1/wizard/result",
-                          "platform": "show", "cut_count": summary.get("cuts", 0), "show": summary, "warnings": manifest.get("warnings", [])}
-            job.progress = 100
-            job.status = "done"
-            job.message = "Show ready"
+            self._finish_show(job, project, destination, manifest, started)
         except WizardCancelled:
             self._mark_cancelled(job)
         except Exception as exc:
             LOGGER.exception("Show failed")
+            job.status = "failed"
+            job.error = str(exc)
+            job.technical_details = traceback.format_exc()
+        finally:
+            _release_job_project_lock(job)
+
+    def _run_show_prepare(self, job, project, source, style, language, gags, resources):
+        from core.show import prepare_show
+        cancel, progress = self._show_hooks(job)
+        held = False
+        try:
+            project.data.setdefault("settings", {}).setdefault("wizard", {}).update(
+                platform="show", show={"source": source, "style": style, "language": language or "", "gags": gags, "review": True, "resources": resources})
+            project.save()
+            summary = prepare_show(project, source, resources, style_name=style, language=language, gags=gags,
+                                   progress=lambda value, detail: progress(value, detail, stage="edit"), cancel=cancel)
+            # Nothing is rendered before the person reviews every effect.
+            job.status = "waiting_show_review"
+            job.stage = "review"
+            job.progress = 60
+            job.message = "Review the show"
+            job.detail = f"{summary['proposals']} effects proposed: preview, adjust, approve or discard each one."
+            job.result = {"platform": "show", "show_review": summary}
+            held = True
+        except WizardCancelled:
+            self._mark_cancelled(job)
+        except Exception as exc:
+            LOGGER.exception("Show preparation failed")
+            job.status = "failed"
+            job.error = str(exc)
+            job.technical_details = traceback.format_exc()
+        finally:
+            if not held:
+                _release_job_project_lock(job)
+
+    def adopt_show_review(self, project: Project) -> WizardJob:
+        """Reattach to a prepared Show review (for example after reopening the app)."""
+        with self._lock:
+            if self._job and self._job.status in {"running", "waiting_show_review"}:
+                return self._job
+            job = WizardJob(id="current", status="waiting_show_review", progress=60, message="Review the show",
+                            detail="Preview, adjust, approve or discard each effect.", stage="review")
+            _attach_project(job, project)
+            if not _acquire_job_project_lock(job, project):
+                raise RuntimeError("This project's pipeline is already active; reconnect instead of starting another")
+            self._job = job
+            self._prepared_project = project
+            self._thread = None
+            return job
+
+    def render_show_review(self, project: Project) -> WizardJob:
+        """Render the edit with the approved effects only."""
+        with self._lock:
+            if not self._job or self._job.status != "waiting_show_review":
+                raise RuntimeError("There is no Show review waiting to be rendered")
+            if self._thread and self._thread.is_alive():
+                raise RuntimeError("A video is already being processed")
+            job = self._job
+            job.status = "running"
+            job.stage = "export"
+            job.progress = 0
+            job.message = "Rendering the reviewed show"
+            job.detail = "Only the approved effects"
+            job.cancel_event.clear()
+            self._thread = threading.Thread(target=self._render_show_review_job, args=(job, project), daemon=True, name="zucker-show-render")
+            self._thread.start()
+            return job
+
+    def _render_show_review_job(self, job, project):
+        from core.show import render_reviewed_show
+        started = time.monotonic()
+        cancel, progress = self._show_hooks(job)
+        try:
+            destination, manifest = render_reviewed_show(project, progress=lambda value, detail: progress(value, detail, stage="export"), cancel=cancel)
+            self._finish_show(job, project, destination, manifest, started)
+        except WizardCancelled:
+            self._mark_cancelled(job)
+        except Exception as exc:
+            LOGGER.exception("Reviewed Show render failed")
             job.status = "failed"
             job.error = str(exc)
             job.technical_details = traceback.format_exc()

@@ -19,12 +19,14 @@ from typing import Any, Callable
 from PIL import Image
 
 from core import gag_director, gag_paint
-from core.gag_stickers import as_sticker, character_with_bubble, photo_sticker, word_sticker
+from core.gag_stickers import _shadowed, character_with_bubble, photo_sticker, word_sticker
 
 # Centre of a picture for each position, when the free side is the left.
 CENTRES = {"": (0.21, 0.42), "top": (0.2, 0.24), "bottom": (0.22, 0.72)}
 WORD_COLOURS = ("#ffd23f", "#5ce1ff", "#ff5ca8", "#7dff6a", "#ffffff", "#ff8a3d")
 WORD_FONTS = ("marker", "marker", "chalk", "board")
+FORMULAS = ("E=mc²", "π", "∞", "√2", "x²+y²", "1+1=3", "∑", "?", "a²+b²=c²", "÷0")
+MATH_ORBIT = (0.15, 0.13)     # orbit radii around the face, shares of the frame
 Progress = Callable[[float, str], None]
 
 
@@ -91,19 +93,46 @@ def painted_picture(subject: str, style: str, *, seed: int = 3, library_root: Pa
                     step: Callable[[int, int], None] | None = None) -> Image.Image:
     """A painted sticker, reused from the gag library when it was painted before."""
     from core.gag_library import library_dir
+    style = style if style in gag_paint.STYLES else "pencil"
     folder = (library_root or library_dir()) / "Painted" / gag_paint.STYLES[style].label
     target = folder / f"{_slug(subject)} {hashlib.sha1(f'{subject}|{style}|{seed}'.encode()).hexdigest()[:6]}.png"
     if target.is_file():
         return Image.open(target).convert("RGBA")
-    sticker = as_sticker(gag_paint.cut_out(gag_paint.paint(subject, style, seed=seed, step=step)))
+    # The drawing itself, its paper removed: no white sticker rim, only a soft shadow to read on video.
+    sticker = _shadowed(gag_paint.cut_out(gag_paint.paint_clean(subject, style, seed=seed, step=step)))
     folder.mkdir(parents=True, exist_ok=True)
     sticker.save(target)
     return sticker
 
 
+def math_items(gag: dict[str, Any], folder: Path, index: int, centre: tuple[float, float]) -> list[dict[str, Any]]:
+    """Hand-written formulas orbiting the host's head, each on its own phase."""
+    import math
+    items = []
+    count = 5
+    for k in range(count):
+        formula = FORMULAS[(index + k) % len(FORMULAS)]
+        # Chalkduster has no "²": those formulas are always in Marker Felt.
+        image = word_sticker(formula, colour=WORD_COLOURS[(index + k) % len(WORD_COLOURS)], font="marker" if "²" in formula else ("chalk", "marker")[k % 2],
+                             font_size=110, tilt=(-8, 6, -4, 9, -6)[k])
+        path = folder / f"gag-{index:03d}-math{k}.png"
+        image.save(path)
+        phase = k / count
+        keys = []
+        for step in range(9):
+            share = step / 8
+            angle = 2 * math.pi * (phase + share * 0.75)
+            keys.append([round(share, 3), round(centre[0] + MATH_ORBIT[0] * math.cos(angle), 4),
+                         round(centre[1] + MATH_ORBIT[1] * math.sin(angle), 4)])
+        items.append({"image": str(path), "at": round(gag["at"] + 0.12 * k, 3), "duration": round(gag["duration"] - 0.12 * k, 3),
+                      "width": 0.075 if len(formula) <= 3 else 0.12, "effect": "pop", "path": keys, "kind": "math"})
+    return items
+
+
 def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right", library: list[dict[str, Any]] | None = None,
                progress: Progress | None = None, cancel: Callable[[], None] | None = None,
-               frame_size: tuple[int, int] = (1920, 1080)) -> tuple[list[dict[str, Any]], list[str]]:
+               frame_size: tuple[int, int] = (1920, 1080),
+               face_at: Callable[[float], tuple[float, float] | None] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
     """Render items for core.gag_render, and notes about gags that were skipped."""
     from core.gag_library import search
     folder.mkdir(parents=True, exist_ok=True)
@@ -120,6 +149,10 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
         if kind == "warp":
             items.append({"warp": gag["warp"], "at": gag["at"], "duration": gag["duration"], "strength": 0.8})
             continue
+        if kind == "math":
+            where = face_at(gag["at"] + gag["duration"] / 2) if face_at else None
+            items.extend(math_items(gag, folder, index, where or (0.62 if face == "right" else 0.38, 0.32)))
+            continue
         position = gag.get("position") or ("left" if face == "right" else "right")
         side = "left" if centre(position, face)[0] < 0.5 else "right"
         image: Image.Image | None = None
@@ -127,9 +160,10 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
             if not painter:
                 continue
             painted += 1
+            style = gag.get("style") if gag.get("style") in gag_paint.STYLES else "pencil"
             if progress:
-                progress(painted / max(1, to_paint), f"Painting {painted}/{to_paint}: {gag['subject']} ({gag_paint.STYLES[gag['style']].label})")
-            picture = painted_picture(gag["subject"], gag["style"], seed=3 + index % 2)
+                progress(painted / max(1, to_paint), f"Painting {painted}/{to_paint}: {gag['subject']} ({gag_paint.STYLES[style].label})")
+            picture = painted_picture(gag["subject"], style, seed=3 + index % 2)
             image = character_with_bubble(picture, gag["says"], side=side, seed=index) if kind == "character" and gag.get("says") else picture
         elif kind == "word":
             image = word_sticker(gag["text"], colour=WORD_COLOURS[index % len(WORD_COLOURS)], font=WORD_FONTS[index % len(WORD_FONTS)],

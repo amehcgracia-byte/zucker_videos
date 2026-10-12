@@ -1,0 +1,204 @@
+"""Show scenes (the shared storyboard model) and the opening: title card, logo and intro."""
+import subprocess
+
+import numpy as np
+import pytest
+from PIL import Image
+
+from core import show_scenes
+from core.ffmpeg import ffprobe, tool_status
+from core.show_identity import card_picture, with_opening
+from core.show_proposals import proposal
+
+
+def _ffmpeg() -> str:
+    ffmpeg = str(tool_status().get("ffmpeg_path") or "")
+    if not ffmpeg:
+        pytest.skip("ffmpeg unavailable")
+    return ffmpeg
+
+
+def _talk(seconds: float):
+    words, t, n = [], 0.0, 0
+    while t < seconds - 0.5:
+        n += 1
+        words.append((f"word{n}." if n % 12 == 0 else f"word{n}", round(t, 2), round(t + 0.35, 2)))
+        t += 0.42
+    return words
+
+
+def test_scenes_break_at_sentence_ends_or_pauses_within_their_limits():
+    words = _talk(100.0)
+    edges = show_scenes.split(words, [31.0, 58.0], 100.0)
+    assert edges[0][0] == 0.0 and edges[-1][1] == 100.0
+    assert all(show_scenes.MIN_SEC <= b - a <= show_scenes.MAX_SEC for a, b in edges[:-1])
+    ends = {end for text, _, end in words if text.endswith(".")} | {31.0, 58.0}
+    assert all(b in ends for _, b in edges[:-1])          # never in the middle of a sentence
+
+
+def test_accepting_a_scene_approves_what_is_ready_and_plain_leaves_it_untouched():
+    ready = proposal("word", 5.0, 2.0, reason="Director: WOW", kind="word", text="WOW")
+    incomplete = proposal("character", 8.0, 0.0, reason='You say "this guy could speak"', source="x.mp4")
+    incomplete["needs"] = ["region", "voice"]
+    later = proposal("cutaway", 40.0, 2.0, reason='You say "millionaires"', source="y.mp4", source_start=1.0)
+    plan = {"edited_duration": 60.0}
+    document = show_scenes.build(plan, _talk(60.0), [30.0], [ready, incomplete, later], title="Channel")
+    first, second = document["scenes"][0], document["scenes"][1]
+    assert set(first["effects"]) == {ready["id"], incomplete["id"]} and second["effects"] == [later["id"]]
+    assert first["proposal"].startswith("Proposed: a shouted word")
+    show_scenes.decide(document, [ready, incomplete, later], first["id"], "accepted")
+    assert ready["status"] == "approved" and incomplete["status"] == "proposed"      # still needs its region and voice
+    show_scenes.decide(document, [ready, incomplete, later], second["id"], "plain")
+    assert later["status"] == "discarded" and second["proposal"] == "Left without effect."
+    exported = show_scenes.decisions(document)
+    assert [scene["decision"] for scene in exported["scenes"]] == ["accepted", "plain"]
+    assert exported["title"] == "Channel" and "asset" not in str(exported)          # no media inside
+    with pytest.raises(ValueError):
+        show_scenes.decide(document, [], first["id"], "maybe")
+
+
+def test_placed_pictures_keep_the_storyboard_position_and_size(tmp_path):
+    Image.new("RGBA", (200, 100), (255, 0, 0, 255)).save(tmp_path / "sun.png")
+    document = {"scenes": [{"start": 10.0, "end": 30.0, "decision": "accepted",
+                            "overlays": [{"asset": str(tmp_path / "sun.png"), "x": 12, "y": 12, "width": 23}]},
+                           {"start": 30.0, "end": 50.0, "decision": "plain", "overlays": [{"asset": str(tmp_path / "sun.png")}]}]}
+    items = show_scenes.overlay_items(document)
+    assert len(items) == 1
+    item = items[0]
+    assert item["width"] == pytest.approx(0.23) and item["x"] == pytest.approx(0.12 + 0.115)
+    assert item["y"] == pytest.approx(0.12 + 0.23 * 16 / 9 * 0.5 / 2)              # half as tall as wide
+
+
+def test_the_card_shows_the_logo_as_it_is(tmp_path):
+    logo = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+    for x in range(100):
+        logo.putpixel((x, 50), (10, 200, 30, 255))
+    logo.save(tmp_path / "logo.png")
+    card = np.asarray(card_picture("Channel of Chema", tmp_path / "logo.png", 640, 360))
+    green = np.argwhere((card[..., 1] > 150) & (card[..., 0] < 60))
+    assert len(green) > 50                                   # the logo's own pixels are on the card
+
+
+def test_logo_card_and_intro_go_before_the_show_with_their_sound(tmp_path):
+    ffmpeg = _ffmpeg()
+    subprocess.run([ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0x404040:s=1920x1080:r=30:d=3",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-c:v", "libx264", "-preset", "veryfast", "-crf", "19",
+                    "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-shortest", str(tmp_path / "show.mp4")], check=True)
+    subprocess.run([ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=640x480:r=25:d=1.5", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", str(tmp_path / "intro.mp4")], check=True)       # no sound, another size and rate
+    Image.new("RGBA", (120, 120), (240, 200, 0, 255)).save(tmp_path / "logo.png")
+    added = with_opening(tmp_path / "show.mp4", tmp_path / "final.mp4", title="My show", logo=tmp_path / "logo.png",
+                         intro=tmp_path / "intro.mp4", ffmpeg=ffmpeg)
+    assert added == pytest.approx(3.5, abs=0.1)
+    probe = ffprobe(str(tmp_path / "final.mp4"))
+    assert float(probe["format"]["duration"]) == pytest.approx(6.5, abs=0.15)
+    video = next(s for s in probe["streams"] if s["codec_type"] == "video")
+    assert (int(video["width"]), int(video["height"])) == (1920, 1080)
+    raw = subprocess.run([ffmpeg, "-v", "error", "-i", str(tmp_path / "final.mp4"), "-ac", "1", "-ar", "8000", "-f", "f32le", "-"],
+                         capture_output=True, check=True).stdout
+    sound = np.frombuffer(raw, dtype=np.float32)
+    assert np.sqrt(np.mean(sound[1000:27000] ** 2)) < 0.01               # card and intro: silent
+    tail = sound[30000:50000]
+    spectrum = np.abs(np.fft.rfft(tail))
+    assert abs(np.argmax(spectrum) * 8000 / len(tail) - 440) < 15       # then the show, in step
+
+
+def _storyboard(tmp_path, monkeypatch):
+    import json
+
+    import server.api as api_module
+    from core import show_proposals
+    from core.project import create_project
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path / "data"))
+    project = create_project("Show", str(tmp_path / "Board.zuckervid"))
+    video, intro = tmp_path / "talk.mp4", tmp_path / "intro.mp4"
+    video.write_bytes(b"x")
+    intro.write_bytes(b"y")
+    project.data["inputs"]["videos"] = [{"path": str(video)}, {"path": str(intro)}]
+    project.save()
+    (project.artifacts_dir / "show_plan.json").write_text(json.dumps({"edited_duration": 90.0, "cuts": 5, "source": str(video), "shots": []}))
+    word = proposal("word", 5.0, 2.0, reason="Director: WOW", kind="word", text="WOW")
+    cut = proposal("cutaway", 50.0, 2.0, reason='You say "money"', source=str(video), source_start=1.0)
+    show_proposals.save(project.artifacts_dir / "show_proposals.json", [word, cut], source=str(video), resources=[])
+    document = show_scenes.build({"edited_duration": 90.0}, _talk(90.0), [30.0, 60.0], [word, cut])
+    show_scenes.save(project.artifacts_dir / "show_scenes.json", document)
+    rendered = []
+
+    def fake_preview(project, scene_id, **kwargs):
+        rendered.append(scene_id)
+        out = project.cache_dir / "show_previews" / f"{scene_id}.mp4"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"preview")
+        return out
+    monkeypatch.setattr("core.show.preview_scene", fake_preview)
+    app = api_module.create_app(project_path=str(project.folder))
+    return project, app.test_client(), document, rendered
+
+
+def test_the_storyboard_prepares_the_next_scenes_and_keeps_every_decision(tmp_path, monkeypatch):
+    import json
+    import time
+    project, client, document, rendered = _storyboard(tmp_path, monkeypatch)
+    board = client.get("/api/v1/show/scenes").get_json()
+    assert len(board["scenes"]) == len(document["scenes"]) >= 3
+    for _ in range(50):
+        if len(rendered) >= 3:
+            break
+        time.sleep(0.05)
+    assert rendered[:3] == [scene["id"] for scene in document["scenes"][:3]]        # current scene and the two next
+    board = client.get("/api/v1/show/scenes").get_json()
+    assert board["scenes"][0]["preview"]["status"] == "ready" and board["scenes"][0]["preview"]["url"]
+    first = board["scenes"][0]["id"]
+    decided = client.post(f"/api/v1/show/scenes/{first}/decision", json={"decision": "plain"}).get_json()
+    assert decided["decision"] == "plain"
+    saved = json.loads((project.artifacts_dir / "show_scenes.json").read_text())
+    assert saved["scenes"][0]["decision"] == "plain"                               # kept in the project
+    stored = json.loads((project.artifacts_dir / "show_proposals.json").read_text())["proposals"]
+    assert next(item for item in stored if item["kind"] == "word")["status"] == "discarded"
+    assert client.post(f"/api/v1/show/scenes/{first}/decision", json={"decision": "maybe"}).status_code == 400
+    exported = client.get("/api/v1/show/scenes/decisions")
+    assert "attachment" in exported.headers["Content-Disposition"] and exported.get_json()["scenes"][0]["decision"] == "plain"
+
+
+def test_identity_intro_and_pictures_come_only_from_the_project_and_its_library(tmp_path, monkeypatch):
+    from PIL import Image
+    project, client, document, _ = _storyboard(tmp_path, monkeypatch)
+    intro = str(tmp_path / "intro.mp4")
+    assert client.patch("/api/v1/show/scenes/identity", json={"intro": str(tmp_path / "other.mp4")}).status_code == 400
+    identity = client.patch("/api/v1/show/scenes/identity", json={"title": "Channel of Chema", "intro": intro, "seconds": 9}).get_json()
+    assert identity["identity"]["title"] == "Channel of Chema" and identity["identity"]["seconds"] == 6.0 and identity["intro"]["path"] == intro
+    scene = document["scenes"][1]["id"]
+    outside = tmp_path / "outside.png"
+    Image.new("RGB", (10, 10)).save(outside)
+    assert client.post(f"/api/v1/show/scenes/{scene}/overlays", json={"overlays": [{"asset": str(outside)}]}).status_code == 400
+    from server.api import app_home
+    flyers = app_home() / "ReelOverlays"
+    flyers.mkdir(parents=True, exist_ok=True)
+    Image.new("RGBA", (40, 20), (255, 0, 0, 255)).save(flyers / "sun.png")
+    library = client.get("/api/v1/show/library").get_json()["items"]
+    sun = next(item for item in library if item["name"] == "sun")
+    placed = client.post(f"/api/v1/show/scenes/{scene}/overlays", json={"overlays": [{"asset": sun["path"], "x": 10, "y": 15, "width": 25}]}).get_json()
+    assert placed["overlays"][0]["width"] == 25 and placed["decision"] == "modified"
+    assert client.get(sun["url"]).status_code == 200
+
+
+def test_animate_element_actions_and_a_talking_character_with_its_voice(tmp_path):
+    import json
+    folder = tmp_path / "Characters" / "Yellow toy"
+    folder.mkdir(parents=True)
+    Image.new("RGBA", (100, 200), (250, 220, 40, 255)).save(folder / "cutout.png")
+    (folder / "character.json").write_text(json.dumps({"mouth": {"rect": [0.3, 0.5, 0.4, 0.1]}, "pivot": [0.5, 1.0],
+                                                        "voice": ["/v/C0274.MP4", 268.9, 6.0]}))
+    sun = tmp_path / "sun.png"
+    Image.new("RGBA", (100, 100), (255, 200, 0, 255)).save(sun)
+    scene = {"start": 0.0, "end": 20.0, "decision": "accepted", "overlays": [
+        {"asset": str(sun), "x": 10, "y": 10, "width": 20, "action": "up", "intensity": 1.0},
+        {"asset": str(sun), "x": 10, "y": 10, "width": 20, "action": "pulse"},
+        {"asset": str(folder / "cutout.png"), "x": 60, "y": 40, "width": 10, "action": "path", "path": [[0, 60, 40], [1, 90, 45]], "hops": 3},
+        {"asset": str(folder / "cutout.png"), "x": 60, "y": 40, "width": 10, "action": "talk", "at": 5.0}]}
+    up, pulse, run, talk = show_scenes.overlay_items({"scenes": [scene]})
+    assert up["path"][1][2] == pytest.approx(up["path"][0][2] - 0.15)            # moves up
+    assert pulse["effect"] == "pulse"
+    assert run["path"] == [[0.0, 0.6, 0.4], [1.0, 0.9, 0.45]] and run["hops"] == 3 and run["pivot"] == [0.5, 1.0]
+    assert talk["insert"] == "character" and talk["source"] == "host" and talk["voice"][1] == 268.9   # its own recorded voice
+    assert talk["overlays"][0]["mouth"] == {"rect": [0.3, 0.5, 0.4, 0.1]}

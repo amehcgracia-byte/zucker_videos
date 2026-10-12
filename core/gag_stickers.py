@@ -29,21 +29,23 @@ def _font(size: int) -> ImageFont.ImageFont:
     return ImageFont.truetype(path, size) if path else ImageFont.load_default()
 
 
-# Lettering that looks written by hand (macOS system fonts), then the app's own.
-HAND_FONTS = {
-    "marker": ("/System/Library/Fonts/MarkerFelt.ttc", 1),
-    "chalk": ("/System/Library/Fonts/Supplemental/Chalkduster.ttf", 0),
-    "note": ("/System/Library/Fonts/Noteworthy.ttc", 1),
-    "board": ("/System/Library/Fonts/Supplemental/ChalkboardSE.ttc", 2),
+# Lettering that looks written by hand: macOS faces first, then the ones every
+# Windows has, then the app's own (Verdana) as the last resort.
+HAND_FONTS: dict[str, tuple[tuple[str, int], ...]] = {
+    "marker": (("/System/Library/Fonts/MarkerFelt.ttc", 1), ("C:/Windows/Fonts/segoeprb.ttf", 0), ("C:/Windows/Fonts/comicbd.ttf", 0)),
+    "chalk": (("/System/Library/Fonts/Supplemental/Chalkduster.ttf", 0), ("C:/Windows/Fonts/Inkfree.ttf", 0), ("C:/Windows/Fonts/segoepr.ttf", 0)),
+    "note": (("/System/Library/Fonts/Noteworthy.ttc", 1), ("C:/Windows/Fonts/segoepr.ttf", 0)),
+    "board": (("/System/Library/Fonts/Supplemental/ChalkboardSE.ttc", 2), ("C:/Windows/Fonts/comicbd.ttf", 0)),
 }
 
 
 def hand_font(size: int, name: str = "marker") -> ImageFont.ImageFont:
-    path, index = HAND_FONTS.get(name, HAND_FONTS["marker"])
-    try:
-        return ImageFont.truetype(path, size, index=index)
-    except OSError:
-        return _font(size)
+    for path, index in HAND_FONTS.get(name, HAND_FONTS["marker"]):
+        try:
+            return ImageFont.truetype(path, size, index=index)
+        except OSError:
+            continue
+    return _font(size)
 
 
 def _outline(image: Image.Image, width: int, colour=WHITE) -> Image.Image:

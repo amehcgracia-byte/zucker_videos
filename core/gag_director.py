@@ -32,7 +32,7 @@ from typing import Any
 from captions.effects import FUN_EFFECTS
 from core.gag_paint import STYLES
 
-KINDS = ("drawing", "character", "word", "photo", "warp")
+KINDS = ("drawing", "character", "word", "photo", "warp", "math")
 POSITIONS = ("left", "right", "top-left", "top-right", "bottom-left", "bottom-right")
 EFFECTS = tuple(name for name in FUN_EFFECTS if name != "none")
 WARPS = ("stretch", "swirl", "wave")
@@ -83,6 +83,7 @@ Rules:
 - "character": someone who reacts to the host (the person they talk about, a random witness, an animal, an object with a face...). "subject" describes them visually (English); "says" is their short funny reply, in the language of the talk.
 - "word": one to three words, shouted, in the language of the talk.
 - "photo": only for a picture listed in the library below ("query" = its name).
+- "math": hand-written formulas orbit the host's head for 3-5 s when they think, explain, philosophise or talk about time, numbers or ideas. At most one every 45 s.
 - "warp": the whole picture bends for 2-4 s when the talk invites it ("stretch" for stretching/pulling/long things, "swirl" for spirals/dizzy/crazy/time, "wave" for shaking/moving/drunk/dreams). At most one every 40 s.
 - "style": mix them all, never the same style twice in a row: {styles}.
 - "effect": vary them; entrances (pop, spin, drop, rise, fly_left, fly_right) or loops (pulse, jelly, bounce, wobble, shake, blink).
@@ -255,6 +256,9 @@ CHARACTERS: dict[str, tuple[str, ...]] = {
     "a crazy doctor": ("doctor", "medico", "hospital", "sick", "enfermo"),
     "an old rich tycoon with a top hat": ("rockefeller", "millionaire", "banker", "banquero", "rich"),
 }
+MATH_WORDS = ("think", "thinking", "pensar", "pienso", "idea", "philosophical", "philosophy", "filosofia", "mean", "meaning",
+              "significado", "time", "tiempo", "future", "futuro", "loop", "spiral", "espiral", "circle", "numbers", "numeros",
+              "calculate", "calcular", "learn", "learned", "aprender", "explain", "explicar", "physics", "fisica", "math", "matematicas")
 WARP_WORDS: dict[str, tuple[str, ...]] = {
     "stretch": ("stretch", "estirar", "estira", "pull", "long", "largo", "elastic", "elastico"),
     "swirl": ("spiral", "espiral", "dizzy", "mareo", "crazy", "loco", "tornado", "loop"),
@@ -282,13 +286,16 @@ def keyword_gags(words: list[dict[str, Any]], library: list[dict[str, Any]], *, 
     replies = REPLIES.get((language or "es")[:2], REPLIES["en"])
     names = {Path(entry["path"]).stem: set(entry.get("words") or []) for entry in library}
     gags: list[dict[str, Any]] = []
-    free_at, warp_free_at = 1.5, 10.0
+    free_at, warp_free_at, math_free_at = 1.5, 10.0, 8.0
     for start, end, text in _timed_lines(words):
         tokens = {token for token in re.split(r"[^a-z]+", _ascii(text)) if token}
         warp = _first_match(WARP_WORDS, tokens)
         if warp and start >= warp_free_at:
             gags.append({"kind": "warp", "warp": warp, "at": round(start, 2), "duration": 3.0})
             warp_free_at = start + 40.0
+        if tokens & set(MATH_WORDS) and start >= math_free_at:
+            gags.append({"kind": "math", "at": round(start, 2), "duration": 4.0})
+            math_free_at = start + 45.0
         if start < free_at:
             continue
         photo = next((name for name, keys in names.items() if keys and keys <= tokens), None)
@@ -336,6 +343,10 @@ def clean_gags(raw: list[Any], duration: float, *, face_side: str = "right") -> 
             if item.get("warp") in WARPS:
                 warps.append({"kind": "warp", "warp": item["warp"], "at": round(at, 2), "duration": round(min(length, duration - at), 2)})
             continue
+        if kind == "math":
+            # Around the host's head: it overlays the person, not the free side.
+            warps.append({"kind": "math", "at": round(at, 2), "duration": round(min(max(length, 3.0), 5.0, duration - at), 2)})
+            continue
         subject = str(item.get("subject") or "").strip()[:120]
         text = str(item.get("text") or "").strip()[:40]
         says = str(item.get("says") or "").strip()[:80]
@@ -368,6 +379,7 @@ def clean_gags(raw: list[Any], duration: float, *, face_side: str = "right") -> 
     warps.sort(key=lambda gag: gag["at"])
     spaced: list[dict[str, Any]] = []
     for warp in warps:
-        if not spaced or warp["at"] >= spaced[-1]["at"] + 30.0:
+        same = [kept for kept in spaced if kept["kind"] == warp["kind"]]
+        if not same or warp["at"] >= same[-1]["at"] + (45.0 if warp["kind"] == "math" else 30.0):
             spaced.append(warp)
     return sorted(kept + spaced, key=lambda gag: gag["at"])

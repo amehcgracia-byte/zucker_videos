@@ -245,6 +245,23 @@ function gigabytes(bytes) {
 // Claude plans the gags with the person's own subscription (local Claude
 // Code); the painter draws them on this computer. Both are optional: without
 // Claude the keyword director plans, without the painter only words appear.
+function renderShowAssistant() {
+  // The talking video and the close-ups, from the project's videos.
+  const select = document.querySelector("#showMain");
+  if (!select) return;
+  const videos = detected.videos.map((item) => item.path).filter(Boolean);
+  const previous = select.value;
+  select.innerHTML = videos.map((path) => `<option value="${escapeHtml(path)}">${escapeHtml(path.split(/[\\/]/).pop())}</option>`).join("");
+  if (videos.includes(previous)) select.value = previous;
+  const list = document.querySelector("#showResourceList");
+  const update = () => {
+    const others = videos.filter((path) => path !== select.value).map((path) => path.split(/[\\/]/).pop());
+    if (list) list.textContent = others.length ? `Close-ups: ${others.join(", ")}.` : "No close-ups yet.";
+  };
+  select.onchange = update;
+  update();
+}
+
 async function refreshShowGagStatus() {
   const status = await api("/gags/status");
   const claude = status.claude || {};
@@ -1373,6 +1390,17 @@ function sameProjectId(left, right) {
   if (!left || !right) return left === right;
   return String(left).replace(/\\/g, "/") === String(right).replace(/\\/g, "/");
 }
+
+// The Show review (web/show_review.js) hands the render back to the progress screen.
+window.resumeAfterShowReview = (started) => {
+  activeProjectId = projectIdFromStatus(started) || activeProjectId;
+  document.querySelector("#showReviewBox").hidden = true;
+  document.querySelector("#progressBox").hidden = false;
+  lastPipelineStage = "export";
+  setStep(3);
+  ensureStatusPolling();
+  return pollStatus(statusPollGeneration);
+};
 
 function stopStatusPolling() {
   if (pollTimer) clearInterval(pollTimer);
@@ -3430,7 +3458,7 @@ function applyEditTypeMode() {
   if (medley) { medley.hidden = selectedPlatform !== "medley"; if (!medley.hidden) renderMedleySources(); }
   const showOptions = document.querySelector("#showOptions");
   if (showOptions) showOptions.hidden = selectedPlatform !== "show";
-  if (selectedPlatform === "show") refreshShowGagStatus().catch(() => {});
+  if (selectedPlatform === "show") { renderShowAssistant(); refreshShowGagStatus().catch(() => {}); }
   if (songPicker && passthrough360) songPicker.hidden = true;
   if (reelOptions) {
     reelOptions.hidden = selectedPlatform !== "reel";
@@ -3904,6 +3932,8 @@ async function startWizard(options = {}) {
       show_style: document.querySelector("#showStyle")?.value || "choe",
       show_language: document.querySelector("#showLanguage")?.value || "",
       show_gags: document.querySelector("#showGags")?.value || "claude",
+      show_main: document.querySelector("#showMain")?.value || "",
+      show_review: document.querySelector("#showReview")?.checked ?? true,
       song_index: selectedSong,
       trim_start_sec: timeToSeconds(document.querySelector("#trimStart").value),
       trim_end_sec: timeToSeconds(document.querySelector("#trimEnd").value),
@@ -4239,6 +4269,19 @@ function renderWizardStatus(status) {
     stopStatusPolling();
     return;
   }
+  if (status.status === "waiting_show_review") {
+    if (progressBox) progressBox.hidden = true;
+    if (reviewBox) reviewBox.hidden = true;
+    const showBox = document.querySelector("#showReviewBox");
+    if (showBox) showBox.hidden = false;
+    if (lastPipelineStage !== "show_review") {
+      lastPipelineStage = "show_review";
+      window.ShowReview?.open().catch((error) => showToast(error.message, true));
+    }
+    stopStatusPolling();
+    setStep(4);
+    return;
+  }
   if (status.status === "waiting_paper_edit") {
     if (progressBox) progressBox.hidden = true;
     if (reviewBox) reviewBox.hidden = true;
@@ -4256,6 +4299,7 @@ function renderWizardStatus(status) {
     if (progressBox) progressBox.hidden = false;
     if (reviewBox) reviewBox.hidden = true;
     document.querySelector("#paperEditBox")?.setAttribute("hidden", "");
+    document.querySelector("#showReviewBox")?.setAttribute("hidden", "");
   }
   progressFloor = progress;
   updateTiming(status, progress);

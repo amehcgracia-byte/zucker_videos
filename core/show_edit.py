@@ -37,13 +37,16 @@ class ShowStyle:
     target_shot: float = 1.5     # typical shot length
     min_shot: float = 0.7        # never shorter than this when splitting
     max_shot: float = 3.2        # longer speech runs are split
-    zooms: tuple[float, ...] = (1.0, 1.18, 1.32)
+    zooms: tuple[float, ...] = (1.0, 1.3, 1.65)   # wide, medium, close on the face
+    push_every: int = 5          # every Nth long shot slowly pushes in...
+    reveal_every: int = 9        # ...and every Mth starts close and opens up
+    move_min_sec: float = 2.0    # only shots this long move
     retake_window: float = 25.0  # how far apart two takes of a phrase can be
     fps: int = 30
 
 
 CHOE = ShowStyle()
-CALM = ShowStyle(max_pause=0.6, target_shot=3.5, min_shot=1.5, max_shot=7.0, zooms=(1.0, 1.12))
+CALM = ShowStyle(max_pause=0.6, target_shot=3.5, min_shot=1.5, max_shot=7.0, zooms=(1.0, 1.15, 1.35), reveal_every=0)
 STYLES = {"choe": CHOE, "calm": CALM}
 
 
@@ -62,6 +65,7 @@ class Shot:
     start: float                 # source seconds
     end: float
     zoom: float = 1.0
+    zoom_end: float | None = None  # a camera move: the zoom reached at the end of the shot
     words: list[int] = field(default_factory=list)
     cut_before: str = "start"    # start / silence / filler / retake / pace
 
@@ -187,6 +191,7 @@ def pace(runs: list[Shot], words: list[Word], style: ShowStyle = CHOE) -> list[S
             pieces[-1:] = [first, second]
         shots.extend(pieces)
     previous = None
+    long_shots = 0
     for index, shot in enumerate(shots):
         # Alternate framings so each cut reads as a cut; a new idea after a
         # silence returns to the wide framing.
@@ -197,6 +202,16 @@ def pace(runs: list[Shot], words: list[Word], style: ShowStyle = CHOE) -> list[S
             zoom = options[index % len(options)]
         shot.zoom = zoom
         previous = zoom
+        if shot.duration >= style.move_min_sec:
+            # Counted over the shots long enough to move, so moves keep coming
+            # whatever the rhythm of the talk.
+            if style.reveal_every and long_shots % style.reveal_every == style.reveal_every // 2:
+                shot.zoom, shot.zoom_end = style.zooms[-1], style.zooms[0]   # close, then the whole room
+                previous = style.zooms[0]
+            elif style.push_every and long_shots % style.push_every == style.push_every // 2:
+                shot.zoom_end = round(zoom + 0.15, 3)                         # slow push in
+                previous = shot.zoom_end
+            long_shots += 1
     return shots
 
 
@@ -225,7 +240,7 @@ def plan_show(transcript: dict[str, Any], duration: float, style: ShowStyle = CH
         "fps": style.fps,
         # Frames are exact; seconds are for reading.
         "shots": [{"start_frame": round(s.start * style.fps), "end_frame": round(s.end * style.fps),
-                   "start": round(s.start, 6), "end": round(s.end, 6), "zoom": s.zoom, "words": s.words, "cut_before": s.cut_before} for s in shots],
+                   "start": round(s.start, 6), "end": round(s.end, 6), "zoom": s.zoom, **({"zoom_end": s.zoom_end} if s.zoom_end else {}), "words": s.words, "cut_before": s.cut_before} for s in shots],
     }
 
 

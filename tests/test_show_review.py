@@ -1,0 +1,151 @@
+"""Show with review, end to end: prepare proposals, approve some, render only those."""
+import json
+import subprocess
+
+import numpy as np
+import pytest
+
+from core import show, show_proposals, show_resources
+from core.ffmpeg import ffprobe, tool_status
+from core.project import create_project
+
+
+def _ffmpeg() -> str:
+    ffmpeg = str(tool_status().get("ffmpeg_path") or "")
+    if not ffmpeg:
+        pytest.skip("ffmpeg unavailable")
+    return ffmpeg
+
+
+def _words(text: str, start: float, step: float = 0.4):
+    out = []
+    for token in text.split():
+        out.append({"word": token, "start_sec": round(start, 2), "end_sec": round(start + step - 0.08, 2)})
+        start += step
+    return out
+
+
+@pytest.fixture
+def media(tmp_path):
+    ffmpeg = _ffmpeg()
+    subprocess.run([ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0x303030:s=320x180:r=25:d=8",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=8", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-shortest", str(tmp_path / "talk.mp4")], check=True)
+    subprocess.run([ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=25:d=6",
+                    "-f", "lavfi", "-i", "aevalsrc='if(between(t,2,3),0.5*sin(2*PI*1000*t),0)':s=48000:d=6",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(tmp_path / "closeup.mp4")], check=True)
+    return tmp_path
+
+
+def test_only_reviewed_effects_are_rendered_and_captions_follow_the_interruption(media, monkeypatch):
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(media / "data"))
+    project = create_project("Show", str(media / "Show.zuckervid"))
+    words = _words("there will be millionaires one day", 0.5) + _words("this guy could speak", 3.4) + _words("and that was the end", 5.6)
+
+    def fake_transcribe(sources, artifact, **kwargs):
+        return {"status": "ready", "sources": [{"language": "en", "segments": [{"words": words}]}]}
+    monkeypatch.setattr("core.backstage_transcription.transcribe_sources", fake_transcribe)
+    monkeypatch.setattr("core.show_framing.face_track", lambda *a, **k: [(t * 0.5, 0.6, 0.3, 0.14) for t in range(16)])
+    monkeypatch.setattr(show_resources, "_speech", lambda *a, **k: [{"start": 2.0, "end": 3.0, "text": "hey bro", "language": "en"}])
+    monkeypatch.setattr("core.scene_tags.available", lambda: False)
+
+    def fake_match(lines, resources, top=3):
+        return [[{"resource": 0, "interval": 0, "score": 0.05}] if "millionaires" in line else [] for line in lines]
+    monkeypatch.setattr(show_resources, "match", fake_match)
+
+    summary = show.prepare_show(project, str(media / "talk.mp4"), [str(media / "talk.mp4"), str(media / "closeup.mp4")],
+                                gags="off", progress=lambda *a: None, cancel=lambda: None)
+    assert summary["by_kind"] == {"cutaway": 1, "character": 1}
+    stored = show_proposals.load(project.artifacts_dir / "show_proposals.json")
+    items = stored["proposals"]
+    cut = next(item for item in items if item["kind"] == "cutaway")
+    character = next(item for item in items if item["kind"] == "character")
+    assert character["needs"] == ["region", "voice"]
+    show_proposals.update(items, cut["id"], status="approved")
+    show_proposals.update(items, character["id"], region={"rect": [0.4, 0.5, 0.2, 0.15]}, zoom_sec=0.4,
+                          voice=character["params"]["voices"][0], status="approved")
+    show_proposals.save(project.artifacts_dir / "show_proposals.json", items)
+
+    destination, manifest = show.render_reviewed_show(project, progress=lambda *a: None, cancel=lambda: None)
+    plan = json.loads((project.artifacts_dir / "show_plan.json").read_text())
+    inserted = 0.4 + 1.0                                        # push-in + one second of voice
+    duration = float(ffprobe(str(destination))["format"]["duration"])
+    assert duration == pytest.approx(plan["edited_duration"] + inserted, abs=0.1)
+    assert manifest["show"]["close_ups"] == 1 and manifest["show"]["characters"] == 1
+    cues = json.loads((project.folder / "cue_track.json").read_text())["cues"]
+    after = [cue for cue in cues if "end" in " ".join(cue["lines"])]
+    before = [cue for cue in cues if "millionaires" in " ".join(cue["lines"])]
+    character_at = character["at"]
+    assert before[0]["start"] < character_at                         # earlier captions stay put
+    assert after[0]["start"] >= character_at + inserted - 0.05       # later ones wait for the character
+
+
+def test_a_window_of_the_edit_keeps_its_frames_and_moves_its_close_ups():
+    plan = {"fps": 30, "edited_duration": 6.0, "shots": [{"start_frame": 0, "end_frame": 60}, {"start_frame": 100, "end_frame": 220}],
+            "cutaways": [{"at": 3.0, "duration": 1.0, "source": "x"}, {"at": 0.2, "duration": 0.5, "source": "y"}]}
+    part = show.window_plan(plan, 1.5, 4.5)
+    assert [(s["start_frame"], s["end_frame"]) for s in part["shots"]] == [(45, 60), (100, 175)]
+    assert part["cutaways"] == [{"at": 1.5, "duration": 1.0, "source": "x"}]
+
+
+def _review_project(tmp_path, monkeypatch):
+    import server.api as api_module
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path / "data"))
+    project = create_project("Show", str(tmp_path / "Review.zuckervid"))
+    video = tmp_path / "talk.mp4"
+    video.write_bytes(b"x")
+    plan = {"fps": 30, "edited_duration": 10.0, "cuts": 3, "source": str(video), "shots": [{"start_frame": 0, "end_frame": 300}]}
+    (project.artifacts_dir / "show_plan.json").write_text(json.dumps(plan))
+    character = show_proposals.proposal("character", 4.0, 0.0, reason="test", source=str(video), still_time=1.0, zoom=1.25,
+                                        focus=[0.5, 0.5], region=None, voice=None, voices=[])
+    word = show_proposals.proposal("word", 2.0, 2.0, reason="test", kind="word", text="WOW")
+    show_proposals.save(project.artifacts_dir / "show_proposals.json", [word, character], source=str(video), resources=[])
+    app = api_module.create_app(project_path=str(project.folder))
+    return project, app.test_client(), word, character
+
+
+def test_the_review_api_adjusts_approves_and_refuses_what_is_incomplete(tmp_path, monkeypatch):
+    project, client, word, character = _review_project(tmp_path, monkeypatch)
+    review = client.get("/api/v1/show/review").get_json()
+    assert [item["kind"] for item in review["proposals"]] == ["word", "character"]
+    assert review["plan"]["edited_duration"] == 10.0
+    refused = client.patch(f"/api/v1/show/review/{character['id']}", json={"status": "approved"})
+    assert refused.status_code == 400 and "region" in refused.get_json()["error"]["message"]
+    changed = client.patch(f"/api/v1/show/review/{word['id']}", json={"text": "WHOA", "at": 2.5, "status": "approved", "evil": 1}).get_json()
+    assert changed["params"]["text"] == "WHOA" and changed["at"] == 2.5 and changed["status"] == "approved" and "evil" not in changed["params"]
+    stored = show_proposals.load(project.artifacts_dir / "show_proposals.json")
+    assert stored["proposals"][0]["status"] == "approved" and stored["source"]   # saved, metadata kept
+    assert client.patch("/api/v1/show/review/nope", json={"status": "approved"}).status_code == 404
+
+
+def test_the_review_only_serves_its_own_files(tmp_path, monkeypatch):
+    project, client, _, _ = _review_project(tmp_path, monkeypatch)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("private")
+    assert client.get(f"/api/v1/show/media?path={secret}").status_code == 404
+    inside = project.cache_dir / "show_previews" / "a.mp4"
+    inside.parent.mkdir(parents=True, exist_ok=True)
+    inside.write_bytes(b"video")
+    assert client.get(f"/api/v1/show/media?path={inside}").status_code in (200, 206)
+    assert client.get(f"/api/v1/show/still?source={secret}&t=1").status_code == 404
+
+
+def test_without_a_prepared_review_there_is_nothing_to_show(tmp_path, monkeypatch):
+    import server.api as api_module
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path / "data"))
+    project = create_project("Empty", str(tmp_path / "Empty.zuckervid"))
+    client = api_module.create_app(project_path=str(project.folder)).test_client()
+    assert client.get("/api/v1/show/review").status_code == 404
+
+
+def test_the_person_can_add_steam_and_a_character_from_this_show_only(tmp_path, monkeypatch):
+    project, client, _, _ = _review_project(tmp_path, monkeypatch)
+    steam = client.post("/api/v1/show/review/add", json={"kind": "steam", "at": 3.0})
+    assert steam.status_code == 201 and steam.get_json()["params"]["point"] == [0.35, 0.75]
+    foreign = client.post("/api/v1/show/review/add", json={"kind": "character", "at": 5.0, "source": str(tmp_path / "elsewhere.mp4")})
+    assert foreign.status_code == 400
+    talk = str(tmp_path / "talk.mp4")
+    character = client.post("/api/v1/show/review/add", json={"kind": "character", "at": 5.0, "source": talk, "still_time": 1.0}).get_json()
+    assert character["needs"] and "region" in character["needs"]
+    kinds = [item["kind"] for item in client.get("/api/v1/show/review").get_json()["proposals"]]
+    assert kinds.count("steam") == 1 and kinds.count("character") == 2

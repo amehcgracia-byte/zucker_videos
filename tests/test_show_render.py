@@ -97,3 +97,46 @@ def test_a_long_show_with_hundreds_of_cuts_is_accepted_by_ffmpeg():
     result = subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-f", "lavfi", "-i", f"testsrc2=s=160x90:r={FPS}:d=3",
                              "-vf", graph, "-f", "null", "-"], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr[-300:]
+
+
+def _colour_video(ffmpeg: str, path, colour: str, seconds: float, tone: int):
+    subprocess.run([ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", f"color=c={colour}:s=320x180:r=25:d={seconds}",
+                    "-f", "lavfi", "-i", f"sine=frequency={tone}:duration={seconds}", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-shortest", str(path)], check=True)
+
+
+def test_a_cutaway_shows_another_video_while_the_host_keeps_talking(tmp_path):
+    ffmpeg = _ffmpeg()
+    _colour_video(ffmpeg, tmp_path / "host.mp4", "0x202020", 4.0, 440)
+    _colour_video(ffmpeg, tmp_path / "closeup.mp4", "0xe0e0e0", 6.0, 1500)
+    plan = _plan([(0, 90, 1.0)])
+    plan["cutaways"] = [{"at": 1.0, "duration": 1.0, "source": str(tmp_path / "closeup.mp4"), "source_start": 2.0, "zoom": 1.5, "focus": [0.3, 0.3]}]
+    render_show(tmp_path / "host.mp4", plan, tmp_path / "out.mp4", ffmpeg=ffmpeg, width=160, height=90)
+    frames = _frames(ffmpeg, tmp_path / "out.mp4", 160, 90)
+    assert len(frames) == 90
+    assert frames[15].mean() < 80 and frames[45].mean() > 180 and frames[75].mean() < 80   # host, close-up, host
+    # The sound is the host's all along (440 Hz), never the close-up's.
+    raw = subprocess.run([ffmpeg, "-v", "error", "-i", str(tmp_path / "out.mp4"), "-ac", "1", "-ar", "8000", "-f", "f32le", "-"],
+                         check=True, capture_output=True).stdout
+    sound = np.frombuffer(raw, dtype=np.float32)[8000 + 1000:16000 - 1000]   # during the cutaway
+    spectrum = np.abs(np.fft.rfft(sound))
+    assert abs(np.argmax(spectrum) * 8000 / len(sound) - 440) < 20
+
+
+def test_cancelling_stops_the_render_at_once(tmp_path):
+    import time
+    ffmpeg = _ffmpeg()
+    _colour_video(ffmpeg, tmp_path / "host.mp4", "0x202020", 60.0, 440)
+    plan = _plan([(0, 1800, 1.32)])
+    started = time.monotonic()
+
+    class Stop(Exception):
+        pass
+
+    def cancel():
+        if time.monotonic() - started > 0.5:
+            raise Stop()
+    with pytest.raises(Stop):
+        render_show(tmp_path / "host.mp4", plan, tmp_path / "out.mp4", ffmpeg=ffmpeg, width=1280, height=720, cancel=cancel)
+    assert time.monotonic() - started < 5
+    assert not (tmp_path / "out.mp4").exists() and not list(tmp_path.glob(".out.part*"))

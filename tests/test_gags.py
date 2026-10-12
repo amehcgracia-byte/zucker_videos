@@ -96,9 +96,37 @@ def test_items_without_the_painter_keep_words_and_explain_the_missing_drawings(t
 def test_items_with_the_painter_get_painted_characters_with_their_bubble(tmp_path, monkeypatch):
     monkeypatch.setattr(gag_paint, "can_paint", lambda: True)
     monkeypatch.setattr(gags, "painted_picture", lambda subject, style, seed=3, **kw: Image.new("RGBA", (300, 300), (200, 30, 30, 255)))
-    plan = [{"kind": "character", "at": 1, "duration": 3, "subject": "a granny", "style": "caricature", "says": "Told you!",
+    plan = [{"kind": "character", "at": 1, "duration": 3, "subject": "a granny", "style": "crayon", "says": "Told you!",
              "position": "left", "size": 0.3, "effect": "pop"}]
     seen = []
     items, notes = gags.make_items(plan, tmp_path, progress=lambda share, text: seen.append(text))
     assert not notes and "Painting 1/1" in seen[0]
     assert Image.open(items[0]["image"]).height > 300   # the bubble sits above the character
+
+
+def test_math_formulas_orbit_the_host_s_face(tmp_path, monkeypatch):
+    monkeypatch.setattr(gag_paint, "can_paint", lambda: False)
+    plan = [{"kind": "math", "at": 10.0, "duration": 4.0}]
+    items, _ = gags.make_items(plan, tmp_path, face_at=lambda t: (0.6, 0.3))
+    assert len(items) == 5 and all(item["path"] for item in items)
+    for item in items:
+        xs = [x for _, x, _ in item["path"]]
+        ys = [y for _, _, y in item["path"]]
+        assert min(xs) < 0.6 < max(xs) and min(ys) < 0.3 < max(ys)          # around the face
+        assert all(abs(x - 0.6) <= 0.16 and abs(y - 0.3) <= 0.14 for x, y in zip(xs, ys))
+    assert len({item["image"] for item in items}) == 5
+
+
+def test_a_drawing_on_a_desk_is_painted_again_one_on_white_is_kept(monkeypatch):
+    import numpy as np
+    from core.gag_paint import clean_background, paint_clean
+    white = Image.new("RGB", (512, 512), (240, 236, 230))
+    for x in range(150, 360):
+        for y in range(200, 512):                                  # a bust touching the bottom
+            white.putpixel((x, y), (30, 30, 30))
+    desk = Image.fromarray(np.full((512, 512, 3), (150, 120, 90), dtype=np.uint8))
+    desk.paste((245, 245, 240), (60, 40, 470, 480))                # the sheet on the desk
+    assert clean_background(white) and not clean_background(desk)
+    tries = []
+    monkeypatch.setattr(gag_paint, "paint", lambda subject, style, seed=0, step=None: tries.append(seed) or (desk if len(tries) < 2 else white))
+    assert paint_clean("a cat", "pencil", seed=5) is white and tries == [5, 106]
