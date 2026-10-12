@@ -1592,6 +1592,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         requested_id = str(body.get("project_id") or "")
         if requested_id and (state.project is None or not same_project_path(requested_id, str(state.project.folder))):
             return error_response("project_mismatch", "The selected project is no longer open", 409)
+        if body.get("platform") == "show":
+            if state.project is None:
+                return error_response("bad_request", "Save the project location first", 400)
+            videos = [str(path) for path in body.get("videos") or [] if isinstance(path, str)]
+            if not videos:
+                return error_response("bad_request", "Add the video where you talk", 400)
+            registered = {str(record.get("path")) for record in state.project.data.get("inputs", {}).get("videos", [])}
+            source = next((path for path in videos if path in registered), videos[0])
+            style = str(body.get("show_style") or "choe")
+            language = str(body.get("show_language") or "").strip().lower() or None
+            try:
+                job = state.wizard.start_show(state.project, source, style if style in {"choe", "calm"} else "choe", language)
+            except RuntimeError as exc:
+                return error_response("wizard_busy", str(exc), 409)
+            state.composition.reset()
+            return jsonify(serialize_wizard_job(job)), 202
         if body.get("platform") == "medley":
             try:
                 if state.project is None:
@@ -2129,7 +2145,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if audio_paths is not None:
                 project.data["inputs"]["additional_audio"] = [{"path": path, "filename": Path(path).name, "kind": "master"} for path in dict.fromkeys(audio_paths)]
             platform = str(body.get("platform") or "")
-            if platform in {"youtube", "reel", "360", "backstage", "medley"}:
+            if platform in {"youtube", "reel", "360", "backstage", "medley", "show"}:
                 project.data.setdefault("settings", {}).setdefault("wizard", {})["platform"] = platform
             if not requested_id:
                 project.data.setdefault("settings", {}).setdefault("wizard", {})["reel_logo_mode"] = "default"

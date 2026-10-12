@@ -49,6 +49,11 @@
             <strong>Backstage</strong>
             <span>Documentary diary with original camera audio</span>
           </button>
+          <button class="platform-card" data-platform="show">
+            <span class="platform-glyph" data-glyph="show"></span>
+            <strong>Show</strong>
+            <span>You talking to camera: pauses, "eh" and retakes cut, fast punch-ins</span>
+          </button>
         </div>
 </div></dialog>
     <main class="wizard">
@@ -149,6 +154,12 @@
           <label>Black between songs (seconds) <input id="medleyGap" type="number" min="0" step="0.1" value="0.5"></label>
           <label>Video and audio fades (seconds) <input id="medleyFade" type="number" min="0" step="0.1" value="0.5"></label>
           <div id="medleySources"></div>
+        </div>
+        <div id="showOptions" class="song-picker" hidden>
+          <h2>Show</h2>
+          <p>Your talking video is cleaned and cut automatically: long pauses, "eh"/"um" and phrases you said twice are removed (the last take stays), then it is cut into short shots with punch-in zooms. Captions from what you say are ready in Overlay &amp; Captions.</p>
+          <label>Pace <select id="showStyle"><option value="choe" selected>Fast: a cut every ~1.5 s with zooms (David Choe style)</option><option value="calm">Calm: longer shots, softer zooms</option></select></label>
+          <label>Language <select id="showLanguage"><option value="" selected>Detect automatically</option><option value="es">Spanish</option><option value="en">English</option></select></label>
         </div>
         <div id="songPicker" class="song-picker" hidden>
           <h2>Which song?</h2>
