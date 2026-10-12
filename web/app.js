@@ -216,6 +216,7 @@ const icons = {
   youtube: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="6" width="18" height="12" rx="4"></rect><path d="m10 9 5 3-5 3Z"></path></svg>',
   instagram: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="4" y="4" width="16" height="16" rx="5"></rect><circle cx="12" cy="12" r="3"></circle><path d="M17 7h.01"></path></svg>',
   tiktok: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 4v10.5a3.5 3.5 0 1 1-3-3.46"></path><path d="M14 4c1 3 2.7 4.7 5 5"></path></svg>',
+  show: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8"></path></svg>',
   backstage: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="9" width="18" height="11" rx="2"></rect><path d="m3 9 2.5-5 15.5 3-1 2"></path><path d="m8 5 2 3.5M13 6l2 3.5"></path></svg>',
   sphere: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"></circle><path d="M3 12h18"></path><path d="M12 3c3 2.4 4.5 5.4 4.5 9S15 18.6 12 21"></path><path d="M12 3c-3 2.4-4.5 5.4-4.5 9S9 18.6 12 21"></path></svg>',
   close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 6l12 12M18 6 6 18"></path></svg>',
@@ -1334,6 +1335,7 @@ const EDIT_MODES = {
   "360": { title: "360", files: "A 360 video, optional master audio and your logo", audio: "360 needs master audio, or one video with its own audio." },
   medley: { title: "Medley Populi", files: "Edited videos from different songs; separate audio files are optional", audio: "No external audio: Medley uses each video's audio. Videos without audio remain silent." },
   backstage: { title: "Backstage", files: "Videos with original camera audio and optional images", audio: "Backstage uses the original camera audio; no master is required." },
+  show: { title: "Show", files: "The video where you talk to camera, and your logo", audio: "Show uses the sound of your video; no master is required." },
 };
 function showEditTypeChooser() {
   const dialog = document.querySelector("#editTypeDialog");
@@ -1349,14 +1351,14 @@ function updateInputMode() {
 }
 function inputAudioError(inputs = selectedInputs()) {
   if (!selectedPlatform) return "Choose your edit type first.";
-  if (inputs.master || ["medley", "backstage"].includes(selectedPlatform)) return "";
+  if (inputs.master || ["medley", "backstage", "show"].includes(selectedPlatform)) return "";
   const embedded = detected.videos.length === 1 && Boolean(detected.videos[0]?.probe?.audio_codec || detected.videos[0]?.audio_codec);
   if (["reel", "360"].includes(selectedPlatform) && embedded) return "";
   return EDIT_MODES[selectedPlatform].audio;
 }
 
 function choosePlatformInUi(platform) {
-  if (!platform || !["youtube", "reel", "360", "backstage", "medley"].includes(platform)) return;
+  if (!platform || !["youtube", "reel", "360", "backstage", "medley", "show"].includes(platform)) return;
   selectedPlatform = platform;
   try { sessionStorage.setItem("zucker.selectedPlatform", platform); } catch (_error) { /* private mode */ }
   document.querySelectorAll(".platform-card").forEach((card) => card.classList.toggle("selected", card.dataset.platform === platform));
@@ -2148,7 +2150,7 @@ function filename(path) {
 
 function renderChips() {
   const root = document.querySelector("#chips");
-  if (!["medley", "backstage", "reel"].includes(selectedPlatform)) applyInboxAnalysisFilter();
+  if (!["medley", "backstage", "reel", "show"].includes(selectedPlatform)) applyInboxAnalysisFilter();
   applySessionFilter();
   const items = [...detected.videos, ...detected.master, ...detected.songs, ...detected.ignored].sort((a, b) =>
     String(a.source_folder || "￿").localeCompare(String(b.source_folder || "￿"))
@@ -2301,7 +2303,7 @@ function clipsMatchingSession(videos, master) {
 }
 
 function applySessionFilter() {
-  if (sessionFilterDisabled || ["medley", "backstage", "reel"].includes(selectedPlatform)) return;
+  if (sessionFilterDisabled || ["medley", "backstage", "reel", "show"].includes(selectedPlatform)) return;
   const master = detected.master.find((item) => item.path === selectedMasterPath) || detected.master[0];
   if (!master) return;
   // Filler is often recorded on another day (interviews, ambience): never set it aside.
@@ -2374,7 +2376,7 @@ function renderSettingsPreparation(status) {
 }
 
 function beginSettingsPreparation() {
-  if (selectedPlatform === "medley") { document.querySelector("#settingsPreparation").hidden = true; return; }
+  if (["medley", "show"].includes(selectedPlatform)) { document.querySelector("#settingsPreparation").hidden = true; return; }
   const projectId = activeProjectId;
   const generation = statusPollGeneration;
   backgroundSettingsProjectId = projectId;
@@ -3368,6 +3370,8 @@ function applyEditTypeMode() {
   if (cameraMix) cameraMix.hidden = !["youtube", "reel"].includes(selectedPlatform);
   const medley = document.querySelector("#medleyOptions");
   if (medley) { medley.hidden = selectedPlatform !== "medley"; if (!medley.hidden) renderMedleySources(); }
+  const showOptions = document.querySelector("#showOptions");
+  if (showOptions) showOptions.hidden = selectedPlatform !== "show";
   if (songPicker && passthrough360) songPicker.hidden = true;
   if (reelOptions) {
     reelOptions.hidden = selectedPlatform !== "reel";
@@ -3378,8 +3382,8 @@ function applyEditTypeMode() {
     backstageOptions.hidden = selectedPlatform !== "backstage";
     backstageOptions.open = selectedPlatform === "backstage";
   }
-  if (trimBox) trimBox.hidden = selectedPlatform === "backstage" || selectedPlatform === "medley";
-  if (songPicker && selectedPlatform === "medley") songPicker.hidden = true;
+  if (trimBox) trimBox.hidden = ["backstage", "medley", "show"].includes(selectedPlatform);
+  if (songPicker && ["medley", "show"].includes(selectedPlatform)) songPicker.hidden = true;
 
   renderSphericalSetup();
   const composeNav = document.querySelector('[data-step-nav="5"]');
@@ -3805,7 +3809,7 @@ async function startWizard(options = {}) {
   lastPipelineStage = null;
   hideStageTransition();
   setStep(3);
-  if (waitForPrepare && selectedPlatform !== "360" && selectedPlatform !== "reel" && selectedPlatform !== "backstage" && selectedPlatform !== "medley") {
+  if (waitForPrepare && !["360", "reel", "backstage", "medley", "show"].includes(selectedPlatform)) {
     prepareHandoffInProgress = true;
     const prepared = await api("/wizard/prepare", {
       method: "POST",
@@ -3838,6 +3842,8 @@ async function startWizard(options = {}) {
       medley_duration_sec: Number(document.querySelector("#medleyDuration").value),
       medley_gap_sec: Number(document.querySelector("#medleyGap").value),
       medley_fade_sec: Number(document.querySelector("#medleyFade").value),
+      show_style: document.querySelector("#showStyle")?.value || "choe",
+      show_language: document.querySelector("#showLanguage")?.value || "",
       song_index: selectedSong,
       trim_start_sec: timeToSeconds(document.querySelector("#trimStart").value),
       trim_end_sec: timeToSeconds(document.querySelector("#trimEnd").value),
@@ -4400,10 +4406,16 @@ function formatEta(seconds) {
 }
 
 function updateStageChecks(progress, status) {
-  const medley = (status.platform || status.result?.platform || selectedPlatform) === "medley";
+  const platform = status.platform || status.result?.platform || selectedPlatform;
+  const medley = platform === "medley";
+  const show = platform === "show";
   const phase = String(status.tasks?.[0]?.id || "");
   const done = new Set();
-  if (medley) {
+  if (show) {
+    if (progress >= 55) done.add("ingest");
+    if (progress >= 58) done.add("sync");
+    if (progress >= 60) done.add("cut");
+  } else if (medley) {
     if (!phase.startsWith("medley-inspect") && phase) done.add("ingest");
     if (/medley-(render|assemble)/.test(phase)) done.add("sync");
     if (phase.startsWith("medley-assemble")) done.add("cut");
@@ -4413,7 +4425,8 @@ function updateStageChecks(progress, status) {
     if (progress >= 58) done.add("cut");
   }
   if (status.status === "done") ["ingest", "sync", "cut", "export"].forEach(stage => done.add(stage));
-  const labels = medley ? { ingest: "Check files", sync: "Highlights", cut: "Excerpts", export: "Assemble" } : { ingest: "Prepare", sync: "Sync", cut: "Cut", export: "Export" };
+  const labels = show ? { ingest: "Listen", sync: "Clean", cut: "Pace", export: "Render" }
+    : medley ? { ingest: "Check files", sync: "Highlights", cut: "Excerpts", export: "Assemble" } : { ingest: "Prepare", sync: "Sync", cut: "Cut", export: "Export" };
   document.querySelectorAll(".stage-checks [data-stage]").forEach(node => {
     node.textContent = labels[node.dataset.stage];
     node.classList.toggle("done", done.has(node.dataset.stage));
@@ -4421,6 +4434,11 @@ function updateStageChecks(progress, status) {
 }
 
 function resultSummary(result) {
+  if (result?.platform === "show" && result.show) {
+    const show = result.show;
+    const removed = show.removed_words || {};
+    return `${formatDuration(show.source_duration_sec || 0)} of talk → ${formatDuration(show.edited_duration_sec || 0)} · ${show.cuts || 0} cuts · ${removed.filler || 0} "eh/um" and ${removed.retake || 0} repeated words removed · ${show.captions || 0} captions ready to style`;
+  }
   const cutCount = Number(result?.cut_count || 0);
   const cameraUsage = result?.camera_usage || {};
   const cameraCount = Object.keys(cameraUsage).length;

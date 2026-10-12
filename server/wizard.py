@@ -462,6 +462,59 @@ class WizardRunner:
         finally:
             _release_job_project_lock(job)
 
+    def start_show(self, project: Project, source: str, style: str, language: str | None) -> WizardJob:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                raise RuntimeError("A pipeline is already running")
+            job = WizardJob(id="current", message="Preparing your show", started_at=time.time())
+            _attach_project(job, project)
+            if not _acquire_job_project_lock(job, project):
+                raise RuntimeError("This project's pipeline is already running")
+            self._job = job
+            self._prepared_project = None
+            self._thread = threading.Thread(target=self._run_show, args=(job, project, source, style, language), daemon=True, name="zucker-show")
+            self._thread.start()
+            return job
+
+    def _run_show(self, job, project, source, style, language):
+        from core.show import run_show
+        started = time.monotonic()
+
+        def cancel():
+            if job.cancel_event.is_set():
+                raise WizardCancelled()
+
+        def progress(value, detail):
+            cancel()
+            job.progress = int(min(99, value))
+            job.stage = "edit" if value < 60 else "export"
+            job.message = "Show"
+            job.detail = detail
+            job.stage_progress = float(min(100, value))
+            job.progress_updated_at = time.time()
+            job.tasks = {"show": {"id": "show", "label": detail, "percent": int(min(100, value)), "detail": ""}}
+        try:
+            project.data.setdefault("settings", {}).setdefault("wizard", {}).update(platform="show", show={"source": source, "style": style, "language": language or ""})
+            project.save()
+            destination, manifest = run_show(project, source, style_name=style, language=language, progress=progress, cancel=cancel)
+            project.data["stages"]["export"].update(status="done", elapsed_seconds=round(time.monotonic() - started, 3), outputs={"export_manifest": str(project.artifacts_dir / "export_manifest.json")})
+            project.save()
+            summary = manifest.get("show") or {}
+            job.result = {"project_path": str(project.folder), "filename": destination.name, "path": str(destination), "media_url": "/api/v1/wizard/result",
+                          "platform": "show", "cut_count": summary.get("cuts", 0), "show": summary, "warnings": manifest.get("warnings", [])}
+            job.progress = 100
+            job.status = "done"
+            job.message = "Show ready"
+        except WizardCancelled:
+            self._mark_cancelled(job)
+        except Exception as exc:
+            LOGGER.exception("Show failed")
+            job.status = "failed"
+            job.error = str(exc)
+            job.technical_details = traceback.format_exc()
+        finally:
+            _release_job_project_lock(job)
+
     def _run_existing_from_scratch(self, *, job: WizardJob, project: Project, options: dict[str, Any]) -> None:
         try:
             platform = str(options.get("platform") or "youtube")
