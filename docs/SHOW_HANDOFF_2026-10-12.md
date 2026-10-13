@@ -215,3 +215,17 @@ Added Thinking / maths, custom Words / thought, imported image layers, and orche
 Local licensed recordings: Investigations (USUAN1100646) and Oppressive Gloom (USUAN1100885), Kevin MacLeod, attribution CC BY 4.0 per current author pages. Source links and credit are carried in soundtrack JSON. MP3 files stay outside Git. Packaged tracks reload as seekable blobs. These are produced strings/orchestral recordings, not the earlier synthesized notes; no choral track added yet.
 
 Verified formulas around protagonist at 13.2 seconds, playback without console errors, image import with size/opacity controls. Not an exported new MP4; only the live preview changed. Fix: clicking a timeline block must not add a no-op undo item; history is now recorded only once dragging actually changes timing. Undo/redo remain recipe operations; source file persistence and renderer integration still pending.
+
+### Range editing and steam repair
+
+Explicit Mark In / Mark Out, selected range shade, Split at playhead (Ctrl/Cmd K), Lift range (keep gap), Extract range (close gap across all tracks), and context ripple-delete. Selected clips have a stronger highlight. Original and imported video/audio use sourceIn distinct from timeline time; the preview clock is independent of a source decoder. Splits stay in the same video/audio lane. Extract preserves linked speech, source offsets and keyframe timing. The new pure model has meaningful source continuity tests in `tools/qa/test_show_timeline_model.cjs` (Node); they pass.
+
+Browser: removed 2–4 seconds, duration changed from 44 to 42, voice/video split in the same rows and subsequent effects shifted together. Original split at 6 seconds produced two pieces; hidden right decoder currentTime was 6, not a restart at source zero. Changes undone after testing. Renderer integration still pending.
+
+Steam had a hidden default off keyframe at 3.8 seconds despite a 44-second clip. Legacy default is migrated to visible throughout this reviewed cup shot; manual cup-rim anchor samples added from 12 reviewed source frames. Controls explicitly show VISIBLE/HIDDEN/CUP OUTSIDE CROP and the visibility keyframes; whole-clip enable/disable available. Steam is transformed with its video and suppressed if the cup rim falls outside a close-up crop. This is manual keyframe tracking, not object detection; sparse samples are approximate.
+
+Professional workflow references reviewed (current official pages, not claims of watching entire courses):
+- https://helpx.adobe.com/ca/premiere/desktop/edit-projects/change-clip-sequence/remove-clips-from-a-sequence.html — delete versus ripple-delete.
+- https://helpx.adobe.com/uk/premiere/desktop/get-started/tour-the-workspace/tools-panel-and-options-panel.html — selection, ripple/rolling/slip/slide, razor, pen.
+- https://www.blackmagicdesign.com/products/davinciresolve/training — editing, sound, compositing and finishing training.
+These support separating editorial operations from effects, linked media, and source time. Still pending: frame thumbnails/waveforms, snapping, locks, finer trim tools, text-driven edits, persistent media and shared export rather than endlessly adding effects.

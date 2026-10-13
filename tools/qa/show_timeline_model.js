@@ -1,0 +1,8 @@
+/* Pure edit operations for the Show pilot. Timeline seconds and source seconds stay separate. */
+(function(root){
+const copy=x=>JSON.parse(JSON.stringify(x));
+function segment(e,a,b,start=a,id=e.id){const n=copy(e),delta=a-e.start,shift=start-a;n.id=id;n.start=start;n.end=start+b-a;if(['video','audio'].includes(e.type))n.sourceIn=(e.sourceIn||0)+delta;else {n.contentShift=(e.contentShift||0)-shift;n.effectOffset=(e.effectOffset||0)+delta;}n.trackId=e.trackId||(['video','audio'].includes(e.type)?e.id:undefined);n.mediaRef=e.mediaRef||e.id;for(const key of ['visibleKeys','positionKeys'])if(e[key])n[key]=e[key].map(k=>[k[0]+shift,...k.slice(1)]);if(e.points)n.points=e.points.map(k=>[k[0]+shift*25,...k.slice(1)]);return n}
+function split(recipe,id,time,newId){const e=recipe.events.find(x=>x.id===id);if(!e||time<=e.start+.04||time>=e.end-.04)return null;const left=segment(e,e.start,time),right=segment(e,time,e.end,time,newId);const i=recipe.events.indexOf(e);recipe.events.splice(i,1,left,right);return right}
+function extract(recipe,a,b,ripple,idFactory){a=Math.max(0,a);b=Math.min(recipe.duration||44,b);if(b-a<.04)return false;const out=[];for(const e of recipe.events){if(e.end<=a){out.push(copy(e));continue}if(e.start>=b){out.push(segment(e,e.start,e.end,e.start-(ripple?b-a:0)));continue}let kept=false;if(e.start<a){out.push(segment(e,e.start,a));kept=true}if(e.end>b){out.push(segment(e,b,e.end,b-(ripple?b-a:0),kept?idFactory():e.id))}}recipe.events=out;if(ripple)recipe.duration=(recipe.duration||44)-(b-a);return true}
+root.ShowTimeline={segment,split,extract};if(typeof module!=='undefined')module.exports=root.ShowTimeline;
+})(typeof window==='undefined'?globalThis:window);
