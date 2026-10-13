@@ -181,3 +181,11 @@ Validación: sintaxis JS comprobada; navegador muestra panel contextual, permite
 ### Biblioteca sonora local ampliada
 
 Generador reproducible `tools/qa/build_show_audio_library.py DESTINO`: 10 melodías cortas (13–26 s) y 6 efectos WAV mono a 24 kHz, sin muestras externas. Crea manifest y galería HTML con reproducción exclusiva y descarga. Generados en `work/show-motion-sample/audio-library/`, fuera de Git. La maqueta incorpora selector de pistas/efectos y carga de carpeta de audio (solo sesión). No descarga música de terceros. Verificados selector en navegador y transición del reproductor WAV a estado reproduciendo; no evaluación auditiva profesional. Ejecutar generador junto a storyboard como `audio-library` al trasladar la demo. No integra exportador de producción.
+
+## 2026-10-13 — Piloto audiovisual exportado
+
+Piloto local `work/show-motion-sample/pilot/index.html`: C0271, 466–510 s, voz continua, acercamientos dirigidos, fórmulas, breve congelado con silueta manual y espiral. Música producida Sneaky Snitch / Kevin MacLeod, CC BY 4.0 según ficha del autor; atribución incrustada, en la página y credits.txt. Ducking por sidechain, fundidos y limitador. Render/mix reproducibles conservados junto a los archivos privados (`render.py`, `mix.sh`), no publicados. Comparación original/montaje en la página. No es función integrada ni seguimiento automático.
+
+Verificación: 1100 frames, 44.000 s, 1280×720 a 25 fps, H.264/AAC, 11.74 MB; decodificación completa sin errores FFmpeg. Revisados fotogramas de zoom, fórmulas y silueta. GrabCut inicial incluía nevera; sustituido por máscara manual del fotograma congelado. Falta valoración auditiva/creativa del usuario; no afirmar equivalencia a un editor profesional.
+
+Seguimiento auditoría: ejecución 38218374953 completada con éxito en macos-15 y windows-latest. Estado consultado; no equivale a revisión de todos los artefactos ni cierra ronda de grabaciones reales. PR #32 sigue fc106448; #31 841d7a4; #30 remoto 42e6d0ab al consultar.
