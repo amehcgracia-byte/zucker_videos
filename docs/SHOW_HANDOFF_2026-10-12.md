@@ -189,3 +189,7 @@ Piloto local `work/show-motion-sample/pilot/index.html`: C0271, 466–510 s, voz
 Verificación: 1100 frames, 44.000 s, 1280×720 a 25 fps, H.264/AAC, 11.74 MB; decodificación completa sin errores FFmpeg. Revisados fotogramas de zoom, fórmulas y silueta. GrabCut inicial incluía nevera; sustituido por máscara manual del fotograma congelado. Falta valoración auditiva/creativa del usuario; no afirmar equivalencia a un editor profesional.
 
 Seguimiento auditoría: ejecución 38218374953 completada con éxito en macos-15 y windows-latest. Estado consultado; no equivale a revisión de todos los artefactos ni cierra ronda de grabaciones reales. PR #32 sigue fc106448; #31 841d7a4; #30 remoto 42e6d0ab al consultar.
+
+### Piloto v2 — gesto del dedo, no formas sobre la nevera
+
+Sustituidos círculo/espiral en coordenadas fijas y fórmulas tipográficas por estela granulada de lápiz ocre, dibujada antes del zoom. Trayectoria en dos tramos (16–19.5 y 31–36.5 s del piloto), 227 fotogramas: anclas de punta de dedo revisadas manualmente cada medio segundo y flujo óptico bidireccional con corrección de deriva. No es detector automático general; oclusiones y movimiento rápido requieren ajuste adicional. Se omite el gesto fuera de cuadro en 29–30 s. Scripts y trayectoria privados junto al piloto (`track_gesture.py`, `finger-track.json`, `render.py`); v1 conservada como script. La estela sigue el gesto real, no fuerza un círculo geométrico. Ouroboros y variantes de pincel quedan pendientes.
