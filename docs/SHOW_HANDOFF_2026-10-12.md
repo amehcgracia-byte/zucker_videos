@@ -171,3 +171,9 @@ Browser manually verified Character → Edit mouth → drag rectangle → next �
 region still visible on original character. This replaces the disabled mouth action
 for still scenes. Overlay mouths and polygon tools remain separate/unintegrated;
 reload persistence, full project storage and real export remain unverified/pending.
+
+## 2026-10-13 — Sonido y cámara en la maqueta
+
+`tools/qa/show_storyboard_demo.html` añade controles por escena: voz de toma/importada/silencio, dos melodías sintetizadas de prueba, música importada, volumen y atenuación fija durante voz, intervalo con fundidos de música, muelle/campanita y censura manual con silenciamiento más pip. Zoom rápido de plano completo con centro, inicio, duración y escala. Escena de taza con vapor arcoíris y origen manual arrastrable. Ajustes incluidos en JSON de decisiones; URLs privadas de medios excluidas. El clip local cup.mp4 no se publica.
+
+Validación: sintaxis JS comprobada; navegador muestra panel contextual, permite seleccionar música/censura y reproducir sin errores de consola. No se ha verificado render ni calidad sonora mediante captura. No es integración de exportación. No hay detección de palabras, caras o tazas, ni sincronización automática de narración entre tomas. La atenuación es fija, no detección de voz. Los archivos y ajustes viven en la sesión; JSON es traspaso, no proyecto recargable. Las melodías son osciladores locales, no una biblioteca comercial licenciada. Pendiente: continuidad de pista maestra y mezcla real en el exportador, detección con revisión del usuario, sincronía de zoom con capas y pruebas de audio exportado.
