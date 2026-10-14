@@ -239,3 +239,78 @@ Video/audio are linked by default, including imported clips. Split, trim, move, 
 Effect rows are name-only until expanded. Captions share a compact row. Serious / Animated / Mixed control preview and pilot camera proposals; proposals use reviewed pilot timings, not new AI analysis. Serious hides playful overlays/preset music and uses speech-only base audio. Existing transcript captions are loaded from local cached faster-whisper output (22 cues), mapped through source edits and editable in a review panel. Timed words allow partial caption trims; manual correction clears stale word alignment. Re-loading does not overwrite corrected captions. Manual caption creation and browser dictation UI are present; dictation depends on browser support/permission and may use the browser's online speech service. Microphone was not activated/tested. Review repetition candidates is conservative and requires a human decision; no automatic best-take selection yet.
 
 Original application and checkout remain untouched. No fresh Whisper job for imported media, generic tracking, new project-wide ingestion or MP4 export integration is claimed. QA assets required alongside editor: original.mp4, mix.m4a, voice.m4a, recipe.json, finger-track.json, captions.json, licensed score MP3s and timeline-model.js. Only code/documentation are published.
+
+## 15 October — on-picture cutout and pigment prototype
+
+User approved testing Choe-reference techniques on the existing 44-second pilot,
+with a compact single-image workspace. This remains a **local prototype**, not
+production Show or an installed release. The main checkout is untouched.
+
+New source files:
+- `tools/qa/show_paint_tools.js`: deterministic pigment stamps and path sampling;
+  fixed gesture bounds for circle/spiral reveal (no moving-centre orbit).
+- `tools/qa/show_studio_tools.js`: Select/Paint/Cutout/Camera/+Add dock, contextual
+  controls below the picture, options drawer, manual rectangle/closed polygon
+  masks, and examples on the original pilot. Tools on a selected sample inset
+  return to the primary shot; general nested inset-coordinate editing is not
+  established by this sample.
+- `tools/qa/build_show_cutout_sample.py`: a reviewed outline at source 21.32 s
+  propagated with backward optical flow through 75 frames / 3 seconds at 25 fps.
+  Produces a private alpha atlas and metadata locally; does not reconstruct the
+  person's pixels, run general person segmentation or use image generation.
+- `tools/qa/test_show_paint_tools.cjs`: fixed shape/reveal geometry, resampling,
+  deterministic seed checks. Existing timeline tests still pass.
+
+Private local assets at `work/show-motion-sample/pilot/`:
+`cutout-atlas.webp` (548,620 bytes) and `cutout-sample.json` are **not in Git**.
+The 75 alpha masks are nonempty, with foreground area fractions 0.2627–0.2674.
+These are integrity checks, not ground-truth segmentation accuracy measurements.
+Inspect cap/hair, fingers, cup and occluding edges before treating the mask as
+finished. Reviewed assets remain bounded to 21.32–24.32 s of this pilot.
+
+Demonstrated looks: original person against paper/dark/imported-image backdrop;
+black silhouette; crayon-pattern fill inside the matte; and a second muted,
+independently timed moving cutout over the primary video. The inset starts from
+the reviewed source window and keeps the underlying speech. It can be dragged
+without jumping its anchor, and resized below the picture. This is not generated
+clothing replacement. Image backgrounds must be reattached after reload.
+
+Painting works directly on the paused canvas, with pencil/crayon/felt-tip,
+independent colour and width, progressive reveal on playback and immediate full
+stroke display while editing. Deterministic pigment texture avoids per-frame
+random flicker. Finger trails retain their painted path; circle and spiral shapes
+are anchored to the entire gesture, not re-centred on the current fingertip.
+Shape fitting is an approximation; it is not a guarantee that a synthetic circle
+matches every actual fingertip sample. Reviewed paths remain manually correctable.
+
+The sample buttons reuse their own demo layers rather than growing duplicates.
+Solo preview isolates the example but preserves existing edits. Manual rectangle
+and polygon masks are fixed source-coordinate outlines: they do **not** track a
+new arbitrary subject automatically. Polygon Finish closes the mask; Back point
+and Ctrl/Cmd Z undo draft points. Escape cancels drafting and closes options.
+The existing timeline range tools are folded, not removed. More options and
+captions remain accessible; all visible UI is English.
+
+Browser observations: native direct URLs against the simple local HTTP server
+became black/stuck at source time 0 during seeks, despite readyState 4. Restoring
+one shared Blob per media source restored seeks to 8.4 s for the primary clip and
+21.32 s for the inset. Initial native src attributes were removed, avoiding a
+native preload plus a second fetch of each file. This observation is specific to
+the prototype serving/browser path; it is not a diagnosed production export bug.
+Matte indexing follows presented video-frame timestamps where available, rather
+than only the independent preview clock. The draw loop reports errors visibly.
+
+Verified interactively: original-pixel cutout, black and patterned looks, freehand
+canvas stroke, undo/redo of that stroke, primary/inset frame seeking, and dragging
+the inset while a primary close-up is active. Existing saved edits/captions were
+retained. PNG/video sources and saved private decisions must not be uploaded to
+public CI artifacts. MP4 export from these new editor decisions remains
+unconnected; the older `show-pilot.mp4` does not contain these new live edits.
+
+Playback and source seeking were retested with the shared Blobs: primary time
+8.40 s, inset time 21.32 s, both readyState 4; no browser warnings/errors reported.
+Dragging the inset moved it from lower-right to upper-right without changing the
+primary close-up. Solo filtering now applies only during the selected example,
+so it cannot silently hide later, unrelated drawings. Freehand test strokes were
+undone after verification. The original source has no initial src, so Blob
+preparation is the sole fetch instead of racing a native preload of the same file.
