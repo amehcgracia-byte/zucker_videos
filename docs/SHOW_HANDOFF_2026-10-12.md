@@ -314,3 +314,24 @@ primary close-up. Solo filtering now applies only during the selected example,
 so it cannot silently hide later, unrelated drawings. Freehand test strokes were
 undone after verification. The original source has no initial src, so Blob
 preparation is the sole fetch instead of racing a native preload of the same file.
+
+### Second Choe reference and head/region tool
+
+User supplied `https://www.youtube.com/watch?v=pYOJ6NzoM9o` while the preceding
+work was finishing. Inventory and approximate timecodes are in
+`docs/SHOW_REFERENCE_PYOJ6NZOM9O.md`; 303 visual samples cover the five-minute
+reference, with no claim of full frame-by-frame or audio analysis.
+
+Added `Big head` on the reviewed 3-second sample, using the original head pixels
+and an anatomical source anchor, without scaling the room/body. `+ Add > Move /
+enlarge a part` allows a manual rectangle/closed outline, independent size,
+rotation and dragging. This copies a region and does not remove its original.
+Fixed manual masks do not acquire tracking automatically. Added affine anchor
+checks to `test_show_paint_tools.cjs`. Other reference techniques are catalogued,
+not claimed implemented. No reference footage is in Git or public artifacts.
+
+Interactive follow-up: selecting a fresh rectangle around the cup replaced the
+head region, enlarged that selected source region, and a 12-degree rotation was
+visibly applied. The selected source view is shown during region drafting so an
+already enlarged copy cannot contaminate selection coordinates. These manual
+region edits remain fixed-coordinate copies, not automatic object removal.

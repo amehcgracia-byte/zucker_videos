@@ -14,3 +14,13 @@ assert.deepEqual(reveal([[0,0],[10,0]],.5),resample([[0,0],[10,0]],1.4).slice(0,
 assert.deepEqual(shape([],'circle'),[]);
 assert.equal(hash(35),hash(35));assert.notEqual(hash(35),hash(36));
 console.log('PASS: fixed gesture anchors, stable shape reveal, arc-length sampling and deterministic pigment seeds');
+const {partMatrix}=require('./show_paint_tools.js');
+function apply(m,p){return[m[0]*p[0]+m[2]*p[1]+m[4],m[1]*p[0]+m[3]*p[1]+m[5]]}
+for(const degrees of [-35,0,90]){
+ const matrix=partMatrix([840,320],[840,320],1.4,degrees),neck=apply(matrix,[840,320]);
+ assert.ok(Math.abs(neck[0]-840)<1e-9&&Math.abs(neck[1]-320)<1e-9,'The enlarged head must stay anchored at the neck');
+}
+const moved=partMatrix([840,320],[600,180],1,90);
+const anchor=apply(moved,[840,320]);assert.ok(Math.abs(anchor[0]-600)<1e-9&&Math.abs(anchor[1]-180)<1e-9);
+const right=apply(moved,[850,320]);assert.ok(Math.abs(right[0]-600)<1e-9&&Math.abs(right[1]-190)<1e-9);
+console.log('PASS: head/region scale and rotation preserve their source anchor and translate independently');
