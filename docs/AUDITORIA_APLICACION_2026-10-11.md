@@ -117,3 +117,23 @@ for private clips: the existing workflow uploads complete screenshots, traces,
 browser videos and masters. A dedicated private transport/evidence path is
 required before introducing real footage. No app was closed or installed; no
 user project or primary checkout was modified.
+
+### Cancellation finding from the downloaded traces
+
+The successful macOS Reel/YouTube and Windows Reel/YouTube server logs contain
+`Reel framing analysis failed` tracebacks ending in `WizardCancelled` when the
+journey goes back from settings. This is a product cancellation propagation bug,
+not a failed detector or a harness timeout: the optional framing fallback catches
+an exception emitted by the caller's progress callback, logs it as a detector
+failure, and can proceed to the next source. The wrapper now propagates callback
+exceptions unchanged before proceeding, while preserving detector fallback.
+A regression raises the actual WizardCancelled from progress and requires that
+the second source is never visited; all nine framing tests pass locally. This
+suite is now included in remote targeted checks. Full journey revalidation is
+pending for this follow-up commit.
+
+A Windows package build was dispatched on the audit branch in run
+[38533337837](https://github.com/amehcgracia-byte/zucker_videos/actions/runs/38533337837).
+This builds/test-starts a package; it does not publish a release or install it on
+the user's computer. Its result must be recorded before claiming current package
+validation, and its revision precedes the cancellation correction above.
