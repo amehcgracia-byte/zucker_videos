@@ -335,3 +335,36 @@ head region, enlarged that selected source region, and a 12-degree rotation was
 visibly applied. The selected source view is shown during region drafting so an
 already enlarged copy cannot contaminate selection coordinates. These manual
 region edits remain fixed-coordinate copies, not automatic object removal.
+
+## 2026-10-15 · Automatic finger ink and six-scene workshop
+
+The pilot now has a six-scene workshop, implemented in `tools/qa/show_scene_workshop.js` and loaded by `show_pilot_editor.html`:
+
+1. Coffee (source 0–5 s): cup-rim placement, width and visibility controls on-picture.
+2. Thinking (7.2–10.5 s): formula cloud and close-up comparison.
+3. Circle (12.8–16 s): detected fingertip path; optional tiny pencil clock gag.
+4. Awkward gesture (16–23 s): preserve the actual imperfect motion.
+5. Later spiral (30.5–39.2 s): actual path, not the old fixed-position spiral.
+6. Surreal character (21.32–24.32 s): existing reviewed head/cutout sample.
+
+Thumbnails navigate to different source times. Previous/Next, scene-bounded Play, optional Loop, persistent review decisions and effect removal with Undo are included. The six-step English tutorial explicitly describes the prototype's limits. Existing user edits remain; enabling automatic ink hides earlier finger/spiral layers during its interval, without deleting them. “Show earlier drawings” disables automatic ink for comparison. A generic ink layer can be disabled or removed independently of the original linked video/audio.
+
+### Genuine automatic detection, not manual anchors
+
+`tools/qa/build_show_hand_sample.py` uses MediaPipe Hands 0.10.21 to detect the extended index tip. It requires no marked starting point. Palm detection is restarted every second to limit tracking drift. Missing detections, excessive jumps and short isolated detections split/discard strokes. The renderer preserves separate runs, original source coordinates, source offsets, and the same parent camera transform as the video. Four seconds of recent pigment remain visible; no line bridges a missing-hand interval. Brush/colour/width remain editable. `ShowPaint.timedTrails` has regression checks for source scaling, future samples and disconnected runs.
+
+Measured on the private 44 s, 1280×720, 25 fps pilot: 1,100 frames analysed in **33.908 s**, 661 extended-index detections before dropping short runs, 635 usable frames. Usable coverage: circle 51/80 frames; awkward gesture 175/175; later spiral 172/218. These numbers do **not** imply that all detections are correct or all gestures are recognised. Contact-sheet review exposed drift onto the cup in the first continuous-tracking pass; periodic palm resets improved the inspected later-gesture samples. Static detection on every frame was also tried (582 detections / 31.724 s) but missed more blurred frames. No claim of perfect tracking.
+
+The private `automatic-hands.json`, source video, review sheets and six thumbnails stay in the local demo directory, outside Git. MediaPipe was installed in an isolated temporary directory, not the application's environment. Reproduce with an isolated Python 3.11 environment, `mediapipe==0.10.21`, then:
+
+```sh
+python tools/qa/build_show_hand_sample.py SOURCE.mp4 PRIVATE_OUTPUT/automatic-hands.json
+```
+
+The demo serves precomputed landmarks once; it does not run inference on each playback. New uploads still need integration with the real ingest pipeline, job progress/cancellation and source-keyed cache validation. Prototype scripts and tests are in PR #30; private media are not.
+
+### Scope / editorial limits
+
+“Spain” / bullring is recorded as a possible contextual background gag, not a detected cue: the available cached transcript contains no matching Spain phrase, and the current 44 s excerpt discusses circles/spirals. No unrelated image has been inserted as though it matched the speech. A user-provided background can already be used with the reviewed cutout sample. General contextual gag selection remains pending.
+
+This is an editable browser preview, not a finished MP4 export path. Generic automatic cup/person detection and full-length effect rendering remain separate integration work. The existing 3-second mask is still a reviewed sample, not general segmentation.

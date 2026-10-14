@@ -24,3 +24,12 @@ const moved=partMatrix([840,320],[600,180],1,90);
 const anchor=apply(moved,[840,320]);assert.ok(Math.abs(anchor[0]-600)<1e-9&&Math.abs(anchor[1]-180)<1e-9);
 const right=apply(moved,[850,320]);assert.ok(Math.abs(right[0]-600)<1e-9&&Math.abs(right[1]-190)<1e-9);
 console.log('PASS: head/region scale and rotation preserve their source anchor and translate independently');
+// Automatic trajectories must remain in source coordinates and never bridge a lost hand.
+{
+ const {timedTrails}=require('./show_paint_tools.js');
+ const runs=[[[0,320,180],[1,330,190]],[[20,100,100],[21,110,110]]];
+ assert.deepStrictEqual(timedTrails(runs,1,25,640,360)[0].points,[[640,360],[660,380]]);
+ assert.strictEqual(timedTrails(runs,200,25,640,360).length,0);
+ assert.deepStrictEqual(timedTrails(runs,21,25,640,360)[1].points,[[200,200],[220,220]]);
+ assert.strictEqual(timedTrails(runs,-1,25,640,360).length,0);
+}
