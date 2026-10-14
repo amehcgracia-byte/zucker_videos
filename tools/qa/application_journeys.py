@@ -127,7 +127,9 @@ def journey(browser, mode, media, output):
         # Decode the complete output, not only its first thumbnail.
         run(['ffmpeg','-v','error','-i',str(path),'-f','null','-'],timeout=180)
         shutil.copy2(path,folder/'render.mp4')
-        page.wait_for_timeout(2000); capture('04-rendered')
+        page.wait_for_function("""() => [...document.querySelectorAll('#composeVideo, #resultVideo, #result360Video')].some(v => v.getClientRects().length && v.readyState >= 2 && v.videoWidth > 0 && !v.error)""", timeout=60000)
+        report['browser_player_loaded'] = True
+        capture('04-rendered')
         if mode=='reel':
             if not page.locator('#captionText').is_visible(): page.locator('[data-step-nav="5"]').click()
             page.locator('#captionText').fill('A first phrase\n\nA second phrase')
@@ -152,7 +154,13 @@ def journey(browser, mode, media, output):
                 if final.get('status')=='done' and '_composed' in str((final.get('result') or {}).get('path')): break
                 page.wait_for_timeout(1000)
             else: raise TimeoutError('Caption composition did not finish')
-            shutil.copy2(final['result']['path'],folder/'captioned.mp4')
+            composed_path = Path(final['result']['path'])
+            run(['ffmpeg','-v','error','-i',str(composed_path),'-f','null','-'],timeout=180)
+            composed_probe = json.loads(run(['ffprobe','-v','error','-show_streams','-show_format','-of','json',str(composed_path)]).stdout)
+            assert abs(float(composed_probe['format']['duration']) - float(probe['format']['duration'])) < 0.25
+            assert {'audio','video'}.issubset({s['codec_type'] for s in composed_probe['streams']})
+            report['caption_composition_verified'] = True
+            shutil.copy2(composed_path,folder/'captioned.mp4')
         assert not errors,errors
         report.update(passed=True,duration=probe['format']['duration'],result=result,review_actions=sorted(actions))
     except Exception:

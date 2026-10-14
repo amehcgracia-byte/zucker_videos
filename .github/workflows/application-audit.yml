@@ -37,7 +37,7 @@ jobs:
           python -m pip install -r requirements.txt playwright
           python -m playwright install chromium
       - name: Test updated scoring, damaged media and UI contracts
-        run: python -m pytest -q tests/test_filter_escaping.py tests/test_probe_store.py tests/test_captions.py tests/test_caption_paths.py tests/test_settings_handoff.py tests/test_shot_quality_speed.py tests/test_media_integrity.py tests/test_new_project_preview.py --junitxml=qa-results/regressions.xml
+        run: python -m pytest -q tests/test_filter_escaping.py tests/test_probe_store.py tests/test_captions.py tests/test_caption_paths.py tests/test_settings_handoff.py tests/test_shot_quality_speed.py tests/test_media_integrity.py tests/test_new_project_preview.py tests/test_export.py::test_reel_scale_overlay_expression_runs_with_ffmpeg --junitxml=qa-results/regressions.xml
       - name: Exercise youtube through the UI
         id: journey_youtube
         continue-on-error: true
