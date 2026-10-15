@@ -396,9 +396,11 @@ def _video_info(path: Path) -> tuple[int, int, float, int]:
 
 def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Path, *, ffmpeg: str = "ffmpeg",
                 progress: Callable[[float], None] | None = None, cancel: Callable[[], None] | None = None,
-                timeline: list[tuple[float, float]] | None = None) -> Path:
+                timeline: list[tuple[float, float]] | None = None, drawings: Any = None) -> Path:
     """Draw ``gags`` on ``video``. Character interventions lengthen it: their
-    (at, duration) spans are appended to ``timeline`` for captions to follow."""
+    (at, duration) spans are appended to ``timeline`` for captions to follow.
+    ``drawings`` (core.show_bridge.StudioDrawings) are Show Studio's effects,
+    drawn on the edited clock under the stickers."""
     video, output = Path(video), Path(output)
     width, height, fps, total = _video_info(video)
     stickers = []
@@ -468,7 +470,8 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
                 live_mouths = [mouth for mouth in mouths if mouth.active(t)]
                 live_steams = [steam for steam in steams if steam.active(t)]
                 live = [sticker for sticker in stickers if sticker.active(t)]
-                if live or live_warps or live_mouths or live_steams:
+                studio = bool(drawings) and drawings.active(t)
+                if live or live_warps or live_mouths or live_steams or studio:
                     frame = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3).copy()
                     for warp in live_warps:
                         frame = warper.apply(frame, warp, t)
@@ -476,6 +479,8 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
                         move_mouth(frame, mouth, t, fps)
                     for steam in live_steams:
                         draw_steam(frame, steam, t)
+                    if studio:
+                        drawings.draw(frame, t)
                     for sticker in live:
                         draw_sticker(frame, sticker, t)
                     raw = frame.tobytes()

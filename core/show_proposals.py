@@ -167,28 +167,51 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
     for item in approved(items):
         params = item["params"]
         if item["kind"] == "cutaway":
-            cutaways.append({"at": item["at"], "duration": item["duration"], "source": params["source"],
+            cutaways.append({"proposal": item["id"], "at": item["at"], "duration": item["duration"], "source": params["source"],
                              "source_start": params["source_start"], "zoom": params.get("zoom", 1.0), "focus": params.get("focus", [0.5, 0.5])})
         elif item["kind"] == "character":
             voice = params.get("voice")
-            items_out.append({"insert": "character", "at": item["at"], "source": params["source"], "still_time": params.get("still_time"),
+            items_out.append({"proposal": item["id"], "insert": "character", "at": item["at"], "source": params["source"], "still_time": params.get("still_time"),
                               "zoom": params.get("zoom", 1.25), "focus": params.get("focus", [0.5, 0.5]), "zoom_sec": params.get("zoom_sec", 1.2),
                               "voice": [voice["source"], voice["start"], voice["length"]] if voice else None,
                               "hold": params.get("hold", 2.0), "region": params.get("region"), "action": params.get("action", "mouth"),
                               "amount": params.get("amount", 0.02), "offset": params.get("offset", [0.0, 0.0]),
                               "entrance": params.get("entrance", "zoom")})
         elif item["kind"] == "steam":
-            items_out.append({"steam": params["point"], "anchor": params.get("anchor"), "at": item["at"], "duration": item["duration"],
+            items_out.append({"proposal": item["id"], "steam": params["point"], "anchor": params.get("anchor"), "at": item["at"], "duration": item["duration"],
                               "scale": params.get("scale", 1.0)})
         elif item["kind"] == "jingle":
-            items_out.append({"jingle": params["path"], "at": item["at"], "duration": item["duration"], "start": params.get("start", 0.0),
+            items_out.append({"proposal": item["id"], "jingle": params["path"], "at": item["at"], "duration": item["duration"], "start": params.get("start", 0.0),
                               "volume": params.get("volume", 0.8), "fade": params.get("fade", 0.05), "duck": params.get("duck", 0.5)})
         elif item["kind"] == "warp":
-            items_out.append({"warp": params.get("warp", "wave"), "at": item["at"], "duration": item["duration"], "strength": params.get("strength", 0.8)})
+            items_out.append({"proposal": item["id"], "warp": params.get("warp", "wave"), "at": item["at"], "duration": item["duration"], "strength": params.get("strength", 0.8)})
         else:
             # The director's own kind (drawing, character, photo, word) travels in params.
-            gags.append({**params, "at": item["at"], "duration": item["duration"]})
+            gags.append({**params, "proposal": item["id"], "at": item["at"], "duration": item["duration"]})
     return cutaways, items_out, gags
+
+
+def results(items: list[dict[str, Any]], outcomes: dict[str, tuple[str, str]]) -> list[dict[str, Any]]:
+    """One line per proposal of the storyboard: what the render did with it.
+    ``outcomes`` holds what picturing the director's gags gave (applied or failed)."""
+    out = []
+    for item in items:
+        params = item.get("params") or {}
+        name = params.get("subject") or params.get("text") or params.get("query") or item["kind"]
+        line = {"id": item["id"], "kind": item["kind"], "name": str(name), "at": item["at"], "duration": item["duration"]}
+        if item["status"] == "discarded":
+            out.append({**line, "status": "disabled", "detail": "Discarded in the storyboard"})
+        elif item["status"] != "approved":
+            out.append({**line, "status": "disabled", "detail": "Not approved in the storyboard"})
+        elif item["id"] in outcomes:
+            status, detail = outcomes[item["id"]]
+            out.append({**line, "status": status, "detail": detail})
+        else:
+            detail = {"cutaway": f"close-up from {Path(str(params.get('source', ''))).name}", "character": "a character that speaks",
+                      "steam": "steam over the mug", "jingle": f"jingle {Path(str(params.get('path', ''))).name}",
+                      "warp": f"{params.get('warp', 'wave')} warp of the picture"}.get(item["kind"], item["kind"])
+            out.append({**line, "status": "applied", "detail": detail})
+    return out
 
 
 REACTION_GAP = 30.0

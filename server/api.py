@@ -2118,6 +2118,78 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                         "source_url": f"/api/v1/show/source?path={quote(str(plan.get('source') or ''))}",
                         "saved_render": ({k: v for k, v in saved.items() if k != "path"} if (saved := _saved_show_render(project)) else None)})
 
+    @app.get("/api/v1/show/studio-effects")
+    def api_show_studio_effects() -> Response:
+        """What the render will do with each Show Studio effect: drawn, off, kept from
+        the automatic edit, failed or not drawn yet, before anything is rendered."""
+        from core import show_proposals
+        from core.show_bridge import studio_layers
+        project = _require_project(state)
+        proposals_path, plan_path = _show_review_files(project)
+        if not plan_path.is_file():
+            return error_response("not_ready", "No Show edit has been prepared for this project", 404)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        cutaways = show_proposals.render_inputs(show_proposals.load(proposals_path)["proposals"])[0] if proposals_path.is_file() else []
+        _, report = studio_layers(project.folder, plan, hidden=[(c["at"], c["at"] + c["duration"]) for c in cutaways])
+        counts: dict[str, int] = {}
+        for item in report:
+            counts[item["status"]] = counts.get(item["status"], 0) + 1
+        return jsonify({"effects": report, "counts": counts})
+
+    def _clay_state(project: Project) -> dict[str, Any]:
+        from core import show_clay
+        from core.show_bridge import source_pieces
+        data = show_clay.ClayStore(project.folder).load()
+        _, plan_path = _show_review_files(project)
+        plan = json.loads(plan_path.read_text(encoding="utf-8")) if plan_path.is_file() else {"shots": []}
+        stories = {item["id"]: item["story"] for item in data.get("stories") or []}
+        placements = []
+        for placement in data.get("placements") or []:
+            story = stories.get(placement.get("story"))
+            edited = []
+            if story and plan.get("shots"):
+                start = float(story["source_start"])
+                edited = [[round(a, 3), round(b, 3), round(sa - start, 3)]
+                          for a, b, sa, _ in source_pieces(plan, start + float(placement["start"]), start + float(placement["end"]))
+                          if b - a >= 0.02]                                  # slivers shorter than a frame show nothing
+            placements.append({**placement, "edited": edited})
+        return {"revision": int(data.get("revision") or 0), "modes": list(show_clay.MODES), "placements": placements,
+                "characters": [{"id": item["id"], "version": item["version"], "status": item["record"].get("status")}
+                               for item in data.get("characters") or []],
+                "stories": [{"id": story["id"], "quote": story.get("quote"), "duration": story["duration"],
+                             "source_start": story["source_start"], "source_end": story["source_end"],
+                             "shots": [{"title": shot.get("title"), "start": shot["start"], "end": shot["end"],
+                                        "cues": [[key["time"], key["pose"], key.get("cue", "")] for key in shot.get("poseKeys") or []]}
+                                       for shot in story["shots"]]} for story in stories.values()]}
+
+    @app.get("/api/v1/show/clay")
+    def api_show_clay() -> Response:
+        """The project's clay stories and their placements in the montage (with the
+        edited moments each placement reaches)."""
+        return jsonify(_clay_state(_require_project(state)))
+
+    @app.put("/api/v1/show/clay/placements")
+    def api_show_clay_placements() -> Response:
+        from core import show_clay
+        from core.show_studio_store import StaleRevision
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        store = show_clay.ClayStore(project.folder)
+        data = store.load()
+        stories = {item["id"]: item["story"] for item in data.get("stories") or []}
+        try:
+            placements = []
+            for raw in body.get("placements") or []:
+                if raw.get("story") not in stories:
+                    raise ValueError("That clay story is not in this project")
+                placements.append(show_clay.check_placement({k: v for k, v in raw.items() if k != "edited"}, stories[raw["story"]]))
+            store.save({**data, "placements": placements}, revision=int(body.get("revision", -1)))
+        except StaleRevision as exc:
+            return error_response("stale_revision", str(exc), 409)
+        except (ValueError, TypeError) as exc:
+            return error_response("invalid_clay", str(exc), 400)
+        return jsonify(_clay_state(project))
+
     @app.post("/api/v1/show/scenes/<scene_id>/decision")
     def api_show_scene_decision(scene_id: str) -> Response:
         from core import show_proposals, show_scenes
@@ -2434,8 +2506,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         stored = show_proposals.load(proposals_path)
         allowed = {"status", "at", "duration", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action",
                    "amount", "offset", "voice", "hold", "subject", "text", "style", "position", "size", "effect", "warp", "point", "anchor", "scale",
-                   "entrance", "prompt"}
+                   "entrance", "prompt", "picture"}
         changes = {key: value for key, value in body.items() if key in allowed}
+        if changes.get("picture") and changes["picture"] not in {item["path"] for item in _show_library_items(project)}:
+            return error_response("bad_request", "Choose one of the pictures in your library", 400)
         if "prompt" in changes and (not isinstance(changes["prompt"], str) or len(changes["prompt"]) > 600):
             return error_response("bad_request", "A drawing's prompt is a text of up to 600 characters", 400)
         from core.show_inserts import ENTRANCES

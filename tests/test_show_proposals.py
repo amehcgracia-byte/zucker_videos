@@ -68,8 +68,24 @@ def test_only_approved_effects_reach_the_render():
     cutaways, layer, director = render_inputs(items)
     assert [c["zoom"] for c in cutaways] == [1.4]
     assert [d["kind"] for d in director] == ["word"]
-    assert layer == [{"steam": [0.3, 0.8], "anchor": [0.28, 0.8, 0.05, 0.08], "at": 50.0, "duration": 4.0, "scale": 1.0}]
+    assert layer == [{"proposal": steam["id"], "steam": [0.3, 0.8], "anchor": [0.28, 0.8, 0.05, 0.08], "at": 50.0, "duration": 4.0, "scale": 1.0}]
     assert len(approved(items)) == 3
+    assert director[0]["proposal"] == gags[0]["id"] and cutaways[0]["proposal"] == cuts[0]["id"]   # each keeps its id
+
+
+def test_every_proposal_gets_a_result_by_id():
+    from core.show_proposals import results
+    gags = from_gags([{"kind": "drawing", "at": 3.0, "duration": 2.0, "subject": "lightbulb"},
+                      {"kind": "word", "at": 9.0, "duration": 2.0, "text": "WOW"},
+                      {"kind": "warp", "at": 40.0, "duration": 3.0, "warp": "swirl"}])
+    update(gags, gags[0]["id"], status="approved")
+    update(gags, gags[1]["id"], status="approved")
+    update(gags, gags[2]["id"], status="discarded")
+    lines = {line["id"]: line for line in results(gags, {gags[0]["id"]: ("failed", "The painter could not draw it on a clean background"),
+                                                         gags[1]["id"]: ("applied", "word: WOW")})}
+    assert lines[gags[0]["id"]]["status"] == "failed" and lines[gags[0]["id"]]["name"] == "lightbulb"
+    assert lines[gags[1]["id"]]["status"] == "applied"
+    assert lines[gags[2]["id"]]["status"] == "disabled"
 
 
 def test_a_question_gets_a_listening_reaction_in_the_pause_after_it(tmp_path):

@@ -31,6 +31,7 @@
     const p = item.params;
     if (item.kind === "cutaway") return p.thumb ? media(p.thumb) : still(p.source, p.source_start);
     if (item.kind === "character") return still(p.source, p.still_time);
+    if (item.kind === "drawing" && p.picture) return `/api/v1/show/library/file?path=${encodeURIComponent(p.picture)}`;
     return `/api/v1/show/frame?t=${encodeURIComponent(item.at)}`;
   }
 
@@ -197,6 +198,7 @@
         <button type="button" class="icon-button small" data-scene-decision="plain">Leave without effect</button>
         <span class="show-decision show-${scene.decision}">${DECISION_LABELS[scene.decision]}</span>
       </div>
+      <div id="showClay" class="show-clay"></div>
       <div id="showSceneEffects" class="show-review-list" ${open.has(scene.id) ? "" : "hidden"}>${effects.map(card).join("") || "<p class=\"show-hint\">No effect in this scene.</p>"}
         <form id="showSceneAdd" class="show-review-add"><strong>Add</strong>
           <select name="kind"><option value="drawing">A drawing</option><option value="steam">Rainbow steam over a mug</option><option value="character">A character that speaks</option><option value="cutaway">A close-up</option><option value="math">Formulas around you</option><option value="word">A shouted word</option></select>
@@ -215,6 +217,65 @@
     bindAddForm(scene);
     drawOverlays(scene);
     showScenePicture(scene);
+    clayBlock(scene);
+  }
+
+  // ---- Clay memories: placements of an approved clay story over this scene ----------
+
+  const CLAY_MODES = { full: "Full clay shot", pip: "Small clay window", bubble: "Thought bubble", blend: "Brief blend over you" };
+  let clay = null;
+  let claySaving = null;
+
+  async function clayBlock(scene) {
+    const box = $("#showClay");
+    if (!box) return;
+    clay = await api("/show/clay").catch(() => null);
+    if (!clay || !clay.stories.length || currentScene()?.id !== scene.id) { box.innerHTML = ""; return; }
+    const inScene = (item) => item.edited.some(([a, b]) => a < scene.end && b > scene.start);
+    const shown = clay.placements.map((item, index) => [item, index]).filter(([item]) => inScene(item));
+    const story = clay.stories.find((item) => clay.placements.some((p) => p.story === item.id && inScene(p))) || null;
+    if (!story && !shown.length) { box.innerHTML = ""; return; }
+    const span = (item) => item.edited.length ? `${clock(item.edited[0][0])}–${clock(item.edited[item.edited.length - 1][1])} in the show` : "cut from the show";
+    box.innerHTML = `<h4>Clay memory <small>${escape(story?.quote || "")}</small></h4>
+      <p class="show-hint">Over your own voice and captions. Times are on the story's clock (seconds of what you say), so a cut in your edit skips that moment of the story too. Gaps between placements go back to you.</p>
+      ${shown.map(([item, index]) => `<fieldset class="show-clay-row" data-clay="${index}">
+        <legend><label><input type="checkbox" data-clay-field="enabled" ${item.enabled !== false ? "checked" : ""}> ${escape(CLAY_MODES[item.mode] || item.mode)}</label> <small>${span(item)}</small></legend>
+        ${field("Mode", `<select data-clay-field="mode">${clay.modes.map((mode) => `<option value="${mode}" ${mode === item.mode ? "selected" : ""}>${CLAY_MODES[mode] || mode}</option>`).join("")}</select>`)}
+        <div class="show-fields">
+          ${field("From (s)", `<input type="number" data-clay-field="start" value="${item.start}" step="0.05" min="0" max="${story?.duration ?? 60}">`)}
+          ${field("To (s)", `<input type="number" data-clay-field="end" value="${item.end}" step="0.05" min="0" max="${story?.duration ?? 60}">`)}
+          ${field("Fade (s)", `<input type="number" data-clay-field="fade" value="${item.fade ?? 0.3}" step="0.05" min="0" max="2">`)}
+        </div>
+        <div class="show-fields">
+          ${field("Across", `<input type="range" data-clay-field="x" value="${item.x}" min="0" max="1" step="0.01">`)}
+          ${field("Down", `<input type="range" data-clay-field="y" value="${item.y}" min="0" max="1" step="0.01">`)}
+          ${field("Size", `<input type="range" data-clay-field="size" value="${item.size}" min="0.1" max="1" step="0.01">`)}
+          ${field("Opacity", `<input type="range" data-clay-field="opacity" value="${item.opacity}" min="0" max="1" step="0.05">`)}
+        </div>
+        ${["pip", "bubble"].includes(item.mode) ? `<label class="show-field"><input type="checkbox" data-clay-field="avoidFace" ${item.avoidFace !== false ? "checked" : ""}> Move aside when it would cover your face</label>` : ""}
+      </fieldset>`).join("") || "<p class=\"show-hint\">No clay placement reaches this scene.</p>"}
+      <p class="show-hint">${story ? story.shots.map((shot) => `${escape(shot.title || "")}: ${shot.cues.map(([time, , cue]) => `${time.toFixed(2)} s ${escape(cue)}`).join(", ")}`).join(" · ") : ""}</p>
+      <p class="show-hint" id="showClayStatus" role="status">The poses change on these word cues and hold still in between. Ask for “Preview with effects” to see it.</p>`;
+    box.querySelectorAll("[data-clay-field]").forEach((input) => input.addEventListener("change", () => clayChange(scene, input)));
+  }
+
+  function clayChange(scene, input) {
+    const index = Number(input.closest("[data-clay]").dataset.clay);
+    const item = clay.placements[index];
+    const name = input.dataset.clayField;
+    item[name] = name === "enabled" || name === "avoidFace" ? input.checked : name === "mode" ? input.value : Number(input.value);
+    clearTimeout(claySaving);
+    $("#showClayStatus").textContent = "Saving…";
+    claySaving = setTimeout(async () => {
+      try {
+        clay = await api("/show/clay/placements", { method: "PUT", body: JSON.stringify({ revision: clay.revision, placements: clay.placements }) });
+        $("#showClayStatus").textContent = "Saved in the project. “Preview with effects” renders it again.";
+        if (name === "mode" || name === "start" || name === "end") clayBlock(scene);
+      } catch (error) {
+        $("#showClayStatus").textContent = `Not saved: ${error.message}`;
+        clayBlock(scene);
+      }
+    }, 350);
   }
 
   // The picture of a scene: at once its cut from the original video; with effects only when asked.
@@ -656,8 +717,39 @@
       <div class="show-actions"><button type="button" class="icon-button" data-watch-all>▶ Watch the whole show</button>
         ${pending ? `<button type="button" class="icon-button" data-first-pending>Go to the first scene to decide</button>` : ""}</div>
       <p class="show-hint">The whole show plays the title card, the intro and each scene's preview one after another.</p>
+      <div id="showStudioEffects" class="show-studio-effects" aria-live="polite"></div>
       <button type="button" id="showRenderNow" class="primary icon-button">Render the show</button>`;
     showVideo("", "The final render joins the title card, the intro and every scene with what you accepted.");
+    studioEffects();
+  }
+
+  const STUDIO_STATUS = {
+    applied: "Drawn in the render", disabled: "Off or hidden in Show Studio", superseded: "The automatic edit's version is kept",
+    failed: "Could not be drawn", unsupported: "Not drawn by the render yet",
+  };
+
+  // What the render does with each Show Studio effect, so nothing is replaced or dropped silently.
+  async function studioEffects() {
+    const box = $("#showStudioEffects");
+    if (!box) return;
+    const data = await api("/show/studio-effects").catch(() => null);
+    if (!data || !data.effects.length) { box.innerHTML = ""; return; }
+    const rows = [];
+    const captions = new Map();
+    for (const item of data.effects) {
+      if (item.type === "caption") {
+        const key = `${item.section}|${item.status}|${item.detail}`;
+        captions.set(key, { ...item, count: (captions.get(key)?.count || 0) + 1 });
+      } else rows.push(item);
+    }
+    for (const item of captions.values()) rows.push({ ...item, name: `Captions · ${item.count}` });
+    const order = ["failed", "unsupported", "applied", "disabled", "superseded"];
+    rows.sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
+    box.innerHTML = `<h3>Show Studio edits</h3>
+      <ul class="show-studio-list">${rows.map((item) => `<li class="studio-${item.status}${item.warning ? " studio-warning" : ""}">
+        <strong>${escape(item.name)}</strong> <span class="show-hint">${escape(item.section)}</span>
+        <span class="studio-status">${escape(STUDIO_STATUS[item.status] || item.status)}</span>
+        <span class="show-hint">${escape(item.detail)}</span></li>`).join("")}</ul>`;
   }
 
   // ---- Effects (inside "Modify") ------------------------------------------------
@@ -762,6 +854,10 @@
       html += `<div class="show-fields">${item.kind === "word" ? field("Text", `<input type="text" data-field="text" value="${escape(p.text)}">`) : field("What is drawn", `<input type="text" data-field="subject" value="${escape(p.subject)}">`)}
         ${field("Position", `<select data-field="position">${["left", "top-left", "bottom-left", "right", "top-right", "bottom-right"].map((pos) => `<option ${p.position === pos ? "selected" : ""}>${pos}</option>`).join("")}</select>`)}
         ${field("Size", range("size", p.size ?? 0.25, 0.1, 0.45, 0.01))}</div>`;
+      if (item.kind === "drawing") {
+        const pictures = library.filter((entry) => /\.(png|jpe?g|webp)$/i.test(entry.path));
+        html += field("Picture", `<select data-field="picture"><option value="">Painted from the words</option>${pictures.map((entry) => `<option value="${escape(entry.path)}" ${p.picture === entry.path ? "selected" : ""}>${escape(entry.name)}</option>`).join("")}</select>`);
+      }
       if (item.kind === "drawing" && p.subject) {
         html += `<div class="show-fields">${field("Style", `<select data-field="style">${Object.entries(DRAWING_STYLES).map(([key, label]) => `<option value="${key}" ${(p.style || "pencil") === key ? "selected" : ""}>${label}</option>`).join("")}</select>`)}</div>
           ${field("What the painter is asked (change it before it is painted)", `<textarea data-field="prompt" rows="3" maxlength="600"></textarea>`)}
