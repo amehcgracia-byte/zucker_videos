@@ -19,8 +19,20 @@
   async function renderPhotos() {
     const photos = (await api("/show/photos")).items || [];
     const sources = window.ShowReview.sources();
-    $("#showStudioBody").innerHTML = `<p class="show-hint">Choose a clear, focused photo of the whole thing. You can also take one from a video.</p>
-      <div class="show-photo-grid">${photos.map((item, index) => `<button type="button" data-photo="${index}" title="${escape(item.name)}"><img src="${item.url}" alt="" loading="lazy"><span>${escape(item.name)}</span></button>`).join("") || "<p>No photos yet.</p>"}</div>
+    const videos = [...new Set(photos.map((item) => item.video || ""))];
+    const only = state.photoFilter && videos.includes(state.photoFilter) ? state.photoFilter : "";
+    // One group per video, in the order of its moments.
+    const groups = videos.filter((video) => !only || video === only).map((video) => {
+      const items = photos.map((item, index) => ({ item, index })).filter(({ item }) => (item.video || "") === video)
+        .sort((a, b) => (a.item.second ?? 0) - (b.item.second ?? 0));
+      return `<h4 class="show-photo-group">${escape(video ? baseName(video) : "Added photos")} · ${items.length}</h4>
+        <div class="show-photo-grid">${items.map(({ item, index }) => `<button type="button" data-photo="${index}" title="${escape(item.name)}"><img src="${item.url}" alt="" loading="lazy"><span>${escape(item.name)}</span></button>`).join("")}</div>`;
+    }).join("");
+    $("#showStudioBody").innerHTML = `<p class="show-hint">Choose a clear, focused photo of the whole thing. Take photos of every steady moment of your videos, or one at an exact second.</p>
+      <div class="show-actions"><button type="button" class="primary icon-button small" id="showPhotoLibrary">Photos of every steady moment</button>
+        ${videos.length > 1 ? `<select id="showPhotoFilter"><option value="">All videos</option>${videos.map((video) => `<option value="${escape(video)}" ${video === only ? "selected" : ""}>${escape(video ? baseName(video) : "Added photos")}</option>`).join("")}</select>` : ""}</div>
+      <p id="showStudioStatus" class="show-hint" role="status" aria-live="polite"></p>
+      ${groups || "<p>No photos yet.</p>"}
       <form id="showTakePhoto" class="show-review-add"><strong>Take a photo</strong>
         <select name="source">${sources.map((path) => `<option value="${escape(path)}">${escape(baseName(path))}</option>`).join("")}</select>
         <label>at <input name="second" type="number" min="0" step="0.1" value="0"> s</label>
@@ -30,6 +42,23 @@
       state.strokes = []; state.undo = []; state.box = null; state.cut = null;
       show(2);
     });
+    const filter = $("#showPhotoFilter");
+    if (filter) filter.onchange = () => { state.photoFilter = filter.value; renderPhotos(); };
+    $("#showPhotoLibrary").onclick = async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      let added = 0;
+      // The close-ups and other takes, not the talking video itself.
+      const videos = window.ShowReview.resources();
+      try {
+        for (const [index, source] of videos.entries()) {
+          $("#showStudioStatus").textContent = `Taking photos of ${baseName(source)}… (${index + 1} of ${videos.length})`;
+          added += (await api("/show/photos/library", { method: "POST", body: JSON.stringify({ source }) })).added;
+        }
+        $("#showStudioStatus").textContent = added ? `${added} new photos.` : "No new photos: every steady moment already has one.";
+        renderPhotos();
+      } catch (error) { showToast(error.message, true); button.disabled = false; }
+    };
     $("#showTakePhoto").onsubmit = async (event) => {
       event.preventDefault();
       const form = event.target;
@@ -61,7 +90,7 @@
       <div class="show-studio-split"><canvas id="showStudioPhoto" class="show-canvas" width="960" height="540"></canvas><div class="show-checker"><img id="showStudioPreview" alt="Cut-out"></div></div>
       <div class="show-actions"><button type="button" class="icon-button small" data-studio="back1">Another photo</button><button type="button" class="primary icon-button small" data-studio="next3">Looks right</button></div>`;
     state.image = new Image();
-    state.image.onload = drawPhoto;
+    state.image.onload = () => drawPhoto();       // not with the load event as a stroke
     state.image.src = state.photo.url;
     const canvas = $("#showStudioPhoto");
     let painting = null;

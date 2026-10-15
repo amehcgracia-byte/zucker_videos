@@ -25,6 +25,11 @@ def test_close_ups_are_proposed_for_clear_matches_spaced_out_and_never_reused():
     assert cuts[0]["params"]["alternatives"][0]["thumb"] == "c.jpg"     # other candidates to choose from
 
 
+def test_shots_of_people_are_kept_for_reactions_not_used_as_close_ups():
+    cuts = propose_cutaways(LINES, RESOURCES, MATCHES, people={(0, 0)})
+    assert [c["params"]["source_start"] for c in cuts] == [pytest.approx(223.0, abs=0.1)]
+
+
 WORDS = [("like", 34.0, 34.3), ("this", 34.4, 34.6), ("guy", 34.7, 34.9), ("could", 35.0, 35.2), ("speak", 35.3, 35.6),
          ("or", 35.7, 35.8), ("something", 35.9, 36.2)]
 

@@ -152,6 +152,17 @@ def shot_windows(plan: dict[str, Any], start: float, end: float) -> list[tuple[f
     return out
 
 
+MUG_SHOWN = 0.6    # share of the mug a shot must show for its steam to appear
+
+
+def _shown(rect: list[float], x0: float, y0: float, window: float) -> float:
+    """Share of ``rect`` (x, y, w, h on the source picture) inside a shot's window."""
+    x, y, w, h = rect
+    seen_w = max(0.0, min(x + w, x0 + window) - max(x, x0))
+    seen_h = max(0.0, min(y + h, y0 + window) - max(y, y0))
+    return seen_w * seen_h / max(1e-9, w * h)
+
+
 def steam_on_screen(plan: dict[str, Any], item: dict[str, Any]) -> list[dict[str, Any]]:
     """A steam item placed on the source picture, as one item per shot in screen
     coordinates (each shot frames the picture differently)."""
@@ -161,6 +172,8 @@ def steam_on_screen(plan: dict[str, Any], item: dict[str, Any]) -> list[dict[str
         sx, sy = (x - x0) / window, (y - y0) / window
         if not (0.0 <= sx <= 1.0 and 0.0 <= sy <= 1.0):
             continue                                  # this shot does not show the mug
+        if item.get("anchor") and _shown(item["anchor"], x0, y0, window) < MUG_SHOWN:
+            continue                                  # only its rim at the edge: steam over nothing
         piece = {**item, "at": a, "duration": round(b - a, 3), "steam": [round(sx, 4), round(sy, 4)],
                  "scale": round(float(item.get("scale") or 1.0) / window, 3)}
         if item.get("anchor"):

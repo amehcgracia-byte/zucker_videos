@@ -24,6 +24,40 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 CHARACTER_VERSION = 1
+PHOTO_EVERY = 4.0      # seconds between library photos of one steady stretch
+PHOTO_LIMIT = 60       # per video
+
+
+def library_photos(resource: dict[str, Any], folder: Path, ffmpeg: str, *, every: float = PHOTO_EVERY,
+                   limit: int = PHOTO_LIMIT) -> list[dict[str, Any]]:
+    """Photos to cut characters from: the video's steady, sharp stretches (as the
+    resource analysis found them; the whole video if it was not analysed), one
+    every ``every`` seconds and at least one per stretch, at full size. A photo
+    already taken is kept, not taken again."""
+    import subprocess
+    source = Path(resource["path"])
+    stretches = [(float(item["start"]), float(item["end"])) for item in resource.get("intervals") or []]
+    if not stretches:
+        from core.ffmpeg import ffprobe
+        stretches = [(0.0, float(ffprobe(str(source))["format"]["duration"]))]
+    times: list[float] = []
+    for start, end in stretches:
+        count = max(1, int((end - start) // every))
+        step = (end - start) / count
+        times += [round(start + step * (k + 0.5), 2) for k in range(count)]
+    folder.mkdir(parents=True, exist_ok=True)
+    photos = []
+    for second in sorted(set(times))[:limit]:
+        target = folder / f"{source.stem}-{second:06.1f}s.jpg"
+        if not target.is_file():
+            subprocess.run([ffmpeg, "-v", "error", "-y", "-nostdin", "-ss", f"{second:.3f}", "-i", str(source), "-frames:v", "1",
+                            "-q:v", "2", str(target)], capture_output=True, check=False)
+        if target.is_file():
+            minutes, seconds = divmod(int(second), 60)
+            photos.append({"name": f"{source.stem} {minutes}:{seconds:02d}", "photo": str(target), "video": str(source),
+                           "second": second, "chosen": "library"})
+    return photos
+
 
 
 def vision_mask(photo: str | Path) -> np.ndarray | None:

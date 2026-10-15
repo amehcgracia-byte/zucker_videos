@@ -116,3 +116,13 @@ def test_steam_placed_on_the_picture_follows_each_shot_s_framing():
     assert pieces[0]["steam"] == [0.35, 0.75] and pieces[0]["scale"] == 1.0
     assert pieces[1]["steam"] == [pytest.approx(0.4), pytest.approx(0.6)] and pieces[1]["scale"] == 2.0
     assert pieces[1]["anchor"][2] == pytest.approx(0.2)                               # the mug looks twice as big
+
+
+def test_no_steam_when_the_mug_is_cut_off_by_the_frame():
+    # A close shot that keeps the rim at its bottom edge but not the mug: the steam
+    # would float over whatever is there.
+    from core.show_framing import steam_on_screen
+    plan = {"fps": 30, "shots": [{"start_frame": 0, "end_frame": 60, "zoom": 2.0, "focus": [0.4, 0.47]},
+                                 {"start_frame": 60, "end_frame": 120, "zoom": 1.0}]}
+    item = {"steam": [0.35, 0.70], "anchor": [0.3, 0.70, 0.1, 0.2], "at": 0.0, "duration": 4.0, "scale": 1.0}
+    assert [(p["at"], p["duration"]) for p in steam_on_screen(plan, item)] == [(2.0, 2.0)]

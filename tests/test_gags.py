@@ -123,10 +123,85 @@ def test_a_drawing_on_a_desk_is_painted_again_one_on_white_is_kept(monkeypatch):
     white = Image.new("RGB", (512, 512), (240, 236, 230))
     for x in range(150, 360):
         for y in range(200, 512):                                  # a bust touching the bottom
-            white.putpixel((x, y), (30, 30, 30))
+            white.putpixel((x, y), (150, 90, 60))
     desk = Image.fromarray(np.full((512, 512, 3), (150, 120, 90), dtype=np.uint8))
     desk.paste((245, 245, 240), (60, 40, 470, 480))                # the sheet on the desk
     assert clean_background(white) and not clean_background(desk)
     tries = []
-    monkeypatch.setattr(gag_paint, "paint", lambda subject, style, seed=0, step=None: tries.append(seed) or (desk if len(tries) < 2 else white))
+    monkeypatch.setattr(gag_paint, "paint", lambda subject, style, seed=0, step=None, prompt=None: tries.append(seed) or (desk if len(tries) < 2 else white))
     assert paint_clean("a cat", "pencil", seed=5) is white and tries == [5, 106]
+    tries.clear()
+    monkeypatch.setattr(gag_paint, "paint", lambda subject, style, seed=0, step=None, prompt=None: tries.append(seed) or desk)
+    with pytest.raises(gag_paint.UnusableDrawing):                 # never a blob on screen
+        paint_clean("a cat", "pencil", seed=5)
+    assert len(tries) == 3
+
+
+
+def test_a_black_blob_is_not_a_drawing():
+    # The painter's "thumbs up": a hand on a black fill, on white: clean edges, but a blob.
+    from core.gag_paint import mostly_black
+    blob = Image.new("RGB", (512, 512), (245, 245, 240))
+    blob.paste((10, 10, 10), (80, 60, 430, 470))
+    blob.paste((230, 190, 160), (200, 180, 300, 300))
+    doodle = Image.new("RGB", (512, 512), (245, 245, 240))
+    for k in range(6):                                               # a few wobbly black strokes
+        doodle.paste((15, 15, 15), (100 + 50 * k, 120, 108 + 50 * k, 400))
+    assert mostly_black(gag_paint.cut_out(blob)) and not mostly_black(gag_paint.cut_out(doodle))
+
+
+def test_a_drawing_the_painter_could_not_clean_is_left_out_with_a_note(tmp_path, monkeypatch):
+    monkeypatch.setattr(gag_paint, "can_paint", lambda: True)
+
+    def unusable(subject, style, seed=3, **kw):
+        raise gag_paint.UnusableDrawing(subject)
+    monkeypatch.setattr(gags, "painted_picture", unusable)
+    plan = [{"kind": "drawing", "at": 1, "duration": 2, "subject": "a thumbs up", "style": "marker", "position": "left", "size": 0.25, "effect": "pop"},
+            {"kind": "word", "at": 4, "duration": 2, "text": "Wow", "position": "top-left", "size": 0.3, "effect": "drop"}]
+    items, notes = gags.make_items(plan, tmp_path)
+    assert [item["kind"] for item in items] == ["word"]
+    assert "a thumbs up" in notes[0]
+
+
+def test_a_blob_kept_from_before_is_painted_again(tmp_path, monkeypatch):
+    style = gag_paint.STYLES["marker"].label
+    folder = tmp_path / "Painted" / style
+    folder.mkdir(parents=True)
+    import hashlib
+    old = folder / f"a thumbs up {hashlib.sha1('a thumbs up|marker|3'.encode()).hexdigest()[:6]}.png"
+    Image.new("RGBA", (200, 200), (5, 5, 5, 255)).save(old)                # painted before the blob check
+    fresh = Image.new("RGB", (512, 512), (245, 245, 240))
+    fresh.paste((200, 40, 40), (150, 150, 360, 360))
+    monkeypatch.setattr(gag_paint, "paint_clean", lambda subject, style, seed=0, step=None, prompt=None: fresh)
+    sticker = gags.painted_picture("a thumbs up", "marker", library_root=tmp_path)
+    assert not gag_paint.mostly_black(sticker) and not gag_paint.mostly_black(Image.open(old))
+
+
+def test_a_drawing_is_painted_with_the_prompt_the_person_wrote(tmp_path, monkeypatch):
+    asked = []
+
+    def fake_paint(subject, style, seed=0, step=None, prompt=None):
+        asked.append(prompt)
+        picture = Image.new("RGB", (512, 512), (245, 245, 240))
+        picture.paste((200, 40, 40), (150, 150, 360, 360))
+        return picture
+    monkeypatch.setattr(gag_paint, "paint_clean", fake_paint)
+    default = gags.painted_picture("a guitar", "crayon", library_root=tmp_path)
+    mine = gags.painted_picture("a guitar", "crayon", library_root=tmp_path, prompt="my own guitar, very wobbly")
+    again = gags.painted_picture("a guitar", "crayon", library_root=tmp_path, prompt="my own guitar, very wobbly")
+    assert asked == [None, "my own guitar, very wobbly"]                     # each version painted once
+    assert default.size == mine.size == again.size
+    assert len(list((tmp_path / "Painted" / gag_paint.STYLES["crayon"].label).glob("*.png"))) == 2   # the first is kept
+
+
+def test_the_painter_uses_the_written_prompt_or_the_style_s_own(monkeypatch):
+    sent = []
+
+    class Pipe:
+        def __call__(self, prompt, **kwargs):
+            sent.append(prompt)
+            return type("Result", (), {"images": [Image.new("RGB", (8, 8))]})()
+    monkeypatch.setattr(gag_paint, "_pipeline", lambda: Pipe())
+    gag_paint.paint("a guitar", "crayon")
+    gag_paint.paint("a guitar", "crayon", prompt="my own words")
+    assert sent == [gag_paint.prompt_for("a guitar", "crayon"), "my own words"]

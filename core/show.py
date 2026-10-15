@@ -68,6 +68,22 @@ def pause_points(plan: dict[str, Any]) -> list[float]:
     return points
 
 
+def between_words(plan: dict[str, Any], entries: list[dict[str, Any]], reach: float = 1.0) -> list[dict[str, Any]]:
+    """Interventions stop the host at a pause (the nearest within ``reach``
+    seconds) or else at the end of the word being said: never mid-word."""
+    pauses = pause_points(plan)
+    words = edited_words(plan)
+    out = []
+    for entry in entries:
+        if entry.get("insert"):
+            at = float(entry["at"])
+            near = [point for point in pauses if abs(point - at) <= reach]
+            at = min(near, key=lambda point: abs(point - at)) if near else next((b for _, a, b in words if a < at < b), at)
+            entry = {**entry, "at": round(at, 3)}
+        out.append(entry)
+    return out
+
+
 def edited_captions(plan: dict[str, Any], style: str) -> list[dict[str, Any]]:
     """Short caption cues from the kept words, on the edited timeline."""
     timed = edited_words(plan)
@@ -145,7 +161,11 @@ def _transcribe_and_plan(project, path: Path, *, style_name: str, language: str 
         progress_callback=lambda value, detail: progress(first + int(value * (last - first) * 0.6 / 100), detail or "Transcribing"),
         model_name=model_name,
         initial_prompt=DISFLUENT_PROMPT.get(language or "", DISFLUENT_PROMPT["auto"]),
-        vad_filter=False,
+        # Voice detection is required: without it Whisper picked the language on
+        # the silent first seconds (Norwegian for an English talk) and skipped
+        # whole stretches (34 words instead of 497 in five minutes). It keeps
+        # every voiced sound, hesitations included, and only drops silences.
+        vad_filter=True,
     )
     sources = transcript.get("sources") or []
     if transcript.get("status") != "ready" or not sources or not sources[0].get("segments"):
@@ -248,7 +268,7 @@ def prepare_show(project, source: str, resources: list[str], *, style_name: str 
     words = edited_words(plan)
     lines = gag_module.gag_director._timed_lines([{"text": w, "start": a, "end": b} for w, a, b in words])
     matches = show_resources.match([text for _, _, text in lines], analysed)
-    cutaways = show_proposals.propose_cutaways(lines, analysed, matches)
+    cutaways = show_proposals.propose_cutaways(lines, analysed, matches, people=set(show_proposals.face_intervals(analysed)))
     characters = show_proposals.propose_characters(words, pause_points(plan), analysed, cutaways)
     taken = [(cut["at"], cut["at"] + cut["duration"]) for cut in cutaways]
     reactions = [item for item in show_proposals.propose_reactions(lines, pause_points(plan), analysed)
@@ -296,6 +316,9 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
     document = show_scenes.load(scenes_path) if scenes_path.is_file() else None
     if document:
         layer += show_scenes.overlay_items(document)
+    layer = between_words(plan, layer)
+    jingles = [entry for entry in layer if entry.get("jingle")]
+    layer = [entry for entry in layer if not entry.get("jingle")]
     path = Path(plan["source"])
     if not path.is_file():
         raise RuntimeError(f"The talking video is not on disk: {path.name}")
@@ -321,6 +344,9 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
         cut.unlink(missing_ok=True)
     else:
         cut.replace(body)
+    if jingles:
+        progress(95, "Laying the jingles")
+        _lay_jingles(body, jingles, spans, ffmpeg)
     identity = (document or {}).get("identity") or {}
     intro = (document or {}).get("intro") or None
     if identity.get("title") or identity.get("logo") or intro:
@@ -339,6 +365,18 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
                                  "characters": sum(1 for item in layer if item.get("insert")), "pictures": len(pictures)})
     progress(100, "Show ready")
     return destination, manifest
+
+
+def _lay_jingles(video: Path, jingles: list[dict[str, Any]], spans: list[tuple[float, float]], ffmpeg: str) -> None:
+    """Mix the chosen jingles into ``video`` in place, moved past any interruption before them."""
+    if not jingles:
+        return
+    from core.show_inserts import shift
+    from core.show_music import mix
+    placed = [{**item, "at": round(shift(float(item["at"]), spans), 3)} for item in jingles]
+    mixed = video.with_name(f".{video.stem}.music{video.suffix}")
+    mix(video, placed, mixed, ffmpeg=ffmpeg)
+    mixed.replace(video)
 
 
 def framed_layer(plan: dict[str, Any], layer: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -392,6 +430,8 @@ def preview_proposal(project, proposal_id: str, *, width: int = 960, height: int
     cut = folder / f"{proposal_id}-{signature}-cut.mp4"
     render_show(Path(plan["source"]), part, cut, ffmpeg=ffmpeg, width=width, height=height, cancel=cancel)
     shifted = [{**entry, "at": round(entry["at"] - start, 3)} for entry in framed_layer(plan, layer)]
+    jingles = [entry for entry in shifted if entry.get("jingle")]
+    shifted = [entry for entry in shifted if not entry.get("jingle")]
     pictures: list[dict[str, Any]] = []
     if director:
         moved = [{**gag, "at": round(gag["at"] - start, 3)} for gag in director]
@@ -399,11 +439,13 @@ def preview_proposal(project, proposal_id: str, *, width: int = 960, height: int
         from core.show_framing import face_on_screen
         pictures, _ = gag_module.make_items(moved, folder / f"{proposal_id}-gags", face=face, cancel=cancel, frame_size=(width, height),
                                             face_at=lambda at: face_on_screen(plan, at + start))
+    spans: list[tuple[float, float]] = []
     if pictures or shifted:
-        render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel)
+        render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans)
         cut.unlink(missing_ok=True)
     else:
         cut.replace(output)
+    _lay_jingles(output, jingles, spans, ffmpeg)
     return output
 
 
@@ -438,16 +480,20 @@ def preview_scene(project, scene_id: str, *, width: int = 960, height: int = 540
     ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
     cut = folder / f"{scene_id}-{signature}-cut.mp4"
     render_show(Path(plan["source"]), part, cut, ffmpeg=ffmpeg, width=width, height=height, cancel=cancel)
-    shifted = [{**entry, "at": round(entry["at"] - start, 3)} for entry in framed_layer(plan, layer) + overlays]
+    shifted = [{**entry, "at": round(entry["at"] - start, 3)} for entry in between_words(plan, framed_layer(plan, layer) + overlays)]
+    jingles = [entry for entry in shifted if entry.get("jingle")]
+    shifted = [entry for entry in shifted if not entry.get("jingle")]
     pictures: list[dict[str, Any]] = []
     if director:
         moved = [{**gag, "at": round(gag["at"] - start, 3)} for gag in director]
         face = "right" if sum(shot.get("focus", [0.5])[0] for shot in plan["shots"]) / max(1, len(plan["shots"])) >= 0.5 else "left"
         pictures, _ = gag_module.make_items(moved, folder / f"{scene_id}-gags", face=face, cancel=cancel, frame_size=(width, height),
                                             face_at=lambda at: face_on_screen(plan, at + start))
+    spans: list[tuple[float, float]] = []
     if pictures or shifted:
-        render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel)
+        render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans)
         cut.unlink(missing_ok=True)
     else:
         cut.replace(output)
+    _lay_jingles(output, jingles, spans, ffmpeg)
     return output

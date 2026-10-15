@@ -7,7 +7,8 @@ from PIL import Image
 
 from core.ffmpeg import ffprobe, tool_status
 from core.gag_render import render_gags
-from core.show_inserts import Steam, convex_hull, draw_steam, load_still, region_polygon, shift
+from core.show_inserts import (BOUNCE_SEC, Steam, convex_hull, draw_steam, insert_frame, load_insert, load_still,
+                               region_polygon, shift)
 
 W, H, FPS = 320, 180, 30
 
@@ -136,3 +137,44 @@ def test_rainbow_steam_rises_from_its_point_and_follows_the_mug():
     draw_steam(scene.copy(), anchored, 1.0)                          # learns the mug
     draw_steam(np.roll(scene, 8, axis=1).copy(), anchored, 1.1)       # the mug moves right
     assert anchored.x == pytest.approx(168, abs=1) and not anchored.lost
+
+
+def test_rainbow_steam_shows_over_a_light_background():
+    # The prototype's 6.5 % pastel puffs vanished over a light mug against a window.
+    frame = np.full((H, W, 3), 200, dtype=np.uint8)
+    draw_steam(frame, Steam(at=0.0, duration=4.0, x=160.0, y=150.0, scale=1.0), 1.0)
+    assert np.abs(frame.astype(int) - 200).max() > 50
+
+
+def test_three_entrances_cut_push_in_or_a_photo_that_bounces_in(tmp_path):
+    ffmpeg = _ffmpeg()
+    _host(ffmpeg, tmp_path / "host.mp4")                                         # grey 0x303030
+    photo = np.full((H, W, 3), (220, 40, 40), dtype=np.uint8)                   # red, with a green stripe on its left edge
+    photo[:, :W // 12] = (40, 200, 40)
+    Image.fromarray(photo).save(tmp_path / "photo.png")
+    base = {"insert": "character", "at": 1.0, "source": str(tmp_path / "photo.png"), "hold": 1.0, "zoom": 1.5, "zoom_sec": 0.4}
+    host = tmp_path / "host.mp4"
+    cut = load_insert({**base, "entrance": "cut"}, W, H, FPS, ffmpeg, host)
+    push = load_insert(base, W, H, FPS, ffmpeg, host)
+    assert (cut.zoom_frames, cut.frames) == (0, 30) and push.zoom_frames == 12  # a cut speaks at once
+    assert insert_frame(push, 0)[H // 2, 2][1] > 150                             # the push starts on the whole photo...
+    assert insert_frame(cut, 0)[H // 2, 2][1] < 100                              # ...the cut is already framed
+    bounce = load_insert({**base, "entrance": "bounce"}, W, H, FPS, ffmpeg, host)
+    first, landed = insert_frame(bounce, 0), insert_frame(bounce, int(BOUNCE_SEC * FPS) + 2)
+    assert np.abs(first[H // 2, W // 2].astype(int) - 0x30).max() < 14          # still below: the frozen host shows
+    assert landed[H // 2, W // 2][0] > 180                                       # the photo, as a card in the middle...
+    assert np.abs(landed[3, 3].astype(int) - 0x30).max() < 14                    # ...with the host around it
+    assert np.abs(insert_frame(bounce, bounce.frames - 1)[H // 2, W // 2].astype(int) - 0x30).max() < 14   # gone at the end
+
+
+def test_a_cut_out_character_comes_closer_with_the_push_in(tmp_path):
+    ffmpeg = _ffmpeg()
+    _host(ffmpeg, tmp_path / "host.mp4")
+    Image.new("RGBA", (40, 80), (250, 250, 0, 255)).save(tmp_path / "toy.png")
+    raw = {"insert": "character", "at": 1.0, "source": "host", "zoom": 1.5, "focus": [0.5, 0.5], "zoom_sec": 0.4, "hold": 0.5,
+           "overlays": [{"image": str(tmp_path / "toy.png"), "x": 0.5, "y": 0.5, "width": 0.1, "effect": "none"}]}
+    insert = load_insert(raw, W, H, FPS, ffmpeg, tmp_path / "host.mp4")
+
+    def yellow(frame):
+        return int(((frame[..., 0] > 200) & (frame[..., 1] > 200) & (frame[..., 2] < 90)).sum())
+    assert yellow(insert_frame(insert, insert.zoom_frames)) == pytest.approx(yellow(insert_frame(insert, 0)) * 2.25, rel=0.15)

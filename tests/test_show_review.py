@@ -43,6 +43,7 @@ def test_only_reviewed_effects_are_rendered_and_captions_follow_the_interruption
     words = _words("there will be millionaires one day", 0.5) + _words("this guy could speak", 3.4) + _words("and that was the end", 5.6)
 
     def fake_transcribe(sources, artifact, **kwargs):
+        assert kwargs["vad_filter"] is True      # language detected on speech, not on the silent start
         return {"status": "ready", "sources": [{"language": "en", "segments": [{"words": words}]}]}
     monkeypatch.setattr("core.backstage_transcription.transcribe_sources", fake_transcribe)
     monkeypatch.setattr("core.show_framing.face_track", lambda *a, **k: [(t * 0.5, 0.6, 0.3, 0.14) for t in range(16)])
@@ -88,6 +89,20 @@ def test_a_window_of_the_edit_keeps_its_frames_and_moves_its_close_ups():
     assert part["cutaways"] == [{"at": 1.5, "duration": 1.0, "source": "x"}]
 
 
+def test_a_character_never_interrupts_the_host_mid_word():
+    # "you know?" | silence cut | "this kind of guy": a character placed inside "know?".
+    words = [{"text": t, "start": a, "end": b} for t, a, b in
+             [("you", 0.2, 0.4), ("know?", 0.4, 0.9), ("this", 2.0, 2.3), ("kind", 2.3, 2.6), ("of", 2.6, 2.7), ("guy", 2.7, 3.1)]]
+    plan = {"fps": 30, "words": words, "shots": [{"start_frame": 0, "end_frame": 30, "words": [0, 1]},
+                                                 {"start_frame": 57, "end_frame": 120, "words": [2, 3, 4, 5], "cut_before": "silence"}]}
+    talk = {"insert": "character", "at": 0.6, "source": "host"}
+    assert show.between_words(plan, [talk])[0]["at"] == 1.0                    # the pause after "know?"
+    late = {"insert": "character", "at": 2.1, "source": "host"}                # inside "guy" (1.8-2.2 edited)
+    assert show.between_words(plan, [late])[0]["at"] == pytest.approx(2.2)      # its end: no pause near
+    sticker = {"image": "x.png", "at": 0.6}
+    assert show.between_words(plan, [sticker]) == [sticker]                     # only interruptions move
+
+
 def _review_project(tmp_path, monkeypatch):
     import server.api as api_module
     monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path / "data"))
@@ -116,6 +131,16 @@ def test_the_review_api_adjusts_approves_and_refuses_what_is_incomplete(tmp_path
     stored = show_proposals.load(project.artifacts_dir / "show_proposals.json")
     assert stored["proposals"][0]["status"] == "approved" and stored["source"]   # saved, metadata kept
     assert client.patch("/api/v1/show/review/nope", json={"status": "approved"}).status_code == 404
+    default = client.get("/api/v1/show/drawing-prompt?subject=a%20guitar&style=crayon").get_json()["prompt"]
+    assert "a guitar" in default and "crayon" in default
+    drawing = client.post("/api/v1/show/review/add", json={"kind": "drawing", "at": 3.0, "subject": "a guitar", "style": "crayon"}).get_json()
+    assert drawing["kind"] == "drawing" and drawing["params"]["subject"] == "a guitar" and drawing["params"]["style"] == "crayon"
+    edited = client.patch(f"/api/v1/show/review/{drawing['id']}", json={"prompt": "a guitar drawn by me, very wobbly"}).get_json()
+    assert edited["params"]["prompt"] == "a guitar drawn by me, very wobbly"
+    assert client.patch(f"/api/v1/show/review/{drawing['id']}", json={"prompt": "x" * 2000}).status_code == 400
+    entered = client.patch(f"/api/v1/show/review/{character['id']}", json={"entrance": "bounce"}).get_json()
+    assert entered["params"]["entrance"] == "bounce"
+    assert client.patch(f"/api/v1/show/review/{character['id']}", json={"entrance": "explode"}).status_code == 400
 
 
 def test_the_review_only_serves_its_own_files(tmp_path, monkeypatch):

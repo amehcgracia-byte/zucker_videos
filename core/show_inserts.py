@@ -15,8 +15,10 @@ picture), so changing the zoom or the focus never misplaces them.
 Rainbow steam: translucent coloured puffs rising from a point, optionally
 anchored to a tracked mug (it stops when the mug is lost).
 
-The loudness mapping, timings and steam particles follow the approved browser
-prototype (tools/qa/show_direction_demo.html on the audit branch).
+The loudness mapping, timings and steam motion follow the approved browser
+prototype (tools/qa/show_direction_demo.html on the audit branch). The steam
+colours are stronger than the prototype's (6.5 % pastel puffs), which could not
+be seen over a light mug against a window in the real footage.
 """
 
 from __future__ import annotations
@@ -37,6 +39,12 @@ BEAT = 5.0                # nod / sideways / turn rhythm (radians per second)
 TURN_RAD = 0.15
 AUDIO_RATE = 48000
 ACTIONS = ("mouth", "nod", "side", "turn")
+ENTRANCES = ("cut", "zoom", "bounce")   # straight cut, push-in, or the photo bouncing in over the frozen host
+BOUNCE_SEC = 0.65         # the photo rises from below with a little jump (the storyboard prototype's timing)
+BOUNCE_SCALE = 0.78
+BOUNCE_EXIT_SEC = 0.25    # and drops away as its voice ends
+CARD_RADIUS = 14 / 960    # its rounded corners, share of the width
+STEAM_OPACITY = 0.3       # each puff at its densest; 0.065 in the prototype was invisible on light mugs
 
 
 def convex_hull(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
@@ -143,6 +151,8 @@ class Insert:
     offset: tuple[float, float] = (0.0, 0.0)
     envelope: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
     overlays: list[Any] = field(default_factory=list)   # stickers drawn on it (a cut-out character talking)
+    entrance: str = "zoom"
+    backdrop: np.ndarray | None = None   # the frozen host behind a photo that bounces in (fitted, RGB)
 
     @property
     def frames(self) -> int:
@@ -164,7 +174,9 @@ def load_insert(raw: dict[str, Any], width: int, height: int, fps: float, ffmpeg
     else:
         photo = raw.get("still_time") is None
         still = load_still(source, None if photo else float(raw["still_time"]), ffmpeg, allow_dark=bool(raw.get("allow_dark")))
-    zoom_frames = int(round(float(raw.get("zoom_sec", ZOOM_SEC)) * fps))
+    entrance = raw.get("entrance") if raw.get("entrance") in ENTRANCES else "zoom"
+    # A cut or a bounce speaks at once; a push-in is silent while the camera moves.
+    zoom_frames = 0 if entrance != "zoom" else int(round(float(raw.get("zoom_sec", ZOOM_SEC)) * fps))
     voice = None
     if raw.get("voice"):
         path, start, length = raw["voice"]
@@ -178,7 +190,11 @@ def load_insert(raw: dict[str, Any], width: int, height: int, fps: float, ffmpeg
                     polygon=region_polygon(raw["region"]) if raw.get("region") else [],
                     action=raw.get("action") if raw.get("action") in ACTIONS else "mouth",
                     amount=float(raw.get("amount") if raw.get("amount") is not None else 0.02),
-                    offset=tuple(raw.get("offset") or (0.0, 0.0)))
+                    offset=tuple(raw.get("offset") or (0.0, 0.0)), entrance=entrance)
+    if entrance == "bounce" and source != "host":
+        if video is None:
+            raise ValueError("A photo that bounces in needs the show video behind it")
+        insert.backdrop = fit(load_still(video, float(raw["at"]), ffmpeg, allow_dark=True), width, height)
     insert.envelope = loudness(voice, fps, hold_frames) if voice is not None else np.zeros(hold_frames, dtype=np.float32)
     if raw.get("overlays"):
         from core.gag_render import load_sticker
@@ -201,20 +217,54 @@ def _window(insert: Insert, zoom: float) -> tuple[float, float, float, float]:
 
 
 def insert_frame(insert: Insert, index: int, fitted: np.ndarray | None = None) -> np.ndarray:
-    """Frame ``index`` of the intervention, RGB at the output size: the still,
-    its region moving, then any character drawn on top."""
-    frame = _still_frame(insert, index, fitted)
+    """Frame ``index`` of the intervention, RGB at the output size: the still
+    with any character drawn on it (so a push-in brings both closer), its region
+    moving; a photo that bounces in is a card over the frozen host."""
+    fitted = fitted if fitted is not None else fit(insert.still, insert.width, insert.height)
     if insert.overlays:
         from core.gag_render import draw_sticker
+        fitted = fitted.copy()
         for sticker in insert.overlays:
-            draw_sticker(frame, sticker, index / insert.fps)
+            draw_sticker(fitted, sticker, index / insert.fps)
+    frame = _still_frame(insert, index, fitted)
+    if insert.backdrop is not None:
+        frame = _card(insert, frame, index)
+    return frame
+
+
+def _card(insert: Insert, picture: np.ndarray, index: int) -> np.ndarray:
+    """The picture as a rounded card over the backdrop: it rises from below with
+    a little jump, stays, and drops away at the end."""
+    import cv2
+    width, height = insert.width, insert.height
+    p = min(1.0, index / insert.fps / BOUNCE_SEC)
+    rise = (1 - (1 - p) ** 3) * 1.10 + math.sin(p * math.pi) * 0.08          # share of the height travelled
+    left = (insert.frames - 1 - index) / insert.fps                           # seconds still to show
+    leave = max(0.0, 1 - left / BOUNCE_EXIT_SEC)
+    dy = (1.10 - rise + leave * leave * 1.10) * height
+    cw, ch = max(1, int(round(width * BOUNCE_SCALE))), max(1, int(round(height * BOUNCE_SCALE)))
+    card = cv2.resize(picture, (cw, ch), interpolation=cv2.INTER_AREA)
+    mask = np.zeros((ch, cw), dtype=np.uint8)
+    r = max(1, int(round(CARD_RADIUS * cw)))
+    cv2.rectangle(mask, (r, 0), (cw - 1 - r, ch - 1), 255, -1)
+    cv2.rectangle(mask, (0, r), (cw - 1, ch - 1 - r), 255, -1)
+    for cx, cy in ((r, r), (cw - 1 - r, r), (r, ch - 1 - r), (cw - 1 - r, ch - 1 - r)):
+        cv2.circle(mask, (cx, cy), r, 255, -1, lineType=cv2.LINE_AA)
+    frame = insert.backdrop.copy()
+    x0, y0 = (width - cw) // 2, (height - ch) // 2 + int(round(dy))
+    top, bottom = max(0, y0), min(height, y0 + ch)
+    if bottom <= top:
+        return frame
+    alpha = mask[top - y0:bottom - y0, :, None].astype(np.float32) / 255.0
+    region = frame[top:bottom, x0:x0 + cw].astype(np.float32)
+    frame[top:bottom, x0:x0 + cw] = (region * (1 - alpha) + card[top - y0:bottom - y0] * alpha + 0.5).astype(np.uint8)
     return frame
 
 
 def _still_frame(insert: Insert, index: int, fitted: np.ndarray | None = None) -> np.ndarray:
     import cv2
     fitted = fitted if fitted is not None else fit(insert.still, insert.width, insert.height)
-    zoom = 1 + (insert.zoom - 1) * min(1.0, index / max(1, insert.zoom_frames))
+    zoom = insert.zoom if insert.zoom_frames == 0 else 1 + (insert.zoom - 1) * min(1.0, index / insert.zoom_frames)
     x, y, w, h = _window(insert, zoom)
     scale = insert.width / w
     matrix = np.array([[scale, 0, -x * scale], [0, scale, -y * scale]], dtype=np.float32)
@@ -303,7 +353,7 @@ def load_steam(raw: dict[str, Any], width: int, height: int) -> Steam:
 
 
 def draw_steam(frame: np.ndarray, steam: Steam, t: float) -> None:
-    """35 translucent rainbow puffs rising and swaying (the prototype's recipe)."""
+    """35 translucent rainbow puffs rising and swaying (the prototype's motion, stronger colours)."""
     import cv2
 
     from core.gag_render import _track
@@ -325,12 +375,12 @@ def draw_steam(frame: np.ndarray, steam: Steam, t: float) -> None:
         cx = steam.x + math.sin(age * 8 + i * 0.4) * age * 28 * s
         cy = steam.y - age * 145 * s
         size = (9 + age * 20) * s
-        peak = 0.065 * (1 - age) * fade
+        peak = STEAM_OPACITY * (1 - age) * fade
         x0, x1 = max(0, int(cx - size)), min(width, int(cx + size) + 1)
         y0, y1 = max(0, int(cy - size)), min(height, int(cy + size) + 1)
         if x1 <= x0 or y1 <= y0 or peak <= 0:
             continue
-        r, g, b = colorsys.hls_to_rgb(i / 35, 0.72, 0.85)
+        r, g, b = colorsys.hls_to_rgb(i / 35, 0.55, 0.95)
         yy, xx = np.mgrid[y0:y1, x0:x1]
         alpha = np.clip(1 - np.hypot(xx - cx, yy - cy) / size, 0, 1)[..., None] * peak
         region = frame[y0:y1, x0:x1].astype(np.float32)

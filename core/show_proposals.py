@@ -7,6 +7,7 @@ Kinds (all times on the edited video):
              voice while the host pauses (its region moves with its pixels)
   drawing, word, warp   gags planned by the director
   steam      rainbow steam over a mug, placed by the person
+  jingle     a short sound the person chose, laid over the show's sound at its moment
 Statuses: proposed -> approved | discarded. "needs" lists what is missing
 before a proposal can be approved (for example a voice for a character).
 Regions are kept in the coordinates of their own picture (shares of the
@@ -24,9 +25,11 @@ from typing import Any
 
 PROPOSALS_VERSION = 1
 STATUSES = ("proposed", "approved", "discarded")
-KINDS = ("cutaway", "character", "drawing", "word", "warp", "steam", "math")
-CUTAWAY_MIN_GAP = 6.0
-CUTAWAY_MIN_SCORE = 0.008
+KINDS = ("cutaway", "character", "drawing", "word", "warp", "steam", "math", "jingle")
+# Measured on a real talk: matches above ~0.015 mostly showed what was said;
+# below it they were close to random. Spaced out so not every line is decorated.
+CUTAWAY_MIN_GAP = 12.0
+CUTAWAY_MIN_SCORE = 0.015
 TALK_WORDS = re.compile(r"\b(speak|speaks|talk|talks|say|says|tell|tells|habla|hablar|dice|decir|cuenta)\b", re.I)
 
 
@@ -42,11 +45,12 @@ def proposal(kind: str, at: float, duration: float, /, *, reason: str, confidenc
 
 
 def propose_cutaways(lines: list[tuple[float, float, str]], resources: list[dict[str, Any]],
-                     matches: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+                     matches: list[list[dict[str, Any]]], *, people: set[tuple[int, int]] | None = None) -> list[dict[str, Any]]:
     """A close-up for lines whose best match stands out, spaced out, each interval used once.
-    The other top matches stay as alternatives to choose from in the review."""
+    The other top matches stay as alternatives to choose from in the review. Shots of
+    people (``people``: the host from another angle) are kept for reactions, not here."""
     out: list[dict[str, Any]] = []
-    used: set[tuple[int, int]] = set()
+    used: set[tuple[int, int]] = set(people or set())
     free_at = 0.0
     for (start, end, text), ranked in zip(lines, matches):
         options = [m for m in ranked if (m["resource"], m["interval"]) not in used]
@@ -171,10 +175,14 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
                               "zoom": params.get("zoom", 1.25), "focus": params.get("focus", [0.5, 0.5]), "zoom_sec": params.get("zoom_sec", 1.2),
                               "voice": [voice["source"], voice["start"], voice["length"]] if voice else None,
                               "hold": params.get("hold", 2.0), "region": params.get("region"), "action": params.get("action", "mouth"),
-                              "amount": params.get("amount", 0.02), "offset": params.get("offset", [0.0, 0.0])})
+                              "amount": params.get("amount", 0.02), "offset": params.get("offset", [0.0, 0.0]),
+                              "entrance": params.get("entrance", "zoom")})
         elif item["kind"] == "steam":
             items_out.append({"steam": params["point"], "anchor": params.get("anchor"), "at": item["at"], "duration": item["duration"],
                               "scale": params.get("scale", 1.0)})
+        elif item["kind"] == "jingle":
+            items_out.append({"jingle": params["path"], "at": item["at"], "duration": item["duration"], "start": params.get("start", 0.0),
+                              "volume": params.get("volume", 0.8), "fade": params.get("fade", 0.05), "duck": params.get("duck", 0.5)})
         elif item["kind"] == "warp":
             items_out.append({"warp": params.get("warp", "wave"), "at": item["at"], "duration": item["duration"], "strength": params.get("strength", 0.8)})
         else:

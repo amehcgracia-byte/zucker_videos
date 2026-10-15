@@ -9,6 +9,8 @@
   const STATUS_LABELS = { proposed: "Proposed", approved: "Approved", discarded: "Discarded" };
   const DECISION_LABELS = { pending: "To decide", accepted: "Accepted", modified: "Modified", plain: "Without effect" };
   const ACTIONS = { mouth: "Mouth (with the voice)", nod: "Nod", side: "Sideways", turn: "Turn" };
+  const DRAWING_STYLES = { pencil: "Pencil", crayon: "Wax crayons", marker: "Felt-tip marker" };
+  const ENTRANCES = { cut: "Straight cut: it talks at once", zoom: "Push in, then it talks", bounce: "The photo bounces in over the frozen host" };
   let review = null;          // the storyboard: identity, intro, scenes, proposals, resources
   let library = [];
   let step = 0;
@@ -48,12 +50,19 @@
   function render() {
     if (!review) return;
     clearTimeout(poll);
+    stopWatching();
     const names = stepNames();
     $("#showSteps").innerHTML = names.map((name, index) => {
       const scene = index >= 2 && index < names.length - 1 ? scenes()[index - 2] : null;
       const mark = scene ? ` <small class="show-decision show-${scene.decision}">${DECISION_LABELS[scene.decision]}</small>` : "";
-      return `<button type="button" data-show-step="${index}" class="${index === step ? "active" : ""}">${escape(name)}${mark}</button>`;
+      const done = scene && scene.decision !== "pending" ? "✓ " : "";
+      return `<button type="button" data-show-step="${index}" class="${index === step ? "active" : ""}">${done}${escape(name)}${mark}</button>`;
     }).join("");
+    // How far along the show is: every decided scene counts, whatever was decided.
+    const decided = scenes().filter((scene) => scene.decision !== "pending").length;
+    const total = scenes().length;
+    $("#showProgress span").textContent = decided === total ? `All ${total} scenes decided ✓` : `${decided} of ${total} scenes decided · ${total - decided} to decide`;
+    Object.assign($("#showProgress progress"), { max: Math.max(1, total), value: decided });
     $("#showStepCount").textContent = `${step + 1} of ${names.length}`;
     $("#showBack").disabled = step === 0;
     $("#showNext").hidden = step === names.length - 1;
@@ -152,15 +161,18 @@
       <p class="show-proposal">${escape(scene.proposal)}</p>
       <details class="show-said"><summary>What you say</summary><p>${escape(scene.text)}</p></details>
       <div class="show-decide">
-        <button type="button" class="primary icon-button small" data-scene-decision="accepted">Accept</button>
+        <button type="button" class="primary icon-button small" data-scene-decision="accepted" data-then-next>Accept and next →</button>
+        <button type="button" class="icon-button small" data-scene-decision="accepted">Accept</button>
         <button type="button" class="icon-button small" data-scene-modify>Modify</button>
         <button type="button" class="icon-button small" data-scene-decision="plain">Leave without effect</button>
         <span class="show-decision show-${scene.decision}">${DECISION_LABELS[scene.decision]}</span>
       </div>
       <div id="showSceneEffects" class="show-review-list" ${open.has(scene.id) ? "" : "hidden"}>${effects.map(card).join("") || "<p class=\"show-hint\">No effect in this scene.</p>"}
         <form id="showSceneAdd" class="show-review-add"><strong>Add</strong>
-          <select name="kind"><option value="steam">Rainbow steam over a mug</option><option value="character">A character that speaks</option><option value="cutaway">A close-up</option><option value="math">Formulas around you</option><option value="word">A shouted word</option></select>
+          <select name="kind"><option value="drawing">A drawing</option><option value="steam">Rainbow steam over a mug</option><option value="character">A character that speaks</option><option value="cutaway">A close-up</option><option value="math">Formulas around you</option><option value="word">A shouted word</option></select>
           <label>at <input name="at" type="number" step="0.1" min="${scene.start}" max="${scene.end}" value="${scene.start.toFixed(1)}"> s</label>
+          <label>of <input name="subject" type="text" maxlength="80" placeholder="a guitar"></label>
+          <select name="style">${Object.entries(DRAWING_STYLES).map(([key, label]) => `<option value="${key}" ${key === "crayon" ? "selected" : ""}>${label}</option>`).join("")}</select>
           <select name="source">${[review.source, ...(review.resources || []).map((item) => item.path)].map((path) => `<option value="${escape(path)}">${escape(baseName(path))}</option>`).join("")}</select>
           <label>from <input name="source_time" type="number" min="0" step="0.1" value="0"> s of it</label>
           <button class="icon-button small" type="submit">Add</button></form>
@@ -192,13 +204,67 @@
     $("#showSteps").querySelectorAll("[data-show-step]").forEach((button) => button.classList.toggle("active", Number(button.dataset.showStep) === step));
   }
 
-  async function decideScene(decision) {
+  async function decideScene(decision, thenNext = false) {
     const scene = currentScene();
     const updated = await api(`/show/scenes/${encodeURIComponent(scene.id)}/decision`, { method: "POST", body: JSON.stringify({ decision }) });
     Object.assign(scene, updated, { preview: { status: "none" } });
-    review = await api(`/show/scenes?current=${encodeURIComponent(scene.id)}`);
+    if (thenNext) step = Math.min(stepNames().length - 1, step + 1);
+    const next = currentScene();
+    review = await api(`/show/scenes?current=${encodeURIComponent((next || scene).id)}`);
     render();
   }
+
+  // ---- The whole show, one step after another --------------------------------------
+
+  let watching = null;
+
+  function stopWatching() {
+    if (!watching) return;
+    clearTimeout(watching.timer);
+    watching = null;
+    $("#showStageVideo").pause();
+  }
+
+  function watchAll() {
+    stopWatching();
+    const identity = review.identity;
+    const parts = [];
+    if (identity.title || identity.logo) parts.push({ kind: "card" });
+    if (review.intro?.path) parts.push({ kind: "video", label: "Intro", url: `/api/v1/show/source?path=${encodeURIComponent(review.intro.path)}` });
+    scenes().forEach((scene) => parts.push({ kind: "scene", scene }));
+    watching = { parts, index: -1, timer: null };
+    playNext();
+  }
+
+  function playNext() {
+    if (!watching) return;
+    const index = ++watching.index;
+    const part = watching.parts[index];
+    if (!part) { stopWatching(); showVideo("", "End of the show. Render it when it looks right."); return; }
+    const video = $("#showStageVideo");
+    const where = `${index + 1} of ${watching.parts.length}`;
+    if (part.kind === "card") {
+      drawCard();
+      $("#showStageStatus").textContent = `Title card · ${where}`;
+      watching.timer = setTimeout(playNext, (review.identity.seconds || 2) * 1000);
+      return;
+    }
+    let url = part.url, label = part.label;
+    if (part.kind === "scene") {
+      const scene = part.scene;
+      label = `${scene.name} · ${DECISION_LABELS[scene.decision]}${scene.decision === "pending" ? " (shown with its proposals; rendered without them until you decide)" : ""}`;
+      url = scene.preview?.status === "ready" ? scene.preview.url : "";
+      if (!url) {
+        showVideo("", `${scene.name}: its preview is still being prepared, skipped · ${where}`);
+        watching.timer = setTimeout(playNext, 1500);
+        return;
+      }
+    }
+    showVideo(url, `${label} · ${where}`);
+    video.play().catch(() => { $("#showStageStatus").textContent = `${label}: press play to continue.`; });
+  }
+
+  $("#showStageVideo").addEventListener("ended", () => { if (watching) playNext(); });
 
   async function markModified() {
     const scene = currentScene();
@@ -216,6 +282,9 @@
       const needsSource = ["character", "cutaway"].includes(form.elements.kind.value);
       form.elements.source.hidden = !needsSource;
       form.elements.source_time.parentElement.hidden = !needsSource;
+      const drawing = form.elements.kind.value === "drawing";
+      form.elements.subject.parentElement.hidden = !drawing;
+      form.elements.style.hidden = !drawing;
     };
     form.elements.kind.onchange = sync;
     sync();
@@ -225,6 +294,7 @@
       const body = { kind, at: Number(form.elements.at.value) || scene.start };
       if (kind === "character") Object.assign(body, { source: form.elements.source.value, still_time: Number(form.elements.source_time.value) || 0 });
       if (kind === "cutaway") Object.assign(body, { source: form.elements.source.value, source_start: Number(form.elements.source_time.value) || 0 });
+      if (kind === "drawing") Object.assign(body, { subject: form.elements.subject.value || "a guitar", style: form.elements.style.value });
       try {
         const item = await api("/show/review/add", { method: "POST", body: JSON.stringify(body) });
         review.proposals.push(item);
@@ -287,6 +357,12 @@
     pulse: "Grow and shrink", swing: "Swing", spin: "Spin", talk: "Talk", path: "Follow a path" };
   let drawingPath = null;
 
+  // A talking character interrupts the host: how it comes in.
+  function showEntrance(overlay, talkable) {
+    $("#showEntranceField").hidden = !(talkable && overlay.action === "talk");
+    $("#showEntrance").value = overlay.entrance || "cut";
+  }
+
   function isCharacter(asset) { return /[\\/]Characters[\\/][^\\/]+[\\/]cutout\.png$/.test(String(asset || "")); }
 
   function openTools(index, x, y) {
@@ -299,11 +375,13 @@
       .filter(([key]) => key !== "talk" || talkable)
       .map(([key, label]) => `<button type="button" data-animate="${key}" class="${(overlay.action || "none") === key ? "active" : ""}">${label}</button>`).join("");
     $("#showIntensity").value = overlay.intensity ?? 1;
+    showEntrance(overlay, talkable);
     $("#showOverlayAt").value = Number(overlay.at ?? scene.start).toFixed(1);
     $("#showOverlayDuration").value = Number(overlay.duration ?? 4).toFixed(1);
     menu.hidden = false;
-    menu.style.left = `${x}px`;
-    menu.style.top = `${y}px`;
+    // Beside the element, but always whole on screen (an element low in the frame opened it off the bottom).
+    menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8))}px`;
   }
 
   document.addEventListener("contextmenu", (event) => {
@@ -319,6 +397,7 @@
     const overlay = scene && selectedOverlay != null ? scene.overlays[selectedOverlay] : null;
     if (!overlay) return;
     if (event.target.id === "showIntensity") overlay.intensity = Number(event.target.value);
+    if (event.target.id === "showEntrance") overlay.entrance = event.target.value;
     if (event.target.id === "showOverlayAt") overlay.at = Math.max(scene.start, Math.min(scene.end - 0.5, Number(event.target.value)));
     if (event.target.id === "showOverlayDuration") overlay.duration = Math.max(0.5, Number(event.target.value));
     saveOverlays(scene);
@@ -361,6 +440,9 @@
       ${pending ? `<p class="show-needs">${pending} scene${pending === 1 ? "" : "s"} still to decide: they will be rendered without their proposals.</p>` : ""}
       <p><a class="icon-button small" href="/api/v1/show/scenes/decisions" download="show-storyboard.json">Download decisions (.json)</a></p>
       <p class="show-hint">The decisions are saved in the project. The JSON is a copy without any media.</p>
+      <div class="show-actions"><button type="button" class="icon-button" data-watch-all>▶ Watch the whole show</button>
+        ${pending ? `<button type="button" class="icon-button" data-first-pending>Go to the first scene to decide</button>` : ""}</div>
+      <p class="show-hint">The whole show plays the title card, the intro and each scene's preview one after another.</p>
       <button type="button" id="showRenderNow" class="primary icon-button">Render the show</button>`;
     showVideo("", "The final render joins the title card, the intro and every scene with what you accepted.");
   }
@@ -438,6 +520,7 @@
       const voices = (p.voices || []).map((voice, index) => `<option value="${index}" ${p.voice && p.voice.start === voice.start && p.voice.source === voice.source ? "selected" : ""}>${escape(voice.text.slice(0, 70))} (${clock(voice.start)}, ${voice.length.toFixed(1)} s)</option>`).join("");
       html += `<div class="show-fields">${isPhoto(p.source) ? field("Holds (s)", number("hold", p.hold ?? 2)) : field("Frozen frame at (s)", number("still_time", p.still_time))}
           ${field("Push-in (s)", number("zoom_sec", p.zoom_sec ?? 1.2))}${field("Zoom", range("zoom", p.zoom ?? 1.25, 1, 2.5, 0.05))}</div>
+        <div class="show-fields">${field("Enters", `<select data-field="entrance">${Object.entries(ENTRANCES).map(([key, label]) => `<option value="${key}" ${(p.entrance || "zoom") === key ? "selected" : ""}>${label}</option>`).join("")}</select>`)}</div>
         <div class="show-fields">${field("Moves", `<select data-field="action">${Object.entries(ACTIONS).map(([key, label]) => `<option value="${key}" ${p.action === key ? "selected" : ""}>${label}</option>`).join("")}</select>`)}
           ${field("How much", range("amount", p.amount ?? 0.02, 0, 0.1, 0.005))}${field("Shift X", range("offset_x", (p.offset || [0, 0])[0], -0.15, 0.15, 0.005))}${field("Shift Y", range("offset_y", (p.offset || [0, 0])[1], -0.15, 0.15, 0.005))}</div>
         ${isPhoto(p.source) ? "<p class=\"show-hint\">A photo has no voice of its own.</p>" : field("Its voice", `<select data-field="voice"><option value="">— choose a recorded line —</option>${voices}</select>`)}
@@ -454,6 +537,11 @@
       html += `<div class="show-fields">${item.kind === "word" ? field("Text", `<input type="text" data-field="text" value="${escape(p.text)}">`) : field("What is drawn", `<input type="text" data-field="subject" value="${escape(p.subject)}">`)}
         ${field("Position", `<select data-field="position">${["left", "top-left", "bottom-left", "right", "top-right", "bottom-right"].map((pos) => `<option ${p.position === pos ? "selected" : ""}>${pos}</option>`).join("")}</select>`)}
         ${field("Size", range("size", p.size ?? 0.25, 0.1, 0.45, 0.01))}</div>`;
+      if (item.kind === "drawing" && p.subject) {
+        html += `<div class="show-fields">${field("Style", `<select data-field="style">${Object.entries(DRAWING_STYLES).map(([key, label]) => `<option value="${key}" ${(p.style || "pencil") === key ? "selected" : ""}>${label}</option>`).join("")}</select>`)}</div>
+          ${field("What the painter is asked (change it before it is painted)", `<textarea data-field="prompt" rows="3" maxlength="600"></textarea>`)}
+          <p class="show-hint">Nothing is painted until you press Preview or render the show. Each wording is a new drawing; the earlier one stays in the library. Empty: the style's own words.</p>`;
+      }
     } else if (item.kind === "warp") {
       html += field("Warp", `<select data-field="warp">${["stretch", "swirl", "wave"].map((name) => `<option ${p.warp === name ? "selected" : ""}>${name}</option>`).join("")}</select>`);
     } else if (item.kind === "steam") {
@@ -461,11 +549,21 @@
         ${field("Size", range("scale", p.scale ?? 1, 0.4, 2, 0.05))}`;
     }
     host.innerHTML = html;
+    fillPrompt(item, host);
     host.addEventListener("input", (event) => onField(item.id, event));
     host.addEventListener("change", (event) => onField(item.id, event));
     const canvas = host.querySelector("canvas");
     if (canvas) editors.set(item.id, new PictureEditor(canvas, item));
     host.querySelectorAll("[data-alt]").forEach((button) => button.addEventListener("click", () => useAlternative(item.id, Number(button.dataset.alt))));
+  }
+
+  // The words the painter will get: the person's own, or the style's for this subject.
+  async function fillPrompt(item, host) {
+    const box = host.querySelector("textarea[data-field=prompt]");
+    if (!box) return;
+    if (item.params.prompt) { box.value = item.params.prompt; return; }
+    const query = new URLSearchParams({ subject: item.params.subject || "", style: item.params.style || "pencil" });
+    try { box.value = (await api(`/show/drawing-prompt?${query}`)).prompt; } catch (error) { box.placeholder = error.message; }
   }
 
   function onField(id, event) {
@@ -486,6 +584,10 @@
     }
     Object.assign(item.params, changes);
     if ("at" in changes) item.at = changes.at;
+    if ((name === "subject" || name === "style") && !item.params.prompt) {
+      const host = $(`[data-show-id="${id}"] .show-editor`);
+      if (host) fillPrompt(item, host);
+    }
     editors.get(id)?.draw();
     saveSoon(id, changes);
   }
@@ -638,20 +740,24 @@
     return lower.slice(0, -1).concat(upper.slice(0, -1));
   }
 
-  // ---- Actions -------------------------------------------------------------
-
   // ---- Actions -----------------------------------------------------------------
 
   document.addEventListener("click", async (event) => {
     const menu = $("#showContextMenu");
-    if (menu && !menu.hidden && !(event.target instanceof Element && event.target.closest("#showContextMenu"))) menu.hidden = true;
-    const target = event.target instanceof Element ? event.target.closest("[data-show-step], #showBack, #showNext, [data-scene-decision], [data-scene-modify], [data-library], [data-menu], [data-animate], #showRenderNow, [data-show-preview], [data-show-adjust], [data-show-status]") : null;
+    // The click that ends a plain press on an element is the one that opened its tools.
+    if (menu && !menu.hidden && !(event.target instanceof Element && event.target.closest("#showContextMenu, [data-overlay]"))) menu.hidden = true;
+    const target = event.target instanceof Element ? event.target.closest("[data-show-step], #showBack, #showNext, [data-scene-decision], [data-scene-modify], [data-library], [data-menu], [data-animate], #showRenderNow, [data-show-preview], [data-show-adjust], [data-show-status], [data-watch-all], [data-first-pending]") : null;
     if (!target || !review) return;
     try {
       if (target.dataset.showStep) { step = Number(target.dataset.showStep); render(); }
       else if (target.id === "showBack") { step = Math.max(0, step - 1); render(); }
       else if (target.id === "showNext") { step = Math.min(stepNames().length - 1, step + 1); render(); }
-      else if (target.dataset.sceneDecision) await decideScene(target.dataset.sceneDecision);
+      else if (target.dataset.sceneDecision) await decideScene(target.dataset.sceneDecision, target.hasAttribute("data-then-next"));
+      else if (target.hasAttribute("data-watch-all")) watchAll();
+      else if (target.hasAttribute("data-first-pending")) {
+        const first = scenes().findIndex((scene) => scene.decision === "pending");
+        if (first >= 0) { step = first + 2; render(); }
+      }
       else if (target.hasAttribute("data-scene-modify")) {
         const scene = currentScene();
         if (open.has(scene.id)) open.delete(scene.id); else open.add(scene.id);
@@ -674,6 +780,7 @@
         overlay.action = target.dataset.animate;
         delete overlay.path;
         menu.querySelectorAll("[data-animate]").forEach((button) => button.classList.toggle("active", button === target));
+        showEntrance(overlay, isCharacter(overlay.asset));
         await saveOverlays(scene);
       } else if (target.dataset.menu) {
         const scene = currentScene();
@@ -739,5 +846,6 @@
     open: openReview, hull, refreshLibrary, addToScene,
     voices: () => (review?.resources || []).flatMap((resource) => (resource.speech || []).map((line) => ({ source: resource.path, start: line.start, length: Math.round((line.end - line.start) * 100) / 100, text: line.text }))),
     sources: () => [review?.source, ...(review?.resources || []).map((item) => item.path)].filter(Boolean),
+    resources: () => (review?.resources || []).filter((item) => item.kind !== "photo").map((item) => item.path),
   };
 })();

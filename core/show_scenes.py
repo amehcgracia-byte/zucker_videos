@@ -27,7 +27,7 @@ DECISIONS = ("pending", "accepted", "modified", "plain")
 TARGET_SEC, MIN_SEC, MAX_SEC = 25.0, 10.0, 45.0
 KIND_WORDS = {"cutaway": "a close-up", "character": "a character answering with its own voice", "drawing": "a drawing",
               "word": "a shouted word", "warp": "the picture bending", "steam": "rainbow steam over the mug",
-              "math": "formulas around you"}
+              "math": "formulas around you", "jingle": "a jingle"}
 
 
 def split(words: list[tuple[str, float, float]], pauses: list[float], duration: float) -> list[tuple[float, float]]:
@@ -51,6 +51,8 @@ def describe(effects: list[dict[str, Any]]) -> str:
     parts = []
     for item in live[:3]:
         reason = re.sub(r'^You say ', "when you say ", item["reason"])
+        reason = re.sub(r'^Director: ', "of ", reason)          # "a drawing of a guitar"
+        reason = re.sub(r'^Added by you$', "added by you", reason)
         parts.append(f"{KIND_WORDS.get(item['kind'], item['kind'])} {reason[0].lower() + reason[1:] if reason else ''}".strip())
     more = f" (and {len(live) - 3} more)" if len(live) > 3 else ""
     return "Proposed: " + "; ".join(parts) + more + "."
@@ -131,6 +133,10 @@ ACTIONS = {
 }
 
 
+ENTRANCES = ("cut", "zoom", "bounce")
+PUSH_ZOOM, PUSH_SEC = 1.25, 0.7          # a talking cut-out's push-in (the storyboard prototype's 0.7 s)
+
+
 def _character_rig(asset: str) -> dict[str, Any]:
     """The rig saved with a character from a photo (mouth, pivot, voice), if the picture is one."""
     path = Path(asset).parent / "character.json"
@@ -178,8 +184,15 @@ def overlay_items(document: dict[str, Any], frame_aspect: float = 16 / 9) -> lis
                 item["mouth_open"] = 0.08 * amount
                 voice = overlay.get("voice") or rig.get("voice")
                 if voice:
-                    items.append({"insert": "character", "at": item["at"], "source": "host", "zoom": 1.0, "zoom_sec": 0.25,
-                                  "voice": voice, "overlays": [{key: value for key, value in item.items() if key not in ("at", "duration")}]})
+                    # It enters at once, rising from below, or the camera pushes in on it.
+                    entrance = overlay.get("entrance") if overlay.get("entrance") in ENTRANCES else "cut"
+                    sticker = {key: value for key, value in item.items() if key not in ("at", "duration")}
+                    if entrance == "bounce":
+                        sticker["effect"] = "rise"
+                    push = entrance == "zoom"
+                    items.append({"insert": "character", "at": item["at"], "source": "host", "entrance": entrance,
+                                  "zoom": PUSH_ZOOM if push else 1.0, "focus": [x, y] if push else [0.5, 0.5],
+                                  "zoom_sec": PUSH_SEC if push else 0, "voice": voice, "overlays": [sticker]})
                     continue
             items.append(item)
     return items

@@ -42,3 +42,6 @@ dist/
 assets/models/clip/*.onnx
 assets/models/clip/tokenizer.json
 tools/clip_text/
+
+# Private recordings, frames and prototypes made from them (never in the repository).
+work/

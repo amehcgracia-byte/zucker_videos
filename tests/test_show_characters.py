@@ -1,5 +1,6 @@
 """Characters from photos: cut out with their own pixels, rigged once, reused; talking and moving."""
 import subprocess
+from pathlib import Path
 import sys
 
 import numpy as np
@@ -109,6 +110,22 @@ def test_a_character_talks_over_the_frozen_host_with_its_own_voice(tmp_path):
     assert np.abs(a[:, :int(0.5 * W)] - b[:, :int(0.5 * W)]).mean() < 3       # the host is frozen meanwhile
 
 
+def test_photos_of_every_steady_moment_of_a_video(tmp_path):
+    ffmpeg = _ffmpeg()
+    video = tmp_path / "closeup.mp4"
+    subprocess.run([ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=s={W}x{H}:r=25:d=12", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", str(video)], check=True)
+    resource = {"path": str(video), "kind": "video", "intervals": [{"start": 0.5, "end": 9.5, "kind": "still"},
+                                                                  {"start": 10.0, "end": 11.0, "kind": "moving"}]}
+    photos = show_characters.library_photos(resource, tmp_path / "photos", ffmpeg, every=4.0)
+    # A photo every 4 s of a long steady stretch, at least one of a short one, each at the middle of its part.
+    assert [item["second"] for item in photos] == [2.75, 7.25, 10.5]
+    assert all(Path(item["photo"]).is_file() and item["video"] == str(video) for item in photos)
+    assert Image.open(photos[0]["photo"]).size == (W, H)                                    # full size
+    again = show_characters.library_photos(resource, tmp_path / "photos", ffmpeg, every=4.0)
+    assert [item["photo"] for item in again] == [item["photo"] for item in photos]          # taken once
+
+
 def test_photos_and_characters_through_the_api(tmp_path, monkeypatch):
     import json
 
@@ -138,6 +155,9 @@ def test_photos_and_characters_through_the_api(tmp_path, monkeypatch):
     assert saved["name"] == "Test card" and saved["provenance"]["second"] == 1.0
     listed = client.get("/api/v1/show/characters").get_json()["items"]
     assert [item["name"] for item in listed] == ["Test card"] and client.get(listed[0]["url"]).status_code == 200
+    library = client.post("/api/v1/show/photos/library", json={"source": str(video)}).get_json()
+    assert library["added"] >= 1 and len(client.get("/api/v1/show/photos").get_json()["items"]) == 1 + library["added"]
+    assert client.post("/api/v1/show/photos/library", json={"source": str(tmp_path / "other.mp4")}).status_code == 400
     rigged = client.patch("/api/v1/show/characters", json={"folder": listed[0]["folder"], "voice": [str(video), 0.0, 1.0]}).get_json()
     assert rigged["voice"][2] == 1.0
     assert client.patch("/api/v1/show/characters", json={"folder": str(tmp_path), "voice": None}).status_code == 404

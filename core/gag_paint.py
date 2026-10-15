@@ -180,8 +180,9 @@ def prompt_for(subject: str, style: str) -> str:
 
 
 def paint(subject: str, style: str, *, seed: int = 0, size: int = SIZE,
-          step: Callable[[int, int], None] | None = None) -> Image.Image:
-    """One drawing of ``subject`` in ``style`` (a key of STYLES)."""
+          step: Callable[[int, int], None] | None = None, prompt: str | None = None) -> Image.Image:
+    """One drawing of ``subject`` in ``style`` (a key of STYLES), with the
+    person's own ``prompt`` if they wrote one."""
     import torch
     recipe = STYLES[style]
     with _LOCK:
@@ -191,7 +192,7 @@ def paint(subject: str, style: str, *, seed: int = 0, size: int = SIZE,
             def callback(_pipe, index, _timestep, kwargs):  # noqa: ANN001 - diffusers signature
                 step(index + 1, recipe.steps)
                 return kwargs
-        result = pipe(prompt_for(subject, style), negative_prompt=NEGATIVE if recipe.guidance > 1 else None,
+        result = pipe(prompt or prompt_for(subject, style), negative_prompt=NEGATIVE if recipe.guidance > 1 else None,
                       num_inference_steps=recipe.steps, guidance_scale=recipe.guidance, width=size, height=size,
                       generator=torch.Generator().manual_seed(int(seed)), callback_on_step_end=callback)
     return result.images[0]
@@ -208,15 +209,30 @@ def clean_background(image: Image.Image) -> bool:
     return sum(clean) >= 3 and light
 
 
-def paint_clean(subject: str, style: str, *, seed: int = 0, tries: int = 3, step: Callable[[int, int], None] | None = None) -> Image.Image:
+DARK_LIMIT = 0.45   # black share of the drawing's box: doodles 0-39 %, the painter's black blobs more
+
+
+def mostly_black(sticker: Image.Image) -> bool:
+    """A cut-out drawing that is mostly black fill: a blob, not a drawing."""
+    rgba = np.asarray(sticker.convert("RGBA"))
+    ink = (rgba[..., 3] > 200) & (rgba[..., :3].max(axis=2) < 50)
+    return float(ink.mean()) > DARK_LIMIT
+
+
+class UnusableDrawing(RuntimeError):
+    """No try came out on a plain background (a sheet on a desk, a black fill)."""
+
+
+def paint_clean(subject: str, style: str, *, seed: int = 0, tries: int = 3, step: Callable[[int, int], None] | None = None,
+                prompt: str | None = None) -> Image.Image:
     """Paint until the drawing floats on white (the model sometimes paints the
-    sheet on a desk); the last try is kept if none is clean."""
-    image = None
+    sheet on a desk) and is a drawing, not a black blob. If no try is clean the
+    drawing is refused: cut out, it would show as a blob on the video."""
     for attempt in range(max(1, tries)):
-        image = paint(subject, style, seed=seed + attempt * 101, step=step)
-        if clean_background(image):
+        image = paint(subject, style, seed=seed + attempt * 101, step=step, prompt=prompt)
+        if clean_background(image) and not mostly_black(cut_out(image)):
             return image
-    return image
+    raise UnusableDrawing(f"No clean drawing of {subject} in {tries} tries")
 
 
 def cut_out(image: Image.Image, tolerance: int = 38) -> Image.Image:

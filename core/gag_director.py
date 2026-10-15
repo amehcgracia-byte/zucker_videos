@@ -275,7 +275,7 @@ def _first_match(table: dict[str, tuple[str, ...]], tokens: set[str]) -> str | N
 
 
 def keyword_gags(words: list[dict[str, Any]], library: list[dict[str, Any]], *, language: str = "es",
-                 face_side: str = "right", every: float = 5.0, seed: int = 0) -> list[dict[str, Any]]:
+                 face_side: str = "right", every: float = 10.0, seed: int = 0) -> list[dict[str, Any]]:
     """Offline director: drawings for known words, characters for people, big words for exclamations."""
     rng = random.Random(seed)
     styles = list(STYLE_NAMES)

@@ -90,16 +90,20 @@ def _slug(text: str) -> str:
 
 
 def painted_picture(subject: str, style: str, *, seed: int = 3, library_root: Path | None = None,
-                    step: Callable[[int, int], None] | None = None) -> Image.Image:
-    """A painted sticker, reused from the gag library when it was painted before."""
+                    step: Callable[[int, int], None] | None = None, prompt: str | None = None) -> Image.Image:
+    """A painted sticker, reused from the gag library when it was painted before
+    (a drawing with the person's own prompt is another drawing)."""
     from core.gag_library import library_dir
     style = style if style in gag_paint.STYLES else "pencil"
     folder = (library_root or library_dir()) / "Painted" / gag_paint.STYLES[style].label
-    target = folder / f"{_slug(subject)} {hashlib.sha1(f'{subject}|{style}|{seed}'.encode()).hexdigest()[:6]}.png"
+    key = f"{subject}|{style}|{seed}" + (f"|{prompt}" if prompt else "")
+    target = folder / f"{_slug(subject)} {hashlib.sha1(key.encode()).hexdigest()[:6]}.png"
     if target.is_file():
-        return Image.open(target).convert("RGBA")
+        kept = Image.open(target).convert("RGBA")
+        if not gag_paint.mostly_black(kept):          # painted before the blob check: paint it again
+            return kept
     # The drawing itself, its paper removed: no white sticker rim, only a soft shadow to read on video.
-    sticker = _shadowed(gag_paint.cut_out(gag_paint.paint_clean(subject, style, seed=seed, step=step)))
+    sticker = _shadowed(gag_paint.cut_out(gag_paint.paint_clean(subject, style, seed=seed, step=step, prompt=prompt)))
     folder.mkdir(parents=True, exist_ok=True)
     sticker.save(target)
     return sticker
@@ -141,6 +145,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
     items: list[dict[str, Any]] = []
     to_paint = sum(1 for gag in gags if gag["kind"] in ("drawing", "character"))
     painted = 0
+    unusable: list[str] = []
     width, height = frame_size
     for index, gag in enumerate(gags):
         if cancel:
@@ -163,7 +168,11 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
             style = gag.get("style") if gag.get("style") in gag_paint.STYLES else "pencil"
             if progress:
                 progress(painted / max(1, to_paint), f"Painting {painted}/{to_paint}: {gag['subject']} ({gag_paint.STYLES[style].label})")
-            picture = painted_picture(gag["subject"], style, seed=3 + index % 2)
+            try:
+                picture = painted_picture(gag["subject"], style, seed=3 + index % 2, prompt=gag.get("prompt") or None)
+            except gag_paint.UnusableDrawing:
+                unusable.append(gag["subject"])
+                continue
             image = character_with_bubble(picture, gag["says"], side=side, seed=index) if kind == "character" and gag.get("says") else picture
         elif kind == "word":
             image = word_sticker(gag["text"], colour=WORD_COLOURS[index % len(WORD_COLOURS)], font=WORD_FONTS[index % len(WORD_FONTS)],
@@ -188,5 +197,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
                       "effect": gag.get("effect") or "pop", "kind": kind})
     if not painter and to_paint:
         notes.append(f"{to_paint} drawings were skipped: download the drawing painter (2.1 GB, once) to get them.")
+    if unusable:
+        notes.append(f"Left out, the painter could not draw them on a clean background: {', '.join(unusable)}.")
     (folder / "gags.json").write_text(json.dumps({"gags": gags, "items": items}, ensure_ascii=False, indent=1), encoding="utf-8")
     return items, notes

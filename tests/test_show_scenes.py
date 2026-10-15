@@ -160,6 +160,34 @@ def test_the_storyboard_prepares_the_next_scenes_and_keeps_every_decision(tmp_pa
     assert "attachment" in exported.headers["Content-Disposition"] and exported.get_json()["scenes"][0]["decision"] == "plain"
 
 
+def test_the_scene_you_ask_for_is_prepared_next_and_only_once(tmp_path, monkeypatch):
+    import threading
+    import time
+    project, client, document, rendered = _storyboard(tmp_path, monkeypatch)
+    busy = threading.Event()
+
+    def slow_preview(project, scene_id, **kwargs):
+        if not rendered:
+            busy.wait(5)                                   # the first preview keeps the worker busy
+        rendered.append(scene_id)
+        out = project.cache_dir / "show_previews" / f"{scene_id}.mp4"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"preview")
+        return out
+    monkeypatch.setattr("core.show.preview_scene", slow_preview)
+    ids = [scene["id"] for scene in client.get("/api/v1/show/scenes").get_json()["scenes"]]
+    last = ids[-1]
+    for _ in range(3):                                     # asked again while it waits
+        assert client.post(f"/api/v1/show/scenes/{last}/preview").status_code == 202
+    busy.set()
+    for _ in range(100):
+        if len(rendered) >= 3:
+            break
+        time.sleep(0.05)
+    time.sleep(0.2)
+    assert rendered[:2] == [ids[0], last] and rendered.count(last) == 1
+
+
 def test_identity_intro_and_pictures_come_only_from_the_project_and_its_library(tmp_path, monkeypatch):
     from PIL import Image
     project, client, document, _ = _storyboard(tmp_path, monkeypatch)
@@ -202,3 +230,20 @@ def test_animate_element_actions_and_a_talking_character_with_its_voice(tmp_path
     assert run["path"] == [[0.0, 0.6, 0.4], [1.0, 0.9, 0.45]] and run["hops"] == 3 and run["pivot"] == [0.5, 1.0]
     assert talk["insert"] == "character" and talk["source"] == "host" and talk["voice"][1] == 268.9   # its own recorded voice
     assert talk["overlays"][0]["mouth"] == {"rect": [0.3, 0.5, 0.4, 0.1]}
+    assert talk["zoom_sec"] == 0 and talk["overlays"][0]["effect"] == "none"     # by default it is there at once
+
+
+@pytest.mark.parametrize("entrance, zoom, zoom_sec, effect", [("cut", 1.0, 0, "none"), ("zoom", 1.25, 0.7, "none"),
+                                                              ("bounce", 1.0, 0, "rise")])
+def test_a_talking_character_can_enter_three_ways(tmp_path, entrance, zoom, zoom_sec, effect):
+    import json
+    folder = tmp_path / "Characters" / "Yellow toy"
+    folder.mkdir(parents=True)
+    Image.new("RGBA", (100, 200), (250, 220, 40, 255)).save(folder / "cutout.png")
+    (folder / "character.json").write_text(json.dumps({"mouth": {"rect": [0.3, 0.5, 0.4, 0.1]}, "voice": ["/v/C0274.MP4", 268.9, 6.0]}))
+    scene = {"start": 0.0, "end": 20.0, "decision": "accepted", "overlays": [
+        {"asset": str(folder / "cutout.png"), "x": 60, "y": 40, "width": 10, "action": "talk", "at": 5.0, "entrance": entrance}]}
+    [talk] = show_scenes.overlay_items({"scenes": [scene]})
+    assert (talk["entrance"], talk["zoom"], talk["zoom_sec"], talk["overlays"][0]["effect"]) == (entrance, zoom, zoom_sec, effect)
+    if entrance == "zoom":                                                       # the camera pushes in on the character
+        assert talk["focus"] == [pytest.approx(0.65), pytest.approx(talk["overlays"][0]["y"])]

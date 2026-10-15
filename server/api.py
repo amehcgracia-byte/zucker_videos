@@ -1985,16 +1985,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def _scene_key(project: Project, scene_id: str) -> str:
         return f"{project.folder}|{scene_id}"
 
-    def _prepare_scenes(project: Project, scene_ids: list[str]) -> None:
-        """Render previews of these scenes in the background, in order (next scenes first)."""
+    def _prepare_scenes(project: Project, scene_ids: list[str], *, first: bool = False) -> None:
+        """Render previews of these scenes in the background, in order (next scenes
+        first). ``first``: the person asked for it, so it goes before the others."""
         from core.show import preview_scene
         with scene_lock:
-            for scene_id in scene_ids:
+            for scene_id in reversed(scene_ids) if first else scene_ids:
                 key = _scene_key(project, scene_id)
-                if scene_previews.get(key, {}).get("status") in {"queued", "rendering", "ready"}:
+                status = scene_previews.get(key, {}).get("status")
+                if status in {"rendering", "ready"} or (status == "queued" and not first):
                     continue
+                scene_queue[:] = [entry for entry in scene_queue if _scene_key(*entry) != key]     # never twice
                 scene_previews[key] = {"status": "queued"}
-                scene_queue.append((project, scene_id))
+                if first:
+                    scene_queue.insert(0, (project, scene_id))
+                else:
+                    scene_queue.append((project, scene_id))
             if scene_worker["thread"] and scene_worker["thread"].is_alive():
                 return
             scene_worker["stop"].clear()
@@ -2088,7 +2094,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_show_scene_preview(scene_id: str) -> Response:
         project = _require_project(state)
         _invalidate_scene(project, scene_id)
-        _prepare_scenes(project, [scene_id])
+        _prepare_scenes(project, [scene_id], first=True)
         return jsonify({"status": "queued"}), 202
 
     @app.patch("/api/v1/show/scenes/identity")
@@ -2135,6 +2141,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                              "duration": max(0.5, min(scene["end"] - scene["start"], float(raw.get("duration", 4.0)))),
                              "effect": str(raw.get("effect") or "pop"),
                              "action": str(raw.get("action") or "none"), "intensity": max(0.2, min(3.0, float(raw.get("intensity", 1.0)))),
+                             **({"entrance": raw["entrance"]} if raw.get("entrance") in show_scenes.ENTRANCES else {}),
                              **({"path": [[max(0.0, min(1.0, float(a))), float(x), float(y)] for a, x, y in raw["path"][:40]],
                                  "hops": max(0, min(20, int(raw.get("hops", 4))))} if isinstance(raw.get("path"), list) and raw["path"] else {}),
                              **({"voice": [str(_show_allowed_source(project, str(raw["voice"][0]))), max(0.0, float(raw["voice"][1])),
@@ -2221,6 +2228,27 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         items.append({"name": name, "photo": str(target), "video": str(source), "second": round(second, 2), "chosen": "by hand"})
         (folder / "photos.json").write_text(json.dumps(items, indent=1, ensure_ascii=False), encoding="utf-8")
         return jsonify(items[-1]), 201
+
+    @app.post("/api/v1/show/photos/library")
+    def api_show_photo_library() -> Response:
+        """Photos of every steady moment of one of the Show's videos, to choose what to cut out."""
+        from core import show_characters, show_proposals
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        source = _show_allowed_source(project, str(body.get("source") or ""))
+        if source is None:
+            return error_response("bad_request", "Choose one of this Show's videos", 400)
+        proposals_path, _ = _show_review_files(project)
+        resources = show_proposals.load(proposals_path).get("resources") or [] if proposals_path.is_file() else []
+        resource = next((item for item in resources if item.get("path") == str(source)), {"path": str(source)})
+        ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
+        taken = show_characters.library_photos({**resource, "path": str(source)}, project.folder / "photos", ffmpeg)
+        items = _show_photos(project)
+        known = {item["photo"] for item in items}
+        added = [item for item in taken if item["photo"] not in known]
+        (project.folder / "photos").mkdir(parents=True, exist_ok=True)
+        (project.folder / "photos" / "photos.json").write_text(json.dumps(items + added, indent=1, ensure_ascii=False), encoding="utf-8")
+        return jsonify({"added": len(added), "photos": len(taken)})
 
     @app.post("/api/v1/show/characters/cutout")
     def api_show_character_cutout() -> Response:
@@ -2353,8 +2381,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         body = request.get_json(silent=True) or {}
         stored = show_proposals.load(proposals_path)
         allowed = {"status", "at", "duration", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action",
-                   "amount", "offset", "voice", "hold", "subject", "text", "style", "position", "size", "effect", "warp", "point", "anchor", "scale"}
+                   "amount", "offset", "voice", "hold", "subject", "text", "style", "position", "size", "effect", "warp", "point", "anchor", "scale",
+                   "entrance", "prompt"}
         changes = {key: value for key, value in body.items() if key in allowed}
+        if "prompt" in changes and (not isinstance(changes["prompt"], str) or len(changes["prompt"]) > 600):
+            return error_response("bad_request", "A drawing's prompt is a text of up to 600 characters", 400)
+        from core.show_inserts import ENTRANCES
+        if "entrance" in changes and changes["entrance"] not in ENTRANCES:
+            return error_response("bad_request", "A character enters with a cut, a push-in or a bounce", 400)
         try:
             item = show_proposals.update(stored["proposals"], proposal_id, **changes)
         except KeyError:
@@ -2363,6 +2397,16 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("bad_request", str(exc), 400)
         show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
         return jsonify(item)
+
+    @app.get("/api/v1/show/drawing-prompt")
+    def api_show_drawing_prompt() -> Response:
+        """The words the painter gets for a drawing, to read and change before it is painted."""
+        from core import gag_paint
+        style = str(request.args.get("style") or "crayon")
+        style = style if style in gag_paint.STYLES else "crayon"
+        subject = str(request.args.get("subject") or "").strip()[:80] or "something"
+        return jsonify({"prompt": gag_paint.prompt_for(subject, style), "style": style,
+                        "styles": {key: value.label for key, value in gag_paint.STYLES.items()}})
 
     @app.post("/api/v1/show/review/add")
     def api_show_review_add() -> Response:
@@ -2393,6 +2437,15 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                                            source_start=float(body.get("source_start") or 0), zoom=1.0, focus=[0.5, 0.5], thumb=None, alternatives=[])
         elif kind == "math":
             item = show_proposals.proposal("math", at, float(body.get("duration") or 4.0), reason="Added by you", kind="math")
+        elif kind == "drawing":
+            from core import gag_paint
+            subject = str(body.get("subject") or body.get("text") or "").strip()[:80]
+            if not subject:
+                return error_response("bad_request", "Say what is drawn", 400)
+            style = str(body.get("style") or "crayon") if str(body.get("style") or "crayon") in gag_paint.STYLES else "crayon"
+            item = show_proposals.proposal("drawing", at, float(body.get("duration") or 3.0), reason="Added by you", kind="drawing",
+                                           subject=subject, style=style, prompt="", says="", text="", query="",
+                                           position="left", size=0.25, effect="pop")
         elif kind == "word":
             item = show_proposals.proposal("word", at, float(body.get("duration") or 2.0), reason="Added by you", kind="word",
                                            text=str(body.get("text") or "WOW")[:40], position="left", size=0.3, effect="pop")
