@@ -44,3 +44,36 @@ A future motion request must add a bounded action, duration, camera, continuity 
 ### Preview verification
 
 The private `clay-memory/index.html` uses `show_clay_memory_demo.html` and exposes the draft reference sheet, storyboard, original-voice preview and an editable direction that downloads JSON. It explicitly says that saving starts no generation. The six-second MP4 is 720×810 at 25 fps (150 frames), with six seconds of audio, 529,700 bytes; full FFmpeg decode completed without errors. Its portrait storyboard framing is a design study, not the final landscape Show composition. Browser loaded the video with readyState 4 and duration 6, and playback was exercised. No existing scene was silently replaced or added to the user's timeline.
+
+## Approved v2 puppet and expanded pose sequence
+
+The user approved the second, deliberately child-built design: lumpy potato head, uneven white eye blobs, round wonky glasses, beard pellets, mitten hands, flattened cap and crude off-white polo. Approval is stored in the private character record; the earlier polished design is retained for comparison. Built-in image generation used the approved character image as an explicit reference for both new pose sheets. Actual prompts are saved privately as `pose-v2-prompt.json` and `story-v2-prompt.json`; generated personal likenesses and voice remain outside Git.
+
+The first six-second revision introduced a head tilt and arm gesture, then a closer camera view. One generated pose raised the opposite hand and was excluded. After the user's follow-up, the story extends through source **223.62–244.90 seconds** (21.28 seconds):
+
+- 0.00–4.24: imagine the meadow/house;
+- 4.24–8.96: anonymous neighbours gather in a crude clay city;
+- 8.96–16.08: a closer group view during the question about staying in the city;
+- 16.08–21.28: the same cast in a little clay village.
+
+The neighbours are generic supporting characters, not invented portraits of actual band members. This remains discrete held-pose animation (three pose changes per second), with repeated gestures and no continuous body simulation or phonetic mouth synthesis. The original voice continues unchanged in meaning/timing; it is encoded for the preview, not replaced by synthetic speech. The surrounding context preview contains four seconds of the real video before and after the clay sequence.
+
+`build_clay_pose_preview.py` consumes the private JSON plan, original voice and two 3×2 pose grids. It validates contiguous finite intervals, renders four video shots, stream-copies them with one final audio encode, fully decodes the pending output, checks duration/frame/audio counts and publishes by same-directory rename. Temporary shot files are scoped to the build and removed; existing inputs and prior revisions are retained. Rendered clay sequence: **1280×720, 25 fps, 532 frames, 21.28 s**. Context version: **732 frames, 29.28 s**, equal audio/video duration; full decode passed. The visual sampling sheet was reviewed across all four shots.
+
+`show_clay_scene_tool.html` is a private-study workbench: approved cast reference, four selectable shots, bounded selected-shot playback, adjustable shared cut boundaries, per-shot editable directions and JSON download. Moving a cut changes the canvas preview immediately while the source voice stays continuous. Directions only prepare a generation brief; no generator/provider is launched. The rendered MP4 remains a snapshot until an edited JSON is rendered separately. This workbench is **not yet connected to the production project store or a one-button in-app MP4 renderer**.
+
+Browser validated a first cut changing from 4.24 to 5.24 seconds (the next shot starts at 5.24), then restored it; selected village seek to 16.10 s; selected city playback starting at 4.38 s and stopping at 8.97 s for an 8.96 s boundary. A real bug was caught: the temporary static server supplies no usable seek range for direct media URLs, so selection reset to zero. These short preview/voice files now load once as bounded local blobs (5 MiB voice / 32 MiB preview caps), never the multi-gigabyte original; browser then reports seekable 0–21.28 and 0–29.28 and seeks correctly. Main context preview was verified at 5.20 s. Python compile, HTML script syntax and diff checks pass. No claim of full application/Windows regression validation for this sample.
+
+Private URLs while the sample server is running:
+
+- `/pilot/clay-memory/`: updated context preview, approved v2 sheet, prior version comparison;
+- `/pilot/clay-memory/editor.html`: timing/direction workbench;
+- `/pilot/clay-memory/story-v2.json`: current source cues, cut intervals and image references.
+
+Render an edited plan with:
+
+```sh
+python tools/qa/build_clay_pose_preview.py PRIVATE_PLAN.json PRIVATE_VOICE.m4a PRIVATE_OUTPUT.mp4 --ffmpeg PATH --ffprobe PATH
+```
+
+Downloaded plans should be kept beside their referenced private sheets, or their relative sheet paths adjusted deliberately. No media migration/deletion, installed-app replacement, video-generation provider or paid API was introduced.
