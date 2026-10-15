@@ -92,11 +92,13 @@ def test_missing_codex_fails_explicitly_without_falling_back(setup,monkeypatch):
 
 def test_provider_cannot_import_a_file_outside_the_request_workspace(setup,monkeypatch,tmp_path):
     p,_=setup;j=ai.create(p,{'id':'scene-1','start':0,'end':10},request())
+    monkeypatch.setenv('OPENAI_API_KEY','unused-test-key')
     outside=tmp_path/'private.png';Image.new('RGBA',(10,10),(0,0,0,50)).save(outside)
     class Proc:
         returncode=0
         def __init__(self,command,**kwargs):
             self.command=command
+            assert 'OPENAI_API_KEY' not in kwargs['env'] and 'CODEX_API_KEY' not in kwargs['env']
         def communicate(self,data,timeout):
             assert 'Use the BUILT-IN image_gen tool' in data.decode()
             (ai.folder(p,j['id'])/'result.json').write_text(json.dumps({'image_path':str(outside)}))

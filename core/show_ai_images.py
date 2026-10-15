@@ -87,7 +87,10 @@ def run(project, job_id: str, *, executable: str | None = None) -> None:
         executable = executable or shutil.which('codex')
         if not executable:
             raise RuntimeError('Install Codex and sign in with ChatGPT to generate this image. Your local painter was not used.')
-        auth = subprocess.run([executable, 'login', 'status'], capture_output=True, text=True, timeout=15)
+        provider_env = os.environ.copy()
+        for name in ('OPENAI_API_KEY', 'CODEX_API_KEY'):
+            provider_env.pop(name, None)
+        auth = subprocess.run([executable, 'login', 'status'], capture_output=True, text=True, timeout=15, env=provider_env)
         if auth.returncode or 'chatgpt' not in (auth.stdout + auth.stderr).lower():
             raise RuntimeError('Sign in to Codex with ChatGPT first. API-key billing and local-model fallback are not enabled for this workflow.')
         job.update(status='generating', message='ChatGPT is creating your image. The scene stays unchanged until you use the result.')
@@ -121,7 +124,7 @@ def run(project, job_id: str, *, executable: str | None = None) -> None:
                        + prompt_for(job))
         with (path/'provider.log').open('wb') as log:
             proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT,
-                                    start_new_session=os.name != 'nt')
+                                    start_new_session=os.name != 'nt', env=provider_env)
             try:
                 proc.communicate(instruction.encode(), timeout=420)
             except subprocess.TimeoutExpired:
