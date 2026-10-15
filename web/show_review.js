@@ -5,7 +5,7 @@
 // coordinates of their own picture, outlines exist only in the editor, and the
 // pixels that move are the originals. Nothing is rendered until the last step.
 (() => {
-  const KIND_LABELS = { cutaway: "Close-up", character: "Character speaks", drawing: "Drawing", word: "Word", warp: "Warp", steam: "Rainbow steam", math: "Formulas around you" };
+  const KIND_LABELS = { sticker:"Sticker", cutaway: "Close-up", character: "Character speaks", drawing: "Drawing", word: "Word", warp: "Warp", steam: "Rainbow steam", math: "Formulas around you" };
   const STATUS_LABELS = { proposed: "Proposed", approved: "Approved", discarded: "Discarded" };
   const DECISION_LABELS = { pending: "To decide", accepted: "Accepted", modified: "Needs review", plain: "Without effect" };
   const ACTIONS = { mouth: "Mouth (with the voice)", nod: "Nod", side: "Sideways", turn: "Turn" };
@@ -13,6 +13,7 @@
   const ENTRANCES = { cut: "Straight cut: it talks at once", zoom: "Push in, then it talks", bounce: "The photo bounces in over the frozen host" };
   let review = null;          // the storyboard: identity, intro, scenes, proposals, resources
   let library = [];
+  let showRetired=false,retiredCount=0;
   let step = 0;
   let poll = null;
   let selectedOverlay = null;
@@ -40,7 +41,7 @@
 
   async function openReview() {
     review = await api("/show/scenes");
-    library = (await api("/show/library").catch(() => ({ items: [] }))).items || [];
+    await loadLibrary();
     for (const scene of review.scenes || []) {
       if (["queued", "rendering", "ready"].includes(scene.preview?.status)) wantEffects.add(scene.id);
     }
@@ -183,13 +184,23 @@
     showVideo(chosen ? `/api/v1/show/source?path=${encodeURIComponent(chosen)}` : "", chosen ? "" : "No intro.");
   }
 
+  async function loadLibrary(){const data=await api('/show/library'+(showRetired?'?retired=1':''));library=data.items||[];retiredCount=data.retired_count||0;}
+  function timelineItems(scene){
+    if(!scene)return [];
+    return [...sceneEffects(scene),...scene.overlays.map(overlay=>{
+      overlay.id ||= crypto.randomUUID();
+      const asset=library.find(item=>item.path===overlay.asset);
+      return {id:'sticker:'+overlay.id,overlay,kind:'sticker',at:overlay.at??scene.start,duration:overlay.duration??4,status:'approved',params:{subject:asset?.name||baseName(overlay.asset),selected_text:overlay.selected_text||''}};
+    })];
+  }
+  const timelineItem=id=>timelineItems(currentScene()).find(item=>item.id===id);
   function sceneEffects(scene) {
     return review.proposals.filter((item) => scene.effects.includes(item.id));
   }
 
   function renderScene() {
     const scene = currentScene();
-    if(selectedEffect && !scene.effects.includes(selectedEffect)){selectedEffect=null;placingWords=false;firstWord=null;pickedWords=null;}
+    if(selectedEffect && !timelineItems(scene).some(item=>item.id===selectedEffect)){selectedEffect=null;placingWords=false;firstWord=null;pickedWords=null;}
     const effects = sceneEffects(scene);
     const preview = scene.preview || { status: "none" };
     const words = scene.words || [];
@@ -220,8 +231,8 @@
           <select name="source">${[review.source, ...(review.resources || []).map((item) => item.path)].map((path) => `<option value="${escape(path)}">${escape(baseName(path))}</option>`).join("")}</select>
           <label>from <input name="source_time" type="number" min="0" step="0.1" value="0"> s of it</label>
           <button class="icon-button small" type="submit">Add &amp; preview</button></form>
-        <h4>Pictures from the library</h4>
-        <div class="show-library">${library.slice(0, 60).map((item, index) => `<button type="button" data-library="${index}" title="${escape(item.name)}"><img src="${item.url}" alt="${escape(item.name)}" loading="lazy"></button>`).join("") || "<p class=\"show-hint\">The library is empty: add images in Overlay &amp; Captions, or keep painted drawings.</p>"}</div>
+        <h4>Your drawings &amp; stickers</h4><p class="show-hint">Choose a picture to add it as an editable timeline clip. Right-click a picture to remove it.</p><button type="button" data-toggle-retired>${showRetired?"Hide retired images":`Retired images (${retiredCount})`}</button>
+        <div class="show-library">${library.slice(0, 80).map((item, index) => `<div class="show-library-entry"><button type="button" data-library="${index}" aria-label="Add ${escape(item.name)}" title="${escape(item.name)}" ${item.retired?"disabled":""}><img src="${item.url}" alt="" loading="lazy">${escape(item.name)}</button><small>${escape(item.origin||"Your library")}</small><button type="button" data-library-retire="${index}">${item.retired?"Restore":"Remove from library"}</button></div>`).join("") || "<p class=\"show-hint\">The library is empty: add images in Overlay &amp; Captions, or keep painted drawings.</p>"}</div>
         <p class="show-hint">Drag a picture on the video to move it, its corner to resize it; click it for its tools.</p>
         <button type="button" class="icon-button small" data-studio="open">New character from a photo</button>
       </div>`;
@@ -242,7 +253,7 @@
   }
   function wordPlacementControls() {
     const box=$('#showWordPlacement'), scene=currentScene(); if(!box||!scene)return;
-    const item=review.proposals.find(p=>p.id===selectedEffect && scene.effects.includes(p.id));
+    const item=timelineItem(selectedEffect);
     if(!item){box.innerHTML='<small>Select an effect in the timeline to place it on words.</small>';return;}
     box.innerHTML=`<strong>${escape(item.params.subject||item.params.text||KIND_LABELS[item.kind]||item.kind)}</strong>
       <button type="button" data-start-word-placement>Choose words</button>
@@ -254,18 +265,23 @@
   async function savePlacement(item, changes) {
     const owner=currentScene()?.id;
     await flushEdits();
+    if(item.overlay){
+      const old={...item.overlay};Object.assign(item.overlay,changes);
+      if(!await saveOverlays(currentScene())){Object.assign(item.overlay,old);throw Error('Sticker changes were not saved');}
+      drawOverlays(currentScene());renderTimeline(currentScene());wordPlacementControls();return timelineItem(item.id);
+    }
     const updated=await patch(item.id,changes);
     await markModified(item.id);
     if(currentScene()?.id===owner){renderTimeline(currentScene()); refreshCard(item.id); wordPlacementControls();}
     return updated;
   }
   async function placeOnWords(picked) {
-    const scene=currentScene(), item=review.proposals.find(p=>p.id===selectedEffect);
+    const scene=currentScene(), item=timelineItem(selectedEffect);
     if(!scene||!item||!picked)return;
     const timing=fitTiming(scene,picked.start,picked.end-picked.start);
     await savePlacement(item,{...timing,selected_text:picked.text});
     placingWords=false;firstWord=null;pickedWords=null;wordPlacementControls();
-    locateEffect(review.proposals.find(p=>p.id===item.id));
+    locateEffect(timelineItem(item.id));
     showToast('Placed on your selected words. Drag the bar edges to extend or shorten it.');
   }
   function enterLiveTiming(scene, at=editedPlayhead()) {
@@ -299,13 +315,14 @@
     if($('#showTimelineLauncher'))$('#showTimelineLauncher').hidden=false;
   }
   function closeTimeline() {
+    $("#showContextMenu").hidden=true;
     if(timelineDialog?.open)timelineDialog.close();
     restoreStage();
     // Context menus mounted on body cannot stay above a modal's top layer.
     $('#showEffectMenu')?.setAttribute('hidden','');
   }
   function locateEffect(item, popup=true) {
-    const scene=currentScene();if(!scene||!item||!scene.effects.includes(item.id))return;
+    const scene=currentScene();if(!scene||!item||!timelineItems(scene).some(entry=>entry.id===item.id))return;
     selectedEffect=item.id;
     wantEffects.delete(scene.id);wantQuick.add(scene.id);
     $('#showPanel').querySelectorAll('[data-preview-mode]').forEach(button=>button.classList.toggle('active',button.dataset.previewMode==='quick'));
@@ -387,11 +404,12 @@
     launcher.hidden=!!timelineDialog?.open;
     const duration=scene.end-scene.start;
     const pct=t=>100*(t-scene.start)/duration;
-    const selected=sceneEffects(scene).find(item=>item.id===selectedEffect);
-    const rows=sceneEffects(scene).filter(item=>item.status!=='discarded');
+    const selected=timelineItems(scene).find(item=>item.id===selectedEffect);
+    const rows=timelineItems(scene).filter(item=>item.status!=='discarded');
     box.innerHTML=`<header><strong>Scene timeline</strong><small>${clock(scene.start)}–${clock(scene.end)}</small></header>
+      <details class="show-sticker-picker"><summary>Add sticker</summary><div class="show-library">${library.map((asset,index)=>asset.retired?'':`<button type="button" data-library="${index}" aria-label="Add ${escape(asset.name)}"><img src="${asset.url}" alt="" loading="lazy">${escape(asset.name)}</button>`).join('')}</div></details>
       <p>Play or scrub to check when a picture appears and disappears. Drag a bar to move it; drag either edge to trim.</p>
-      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button><button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>${selected.kind==='drawing'&&!selected.params.picture?'<small>This local drawing needs a rendered preview. It is not drawn in the live timing view.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
+      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${selected.kind==='drawing'&&!selected.params.picture?'<small>This local drawing needs a rendered preview. It is not drawn in the live timing view.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
       <div class="show-time-row"><span>Video</span><div class="show-time-source" data-scene-seek>Original video · your cut</div></div>
       <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
       ${rows.map(item=>{
@@ -410,7 +428,7 @@
       const clip=event.target.closest('[data-time-clip]');if(!clip)return;
       enterLiveTiming(scene);
       event.preventDefault();clip.setPointerCapture(event.pointerId);
-      const item=review.proposals.find(p=>p.id===clip.dataset.timeClip), track=clip.parentElement.getBoundingClientRect(),x=event.clientX,at=item.at,end=at+item.duration,edge=event.target.dataset.trim;
+      const item=timelineItem(clip.dataset.timeClip), track=clip.parentElement.getBoundingClientRect(),x=event.clientX,at=item.at,end=at+item.duration,edge=event.target.dataset.trim;
       selectedEffect=item.id;wordPlacementControls();let moved=false,timing={at,duration:item.duration};
       clip.onpointermove=e=>{
         const delta=(e.clientX-x)/track.width*duration;moved ||= Math.abs(e.clientX-x)>2;
@@ -434,7 +452,7 @@
       const bounds=track.getBoundingClientRect();seekTo(scene.start+(event.clientX-bounds.left)/bounds.width*duration);
     };
     syncPlayback();
-    box.onkeydown=event=>{const clip=event.target.closest('[data-time-clip]');if(clip && ['Enter',' '].includes(event.key)){event.preventDefault();locateEffect(review.proposals.find(p=>p.id===clip.dataset.timeClip));}};
+    box.onkeydown=event=>{const clip=event.target.closest('[data-time-clip]');if(clip && ['Enter',' '].includes(event.key)){event.preventDefault();locateEffect(timelineItem(clip.dataset.timeClip));}};
   }
   for(const name of ['timeupdate','loadeddata','play','pause'])$('#showStageVideo').addEventListener(name,syncPlayback);
   $('#showStageVideo').addEventListener('seeked',()=>{if(quick)quick.pending=null;syncPlayback();});
@@ -448,7 +466,7 @@
       if(target.hasAttribute('data-cancel-word-placement')){placingWords=false;firstWord=null;pickedWords=null;wordPlacementControls();return;}
       if(target.hasAttribute('data-use-word-placement')){await placeOnWords(pickedWords);return;}
       selectedEffect=target.dataset.placeWords||target.dataset.locateEffect||selectedEffect;
-      if(target.dataset.locateEffect){locateEffect(review.proposals.find(p=>p.id===selectedEffect));return;}
+      if(target.dataset.locateEffect){locateEffect(timelineItem(selectedEffect));return;}
       closeTimeline();placingWords=true;firstWord=null;pickedWords=null;wordPlacementControls();$('#showSaid').scrollIntoView({block:'nearest'});
     }catch(error){showToast(error.message,true);}
   });
@@ -841,8 +859,8 @@
     const layer = $("#showStageLayer");
     layer.innerHTML = scene.overlays.map((overlay, index) => {
       const item = library.find((entry) => entry.path === overlay.asset);
-      return `<div class="show-overlay ${selectedOverlay === index ? "selected" : ""}" data-overlay="${index}" style="left:${overlay.x}%;top:${overlay.y}%;width:${overlay.width}%">
-        <img src="${item ? item.url : ""}" alt="" draggable="false"><span class="show-resize" data-resize="${index}"></span></div>`;
+      return `<div class="show-overlay ${selectedOverlay === index || selectedEffect==='sticker:'+overlay.id ? "selected" : ""}" data-overlay="${index}" style="left:${overlay.x}%;top:${overlay.y}%;width:${overlay.width}%">
+        <img src="${item ? item.url : `/api/v1/show/library/file?path=${encodeURIComponent(overlay.asset)}`}" alt="" draggable="false"><span class="show-resize" data-resize="${index}"></span></div>`;
     }).join("");
     liveDrawings(scene);
   }
@@ -853,7 +871,8 @@
       scene.overlays = updated.overlays;
       scene.decision = updated.decision;
       invalidateLocal(scene);
-    } catch (error) { showToast(error.message, true); }
+      renderTimeline(scene);wordPlacementControls();return true;
+    } catch (error) { showToast(error.message, true);return false; }
   }
 
   let dragging = null;
@@ -901,6 +920,7 @@
     const overlay = scene.overlays[index];
     selectedOverlay = index;
     const menu = $("#showContextMenu");
+    (timelineDialog?.open?timelineDialog:document.body).append(menu);
     const talkable = isCharacter(overlay.asset);
     $("#showActionButtons").innerHTML = Object.entries(ANIMATIONS)
       .filter(([key]) => key !== "talk" || talkable)
@@ -929,8 +949,8 @@
     if (!overlay) return;
     if (event.target.id === "showIntensity") overlay.intensity = Number(event.target.value);
     if (event.target.id === "showEntrance") overlay.entrance = event.target.value;
-    if (event.target.id === "showOverlayAt") overlay.at = Math.max(scene.start, Math.min(scene.end - 0.5, Number(event.target.value)));
-    if (event.target.id === "showOverlayDuration") overlay.duration = Math.max(0.5, Number(event.target.value));
+    if (event.target.id === "showOverlayAt") Object.assign(overlay,fitTiming(scene,Number(event.target.value),overlay.duration));
+    if (event.target.id === "showOverlayDuration") Object.assign(overlay,fitTiming(scene,overlay.at,Number(event.target.value)));
     saveOverlays(scene);
   });
 
@@ -1339,12 +1359,13 @@
     if (!review || $("#showReviewBox")?.hidden || !(event.target instanceof Element)) return;
     if (event.target.closest("#showSaid, [data-overlay], canvas, input, textarea")) return;
     const scene = currentScene();
-    if (!scene || !event.target.closest("#showStage, [data-show-id]")) return;
+    if (!scene || !event.target.closest("#showStage, [data-show-id], [data-time-clip]")) return;
     event.preventDefault();
     let menu = $("#showEffectMenu");
     if (!menu) { menu = document.createElement("div"); menu.id="showEffectMenu"; menu.className="show-context-menu"; menu.setAttribute("role","menu"); document.body.append(menu); }
     (timelineDialog?.open ? timelineDialog : document.body).append(menu);
-    const ownId=event.target.closest("[data-show-id]")?.dataset.showId || event.target.closest("[data-live-effect]")?.dataset.liveEffect;
+    const ownId=event.target.closest("[data-time-clip]")?.dataset.timeClip || event.target.closest("[data-show-id]")?.dataset.showId || event.target.closest("[data-live-effect]")?.dataset.liveEffect;
+    if(ownId?.startsWith('sticker:')){openTools(currentScene().overlays.findIndex(overlay=>'sticker:'+overlay.id===ownId),event.clientX,event.clientY);return;}
     const items=sceneEffects(scene).filter(item => !ownId || item.id===ownId);
     menu.innerHTML = `<strong>Scene effects</strong>${items.map(item => `<div><span>${escape(item.params.subject || item.params.text || KIND_LABELS[item.kind] || item.kind)}</span><button type="button" data-effect-action="change" data-id="${item.id}">Change / replace…</button><button type="button" data-effect-action="remove" data-id="${item.id}">${item.status === "discarded" ? "Restore effect" : "Remove effect"}</button></div>`).join("") || "<p>No effect in this scene.</p>"}<button type="button" data-effect-action="preview">Generate scene preview</button>`;
     menu.hidden=false;
@@ -1376,6 +1397,22 @@
     const item=review.proposals.find(item=>item.id===button.dataset.aiEdit);
     const scene=currentScene();if(!item||!scene)return;
     ShowEinstein.open(scene,{text:item.params.selected_text||scene.text,start:item.at,end:Math.min(scene.end,item.at+item.duration)},item.params.ai_direction || item.params.subject,item.id,{style:item.params.style,position:item.params.position});
+  });
+
+  document.addEventListener('click',async event=>{
+    const target=event.target.closest?.('[data-toggle-retired],[data-library-retire],[data-remove-sticker]');if(!target)return;
+    try{
+      if(target.hasAttribute('data-toggle-retired')){showRetired=!showRetired;await loadLibrary();renderScene();}
+      else if(target.hasAttribute('data-library-retire')){
+        const item=library[Number(target.dataset.libraryRetire)];
+        await api('/show/library/visibility',{method:'POST',body:JSON.stringify({path:item.path,retired:!item.retired})});
+        await loadLibrary();renderScene();
+      }else{
+        const scene=currentScene(),item=timelineItem(target.dataset.removeSticker);if(!item?.overlay)return;
+        scene.overlays=scene.overlays.filter(overlay=>overlay.id!==item.overlay.id);selectedEffect=null;
+        await saveOverlays(scene);drawOverlays(scene);renderTimeline(scene);
+      }
+    }catch(error){showToast(error.message,true);}
   });
 
   // ---- Actions -----------------------------------------------------------------
@@ -1410,9 +1447,8 @@
         renderScene();
       } else if (target.dataset.library) {
         const scene = currentScene();
-        scene.overlays.push({ asset: library[Number(target.dataset.library)].path, x: 8, y: 10, width: 22, at: scene.start, duration: Math.min(4, scene.end - scene.start), effect: "pop" });
-        drawOverlays(scene);
-        await saveOverlays(scene);
+        scene.overlays.push({ id:crypto.randomUUID(),asset: library[Number(target.dataset.library)].path, x: 8, y: 10, width: 22, at: scene.start, duration: Math.min(4, scene.end - scene.start), effect: "pop" });
+        if(await saveOverlays(scene))locateEffect(timelineItems(scene).at(-1));
       } else if (target.dataset.animate) {
         const scene = currentScene();
         const overlay = scene.overlays[selectedOverlay];
@@ -1433,7 +1469,7 @@
         menu.hidden = true;
         if (selectedOverlay == null || !scene) return;
         const overlay = scene.overlays[selectedOverlay];
-        if (target.dataset.menu === "remove") scene.overlays.splice(selectedOverlay, 1);
+        if (target.dataset.menu === "remove") {scene.overlays.splice(selectedOverlay, 1);selectedEffect=null;}
         if (target.dataset.menu === "bigger") overlay.width = Math.min(100, overlay.width * 1.2);
         if (target.dataset.menu === "smaller") overlay.width = Math.max(3, overlay.width / 1.2);
         selectedOverlay = null;
@@ -1458,12 +1494,13 @@
         renderTimeline(currentScene());liveDrawings(currentScene());
       } else if (target.dataset.showPreview) {
         await flushEdits();
-        const item=review.proposals.find(p=>p.id===target.dataset.showPreview);
+        const item=timelineItem(target.dataset.showPreview);
         if(item.needs?.length)throw Error('Complete this effect first: '+item.needs.join(', '));
         target.disabled=true;target.textContent='Preparing effect preview…';
-        const result=await api(`/show/review/${encodeURIComponent(item.id)}/preview`,{method:'POST',body:'{}'});
+        const previewRoute=item.overlay?`/show/scenes/${currentScene().id}/stickers/${encodeURIComponent(item.overlay.id)}/preview`:`/show/review/${encodeURIComponent(item.id)}/preview`;
+        const result=await api(previewRoute,{method:'POST',body:'{}'});
         showVideo(result.url,'This effect, rendered with a little context. Generate scene preview to review every effect together.');
-        previewOrigin=Math.max(0,item.at-1.5);
+        previewOrigin=result.origin??Math.max(0,item.at-1.5);
         $('#showStageLayer').querySelector('.show-picture-placement')?.remove();
         $('#showStageVideo').play().catch(()=>{});
       }
@@ -1484,14 +1521,14 @@
   });
 
   async function refreshLibrary() {
-    library = (await api("/show/library").catch(() => ({ items: [] }))).items || [];
+    await loadLibrary();
     if (currentScene()) renderScene();
   }
 
   async function addToScene(asset) {
     const scene = currentScene();
     if (!scene) { showToast("Open a scene to place it", true); return; }
-    scene.overlays.push({ asset, x: 62, y: 35, width: 12, at: scene.start, duration: Math.min(4, scene.end - scene.start), action: "none", intensity: 1 });
+    scene.overlays.push({ id:crypto.randomUUID(),asset, x: 62, y: 35, width: 12, at: scene.start, duration: Math.min(4, scene.end - scene.start), action: "none", intensity: 1 });
     await saveOverlays(scene);
     open.add(scene.id);
     renderScene();

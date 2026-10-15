@@ -483,7 +483,7 @@ def preview_proposal(project, proposal_id: str, *, width: int = 960, height: int
 
 
 
-def preview_scene(project, scene_id: str, *, width: int = 960, height: int = 540,
+def preview_scene(project, scene_id: str, *, width: int = 960, height: int = 540, only_sticker_id: str | None = None,
                   cancel: Callable[[], None] | None = None,
                   progress: Callable[[float, str], None] | None = None) -> Path:
     """A real render of one scene with the effects it proposes (or the person kept)."""
@@ -497,6 +497,11 @@ def preview_scene(project, scene_id: str, *, width: int = 960, height: int = 540
     items = show_proposals.load(project.artifacts_dir / "show_proposals.json")["proposals"]
     document = show_scenes.load(project.artifacts_dir / "show_scenes.json")
     scene = next(entry for entry in document["scenes"] if entry["id"] == scene_id)
+    if only_sticker_id is not None:
+        sticker = next(entry for entry in scene["overlays"] if entry.get("id") == only_sticker_id)
+        scene = {**scene, "effects": [], "overlays": [sticker], "decision": "modified",
+                 "start": max(float(scene["start"]), float(sticker["at"]) - 1.5),
+                 "end": min(float(scene["end"]), float(sticker["at"]) + float(sticker["duration"]) + 1.5)}
     for item in items:
         item["needs"] = show_proposals.check(item)
     incomplete = [item for item in items if scene["decision"] != "plain" and item["id"] in scene["effects"]
