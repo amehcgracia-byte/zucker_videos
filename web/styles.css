@@ -2071,3 +2071,16 @@ pre {
 .show-preview-mode { display: flex; flex-wrap: wrap; gap: 6px; }
 .show-preview-mode .active { background: var(--accent); color: #fff; }
 #showSayMenu small { color: var(--muted); }
+
+/* Shared Show workspace: keep the actual video and current proposal visible. */
+.show-steps { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 6px; }
+.show-steps button { flex: 0 0 auto; }
+.show-workspace-help summary { cursor: pointer; }
+.show-workspace-help:not([open]) { padding-block: 10px; }
+.show-stage-wrap { min-width: 0; }
+.show-stage-layer { pointer-events: none; }
+.show-overlay { pointer-events: auto; }
+.show-stage-status { position: static; color: var(--muted); text-shadow: none; font-size: .85em; margin: 7px 0; }
+.show-review { min-width: 0; width: 100%; }
+.show-review > .show-steps { min-width: 0; max-width: 100%; }
+#step4:has(> #showReviewBox:not([hidden])) > .step-header { display: none; }

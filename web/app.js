@@ -1392,6 +1392,15 @@ function sameProjectId(left, right) {
 }
 
 // The Show review (web/show_review.js) hands the render back to the progress screen.
+window.enterShowWorkspace = () => {
+  stopStatusPolling();
+  lastPipelineStage = "show_review";
+  for (const id of ["progressBox", "reviewBox", "paperEditBox", "reviewReadyNotice"]) document.getElementById(id)?.setAttribute("hidden", "");
+  document.querySelector("#step4 .review-empty")?.setAttribute("hidden", "");
+  document.querySelector("#showReviewBox").hidden = false;
+  setStep(4);
+};
+
 window.resumeAfterShowReview = (started) => {
   activeProjectId = projectIdFromStatus(started) || activeProjectId;
   document.querySelector("#showReviewBox").hidden = true;
@@ -5810,6 +5819,13 @@ async function boot() {
   if (["running", "waiting_choice", "waiting_review", "waiting_paper_edit", "done", "failed"].includes(status.status)) {
     await resumeInputsFromProject().catch(() => {});
   }
+  // Keep the result/captions UI dormant when opening the storyboard directly.
+  if (new URLSearchParams(location.search).get("show") === "storyboard" && !["running", "cancelling"].includes(status.status)) {
+    latestStatus = status;
+    latestResult = status.result || null;
+    updateInputMode();
+    return;
+  }
   renderWizardStatus(status);
   if (status.status === "idle" && !activeProjectId) {
     selectedPlatform = null;
@@ -5838,6 +5854,11 @@ async function boot() {
 }
 
 boot().then(async () => {
+  const workspace = new URLSearchParams(location.search);
+  if (workspace.get("show") === "storyboard") {
+    await window.ShowReview.openWorkspace({ sceneId: workspace.get("scene") });
+    return;
+  }
   // On a first run Einstein's welcome and the edit type chooser both opened,
   // one over the other: the chooser waits until the welcome or tour closes.
   const chooser = document.querySelector("#editTypeDialog");
