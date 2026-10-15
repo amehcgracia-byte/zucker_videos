@@ -425,7 +425,8 @@ def window_plan(plan: dict[str, Any], start: float, end: float) -> dict[str, Any
 
 
 def preview_proposal(project, proposal_id: str, *, width: int = 960, height: int = 540,
-                     cancel: Callable[[], None] | None = None) -> Path:
+                     cancel: Callable[[], None] | None = None,
+                     progress: Callable[[float, str], None] | None = None) -> Path:
     """A short real render of one proposal in its context (1.5 s around it)."""
     import hashlib
 
@@ -435,6 +436,8 @@ def preview_proposal(project, proposal_id: str, *, width: int = 960, height: int
     plan = json.loads((project.artifacts_dir / "show_plan.json").read_text(encoding="utf-8"))
     items = show_proposals.load(project.artifacts_dir / "show_proposals.json")["proposals"]
     item = next(entry for entry in items if entry["id"] == proposal_id)
+    if missing := show_proposals.check(item):
+        raise ValueError("Complete this effect first: " + ", ".join(missing))
     trial = {**item, "status": "approved"}
     cutaways, layer, director = show_proposals.render_inputs([trial])
     start = max(0.0, item["at"] - 1.5)
@@ -442,13 +445,14 @@ def preview_proposal(project, proposal_id: str, *, width: int = 960, height: int
     plan["cutaways"] = cutaways
     part = window_plan(plan, start, end)
     from core.show_bridge import studio_fingerprint
-    signature = hashlib.sha1(json.dumps([trial, start, end, width, studio_fingerprint(project.folder)], sort_keys=True,
+    signature = hashlib.sha1(json.dumps(["placement-preview-v2", trial, start, end, width, height, studio_fingerprint(project.folder)], sort_keys=True,
                                         default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     folder.mkdir(parents=True, exist_ok=True)
-    output = folder / f"{proposal_id}-{signature}.mp4"
-    if output.is_file():
-        return output
+    completed = folder / f"{proposal_id}-{signature}.mp4"
+    if completed.is_file():
+        return completed
+    output = folder / f"{proposal_id}-{signature}-building.mp4"
     ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
     cut = folder / f"{proposal_id}-{signature}-cut.mp4"
     render_show(Path(plan["source"]), part, cut, ffmpeg=ffmpeg, width=width, height=height, cancel=cancel,
@@ -461,8 +465,10 @@ def preview_proposal(project, proposal_id: str, *, width: int = 960, height: int
         moved = [{**gag, "at": round(gag["at"] - start, 3)} for gag in director]
         face = "right" if sum(shot.get("focus", [0.5])[0] for shot in plan["shots"]) / max(1, len(plan["shots"])) >= 0.5 else "left"
         from core.show_framing import face_on_screen
-        pictures, _ = gag_module.make_items(moved, folder / f"{proposal_id}-gags", face=face, cancel=cancel, frame_size=(width, height),
+        pictures, notes = gag_module.make_items(moved, folder / f"{proposal_id}-{signature}-gags", face=face, cancel=cancel, frame_size=(width, height),
                                             face_at=lambda at: face_on_screen(plan, at + start))
+        if notes:
+            raise RuntimeError("The effect preview is incomplete: " + "; ".join(notes))
     from core.show_bridge import studio_layers
     studio, _ = studio_layers(project.folder, part, hidden=[(c["at"], c["at"] + c["duration"]) for c in part["cutaways"]])
     spans: list[tuple[float, float]] = []
@@ -472,7 +478,8 @@ def preview_proposal(project, proposal_id: str, *, width: int = 960, height: int
     else:
         cut.replace(output)
     _lay_jingles(output, jingles, spans, ffmpeg)
-    return output
+    output.replace(completed)
+    return completed
 
 
 

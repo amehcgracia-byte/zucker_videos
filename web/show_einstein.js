@@ -25,14 +25,14 @@
     if(dialog)return;
     dialog=document.createElement('dialog');dialog.id='showEinsteinDialog';dialog.setAttribute('aria-label','Create with Einstein');
     dialog.innerHTML=`<header><img src="/tutorial-einstein.png" alt="Einstein"><div><h2>Create with Einstein</h2><p>What should happen when you say this?</p></div><button type="button" data-ai-close aria-label="Close Einstein">×</button></header>
-      <blockquote data-ai-phrase></blockquote><label data-ai-history-label hidden>Previous image versions<select data-ai-history aria-label="Previous image versions"></select></label><p class="show-hint">Explain the joke, who appears, and how it should look. I will make an image first; you choose whether to use it. You can animate it afterwards.</p>
+      <blockquote data-ai-phrase></blockquote><label data-ai-history-label hidden>Previous image versions<select data-ai-history aria-label="Previous image versions"></select></label><p class="show-hint">Explain the joke, who appears, and how it should look. I will make an image first; you choose whether to use it. Then select the words where it should appear, and drag it on the video to position it.</p>
       <label>Your idea<textarea rows="4" maxlength="4000" data-ai-direction aria-label="Your idea for Einstein" placeholder="An adult version of me slouching lazily on a sofa, rough wax-crayon lines, on the left…"></textarea></label>
       <div class="show-fields"><label>Drawing style<select data-ai-style><option value="crayon">Rough wax crayons</option><option value="pencil">Messy pencil</option><option value="marker">Clumsy felt-tip pen</option></select></label><label>Position<select data-ai-position><option>left</option><option>right</option><option>top-left</option><option>top-right</option><option>bottom-left</option><option>bottom-right</option></select></label></div>
       <label><input type="checkbox" data-ai-face> Use my face from this moment</label><p class="show-hint">If selected, one video frame is sent to ChatGPT as an identity reference. Your video is not uploaded.</p>
       <label data-ai-refine-label hidden><input type="checkbox" data-ai-refine checked> Keep this image as a reference when I ask for changes</label><div class="show-actions"><button type="button" data-ai-generate class="primary">Generate with ChatGPT</button><button type="button" data-ai-local>Try the local painter instead</button></div>
       <p class="show-hint">ChatGPT uses Codex signed in on this computer and its usage limits. The local painter is a separate model; it will never be substituted silently.</p>
       <p role="status" data-ai-status></p><img data-ai-result hidden alt="Generated image to review before using it" class="ai-result">
-      <div class="show-actions"><button type="button" data-ai-apply class="primary" hidden>Use image &amp; preview scene</button></div>`;
+      <div class="show-actions"><button type="button" data-ai-apply class="primary" hidden>Use image &amp; choose words</button></div>`;
     document.body.append(dialog);
     dialog.querySelector('[data-ai-close]').onclick=()=>dialog.close();
     dialog.addEventListener('close',()=>clearTimeout(timer));

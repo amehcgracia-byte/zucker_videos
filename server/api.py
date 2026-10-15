@@ -2636,8 +2636,33 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         stored = show_proposals.load(proposals_path)
         allowed = {"status", "at", "duration", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action",
                    "amount", "offset", "voice", "hold", "subject", "text", "style", "position", "size", "effect", "warp", "point", "anchor", "scale",
-                   "entrance", "prompt", "picture"}
+                   "entrance", "prompt", "picture", "selected_text", "image_center"}
         changes = {key: value for key, value in body.items() if key in allowed}
+        # All storyboard tools share the edited clock. Reject impossible placements
+        # instead of silently accepting an image beyond its owning scene.
+        try:
+            current = next(p for p in stored["proposals"] if p["id"] == proposal_id)
+            if "at" in changes or "duration" in changes:
+                at = float(changes.get("at", current["at"]))
+                duration = float(changes.get("duration", current["duration"]))
+                if not math.isfinite(at + duration) or at < 0 or duration < 0 or (duration == 0 and current["kind"] != "character"):
+                    raise ValueError("Choose a positive duration and a finite start time")
+                scene_path = _scene_files(project)
+                if scene_path.is_file():
+                    from core import show_scenes
+                    owner = next((s for s in show_scenes.load(scene_path)["scenes"] if proposal_id in s["effects"]), None)
+                    if owner and (at < owner["start"] - .001 or at + duration > owner["end"] + .001):
+                        raise ValueError("Place this effect within its scene: select words in What you say or drag its timeline bar")
+            if "image_center" in changes and changes["image_center"] is not None:
+                point = changes["image_center"]
+                if not isinstance(point, list) or len(point) != 2 or not all(isinstance(n, (int, float)) and math.isfinite(n) and -1 <= n <= 2 for n in point):
+                    raise ValueError("Choose a valid picture position")
+            if "selected_text" in changes and (not isinstance(changes["selected_text"], str) or len(changes["selected_text"]) > 400):
+                raise ValueError("Select up to 400 characters of the transcript")
+        except StopIteration:
+            return error_response("not_found", "That effect is not in this review", 404)
+        except (ValueError, TypeError) as exc:
+            return error_response("bad_request", str(exc), 400)
         if changes.get("picture") and changes["picture"] not in {item["path"] for item in _show_library_items(project)}:
             return error_response("bad_request", "Choose one of the pictures in your library", 400)
         if "prompt" in changes and (not isinstance(changes["prompt"], str) or len(changes["prompt"]) > 600):

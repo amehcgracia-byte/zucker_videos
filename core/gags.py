@@ -221,13 +221,16 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
         image.save(path)
         size = float(gag.get("size") or 0.25)
         x, y = centre(position, face)
+        explicit = gag.get("image_center")
+        if explicit is not None:
+            x, y = map(float, explicit)
         half_w, half_h = size / 2, size * width * image.height / image.width / height / 2
         if half_h > 0.45:  # very tall picture: narrower so it fits the height
             size *= 0.45 / half_h
             half_w, half_h = size / 2, 0.45
         items.append({"image": str(path), "at": gag["at"], "duration": gag["duration"], "width": round(size, 4),
-                      "x": round(min(max(x, half_w + 0.01), 1 - half_w - 0.01), 4),
-                      "y": round(min(max(y, half_h + 0.01), 1 - half_h - 0.01), 4),
+                      "x": round(x if explicit is not None else min(max(x, half_w + 0.01), 1 - half_w - 0.01), 4),
+                      "y": round(y if explicit is not None else min(max(y, half_h + 0.01), 1 - half_h - 0.01), 4),
                       "effect": gag.get("effect") or "pop", "kind": kind})
     if not painter and to_paint:
         notes.append(f"{to_paint} drawings were skipped: download the drawing painter (2.1 GB, once) to get them.")

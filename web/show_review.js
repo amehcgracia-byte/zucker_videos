@@ -16,6 +16,8 @@
   let step = 0;
   let poll = null;
   let selectedOverlay = null;
+  let previewOrigin = 0;
+  let selectedEffect = null, placingWords = false, firstWord = null, pickedWords = null;
   const open = new Set();
   const editors = new Map();
 
@@ -93,6 +95,7 @@
     $("#showStageLayer").innerHTML = "";
     $("#showStageStatus").textContent = "";
     selectedOverlay = null;
+    document.getElementById("showTimeline")?.remove();
     if (step === 0) renderIdentity();
     else if (step === 1) renderIntro();
     else if (currentScene()) renderScene();
@@ -101,6 +104,7 @@
 
   function showVideo(url, status = "") {
     stopQuick();
+    previewOrigin=currentScene()?.start||0;
     const video = $("#showStageVideo");
     $("#showStageCard").hidden = true;
     video.hidden = !url;
@@ -178,12 +182,13 @@
 
   function renderScene() {
     const scene = currentScene();
+    if(selectedEffect && !scene.effects.includes(selectedEffect)){selectedEffect=null;placingWords=false;firstWord=null;pickedWords=null;}
     const effects = sceneEffects(scene);
     const preview = scene.preview || { status: "none" };
     const words = scene.words || [];
     $("#showPanel").innerHTML = `<h3>${escape(scene.name)} <small>${clock(scene.start)}–${clock(scene.end)}</small></h3>
       <div class="show-said" id="showSaid"><strong>What you say</strong> <small>Click a word to go there. Select some words and right-click them to add an animation over them.</small>
-        <p class="show-said-text">${words.length ? words.map(([text, start, end], index) => `<span data-word="${index}" data-start="${start}" data-end="${end}">${escape(text)}</span>`).join(" ") : escape(scene.text)}</p></div>
+        <div id="showWordPlacement" class="show-actions"></div><p class="show-said-text">${words.length ? words.map(([text, start, end], index) => `<span data-word="${index}" data-start="${start}" data-end="${end}">${escape(text)}</span>`).join(" ") : escape(scene.text)}</p></div>
       <div class="show-preview-mode">
         ${review.saved_render ? `<button type="button" class="icon-button small ${useSaved(scene) ? "active" : ""}" data-preview-mode="saved" title="The last completed export, including its captions and effects">Saved render</button>` : ""}
         <button type="button" class="icon-button small ${!wantEffects.has(scene.id) && !useSaved(scene) ? "active" : ""}" data-preview-mode="quick" title="Your cut, played from the original video at once">Quick: the cut only</button>
@@ -218,7 +223,152 @@
     drawOverlays(scene);
     showScenePicture(scene);
     clayBlock(scene);
+    renderTimeline(scene);
+    wordPlacementControls();
   }
+
+  // The production storyboard uses edited seconds, including transcript and bars.
+  function fitTiming(scene, at, duration) {
+    duration=Math.max(.04,Math.min(Number(duration)||.04,scene.end-scene.start));
+    at=Math.max(scene.start,Math.min(Number(at)||scene.start,scene.end-duration));
+    return {at:Math.round(at*1000)/1000,duration:Math.round(duration*1000)/1000};
+  }
+  function highlightWords(start,end) {
+    document.querySelectorAll('#showSaid [data-word]').forEach(word=>word.classList.toggle('placement-word',Number(word.dataset.start)<end && Number(word.dataset.end)>start));
+  }
+  function wordPlacementControls() {
+    const box=$('#showWordPlacement'), scene=currentScene(); if(!box||!scene)return;
+    const item=review.proposals.find(p=>p.id===selectedEffect && scene.effects.includes(p.id));
+    if(!item){box.innerHTML='<small>Select an effect in the timeline to place it on words.</small>';return;}
+    box.innerHTML=`<strong>${escape(item.params.subject||item.params.text||KIND_LABELS[item.kind]||item.kind)}</strong>
+      <button type="button" data-start-word-placement>Choose words</button>
+      <button type="button" data-use-word-placement ${pickedWords?'':'disabled'}>Use these words</button>
+      ${placingWords?'<button type="button" data-cancel-word-placement>Cancel</button>':''}
+      <small>${pickedWords?`“${escape(pickedWords.text)}”`:placingWords?(firstWord===null?'Select a phrase, or click its first word, then its last word.':'Now click the last word.'):item.params.selected_text?`On: “${escape(item.params.selected_text)}”`:'Drag the bar or choose words.'}</small>`;
+    highlightWords(pickedWords?.start??item.at,pickedWords?.end??item.at+item.duration);
+  }
+  async function savePlacement(item, changes) {
+    const owner=currentScene()?.id;
+    await flushEdits();
+    const updated=await patch(item.id,changes);
+    await markModified(item.id);
+    if(currentScene()?.id===owner){renderTimeline(currentScene()); refreshCard(item.id); wordPlacementControls();}
+    return updated;
+  }
+  async function placeOnWords(picked) {
+    const scene=currentScene(), item=review.proposals.find(p=>p.id===selectedEffect);
+    if(!scene||!item||!picked)return;
+    const timing=fitTiming(scene,picked.start,picked.end-picked.start);
+    await savePlacement(item,{...timing,selected_text:picked.text});
+    placingWords=false;firstWord=null;pickedWords=null;wordPlacementControls();
+    locateEffect(review.proposals.find(p=>p.id===item.id));
+    showToast('Placed on your selected words. Drag the bar edges to extend or shorten it.');
+  }
+  function locateEffect(item) {
+    const scene=currentScene();if(!scene||!item||!scene.effects.includes(item.id))return;
+    selectedEffect=item.id;
+    // A layout view is immediate; a full effects preview remains an explicit render.
+    wantEffects.delete(scene.id);wantQuick.add(scene.id);
+    $('#showPanel').querySelectorAll('[data-preview-mode]').forEach(button=>button.classList.toggle('active',button.dataset.previewMode==='quick'));
+    playQuick(scene,Math.max(0,Math.min(scene.end-.04,item.at)-scene.start));
+    const video=$('#showStageVideo');video.pause();
+    drawOverlays(scene);
+    if(item.kind==='drawing' && item.params.picture) {
+      const p=item.params;
+      const vertical=p.position?.startsWith('top')?'top':p.position?.startsWith('bottom')?'bottom':'';
+      const preset={top:[.2,.24],bottom:[.22,.72],'':[.21,.42]}[vertical];
+      const pos=p.image_center || [p.position?.endsWith('right')?1-preset[0]:preset[0],preset[1]];
+      const element=document.createElement('div');element.className='show-picture-placement';
+      element.style.cssText=`left:${pos[0]*100}%;top:${pos[1]*100}%;width:${(p.size||.25)*100}%`;
+      element.innerHTML=`<img src="${picture(item)}" draggable="false" alt="Selected drawing"><span class="picture-corner" title="Drag to resize"></span>`;
+      $('#showStageLayer').append(element);
+      element.onpointerdown=event=>{
+        event.preventDefault();element.setPointerCapture(event.pointerId);
+        const bounds=$('#showStage').getBoundingClientRect(),start=[event.clientX,event.clientY],initial=[...pos],width=p.size||.25,resize=event.target.classList.contains('picture-corner');
+        element.onpointermove=e=>{
+          if(resize){p.size=Math.max(.02,Math.min(2,width+2*(e.clientX-start[0])/bounds.width));element.style.width=`${p.size*100}%`;}
+          else {p.image_center=[Math.max(-1,Math.min(2,initial[0]+(e.clientX-start[0])/bounds.width)),Math.max(-1,Math.min(2,initial[1]+(e.clientY-start[1])/bounds.height))];element.style.left=`${p.image_center[0]*100}%`;element.style.top=`${p.image_center[1]*100}%`;}
+        };
+        element.onpointerup=async()=>{
+          element.onpointermove=null;element.onpointerup=null;
+          try{const updated=await savePlacement(item,resize?{size:p.size}:{image_center:p.image_center||initial});locateEffect(updated);}catch(error){p.size=width;p.image_center=initial;locateEffect(item);showToast(error.message,true);}
+        };
+        element.onpointercancel=()=>{element.onpointermove=null;p.size=width;p.image_center=initial;locateEffect(item);};
+      };
+      $('#showStageStatus').textContent='Image layout: drag the drawing to move it; drag its corner to resize. Generate scene preview to check the final motion and other effects.';
+    }
+    renderTimeline(scene);wordPlacementControls();
+  }
+  function renderTimeline(scene) {
+    let box=$('#showTimeline');if(!box){box=document.createElement('section');box.id='showTimeline';box.setAttribute('aria-label','Scene timeline');$('.show-stage-wrap').append(box);}
+    const duration=scene.end-scene.start;
+    const pct=t=>100*(t-scene.start)/duration;
+    const rows=sceneEffects(scene).filter(item=>item.status!=='discarded');
+    box.innerHTML=`<header><strong>Scene timeline</strong><small>${clock(scene.start)}–${clock(scene.end)}</small></header>
+      <p>Click an effect to locate it. Drag its body to move; drag either edge to trim.</p><label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
+      <div class="show-time-row"><span>Video</span><div class="show-time-source" data-scene-seek>Original video · your cut</div></div>
+      <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
+      ${rows.map(item=>{
+        const a=Math.max(scene.start,item.at),b=Math.min(scene.end,item.at+item.duration),outside=b<=a;
+        const name=item.params.subject||item.params.text||KIND_LABELS[item.kind]||item.kind;
+        return `<div class="show-time-row"><button type="button" class="show-time-name" data-locate-effect="${item.id}" title="${escape(name)}">${escape(KIND_LABELS[item.kind]||item.kind)}</button><div class="show-time-track" data-track="${item.id}">
+        ${outside?`<button type="button" data-place-words="${item.id}" class="show-time-outside">Outside this scene · choose words</button>`:`<div tabindex="0" role="button" aria-label="${escape(name)} timeline clip" class="show-time-clip ${selectedEffect===item.id?'selected':''}" data-time-clip="${item.id}" style="left:${pct(a)}%;width:${100*(b-a)/duration}%" title="${escape(name)} · ${clock(item.at)}–${clock(item.at+item.duration)}"><span data-trim="start" aria-label="Trim start"></span><b>${escape(name)}</b><span data-trim="end" aria-label="Trim end"></span></div>`}</div></div>`;
+      }).join('')}`;
+    const seekTo=time=>{
+      wantEffects.delete(scene.id);wantQuick.add(scene.id);
+      $('#showStageLayer').querySelector('.show-picture-placement')?.remove();
+      playQuick(scene,Math.max(0,Math.min(duration-.04,time-scene.start)));
+    };
+    box.querySelector('[data-timeline-seek]').oninput=event=>seekTo(Number(event.target.value));
+    box.onpointerdown=event=>{
+      const clip=event.target.closest('[data-time-clip]');if(!clip)return;
+      event.preventDefault();clip.setPointerCapture(event.pointerId);
+      const item=review.proposals.find(p=>p.id===clip.dataset.timeClip), track=clip.parentElement.getBoundingClientRect(),x=event.clientX,at=item.at,end=at+item.duration,edge=event.target.dataset.trim;
+      selectedEffect=item.id;wordPlacementControls();let moved=false,timing={at,duration:item.duration};
+      clip.onpointermove=e=>{
+        const delta=(e.clientX-x)/track.width*duration;moved ||= Math.abs(e.clientX-x)>2;
+        if(edge==='start'){const start=Math.max(scene.start,Math.min(end-.04,at+delta));timing={at:start,duration:end-start};}
+        else if(edge==='end')timing={at,duration:Math.max(.04,Math.min(scene.end,end+delta)-at)};
+        else timing=fitTiming(scene,at+delta,end-at);
+        clip.style.left=`${pct(timing.at)}%`;clip.style.width=`${100*timing.duration/duration}%`;
+        highlightWords(timing.at,timing.at+timing.duration);
+      };
+      clip.onpointerup=async()=>{
+        clip.onpointermove=null;clip.onpointerup=null;
+        try {if(moved) await savePlacement(item,{...fitTiming(scene,timing.at,timing.duration),selected_text:''});locateEffect(review.proposals.find(p=>p.id===item.id));}
+        catch(error){showToast(error.message,true);renderTimeline(scene);}
+      };
+      clip.onpointercancel=()=>{clip.onpointermove=null;renderTimeline(scene);};
+    };
+    box.onclick=event=>{
+      const track=event.target.closest('[data-scene-seek],[data-track]');
+      if(!track||event.target.closest('button,[data-time-clip]'))return;
+      const bounds=track.getBoundingClientRect();seekTo(scene.start+(event.clientX-bounds.left)/bounds.width*duration);
+    };
+    box.onkeydown=event=>{const clip=event.target.closest('[data-time-clip]');if(clip && ['Enter',' '].includes(event.key)){event.preventDefault();locateEffect(review.proposals.find(p=>p.id===clip.dataset.timeClip));}};
+  }
+  $('#showStageVideo').addEventListener('timeupdate',()=>{
+    const scene=currentScene(), box=$('#showTimeline');if(!scene||!box)return;
+    const video=$('#showStageVideo');
+    let at=previewOrigin+video.currentTime;
+    if(quick?.scene.id===scene.id) at=scene.start+quick.segments.slice(0,quick.index).reduce((sum,[a,b])=>sum+b-a,0)+video.currentTime-quick.segments[quick.index][0];
+    const input=box.querySelector('[data-timeline-seek]');
+    if(input){input.value=at;box.querySelector('[data-playhead-label]').textContent=clock(at);box.style.setProperty('--playhead',`${Math.max(0,Math.min(100,100*(at-scene.start)/(scene.end-scene.start)))}%`);}
+  });
+  document.addEventListener('selectionchange',()=>{
+    if(!selectedEffect)return;const picked=saidSelection();if(!picked)return;
+    pickedWords=picked;wordPlacementControls();
+  });
+  document.addEventListener('click',async event=>{
+    const target=event.target.closest?.('[data-place-words],[data-locate-effect],[data-start-word-placement],[data-use-word-placement],[data-cancel-word-placement]');if(!target||!review)return;
+    try {
+      if(target.hasAttribute('data-cancel-word-placement')){placingWords=false;firstWord=null;pickedWords=null;wordPlacementControls();return;}
+      if(target.hasAttribute('data-use-word-placement')){await placeOnWords(pickedWords);return;}
+      selectedEffect=target.dataset.placeWords||target.dataset.locateEffect||selectedEffect;
+      if(target.dataset.locateEffect){locateEffect(review.proposals.find(p=>p.id===selectedEffect));return;}
+      placingWords=true;firstWord=null;pickedWords=null;wordPlacementControls();$('#showSaid').scrollIntoView({block:'nearest'});
+    }catch(error){showToast(error.message,true);}
+  });
 
   // ---- Clay memories: placements of an approved clay story over this scene ----------
 
@@ -524,6 +674,7 @@
     const span = Math.max(0.5, picked.end - picked.start);
     const quoted = escape(picked.text.length > 34 ? `${picked.text.slice(0, 32)}…` : picked.text);
     const choices = [
+      ...(selectedEffect ? [["place", "Place selected effect on these words", null]] : []),
       ["ai", "AI · create with Einstein…", null],
       ["drawing", `Draw “${quoted}”`, { kind: "drawing", subject: picked.text, style: "crayon", duration: Math.max(2, span) }],
       ["word", `Show “${quoted}” big`, { kind: "word", text: picked.text.toUpperCase().slice(0, 40), duration: Math.max(1.5, span) }],
@@ -545,6 +696,7 @@
       if (!button) return;
       menu.hidden = true;
       const key = button.dataset.say;
+      if (key === "place") { await placeOnWords(picked); return; }
       if (key === "ai") { ShowEinstein.open(scene,picked); return; }
       if (key === "drawing") { ShowEinstein.open(scene,picked,`Draw ${picked.text}`); return; }
       if (key === "idea") {
@@ -581,6 +733,16 @@
     const word = event.target instanceof Element ? event.target.closest("#showSaid [data-word]") : null;
     const scene = currentScene();
     if (!word || !scene || !window.getSelection()?.isCollapsed) return;
+    if (placingWords && selectedEffect) {
+      const index=Number(word.dataset.word);
+      if(firstWord===null) {firstWord=index; word.classList.add("placement-word"); wordPlacementControls();}
+      else {
+        const a=Math.min(firstWord,index), b=Math.max(firstWord,index), words=scene.words.slice(a,b+1);
+        pickedWords={text:words.map(w=>w[0]).join(" "),start:words[0][1],end:words.at(-1)[2]};
+        firstWord=null; wordPlacementControls(); highlightWords(pickedWords.start,pickedWords.end);
+      }
+      return;
+    }
     if (wantEffects.has(scene.id)) { wantEffects.delete(scene.id); renderScene(); }
     playQuick(scene, Number(word.dataset.start) - scene.start);
     $("#showStageVideo").play().catch(() => {});
@@ -761,6 +923,8 @@
   // ---- Effects (inside "Modify") ------------------------------------------------
 
   function card(item) {
+    const scene=currentScene();
+    const outside=scene && (item.at>=scene.end || item.at+item.duration<=scene.start);
     const needs = (item.needs || []).length ? `<p class="show-needs">Still needed: ${escape(item.needs.join(", "))}</p>` : "";
     const confidence = item.kind === "cutaway" ? `<span class="show-confidence" title="How clearly the picture matches what is said">match ${(item.confidence * 100).toFixed(1)}</span>` : "";
     return `<article class="show-card show-${item.status}" data-show-id="${item.id}">
@@ -768,12 +932,14 @@
       <div class="show-card-body">
         <img src="${picture(item)}" alt="" loading="lazy">
         <div>
-          <p class="show-reason">${escape(item.reason)}</p>${item.kind === "drawing" ? `<p class="show-hint">Image source: ${escape(item.params.image_engine || (item.params.picture ? "Your library" : "Local painter · DreamShaper"))}</p>` : ""}${needs}
+          <p class="show-reason">${escape(item.reason)}</p>${item.kind === "drawing" ? `<p class="show-hint">Image source: ${escape(item.params.image_engine || (item.params.picture ? "Your library" : "Local painter · DreamShaper"))}</p>` : ""}${needs}${outside?'<p class="show-needs">Outside this scene. Choose words to bring this effect back.</p>':''}
           <div class="show-actions">
             ${item.kind === "drawing" ? `<button type="button" class="icon-button small" data-ai-edit="${item.id}">AI · change image…</button>` : ""}
+            <button type="button" class="icon-button small" data-place-words="${item.id}">Choose words</button>
+            <button type="button" class="icon-button small" data-locate-effect="${item.id}">Show on video & timeline</button>
             <button type="button" class="icon-button small" data-show-preview="${item.id}">Preview in scene</button>
             <button type="button" class="icon-button small" data-show-adjust="${item.id}">${open.has(item.id) ? "Close" : "Adjust"}</button>
-            <button type="button" class="icon-button small" data-show-status="approved" data-id="${item.id}" ${(item.needs || []).length || !viewedScenes.has(currentScene()?.id) ? "disabled" : ""}>Approve</button>
+            <button type="button" class="icon-button small" data-show-status="approved" data-id="${item.id}" ${(item.needs || []).length || outside ? "disabled" : ""} title="Keep this effect for the render. Review the full scene separately.">Approve</button>
             <button type="button" class="icon-button small" data-show-status="discarded" data-id="${item.id}">Discard</button>
           </div>
         </div>
@@ -834,7 +1000,7 @@
     if (!item || !host) return;
     host.hidden = false;
     const p = item.params;
-    let html = `<div class="show-fields">${field("Starts at (s)", number("at", item.at))}${item.kind === "character" ? "" : field("Lasts (s)", number("duration", item.duration))}</div>`;
+    let html = `<p class="show-hint">Select words to place this effect, or drag its bar below the video. Drag either edge to change its duration.</p><details><summary>Exact timing (optional)</summary><div class="show-fields">${field("Starts at (s)", number("at", item.at))}${item.kind === "character" ? "" : field("Lasts (s)", number("duration", item.duration))}</div></details>`;
     if (item.kind === "cutaway") {
       const alternatives = (p.alternatives || []).map((alt, index) => `<button type="button" class="show-alt" data-alt="${index}" title="Use this close-up instead"><img src="${alt.thumb ? media(alt.thumb) : ""}" alt=""></button>`).join("");
       html += `<div class="show-fields">${field("From second", number("source_start", p.source_start))}${field("Zoom", range("zoom", p.zoom ?? 1, 1, 2.5, 0.05))}</div>
@@ -860,7 +1026,7 @@
     } else if (item.kind === "drawing" || item.kind === "word") {
       html += `<div class="show-fields">${item.kind === "word" ? field("Text", `<input type="text" data-field="text" value="${escape(p.text)}">`) : field("What is drawn", `<input type="text" data-field="subject" value="${escape(p.subject)}">`)}
         ${field("Position", `<select data-field="position">${["left", "top-left", "bottom-left", "right", "top-right", "bottom-right"].map((pos) => `<option ${p.position === pos ? "selected" : ""}>${pos}</option>`).join("")}</select>`)}
-        ${field("Size", range("size", p.size ?? 0.25, 0.1, 0.45, 0.01))}</div>`;
+        ${field("Size", range("size", p.size ?? 0.25, 0.02, 2, 0.01))}</div>`;
       if (item.kind === "drawing") {
         const pictures = library.filter((entry) => /\.(png|jpe?g|webp)$/i.test(entry.path));
         html += field("Picture", `<select data-field="picture"><option value="">Painted from the words</option>${pictures.map((entry) => `<option value="${escape(entry.path)}" ${p.picture === entry.path ? "selected" : ""}>${escape(entry.name)}</option>`).join("")}</select>`);
@@ -913,6 +1079,11 @@
     }
     Object.assign(item.params, changes);
     if ("at" in changes) item.at = changes.at;
+    if ("duration" in changes) item.duration = changes.duration;
+    if (name === "position") changes.image_center = null;
+    if (name === "at" || name === "duration") {
+      const timing=fitTiming(currentScene(),item.at,item.duration); Object.assign(item,timing); Object.assign(changes,timing,{selected_text:''}); renderTimeline(currentScene());
+    }
     if ((name === "subject" || name === "style") && !item.params.prompt) {
       const host = $(`[data-show-id="${id}"] .show-editor`);
       if (host) fillPrompt(item, host);
@@ -1185,13 +1356,22 @@
         refreshCard(target.dataset.id);
         await markModified();
       } else if (target.dataset.showPreview) {
-        await requestScenePreview(currentScene());
+        await flushEdits();
+        const item=review.proposals.find(p=>p.id===target.dataset.showPreview);
+        if(item.needs?.length)throw Error('Complete this effect first: '+item.needs.join(', '));
+        target.disabled=true;target.textContent='Preparing effect preview…';
+        const result=await api(`/show/review/${encodeURIComponent(item.id)}/preview`,{method:'POST',body:'{}'});
+        showVideo(result.url,'This effect, rendered with a little context. Generate scene preview to review every effect together.');
+        previewOrigin=Math.max(0,item.at-1.5);
+        $('#showStageLayer').querySelector('.show-picture-placement')?.remove();
+        $('#showStageVideo').play().catch(()=>{});
       }
     } catch (error) {
       showToast(error.message, true);
       if (target.dataset.showPreview) target.textContent = "Preview";
     } finally {
       if (target.dataset.showPreview || target.id === "showRenderNow") target.disabled = false;
+      if (target.dataset.showPreview) target.textContent="Preview in scene";
     }
   });
 
@@ -1228,7 +1408,9 @@
       if(!scene.effects.includes(item.id))scene.effects.push(item.id);
       scene.decision="modified"; invalidateLocal(scene);
       step=scenes().indexOf(scene)+2; open.add(scene.id); open.add(item.id); render();
-      await requestScenePreview(scene);
+      selectedEffect=item.id; placingWords=true; firstWord=null; pickedWords=null;
+      wordPlacementControls();
+      $("#showSaid").scrollIntoView({block:"nearest"});
     },
     async localImageIdea(sceneId,picked,direction,style) {
       const scene=scenes().find(s=>s.id===sceneId);if(!scene)throw Error("This scene is no longer open");
