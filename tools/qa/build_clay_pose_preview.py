@@ -2,7 +2,7 @@
 
 Plan JSON supplies duration, contiguous shots and per-shot sheet/pose indices.
 Sheets are borderless 3 x 2 grids. Relative sheet paths resolve beside the plan.
-A pose is held for 1/3 second; the final film stays at 25 fps. No interpolation.
+Each source-timed cue happens once and holds; the film stays at 25 fps. No interpolation.
 """
 from __future__ import annotations
 import argparse
@@ -24,6 +24,9 @@ def render(plan: Path, voice: Path, output: Path, ffmpeg: str, ffprobe: str) -> 
             raise ValueError('Shots must be finite, positive and contiguous from zero')
         if not shot['poses'] or any(type(p) is not int or not 0 <= p < 6 for p in shot['poses']):
             raise ValueError('Each shot needs grid pose indices from zero to five')
+        keys=shot.get('poseKeys',[])
+        if any(not math.isfinite(k['time']) or type(k['pose']) is not int or not 0<=k['pose']<6 for k in keys) or any(a['time']>b['time'] for a,b in zip(keys,keys[1:])):
+            raise ValueError('Pose cues must be finite, ordered and use indices zero to five')
         previous = end
     if not shots or abs(previous-duration) > .001:
         raise ValueError('Shot duration must match the plan')
@@ -39,12 +42,13 @@ def render(plan: Path, voice: Path, output: Path, ffmpeg: str, ffprobe: str) -> 
                 tile_w, tile_h = width//3//2*2-4, height//2//2*2-4
                 if tile_w < 64 or tile_h < 64:
                     raise ValueError('The sheet is too small')
-                poses = shot['poses']
+                keys = shot.get('poseKeys') or [{'time':shot['start'],'pose':shot['poses'][0]}]
                 def expression(axis: str) -> str:
-                    values = [(p%3)*(width//3)+2 if axis == 'x' else (p//3)*(height//2)+2 for p in poses]
-                    expr = str(values[-1])
-                    for j in range(len(values)-2, -1, -1):
-                        expr = f'if(eq(mod(floor(t*3),{len(poses)}),{j}),{values[j]},{expr})'
+                    def coordinate(p):
+                        return (p%3)*(width//3)+2 if axis == 'x' else (p//3)*(height//2)+2
+                    expr = str(coordinate(keys[0]['pose']))
+                    for key in keys[1:]:
+                        expr = f"if(gte(t+{shot['start']},{key['time']}),{coordinate(key['pose'])},{expr})"
                     return expr
                 filters = f"crop={tile_w}:{tile_h}:x='{expression('x')}':y='{expression('y')}',scale=1280:720"
                 if shot.get('close'):

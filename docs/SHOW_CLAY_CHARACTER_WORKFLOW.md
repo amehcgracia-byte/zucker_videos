@@ -77,3 +77,11 @@ python tools/qa/build_clay_pose_preview.py PRIVATE_PLAN.json PRIVATE_VOICE.m4a P
 ```
 
 Downloaded plans should be kept beside their referenced private sheets, or their relative sheet paths adjusted deliberately. No media migration/deletion, installed-app replacement, video-generation provider or paid API was introduced.
+
+## Narrative v3 — stop the implicit loop
+
+User requested movements that follow the explanation, including still moments. The new private `story-v3.json` keeps the same approved cast and four shots but replaces cyclic poses with explicit `poseKeys` on the **source-relative story clock**. `show_clay_pose_model.js` and the Python renderer choose the last cue at or before the current time, holding it until the next cue. Legacy pose arrays without cues now hold their first pose rather than implicitly looping. Retiming a camera cut does not shift the word cue.
+
+“Dream”, “everyone / coming”, the city question, the reflective pause and the village receive distinct short gestures separated by holds. No new images were needed. `nature-story-v3.mp4` and `nature-story-context-v3.mp4` are new outputs; prior loop versions remain for comparison. The tool displays the cue times/reasons, and the current preview points to v3. Cue schedules come from the newer project's cached word timings and require editorial review; this is not phonetic lip sync.
+
+Regression: `node tools/qa/test_show_clay_pose_model.cjs` passes cue-boundary, hold, no-wrap and source-time cut-retiming assertions. Real renders and static-interval pixel checks are recorded in `docs/SHOW_RENDER_PARITY_REVIEW_2026-10-15.md`, which also compares the user's actual Claude export with our tools and supplies a concrete handoff prompt. This correction applies to the private study and renderer, not yet the installed app's automatic export.
