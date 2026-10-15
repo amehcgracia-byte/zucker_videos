@@ -2009,16 +2009,24 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 while not scene_worker["stop"].is_set():
                     with scene_lock:
                         if not scene_queue:
+                            scene_worker["thread"] = None
                             return
                         item_project, scene_id = scene_queue.pop(0)
                         key = _scene_key(item_project, scene_id)
-                        scene_previews[key] = {"status": "rendering"}
+                        ticket = scene_previews[key] = {"status": "rendering", "message": "Rendering the scene cut"}
+
+                    def report(_fraction, message):
+                        with scene_lock:
+                            if scene_previews.get(key) is ticket:
+                                ticket["message"] = message
 
                     def stop() -> None:
-                        if scene_worker["stop"].is_set():
-                            raise InterruptedError("Scene previews stopped")
+                        with scene_lock:
+                            stale = scene_previews.get(key) is not ticket
+                        if stale or scene_worker["stop"].is_set():
+                            raise InterruptedError("Scene preview superseded or stopped")
                     try:
-                        path = preview_scene(item_project, scene_id, cancel=stop)
+                        path = preview_scene(item_project, scene_id, cancel=stop, progress=report)
                         result = {"status": "ready", "url": f"/api/v1/show/media?path={quote(str(path))}"}
                     except InterruptedError:
                         result = {"status": "stopped"}
@@ -2026,7 +2034,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                         LOGGER.exception("Scene preview failed")
                         result = {"status": "failed", "error": str(exc)}
                     with scene_lock:
-                        scene_previews[key] = result
+                        # An edit during rendering invalidates this exact ticket.
+                        # Never publish an old result over a newer queued revision.
+                        if scene_previews.get(key) is ticket:
+                            scene_previews[key] = result
             scene_worker["thread"] = threading.Thread(target=work, daemon=True, name="zucker-show-scene-previews")
             scene_worker["thread"].start()
 
@@ -2036,6 +2047,18 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def _invalidate_scene(project: Project, scene_id: str) -> None:
         with scene_lock:
             scene_previews.pop(_scene_key(project, scene_id), None)
+
+    def _effect_changed(project, proposal_id):
+        from core import show_scenes
+        path = _scene_files(project)
+        if not path.is_file():
+            return
+        document = show_scenes.load(path)
+        for scene in document["scenes"]:
+            if proposal_id in scene["effects"]:
+                scene["decision"] = "modified"
+                _invalidate_scene(project, scene["id"])
+        show_scenes.save(path, document)
 
     def _saved_show_render(project):
         # The saved snapshot belongs to this project, never an arbitrary path.
@@ -2113,13 +2136,16 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("bad_request", str(exc), 400)
         show_scenes.save(_scene_files(project), document)
         show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
-        _invalidate_scene(project, scene_id)
+        if body.get("decision") != "accepted":
+            _invalidate_scene(project, scene_id)
         return jsonify(scene)
 
     @app.post("/api/v1/show/scenes/<scene_id>/preview")
     def api_show_scene_preview(scene_id: str) -> Response:
         project = _require_project(state)
-        _invalidate_scene(project, scene_id)
+        from core import show_scenes
+        if not any(scene["id"] == scene_id for scene in show_scenes.load(_scene_files(project))["scenes"]):
+            return error_response("not_found", "That scene is not in this Show", 404)
         _prepare_scenes(project, [scene_id], first=True)
         return jsonify({"status": "queued"}), 202
 
@@ -2422,6 +2448,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except (ValueError, TypeError) as exc:
             return error_response("bad_request", str(exc), 400)
         show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
+        _effect_changed(project, proposal_id)
         return jsonify(item)
 
     @app.get("/api/v1/show/drawing-prompt")
@@ -2488,6 +2515,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             document = show_scenes.load(scenes_path)
             show_scenes.attach(document, item)
             show_scenes.save(scenes_path, document)
+            _effect_changed(project, item["id"])
         return jsonify(item), 201
 
     @app.post("/api/v1/show/review/<proposal_id>/preview")

@@ -2071,3 +2071,8 @@ pre {
 .show-review { min-width: 0; width: 100%; }
 .show-review > .show-steps { min-width: 0; max-width: 100%; }
 #step4:has(> #showReviewBox:not([hidden])) > .step-header { display: none; }
+
+#showEffectMenu {position:fixed;z-index:10000;max-width:min(420px,calc(100vw - 16px));max-height:70vh;overflow:auto;padding:12px;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 32px #0008;}
+#showEffectMenu[hidden]{display:none}
+#showEffectMenu > div {display:flex;flex-wrap:wrap;gap:6px;border-bottom:1px solid var(--line);padding:9px 0;}
+#showEffectMenu > div > span {width:100%;overflow-wrap:anywhere}

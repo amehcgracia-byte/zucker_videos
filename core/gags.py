@@ -170,10 +170,17 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
                 continue
             painted += 1
             style = gag.get("style") if gag.get("style") in gag_paint.STYLES else "pencil"
+            label = {"pencil": "Pencil", "crayon": "Wax crayons", "marker": "Felt-tip marker"}.get(style, style)
+            message = f"Painting {painted}/{to_paint}: {gag['subject']} ({label})"
             if progress:
-                progress(painted / max(1, to_paint), f"Painting {painted}/{to_paint}: {gag['subject']} ({gag_paint.STYLES[style].label})")
+                progress((painted - 1) / max(1, to_paint), message)
+            def paint_step(done, total):
+                if cancel:
+                    cancel()
+                if progress:
+                    progress((painted - 1 + done / max(1, total)) / max(1, to_paint), f"{message} — step {done}/{total}")
             try:
-                picture = painted_picture(gag["subject"], style, seed=3 + index % 2, prompt=gag.get("prompt") or None)
+                picture = painted_picture(gag["subject"], style, seed=3 + index % 2, prompt=gag.get("prompt") or None, step=paint_step)
             except gag_paint.UnusableDrawing:
                 unusable.append(gag["subject"])
                 continue

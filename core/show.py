@@ -435,7 +435,8 @@ def preview_proposal(project, proposal_id: str, *, width: int = 960, height: int
         return output
     ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
     cut = folder / f"{proposal_id}-{signature}-cut.mp4"
-    render_show(Path(plan["source"]), part, cut, ffmpeg=ffmpeg, width=width, height=height, cancel=cancel)
+    render_show(Path(plan["source"]), part, cut, ffmpeg=ffmpeg, width=width, height=height, cancel=cancel,
+                progress=(lambda fraction: progress(fraction, f"Rendering the scene cut — {fraction:.0%}")) if progress else None)
     shifted = [{**entry, "at": round(entry["at"] - start, 3)} for entry in framed_layer(plan, layer)]
     jingles = [entry for entry in shifted if entry.get("jingle")]
     shifted = [entry for entry in shifted if not entry.get("jingle")]
@@ -458,7 +459,8 @@ def preview_proposal(project, proposal_id: str, *, width: int = 960, height: int
 
 
 def preview_scene(project, scene_id: str, *, width: int = 960, height: int = 540,
-                  cancel: Callable[[], None] | None = None) -> Path:
+                  cancel: Callable[[], None] | None = None,
+                  progress: Callable[[float, str], None] | None = None) -> Path:
     """A real render of one scene with the effects it proposes (or the person kept)."""
     import hashlib
 
@@ -470,23 +472,32 @@ def preview_scene(project, scene_id: str, *, width: int = 960, height: int = 540
     items = show_proposals.load(project.artifacts_dir / "show_proposals.json")["proposals"]
     document = show_scenes.load(project.artifacts_dir / "show_scenes.json")
     scene = next(entry for entry in document["scenes"] if entry["id"] == scene_id)
+    for item in items:
+        item["needs"] = show_proposals.check(item)
+    incomplete = [item for item in items if scene["decision"] != "plain" and item["id"] in scene["effects"]
+                  and item["status"] != "discarded" and item["needs"]]
+    if incomplete:
+        raise ValueError("Finish or remove these effects before previewing: " + "; ".join(
+            f"{item['kind']}: {', '.join(item['needs'])}" for item in incomplete))
     live = [] if scene["decision"] == "plain" else [
         {**item, "status": "approved"} for item in items
         if item["id"] in scene["effects"] and item["status"] != "discarded" and not item.get("needs")]
     overlays = show_scenes.overlay_items({"scenes": [{**scene, "decision": "accepted"}]}) if scene["decision"] != "plain" else []
     start, end = float(scene["start"]), float(scene["end"])
-    signature = hashlib.sha1(json.dumps([live, overlays, start, end, width], sort_keys=True, default=str).encode()).hexdigest()[:12]
+    signature = hashlib.sha1(json.dumps(["scene-preview-v2", live, overlays, start, end, width, height], sort_keys=True, default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     folder.mkdir(parents=True, exist_ok=True)
-    output = folder / f"{scene_id}-{signature}.mp4"
-    if output.is_file():
-        return output
+    completed = folder / f"{scene_id}-{signature}.mp4"
+    if completed.is_file():
+        return completed
+    output = folder / f"{scene_id}-{signature}-building.mp4"
     cutaways, layer, director = show_proposals.render_inputs(live)
     plan["cutaways"] = cutaways
     part = window_plan(plan, start, end)
     ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
     cut = folder / f"{scene_id}-{signature}-cut.mp4"
-    render_show(Path(plan["source"]), part, cut, ffmpeg=ffmpeg, width=width, height=height, cancel=cancel)
+    render_show(Path(plan["source"]), part, cut, ffmpeg=ffmpeg, width=width, height=height, cancel=cancel,
+                progress=(lambda fraction: progress(fraction, f"Rendering the scene cut — {fraction:.0%}")) if progress else None)
     shifted = [{**entry, "at": round(entry["at"] - start, 3)} for entry in between_words(plan, framed_layer(plan, layer) + overlays)]
     jingles = [entry for entry in shifted if entry.get("jingle")]
     shifted = [entry for entry in shifted if not entry.get("jingle")]
@@ -494,8 +505,12 @@ def preview_scene(project, scene_id: str, *, width: int = 960, height: int = 540
     if director:
         moved = [{**gag, "at": round(gag["at"] - start, 3)} for gag in director]
         face = "right" if sum(shot.get("focus", [0.5])[0] for shot in plan["shots"]) / max(1, len(plan["shots"])) >= 0.5 else "left"
-        pictures, _ = gag_module.make_items(moved, folder / f"{scene_id}-gags", face=face, cancel=cancel, frame_size=(width, height),
-                                            face_at=lambda at: face_on_screen(plan, at + start))
+        pictures, notes = gag_module.make_items(moved, folder / f"{scene_id}-gags", face=face, cancel=cancel, progress=progress, frame_size=(width, height),
+                                                face_at=lambda at: face_on_screen(plan, at + start))
+        if notes:
+            raise RuntimeError("The scene preview is incomplete: " + "; ".join(notes))
+    if progress:
+        progress(0, "Compositing this scene with its effects")
     spans: list[tuple[float, float]] = []
     if pictures or shifted:
         render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans)
@@ -503,4 +518,5 @@ def preview_scene(project, scene_id: str, *, width: int = 960, height: int = 540
     else:
         cut.replace(output)
     _lay_jingles(output, jingles, spans, ffmpeg)
-    return output
+    output.replace(completed)
+    return completed

@@ -205,3 +205,24 @@ def test_the_painter_uses_the_written_prompt_or_the_style_s_own(monkeypatch):
     gag_paint.paint("a guitar", "crayon")
     gag_paint.paint("a guitar", "crayon", prompt="my own words")
     assert sent == [gag_paint.prompt_for("a guitar", "crayon"), "my own words"]
+
+
+def test_painter_steps_report_real_progress_and_can_cancel(tmp_path, monkeypatch):
+    monkeypatch.setattr(gag_paint, 'can_paint', lambda: True)
+    def paint(subject, style, **kwargs):
+        kwargs['step'](1, 4)
+        kwargs['step'](4, 4)
+        return Image.new('RGBA', (40, 40), (200, 30, 30, 255))
+    monkeypatch.setattr(gags, 'painted_picture', paint)
+    plan = [{'kind':'drawing','at':1,'duration':2,'subject':'a sofa','style':'crayon','position':'left','size':.25,'effect':'pop'}]
+    events = []
+    gags.make_items(plan, tmp_path, progress=lambda fraction, message: events.append((fraction, message)))
+    assert [fraction for fraction, _ in events[:3]] == [0, .25, 1]
+    assert 'step 1/4' in events[1][1] and 'Wax crayons' in events[1][1]
+    checks = []
+    def cancel():
+        checks.append(True)
+        if len(checks) == 2:
+            raise InterruptedError('superseded')
+    with pytest.raises(InterruptedError, match='superseded'):
+        gags.make_items(plan, tmp_path, cancel=cancel)

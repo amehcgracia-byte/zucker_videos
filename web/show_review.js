@@ -7,7 +7,7 @@
 (() => {
   const KIND_LABELS = { cutaway: "Close-up", character: "Character speaks", drawing: "Drawing", word: "Word", warp: "Warp", steam: "Rainbow steam", math: "Formulas around you" };
   const STATUS_LABELS = { proposed: "Proposed", approved: "Approved", discarded: "Discarded" };
-  const DECISION_LABELS = { pending: "To decide", accepted: "Accepted", modified: "Modified", plain: "Without effect" };
+  const DECISION_LABELS = { pending: "To decide", accepted: "Accepted", modified: "Needs review", plain: "Without effect" };
   const ACTIONS = { mouth: "Mouth (with the voice)", nod: "Nod", side: "Sideways", turn: "Turn" };
   const DRAWING_STYLES = { pencil: "Pencil", crayon: "Wax crayons", marker: "Felt-tip marker" };
   const ENTRANCES = { cut: "Straight cut: it talks at once", zoom: "Push in, then it talks", bounce: "The photo bounces in over the frozen host" };
@@ -37,6 +37,9 @@
   async function openReview() {
     review = await api("/show/scenes");
     library = (await api("/show/library").catch(() => ({ items: [] }))).items || [];
+    for (const scene of review.scenes || []) {
+      if (["queued", "rendering", "ready"].includes(scene.preview?.status)) wantEffects.add(scene.id);
+    }
     step = 0;
     render();
   }
@@ -55,6 +58,8 @@
 
   // ---- Storyboard -------------------------------------------------------------
 
+  const dirtyScenes = new Set();
+  const viewedScenes = new Set();
   const wantQuick = new Set();
   const useSaved = scene => !!review.saved_render && !wantEffects.has(scene.id) && !wantQuick.has(scene.id);
   const wantEffects = new Set();      // scenes whose preview with effects was asked for
@@ -71,11 +76,11 @@
     $("#showSteps").innerHTML = names.map((name, index) => {
       const scene = index >= 2 && index < names.length - 1 ? scenes()[index - 2] : null;
       const mark = scene ? ` <small class="show-decision show-${scene.decision}">${DECISION_LABELS[scene.decision]}</small>` : "";
-      const done = scene && scene.decision !== "pending" ? "✓ " : "";
+      const done = scene && ["accepted", "plain"].includes(scene.decision) ? "✓ " : "";
       return `<button type="button" data-show-step="${index}" class="${index === step ? "active" : ""}">${done}${escape(name)}${mark}</button>`;
     }).join("");
     // How far along the show is: every decided scene counts, whatever was decided.
-    const decided = scenes().filter((scene) => scene.decision !== "pending").length;
+    const decided = scenes().filter((scene) => ["accepted", "plain"].includes(scene.decision)).length;
     const total = scenes().length;
     $("#showProgress span").textContent = decided === total ? `All ${total} scenes decided ✓` : `${decided} of ${total} scenes decided · ${total - decided} to decide`;
     Object.assign($("#showProgress progress"), { max: Math.max(1, total), value: decided });
@@ -181,12 +186,13 @@
       <div class="show-preview-mode">
         ${review.saved_render ? `<button type="button" class="icon-button small ${useSaved(scene) ? "active" : ""}" data-preview-mode="saved" title="The last completed export, including its captions and effects">Saved render</button>` : ""}
         <button type="button" class="icon-button small ${!wantEffects.has(scene.id) && !useSaved(scene) ? "active" : ""}" data-preview-mode="quick" title="Your cut, played from the original video at once">Quick: the cut only</button>
-        <button type="button" class="icon-button small ${wantEffects.has(scene.id) ? "active" : ""}" data-preview-mode="effects" title="Rendered with zooms, close-ups and drawings: it takes a while">Preview with effects</button>
+        <button type="button" class="icon-button small ${wantEffects.has(scene.id) ? "active" : ""}" data-preview-mode="effects" title="Generate this scene with your current proposed effects before accepting">Generate scene preview</button>
       </div>
       <p class="show-proposal">${escape(scene.proposal)}</p>
+      <p class="show-hint" role="status">${dirtyScenes.has(scene.id) ? "Changes saved. Generate a new scene preview to see them before accepting." : "Generate this scene with its effects, watch it, then accept or change it."}</p>
       <div class="show-decide">
-        <button type="button" class="primary icon-button small" data-scene-decision="accepted" data-then-next>Accept and next →</button>
-        <button type="button" class="icon-button small" data-scene-decision="accepted">Accept</button>
+        <button type="button" class="primary icon-button small" data-scene-decision="accepted" data-then-next ${viewedScenes.has(scene.id) ? "" : "disabled"}>Accept and next →</button>
+        <button type="button" class="icon-button small" data-scene-decision="accepted" ${viewedScenes.has(scene.id) ? "" : "disabled"}>Accept</button>
         <button type="button" class="icon-button small" data-scene-modify>Modify</button>
         <button type="button" class="icon-button small" data-scene-decision="plain">Leave without effect</button>
         <span class="show-decision show-${scene.decision}">${DECISION_LABELS[scene.decision]}</span>
@@ -199,7 +205,7 @@
           <select name="style">${Object.entries(DRAWING_STYLES).map(([key, label]) => `<option value="${key}" ${key === "crayon" ? "selected" : ""}>${label}</option>`).join("")}</select>
           <select name="source">${[review.source, ...(review.resources || []).map((item) => item.path)].map((path) => `<option value="${escape(path)}">${escape(baseName(path))}</option>`).join("")}</select>
           <label>from <input name="source_time" type="number" min="0" step="0.1" value="0"> s of it</label>
-          <button class="icon-button small" type="submit">Add</button></form>
+          <button class="icon-button small" type="submit">Add &amp; preview</button></form>
         <h4>Pictures from the library</h4>
         <div class="show-library">${library.slice(0, 60).map((item, index) => `<button type="button" data-library="${index}" title="${escape(item.name)}"><img src="${item.url}" alt="${escape(item.name)}" loading="lazy"></button>`).join("") || "<p class=\"show-hint\">The library is empty: add images in Overlay &amp; Captions, or keep painted drawings.</p>"}</div>
         <p class="show-hint">Drag a picture on the video to move it, its corner to resize it; click it for its tools.</p>
@@ -218,9 +224,12 @@
       if (!playQuick(scene)) showVideo("", "This scene has no picture to play.");
       return;
     }
-    if (preview.status === "ready") { showVideo(preview.url, "With its zooms, close-ups and drawings."); return; }
-    showVideo("", preview.status === "failed" ? `The preview failed: ${preview.error}` : "Rendering this scene with its effects… it can take a few minutes. The quick view stays available.");
-    poll = setTimeout(refreshBoard, 3000);
+    if (preview.status === "ready") { showVideo(preview.url, "Current scene preview. Watch it, then accept or change it."); return; }
+    playQuick(scene); // Keep the source picture usable while the new effect is prepared.
+    $("#showStageStatus").textContent = ["failed", "stopped"].includes(preview.status)
+      ? `The preview is not ready: ${preview.error || "Stopped; generate it again to retry."}`
+      : `${preview.message || "Queued: preparing this scene and its drawings"}. Showing the source cut until it is ready.`;
+    if (!["failed", "stopped"].includes(preview.status)) poll = setTimeout(refreshBoard, 1500);
   }
 
   // ---- Quick view: the scene's cut played from the original, nothing rendered ----------
@@ -272,14 +281,52 @@
     review = fresh;
     const updated = currentScene();
     if (!updated || !wantEffects.has(updated.id)) return;
-    if (updated.preview?.status === "ready") showVideo(updated.preview.url, "With its zooms, close-ups and drawings.");
-    else if (updated.preview?.status === "failed") showVideo("", `The preview failed: ${updated.preview.error}`);
-    else poll = setTimeout(refreshBoard, 3000);
+    if (["ready", "failed", "stopped"].includes(updated.preview?.status)) renderScene();
+    else {
+      $("#showStageStatus").textContent = `${updated.preview?.message || "Queued: preparing this scene and its drawings"}. Showing the source cut until it is ready.`;
+      poll = setTimeout(refreshBoard, 1500);
+    }
     $("#showSteps").querySelectorAll("[data-show-step]").forEach((button) => button.classList.toggle("active", Number(button.dataset.showStep) === step));
+  }
+
+  $("#showStageVideo").addEventListener("loadeddata", () => {
+    const scene = currentScene();
+    if (!scene || !wantEffects.has(scene.id) || scene.preview?.status !== "ready") return;
+    if ($("#showStageVideo").getAttribute("src") !== scene.preview.url) return;
+    viewedScenes.add(scene.id);
+    dirtyScenes.delete(scene.id);
+    $("#showPanel").querySelectorAll('[data-show-status="approved"]').forEach(button => {
+      const item=review.proposals.find(item=>item.id===button.dataset.id);
+      button.disabled=!!item?.needs?.length;
+    });
+    $("#showPanel").querySelectorAll('[data-scene-decision="accepted"]').forEach(button => button.disabled = false);
+  });
+
+  function invalidateLocal(scene) {
+    if (!scene) return;
+    dirtyScenes.add(scene.id); viewedScenes.delete(scene.id);
+    scene.preview = {status:"none"};
+    wantEffects.delete(scene.id); wantQuick.add(scene.id);
+    if (currentScene()?.id === scene.id) {
+      clearTimeout(poll);
+      $("#showPanel").querySelectorAll('[data-scene-decision="accepted"]').forEach(button => button.disabled = true);
+      $("#showStageStatus").textContent = "Changes saved; this view does not include them. Generate a new scene preview.";
+    }
+  }
+
+  async function requestScenePreview(scene) {
+    await flushEdits();
+    wantQuick.delete(scene.id); wantEffects.add(scene.id);
+    if (scene.preview?.status !== "ready") {
+      await api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, {method:"POST",body:"{}"});
+      scene.preview = {status:"queued"};
+    }
+    renderScene();
   }
 
   async function decideScene(decision, thenNext = false) {
     const scene = currentScene();
+    if (decision === "accepted" && !viewedScenes.has(scene.id)) throw new Error("Generate and watch this scene preview before accepting it.");
     const updated = await api(`/show/scenes/${encodeURIComponent(scene.id)}/decision`, { method: "POST", body: JSON.stringify({ decision }) });
     Object.assign(scene, updated, { preview: { status: "none" } });
     if (thenNext) step = Math.min(stepNames().length - 1, step + 1);
@@ -341,12 +388,13 @@
 
   $("#showStageVideo").addEventListener("ended", () => { if (watching) playNext(); });
 
-  async function markModified() {
-    const scene = currentScene();
+  async function markModified(proposalId = null) {
+    const scene = proposalId ? scenes().find(scene => scene.effects.includes(proposalId)) : currentScene();
+    invalidateLocal(scene);
     if (scene && scene.decision !== "modified") {
       await api(`/show/scenes/${encodeURIComponent(scene.id)}/decision`, { method: "POST", body: JSON.stringify({ decision: "modified" }) }).catch(() => {});
       scene.decision = "modified";
-      $("#showPanel .show-decide .show-decision").textContent = DECISION_LABELS.modified;
+      if (currentScene()?.id === scene.id) $("#showPanel .show-decide .show-decision").textContent = DECISION_LABELS.modified;
     }
   }
 
@@ -380,8 +428,10 @@
       review.proposals.push(item);
       scene.effects.push(item.id);
       scene.decision = "modified";
+      invalidateLocal(scene);
       open.add(scene.id); open.add(item.id);
       renderScene();
+      if (!(item.needs || []).length) await requestScenePreview(scene);
       return item;
     } catch (error) { showToast(error.message, true); return null; }
   }
@@ -420,8 +470,8 @@
     menu.innerHTML = `<strong>Create an animation over this selection</strong><small>${clock(picked.start)}–${clock(picked.end)}</small>
       <div class="show-actions-grid">${choices.map(([key, label]) => `<button type="button" data-say="${key}">${label}</button>`).join("")}</div>
       <label>Your drawing idea for this selection<textarea aria-label="Drawing idea for selected words" maxlength="2000" placeholder="For example: a clumsy hand-drawn sun peeking from the corner"></textarea></label>
-      <small>Saved as a proposal. Review it before asking for an effects preview.</small>
-      <div class="show-actions"><button type="button" data-say="idea">Add drawing idea</button><button type="button" data-say="copy">Copy</button></div>`;
+      <small>Generate this proposal in the scene first. Watch the result before accepting it.</small>
+      <div class="show-actions"><button type="button" data-say="idea">Generate &amp; preview</button><button type="button" data-say="copy">Copy</button></div>`;
     menu.hidden = false;
     menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 8))}px`;
     menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8))}px`;
@@ -484,7 +534,7 @@
       const updated = await api(`/show/scenes/${encodeURIComponent(scene.id)}/overlays`, { method: "POST", body: JSON.stringify({ overlays: scene.overlays }) });
       scene.overlays = updated.overlays;
       scene.decision = updated.decision;
-      scene.preview = { status: "none" };
+      invalidateLocal(scene);
     } catch (error) { showToast(error.message, true); }
   }
 
@@ -622,9 +672,9 @@
         <div>
           <p class="show-reason">${escape(item.reason)}</p>${needs}
           <div class="show-actions">
-            <button type="button" class="icon-button small" data-show-preview="${item.id}">Preview</button>
+            <button type="button" class="icon-button small" data-show-preview="${item.id}">Preview in scene</button>
             <button type="button" class="icon-button small" data-show-adjust="${item.id}">${open.has(item.id) ? "Close" : "Adjust"}</button>
-            <button type="button" class="icon-button small" data-show-status="approved" data-id="${item.id}" ${(item.needs || []).length ? "disabled" : ""}>Approve</button>
+            <button type="button" class="icon-button small" data-show-status="approved" data-id="${item.id}" ${(item.needs || []).length || !viewedScenes.has(currentScene()?.id) ? "disabled" : ""}>Approve</button>
             <button type="button" class="icon-button small" data-show-status="discarded" data-id="${item.id}">Discard</button>
           </div>
         </div>
@@ -656,9 +706,21 @@
   }
 
   let saveTimer = null;
-  function saveSoon(id, changes) {
+  const pendingEdits = new Map();
+  let saving = Promise.resolve();
+  function flushEdits() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => patch(id, changes).then(() => { refreshCard(id); markModified(); }).catch((error) => showToast(error.message, true)), 350);
+    const batch = [...pendingEdits]; pendingEdits.clear();
+    saving = saving.catch(() => {}).then(async () => {
+      for (const [id, changes] of batch) { await patch(id, changes); refreshCard(id); await markModified(id); }
+    });
+    return saving;
+  }
+  function saveSoon(id, changes) {
+    pendingEdits.set(id, {...pendingEdits.get(id), ...changes});
+    invalidateLocal(currentScene());
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => flushEdits().catch(error => showToast(error.message, true)), 350);
   }
 
   // ---- Editors -----------------------------------------------------------
@@ -703,7 +765,8 @@
       if (item.kind === "drawing" && p.subject) {
         html += `<div class="show-fields">${field("Style", `<select data-field="style">${Object.entries(DRAWING_STYLES).map(([key, label]) => `<option value="${key}" ${(p.style || "pencil") === key ? "selected" : ""}>${label}</option>`).join("")}</select>`)}</div>
           ${field("What the painter is asked (change it before it is painted)", `<textarea data-field="prompt" rows="3" maxlength="600"></textarea>`)}
-          <p class="show-hint">Nothing is painted until you press Preview or render the show. Each wording is a new drawing; the earlier one stays in the library. Empty: the style's own words.</p>`;
+          <p class="show-hint">Edit this drawing, then generate a preview to see it in context. Each wording is a new drawing; the earlier one stays in the library. Empty: the style's own words.</p>
+          <button type="button" class="icon-button small" data-preview-mode="effects">Generate &amp; preview this scene</button>`;
       }
     } else if (item.kind === "warp") {
       html += field("Warp", `<select data-field="warp">${["stretch", "swirl", "wave"].map((name) => `<option ${p.warp === name ? "selected" : ""}>${name}</option>`).join("")}</select>`);
@@ -903,6 +966,41 @@
     return lower.slice(0, -1).concat(upper.slice(0, -1));
   }
 
+  document.addEventListener("contextmenu", event => {
+    if (!review || $("#showReviewBox")?.hidden || !(event.target instanceof Element)) return;
+    if (event.target.closest("#showSaid, [data-overlay], canvas, input, textarea")) return;
+    const scene = currentScene();
+    if (!scene || !event.target.closest("#showStage, [data-show-id]")) return;
+    event.preventDefault();
+    let menu = $("#showEffectMenu");
+    if (!menu) { menu = document.createElement("div"); menu.id="showEffectMenu"; menu.className="show-context-menu"; menu.setAttribute("role","menu"); document.body.append(menu); }
+    const ownId=event.target.closest("[data-show-id]")?.dataset.showId;
+    const items=sceneEffects(scene).filter(item => !ownId || item.id===ownId);
+    menu.innerHTML = `<strong>Scene effects</strong>${items.map(item => `<div><span>${escape(item.params.subject || item.params.text || KIND_LABELS[item.kind] || item.kind)}</span><button type="button" data-effect-action="change" data-id="${item.id}">Change / replace…</button><button type="button" data-effect-action="remove" data-id="${item.id}">${item.status === "discarded" ? "Restore effect" : "Remove effect"}</button></div>`).join("") || "<p>No effect in this scene.</p>"}<button type="button" data-effect-action="preview">Generate scene preview</button>`;
+    menu.hidden=false;
+    menu.style.left=`${Math.max(8,Math.min(event.clientX,innerWidth-menu.offsetWidth-8))}px`;
+    menu.style.top=`${Math.max(8,Math.min(event.clientY,innerHeight-menu.offsetHeight-8))}px`;
+    menu.onclick=async e => {
+      const button=e.target.closest("[data-effect-action]"); if(!button)return;
+      menu.hidden=true;
+      try {
+        await flushEdits();
+        const item=review.proposals.find(item=>item.id===button.dataset.id);
+        if(button.dataset.effectAction==="preview") { await requestScenePreview(scene); return; }
+        if(button.dataset.effectAction==="remove") {
+          await patch(item.id,{status:item.status==="discarded"?"proposed":"discarded"});
+          await markModified(); renderScene();
+        } else {
+          open.add(scene.id); open.add(item.id); renderScene();
+          const field=$(`[data-show-id="${item.id}"] [data-field="${item.kind === "drawing" ? "prompt" : "at"}"]`);
+          field?.focus();
+        }
+      } catch(error){showToast(error.message,true);}
+    };
+  });
+  document.addEventListener("click", event => { const menu=$("#showEffectMenu"); if(menu && !event.target.closest?.("#showEffectMenu"))menu.hidden=true; });
+  document.addEventListener("keydown", event => { if(event.key==="Escape"){ const menu=$("#showEffectMenu");if(menu)menu.hidden=true;} });
+
   // ---- Actions -----------------------------------------------------------------
 
   document.addEventListener("click", async (event) => {
@@ -919,14 +1017,8 @@
       else if (target.hasAttribute("data-watch-all")) watchAll();
       else if (target.dataset.previewMode) {
         const scene = currentScene();
-        if (target.dataset.previewMode === "effects") {
-          wantQuick.delete(scene.id);
-          wantEffects.add(scene.id);
-          if (scene.preview?.status !== "ready") {
-            await api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, { method: "POST" });
-            scene.preview = { status: "queued" };
-          }
-        } else { wantEffects.delete(scene.id); if(target.dataset.previewMode === "quick") wantQuick.add(scene.id); else wantQuick.delete(scene.id); }
+        if (target.dataset.previewMode === "effects") { await requestScenePreview(scene); return; }
+        else { wantEffects.delete(scene.id); if(target.dataset.previewMode === "quick") wantQuick.add(scene.id); else wantQuick.delete(scene.id); }
         $("#showPanel").querySelectorAll("[data-preview-mode]").forEach((button) => button.classList.toggle("active", button === target));
         clearTimeout(poll);
         showScenePicture(scene);
@@ -983,12 +1075,7 @@
         refreshCard(target.dataset.id);
         await markModified();
       } else if (target.dataset.showPreview) {
-        const id = target.dataset.showPreview;
-        const video = $(`[data-show-id="${id}"] .show-preview`);
-        target.disabled = true; target.textContent = "Rendering preview…";
-        const made = await api(`/show/review/${encodeURIComponent(id)}/preview`, { method: "POST", body: "{}" });
-        video.hidden = false; video.src = made.url; video.play().catch(() => {});
-        target.textContent = "Preview";
+        await requestScenePreview(currentScene());
       }
     } catch (error) {
       showToast(error.message, true);

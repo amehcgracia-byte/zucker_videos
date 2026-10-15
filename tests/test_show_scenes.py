@@ -6,6 +6,7 @@ import pytest
 from PIL import Image
 
 from core import show_scenes
+from core.show import preview_scene as render_scene_preview
 from core.ffmpeg import ffprobe, tool_status
 from core.show_identity import card_picture, with_opening
 from core.show_proposals import proposal
@@ -258,3 +259,110 @@ def test_a_talking_character_can_enter_three_ways(tmp_path, entrance, zoom, zoom
     assert (talk["entrance"], talk["zoom"], talk["zoom_sec"], talk["overlays"][0]["effect"]) == (entrance, zoom, zoom_sec, effect)
     if entrance == "zoom":                                                       # the camera pushes in on the character
         assert talk["focus"] == [pytest.approx(0.65), pytest.approx(talk["overlays"][0]["y"])]
+
+
+def test_changed_effect_invalidates_ready_preview_and_accept_preserves_current_preview(tmp_path, monkeypatch):
+    import time
+    project, client, document, rendered = _storyboard(tmp_path, monkeypatch)
+    sid = document['scenes'][0]['id']
+    endpoint = f'/api/v1/show/scenes/{sid}/preview'
+    client.post(endpoint)
+    for _ in range(100):
+        board = client.get('/api/v1/show/scenes').get_json()
+        if board['scenes'][0]['preview']['status'] == 'ready':
+            break
+        time.sleep(.01)
+    assert board['scenes'][0]['preview']['status'] == 'ready'
+    assert client.post(f'/api/v1/show/scenes/{sid}/decision', json={'decision':'accepted'}).status_code == 200
+    assert client.get('/api/v1/show/scenes').get_json()['scenes'][0]['preview']['status'] == 'ready'
+    pid = document['scenes'][0]['effects'][0]
+    assert client.patch(f'/api/v1/show/review/{pid}', json={'text':'Changed'}).status_code == 200
+    scene = client.get('/api/v1/show/scenes').get_json()['scenes'][0]
+    assert scene['decision'] == 'modified' and scene['preview']['status'] == 'none'
+    assert client.patch(f'/api/v1/show/review/{pid}', json={'status':'discarded'}).get_json()['status'] == 'discarded'
+    assert client.patch(f'/api/v1/show/review/{pid}', json={'status':'proposed'}).get_json()['status'] == 'proposed'
+    assert client.post('/api/v1/show/scenes/missing/preview').status_code == 404
+
+
+def test_edit_during_render_never_publishes_stale_preview_and_duplicate_requests_coalesce(tmp_path, monkeypatch):
+    import threading
+    import time
+    project, client, document, _ = _storyboard(tmp_path, monkeypatch)
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    calls = []
+    def blocked(project, scene_id, **kwargs):
+        calls.append(scene_id)
+        kwargs['progress'](.5, 'Painting requested drawing')
+        entered.set()
+        assert release.wait(5)
+        finished.set()
+        return project.cache_dir/'stale.mp4'
+    monkeypatch.setattr('core.show.preview_scene', blocked)
+    sid = document['scenes'][0]['id']
+    url = f'/api/v1/show/scenes/{sid}/preview'
+    client.post(url)
+    assert entered.wait(5)
+    assert client.get('/api/v1/show/scenes').get_json()['scenes'][0]['preview']['message'] == 'Painting requested drawing'
+    client.post(url)
+    pid = document['scenes'][0]['effects'][0]
+    client.patch(f'/api/v1/show/review/{pid}', json={'status':'discarded'})
+    release.set()
+    assert finished.wait(5)
+    time.sleep(.1)
+    scene = client.get('/api/v1/show/scenes').get_json()['scenes'][0]
+    assert calls == [sid] and scene['preview']['status'] == 'none'
+
+
+def test_scene_preview_reports_missing_drawings_instead_of_publishing_incomplete_video(tmp_path, monkeypatch):
+    import json
+    from core import show, show_proposals
+    project, _, document, _ = _storyboard(tmp_path, monkeypatch)
+    plan_path = project.artifacts_dir/'show_plan.json'
+    plan = json.loads(plan_path.read_text())
+    plan['words'] = []
+    plan_path.write_text(json.dumps(plan))
+    drawing = show_proposals.proposal('drawing', 1, 2, reason='Your idea', kind='drawing', subject='a man on a sofa', style='crayon')
+    show_proposals.save(project.artifacts_dir/'show_proposals.json', [drawing])
+    document['scenes'][0]['effects'] = [drawing['id']]
+    show_scenes.save(project.artifacts_dir/'show_scenes.json', document)
+    monkeypatch.setattr(show, 'render_show', lambda source, part, output, **kwargs: output.write_bytes(b'cut'))
+    monkeypatch.setattr('core.gags.make_items', lambda *args, **kwargs: ([], ['Drawing painter is not installed']))
+    with pytest.raises(RuntimeError, match='preview is incomplete.*not installed'):
+        render_scene_preview(project, document['scenes'][0]['id'])
+    assert not list((project.cache_dir/'show_previews').glob('scene-01-*.mp4')) or all(p.name.endswith('-cut.mp4') for p in (project.cache_dir/'show_previews').glob('scene-01-*.mp4'))
+
+
+def test_scene_preview_rejects_an_unfinished_character_before_rendering(tmp_path, monkeypatch):
+    from core import show_proposals
+    project, _, document, _ = _storyboard(tmp_path, monkeypatch)
+    character = show_proposals.proposal('character', 1, 2, reason='Speaks', source='person.mp4')
+    show_proposals.save(project.artifacts_dir/'show_proposals.json', [character])
+    document['scenes'][0]['effects'] = [character['id']]
+    show_scenes.save(project.artifacts_dir/'show_scenes.json', document)
+    with pytest.raises(ValueError, match='Finish or remove.*region, voice'):
+        render_scene_preview(project, document['scenes'][0]['id'])
+
+
+def test_failed_final_preview_pass_is_not_reused_as_a_completed_cache(tmp_path, monkeypatch):
+    import json
+    from core import show, show_proposals
+    project, _, document, _ = _storyboard(tmp_path, monkeypatch)
+    path = project.artifacts_dir/'show_plan.json'
+    plan = json.loads(path.read_text()); plan['words'] = []; path.write_text(json.dumps(plan))
+    show_proposals.save(project.artifacts_dir/'show_proposals.json', [])
+    document['scenes'][0]['effects'] = []
+    show_scenes.save(project.artifacts_dir/'show_scenes.json', document)
+    renders = []
+    def make_cut(source, part, output, **kwargs):
+        renders.append(output)
+        output.write_bytes(f'render {len(renders)}'.encode())
+    monkeypatch.setattr(show, 'render_show', make_cut)
+    def fail(*args):
+        raise RuntimeError('audio pass failed')
+    monkeypatch.setattr(show, '_lay_jingles', fail)
+    with pytest.raises(RuntimeError, match='audio pass failed'):
+        render_scene_preview(project, document['scenes'][0]['id'])
+    monkeypatch.setattr(show, '_lay_jingles', lambda *args: None)
+    result = render_scene_preview(project, document['scenes'][0]['id'])
+    assert result.read_bytes() == b'render 2'
+    assert '-building' not in result.name
