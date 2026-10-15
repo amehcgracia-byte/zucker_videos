@@ -926,7 +926,7 @@
     else openTools(index, event.clientX, event.clientY);     // a plain click shows the element's tools beside it
   });
   const ANIMATIONS = { none: "Still", up: "Move up", down: "Move down", jump: "Jump", grow: "Grow", grow_return: "Grow and back",
-    pulse: "Grow and shrink", swing: "Swing", spin: "Spin", talk: "Talk", path: "Follow a path" };
+    pulse: "Grow and shrink", swing: "Swing", spin: "Spin", talk: "Talk", path: "Follow a path", draw: "Draws itself" };
   let drawingPath = null;
 
   // A talking character interrupts the host: how it comes in.
@@ -1180,6 +1180,8 @@
         ${field("Position", `<select data-field="position">${["left", "top-left", "bottom-left", "right", "top-right", "bottom-right"].map((pos) => `<option ${p.position === pos ? "selected" : ""}>${pos}</option>`).join("")}</select>`)}
         ${field("Size", range("size", p.size ?? 0.25, 0.02, 2, 0.01))}</div>`;
       if (item.kind === "drawing") {
+        html += field("Appears", `<select data-field="effect">${[["pop", "Pops in"], ["draw", "Draws itself, stroke by stroke"], ["rise", "Rises from below"], ["drop", "Drops from above"], ["none", "Just appears"]]
+          .map(([key, label]) => `<option value="${key}" ${(p.effect || "pop") === key ? "selected" : ""}>${label}</option>`).join("")}</select>`);
         const pictures = library.filter((entry) => /\.(png|jpe?g|webp)$/i.test(entry.path));
         html += field("Picture", `<select data-field="picture"><option value="">Painted from the words</option>${pictures.map((entry) => `<option value="${escape(entry.path)}" ${p.picture === entry.path ? "selected" : ""}>${escape(entry.name)}</option>`).join("")}</select>`);
       }

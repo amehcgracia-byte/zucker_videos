@@ -2423,9 +2423,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("not_found", "This scene no longer exists", 404)
         proposals_path, _ = _show_review_files(project)
         stored = show_proposals.load(proposals_path)
+        strokes = show_ai_images.folder(project, job_id)/"strokes.json"
         params = dict(picture=str(show_ai_images.folder(project, job_id)/"image.png"), image_engine=job["engine"],
                       subject=job["direction"][:80], prompt=job["direction"][:600], ai_direction=job["direction"], selected_text=job["selected_text"],
-                      style=job["style"], position=job["position"], size=.25, effect="pop", kind="drawing")
+                      style=job["style"], position=job["position"], size=.25, kind="drawing",
+                      # Claude's drawings draw themselves on the video, line by line.
+                      effect="draw" if strokes.is_file() else "pop", **({"strokes": str(strokes)} if strokes.is_file() else {}))
         prior = job.get("applied_id") or job.get("replace_id")
         item = next((p for p in stored["proposals"] if p["id"] == prior and p["id"] in scene["effects"]), None)
         if item:

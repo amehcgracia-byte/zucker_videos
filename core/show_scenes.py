@@ -129,7 +129,7 @@ ACTIONS = {
     # action: (fun effect, path preset) - what "Animate element" offers.
     "none": ("none", None), "up": ("none", "up"), "down": ("none", "down"), "jump": ("bounce", None), "grow": ("pop", None),
     "grow_return": ("jelly", None), "pulse": ("pulse", None), "swing": ("wobble", None), "spin": ("spin", None),
-    "talk": ("none", None), "path": ("none", "path"),
+    "talk": ("none", None), "path": ("none", "path"), "draw": ("draw", None),
 }
 
 

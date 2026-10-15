@@ -231,7 +231,8 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
         items.append({"image": str(path), "at": gag["at"], "duration": gag["duration"], "width": round(size, 4),
                       "x": round(x if explicit is not None else min(max(x, half_w + 0.01), 1 - half_w - 0.01), 4),
                       "y": round(y if explicit is not None else min(max(y, half_h + 0.01), 1 - half_h - 0.01), 4),
-                      "effect": gag.get("effect") or "pop", "kind": kind})
+                      "effect": gag.get("effect") or "pop", "kind": kind,
+                      **({"strokes": gag["strokes"]} if gag.get("strokes") else {})})
     if not painter and to_paint:
         notes.append(f"{to_paint} drawings were skipped: download the drawing painter (2.1 GB, once) to get them.")
     if unusable:
