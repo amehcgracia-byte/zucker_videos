@@ -162,8 +162,11 @@ def pigment(frame: np.ndarray, points: list[tuple[float, float]], view: View, *,
     if box is None:
         return
     bx0, by0, bx1, by1 = box
-    layer = np.zeros((by1 - by0, bx1 - bx0, 4), dtype=np.float32)
-    stamp = stamp * strength
+    # Every stamp has the same colour, so stamping one over another (source-over) only
+    # multiplies what shows through: the ink's alpha is 1 - the product of (1 - each
+    # stamp's alpha), and its colour stays the stamp colour. Only alpha is warped.
+    through = np.ones((by1 - by0, bx1 - bx0), dtype=np.float32)
+    alpha = np.ascontiguousarray(stamp[..., 3]) * strength
     for x, y, size in stamps:
         # drawImage(stamp, x, y, size, size) as Chrome draws it: bilinear samples of the
         # 64 px stamp at each covered pixel's centre (no averaging, so the grain stays crisp).
@@ -173,11 +176,12 @@ def pigment(frame: np.ndarray, points: list[tuple[float, float]], view: View, *,
             continue
         s = STAMP / size
         matrix = np.float32([[s, 0, (bx0 + x0c + 0.5 - x) * s - 0.5], [0, s, (by0 + y0c + 0.5 - y) * s - 0.5]])
-        cut = cv2.warpAffine(stamp, matrix, (x1c - x0c, y1c - y0c), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
-                             borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
-        target = layer[y0c:y1c, x0c:x1c]
-        target[...] = cut + target * (1 - cut[..., 3:4])
-    _composite(layer, frame[by0:by1, bx0:bx1])
+        cut = cv2.warpAffine(alpha, matrix, (x1c - x0c, y1c - y0c), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                             borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        through[y0c:y1c, x0c:x1c] *= 1 - cut
+    ink = (1 - through)[..., None]
+    rgb = np.array(_rgb(color), dtype=np.float32)
+    _composite(np.concatenate([ink * rgb, ink], axis=2), frame[by0:by1, bx0:bx1])
 
 
 def stroke(frame: np.ndarray, points: list[tuple[float, float]], view: View, *, brush: str = "pencil",
