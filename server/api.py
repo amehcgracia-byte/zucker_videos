@@ -2925,6 +2925,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         LOGGER.exception("Unhandled API error")
         return error_response("internal_error", str(exc), 500)
 
+    from server.project_library_api import register_library_routes
+    register_library_routes(app, state, lambda: app_home() / "Library" / "projects.json")
     return app
 
 
