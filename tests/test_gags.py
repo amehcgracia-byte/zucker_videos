@@ -163,7 +163,7 @@ def test_a_drawing_the_painter_could_not_clean_is_left_out_with_a_note(tmp_path,
     assert "a thumbs up" in notes[0]
 
 
-def test_a_blob_kept_from_before_is_painted_again(tmp_path, monkeypatch):
+def test_a_blob_from_an_older_recipe_is_preserved_but_not_reused(tmp_path, monkeypatch):
     style = gag_paint.STYLES["marker"].label
     folder = tmp_path / "Painted" / style
     folder.mkdir(parents=True)
@@ -174,7 +174,7 @@ def test_a_blob_kept_from_before_is_painted_again(tmp_path, monkeypatch):
     fresh.paste((200, 40, 40), (150, 150, 360, 360))
     monkeypatch.setattr(gag_paint, "paint_clean", lambda subject, style, seed=0, step=None, prompt=None: fresh)
     sticker = gags.painted_picture("a thumbs up", "marker", library_root=tmp_path)
-    assert not gag_paint.mostly_black(sticker) and not gag_paint.mostly_black(Image.open(old))
+    assert not gag_paint.mostly_black(sticker) and gag_paint.mostly_black(Image.open(old))  # old recipe remains recoverable
 
 
 def test_a_drawing_is_painted_with_the_prompt_the_person_wrote(tmp_path, monkeypatch):

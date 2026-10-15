@@ -503,7 +503,10 @@ def preview_scene(project, scene_id: str, *, width: int = 960, height: int = 540
     overlays = show_scenes.overlay_items({"scenes": [{**scene, "decision": "accepted"}]}) if scene["decision"] != "plain" else []
     start, end = float(scene["start"]), float(scene["end"])
     from core.show_bridge import studio_fingerprint
-    signature = hashlib.sha1(json.dumps(["scene-preview-v2", live, overlays, start, end, width, height, studio_fingerprint(project.folder)], sort_keys=True,
+    from core import gag_paint
+    local_art_recipe = [gag_paint.NEGATIVE, {key: vars(style) for key, style in gag_paint.STYLES.items()}] if any(
+        item["kind"] == "drawing" and not item["params"].get("picture") for item in live) else None
+    signature = hashlib.sha1(json.dumps(["scene-preview-v2", live, overlays, start, end, width, height, studio_fingerprint(project.folder), local_art_recipe], sort_keys=True,
                                         default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     folder.mkdir(parents=True, exist_ok=True)

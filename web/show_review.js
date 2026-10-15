@@ -478,7 +478,10 @@
       const body = { kind, at: Number(form.elements.at.value) || scene.start };
       if (kind === "character") Object.assign(body, { source: form.elements.source.value, still_time: Number(form.elements.source_time.value) || 0 });
       if (kind === "cutaway") Object.assign(body, { source: form.elements.source.value, source_start: Number(form.elements.source_time.value) || 0 });
-      if (kind === "drawing") Object.assign(body, { subject: form.elements.subject.value || "a guitar", style: form.elements.style.value });
+      if (kind === "drawing") {
+        ShowEinstein.open(scene,{text:scene.text,start:body.at,end:Math.min(scene.end,body.at+3)},form.elements.subject.value,null,{style:form.elements.style.value});
+        return;
+      }
       await addEffect(scene, body);
     };
   }
@@ -521,6 +524,7 @@
     const span = Math.max(0.5, picked.end - picked.start);
     const quoted = escape(picked.text.length > 34 ? `${picked.text.slice(0, 32)}…` : picked.text);
     const choices = [
+      ["ai", "AI · create with Einstein…", null],
       ["drawing", `Draw “${quoted}”`, { kind: "drawing", subject: picked.text, style: "crayon", duration: Math.max(2, span) }],
       ["word", `Show “${quoted}” big`, { kind: "word", text: picked.text.toUpperCase().slice(0, 40), duration: Math.max(1.5, span) }],
       ["math", "Formulas around me here", { kind: "math", duration: Math.max(2, span) }],
@@ -532,7 +536,7 @@
       <div class="show-actions-grid">${choices.map(([key, label]) => `<button type="button" data-say="${key}">${label}</button>`).join("")}</div>
       <label>Your drawing idea for this selection<textarea aria-label="Drawing idea for selected words" maxlength="2000" placeholder="For example: a clumsy hand-drawn sun peeking from the corner"></textarea></label>
       <small>Generate this proposal in the scene first. Watch the result before accepting it.</small>
-      <div class="show-actions"><button type="button" data-say="idea">Generate &amp; preview</button><button type="button" data-say="copy">Copy</button></div>`;
+      <div class="show-actions"><button type="button" data-say="idea">Create with Einstein…</button><button type="button" data-say="copy">Copy</button></div>`;
     menu.hidden = false;
     menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 8))}px`;
     menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8))}px`;
@@ -541,10 +545,12 @@
       if (!button) return;
       menu.hidden = true;
       const key = button.dataset.say;
+      if (key === "ai") { ShowEinstein.open(scene,picked); return; }
+      if (key === "drawing") { ShowEinstein.open(scene,picked,`Draw ${picked.text}`); return; }
       if (key === "idea") {
         const input=menu.querySelector('textarea'),direction=input.value.trim();
         if(!direction){menu.hidden=false;input.focus();return;}
-        await addEffect(scene,{kind:"drawing",subject:direction.slice(0,80),direction,selected_text:picked.text,style:"crayon",at:picked.start,duration:Math.max(2,span)});
+        ShowEinstein.open(scene,picked,direction);
         return;
       }
       if (key === "copy") { await navigator.clipboard?.writeText(picked.text).catch(() => {}); return; }
@@ -762,8 +768,9 @@
       <div class="show-card-body">
         <img src="${picture(item)}" alt="" loading="lazy">
         <div>
-          <p class="show-reason">${escape(item.reason)}</p>${needs}
+          <p class="show-reason">${escape(item.reason)}</p>${item.kind === "drawing" ? `<p class="show-hint">Image source: ${escape(item.params.image_engine || (item.params.picture ? "Your library" : "Local painter · DreamShaper"))}</p>` : ""}${needs}
           <div class="show-actions">
+            ${item.kind === "drawing" ? `<button type="button" class="icon-button small" data-ai-edit="${item.id}">AI · change image…</button>` : ""}
             <button type="button" class="icon-button small" data-show-preview="${item.id}">Preview in scene</button>
             <button type="button" class="icon-button small" data-show-adjust="${item.id}">${open.has(item.id) ? "Close" : "Adjust"}</button>
             <button type="button" class="icon-button small" data-show-status="approved" data-id="${item.id}" ${(item.needs || []).length || !viewedScenes.has(currentScene()?.id) ? "disabled" : ""}>Approve</button>
@@ -1097,6 +1104,13 @@
   document.addEventListener("click", event => { const menu=$("#showEffectMenu"); if(menu && !event.target.closest?.("#showEffectMenu"))menu.hidden=true; });
   document.addEventListener("keydown", event => { if(event.key==="Escape"){ const menu=$("#showEffectMenu");if(menu)menu.hidden=true;} });
 
+  document.addEventListener('click',event=>{
+    const button=event.target.closest?.('[data-ai-edit]');if(!button)return;
+    const item=review.proposals.find(item=>item.id===button.dataset.aiEdit);
+    const scene=currentScene();if(!item||!scene)return;
+    ShowEinstein.open(scene,{text:item.params.selected_text||scene.text,start:item.at,end:Math.min(scene.end,item.at+item.duration)},item.params.ai_direction || item.params.subject,item.id,{style:item.params.style,position:item.params.position});
+  });
+
   // ---- Actions -----------------------------------------------------------------
 
   document.addEventListener("click", async (event) => {
@@ -1207,6 +1221,20 @@
 
   window.ShowReview = {
     open: openReview, openWorkspace, hull, refreshLibrary, addToScene,
+    async imageApplied(item,sceneId) {
+      const scene=scenes().find(s=>s.id===sceneId); if(!scene)throw Error("Open the image's scene before applying it");
+      const index=review.proposals.findIndex(p=>p.id===item.id);
+      if(index>=0)review.proposals[index]=item;else review.proposals.push(item);
+      if(!scene.effects.includes(item.id))scene.effects.push(item.id);
+      scene.decision="modified"; invalidateLocal(scene);
+      step=scenes().indexOf(scene)+2; open.add(scene.id); open.add(item.id); render();
+      await requestScenePreview(scene);
+    },
+    async localImageIdea(sceneId,picked,direction,style) {
+      const scene=scenes().find(s=>s.id===sceneId);if(!scene)throw Error("This scene is no longer open");
+      step=scenes().indexOf(scene)+2;
+      return addEffect(scene,{kind:"drawing",subject:direction.slice(0,80),direction,selected_text:picked.text,style,at:picked.start,duration:Math.max(.1,picked.end-picked.start)});
+    },
     voices: () => (review?.resources || []).flatMap((resource) => (resource.speech || []).map((line) => ({ source: resource.path, start: line.start, length: Math.round((line.end - line.start) * 100) / 100, text: line.text }))),
     sources: () => [review?.source, ...(review?.resources || []).map((item) => item.path)].filter(Boolean),
     resources: () => (review?.resources || []).filter((item) => item.kind !== "photo").map((item) => item.path),

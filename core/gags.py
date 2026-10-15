@@ -100,7 +100,7 @@ def painted_picture(subject: str, style: str, *, seed: int = 3, library_root: Pa
     from core.gag_library import library_dir
     style = style if style in gag_paint.STYLES else "pencil"
     folder = (library_root or library_dir()) / "Painted" / gag_paint.STYLES[style].label
-    key = f"{subject}|{style}|{seed}" + (f"|{prompt}" if prompt else "")
+    key = f"{subject}|{style}|{seed}|rough-art-v2|{gag_paint.STYLES[style].prompt}" + (f"|{prompt}" if prompt else "")
     target = folder / f"{_slug(subject)} {hashlib.sha1(key.encode()).hexdigest()[:6]}.png"
     if target.is_file():
         kept = Image.open(target).convert("RGBA")

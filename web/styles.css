@@ -2089,3 +2089,7 @@ pre {
 #showEffectMenu[hidden]{display:none}
 #showEffectMenu > div {display:flex;flex-wrap:wrap;gap:6px;border-bottom:1px solid var(--line);padding:9px 0;}
 #showEffectMenu > div > span {width:100%;overflow-wrap:anywhere}
+
+#showEinsteinDialog{width:min(720px,calc(100vw - 24px));max-height:90vh;overflow:auto;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:18px;padding:20px}#showEinsteinDialog::backdrop{background:#000a}#showEinsteinDialog header{display:flex;align-items:center;gap:15px}#showEinsteinDialog header img{width:84px;height:110px;object-fit:contain}#showEinsteinDialog header div{flex:1}#showEinsteinDialog h2{margin:0}#showEinsteinDialog textarea{width:100%;box-sizing:border-box}#showEinsteinDialog .ai-result{display:block;max-width:100%;max-height:350px;margin:12px auto;background:repeating-conic-gradient(#ddd 0 25%,#fff 0 50%) 0/18px 18px}#showEinsteinDialog [hidden]{display:none!important}
+
+#showEinsteinDialog header{position:sticky;top:-20px;z-index:2;background:var(--panel);padding-block:8px}#showEinsteinDialog header img{height:76px}

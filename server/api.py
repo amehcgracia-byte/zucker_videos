@@ -2293,7 +2293,137 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             for path in sorted(root.rglob("*")):
                 if path.is_file() and path.suffix.lower() in {".png", ".webp", ".jpg", ".jpeg"}:
                     items.append({"name": path.stem, "path": str(path.resolve()), "folder": path.parent.name})
+        ai_root = project.folder / "assets" / "show-ai"
+        if ai_root.is_dir():
+            for picture in ai_root.glob("*/image.png"):
+                try:
+                    meta = json.loads((picture.parent / "request.json").read_text())
+                    if meta.get("status") == "ready":
+                        items.append({"name": meta.get("direction", "ChatGPT image")[:80], "path": str(picture.resolve()), "folder": "ChatGPT images"})
+                except (OSError, ValueError):
+                    continue
         return items
+
+    ai_jobs_lock = threading.Lock()
+    ai_jobs = set()
+
+    @app.get("/api/v1/show/ai/images")
+    def api_show_ai_versions():
+        from core import show_ai_images
+        project = _require_project(state)
+        items = []
+        root = project.folder / "assets" / "show-ai"
+        for path in sorted(root.glob("*/request.json"), key=lambda p:p.stat().st_mtime, reverse=True):
+            try:
+                job = show_ai_images.load(project, path.parent.name)
+            except (OSError, ValueError):
+                continue
+            if job["scene_id"] != request.args.get("scene_id"):
+                continue
+            if job["status"] == "ready":
+                job["url"] = f"/api/v1/show/ai/images/{job['id']}/image"
+            items.append(job)
+            if len(items) >= 20:
+                break
+        return jsonify({"items":items})
+
+    @app.post("/api/v1/show/ai/images")
+    def api_show_ai_create():
+        from core import show_ai_images, show_scenes
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        document = show_scenes.load(_scene_files(project))
+        scene = next((s for s in document["scenes"] if s["id"] == body.get("scene_id")), None)
+        if not scene:
+            return error_response("not_found", "Choose a scene first", 404)
+        if body.get("replace_id") and body["replace_id"] not in scene["effects"]:
+            return error_response("bad_request", "That effect is not in this scene", 400)
+        key = str(project.folder)
+        with ai_jobs_lock:
+            if key in ai_jobs:
+                return error_response("busy", "One image is already being generated for this project", 409)
+            try:
+                job = show_ai_images.create(project, scene, body)
+            except (ValueError, TypeError, OSError) as exc:
+                return error_response("bad_request", str(exc), 400)
+            ai_jobs.add(key)
+        def work():
+            try:
+                show_ai_images.run(project, job["id"])
+            finally:
+                with ai_jobs_lock:
+                    ai_jobs.discard(key)
+        threading.Thread(target=work, daemon=True, name="show-chatgpt-image").start()
+        return jsonify(job), 202
+
+    def _ai_request(project, job_id):
+        from core import show_ai_images
+        return show_ai_images.load(project, job_id)
+
+    @app.get("/api/v1/show/ai/images/<job_id>")
+    def api_show_ai_status(job_id):
+        project = _require_project(state)
+        try:
+            job = _ai_request(project, job_id)
+        except (ValueError, OSError):
+            return error_response("not_found", "Unknown image request", 404)
+        if job["status"] == "ready":
+            job["url"] = f"/api/v1/show/ai/images/{job_id}/image"
+        elif job["status"] in {"queued", "generating"}:
+            with ai_jobs_lock:
+                if str(project.folder) not in ai_jobs:
+                    job.update(status="failed", error="The app restarted before this image finished. Retry your request.")
+        return jsonify(job)
+
+    @app.get("/api/v1/show/ai/images/<job_id>/image")
+    def api_show_ai_image(job_id):
+        from core import show_ai_images
+        project = _require_project(state)
+        try:
+            job = _ai_request(project, job_id)
+            if job["status"] != "ready":
+                raise ValueError("Not ready")
+            return send_file(show_ai_images.folder(project, job_id)/"image.png")
+        except (ValueError, OSError):
+            return error_response("not_found", "This image is not ready", 404)
+
+    @app.post("/api/v1/show/ai/images/<job_id>/apply")
+    def api_show_ai_apply(job_id):
+        from core import show_ai_images, show_proposals, show_scenes
+        project = _require_project(state)
+        try:
+            job = _ai_request(project, job_id)
+        except (ValueError, OSError):
+            return error_response("not_found", "Unknown image request", 404)
+        if job["status"] != "ready":
+            return error_response("not_ready", "Review a completed image first", 409)
+        document = show_scenes.load(_scene_files(project))
+        scene = next((s for s in document["scenes"] if s["id"] == job["scene_id"]), None)
+        if not scene:
+            return error_response("not_found", "This scene no longer exists", 404)
+        proposals_path, _ = _show_review_files(project)
+        stored = show_proposals.load(proposals_path)
+        params = dict(picture=str(show_ai_images.folder(project, job_id)/"image.png"), image_engine=job["engine"],
+                      subject=job["direction"][:80], prompt=job["direction"][:600], ai_direction=job["direction"], selected_text=job["selected_text"],
+                      style=job["style"], position=job["position"], size=.25, effect="pop", kind="drawing")
+        prior = job.get("applied_id") or job.get("replace_id")
+        item = next((p for p in stored["proposals"] if p["id"] == prior and p["id"] in scene["effects"]), None)
+        if item:
+            # Changing the artwork must not reset the user's animation or sizing.
+            params.pop("size", None)
+            params.pop("effect", None)
+            item["params"].update(params)
+            item.update(status="proposed", needs=[])
+        else:
+            item = show_proposals.proposal("drawing", job["at"], job["duration"], reason="Your idea · ChatGPT image", **params)
+            stored["proposals"].append(item)
+            show_scenes.attach(document, item)
+            show_scenes.save(_scene_files(project), document)
+        show_proposals.save(proposals_path, stored["proposals"], **{k:v for k,v in stored.items() if k not in ("proposals","version")})
+        _effect_changed(project, item["id"])
+        job["applied_id"] = item["id"]
+        show_ai_images.save(show_ai_images.folder(project, job_id)/"request.json", job)
+        return jsonify(item)
 
     @app.get("/api/v1/show/source")
     def api_show_source() -> Response:
