@@ -5,6 +5,13 @@ Answers `SHOW_RENDER_PARITY_REVIEW_2026-10-15.md` and the reconciliation brief.
 Private recordings, frames, the clay sheets and the user's project stay out of Git;
 every validation output named here lives in a private scratch folder.
 
+## Reconciliation
+
+Git merges only, nothing rewritten: PR #30 up to `7db8a015` (`d8fe9e9f`), then
+Codex's `2843d6e5` (unified storyboard, saved render, selected-word directions)
+on top of the bridge work (`bd5f7885`). Only asset version numbers clashed.
+Both sides' tests pass together.
+
 ## What changed structurally
 
 `render_reviewed_show` used to read only `show_plan.json`, `show_proposals.json`
@@ -44,6 +51,8 @@ An applied effect with a problem (a mask whose voice track is missing: jaw still
 carries `warning`. Failed, unsupported and warned effects become export warnings.
 Every storyboard proposal also gets a result by id (`show_effects`), so a drawing
 the painter could not make is named with its time, not hidden in a subject list.
+A storyboard drawing can be corrected to one of the person's own library
+pictures (painted drawings they kept) instead of a new painting.
 
 ## Tools now in the render, and how close they are to the preview
 
@@ -98,6 +107,27 @@ the face (switchable). The first proposal uses each mode once along the story.
 
 All clips: H.264 1280×720, audio present and equal in length, full decode clean.
 
+## Storyboard additions (after the user's review of the installed app)
+
+- **Previews that show up.** Rendering a part of the edit fed picture and sound
+  to FFmpeg together and could spin for two minutes; the picture is now
+  rendered first and the sound joined after (22 s scene: 131 s → 17 s).
+  Previews are 640×360 with a fast encoder; opening a scene plays its cut at
+  once, prepares its preview with effects (and the next scene's) in the
+  background and switches to it when ready (about half a minute). Edits make
+  it again once they settle.
+- **Einstein.** Right-click selected words → “Create an image here with
+  Einstein…”: a chat pinned to that moment asks the person's own ChatGPT
+  through the Codex CLI (signed in with ChatGPT, no API key, no paid API) for a
+  hand-drawn picture on a transparent background; asking again changes it in
+  the same conversation; “Use this one” keeps it in the gag library and places
+  it on the scene beside the host. When the ChatGPT Codex allowance is used up
+  the chat says until when; this computer's painter can be chosen instead.
+- **Picture tools.** Placed pictures can be moved, resized, stretched, turned,
+  mirrored and made see-through, on the stage and in the render.
+- **Steam** added in the storyboard goes over the cup Show Studio marked.
+- **Saved render** scenes start after what was inserted before them.
+
 ## Not done yet (honestly)
 
 - **The user's latest browser edits are not in the project.** The project's
@@ -115,5 +145,9 @@ All clips: H.264 1280×720, audio present and equal in length, full decode clean
   waits for the user's go-ahead.
 - Not presented as finished: automatic generation, general segmentation, the
   hat/glasses gag. The drawing generator via ChatGPT/Codex is not integrated.
-- No app rebuild or installation was done for this reconciliation, and the
-  installed app was not touched.
+- During the reconciliation the installed app was not touched; after the
+  user's review it is rebuilt and installed at their request, with the
+  previous app kept beside the build folder.
+- The first live Einstein request hit the account's Codex usage limit; a
+  successful end-to-end ChatGPT drawing inside the app is still to be seen
+  once the allowance resets (the CLI path itself drew the three test pictures).
