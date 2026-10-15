@@ -1,12 +1,20 @@
 # Traspaso actual a Claude — 16 octubre 2026
 
-Este documento actualiza los traspasos anteriores. **Código mínimo: `253f0b34fd6c899bc77802e7977ec00b980f2542`**, rama `codex/crossplatform-ui-audit`, PR https://github.com/amehcgracia-byte/zucker_videos/pull/30. Su padre `8173ae51` contiene colocación por palabras y previsualización individual; los commits `2a710b40` y `f8ab0c2f` conectaron y aislaron la generación real de imágenes con Einstein/ChatGPT. No reconstruyas desde un commit anterior ni desde una copia antigua de la maqueta.
+Este documento actualiza los traspasos anteriores. **Código mínimo: `33326721`**, rama `codex/crossplatform-ui-audit`, PR https://github.com/amehcgracia-byte/zucker_videos/pull/30. Su padre `8173ae51` contiene colocación por palabras y previsualización individual; los commits `2a710b40` y `f8ab0c2f` conectaron y aislaron la generación real de imágenes con Einstein/ChatGPT. No reconstruyas desde un commit anterior ni desde una copia antigua de la maqueta.
+
+## Actualización: pegatinas y biblioteca limpia
+
+Lee también `docs/SHOW_STICKERS_LIBRARY_REVIEW_2026-10-16.md`. Las pegatinas de `scene.overlays` tienen IDs persistentes y pistas, edición por palabras/bordes, menú de botón derecho dentro del popup y render individual sin exigir completar otros efectos. El selector ofrece **Add sticker** dentro del editor.
+
+`assets/show-library/catalog.json` identifica recursos elegidos y retirados. Los antiguos `Gag library/Painted` están retirados por defecto; se pueden restaurar sin romper referencias de proyectos existentes. Hay cinco recursos visibles en el proyecto de prueba: sol de ceras original, toro original, recortes exactos de planta/nevera y sofá elegido. No vuelvas a llenar el selector con las 30 imágenes retiradas. Conserva la distinción entre retirar del selector y borrar archivos compartidos.
+
+El inventario privado incluye ahora la raíz `project_curated_library`. Copia/integra esos archivos elegidos cuando prepares la app real; no basta con bajar el PR. La guitarra antigua sigue sin identificación positiva.
 
 ## Encargo
 
 Conserva la edición automática, captions, cortes y mejoras que ya gustaron al usuario. Integra lo nuevo sin convertirlo en otra aplicación ni reemplazar dibujos aprobados por recursos genéricos de GitHub/Hugging Face. Toda la interfaz sigue en inglés.
 
-1. Comprueba `git status`, los commits recientes y el PR. Trabaja en un checkout aislado; incorpora estos cambios con su historial o una integración revisada, sin sobrescribir cambios locales. Comprueba `git merge-base --is-ancestor 253f0b34 HEAD` en el checkout que vayas a empaquetar. Si no es ancestro, detente antes de construir y revisa qué falta.
+1. Comprueba `git status`, los commits recientes y el PR. Trabaja en un checkout aislado; incorpora estos cambios con su historial o una integración revisada, sin sobrescribir cambios locales. Comprueba `git merge-base --is-ancestor 33326721 HEAD` en el checkout que vayas a empaquetar. Si no es ancestro, detente antes de construir y revisa qué falta.
 2. Lee `docs/SHOW_SELF_REVIEW_2026-10-15.md`, `docs/SHOW_TEXT_AND_TIMELINE_PLACEMENT_2026-10-15.md`, `docs/SHOW_EINSTEIN_IMAGE_REQUESTS_2026-10-15.md` y este traspaso. Los traspasos viejos describen prototipos de otra fase; sus frases «no hay proveedor conectado» no describen el actual Einstein del storyboard de producción.
 3. Abre y compara el storyboard de producción, no solo el Studio experimental. La referencia local es `http://127.0.0.1:8798/?show=storyboard&scene=scene-02`, servida desde `/Users/macbookair/zucker_videos/work/medley-repair`. No cierres la app instalada ni interrumpas un trabajo activo para comparar.
 
@@ -56,7 +64,7 @@ No basta copiar una carpeta. `core.gags.make_items` usa el PNG exacto cuando un 
 
 1. Prueba con el dibujo exacto del sofá: selección de palabras, reproducción antes/durante/después, cambio de duración, movimiento, cierre/reapertura y comparación con un MP4 real. Comprueba también un dibujo antiguo elegido por el usuario; debe ser el mismo archivo antes y después.
 2. Ejecuta `node tools/qa/show_clock_test.cjs` y `node tools/qa/show_edit_queue_test.cjs`.
-3. Ejecuta la suite dirigida de Show indicada en el informe y la general. Última dirigida: **117 pasan**. General: **951 pasan / 26 fallan**, con 2 skips y 1 xfail ya existentes; los mismos 26 se reprodujeron en el padre `8173ae51`. No ocultarlos, añadir skips/xfails ni afirmar que toda la app está verde.
+3. Ejecuta la suite dirigida de Show indicada en el informe y la general. Última dirigida: **120 pasan**. General: **951 pasan / 26 fallan**, con 2 skips y 1 xfail ya existentes; los mismos 26 se reprodujeron en el padre `8173ae51`. No ocultarlos, añadir skips/xfails ni afirmar que toda la app está verde.
 4. La vista inmediata no compone todavía todos los efectos: pintura local sin imagen elegida, steam/tracking, matemáticas, cámara y personajes/voz necesitan render. La duración de personajes hablados usa voz/hold y requiere un contrato específico. No afirmar que eso está resuelto por las barras de imágenes.
 5. Si el usuario solicita instalación, verifica respaldo y paquete terminado antes de sustituir la app; confirma que el build contiene el commit y los JS nuevos. Conserva proyectos, raíces de almacenamiento, recursos elegidos y hashes. No reemplaces el proyecto real por la copia de prueba.
 
