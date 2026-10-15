@@ -396,7 +396,8 @@ def _video_info(path: Path) -> tuple[int, int, float, int]:
 
 def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Path, *, ffmpeg: str = "ffmpeg",
                 progress: Callable[[float], None] | None = None, cancel: Callable[[], None] | None = None,
-                timeline: list[tuple[float, float]] | None = None, drawings: Any = None) -> Path:
+                timeline: list[tuple[float, float]] | None = None, drawings: Any = None,
+                preset: str = "veryfast", crf: int = 19) -> Path:
     """Draw ``gags`` on ``video``. Character interventions lengthen it: their
     (at, duration) spans are appended to ``timeline`` for captions to follow.
     ``drawings`` (core.show_bridge.StudioDrawings) are Show Studio's effects,
@@ -442,7 +443,7 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
         encoder = subprocess.Popen([
             ffmpeg, "-y", "-v", "error", "-nostdin", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}",
             "-r", f"{fps:.6f}", "-i", "pipe:0", *audio_args,
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-pix_fmt", "yuv420p",
+            "-c:v", "libx264", "-preset", preset, "-crf", str(crf), "-pix_fmt", "yuv420p",
             "-shortest", "-movflags", "+faststart", str(pending)], stdin=subprocess.PIPE, stderr=encode_log)
         pending_inserts = list(inserts)
         written = 0

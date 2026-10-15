@@ -2082,9 +2082,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         from core.show import edited_words, scene_segments
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
         timed = edited_words(plan) if plan.get("words") else []
+        from core.show import scene_preview_ready
         with scene_lock:
             for scene in document["scenes"]:
-                scene["preview"] = scene_previews.get(_scene_key(project, scene["id"]), {"status": "none"})
+                made = scene_preview_ready(project, scene["id"])
+                known = scene_previews.get(_scene_key(project, scene["id"]), {"status": "none"})
+                # A preview made for what the scene shows now; an older one does not count.
+                scene["preview"] = ({"status": "ready", "url": f"/api/v1/show/media?path={quote(str(made))}"} if made
+                                    else known if known.get("status") in ("queued", "rendering", "failed") else {"status": "none"})
                 scene["segments"] = scene_segments(plan, float(scene["start"]), float(scene["end"])) if plan.get("shots") else []
                 scene["words"] = [[text, a, b] for text, a, b in timed if scene["start"] <= a < scene["end"]]
         wizard = project.data.get("settings", {}).get("wizard", {})
@@ -2190,10 +2195,20 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.post("/api/v1/show/scenes/<scene_id>/preview")
     def api_show_scene_preview(scene_id: str) -> Response:
+        """Prepare this scene's preview with effects first, then ``next`` ones; a
+        preview already made for what a scene shows now is not made again."""
+        from core.show import scene_preview_ready
         project = _require_project(state)
-        _invalidate_scene(project, scene_id)
-        _prepare_scenes(project, [scene_id], first=True)
-        return jsonify({"status": "queued"}), 202
+        body = request.get_json(silent=True) or {}
+        wanted = [scene_id] + [str(item) for item in body.get("next") or []][:3]
+        missing = [item for item in wanted if not scene_preview_ready(project, item)]
+        for item in missing:
+            with scene_lock:
+                if scene_previews.get(_scene_key(project, item), {}).get("status") in ("ready", "failed", "stopped"):
+                    scene_previews.pop(_scene_key(project, item), None)
+        if missing:
+            _prepare_scenes(project, missing, first=True)
+        return jsonify({"status": "ready" if scene_id not in missing else "queued"}), 202
 
     @app.patch("/api/v1/show/scenes/identity")
     def api_show_scene_identity() -> Response:

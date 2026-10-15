@@ -183,6 +183,10 @@ def _transcribe_and_plan(project, path: Path, *, style_name: str, language: str 
     return plan
 
 
+PREVIEW_SIZE = (640, 360)          # previews of scenes and effects: small and quick to make
+PREVIEW_ENCODING = {"preset": "ultrafast", "crf": 26}
+
+
 def _destination(project) -> Path:
     name = re.sub(r"[^\w.-]+", "-", str(project.data.get("name") or "Show")).strip("-") or "Show"
     return project.exports_dir / f"{name}-show-{time.strftime('%Y%m%d-%H%M%S')}.mp4"
@@ -424,9 +428,10 @@ def window_plan(plan: dict[str, Any], start: float, end: float) -> dict[str, Any
     return {**plan, "shots": shots, "cutaways": cutaways}
 
 
-def preview_proposal(project, proposal_id: str, *, width: int = 960, height: int = 540,
+def preview_proposal(project, proposal_id: str, *, width: int | None = None, height: int | None = None,
                      cancel: Callable[[], None] | None = None) -> Path:
     """A short real render of one proposal in its context (1.5 s around it)."""
+    width, height = width or PREVIEW_SIZE[0], height or PREVIEW_SIZE[1]
     import hashlib
 
     from core import gags as gag_module
@@ -451,7 +456,7 @@ def preview_proposal(project, proposal_id: str, *, width: int = 960, height: int
         return output
     ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
     cut = folder / f"{proposal_id}-{signature}-cut.mp4"
-    render_show(Path(plan["source"]), part, cut, ffmpeg=ffmpeg, width=width, height=height, cancel=cancel)
+    render_show(Path(plan["source"]), part, cut, ffmpeg=ffmpeg, width=width, height=height, cancel=cancel, **PREVIEW_ENCODING)
     shifted = [{**entry, "at": round(entry["at"] - start, 3)} for entry in framed_layer(plan, layer)]
     jingles = [entry for entry in shifted if entry.get("jingle")]
     shifted = [entry for entry in shifted if not entry.get("jingle")]
@@ -466,7 +471,7 @@ def preview_proposal(project, proposal_id: str, *, width: int = 960, height: int
     studio, _ = studio_layers(project.folder, part, hidden=[(c["at"], c["at"] + c["duration"]) for c in part["cutaways"]])
     spans: list[tuple[float, float]] = []
     if pictures or shifted or studio:
-        render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio)
+        render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio, **PREVIEW_ENCODING)
         cut.unlink(missing_ok=True)
     else:
         cut.replace(output)
@@ -475,15 +480,12 @@ def preview_proposal(project, proposal_id: str, *, width: int = 960, height: int
 
 
 
-def preview_scene(project, scene_id: str, *, width: int = 960, height: int = 540,
-                  cancel: Callable[[], None] | None = None) -> Path:
-    """A real render of one scene with the effects it proposes (or the person kept)."""
+def _scene_preview_inputs(project, scene_id: str, width: int, height: int):
+    """What a scene's preview shows, and the file it is (or will be) rendered to."""
     import hashlib
 
-    from core import gags as gag_module
     from core import show_proposals, show_scenes
-    from core.gag_render import render_gags
-    from core.show_framing import face_on_screen
+    from core.show_bridge import studio_fingerprint
     plan = json.loads((project.artifacts_dir / "show_plan.json").read_text(encoding="utf-8"))
     items = show_proposals.load(project.artifacts_dir / "show_proposals.json")["proposals"]
     document = show_scenes.load(project.artifacts_dir / "show_scenes.json")
@@ -493,20 +495,46 @@ def preview_scene(project, scene_id: str, *, width: int = 960, height: int = 540
         if item["id"] in scene["effects"] and item["status"] != "discarded" and not item.get("needs")]
     overlays = show_scenes.overlay_items({"scenes": [{**scene, "decision": "accepted"}]}) if scene["decision"] != "plain" else []
     start, end = float(scene["start"]), float(scene["end"])
-    from core.show_bridge import studio_fingerprint
     signature = hashlib.sha1(json.dumps([live, overlays, start, end, width, studio_fingerprint(project.folder)], sort_keys=True,
                                         default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
+    return plan, live, overlays, start, end, folder, folder / f"{scene_id}-{signature}.mp4"
+
+
+def scene_preview_path(project, scene_id: str, *, width: int | None = None, height: int | None = None) -> Path:
+    """Where the preview of what the scene shows now is (or will be) rendered."""
+    return _scene_preview_inputs(project, scene_id, width or PREVIEW_SIZE[0], height or PREVIEW_SIZE[1])[-1]
+
+
+def scene_preview_ready(project, scene_id: str, *, width: int | None = None, height: int | None = None) -> Path | None:
+    """The scene's preview if it is already made for what the scene shows now."""
+    try:
+        output = scene_preview_path(project, scene_id, width=width, height=height)
+    except (OSError, ValueError, KeyError, StopIteration):
+        return None
+    return output if output.is_file() else None
+
+
+def preview_scene(project, scene_id: str, *, width: int | None = None, height: int | None = None,
+                  cancel: Callable[[], None] | None = None) -> Path:
+    """A real render of one scene with the effects it proposes (or the person kept),
+    small and quick to make."""
+    from core import gags as gag_module
+    from core import show_proposals
+    from core.gag_render import render_gags
+    from core.show_framing import face_on_screen
+    width, height = width or PREVIEW_SIZE[0], height or PREVIEW_SIZE[1]
+    plan, live, overlays, start, end, folder, output = _scene_preview_inputs(project, scene_id, width, height)
     folder.mkdir(parents=True, exist_ok=True)
-    output = folder / f"{scene_id}-{signature}.mp4"
     if output.is_file():
         return output
+    signature = output.stem.rsplit("-", 1)[-1]
     cutaways, layer, director = show_proposals.render_inputs(live)
     plan["cutaways"] = cutaways
     part = window_plan(plan, start, end)
     ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
     cut = folder / f"{scene_id}-{signature}-cut.mp4"
-    render_show(Path(plan["source"]), part, cut, ffmpeg=ffmpeg, width=width, height=height, cancel=cancel)
+    render_show(Path(plan["source"]), part, cut, ffmpeg=ffmpeg, width=width, height=height, cancel=cancel, **PREVIEW_ENCODING)
     shifted = [{**entry, "at": round(entry["at"] - start, 3)} for entry in between_words(plan, framed_layer(plan, layer) + overlays)]
     jingles = [entry for entry in shifted if entry.get("jingle")]
     shifted = [entry for entry in shifted if not entry.get("jingle")]
@@ -520,7 +548,7 @@ def preview_scene(project, scene_id: str, *, width: int = 960, height: int = 540
     studio, _ = studio_layers(project.folder, part, hidden=[(c["at"], c["at"] + c["duration"]) for c in part["cutaways"]])
     spans: list[tuple[float, float]] = []
     if pictures or shifted or studio:
-        render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio)
+        render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio, **PREVIEW_ENCODING)
         cut.unlink(missing_ok=True)
     else:
         cut.replace(output)

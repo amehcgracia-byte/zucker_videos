@@ -125,8 +125,9 @@ def _storyboard(tmp_path, monkeypatch):
     rendered = []
 
     def fake_preview(project, scene_id, **kwargs):
+        from core.show import scene_preview_path
         rendered.append(scene_id)
-        out = project.cache_dir / "show_previews" / f"{scene_id}.mp4"
+        out = scene_preview_path(project, scene_id)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"preview")
         return out
@@ -152,6 +153,12 @@ def test_the_storyboard_renders_effects_only_when_asked_and_keeps_every_decision
     assert rendered == [board["scenes"][0]["id"]]
     board = client.get("/api/v1/show/scenes").get_json()
     assert board["scenes"][0]["preview"]["status"] == "ready" and board["scenes"][0]["preview"]["url"]
+    assert client.post(f"/api/v1/show/scenes/{board['scenes'][0]['id']}/preview", json={"next": [board["scenes"][1]["id"]]}).get_json()["status"] == "ready"
+    for _ in range(50):                                     # made already: only the next scene is prepared
+        if len(rendered) == 2:
+            break
+        time.sleep(0.05)
+    assert rendered == [board["scenes"][0]["id"], board["scenes"][1]["id"]]
     first = board["scenes"][0]["id"]
     decided = client.post(f"/api/v1/show/scenes/{first}/decision", json={"decision": "plain"}).get_json()
     assert decided["decision"] == "plain"
@@ -173,8 +180,9 @@ def test_the_scene_you_ask_for_is_prepared_next_and_only_once(tmp_path, monkeypa
     def slow_preview(project, scene_id, **kwargs):
         if not rendered:
             busy.wait(5)                                   # the first preview keeps the worker busy
+        from core.show import scene_preview_path
         rendered.append(scene_id)
-        out = project.cache_dir / "show_previews" / f"{scene_id}.mp4"
+        out = scene_preview_path(project, scene_id)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"preview")
         return out

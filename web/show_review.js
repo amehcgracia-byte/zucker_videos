@@ -56,9 +56,13 @@
 
   // ---- Storyboard -------------------------------------------------------------
 
-  const wantQuick = new Set();
-  const useSaved = scene => !!review.saved_render && !wantEffects.has(scene.id) && !wantQuick.has(scene.id);
-  const wantEffects = new Set();      // scenes whose preview with effects was asked for
+  // What each scene shows: the preview with effects once it is made (it is prepared on its
+  // own, small and quick), until then the saved render or the quick cut; a choice the
+  // person makes with the buttons stays for that scene.
+  const choice = new Map();
+  const effectsReady = (scene) => scene?.preview?.status === "ready";
+  const mode = (scene) => choice.get(scene.id) || (effectsReady(scene) ? "effects" : review.saved_render ? "saved" : "quick");
+  const useSaved = (scene) => !!review.saved_render && mode(scene) === "saved";
   const scenes = () => review.scenes || [];
   const stepNames = () => ["Identity", "Intro", ...scenes().map((scene) => scene.name), "Review & render"];
   const currentScene = () => (step >= 2 && step < 2 + scenes().length ? scenes()[step - 2] : null);
@@ -180,9 +184,9 @@
       <div class="show-said" id="showSaid"><strong>What you say</strong> <small>Click a word to go there. Select some words and right-click them to add an animation over them.</small>
         <p class="show-said-text">${words.length ? words.map(([text, start, end], index) => `<span data-word="${index}" data-start="${start}" data-end="${end}">${escape(text)}</span>`).join(" ") : escape(scene.text)}</p></div>
       <div class="show-preview-mode">
-        ${review.saved_render ? `<button type="button" class="icon-button small ${useSaved(scene) ? "active" : ""}" data-preview-mode="saved" title="The last completed export, including its captions and effects">Saved render</button>` : ""}
-        <button type="button" class="icon-button small ${!wantEffects.has(scene.id) && !useSaved(scene) ? "active" : ""}" data-preview-mode="quick" title="Your cut, played from the original video at once">Quick: the cut only</button>
-        <button type="button" class="icon-button small ${wantEffects.has(scene.id) ? "active" : ""}" data-preview-mode="effects" title="Rendered with zooms, close-ups and drawings: it takes a while">Preview with effects</button>
+        <button type="button" class="icon-button small ${mode(scene) === "effects" ? "active" : ""}" data-preview-mode="effects" title="Your scene with its zooms, close-ups, drawings and Show Studio effects, made small and quick">Preview with effects</button>
+        <button type="button" class="icon-button small ${mode(scene) === "quick" ? "active" : ""}" data-preview-mode="quick" title="Your cut, played from the original video at once">Quick: the cut only</button>
+        ${review.saved_render ? `<button type="button" class="icon-button small ${mode(scene) === "saved" ? "active" : ""}" data-preview-mode="saved" title="The last completed export, including its captions and effects">Saved render</button>` : ""}
       </div>
       <p class="show-proposal">${escape(scene.proposal)}</p>
       <div class="show-decide">
@@ -263,7 +267,8 @@
     claySaving = setTimeout(async () => {
       try {
         clay = await api("/show/clay/placements", { method: "PUT", body: JSON.stringify({ revision: clay.revision, placements: clay.placements }) });
-        $("#showClayStatus").textContent = "Saved in the project. “Preview with effects” renders it again.";
+        $("#showClayStatus").textContent = "Saved in the project. The preview with effects is being made again.";
+        remakePreview(scene);
         if (name === "mode" || name === "start" || name === "end") clayBlock(scene);
       } catch (error) {
         $("#showClayStatus").textContent = `Not saved: ${error.message}`;
@@ -272,16 +277,52 @@
     }, 350);
   }
 
-  // The picture of a scene: at once its cut from the original video; with effects only when asked.
-  function showScenePicture(scene) {
-    const preview = scene.preview || { status: "none" };
-    if (!wantEffects.has(scene.id)) {
-      if (!playQuick(scene)) showVideo("", "This scene has no picture to play.");
-      return;
+  const EFFECTS_NOTE = "Preview with effects: zooms, close-ups, drawings and Show Studio effects, in low quality to be quick.";
+
+  // The picture of a scene: its preview with effects when made, otherwise at once its cut
+  // (or the saved render) while the preview with effects is prepared for it and the next scene.
+  function showScenePicture(scene, at = 0) {
+    clearTimeout(poll);
+    if (mode(scene) === "effects" && effectsReady(scene)) playEffects(scene, at, false);
+    else if (!playQuick(scene, at)) showVideo("", "This scene has no picture to play.");
+    if (!effectsReady(scene)) {
+      if (!choice.has(scene.id) || choice.get(scene.id) === "effects") note(scene);
+      prepareEffects(scene);
     }
-    if (preview.status === "ready") { showVideo(preview.url, "With its zooms, close-ups and drawings."); return; }
-    showVideo("", preview.status === "failed" ? `The preview failed: ${preview.error}` : "Rendering this scene with its effects… it can take a few minutes. The quick view stays available.");
+  }
+
+  function playEffects(scene, at = 0, play = false) {
+    showVideo(scene.preview.url, EFFECTS_NOTE);
+    const video = $("#showStageVideo");
+    const go = () => { video.currentTime = Math.max(0, at); if (play) video.play().catch(() => {}); };
+    if (video.readyState >= 1) go(); else video.addEventListener("loadedmetadata", go, { once: true });
+  }
+
+  function note(scene) {
+    const preview = scene.preview || {};
+    const extra = preview.status === "failed" ? ` · The preview with effects failed: ${preview.error}`
+      : " · Preparing the preview with effects (about half a minute); it appears here when ready.";
+    const status = $("#showStageStatus");
+    if (!status.textContent.includes(" · ")) status.textContent += extra;
+  }
+
+  async function prepareEffects(scene) {
+    if (!["queued", "rendering", "failed"].includes(scene.preview?.status)) {
+      const index = scenes().indexOf(scene);
+      const next = scenes().slice(index + 1, index + 2).map((item) => item.id);
+      const answer = await api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, { method: "POST", body: JSON.stringify({ next }) }).catch(() => null);
+      if (answer?.status !== "ready") scene.preview = { status: "queued" };
+    }
+    clearTimeout(poll);
     poll = setTimeout(refreshBoard, 3000);
+  }
+
+  // Seconds into the scene of what the quick view is showing.
+  function quickTime() {
+    if (!quick) return 0;
+    const video = $("#showStageVideo");
+    const before = quick.segments.slice(0, quick.index).reduce((sum, [a, b]) => sum + (b - a), 0);
+    return before + Math.max(0, video.currentTime - quick.segments[quick.index][0]);
   }
 
   // ---- Quick view: the scene's cut played from the original, nothing rendered ----------
@@ -330,11 +371,16 @@
     if (!scene) return;
     const fresh = await api(`/show/scenes?current=${encodeURIComponent(scene.id)}`).catch(() => null);
     if (!fresh) return;
+    const playing = quick ? quickTime() : null;
+    const wasPlaying = !$("#showStageVideo").paused;
     review = fresh;
     const updated = currentScene();
-    if (!updated || !wantEffects.has(updated.id)) return;
-    if (updated.preview?.status === "ready") showVideo(updated.preview.url, "With its zooms, close-ups and drawings.");
-    else if (updated.preview?.status === "failed") showVideo("", `The preview failed: ${updated.preview.error}`);
+    if (!updated) return;
+    if (effectsReady(updated)) {
+      // Ready: switch to it where the quick view was, unless the person chose another view.
+      if (mode(updated) === "effects" && playing !== null) playEffects(updated, playing, wasPlaying);
+      $("#showPanel").querySelectorAll("[data-preview-mode]").forEach((button) => button.classList.toggle("active", button.dataset.previewMode === mode(updated)));
+    } else if (updated.preview?.status === "failed") note(updated);
     else poll = setTimeout(refreshBoard, 3000);
     $("#showSteps").querySelectorAll("[data-show-step]").forEach((button) => button.classList.toggle("active", Number(button.dataset.showStep) === step));
   }
@@ -388,7 +434,7 @@
     if (part.kind === "scene") {
       const scene = part.scene;
       label = `${scene.name} · ${DECISION_LABELS[scene.decision]}${scene.decision === "pending" ? " (shown with its proposals; rendered without them until you decide)" : ""}`;
-      url = wantEffects.has(scene.id) && scene.preview?.status === "ready" ? scene.preview.url : "";
+      url = mode(scene) === "effects" && effectsReady(scene) ? scene.preview.url : "";
       if (!url) {                                   // the cut itself, at once, from the original video
         if (!playQuick(scene, 0, playNext)) { watching.timer = setTimeout(playNext, 500); return; }
         $("#showStageStatus").textContent = `${scene.name} · ${DECISION_LABELS[scene.decision]} · its cut, without effects · ${where}`;
@@ -402,8 +448,18 @@
 
   $("#showStageVideo").addEventListener("ended", () => { if (watching) playNext(); });
 
+  // After a change, the scene's preview with effects is made again once the edits settle.
+  let remake = null;
+  function remakePreview(scene) {
+    if (!scene) return;
+    scene.preview = { status: "none" };
+    clearTimeout(remake);
+    remake = setTimeout(() => { if (currentScene()?.id === scene.id) prepareEffects(scene); }, 1500);
+  }
+
   async function markModified() {
     const scene = currentScene();
+    remakePreview(scene);
     if (scene && scene.decision !== "modified") {
       await api(`/show/scenes/${encodeURIComponent(scene.id)}/decision`, { method: "POST", body: JSON.stringify({ decision: "modified" }) }).catch(() => {});
       scene.decision = "modified";
@@ -525,9 +581,9 @@
     const word = event.target instanceof Element ? event.target.closest("#showSaid [data-word]") : null;
     const scene = currentScene();
     if (!word || !scene || !window.getSelection()?.isCollapsed) return;
-    if (wantEffects.has(scene.id)) { wantEffects.delete(scene.id); renderScene(); }
-    playQuick(scene, Number(word.dataset.start) - scene.start);
-    $("#showStageVideo").play().catch(() => {});
+    const at = Number(word.dataset.start) - scene.start;
+    if (mode(scene) === "effects" && effectsReady(scene)) playEffects(scene, at, true);
+    else { playQuick(scene, at); $("#showStageVideo").play().catch(() => {}); }
   });
 
   // Pictures placed on the scene: drag to move, corner to resize, right-click menu.
@@ -545,7 +601,7 @@
       const updated = await api(`/show/scenes/${encodeURIComponent(scene.id)}/overlays`, { method: "POST", body: JSON.stringify({ overlays: scene.overlays }) });
       scene.overlays = updated.overlays;
       scene.decision = updated.decision;
-      scene.preview = { status: "none" };
+      remakePreview(scene);
     } catch (error) { showToast(error.message, true); }
   }
 
@@ -1015,16 +1071,8 @@
       else if (target.hasAttribute("data-watch-all")) watchAll();
       else if (target.dataset.previewMode) {
         const scene = currentScene();
-        if (target.dataset.previewMode === "effects") {
-          wantQuick.delete(scene.id);
-          wantEffects.add(scene.id);
-          if (scene.preview?.status !== "ready") {
-            await api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, { method: "POST" });
-            scene.preview = { status: "queued" };
-          }
-        } else { wantEffects.delete(scene.id); if(target.dataset.previewMode === "quick") wantQuick.add(scene.id); else wantQuick.delete(scene.id); }
+        choice.set(scene.id, target.dataset.previewMode);
         $("#showPanel").querySelectorAll("[data-preview-mode]").forEach((button) => button.classList.toggle("active", button === target));
-        clearTimeout(poll);
         showScenePicture(scene);
       }
       else if (target.hasAttribute("data-first-pending")) {
