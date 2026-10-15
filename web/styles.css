@@ -1996,6 +1996,7 @@ pre {
 .show-studio-list .studio-applied { border-left-color: #16a34a; }
 .show-studio-list .studio-failed, .show-studio-list .studio-unsupported { border-left-color: #c2410c; }
 .show-studio-list .studio-failed .studio-status, .show-studio-list .studio-unsupported .studio-status { color: #c2410c; }
+.show-studio-list .studio-warning { border-left-color: #d97706; }
 .show-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .show-preview { width: 100%; margin-top: 10px; border-radius: 8px; background: #000; }
 .show-editor { margin-top: 10px; display: grid; gap: 8px; }

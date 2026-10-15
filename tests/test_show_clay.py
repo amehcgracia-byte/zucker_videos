@@ -92,8 +92,9 @@ def test_an_imported_story_is_drawn_on_the_voice_clock_through_the_edit(tmp_path
     assert pip.section_time(6.0) is None and pip.section_time(6.6) == pytest.approx(6.6)
     frame = np.zeros((180, 320, 3), np.uint8)
     drawings.draw(frame, 7.5)                                                    # story 7.5: the small window, pose 5 (close)
-    x, y = int(0.79 * 320), int(0.27 * 180)
-    assert np.abs(frame[y, x].astype(int) - COLOURS[5]).max() <= 3 and frame[150, 40].max() == 0
+    pip = show_clay.DEFAULTS["pip"]
+    x, y = int(pip["x"] * 320), int(pip["y"] * 180)
+    assert np.abs(frame[y, x].astype(int) - COLOURS[5]).max() <= 3 and frame[150, 280].max() == 0
     bubble = np.zeros((720, 1280, 3), np.uint8)
     next(layer for layer in drawings.layers if layer.effect_id == "clay-2").drawer(bubble, 3.5, (0, 0, 1.0), 1.5)
     spot = show_clay.DEFAULTS["bubble"]
@@ -159,3 +160,13 @@ def test_placements_are_read_and_edited_through_the_app(tmp_path, monkeypatch):
     assert stale.status_code == 409
     bad = client.put("/api/v1/show/clay/placements", json={"revision": 2, "placements": [{**edited[0], "mode": "spin"}]})
     assert bad.status_code == 400 and show_clay.ClayStore(project.folder).load()["revision"] == 2
+
+
+def test_a_small_window_or_bubble_moves_off_the_host_s_face():
+    spot = {"mode": "pip", "x": 0.5, "y": 0.4, "size": 0.3}
+    moved = show_clay.clear_of_face(spot, (0.55, 0.4), 1.0, 1280, 720, 384, 216, 7)
+    assert moved["x"] < 0.5 and abs(moved["x"] * 1280 + 192 + 7 - (0.55 * 1280 - 0.085 * 1280)) < 1   # just left of the face
+    assert show_clay.clear_of_face(spot, (0.9, 0.85), 1.0, 1280, 720, 384, 216, 7) is spot             # clear already
+    assert show_clay.clear_of_face({**spot, "avoidFace": False}, (0.55, 0.4), 1.0, 1280, 720, 384, 216, 7)["x"] == 0.5
+    close = show_clay.clear_of_face(spot, (0.5, 0.45), 1.65, 1280, 720, 384, 216, 7)
+    assert close["x"] != 0.5 or close["y"] < 0.4                                # a closer framing needs a bigger berth

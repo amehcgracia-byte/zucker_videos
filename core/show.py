@@ -190,7 +190,7 @@ def _destination(project) -> Path:
 
 def _publish(project, plan: dict[str, Any], destination: Path, *, style_name: str, language: str, started: float,
              spans: list[tuple[float, float]] | None = None, summary: dict[str, Any] | None = None, warnings: list[str] | None = None,
-             studio: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+             studio: list[dict[str, Any]] | None = None, effects: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Captions on the final timeline, the cue track and the export manifest
     (with the result of every Show Studio effect)."""
     from core.show_inserts import shift
@@ -216,6 +216,8 @@ def _publish(project, plan: dict[str, Any], destination: Path, *, style_name: st
     }
     if studio:
         manifest["studio_effects"] = studio
+    if effects:
+        manifest["show_effects"] = effects                                       # every storyboard proposal, by id
     (project.artifacts_dir / "export_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
 
@@ -334,11 +336,15 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
     face = "right" if sum(shot.get("focus", [0.5])[0] for shot in plan["shots"]) / max(1, len(plan["shots"])) >= 0.5 else "left"
     notes: list[str] = []
     pictures: list[dict[str, Any]] = []
+    outcomes: dict[str, tuple[str, str]] = {}
     if director:
         from core.show_framing import face_on_screen
         pictures, notes = gag_module.make_items(director, project.folder / "gags", face=face, cancel=cancel,
-                                                face_at=lambda at: face_on_screen(plan, at),
+                                                face_at=lambda at: face_on_screen(plan, at), outcomes=outcomes,
                                                 progress=lambda share, text: progress(50 + int(share * 30), text))
+    show_effects = show_proposals.results(items, outcomes)
+    notes += [f"Storyboard · {line['kind']} “{line['name']}” at {line['at']:.1f} s ({line['id']}): {line['detail']}"
+              for line in show_effects if line["status"] == "failed"]
     from core.show_bridge import studio_layers, studio_warnings
     studio, studio_report = studio_layers(project.folder, plan, hidden=[(c["at"], c["at"] + c["duration"]) for c in cutaways])
     notes += studio_warnings(studio_report)
@@ -370,7 +376,7 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
                         started=started, spans=spans, warnings=notes,
                         summary={"approved": len(show_proposals.approved(items)), "close_ups": len(cutaways),
                                  "characters": sum(1 for item in layer if item.get("insert")), "pictures": len(pictures)},
-                        studio=studio_report)
+                        studio=studio_report, effects=show_effects)
     progress(100, "Show ready")
     return destination, manifest
 

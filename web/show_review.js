@@ -230,6 +230,7 @@
           ${field("Size", `<input type="range" data-clay-field="size" value="${item.size}" min="0.1" max="1" step="0.01">`)}
           ${field("Opacity", `<input type="range" data-clay-field="opacity" value="${item.opacity}" min="0" max="1" step="0.05">`)}
         </div>
+        ${["pip", "bubble"].includes(item.mode) ? `<label class="show-field"><input type="checkbox" data-clay-field="avoidFace" ${item.avoidFace !== false ? "checked" : ""}> Move aside when it would cover your face</label>` : ""}
       </fieldset>`).join("") || "<p class=\"show-hint\">No clay placement reaches this scene.</p>"}
       <p class="show-hint">${story ? story.shots.map((shot) => `${escape(shot.title || "")}: ${shot.cues.map(([time, , cue]) => `${time.toFixed(2)} s ${escape(cue)}`).join(", ")}`).join(" · ") : ""}</p>
       <p class="show-hint" id="showClayStatus" role="status">The poses change on these word cues and hold still in between. Ask for “Preview with effects” to see it.</p>`;
@@ -240,7 +241,7 @@
     const index = Number(input.closest("[data-clay]").dataset.clay);
     const item = clay.placements[index];
     const name = input.dataset.clayField;
-    item[name] = name === "enabled" ? input.checked : name === "mode" ? input.value : Number(input.value);
+    item[name] = name === "enabled" || name === "avoidFace" ? input.checked : name === "mode" ? input.value : Number(input.value);
     clearTimeout(claySaving);
     $("#showClayStatus").textContent = "Saving…";
     claySaving = setTimeout(async () => {
@@ -669,7 +670,7 @@
     const order = ["failed", "unsupported", "applied", "disabled", "superseded"];
     rows.sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
     box.innerHTML = `<h3>Show Studio edits</h3>
-      <ul class="show-studio-list">${rows.map((item) => `<li class="studio-${item.status}">
+      <ul class="show-studio-list">${rows.map((item) => `<li class="studio-${item.status}${item.warning ? " studio-warning" : ""}">
         <strong>${escape(item.name)}</strong> <span class="show-hint">${escape(item.section)}</span>
         <span class="studio-status">${escape(STUDIO_STATUS[item.status] || item.status)}</span>
         <span class="show-hint">${escape(item.detail)}</span></li>`).join("")}</ul>`;

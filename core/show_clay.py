@@ -34,10 +34,11 @@ from typing import Any
 import numpy as np
 
 STORE = "clay.json"
+STUDIO_W = 1280
 MODES = ("full", "pip", "bubble", "blend")
 DEFAULTS = {
     "full": {"x": 0.5, "y": 0.5, "size": 1.0, "opacity": 1.0},
-    "pip": {"x": 0.79, "y": 0.27, "size": 0.34, "opacity": 1.0},
+    "pip": {"x": 0.21, "y": 0.27, "size": 0.34, "opacity": 1.0},
     "bubble": {"x": 0.21, "y": 0.24, "size": 0.32, "opacity": 1.0},
     "blend": {"x": 0.5, "y": 0.5, "size": 1.0, "opacity": 0.5},
 }
@@ -179,6 +180,7 @@ def check_placement(raw: dict[str, Any], story: dict[str, Any]) -> dict[str, Any
     out["opacity"] = min(1.0, max(0.0, out["opacity"]))
     out["fade"] = min(2.0, max(0.0, out["fade"]))
     out["enabled"] = bool(out.get("enabled", True))
+    out["avoidFace"] = bool(out.get("avoidFace", True))
     out["id"] = str(out.get("id") or f"clay-{int(time.time() * 1000)}")
     out["story"] = story["id"]
     return out
@@ -358,9 +360,40 @@ def _bubble(frame: np.ndarray, picture: np.ndarray, placement: dict[str, Any], h
         draw.stroke(frame, _wobbly(px, py, r, r, 11 + step, 36), (0.0, 0.0, 1.0), brush="crayon", color=INK, width=3.5 * unit, opacity=alpha)
 
 
+def clear_of_face(placement: dict[str, Any], head: tuple[float, float] | None, zoom: float, width: int, height: int,
+                  bw: float, bh: float, pad: float) -> dict[str, Any]:
+    """The placement moved sideways (or up) just enough not to cover the host's face,
+    when it would; it stays where it was put otherwise."""
+    if head is None or placement.get("avoidFace") is False:
+        return placement
+    half = 0.085 * width * zoom                                                 # the face (and cap) on this framing
+    fx, fy = head[0] * width, head[1] * height
+    face = (fx - half, fy - 1.5 * half, fx + half, fy + 1.4 * half)
+    cx, cy = placement["x"] * width, placement["y"] * height
+    box = (cx - bw / 2 - pad, cy - bh / 2 - pad, cx + bw / 2 + pad, cy + bh / 2 + pad)
+    if box[2] <= face[0] or box[0] >= face[2] or box[3] <= face[1] or box[1] >= face[3]:
+        return placement
+    margin = 0.01 * width
+    options = []
+    left = face[0] - (bw / 2 + pad)                                             # its right edge at the face's left
+    if left - bw / 2 - pad >= margin:
+        options.append((abs(cx - left), left, cy))
+    right = face[2] + (bw / 2 + pad)
+    if right + bw / 2 + pad <= width - margin:
+        options.append((abs(right - cx), right, cy))
+    up = face[1] - (bh / 2 + pad)
+    if up - bh / 2 - pad >= 0:
+        options.append((abs(cy - up), cx, up))
+    if not options:
+        return placement
+    _, x, y = min(options)
+    return {**placement, "x": x / width, "y": y / height}
+
+
 def draw_placement(frame: np.ndarray, story: ClayStory, placement: dict[str, Any], t: float,
-                   head: tuple[float, float] | None = None) -> None:
-    """One placement at story time ``t`` on an RGB output frame."""
+                   head: tuple[float, float] | None = None, zoom: float = 1.0) -> None:
+    """One placement at story time ``t`` on an RGB output frame; ``head`` is where the
+    host's face is on it (shares) and ``zoom`` how close the framing is."""
     from core import show_bridge_draw as draw
     height, width = frame.shape[:2]
     alpha = float(placement.get("opacity", 1.0)) * _fade(placement, t)
@@ -374,8 +407,9 @@ def draw_placement(frame: np.ndarray, story: ClayStory, placement: dict[str, Any
     bh = max(9, int(round(bw * 9 / 16)))
     picture = story.picture(t, bw, bh)
     if mode == "bubble":
-        _bubble(frame, picture, placement, head, alpha)
+        _bubble(frame, picture, clear_of_face(placement, head, zoom, width, height, bw * 1.12, bh * 1.2, 0.2 * bh), head, alpha)
         return
+    placement = clear_of_face(placement, head, zoom, width, height, bw, bh, 7 * width / 1280)
     # pip: the clay picture on a paper mount, outlined in crayon.
     unit = width / 1280
     border = max(2, int(round(7 * unit)))
@@ -434,8 +468,8 @@ def clay_layers(project_folder: str | Path, plan: dict[str, Any], *, hidden: lis
             continue
 
         def drawer(frame, at, view, t=None, story=story, placement=placement):
-            head = face_on_screen(plan, t) if placement["mode"] == "bubble" and t is not None else None
-            draw_placement(frame, story, placement, at, head)
+            head = face_on_screen(plan, t) if placement["mode"] in ("bubble", "pip") and t is not None else None
+            draw_placement(frame, story, placement, at, head, view[2] * STUDIO_W / frame.shape[1])
         layers.append(Layer(placement["id"], "clay", [(x, y, sa - story.source_start) for x, y, sa, _ in pieces], placement,
                             drawer, list(hidden or []), [], "clay"))
         kept = sum(y - x for x, y, _, _ in pieces)

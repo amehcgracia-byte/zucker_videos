@@ -205,3 +205,17 @@ def test_the_painter_uses_the_written_prompt_or_the_style_s_own(monkeypatch):
     gag_paint.paint("a guitar", "crayon")
     gag_paint.paint("a guitar", "crayon", prompt="my own words")
     assert sent == [gag_paint.prompt_for("a guitar", "crayon"), "my own words"]
+
+
+def test_each_storyboard_gag_says_whether_it_was_pictured(tmp_path, monkeypatch):
+    from core import gag_paint, gags
+    monkeypatch.setattr(gag_paint, "can_paint", lambda: False)
+    outcomes = {}
+    items, notes = gags.make_items([
+        {"kind": "drawing", "subject": "guitar", "at": 1.0, "duration": 2.0, "proposal": "p-draw"},
+        {"kind": "word", "text": "WOW", "at": 4.0, "duration": 1.0, "proposal": "p-word"},
+        {"kind": "photo", "query": "zebra crossing", "at": 6.0, "duration": 1.0, "proposal": "p-photo"},
+        {"kind": "warp", "warp": "swirl", "at": 8.0, "duration": 1.0, "proposal": "p-warp"}], tmp_path, library=[], outcomes=outcomes)
+    assert outcomes["p-draw"] == ("failed", "The drawing painter is not installed")
+    assert outcomes["p-word"][0] == "applied" and outcomes["p-warp"][0] == "applied"
+    assert outcomes["p-photo"][0] == "failed" and "zebra crossing" in outcomes["p-photo"][1]

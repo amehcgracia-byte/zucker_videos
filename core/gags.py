@@ -140,8 +140,16 @@ def math_items(gag: dict[str, Any], folder: Path, index: int, centre: tuple[floa
 def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right", library: list[dict[str, Any]] | None = None,
                progress: Progress | None = None, cancel: Callable[[], None] | None = None,
                frame_size: tuple[int, int] = (1920, 1080),
-               face_at: Callable[[float], tuple[float, float] | None] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
-    """Render items for core.gag_render, and notes about gags that were skipped."""
+               face_at: Callable[[float], tuple[float, float] | None] | None = None,
+               outcomes: dict[str, tuple[str, str]] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+    """Render items for core.gag_render, and notes about gags that were skipped.
+    ``outcomes`` receives, for each gag from a storyboard proposal, whether it was
+    pictured ("applied") or why not ("failed")."""
+    outcomes = {} if outcomes is None else outcomes
+
+    def result(gag: dict[str, Any], status: str, detail: str) -> None:
+        if gag.get("proposal"):
+            outcomes[gag["proposal"]] = (status, detail)
     from core.gag_library import search
     folder.mkdir(parents=True, exist_ok=True)
     painter = gag_paint.can_paint()
@@ -157,16 +165,19 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
         kind = gag["kind"]
         if kind == "warp":
             items.append({"warp": gag["warp"], "at": gag["at"], "duration": gag["duration"], "strength": 0.8})
+            result(gag, "applied", f"{gag['warp']} warp of the whole picture")
             continue
         if kind == "math":
             where = face_at(gag["at"] + gag["duration"] / 2) if face_at else None
             items.extend(math_items(gag, folder, index, where or (0.62 if face == "right" else 0.38, 0.32)))
+            result(gag, "applied", "formulas around your head")
             continue
         position = gag.get("position") or ("left" if face == "right" else "right")
         side = "left" if centre(position, face)[0] < 0.5 else "right"
         image: Image.Image | None = None
         if kind in ("drawing", "character"):
             if not painter:
+                result(gag, "failed", "The drawing painter is not installed")
                 continue
             painted += 1
             style = gag.get("style") if gag.get("style") in gag_paint.STYLES else "pencil"
@@ -176,6 +187,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
                 picture = painted_picture(gag["subject"], style, seed=3 + index % 2, prompt=gag.get("prompt") or None)
             except gag_paint.UnusableDrawing:
                 unusable.append(gag["subject"])
+                result(gag, "failed", "The painter could not draw it on a clean background")
                 continue
             image = character_with_bubble(picture, gag["says"], side=side, seed=index) if kind == "character" and gag.get("says") else picture
         elif kind == "word":
@@ -186,7 +198,9 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
             if found:
                 image = photo_sticker(Path(found["path"]))
         if image is None:
+            result(gag, "failed", f"No picture in your library matches “{gag.get('query', '')}”" if kind == "photo" else "Nothing to show")
             continue
+        result(gag, "applied", f"{kind}: {gag.get('subject') or gag.get('text') or gag.get('query') or ''}".rstrip(": "))
         path = folder / f"gag-{index:03d}.png"
         image.save(path)
         size = float(gag.get("size") or 0.25)

@@ -4541,7 +4541,15 @@ function resultSummary(result) {
   if (result?.platform === "show" && result.show) {
     const show = result.show;
     const removed = show.removed_words || {};
-    return `${formatDuration(show.source_duration_sec || 0)} of talk → ${formatDuration(show.edited_duration_sec || 0)} · ${show.cuts || 0} cuts · ${removed.filler || 0} "eh/um" and ${removed.retake || 0} repeated words removed · ${show.captions || 0} captions ready to style`;
+    const parts = [`${formatDuration(show.source_duration_sec || 0)} of talk → ${formatDuration(show.edited_duration_sec || 0)} · ${show.cuts || 0} cuts · ${removed.filler || 0} "eh/um" and ${removed.retake || 0} repeated words removed · ${show.captions || 0} captions ready to style`];
+    const studio = (result.studio_effects || []).filter((item) => item.type !== "caption");
+    if (studio.length) {
+      const count = (status) => studio.filter((item) => item.status === status).length;
+      parts.push(`Show Studio: ${count("applied")} drawn, ${count("disabled")} off, ${count("superseded")} kept from the automatic edit, ${count("failed") + count("unsupported")} not drawn`);
+    }
+    const warnings = result.warnings || [];
+    if (warnings.length) parts.push(`Not drawn or partly drawn (${warnings.length}): ${warnings.join(" · ")}`);
+    return parts.join(" · ");
   }
   const cutCount = Number(result?.cut_count || 0);
   const cameraUsage = result?.camera_usage || {};
