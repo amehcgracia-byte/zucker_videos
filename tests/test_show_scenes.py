@@ -258,3 +258,22 @@ def test_a_talking_character_can_enter_three_ways(tmp_path, entrance, zoom, zoom
     assert (talk["entrance"], talk["zoom"], talk["zoom_sec"], talk["overlays"][0]["effect"]) == (entrance, zoom, zoom_sec, effect)
     if entrance == "zoom":                                                       # the camera pushes in on the character
         assert talk["focus"] == [pytest.approx(0.65), pytest.approx(talk["overlays"][0]["y"])]
+
+
+def test_the_last_step_lists_what_the_render_does_with_each_show_studio_effect(tmp_path, monkeypatch):
+    import json
+
+    from core.show_studio_store import StudioStore
+    project, client, _, _ = _storyboard(tmp_path, monkeypatch)
+    plan = json.loads((project.artifacts_dir / "show_plan.json").read_text())
+    plan.update(fps=30, shots=[{"start_frame": 466 * 30, "end_frame": 476 * 30, "zoom": 1.0}])
+    (project.artifacts_dir / "show_plan.json").write_text(json.dumps(plan))
+    StudioStore(project.folder).save_composition({"version": 2, "mode": "mixed", "duration": 44.0, "events": [
+        {"id": "base", "type": "video", "start": 0, "end": 44, "source": "original", "trackId": "base"},
+        {"id": "zoom1", "type": "zoom", "start": 1, "end": 2, "parent": "base"},
+        {"id": "spiral1", "type": "spiral", "start": 2, "end": 4, "x": 0.5, "y": 0.5, "parent": "base"},
+        {"id": "gone", "type": "spiral", "start": 30, "end": 31, "x": 0.5, "y": 0.5, "parent": "base"}]}, revision=0)
+    data = client.get("/api/v1/show/studio-effects").get_json()
+    status = {item["id"]: item["status"] for item in data["effects"]}
+    assert status == {"zoom1": "superseded", "spiral1": "applied", "gone": "failed"}      # source 496 s was cut
+    assert data["counts"] == {"superseded": 1, "applied": 1, "failed": 1}

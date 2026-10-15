@@ -1,0 +1,38 @@
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Render parity</title>
+<!-- Show Studio preview vs real render: see tools/qa/show_render_parity.py. Red: only the preview drew; green: only the render; yellow: both. -->
+<style>body{font:13px system-ui;background:#111;color:#ddd;margin:12px}canvas{width:426px;margin:2px}h3{margin:10px 0 2px}</style>
+<div id="out"></div>
+<script>
+let ctx=null,tracks=[],handData=null,currentView=null;
+const recipe={events:[{id:'base',type:'video',start:0,end:1e9,sourceIn:0,trackId:'base'}]};
+function active(e,t){return t>=e.start&&t<e.end}
+function transform(){return {x:currentView[0],y:currentView[1],scale:currentView[2]}}
+</script>
+<script src="show_paint_tools.js"></script>
+<script src="preview_functions.js"></script>
+<script>
+const load=src=>new Promise((ok,bad)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=bad;i.src=src});
+async function run(){
+  [handData,tracks]=await Promise.all(['automatic-hands.json','finger-track.json'].map(f=>fetch(f).then(r=>r.json())));
+  const cases=await fetch('cases.json?'+Date.now()).then(r=>r.json()),results=[];
+  for(const c of cases){
+    const [bg,py]=await Promise.all([load(c.tag+'-bg.png'),load(c.tag+'-py.png')]);
+    const W=bg.width,H=bg.height,mk=()=>{const k=document.createElement('canvas');k.width=W;k.height=H;return k};
+    const js=mk();ctx=js.getContext('2d');ctx.drawImage(bg,0,0);currentView=c.view;
+    for(const {event:e,t} of c.layers){ctx.save();ctx.scale(c.view[2],c.view[2]);ctx.translate(-c.view[0],-c.view[1]);
+      if(e.type==='finger')finger(e,t);if(e.type==='spiral')spiral(e,t);if(e.type==='coffee')coffee(e,t);ctx.restore()}
+    const pc=mk(),p=pc.getContext('2d');p.drawImage(py,0,0);const bc=mk(),b=bc.getContext('2d');b.drawImage(bg,0,0);
+    const A=ctx.getImageData(0,0,W,H).data,B=p.getImageData(0,0,W,H).data,G=b.getImageData(0,0,W,H).data;
+    const dc=mk(),d=dc.getContext('2d'),D=d.createImageData(W,H);
+    let jsInk=0,pyInk=0,both=0,sum=0,inkSum=0,inkN=0;
+    for(let i=0;i<A.length;i+=4){const dj=Math.abs(A[i]-G[i])+Math.abs(A[i+1]-G[i+1])+Math.abs(A[i+2]-G[i+2]),dp=Math.abs(B[i]-G[i])+Math.abs(B[i+1]-G[i+1])+Math.abs(B[i+2]-G[i+2]),diff=Math.abs(A[i]-B[i])+Math.abs(A[i+1]-B[i+1])+Math.abs(A[i+2]-B[i+2]);
+      const a=dj>24,q=dp>24;jsInk+=a;pyInk+=q;both+=a&&q;sum+=diff;if(a||q){inkSum+=diff;inkN++}
+      D.data[i]=Math.min(255,dj*2);D.data[i+1]=Math.min(255,dp*2);D.data[i+2]=0;D.data[i+3]=255}
+    d.putImageData(D,0,0);
+    const r={tag:c.tag,layers:c.layers.map(l=>l.event.id+'@'+l.t.toFixed(2)),jsInk,pyInk,iou:+(both/Math.max(1,jsInk+pyInk-both)).toFixed(3),meanDiffOnInk:+(inkSum/Math.max(1,inkN)/3).toFixed(1),meanDiffAll:+(sum/(A.length/4)/3).toFixed(2)};
+    results.push(r);const h=document.createElement('h3');h.textContent=JSON.stringify(r);out.append(h,js,pc,dc);
+  }
+  window.parityResults=results;
+}
+run().catch(e=>{document.body.append('Error: '+e.message);window.parityResults={error:e.message}});
+</script>

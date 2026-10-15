@@ -2072,6 +2072,24 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                         "plan": {"edited_duration": plan["edited_duration"]},
                         "source_url": f"/api/v1/show/source?path={quote(str(plan.get('source') or ''))}"})
 
+    @app.get("/api/v1/show/studio-effects")
+    def api_show_studio_effects() -> Response:
+        """What the render will do with each Show Studio effect: drawn, off, kept from
+        the automatic edit, failed or not drawn yet, before anything is rendered."""
+        from core import show_proposals
+        from core.show_bridge import studio_layers
+        project = _require_project(state)
+        proposals_path, plan_path = _show_review_files(project)
+        if not plan_path.is_file():
+            return error_response("not_ready", "No Show edit has been prepared for this project", 404)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        cutaways = show_proposals.render_inputs(show_proposals.load(proposals_path)["proposals"])[0] if proposals_path.is_file() else []
+        _, report = studio_layers(project.folder, plan, hidden=[(c["at"], c["at"] + c["duration"]) for c in cutaways])
+        counts: dict[str, int] = {}
+        for item in report:
+            counts[item["status"]] = counts.get(item["status"], 0) + 1
+        return jsonify({"effects": report, "counts": counts})
+
     @app.post("/api/v1/show/scenes/<scene_id>/decision")
     def api_show_scene_decision(scene_id: str) -> Response:
         from core import show_proposals, show_scenes

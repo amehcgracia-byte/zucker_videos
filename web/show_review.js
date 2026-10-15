@@ -581,8 +581,39 @@
       <div class="show-actions"><button type="button" class="icon-button" data-watch-all>▶ Watch the whole show</button>
         ${pending ? `<button type="button" class="icon-button" data-first-pending>Go to the first scene to decide</button>` : ""}</div>
       <p class="show-hint">The whole show plays the title card, the intro and each scene's preview one after another.</p>
+      <div id="showStudioEffects" class="show-studio-effects" aria-live="polite"></div>
       <button type="button" id="showRenderNow" class="primary icon-button">Render the show</button>`;
     showVideo("", "The final render joins the title card, the intro and every scene with what you accepted.");
+    studioEffects();
+  }
+
+  const STUDIO_STATUS = {
+    applied: "Drawn in the render", disabled: "Off or hidden in Show Studio", superseded: "The automatic edit's version is kept",
+    failed: "Could not be drawn", unsupported: "Not drawn by the render yet",
+  };
+
+  // What the render does with each Show Studio effect, so nothing is replaced or dropped silently.
+  async function studioEffects() {
+    const box = $("#showStudioEffects");
+    if (!box) return;
+    const data = await api("/show/studio-effects").catch(() => null);
+    if (!data || !data.effects.length) { box.innerHTML = ""; return; }
+    const rows = [];
+    const captions = new Map();
+    for (const item of data.effects) {
+      if (item.type === "caption") {
+        const key = `${item.section}|${item.status}|${item.detail}`;
+        captions.set(key, { ...item, count: (captions.get(key)?.count || 0) + 1 });
+      } else rows.push(item);
+    }
+    for (const item of captions.values()) rows.push({ ...item, name: `Captions · ${item.count}` });
+    const order = ["failed", "unsupported", "applied", "disabled", "superseded"];
+    rows.sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
+    box.innerHTML = `<h3>Show Studio edits</h3>
+      <ul class="show-studio-list">${rows.map((item) => `<li class="studio-${item.status}">
+        <strong>${escape(item.name)}</strong> <span class="show-hint">${escape(item.section)}</span>
+        <span class="studio-status">${escape(STUDIO_STATUS[item.status] || item.status)}</span>
+        <span class="show-hint">${escape(item.detail)}</span></li>`).join("")}</ul>`;
   }
 
   // ---- Effects (inside "Modify") ------------------------------------------------

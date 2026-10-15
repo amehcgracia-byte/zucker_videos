@@ -189,8 +189,10 @@ def _destination(project) -> Path:
 
 
 def _publish(project, plan: dict[str, Any], destination: Path, *, style_name: str, language: str, started: float,
-             spans: list[tuple[float, float]] | None = None, summary: dict[str, Any] | None = None, warnings: list[str] | None = None) -> dict[str, Any]:
-    """Captions on the final timeline, the cue track and the export manifest."""
+             spans: list[tuple[float, float]] | None = None, summary: dict[str, Any] | None = None, warnings: list[str] | None = None,
+             studio: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Captions on the final timeline, the cue track and the export manifest
+    (with the result of every Show Studio effect)."""
     from core.show_inserts import shift
     spans = spans or []
     cues = edited_captions(plan, style_name)
@@ -212,6 +214,8 @@ def _publish(project, plan: dict[str, Any], destination: Path, *, style_name: st
                  "elapsed_sec": round(time.monotonic() - started, 1), **(summary or {})},
         "warnings": list(warnings or []),
     }
+    if studio:
+        manifest["studio_effects"] = studio
     (project.artifacts_dir / "export_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
 
@@ -335,11 +339,14 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
         pictures, notes = gag_module.make_items(director, project.folder / "gags", face=face, cancel=cancel,
                                                 face_at=lambda at: face_on_screen(plan, at),
                                                 progress=lambda share, text: progress(50 + int(share * 30), text))
+    from core.show_bridge import studio_layers, studio_warnings
+    studio, studio_report = studio_layers(project.folder, plan, hidden=[(c["at"], c["at"] + c["duration"]) for c in cutaways])
+    notes += studio_warnings(studio_report)
     spans: list[tuple[float, float]] = []
     body = project.cache_dir / "show-body.mp4"
-    if pictures or layer:
+    if pictures or layer or studio:
         progress(80, "Drawing the effects on the video")
-        render_gags(cut, pictures + layer, body, ffmpeg=ffmpeg, cancel=cancel, timeline=spans,
+        render_gags(cut, pictures + layer, body, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio,
                     progress=lambda share: progress(80 + int(share * 15), "Drawing the effects on the video"))
         cut.unlink(missing_ok=True)
     else:
@@ -362,7 +369,8 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
     manifest = _publish(project, plan, destination, style_name=str(plan.get("style") or "choe"), language=str(plan.get("language") or ""),
                         started=started, spans=spans, warnings=notes,
                         summary={"approved": len(show_proposals.approved(items)), "close_ups": len(cutaways),
-                                 "characters": sum(1 for item in layer if item.get("insert")), "pictures": len(pictures)})
+                                 "characters": sum(1 for item in layer if item.get("insert")), "pictures": len(pictures)},
+                        studio=studio_report)
     progress(100, "Show ready")
     return destination, manifest
 
@@ -427,7 +435,9 @@ def preview_proposal(project, proposal_id: str, *, width: int = 960, height: int
     end = min(float(plan["edited_duration"]), item["at"] + max(1.0, item["duration"]) + 1.5)
     plan["cutaways"] = cutaways
     part = window_plan(plan, start, end)
-    signature = hashlib.sha1(json.dumps([trial, start, end, width], sort_keys=True, default=str).encode()).hexdigest()[:12]
+    from core.show_bridge import studio_fingerprint
+    signature = hashlib.sha1(json.dumps([trial, start, end, width, studio_fingerprint(project.folder)], sort_keys=True,
+                                        default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     folder.mkdir(parents=True, exist_ok=True)
     output = folder / f"{proposal_id}-{signature}.mp4"
@@ -446,9 +456,11 @@ def preview_proposal(project, proposal_id: str, *, width: int = 960, height: int
         from core.show_framing import face_on_screen
         pictures, _ = gag_module.make_items(moved, folder / f"{proposal_id}-gags", face=face, cancel=cancel, frame_size=(width, height),
                                             face_at=lambda at: face_on_screen(plan, at + start))
+    from core.show_bridge import studio_layers
+    studio, _ = studio_layers(project.folder, part, hidden=[(c["at"], c["at"] + c["duration"]) for c in part["cutaways"]])
     spans: list[tuple[float, float]] = []
-    if pictures or shifted:
-        render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans)
+    if pictures or shifted or studio:
+        render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio)
         cut.unlink(missing_ok=True)
     else:
         cut.replace(output)
@@ -475,7 +487,9 @@ def preview_scene(project, scene_id: str, *, width: int = 960, height: int = 540
         if item["id"] in scene["effects"] and item["status"] != "discarded" and not item.get("needs")]
     overlays = show_scenes.overlay_items({"scenes": [{**scene, "decision": "accepted"}]}) if scene["decision"] != "plain" else []
     start, end = float(scene["start"]), float(scene["end"])
-    signature = hashlib.sha1(json.dumps([live, overlays, start, end, width], sort_keys=True, default=str).encode()).hexdigest()[:12]
+    from core.show_bridge import studio_fingerprint
+    signature = hashlib.sha1(json.dumps([live, overlays, start, end, width, studio_fingerprint(project.folder)], sort_keys=True,
+                                        default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     folder.mkdir(parents=True, exist_ok=True)
     output = folder / f"{scene_id}-{signature}.mp4"
@@ -496,9 +510,11 @@ def preview_scene(project, scene_id: str, *, width: int = 960, height: int = 540
         face = "right" if sum(shot.get("focus", [0.5])[0] for shot in plan["shots"]) / max(1, len(plan["shots"])) >= 0.5 else "left"
         pictures, _ = gag_module.make_items(moved, folder / f"{scene_id}-gags", face=face, cancel=cancel, frame_size=(width, height),
                                             face_at=lambda at: face_on_screen(plan, at + start))
+    from core.show_bridge import studio_layers
+    studio, _ = studio_layers(project.folder, part, hidden=[(c["at"], c["at"] + c["duration"]) for c in part["cutaways"]])
     spans: list[tuple[float, float]] = []
-    if pictures or shifted:
-        render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans)
+    if pictures or shifted or studio:
+        render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio)
         cut.unlink(missing_ok=True)
     else:
         cut.replace(output)

@@ -1984,6 +1984,13 @@ pre {
 .show-card-body img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; background: #000; }
 .show-reason { margin: 0 0 6px; }
 .show-needs { margin: 0 0 6px; color: #c2410c; font-size: 0.9em; }
+.show-studio-effects h3 { margin: 14px 0 6px; }
+.show-studio-list { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 6px; }
+.show-studio-list li { display: grid; gap: 2px; padding: 6px 8px; border-left: 3px solid var(--line, #d4d4d8); border-radius: 4px; }
+.show-studio-list .studio-status { font-size: 0.9em; }
+.show-studio-list .studio-applied { border-left-color: #16a34a; }
+.show-studio-list .studio-failed, .show-studio-list .studio-unsupported { border-left-color: #c2410c; }
+.show-studio-list .studio-failed .studio-status, .show-studio-list .studio-unsupported .studio-status { color: #c2410c; }
 .show-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .show-preview { width: 100%; margin-top: 10px; border-radius: 8px; background: #000; }
 .show-editor { margin-top: 10px; display: grid; gap: 8px; }
