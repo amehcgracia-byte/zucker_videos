@@ -198,9 +198,11 @@ REACTION_SEC = 1.2
 def face_intervals(resources: list[dict[str, Any]]) -> list[tuple[int, int]]:
     """(resource, interval) of steady shots with a face in them: someone listening."""
     import cv2
-    folder = Path(cv2.data.haarcascades)
-    detectors = [cv2.CascadeClassifier(str(folder / "haarcascade_frontalface_default.xml")),
-                 cv2.CascadeClassifier(str(folder / "haarcascade_frontalface_alt2.xml"))]
+
+    from core.show_framing import face_detectors
+    detectors = [detector for detector, _ in face_detectors()]
+    if not detectors:
+        return []
     clahe = cv2.createCLAHE(2.0, (8, 8))
     found = []
     for r, resource in enumerate(resources):

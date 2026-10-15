@@ -155,6 +155,8 @@ def _analyze_video(path: str, role: str, record: dict[str, Any], progress_callba
     try:
         cascade_path = str(Path(cv2.data.haarcascades) / "haarcascade_frontalface_alt2.xml")
         face_cascade = cv2.CascadeClassifier(cascade_path)
+        if face_cascade.empty():          # OpenCV's data missing: no faces rather than a failed render
+            face_cascade = None
     except Exception:
         face_cascade = None
     try:

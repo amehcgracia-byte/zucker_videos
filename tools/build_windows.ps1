@@ -50,7 +50,7 @@ $common = @(
   "--add-data", "$BuildInfo;.",
   "--add-data", "$Root\README_APP.md;.",
   "--collect-submodules", "demucs", "--collect-data", "demucs", "--hidden-import", "torchaudio",
-  "--collect-data", "faster_whisper", "--collect-data", "whisper",
+  "--collect-data", "faster_whisper", "--collect-data", "whisper", "--collect-data", "cv2",
   "--collect-data", "onnxruntime", "--collect-data", "tokenizers",
   "--hidden-import", "librosa", "--hidden-import", "cv2", "--hidden-import", "scipy.signal",
   "--hidden-import", "soundfile", "--hidden-import", "audioread", "--hidden-import", "numba", "--hidden-import", "llvmlite",

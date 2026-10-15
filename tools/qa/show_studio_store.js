@@ -185,6 +185,7 @@
     const line = document.createElement('small');
     line.id = 'studioStorage';
     line.setAttribute('role', 'status');
+    line.style.cssText = 'display:block;margin-top:2px';     // its own line under the title text
     header.append(line);
     if (inProject) {
       const back = document.createElement('a');

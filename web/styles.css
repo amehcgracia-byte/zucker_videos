@@ -58,13 +58,16 @@ body { -webkit-user-select: text; user-select: text; }
   box-sizing: border-box;
 }
 
+/* Text grows a little with large windows (16 px on a laptop, about 17 at 1920, 19 at most). */
+html { font-size: clamp(16px, 0.45vw + 8.5px, 19px); }
+
 body {
   margin: 0;
   min-height: 100vh;
   position: relative;
   color: var(--text);
   background: var(--bg);
-  font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font: 1rem/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   transition: background-color 160ms ease, color 160ms ease;
 }
 
@@ -172,13 +175,15 @@ audio {
   animation: pulse 1.4s infinite;
 }
 
+/* The page grows with the window: forms stay readable, video steps use the room. */
+:root { --gutter: clamp(16px, 2.6vw, 44px); --page: 1240px; }
+body:has(#step3.active, #step4.active, #step5.active, #step6.active) { --page: 1720px; }
+
 .wizard {
-  width: min(980px, calc(100% - 32px));
+  width: min(var(--page), calc(100% - 2 * var(--gutter)));
   margin: 0 auto;
   padding: 42px 0;
 }
-
-.wizard:has(.compose-step.active) { width: min(1500px, calc(100% - 32px)); }
 
 .wizard-nav {
   position: sticky;
@@ -188,7 +193,7 @@ audio {
   justify-content: space-between;
   align-items: center;
   gap: 12px;
-  padding: 10px max(16px, calc((100vw - 980px) / 2));
+  padding: 10px max(var(--gutter), calc((100vw - var(--page)) / 2));
   background: var(--nav-bg);
   border-bottom: 1px solid var(--line);
   backdrop-filter: blur(12px);
@@ -1620,13 +1625,13 @@ pre {
   --caption-accent: #9be37a;
 }
 
-.compose-step { width: min(1500px, calc(100% - 32px)); max-width: none; padding-bottom: 4rem; }
+.compose-step { width: 100%; max-width: none; padding-bottom: 4rem; }
 .compose-workspace { --compose-left-track: .85fr; --compose-center-track: 1fr; --compose-right-track: 1.2fr; display: grid; grid-template-columns: minmax(260px, var(--compose-left-track)) minmax(360px, var(--compose-center-track)) minmax(300px, var(--compose-right-track)); gap: 1.25rem; align-items: start; }
 .compose-workspace[data-video-orientation="horizontal"] { --compose-left-track: .68fr; --compose-center-track: 1.75fr; --compose-right-track: .9fr; }
 .compose-workspace[data-video-orientation="square"] { --compose-left-track: .78fr; --compose-center-track: 1.3fr; --compose-right-track: 1.05fr; }
 .compose-center, .compose-captions-panel, .compose-overlays-panel { min-width: 0; }
 .compose-workspace .compose-player-wrap { max-width: none; margin: 0; }
-.compose-player-wrap { max-width: 980px; margin: 0 auto 1rem; }
+.compose-player-wrap { max-width: min(100%, 1320px); margin: 0 auto 1rem; }
 .compose-video-stage { position: relative; display: grid; place-items: center; min-height: 300px; overflow: hidden; border-radius: 14px; background: #101619; }
 .compose-video-stage video { display: block; width: 100%; max-height: 68vh; object-fit: contain; background: #101619; }
 .compose-overlay-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; }
@@ -1819,7 +1824,7 @@ pre {
 
 
 .app-footer {
-  max-width: 1400px;
+  max-width: var(--page);
   margin: 0 auto;
   padding: 0 28px 18px;
   color: var(--muted);

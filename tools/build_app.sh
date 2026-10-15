@@ -98,6 +98,7 @@ PY
   --collect-data demucs \
   --hidden-import torchaudio \
   --collect-data faster_whisper \
+  --collect-data cv2 \
   --collect-data whisper \
   --collect-data onnxruntime \
   --collect-data tokenizers \

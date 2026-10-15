@@ -23,14 +23,32 @@ NEAREST_SEC = 4.0     # how far to look for a face when a shot has none
 DEFAULT_FOCUS = (0.5, 0.42)
 
 
+def face_detectors() -> list[tuple[Any, int]]:
+    """OpenCV's frontal face detectors (with their neighbour counts) that actually loaded.
+    None if the app was packaged without OpenCV's data: faces are then simply not found,
+    and the show is framed without them instead of failing."""
+    import logging
+
+    import cv2
+    folder = Path(cv2.data.haarcascades)
+    loaded = []
+    for name, neighbours in (("haarcascade_frontalface_default.xml", 4), ("haarcascade_frontalface_alt2.xml", 3)):
+        detector = cv2.CascadeClassifier(str(folder / name))
+        if not detector.empty():
+            loaded.append((detector, neighbours))
+    if not loaded:
+        logging.getLogger(__name__).warning("Face detection unavailable: no OpenCV face model in %s", folder)
+    return loaded
+
+
 def face_track(source: str | Path, ffmpeg: str = "ffmpeg", *, cancel: Callable[[], None] | None = None) -> list[tuple[float, float, float, float]]:
     """(seconds, centre x, centre y, width) of the largest face, as shares of the frame."""
     import tempfile
 
     import cv2
-    folder = Path(cv2.data.haarcascades)
-    detectors = [(cv2.CascadeClassifier(str(folder / "haarcascade_frontalface_default.xml")), 4),
-                 (cv2.CascadeClassifier(str(folder / "haarcascade_frontalface_alt2.xml")), 3)]
+    detectors = face_detectors()
+    if not detectors:
+        return []
     # A dim room, a cap and glasses: local contrast first (measured on a real
     # talk: 6 % of samples with a face without it, 73 % with it).
     clahe = cv2.createCLAHE(2.0, (8, 8))

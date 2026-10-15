@@ -37,8 +37,12 @@ def face_side(video: str | Path, ffmpeg: str = "ffmpeg", samples: int = 9) -> st
     import cv2
     import numpy as np
     from core.ffmpeg import ffprobe
+    from core.show_framing import face_detectors
+    detectors = face_detectors()
+    if not detectors:
+        return "right"
+    cascade = detectors[0][0]
     duration = float((ffprobe(str(video)).get("format") or {}).get("duration") or 0)
-    cascade = cv2.CascadeClassifier(str(Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml"))
     centres = []
     for index in range(samples):
         at = duration * (index + 0.5) / samples

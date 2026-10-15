@@ -126,3 +126,18 @@ def test_no_steam_when_the_mug_is_cut_off_by_the_frame():
                                  {"start_frame": 60, "end_frame": 120, "zoom": 1.0}]}
     item = {"steam": [0.35, 0.70], "anchor": [0.3, 0.70, 0.1, 0.2], "at": 0.0, "duration": 4.0, "scale": 1.0}
     assert [(p["at"], p["duration"]) for p in steam_on_screen(plan, item)] == [(2.0, 2.0)]
+
+
+def test_without_opencv_face_models_the_show_is_framed_without_faces(tmp_path, monkeypatch):
+    # A packaged app once lacked OpenCV's data: every render failed in detectMultiScale.
+    import cv2
+
+    from core import gags
+    from core.show_framing import face_detectors, face_track
+    from core.show_proposals import face_intervals
+    monkeypatch.setattr(cv2.data, "haarcascades", str(tmp_path) + "/")
+    assert face_detectors() == []
+    assert face_track(tmp_path / "missing.mp4") == []                         # no crash, no faces
+    resources = [{"kind": "video", "intervals": [{"kind": "still", "thumb": str(tmp_path / "t.jpg"), "start": 0, "end": 9}]}]
+    assert face_intervals(resources) == []
+    assert gags.face_side(tmp_path / "missing.mp4") == "right"
