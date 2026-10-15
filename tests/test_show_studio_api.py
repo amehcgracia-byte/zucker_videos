@@ -99,3 +99,14 @@ def test_in_development_the_studio_policy_is_not_widened(tmp_path, monkeypatch):
     preflight = client.open("/api/v1/show-studio/composition", method="OPTIONS",
                             headers={"Origin": "http://127.0.0.1:8796", "Access-Control-Request-Method": "PUT"})
     assert preflight.headers["Access-Control-Allow-Origin"] == "http://127.0.0.1:8796" and "PUT" in preflight.headers["Access-Control-Allow-Methods"]
+
+
+def test_the_beginning_section_is_served_from_its_own_files(tmp_path, monkeypatch):
+    _, client = _client(tmp_path, monkeypatch)
+    video = _upload(client, "opening.mp4", b"opening bytes").get_json()
+    assert client.put("/api/v1/show-studio/sources?section=opening", json={"sources": {"original": video["id"]}}).status_code == 200
+    assert client.get("/show-studio/opening/original.mp4").data == b"opening bytes"
+    assert client.get("/show-studio/original.mp4").status_code == 404                 # the workshop has its own
+    saved = client.put("/api/v1/show-studio/composition?section=opening", json={"recipe": RECIPE, "revision": 0}).get_json()
+    assert saved["revision"] == 1 and client.get("/api/v1/show-studio/state").get_json()["revision"] == 0
+    assert client.get("/api/v1/show-studio/state?section=opening").get_json()["revision"] == 1

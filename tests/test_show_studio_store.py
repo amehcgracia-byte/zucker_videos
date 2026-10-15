@@ -84,3 +84,19 @@ def test_sources_and_tracking_belong_to_the_project(tmp_path, monkeypatch):
         store.save_analysis("secrets", {"x": 1})
     with pytest.raises(ValueError):
         store.save_analysis("captions", {"x": "y" * (9 * 1024 * 1024)})            # too big for tracking data
+
+
+def test_each_source_section_keeps_its_own_edit_sources_and_tracking(tmp_path, monkeypatch):
+    project, store = _store(tmp_path, monkeypatch)
+    opening = StudioStore(project.folder, section="opening")
+    video = store.library.import_stream(io.BytesIO(b"opening video"), "original.mp4")
+    assert opening.save_composition(_recipe(), revision=0) == 1
+    assert store.state()["composition"] is None                                   # the workshop is untouched
+    opening.save_sources({"original": video["id"]})
+    opening.save_analysis("captions", {"captions": []})
+    assert store.state()["sources"] == {} and store.state()["analysis"] == []
+    assert (project.folder / "show_studio" / "sections" / "opening" / "composition.json").is_file()
+    store.save_materials([{"id": "b", "kind": "background", "asset": video["id"]}])
+    assert opening.state()["materials"][0]["id"] == "b"                           # own pictures serve every section
+    with pytest.raises(ValueError):
+        StudioStore(project.folder, section="../evil")

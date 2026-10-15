@@ -18,7 +18,7 @@ from pathlib import Path
 
 from flask import Response, jsonify, redirect, request, send_from_directory
 
-from core.show_studio_store import ANALYSIS_NAMES, StaleRevision, StudioStore
+from core.show_studio_store import ANALYSIS_NAMES, DEFAULT_SECTION, StaleRevision, StudioStore
 from server.media import send_file_with_range
 
 MODULE = re.compile(r"^[a-z][a-z-]{1,40}\.js$")
@@ -35,10 +35,10 @@ def studio_origins() -> set[str]:
 def register_show_studio_routes(app, state, root: Path) -> None:
     studio_dir = root / "tools" / "qa"
 
-    def store() -> StudioStore:
+    def store(section: str | None = None) -> StudioStore:
         if not state.project:
             raise ValueError("Open a saved project first.")
-        return StudioStore(state.project.folder)
+        return StudioStore(state.project.folder, section or request.args.get("section") or DEFAULT_SECTION)
 
     def failure(exc: Exception, status: int = 400):
         code = "stale_revision" if isinstance(exc, StaleRevision) else "show_studio_error"
@@ -154,6 +154,10 @@ def register_show_studio_routes(app, state, root: Path) -> None:
 
     @app.get("/show-studio/<path:name>")
     def studio_file(name: str):
+        # The Beginning section's own files ("opening/original.mp4"...) come from its own store.
+        section = DEFAULT_SECTION
+        if name.startswith("opening/"):
+            section, name = "opening", name[len("opening/"):]
         if MODULE.match(name):
             module = studio_dir / f"show_{name[:-3].replace('-', '_')}.js"
             return send_from_directory(studio_dir, module.name) if module.is_file() else failure(ValueError("No such module"), 404)
@@ -164,12 +168,12 @@ def register_show_studio_routes(app, state, root: Path) -> None:
             thumb = re.match(r"^scene-thumbs/([a-z0-9-]{1,30})\.jpg$", name)
             if name in SOURCE_FILES or thumb:
                 key = f"thumb-{thumb.group(1)}" if thumb else SOURCE_FILES[name]
-                asset = store().state()["sources"].get(key)
+                asset = store(section).state()["sources"].get(key)
                 if not asset:
                     return failure(ValueError(f"This project has no {name} for Show Studio yet"), 404)
-                return send_file_with_range(str(store().asset_path(asset)))
+                return send_file_with_range(str(store(section).asset_path(asset)))
             if name in ANALYSIS_FILES:
-                data = store().load_analysis(ANALYSIS_FILES[name])
+                data = store(section).load_analysis(ANALYSIS_FILES[name])
                 return jsonify(data) if data is not None else failure(ValueError(f"{name} is not prepared for this project"), 404)
         except (OSError, ValueError) as exc:
             return failure(exc, 404)

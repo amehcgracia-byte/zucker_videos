@@ -8,6 +8,10 @@
 (function () {
   'use strict';
   const inProject = !!(window.ZUCKER_STUDIO && window.ZUCKER_STUDIO.project);
+  // The part of the source being edited (ShowSource's "Beginning" or the earlier workshop): each keeps its own edit.
+  const section = new URLSearchParams(location.search).get('section') === 'opening' ? 'opening' : 'workshop';
+  const scoped = (path) => `${path}?section=${section}`;
+  const local = (name) => (window.ShowSource ? window.ShowSource.path(name) : name);
   const SOURCES = { 'original.mp4': 'original', 'mix.m4a': 'baseAudio', 'voice.m4a': 'voice', 'cutout-atlas.webp': 'cutoutAtlas' };
   const ANALYSIS = { 'finger-track.json': 'finger-track', 'face-track.json': 'face-track', 'automatic-hands.json': 'automatic-hands',
     'captions.json': 'captions', 'cutout-sample.json': 'cutout-sample', 'recipe.json': 'proposal' };
@@ -67,7 +71,7 @@
 
   async function load() {
     if (!inProject) return null;
-    loaded = await call('/api/v1/show-studio/state');
+    loaded = await call(scoped('/api/v1/show-studio/state'));
     revision = loaded.revision;
     notify('loaded', loaded);
     return loaded;
@@ -79,7 +83,7 @@
     const recipe = pending;
     pending = null;
     try {
-      revision = (await put('/api/v1/show-studio/composition', { recipe, revision })).revision;
+      revision = (await put(scoped('/api/v1/show-studio/composition'), { recipe, revision })).revision;
       notify('saved', revision);
     } catch (error) {
       notify(error.code === 'stale_revision' ? 'stale' : 'error', error.message);
@@ -128,20 +132,20 @@
 
   async function migrate(base, { recipe, step = () => {} }) {
     base = String(base || '').replace(/\/+$/, '');
-    const target = await call(`${base}/api/v1/show-studio/state`);
-    const report = { project: target.project, files: 0, materials: 0, analysis: 0, skipped: [] };
+    const target = await call(scoped(`${base}/api/v1/show-studio/state`));
+    const report = { project: target.project, section, files: 0, materials: 0, analysis: 0, skipped: [] };
     const sources = {};
     for (const [name, key] of Object.entries(SOURCES)) {
-      step(`Copying ${name}…`);
-      const response = await fetch(name);
-      if (!response.ok) { report.skipped.push(name); continue; }
-      sources[key] = (await importFile(await response.blob(), name, 'Show pilot excerpt', base)).id;
+      step(`Copying ${local(name)}…`);
+      const response = await fetch(local(name));
+      if (!response.ok) { report.skipped.push(local(name)); continue; }
+      sources[key] = (await importFile(await response.blob(), name, `Show pilot excerpt · ${section}`, base)).id;
       report.files += 1;
     }
     // The scene workshop's thumbnails (frames of this video).
-    const thumbs = [...new Set([...document.querySelectorAll('img[src^="scene-thumbs/"]')].map((img) => img.getAttribute('src')))];
+    const thumbs = [...new Set([...document.querySelectorAll('img[src*="scene-thumbs/"]')].map((img) => img.getAttribute('src')))];
     for (const path of thumbs) {
-      const id = path.slice('scene-thumbs/'.length).replace(/\.jpg$/, '');
+      const id = path.slice(path.indexOf('scene-thumbs/') + 'scene-thumbs/'.length).replace(/\.jpg$/, '');
       if (!/^[a-z0-9-]{1,30}$/.test(id)) continue;
       const response = await fetch(path);
       if (!response.ok) { report.skipped.push(path); continue; }
@@ -149,12 +153,12 @@
       sources[`thumb-${id}`] = (await importFile(await response.blob(), `${id}.jpg`, 'Show pilot scene thumbnail', base)).id;
       report.files += 1;
     }
-    if (Object.keys(sources).length) await put(`${base}/api/v1/show-studio/sources`, { sources });
+    if (Object.keys(sources).length) await put(scoped(`${base}/api/v1/show-studio/sources`), { sources });
     for (const [name, key] of Object.entries(ANALYSIS)) {
-      const response = await fetch(name);
-      if (!response.ok) { report.skipped.push(name); continue; }
-      step(`Copying ${name}…`);
-      await put(`${base}/api/v1/show-studio/analysis/${key}`, await response.json());
+      const response = await fetch(local(name));
+      if (!response.ok) { report.skipped.push(local(name)); continue; }
+      step(`Copying ${local(name)}…`);
+      await put(scoped(`${base}/api/v1/show-studio/analysis/${key}`), await response.json());
       report.analysis += 1;
     }
     const list = [...(target.materials || [])];
@@ -169,7 +173,7 @@
     }
     if (own.length) await put(`${base}/api/v1/show-studio/materials`, { materials: list });
     step('Saving your edit…');
-    report.revision = (await put(`${base}/api/v1/show-studio/composition`, { recipe, revision: target.revision })).revision;
+    report.revision = (await put(scoped(`${base}/api/v1/show-studio/composition`), { recipe, revision: target.revision })).revision;
     return report;
   }
 
@@ -199,7 +203,7 @@
     const button = document.createElement('button');
     button.id = 'saveToProject';
     button.type = 'button';
-    button.textContent = 'Save to project…';
+    button.textContent = section === 'opening' ? 'Save this section to project…' : 'Save to project…';
     header.append(button);
     button.onclick = async () => {
       let address = '';
@@ -209,7 +213,7 @@
       try { localStorage.setItem('zucker-studio-address', address); } catch (_) { /* private window */ }
       button.disabled = true;
       try {
-        const target = await call(`${address.replace(/\/+$/, '')}/api/v1/show-studio/state`);
+        const target = await call(scoped(`${address.replace(/\/+$/, '')}/api/v1/show-studio/state`));
         const replaces = target.revision ? `\n\nIt replaces the edit already saved there (revision ${target.revision}).` : '';
         if (!confirm(`Copy this edit, its video and sound, its tracking and your own backgrounds and masks into the project “${target.project?.name}”?\n${target.project?.folder}${replaces}\n\nEvery file is checked after the copy. Nothing is deleted from this browser.`)) return;
         // eslint-disable-next-line no-undef

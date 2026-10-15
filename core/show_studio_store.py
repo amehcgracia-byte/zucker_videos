@@ -31,6 +31,8 @@ MATERIAL_KINDS = ("background", "mask")
 ANALYSIS_NAMES = ("finger-track", "face-track", "automatic-hands", "captions", "cutout-sample", "proposal")
 NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
 ASSET_ID = re.compile(r"^[0-9a-f]{64}$")
+SECTION = re.compile(r"^[a-z][a-z0-9-]{0,29}$")
+DEFAULT_SECTION = "workshop"
 BUILTIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,80}\.(png|jpe?g|webp)$")
 
 
@@ -50,10 +52,17 @@ def _number(value: Any, what: str) -> float:
 
 
 class StudioStore:
-    def __init__(self, project_folder: Path):
+    """``section``: which part of the source this edit is ("workshop", the first one,
+    kept at the top of show_studio/; others under show_studio/sections/<name>/).
+    Own backgrounds and masks belong to the whole project."""
+
+    def __init__(self, project_folder: Path, section: str = DEFAULT_SECTION):
+        if not SECTION.match(str(section)):
+            raise ValueError("Unknown source section")
         self.library = ProjectLibrary(Path(project_folder))
-        self.root = self.library.project / "show_studio"
-        if self.root.is_symlink():
+        self.base = self.library.project / "show_studio"
+        self.root = self.base if section == DEFAULT_SECTION else self.base / "sections" / section
+        if self.base.is_symlink() or self.root.is_symlink():
             raise ValueError("Show Studio's data must stay inside the project.")
 
     # ---- reading -------------------------------------------------------------
@@ -68,9 +77,13 @@ class StudioStore:
         composition = self._load("composition.json", {"revision": 0, "recipe": None})
         folder = self.root / "analysis"
         return {"composition": composition.get("recipe"), "revision": int(composition.get("revision") or 0),
-                "materials": self._load("materials.json", {"materials": []})["materials"],
+                "materials": self._shared("materials.json", {"materials": []})["materials"],
                 "sources": self._load("sources.json", {"sources": {}})["sources"],
                 "analysis": sorted(path.stem for path in folder.glob("*.json")) if folder.is_dir() else []}
+
+    def _shared(self, name: str, default: Any) -> Any:
+        path = self.base / name
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else default
 
     def asset_path(self, asset_id: str) -> Path:
         """The library file behind an asset reference (checked against the manifest)."""
@@ -152,7 +165,7 @@ class StudioStore:
         _size_checked(materials, "list of materials")
         self._assets_known(materials)
         with _locked(self.library.root):
-            atomic_write_json(self.root / "materials.json", {"materials": materials})
+            atomic_write_json(self.base / "materials.json", {"materials": materials})
         return materials
 
     def save_sources(self, sources: dict[str, str]) -> dict[str, str]:
