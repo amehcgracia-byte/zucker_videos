@@ -137,3 +137,11 @@ A Windows package build was dispatched on the audit branch in run
 This builds/test-starts a package; it does not publish a release or install it on
 the user's computer. Its result must be recorded before claiming current package
 validation, and its revision precedes the cancellation correction above.
+
+### 15 October follow-up: latest remote results collected
+
+At `09afc2eb`, [journey run 38654782318](https://github.com/amehcgracia-byte/zucker_videos/actions/runs/38654782318) passed all five macOS journeys and four Windows journeys. Windows YouTube failed on the second transition to settings after back navigation. The screenshot displays “Failed to fetch”; the downloaded network trace records `net::ERR_NO_BUFFER_SPACE` on the status GET during cancellation. The server continued answering subsequent status requests with HTTP 200. This is evidence of a browser/network resource failure, **not yet proof of a product regression or an acceptable reason to mark the journey passed**. A failed-job rerun was requested to distinguish reproducibility from a transient executor issue. No timeout was increased and no assertion was removed. Earlier [run 38649274271](https://github.com/amehcgracia-byte/zucker_videos/actions/runs/38649274271) passed both OS jobs at `19dd5b1c`.
+
+The targeted remote checks reported 79 passed / 6 skipped on each OS. The separate full fast suite [38654788370](https://github.com/amehcgracia-byte/zucker_videos/actions/runs/38654788370) remains red: 27 failed, 756 passed, 9 skipped, 16 deselected and one existing xfail. This follow-up does not claim that the historical full-suite failures have been repaired.
+
+[Windows package run 38533337837](https://github.com/amehcgracia-byte/zucker_videos/actions/runs/38533337837) completed successfully at `7c9c561c`; that confirms that revision's package build/startup checks, not the latest head or full native-dialog interaction. Real-recording private transport/testing, remaining trace/video review and current-head packaged/native validation are still pending. No private clips were uploaded in this follow-up. The scheduled audit is not complete.
