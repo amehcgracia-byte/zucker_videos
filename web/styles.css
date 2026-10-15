@@ -1985,6 +1985,11 @@ pre {
 .show-reason { margin: 0 0 6px; }
 .show-needs { margin: 0 0 6px; color: #c2410c; font-size: 0.9em; }
 .show-studio-effects h3 { margin: 14px 0 6px; }
+.show-clay { margin: 10px 0; }
+.show-clay h4 { margin: 8px 0 4px; }
+.show-clay h4 small { font-weight: normal; opacity: 0.8; }
+.show-clay-row { border: 1px solid var(--line, #d4d4d8); border-radius: 8px; margin: 6px 0; padding: 6px 10px 8px; display: grid; gap: 6px; }
+.show-clay-row legend { padding: 0 4px; }
 .show-studio-list { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 6px; }
 .show-studio-list li { display: grid; gap: 2px; padding: 6px 8px; border-left: 3px solid var(--line, #d4d4d8); border-radius: 4px; }
 .show-studio-list .studio-status { font-size: 0.9em; }

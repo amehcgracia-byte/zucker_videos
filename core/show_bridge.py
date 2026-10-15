@@ -206,7 +206,8 @@ def plan_effects(recipe: dict[str, Any], *, section: str, source_start: float, p
 
 def studio_drawers(analysis: Callable[[str], Any]) -> dict[str, Callable[[dict[str, Any]], tuple[Any, str]]]:
     """How each Studio effect is drawn: ``analysis(name)`` reads the section's
-    tracking data (None when it is missing). A drawer is draw(frame, section seconds, view)."""
+    tracking data (None when it is missing). A drawer is draw(frame, section seconds, view,
+    edited seconds)."""
     from core import show_bridge_draw as draw
 
     def style(event: dict[str, Any], brush: str, color: str, width: float) -> dict[str, Any]:
@@ -219,7 +220,7 @@ def studio_drawers(analysis: Callable[[str], Any]) -> dict[str, Callable[[dict[s
                 raise ValueError("The detected fingertip data (automatic-hands) is missing from the project")
             ink = style(event, "crayon", "#e7b64c", 5)
 
-            def auto(frame, t, view):
+            def auto(frame, t, view, *_):
                 for points, opacity in draw.auto_ink_trails(event, t, hands):
                     draw.pigment(frame, points, view, opacity=opacity, **ink)
             return auto, (f"detected index tip in {hands.get('detected_frames', '?')} of {hands.get('frames', '?')} frames, "
@@ -243,7 +244,7 @@ def studio_drawers(analysis: Callable[[str], Any]) -> dict[str, Callable[[dict[s
             detail += f", revealing a {event['drawMode']} at the fingertip"
         lines = style(event, "pencil", "#f4cc77", 4)
 
-        def hand(frame, t, view):
+        def hand(frame, t, view, *_):
             shape = draw.finger_drawing(event, t, tracks)
             if shape is None:
                 return
@@ -257,7 +258,7 @@ def studio_drawers(analysis: Callable[[str], Any]) -> dict[str, Callable[[dict[s
     def spiral(event: dict[str, Any]):
         lines = style(event, "crayon", "#f6ba82", 5)
 
-        def turn(frame, t, view):
+        def turn(frame, t, view, *_):
             draw.stroke(frame, draw.spiral_points(event, t), view, opacity=draw.spiral_opacity(event, t), **lines)
         return turn, f"{event.get('turns', 3)} turns {'outward' if event.get('direction') == 'out' else 'inward'}"
 
@@ -269,7 +270,7 @@ def studio_drawers(analysis: Callable[[str], Any]) -> dict[str, Callable[[dict[s
         start, radius = float(event.get("start") or 0), float(event.get("radius") or 0.035)
         fixed = (float(event.get("x", 0.66)) * 1280, float(event.get("y", 0.54)) * 720)
 
-        def steam(frame, t, view):
+        def steam(frame, t, view, *_):
             on = False
             for time, state in seen:
                 if time <= t:
@@ -304,7 +305,7 @@ class StudioDrawings:
         for layer in self.layers:
             at = layer.section_time(t)
             if at is not None:
-                layer.drawer(frame, at, view)
+                layer.drawer(frame, at, view, t)
 
 
 def studio_layers(project_folder: str | Path, plan: dict[str, Any], *,
@@ -340,7 +341,9 @@ def studio_layers(project_folder: str | Path, plan: dict[str, Any], *,
                                       hidden=hidden, drawers=studio_drawers(analysis))
         layers += found
         report += results
-    return StudioDrawings(plan, layers), report
+    from core.show_clay import clay_layers
+    clay, results = clay_layers(project_folder, plan, hidden=hidden)
+    return StudioDrawings(plan, layers + clay), report + results
 
 
 def studio_warnings(report: list[dict[str, Any]]) -> list[str]:
@@ -354,7 +357,7 @@ def studio_fingerprint(project_folder: str | Path) -> str:
     import hashlib
     digest = hashlib.sha1()
     base = Path(project_folder) / "show_studio"
-    for path in sorted([*base.glob("composition.json"), *base.glob("analysis/*.json"),
+    for path in sorted([*base.glob("composition.json"), *base.glob("clay.json"), *base.glob("analysis/*.json"),
                         *base.glob("sections/*/composition.json"), *base.glob("sections/*/analysis/*.json")]):
         stat = path.stat()
         digest.update(f"{path.relative_to(base)}:{stat.st_size}:{stat.st_mtime_ns}".encode())

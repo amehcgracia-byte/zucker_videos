@@ -117,8 +117,8 @@ def frames(project: str, out: str, name: str, times: list[float]) -> None:
         layers = []
         for layer in studio.layers:
             seconds = layer.section_time(n / meta["fps"])
-            if seconds is not None:
-                layer.drawer(frame, seconds, view)
+            if seconds is not None and (layer.section, layer.effect_id) in events:  # Studio effects (clay is checked against its own render)
+                layer.drawer(frame, seconds, view, n / meta["fps"])
                 layers.append({"event": events[layer.section, layer.effect_id], "t": seconds})
         Image.fromarray(frame).save(target / f"{tag}-py.png")
         cases = [case for case in cases if case["tag"] != tag] + [{"tag": tag, "view": list(view), "layers": layers}]

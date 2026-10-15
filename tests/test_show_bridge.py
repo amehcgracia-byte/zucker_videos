@@ -135,7 +135,7 @@ def test_the_detected_finger_ink_hides_hand_placed_drawings_as_in_studio():
 def test_studio_drawings_follow_each_frame_s_framing():
     import numpy as np
     seen = []
-    layer = show_bridge.Layer("x", "spiral", [(2.0, 3.0, 15.0)], {}, lambda frame, t, view: seen.append((t, view)))
+    layer = show_bridge.Layer("x", "spiral", [(2.0, 3.0, 15.0)], {}, lambda frame, t, view, edited: seen.append((t, view)))
     drawings = show_bridge.StudioDrawings(PLAN, [layer])
     assert drawings.active(2.5) and not drawings.active(1.0)
     drawings.draw(np.zeros((1080, 1920, 3), dtype=np.uint8), 2.5)
