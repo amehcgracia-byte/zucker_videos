@@ -100,3 +100,16 @@ def test_each_source_section_keeps_its_own_edit_sources_and_tracking(tmp_path, m
     assert opening.state()["materials"][0]["id"] == "b"                           # own pictures serve every section
     with pytest.raises(ValueError):
         StudioStore(project.folder, section="../evil")
+
+
+def test_every_replaced_revision_is_kept(tmp_path, monkeypatch):
+    project, store = _store(tmp_path, monkeypatch)
+    store.save_composition(_recipe(), revision=0)
+    edited = _recipe({"id": "base", "type": "video", "start": 0, "end": 44}, {"id": "mask-1", "type": "image", "start": 26.04, "end": 26.52})
+    store.save_composition(edited, revision=1)
+    kept = project.folder / "show_studio" / "history" / "composition-r1.json"
+    assert kept.is_file() and [e["id"] for e in json.loads(kept.read_text())["recipe"]["events"]] == ["base", "finger-a", "cut-1"]
+    assert [e["id"] for e in store.state()["composition"]["events"]] == ["base", "mask-1"]
+    store.save_materials([])
+    store.save_materials([])
+    assert (project.folder / "show_studio" / "history").is_dir()

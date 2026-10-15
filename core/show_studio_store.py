@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 import math
 import re
+import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -141,6 +143,17 @@ class StudioStore:
 
     # ---- writing -------------------------------------------------------------
 
+    @staticmethod
+    def _history(folder: Path) -> Path:
+        history = folder / "history"
+        history.mkdir(parents=True, exist_ok=True)
+        return history
+
+    def _keep(self, name: str, kept_as: str) -> None:
+        """The version about to be replaced stays in history/ (never deleted here)."""
+        if (self.root / name).is_file() and not (self._history(self.root) / kept_as).exists():
+            shutil.copy2(self.root / name, self._history(self.root) / kept_as)
+
     def save_composition(self, recipe: dict[str, Any], *, revision: int) -> int:
         """Keep the recipe; ``revision`` is the one the editor loaded. Returns the new revision."""
         self._check_recipe(recipe)
@@ -148,6 +161,7 @@ class StudioStore:
             current = int(self._load("composition.json", {"revision": 0}).get("revision") or 0)
             if int(revision) != current:
                 raise StaleRevision("The composition was changed in another window; reload it before saving")
+            self._keep("composition.json", f"composition-r{current}.json")
             atomic_write_json(self.root / "composition.json", {"revision": current + 1, "recipe": recipe})
             return current + 1
 
@@ -165,6 +179,9 @@ class StudioStore:
         _size_checked(materials, "list of materials")
         self._assets_known(materials)
         with _locked(self.library.root):
+            if (self.base / "materials.json").is_file():
+                stamp = time.strftime("%Y%m%d-%H%M%S")
+                shutil.copy2(self.base / "materials.json", self._history(self.base) / f"materials-{stamp}-{time.monotonic_ns() % 10**6}.json")
             atomic_write_json(self.base / "materials.json", {"materials": materials})
         return materials
 
