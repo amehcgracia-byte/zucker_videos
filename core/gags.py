@@ -175,7 +175,15 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
         position = gag.get("position") or ("left" if face == "right" else "right")
         side = "left" if centre(position, face)[0] < 0.5 else "right"
         image: Image.Image | None = None
-        if kind in ("drawing", "character"):
+        if kind == "drawing" and gag.get("picture"):
+            # The person chose one of their own approved pictures instead of a new painting.
+            try:
+                with Image.open(gag["picture"]) as chosen:
+                    image = chosen.convert("RGBA")
+            except OSError:
+                result(gag, "failed", f"Your chosen picture {Path(str(gag['picture'])).name} is missing")
+                continue
+        elif kind in ("drawing", "character"):
             if not painter:
                 result(gag, "failed", "The drawing painter is not installed")
                 continue
@@ -200,7 +208,8 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
         if image is None:
             result(gag, "failed", f"No picture in your library matches “{gag.get('query', '')}”" if kind == "photo" else "Nothing to show")
             continue
-        result(gag, "applied", f"{kind}: {gag.get('subject') or gag.get('text') or gag.get('query') or ''}".rstrip(": "))
+        result(gag, "applied", f"your picture {Path(str(gag['picture'])).name}" if kind == "drawing" and gag.get("picture")
+               else f"{kind}: {gag.get('subject') or gag.get('text') or gag.get('query') or ''}".rstrip(": "))
         path = folder / f"gag-{index:03d}.png"
         image.save(path)
         size = float(gag.get("size") or 0.25)

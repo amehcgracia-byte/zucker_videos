@@ -147,6 +147,15 @@ def test_the_review_api_adjusts_approves_and_refuses_what_is_incomplete(tmp_path
     entered = client.patch(f"/api/v1/show/review/{character['id']}", json={"entrance": "bounce"}).get_json()
     assert entered["params"]["entrance"] == "bounce"
     assert client.patch(f"/api/v1/show/review/{character['id']}", json={"entrance": "explode"}).status_code == 400
+    # A drawing can use one of the person's library pictures instead of a painting; nothing from elsewhere.
+    from core.gag_library import library_dir
+    own = library_dir() / "bulb.png"
+    own.parent.mkdir(parents=True, exist_ok=True)
+    own.write_bytes(b"png")
+    chosen = client.patch(f"/api/v1/show/review/{drawing['id']}", json={"picture": str(own.resolve())})
+    assert chosen.status_code == 200 and chosen.get_json()["params"]["picture"] == str(own.resolve())
+    assert client.patch(f"/api/v1/show/review/{drawing['id']}", json={"picture": "/etc/hosts"}).status_code == 400
+    assert client.patch(f"/api/v1/show/review/{drawing['id']}", json={"picture": ""}).get_json()["params"]["picture"] == ""
 
 
 def test_the_review_only_serves_its_own_files(tmp_path, monkeypatch):

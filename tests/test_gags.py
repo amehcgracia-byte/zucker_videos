@@ -219,3 +219,16 @@ def test_each_storyboard_gag_says_whether_it_was_pictured(tmp_path, monkeypatch)
     assert outcomes["p-draw"] == ("failed", "The drawing painter is not installed")
     assert outcomes["p-word"][0] == "applied" and outcomes["p-warp"][0] == "applied"
     assert outcomes["p-photo"][0] == "failed" and "zebra crossing" in outcomes["p-photo"][1]
+
+
+def test_a_drawing_can_use_one_of_your_own_pictures_instead_of_a_painting(tmp_path, monkeypatch):
+    from core import gag_paint, gags
+    monkeypatch.setattr(gag_paint, "can_paint", lambda: False)                  # no painter needed for your own picture
+    own = tmp_path / "bulb.png"
+    Image.new("RGBA", (200, 300), (250, 220, 90, 255)).save(own)
+    outcomes = {}
+    items, _ = gags.make_items([{"kind": "drawing", "subject": "lightbulb", "picture": str(own), "at": 1.0, "duration": 2.0, "proposal": "p1"},
+                                {"kind": "drawing", "subject": "lamp", "picture": str(tmp_path / "gone.png"), "at": 4.0, "duration": 2.0,
+                                 "proposal": "p2"}], tmp_path / "out", outcomes=outcomes)
+    assert len(items) == 1 and Image.open(items[0]["image"]).size == (200, 300)
+    assert outcomes["p1"] == ("applied", "your picture bulb.png") and outcomes["p2"][0] == "failed" and "gone.png" in outcomes["p2"][1]

@@ -31,6 +31,7 @@
     const p = item.params;
     if (item.kind === "cutaway") return p.thumb ? media(p.thumb) : still(p.source, p.source_start);
     if (item.kind === "character") return still(p.source, p.still_time);
+    if (item.kind === "drawing" && p.picture) return `/api/v1/show/library/file?path=${encodeURIComponent(p.picture)}`;
     return `/api/v1/show/frame?t=${encodeURIComponent(item.at)}`;
   }
 
@@ -766,6 +767,10 @@
       html += `<div class="show-fields">${item.kind === "word" ? field("Text", `<input type="text" data-field="text" value="${escape(p.text)}">`) : field("What is drawn", `<input type="text" data-field="subject" value="${escape(p.subject)}">`)}
         ${field("Position", `<select data-field="position">${["left", "top-left", "bottom-left", "right", "top-right", "bottom-right"].map((pos) => `<option ${p.position === pos ? "selected" : ""}>${pos}</option>`).join("")}</select>`)}
         ${field("Size", range("size", p.size ?? 0.25, 0.1, 0.45, 0.01))}</div>`;
+      if (item.kind === "drawing") {
+        const pictures = library.filter((entry) => /\.(png|jpe?g|webp)$/i.test(entry.path));
+        html += field("Picture", `<select data-field="picture"><option value="">Painted from the words</option>${pictures.map((entry) => `<option value="${escape(entry.path)}" ${p.picture === entry.path ? "selected" : ""}>${escape(entry.name)}</option>`).join("")}</select>`);
+      }
       if (item.kind === "drawing" && p.subject) {
         html += `<div class="show-fields">${field("Style", `<select data-field="style">${Object.entries(DRAWING_STYLES).map(([key, label]) => `<option value="${key}" ${(p.style || "pencil") === key ? "selected" : ""}>${label}</option>`).join("")}</select>`)}</div>
           ${field("What the painter is asked (change it before it is painted)", `<textarea data-field="prompt" rows="3" maxlength="600"></textarea>`)}

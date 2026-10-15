@@ -2457,8 +2457,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         stored = show_proposals.load(proposals_path)
         allowed = {"status", "at", "duration", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action",
                    "amount", "offset", "voice", "hold", "subject", "text", "style", "position", "size", "effect", "warp", "point", "anchor", "scale",
-                   "entrance", "prompt"}
+                   "entrance", "prompt", "picture"}
         changes = {key: value for key, value in body.items() if key in allowed}
+        if changes.get("picture") and changes["picture"] not in {item["path"] for item in _show_library_items(project)}:
+            return error_response("bad_request", "Choose one of the pictures in your library", 400)
         if "prompt" in changes and (not isinstance(changes["prompt"], str) or len(changes["prompt"]) > 600):
             return error_response("bad_request", "A drawing's prompt is a text of up to 600 characters", 400)
         from core.show_inserts import ENTRANCES
