@@ -7,7 +7,7 @@
 (() => {
   const KIND_LABELS = { cutaway: "Close-up", character: "Character speaks", drawing: "Drawing", word: "Word", warp: "Warp", steam: "Rainbow steam", math: "Formulas around you" };
   const STATUS_LABELS = { proposed: "Proposed", approved: "Approved", discarded: "Discarded" };
-  const DECISION_LABELS = { pending: "To decide", accepted: "Accepted", modified: "Modified", plain: "Without effect" };
+  const DECISION_LABELS = { pending: "To decide", accepted: "Accepted", modified: "Needs review", plain: "Without effect" };
   const ACTIONS = { mouth: "Mouth (with the voice)", nod: "Nod", side: "Sideways", turn: "Turn" };
   const DRAWING_STYLES = { pencil: "Pencil", crayon: "Wax crayons", marker: "Felt-tip marker" };
   const ENTRANCES = { cut: "Straight cut: it talks at once", zoom: "Push in, then it talks", bounce: "The photo bounces in over the frozen host" };
@@ -16,6 +16,9 @@
   let step = 0;
   let poll = null;
   let selectedOverlay = null;
+  let previewOrigin = 0;
+  let timelineDialog = null, stageHome = null;
+  let selectedEffect = null, placingWords = false, firstWord = null, pickedWords = null;
   const open = new Set();
   const editors = new Map();
 
@@ -38,6 +41,9 @@
   async function openReview() {
     review = await api("/show/scenes");
     library = (await api("/show/library").catch(() => ({ items: [] }))).items || [];
+    for (const scene of review.scenes || []) {
+      if (["queued", "rendering", "ready"].includes(scene.preview?.status)) wantEffects.add(scene.id);
+    }
     step = 0;
     render();
   }
@@ -56,13 +62,12 @@
 
   // ---- Storyboard -------------------------------------------------------------
 
-  // What each scene shows: the preview with effects once it is made (it is prepared on its
-  // own, small and quick), until then the saved render or the quick cut; a choice the
-  // person makes with the buttons stays for that scene.
-  const choice = new Map();
-  const effectsReady = (scene) => scene?.preview?.status === "ready";
-  const mode = (scene) => choice.get(scene.id) || (effectsReady(scene) ? "effects" : review.saved_render ? "saved" : "quick");
-  const useSaved = (scene) => !!review.saved_render && mode(scene) === "saved";
+  const dirtyScenes = new Set();
+  const viewedScenes = new Set();
+  const wantQuick = new Set();
+  const wantSaved = new Set();        // the person chose the saved render for this scene
+  const useSaved = scene => !!review.saved_render && !wantEffects.has(scene.id) && !wantQuick.has(scene.id);
+  const wantEffects = new Set();      // scenes whose preview with effects was asked for
   const scenes = () => review.scenes || [];
   const stepNames = () => ["Identity", "Intro", ...scenes().map((scene) => scene.name), "Review & render"];
   const currentScene = () => (step >= 2 && step < 2 + scenes().length ? scenes()[step - 2] : null);
@@ -70,17 +75,18 @@
   function render() {
     if (!review) return;
     clearTimeout(poll);
+    closeTimeline();
     stopWatching();
     stopQuick();
     const names = stepNames();
     $("#showSteps").innerHTML = names.map((name, index) => {
       const scene = index >= 2 && index < names.length - 1 ? scenes()[index - 2] : null;
       const mark = scene ? ` <small class="show-decision show-${scene.decision}">${DECISION_LABELS[scene.decision]}</small>` : "";
-      const done = scene && scene.decision !== "pending" ? "✓ " : "";
+      const done = scene && ["accepted", "plain"].includes(scene.decision) ? "✓ " : "";
       return `<button type="button" data-show-step="${index}" class="${index === step ? "active" : ""}">${done}${escape(name)}${mark}</button>`;
     }).join("");
     // How far along the show is: every decided scene counts, whatever was decided.
-    const decided = scenes().filter((scene) => scene.decision !== "pending").length;
+    const decided = scenes().filter((scene) => ["accepted", "plain"].includes(scene.decision)).length;
     const total = scenes().length;
     $("#showProgress span").textContent = decided === total ? `All ${total} scenes decided ✓` : `${decided} of ${total} scenes decided · ${total - decided} to decide`;
     Object.assign($("#showProgress progress"), { max: Math.max(1, total), value: decided });
@@ -92,6 +98,9 @@
     $("#showStageLayer").innerHTML = "";
     $("#showStageStatus").textContent = "";
     selectedOverlay = null;
+    document.getElementById("showTimeline")?.remove();
+    document.getElementById("showTimelineLauncher")?.remove();
+    document.getElementById("showSceneTransport")?.remove();
     if (step === 0) renderIdentity();
     else if (step === 1) renderIntro();
     else if (currentScene()) renderScene();
@@ -100,9 +109,13 @@
 
   function showVideo(url, status = "") {
     stopQuick();
+    $("#showStageLayer").querySelectorAll(".show-picture-placement").forEach(element=>element.remove());
+    previewOrigin=currentScene()?.start||0;
     const video = $("#showStageVideo");
     $("#showStageCard").hidden = true;
     video.hidden = !url;
+    video.controls=true;
+    if($("#showSceneTransport"))$("#showSceneTransport").hidden=true;
     if (url && video.getAttribute("src") !== url) { video.src = url; video.load(); }
     if (!url) video.removeAttribute("src");
     $("#showStageStatus").textContent = status;
@@ -177,23 +190,25 @@
 
   function renderScene() {
     const scene = currentScene();
+    if(selectedEffect && !scene.effects.includes(selectedEffect)){selectedEffect=null;placingWords=false;firstWord=null;pickedWords=null;}
     const effects = sceneEffects(scene);
     const preview = scene.preview || { status: "none" };
     const words = scene.words || [];
     // A pin before the word where each placed picture enters.
     const pins = new Set((scene.overlays || []).map((overlay) => words.findIndex(([, start]) => start >= Number(overlay.at ?? scene.start) - 0.05)).filter((index) => index >= 0));
-    $("#showPanel").innerHTML = `<h3>${escape(scene.name)} <small>${clock(scene.start)}–${clock(scene.end)}</small></h3>
+    $("#showPanel").innerHTML = `<p id="showSaveStatus" class="show-needs" role="alert" hidden></p><h3>${escape(scene.name)} <small>${clock(scene.start)}–${clock(scene.end)}</small></h3>
       <div class="show-said" id="showSaid"><strong>What you say</strong> <small>Click a word to go there. Select some words and right-click them to add an animation over them.</small>
-        <p class="show-said-text">${words.length ? words.map(([text, start, end], index) => `${pins.has(index) ? `<span class="show-pin" title="A picture enters here">📍</span>` : ""}<span data-word="${index}" data-start="${start}" data-end="${end}">${escape(text)}</span>`).join(" ") : escape(scene.text)}</p></div>
+        <div id="showWordPlacement" class="show-actions"></div><p class="show-said-text">${words.length ? words.map(([text, start, end], index) => `${pins.has(index) ? `<span class="show-pin" title="A picture enters here">📍</span>` : ""}<span data-word="${index}" data-start="${start}" data-end="${end}">${escape(text)}</span>`).join(" ") : escape(scene.text)}</p></div>
       <div class="show-preview-mode">
-        <button type="button" class="icon-button small ${mode(scene) === "effects" ? "active" : ""}" data-preview-mode="effects" title="Your scene with its zooms, close-ups, drawings and Show Studio effects, made small and quick">Preview with effects</button>
-        <button type="button" class="icon-button small ${mode(scene) === "quick" ? "active" : ""}" data-preview-mode="quick" title="Your cut, played from the original video at once">Quick: the cut only</button>
-        ${review.saved_render ? `<button type="button" class="icon-button small ${mode(scene) === "saved" ? "active" : ""}" data-preview-mode="saved" title="The last completed export, including its captions and effects">Saved render</button>` : ""}
+        ${review.saved_render ? `<button type="button" class="icon-button small ${useSaved(scene) ? "active" : ""}" data-preview-mode="saved" title="The last completed export, including its captions and effects">Saved render</button>` : ""}
+        <button type="button" class="icon-button small ${!wantEffects.has(scene.id) && !useSaved(scene) ? "active" : ""}" data-preview-mode="quick" title="Your cut and chosen pictures, with immediate timing updates">Live timing preview</button>
+        <button type="button" class="icon-button small ${wantEffects.has(scene.id) ? "active" : ""}" data-preview-mode="effects" title="Generate this scene with your current proposed effects before accepting">Generate scene preview</button>
       </div>
       <p class="show-proposal">${escape(scene.proposal)}</p>
+      <p class="show-hint" role="status">${dirtyScenes.has(scene.id) ? "Changes saved. Generate a new scene preview to see them before accepting." : "Generate this scene with its effects, watch it, then accept or change it."}</p>
       <div class="show-decide">
-        <button type="button" class="primary icon-button small" data-scene-decision="accepted" data-then-next>Accept and next →</button>
-        <button type="button" class="icon-button small" data-scene-decision="accepted">Accept</button>
+        <button type="button" class="primary icon-button small" data-scene-decision="accepted" data-then-next ${viewedScenes.has(scene.id) ? "" : "disabled"}>Accept and next →</button>
+        <button type="button" class="icon-button small" data-scene-decision="accepted" ${viewedScenes.has(scene.id) ? "" : "disabled"}>Accept</button>
         <button type="button" class="icon-button small" data-scene-modify>Modify</button>
         <button type="button" class="icon-button small" data-scene-decision="plain">Leave without effect</button>
         <span class="show-decision show-${scene.decision}">${DECISION_LABELS[scene.decision]}</span>
@@ -207,7 +222,7 @@
           <select name="style">${Object.entries(DRAWING_STYLES).map(([key, label]) => `<option value="${key}" ${key === "crayon" ? "selected" : ""}>${label}</option>`).join("")}</select>
           <select name="source">${[review.source, ...(review.resources || []).map((item) => item.path)].map((path) => `<option value="${escape(path)}">${escape(baseName(path))}</option>`).join("")}</select>
           <label>from <input name="source_time" type="number" min="0" step="0.1" value="0"> s of it</label>
-          <button class="icon-button small" type="submit">Add</button></form>
+          <button class="icon-button small" type="submit">Add &amp; preview</button></form>
         <h4>Pictures from the library</h4>
         <div class="show-library">${library.slice(0, 60).map((item, index) => `<button type="button" data-library="${index}" title="${escape(item.name)}"><img src="${item.url}" alt="${escape(item.name)}" loading="lazy"></button>`).join("") || "<p class=\"show-hint\">The library is empty: add images in Overlay &amp; Captions, or keep painted drawings.</p>"}</div>
         <p class="show-hint">Drag a picture on the video to move it, its corner to resize it; click it for its tools.</p>
@@ -218,7 +233,228 @@
     drawOverlays(scene);
     showScenePicture(scene);
     clayBlock(scene);
+    renderTimeline(scene);
+    wordPlacementControls();
+    showSaveStatus();
   }
+
+  // The production storyboard uses edited seconds, including transcript and bars.
+  const fitTiming=ShowClock.fit;
+  function highlightWords(start,end) {
+    document.querySelectorAll('#showSaid [data-word]').forEach(word=>word.classList.toggle('placement-word',Number(word.dataset.start)<end && Number(word.dataset.end)>start));
+  }
+  function wordPlacementControls() {
+    const box=$('#showWordPlacement'), scene=currentScene(); if(!box||!scene)return;
+    const item=review.proposals.find(p=>p.id===selectedEffect && scene.effects.includes(p.id));
+    if(!item){box.innerHTML='<small>Select an effect in the timeline to place it on words.</small>';return;}
+    box.innerHTML=`<strong>${escape(item.params.subject||item.params.text||KIND_LABELS[item.kind]||item.kind)}</strong>
+      <button type="button" data-start-word-placement>Choose words</button>
+      <button type="button" data-use-word-placement ${pickedWords?'':'disabled'}>Use these words</button>
+      ${placingWords?'<button type="button" data-cancel-word-placement>Cancel</button>':''}
+      <small>${pickedWords?`“${escape(pickedWords.text)}”`:placingWords?(firstWord===null?'Select a phrase, or click its first word, then its last word.':'Now click the last word.'):item.params.selected_text?`On: “${escape(item.params.selected_text)}”`:'Drag the bar or choose words.'}</small>`;
+    highlightWords(pickedWords?.start??item.at,pickedWords?.end??item.at+item.duration);
+  }
+  async function savePlacement(item, changes) {
+    const owner=currentScene()?.id;
+    await flushEdits();
+    const updated=await patch(item.id,changes);
+    await markModified(item.id);
+    if(currentScene()?.id===owner){renderTimeline(currentScene()); refreshCard(item.id); wordPlacementControls();}
+    return updated;
+  }
+  async function placeOnWords(picked) {
+    const scene=currentScene(), item=review.proposals.find(p=>p.id===selectedEffect);
+    if(!scene||!item||!picked)return;
+    const timing=fitTiming(scene,picked.start,picked.end-picked.start);
+    await savePlacement(item,{...timing,selected_text:picked.text});
+    placingWords=false;firstWord=null;pickedWords=null;wordPlacementControls();
+    locateEffect(review.proposals.find(p=>p.id===item.id));
+    showToast('Placed on your selected words. Drag the bar edges to extend or shorten it.');
+  }
+  function enterLiveTiming(scene, at=editedPlayhead()) {
+    if(quick && !quick.saved)return;
+    wantEffects.delete(scene.id);wantQuick.add(scene.id);
+    $('#showPanel').querySelectorAll('[data-preview-mode]').forEach(button=>button.classList.toggle('active',button.dataset.previewMode==='quick'));
+    playQuick(scene,Math.max(0,Math.min(scene.end-scene.start-.04,at-scene.start)));
+  }
+  function openTimeline() {
+    if(!currentScene())return;
+    enterLiveTiming(currentScene());
+    if(!timelineDialog){
+      timelineDialog=document.createElement('dialog');timelineDialog.id='showTimelineDialog';timelineDialog.setAttribute('aria-label','Scene editor');
+      timelineDialog.innerHTML='<header><div><strong>Scene editor</strong><small>Video, voice and effect timing</small></div><button type="button" aria-label="Close scene editor" data-close-scene-editor>×</button></header><div data-scene-editor-body></div>';
+      document.body.append(timelineDialog);
+      timelineDialog.querySelector('[data-close-scene-editor]').onclick=closeTimeline;
+      timelineDialog.addEventListener('cancel',event=>{event.preventDefault();closeTimeline();});
+      timelineDialog.addEventListener('click',event=>{if(event.target!==timelineDialog)return;const r=timelineDialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)closeTimeline();});
+      timelineDialog.addEventListener('close',()=>{if(!timelineDialog.open)restoreStage();});
+    }
+    if(!timelineDialog.open){
+      const wrap=$('.show-stage-wrap');stageHome=document.createComment('Scene player home');wrap.before(stageHome);
+      timelineDialog.querySelector('[data-scene-editor-body]').append(wrap);
+      $('#showTimeline').hidden=false;$('#showTimelineLauncher').hidden=true;
+      timelineDialog.showModal();
+    }
+  }
+  function restoreStage() {
+    if(stageHome){stageHome.replaceWith($('.show-stage-wrap'));stageHome=null;}
+    if($('#showTimeline'))$('#showTimeline').hidden=true;
+    if($('#showTimelineLauncher'))$('#showTimelineLauncher').hidden=false;
+  }
+  function closeTimeline() {
+    if(timelineDialog?.open)timelineDialog.close();
+    restoreStage();
+    // Context menus mounted on body cannot stay above a modal's top layer.
+    $('#showEffectMenu')?.setAttribute('hidden','');
+  }
+  function locateEffect(item, popup=true) {
+    const scene=currentScene();if(!scene||!item||!scene.effects.includes(item.id))return;
+    selectedEffect=item.id;
+    wantEffects.delete(scene.id);wantQuick.add(scene.id);
+    $('#showPanel').querySelectorAll('[data-preview-mode]').forEach(button=>button.classList.toggle('active',button.dataset.previewMode==='quick'));
+    playQuick(scene,Math.max(0,Math.min(scene.end-.04,item.at)-scene.start));
+    $('#showStageVideo').pause();
+    drawOverlays(scene);
+    renderTimeline(scene);wordPlacementControls();
+    if(popup)openTimeline();
+  }
+  function drawingPosition(item) {
+    const p=item.params,vertical=p.position?.startsWith('top')?'top':p.position?.startsWith('bottom')?'bottom':'';
+    const preset={top:[.2,.24],bottom:[.22,.72],'':[.21,.42]}[vertical];
+    return p.image_center || [p.position?.endsWith('right')?1-preset[0]:preset[0],preset[1]];
+  }
+  function liveDrawings(scene) {
+    const layer=$('#showStageLayer');
+    layer.querySelectorAll('.show-picture-placement').forEach(element=>element.remove());
+    if(!quick || quick.saved)return;
+    for(const item of sceneEffects(scene).filter(item=>item.kind==='drawing' && item.params.picture && item.status!=='discarded')) {
+      const p=item.params,pos=drawingPosition(item);
+      const element=document.createElement('div');element.className='show-picture-placement';element.dataset.liveEffect=item.id;
+      element.classList.toggle('selected',item.id===selectedEffect);
+      element.style.cssText=`left:${pos[0]*100}%;top:${pos[1]*100}%;width:${(p.size||.25)*100}%`;
+      element.innerHTML=`<img src="${picture(item)}" draggable="false" alt="${escape(p.subject||'Drawing')}"><span class="picture-corner" title="Drag to resize"></span>`;
+      layer.append(element);
+      element.onpointerdown=event=>{
+        event.preventDefault();event.stopPropagation();element.setPointerCapture(event.pointerId);
+        selectedEffect=item.id;wordPlacementControls();
+        layer.querySelectorAll('.show-picture-placement').forEach(el=>el.classList.toggle('selected',el===element));
+        const bounds=$('#showStage').getBoundingClientRect(),start=[event.clientX,event.clientY],initial=[...drawingPosition(item)],width=p.size||.25,resize=event.target.classList.contains('picture-corner');
+        const playing=!$('#showStageVideo').paused;$('#showStageVideo').pause();
+        let changes={},moved=false;
+        element.onpointermove=e=>{
+          moved ||= Math.abs(e.clientX-start[0])+Math.abs(e.clientY-start[1])>2;
+          if(resize){changes={size:Math.max(.02,Math.min(2,width+2*(e.clientX-start[0])/bounds.width)),image_center:initial};element.style.width=`${changes.size*100}%`;}
+          else {changes={image_center:[Math.max(-1,Math.min(2,initial[0]+(e.clientX-start[0])/bounds.width)),Math.max(-1,Math.min(2,initial[1]+(e.clientY-start[1])/bounds.height))]};element.style.left=`${changes.image_center[0]*100}%`;element.style.top=`${changes.image_center[1]*100}%`;}
+        };
+        const finish=()=>{element.onpointermove=null;element.onpointerup=null;element.onpointercancel=null;};
+        element.onpointerup=async()=>{
+          finish();
+          try{if(moved)await savePlacement(item,changes);liveDrawings(scene);if(playing)$('#showStageVideo').play().catch(()=>{});}
+          catch(error){liveDrawings(scene);showToast(error.message,true);}
+        };
+        element.onpointercancel=()=>{finish();liveDrawings(scene);};
+      };
+    }
+    syncPlayback();
+  }
+  function editedPlayhead() {
+    const scene=currentScene(),video=$('#showStageVideo');if(!scene)return 0;
+    if(quick?.scene.id===scene.id){
+      if(quick.pending!=null)return quick.pending;
+      return ShowClock.editedAt(scene,quick.segments,video.currentTime,quick.index,quick.pending);
+    }
+    return previewOrigin+video.currentTime;
+  }
+  function syncPlayback() {
+    const scene=currentScene();if(!scene)return;
+    const at=Math.max(scene.start,Math.min(scene.end,editedPlayhead())),box=$('#showTimeline');
+    const transport=$('#showSceneTransport');
+    if(transport){transport.hidden=!quick;transport.querySelector('[data-scene-play]').textContent=$('#showStageVideo').paused?'Play scene':'Pause';transport.querySelector('[data-scene-clock]').textContent=`${clock(Math.max(scene.start,Math.min(scene.end,at)))} / ${clock(scene.end)} · edited time`;}
+
+    $('#showStageLayer').querySelectorAll('[data-live-effect]').forEach(element=>{
+      const item=review.proposals.find(p=>p.id===element.dataset.liveEffect);
+      element.hidden=!quick || quick.saved || !ShowClock.visible(item,at);
+    });
+    $('#showStageLayer').querySelectorAll('[data-overlay]').forEach(element=>{
+      const item=scene.overlays[Number(element.dataset.overlay)];
+      const start=item?.at??scene.start,end=start+(item?.duration??scene.end-scene.start);
+      element.hidden=!quick || quick.saved || at<start || at>=end;
+    });
+    const input=box?.querySelector('[data-timeline-seek]');
+    if(input){input.value=at;box.querySelector('[data-playhead-label]').textContent=clock(at);box.style.setProperty('--playhead',`${Math.max(0,Math.min(100,100*(at-scene.start)/(scene.end-scene.start)))}%`);}
+  }
+  function renderTimeline(scene) {
+    let box=$('#showTimeline');if(!box){box=document.createElement('section');box.id='showTimeline';box.setAttribute('aria-label','Scene timeline');$('.show-stage-wrap').append(box);}
+    box.hidden=!timelineDialog?.open;
+    let launcher=$('#showTimelineLauncher');if(!launcher){launcher=document.createElement('button');launcher.type='button';launcher.id='showTimelineLauncher';launcher.className='icon-button';launcher.textContent='Open scene editor · video & timeline';launcher.onclick=()=>{openTimeline();};$('.show-stage-wrap').append(launcher);}
+    launcher.hidden=!!timelineDialog?.open;
+    const duration=scene.end-scene.start;
+    const pct=t=>100*(t-scene.start)/duration;
+    const selected=sceneEffects(scene).find(item=>item.id===selectedEffect);
+    const rows=sceneEffects(scene).filter(item=>item.status!=='discarded');
+    box.innerHTML=`<header><strong>Scene timeline</strong><small>${clock(scene.start)}–${clock(scene.end)}</small></header>
+      <p>Play or scrub to check when a picture appears and disappears. Drag a bar to move it; drag either edge to trim.</p>
+      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button><button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>${selected.kind==='drawing'&&!selected.params.picture?'<small>This local drawing needs a rendered preview. It is not drawn in the live timing view.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
+      <div class="show-time-row"><span>Video</span><div class="show-time-source" data-scene-seek>Original video · your cut</div></div>
+      <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
+      ${rows.map(item=>{
+        const a=Math.max(scene.start,item.at),b=Math.min(scene.end,item.at+item.duration),outside=b<=a;
+        const name=item.params.subject||item.params.text||KIND_LABELS[item.kind]||item.kind;
+        return `<div class="show-time-row"><button type="button" class="show-time-name" data-locate-effect="${item.id}" title="${escape(name)}">${escape(KIND_LABELS[item.kind]||item.kind)}</button><div class="show-time-track" data-track="${item.id}">
+        ${outside?item.kind==='character'&&item.duration<=0?`<button type="button" data-show-adjust="${item.id}" class="show-time-outside">Voice &amp; hold timing · Adjust</button>`:`<button type="button" data-place-words="${item.id}" class="show-time-outside">Outside this scene · choose words</button>`:`<div tabindex="0" role="button" aria-label="${escape(name)} timeline clip" class="show-time-clip ${selectedEffect===item.id?'selected':''}" data-time-clip="${item.id}" style="left:${pct(a)}%;width:${100*(b-a)/duration}%" title="${escape(name)} · ${clock(item.at)}–${clock(item.at+item.duration)}"><span data-trim="start" aria-label="Trim start"></span><b>${escape(name)}</b><span data-trim="end" aria-label="Trim end"></span></div>`}</div></div>`;
+      }).join('')}`;
+    const seekTo=time=>{
+      wantEffects.delete(scene.id);wantQuick.add(scene.id);
+      playQuick(scene,Math.max(0,Math.min(duration-.04,time-scene.start)));
+      syncPlayback();
+    };
+    box.querySelector('[data-timeline-seek]').oninput=event=>seekTo(Number(event.target.value));
+    box.onpointerdown=event=>{
+      const clip=event.target.closest('[data-time-clip]');if(!clip)return;
+      enterLiveTiming(scene);
+      event.preventDefault();clip.setPointerCapture(event.pointerId);
+      const item=review.proposals.find(p=>p.id===clip.dataset.timeClip), track=clip.parentElement.getBoundingClientRect(),x=event.clientX,at=item.at,end=at+item.duration,edge=event.target.dataset.trim;
+      selectedEffect=item.id;wordPlacementControls();let moved=false,timing={at,duration:item.duration};
+      clip.onpointermove=e=>{
+        const delta=(e.clientX-x)/track.width*duration;moved ||= Math.abs(e.clientX-x)>2;
+        if(edge==='start'){const start=Math.max(scene.start,Math.min(end-.04,at+delta));timing={at:start,duration:end-start};}
+        else if(edge==='end')timing={at,duration:Math.max(.04,Math.min(scene.end,end+delta)-at)};
+        else timing=fitTiming(scene,at+delta,end-at);
+        clip.style.left=`${pct(timing.at)}%`;clip.style.width=`${100*timing.duration/duration}%`;
+        highlightWords(timing.at,timing.at+timing.duration);
+      };
+      clip.onpointerup=async()=>{
+        clip.onpointermove=null;clip.onpointerup=null;
+        try {if(moved){await savePlacement(item,{...fitTiming(scene,timing.at,timing.duration),selected_text:''});liveDrawings(scene);}
+          else locateEffect(item,false);}
+        catch(error){showToast(error.message,true);renderTimeline(scene);}
+      };
+      clip.onpointercancel=()=>{clip.onpointermove=null;renderTimeline(scene);};
+    };
+    box.onclick=event=>{
+      const track=event.target.closest('[data-scene-seek],[data-track]');
+      if(!track||event.target.closest('button,[data-time-clip]'))return;
+      const bounds=track.getBoundingClientRect();seekTo(scene.start+(event.clientX-bounds.left)/bounds.width*duration);
+    };
+    syncPlayback();
+    box.onkeydown=event=>{const clip=event.target.closest('[data-time-clip]');if(clip && ['Enter',' '].includes(event.key)){event.preventDefault();locateEffect(review.proposals.find(p=>p.id===clip.dataset.timeClip));}};
+  }
+  for(const name of ['timeupdate','loadeddata','play','pause'])$('#showStageVideo').addEventListener(name,syncPlayback);
+  $('#showStageVideo').addEventListener('seeked',()=>{if(quick)quick.pending=null;syncPlayback();});
+  document.addEventListener('selectionchange',()=>{
+    if(!selectedEffect)return;const picked=saidSelection();if(!picked)return;
+    pickedWords=picked;wordPlacementControls();
+  });
+  document.addEventListener('click',async event=>{
+    const target=event.target.closest?.('[data-place-words],[data-locate-effect],[data-start-word-placement],[data-use-word-placement],[data-cancel-word-placement]');if(!target||!review)return;
+    try {
+      if(target.hasAttribute('data-cancel-word-placement')){placingWords=false;firstWord=null;pickedWords=null;wordPlacementControls();return;}
+      if(target.hasAttribute('data-use-word-placement')){await placeOnWords(pickedWords);return;}
+      selectedEffect=target.dataset.placeWords||target.dataset.locateEffect||selectedEffect;
+      if(target.dataset.locateEffect){locateEffect(review.proposals.find(p=>p.id===selectedEffect));return;}
+      closeTimeline();placingWords=true;firstWord=null;pickedWords=null;wordPlacementControls();$('#showSaid').scrollIntoView({block:'nearest'});
+    }catch(error){showToast(error.message,true);}
+  });
 
   // ---- Clay memories: placements of an approved clay story over this scene ----------
 
@@ -269,8 +505,9 @@
     claySaving = setTimeout(async () => {
       try {
         clay = await api("/show/clay/placements", { method: "PUT", body: JSON.stringify({ revision: clay.revision, placements: clay.placements }) });
-        $("#showClayStatus").textContent = "Saved in the project. The preview with effects is being made again.";
-        remakePreview(scene);
+        $("#showClayStatus").textContent = "Saved in the project. A new preview with effects is being prepared.";
+        invalidateLocal(scene);
+        prepareInBackground(scene);
         if (name === "mode" || name === "start" || name === "end") clayBlock(scene);
       } catch (error) {
         $("#showClayStatus").textContent = `Not saved: ${error.message}`;
@@ -279,52 +516,44 @@
     }, 350);
   }
 
-  const EFFECTS_NOTE = "Preview with effects: zooms, close-ups, drawings and Show Studio effects, in low quality to be quick.";
+  // A scene opened without a chosen view prepares its preview with effects on its own
+  // (and the next scene's), small and quick, and shows it when ready; until then its cut plays.
+  function autoPreview(scene) {
+    const preview = scene.preview || { status: "none" };
+    if (wantEffects.has(scene.id) || wantQuick.has(scene.id) || wantSaved.has(scene.id)) return;
+    if (preview.status === "failed" || preview.status === "stopped") return;
+    wantEffects.add(scene.id);
+    if (preview.status === "ready") return;
+    const index = scenes().indexOf(scene);
+    const next = scenes().slice(index + 1, index + 2).map((item) => item.id);
+    scene.preview = { status: "queued", message: "Preparing the preview with effects (about half a minute)" };
+    api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, { method: "POST", body: JSON.stringify({ next }) })
+      .then((answer) => { if (answer?.status === "ready") refreshBoard(); }).catch(() => {});
+  }
 
-  // The picture of a scene: its preview with effects when made, otherwise at once its cut
-  // (or the saved render) while the preview with effects is prepared for it and the next scene.
-  function showScenePicture(scene, at = 0) {
-    clearTimeout(poll);
-    if (mode(scene) === "effects" && effectsReady(scene)) playEffects(scene, at, false);
-    else if (!playQuick(scene, at)) showVideo("", "This scene has no picture to play.");
-    if (!effectsReady(scene)) {
-      if (!choice.has(scene.id) || choice.get(scene.id) === "effects") note(scene);
-      prepareEffects(scene);
+  // After edits the live view stays; the new preview is prepared in the background meanwhile.
+  let backgroundPreview = null;
+  function prepareInBackground(scene) {
+    clearTimeout(backgroundPreview);
+    backgroundPreview = setTimeout(async () => {
+      await flushEdits().catch(() => {});
+      api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, { method: "POST", body: "{}" }).catch(() => {});
+    }, 2000);
+  }
+
+  function showScenePicture(scene) {
+    autoPreview(scene);
+    const preview = scene.preview || { status: "none" };
+    if (!wantEffects.has(scene.id)) {
+      if (!playQuick(scene)) showVideo("", "This scene has no picture to play.");
+      return;
     }
-  }
-
-  function playEffects(scene, at = 0, play = false) {
-    showVideo(scene.preview.url, EFFECTS_NOTE);
-    const video = $("#showStageVideo");
-    const go = () => { video.currentTime = Math.max(0, at); if (play) video.play().catch(() => {}); };
-    if (video.readyState >= 1) go(); else video.addEventListener("loadedmetadata", go, { once: true });
-  }
-
-  function note(scene) {
-    const preview = scene.preview || {};
-    const extra = preview.status === "failed" ? ` · The preview with effects failed: ${preview.error}`
-      : " · Preparing the preview with effects (about half a minute); it appears here when ready.";
-    const status = $("#showStageStatus");
-    if (!status.textContent.includes(" · ")) status.textContent += extra;
-  }
-
-  async function prepareEffects(scene) {
-    if (!["queued", "rendering", "failed"].includes(scene.preview?.status)) {
-      const index = scenes().indexOf(scene);
-      const next = scenes().slice(index + 1, index + 2).map((item) => item.id);
-      const answer = await api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, { method: "POST", body: JSON.stringify({ next }) }).catch(() => null);
-      if (answer?.status !== "ready") scene.preview = { status: "queued" };
-    }
-    clearTimeout(poll);
-    poll = setTimeout(refreshBoard, 3000);
-  }
-
-  // Seconds into the scene of what the quick view is showing.
-  function quickTime() {
-    if (!quick) return 0;
-    const video = $("#showStageVideo");
-    const before = quick.segments.slice(0, quick.index).reduce((sum, [a, b]) => sum + (b - a), 0);
-    return before + Math.max(0, video.currentTime - quick.segments[quick.index][0]);
+    if (preview.status === "ready") { showVideo(preview.url, "Current scene preview (low quality, to be quick). Watch it, then accept or change it."); return; }
+    playQuick(scene); // Keep the source picture usable while the new effect is prepared.
+    $("#showStageStatus").textContent = ["failed", "stopped"].includes(preview.status)
+      ? `The preview is not ready: ${preview.error || "Stopped; generate it again to retry."}`
+      : `${preview.message || "Queued: preparing this scene and its drawings"}. Showing the source cut until it is ready.`;
+    if (!["failed", "stopped"].includes(preview.status)) poll = setTimeout(refreshBoard, 1500);
   }
 
   // ---- Quick view: the scene's cut played from the original, nothing rendered ----------
@@ -342,55 +571,94 @@
     $("#showStageCard").hidden = true;
     video.hidden = false;
     if (video.getAttribute("src") !== source) { video.src = source; video.load(); }
-    quick = { scene, segments, index: 0, frame: 0 };
-    const seek = (index, offset = 0) => { quick.index = index; video.currentTime = segments[index][0] + offset; };
-    const start = () => { if (quick) { const [index, offset] = sourceAt(segments, from); seek(index, offset); } };
+    quick = { scene, segments, saved, index: 0, frame: 0, pending:scene.start+from };
+    const session=quick;
+    liveDrawings(scene);
+    video.controls=false;
+    let transport=$('#showSceneTransport');
+    if(!transport){transport=document.createElement('div');transport.id='showSceneTransport';transport.className='show-scene-transport';transport.innerHTML='<button type="button" data-scene-play>Play scene</button><output data-scene-clock></output>';$('#showStageStatus').after(transport);transport.querySelector('button').onclick=()=>{if(video.paused){if(editedPlayhead()>=scene.end-.05)playQuick(scene);video.play().catch(error=>showToast(error.message,true));}else video.pause();};}
+    transport.hidden=false;
+    const seek = (index, offset = 0) => { if(quick!==session)return;quick.index = index;quick.pending=scene.start+segments.slice(0,index).reduce((sum,[a,b])=>sum+b-a,0)+offset;video.currentTime = segments[index][0] + offset;syncPlayback(); };
+    const start = () => { if (quick===session) { const [index, offset] = sourceAt(segments, from); seek(index, offset); } };
     if (video.readyState >= 1) start(); else video.addEventListener("loadedmetadata", start, { once: true });
     const tick = () => {
       if (!quick) return;
+      if(!video.seeking){
+        const actual=segments.findIndex(([a,b])=>a<=video.currentTime && video.currentTime<b);
+        if(actual>=0)quick.index=actual;
+      }
       const end = Math.min(segments[quick.index][1], Number.isFinite(video.duration) ? video.duration : Infinity);
       if (!video.seeking && (video.ended || video.currentTime >= end - 0.04)) {
         if (quick.index + 1 < segments.length) seek(quick.index + 1);          // skip what was cut
         else if (onEnd) { stopQuick(); onEnd(); return; }
-        else { video.pause(); seek(0); }
+        else { video.pause(); if(video.currentTime>end+.04)seek(segments.length-1,Math.max(0,end-segments.at(-1)[0]-.04)); }
       }
+      syncPlayback();
       quick.frame = requestAnimationFrame(tick);
     };
     quick.frame = requestAnimationFrame(tick);
-    $("#showStageStatus").textContent = saved ? "Saved render: the last completed edit, with its captions and effects. New decisions need a new effects preview/render." : "Quick view: your cut, played from the original video, without zooms or effects.";
+    $("#showStageStatus").textContent = saved ? "Saved render: the last completed edit, with its captions and effects. New decisions need a new effects preview/render." : "Live timing preview: your cut and chosen pictures. Pictures appear only inside their bars; render a preview to check all camera and animation effects.";
     return true;
   }
   // Seconds into the scene's edit → (segment, offset in it).
-  function sourceAt(segments, seconds) {
-    let left = Math.max(0, seconds);
-    for (const [index, [a, b]] of segments.entries()) {
-      if (left < b - a) return [index, left];
-      left -= b - a;
-    }
-    return [0, 0];
-  }
+  const sourceAt=ShowClock.sourceAt;
 
   async function refreshBoard() {
     const scene = currentScene();
     if (!scene) return;
     const fresh = await api(`/show/scenes?current=${encodeURIComponent(scene.id)}`).catch(() => null);
     if (!fresh) return;
-    const playing = quick ? quickTime() : null;
-    const wasPlaying = !$("#showStageVideo").paused;
     review = fresh;
     const updated = currentScene();
-    if (!updated) return;
-    if (effectsReady(updated)) {
-      // Ready: switch to it where the quick view was, unless the person chose another view.
-      if (mode(updated) === "effects" && playing !== null) playEffects(updated, playing, wasPlaying);
-      $("#showPanel").querySelectorAll("[data-preview-mode]").forEach((button) => button.classList.toggle("active", button.dataset.previewMode === mode(updated)));
-    } else if (updated.preview?.status === "failed") note(updated);
-    else poll = setTimeout(refreshBoard, 3000);
+    if (!updated || !wantEffects.has(updated.id)) return;
+    if (["ready", "failed", "stopped"].includes(updated.preview?.status)) renderScene();
+    else {
+      $("#showStageStatus").textContent = `${updated.preview?.message || "Queued: preparing this scene and its drawings"}. Showing the source cut until it is ready.`;
+      poll = setTimeout(refreshBoard, 1500);
+    }
     $("#showSteps").querySelectorAll("[data-show-step]").forEach((button) => button.classList.toggle("active", Number(button.dataset.showStep) === step));
   }
 
-  async function decideScene(decision, thenNext = false) {
+  $("#showStageVideo").addEventListener("loadeddata", () => {
     const scene = currentScene();
+    if (!scene || !wantEffects.has(scene.id) || scene.preview?.status !== "ready") return;
+    if ($("#showStageVideo").getAttribute("src") !== scene.preview.url) return;
+    viewedScenes.add(scene.id);
+    dirtyScenes.delete(scene.id);
+    $("#showPanel").querySelectorAll('[data-show-status="approved"]').forEach(button => {
+      const item=review.proposals.find(item=>item.id===button.dataset.id);
+      button.disabled=!!item?.needs?.length;
+    });
+    $("#showPanel").querySelectorAll('[data-scene-decision="accepted"]').forEach(button => button.disabled = false);
+  });
+
+  function invalidateLocal(scene) {
+    if (!scene) return;
+    dirtyScenes.add(scene.id); viewedScenes.delete(scene.id);
+    scene.preview = {status:"none"};
+    wantEffects.delete(scene.id); wantQuick.add(scene.id);
+    if (currentScene()?.id === scene.id) {
+      clearTimeout(poll);
+      $("#showPanel").querySelectorAll('[data-scene-decision="accepted"]').forEach(button => button.disabled = true);
+      $("#showStageStatus").textContent = quick && !quick.saved ? "Changes saved. Live picture timing is updated; a new preview with effects is being prepared — press “Preview with effects” to watch it." : "Changes saved. This rendered video is now out of date; a new preview is being prepared — open the scene editor for live picture timing meanwhile.";
+    }
+    prepareInBackground(scene);
+  }
+
+  async function requestScenePreview(scene) {
+    await flushEdits();
+    wantQuick.delete(scene.id); wantEffects.add(scene.id);
+    if (scene.preview?.status !== "ready") {
+      await api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, {method:"POST",body:"{}"});
+      scene.preview = {status:"queued"};
+    }
+    renderScene();
+  }
+
+  async function decideScene(decision, thenNext = false) {
+    await flushEdits();
+    const scene = currentScene();
+    if (decision === "accepted" && !viewedScenes.has(scene.id)) throw new Error("Generate and watch this scene preview before accepting it.");
     const updated = await api(`/show/scenes/${encodeURIComponent(scene.id)}/decision`, { method: "POST", body: JSON.stringify({ decision }) });
     Object.assign(scene, updated, { preview: { status: "none" } });
     if (thenNext) step = Math.min(stepNames().length - 1, step + 1);
@@ -438,7 +706,7 @@
     if (part.kind === "scene") {
       const scene = part.scene;
       label = `${scene.name} · ${DECISION_LABELS[scene.decision]}${scene.decision === "pending" ? " (shown with its proposals; rendered without them until you decide)" : ""}`;
-      url = mode(scene) === "effects" && effectsReady(scene) ? scene.preview.url : "";
+      url = wantEffects.has(scene.id) && scene.preview?.status === "ready" ? scene.preview.url : "";
       if (!url) {                                   // the cut itself, at once, from the original video
         if (!playQuick(scene, 0, playNext)) { watching.timer = setTimeout(playNext, 500); return; }
         $("#showStageStatus").textContent = `${scene.name} · ${DECISION_LABELS[scene.decision]} · its cut, without effects · ${where}`;
@@ -452,22 +720,13 @@
 
   $("#showStageVideo").addEventListener("ended", () => { if (watching) playNext(); });
 
-  // After a change, the scene's preview with effects is made again once the edits settle.
-  let remake = null;
-  function remakePreview(scene) {
-    if (!scene) return;
-    scene.preview = { status: "none" };
-    clearTimeout(remake);
-    remake = setTimeout(() => { if (currentScene()?.id === scene.id) prepareEffects(scene); }, 1500);
-  }
-
-  async function markModified() {
-    const scene = currentScene();
-    remakePreview(scene);
+  async function markModified(proposalId = null) {
+    const scene = proposalId ? scenes().find(scene => scene.effects.includes(proposalId)) : currentScene();
+    invalidateLocal(scene);
     if (scene && scene.decision !== "modified") {
       await api(`/show/scenes/${encodeURIComponent(scene.id)}/decision`, { method: "POST", body: JSON.stringify({ decision: "modified" }) }).catch(() => {});
       scene.decision = "modified";
-      $("#showPanel .show-decide .show-decision").textContent = DECISION_LABELS.modified;
+      if (currentScene()?.id === scene.id) $("#showPanel .show-decide .show-decision").textContent = DECISION_LABELS.modified;
     }
   }
 
@@ -490,7 +749,10 @@
       const body = { kind, at: Number(form.elements.at.value) || scene.start };
       if (kind === "character") Object.assign(body, { source: form.elements.source.value, still_time: Number(form.elements.source_time.value) || 0 });
       if (kind === "cutaway") Object.assign(body, { source: form.elements.source.value, source_start: Number(form.elements.source_time.value) || 0 });
-      if (kind === "drawing") Object.assign(body, { subject: form.elements.subject.value || "a guitar", style: form.elements.style.value });
+      if (kind === "drawing") {
+        ShowEinstein.open(scene,{text:scene.text,start:body.at,end:Math.min(scene.end,body.at+3)},form.elements.subject.value,null,{style:form.elements.style.value});
+        return;
+      }
       await addEffect(scene, body);
     };
   }
@@ -501,112 +763,12 @@
       review.proposals.push(item);
       scene.effects.push(item.id);
       scene.decision = "modified";
+      invalidateLocal(scene);
       open.add(scene.id); open.add(item.id);
       renderScene();
+      if (!(item.needs || []).length) await requestScenePreview(scene);
       return item;
     } catch (error) { showToast(error.message, true); return null; }
-  }
-
-  // ---- Einstein: a picture drawn by the person's own ChatGPT, pinned to what they say ----
-
-  let chat = null;            // {id, scene, pin, timer}
-  async function einstein(scene, pin) {
-    let box = $("#showEinstein");
-    if (!box) {
-      box = document.createElement("div");
-      box.id = "showEinstein";
-      box.className = "show-einstein";
-      box.setAttribute("role", "dialog");
-      box.setAttribute("aria-modal", "true");
-      box.setAttribute("aria-label", "Einstein draws for you");
-      document.body.append(box);
-    }
-    chat = { id: null, scene, pin, timer: null };
-    box.innerHTML = `<div class="show-einstein-card">
-        <header><strong>Einstein</strong><small>draws with your ChatGPT</small><button type="button" class="icon-button small" data-einstein="close">Close</button></header>
-        <p class="show-einstein-pin">📍 ${clock(pin.start)} · “${escape(pin.text.length > 90 ? `${pin.text.slice(0, 88)}…` : pin.text)}”</p>
-        <p class="show-hint" id="einsteinStatus">Checking that your ChatGPT is ready…</p>
-        <div class="show-einstein-messages" id="einsteinMessages" aria-live="polite"></div>
-        <form id="einsteinForm" class="show-einstein-form">
-          <textarea name="message" rows="2" maxlength="2000" placeholder="What should Einstein draw? For example: a lazy guy on a sofa"></textarea>
-          <div class="show-einstein-send">
-            <select name="engine" aria-label="Who draws it"><option value="chatgpt">Your ChatGPT</option><option value="local">This computer (free, slower)</option></select>
-            <button type="submit" class="primary icon-button small">Ask Einstein</button>
-          </div>
-        </form>
-        <p class="show-hint">Einstein draws in your rough crayon style on a transparent background. Ask for changes as many times as you like; “Use this one” places it here and you can move, resize, stretch or turn it.</p>
-      </div>`;
-    box.hidden = false;
-    const form = box.querySelector("#einsteinForm");
-    form.elements.message.focus();
-    box.onclick = (event) => {
-      const target = event.target instanceof Element ? event.target.closest("[data-einstein], [data-einstein-use]") : null;
-      if (!target) return;
-      if (target.dataset.einstein === "close") closeEinstein();
-      if (target.dataset.einsteinUse) useEinstein(target.dataset.einsteinUse);
-    };
-    form.onsubmit = async (event) => {
-      event.preventDefault();
-      const message = form.elements.message.value.trim();
-      if (!message) return;
-      form.elements.message.value = "";
-      try {
-        const data = await api("/show/einstein", { method: "POST", body: JSON.stringify({ chat: chat.id, message, context: pin.text, engine: form.elements.engine.value }) });
-        chat.id = data.id;
-        showEinsteinChat(data);
-      } catch (error) { $("#einsteinStatus").textContent = error.message; }
-    };
-    const ready = await api("/show/einstein/status").catch((error) => ({ ready: false, painter: false, detail: error.message }));
-    const engine = form.elements.engine;
-    engine.querySelector('[value="chatgpt"]').disabled = !ready.ready;
-    engine.querySelector('[value="local"]').disabled = !ready.painter;
-    engine.value = ready.ready ? "chatgpt" : ready.painter ? "local" : "chatgpt";
-    $("#einsteinStatus").textContent = ready.ready ? "Ready: your ChatGPT draws it (about a minute per picture). Or pick this computer's own painter."
-      : `${ready.detail}${ready.painter ? " Meanwhile this computer's own painter can draw it." : ""}`;
-    form.querySelector("button").disabled = !ready.ready && !ready.painter;
-  }
-
-  function showEinsteinChat(data) {
-    const list = $("#einsteinMessages");
-    if (!list) return;
-    list.innerHTML = data.messages.map((message) => `<div class="show-einstein-message ${message.role}">
-        <span>${escape(message.text)}</span>
-        ${(message.images || []).map((image) => `<figure><img src="${image.url}" alt="Einstein's drawing"><button type="button" class="primary icon-button small" data-einstein-use="${image.name}">Use this one</button></figure>`).join("")}
-      </div>`).join("") + (data.busy ? `<div class="show-einstein-message einstein busy"><span>Einstein is drawing… (about a minute)</span></div>` : "")
-      + (data.error ? `<p class="show-needs">${escape(data.error)}</p>` : "");
-    list.scrollTop = list.scrollHeight;
-    const button = $("#einsteinForm button[type=submit]");
-    if (button) button.disabled = data.busy;
-    clearTimeout(chat.timer);
-    if (data.busy) chat.timer = setTimeout(async () => {
-      if (!chat?.id) return;
-      const fresh = await api(`/show/einstein/${chat.id}`).catch(() => null);
-      if (fresh) showEinsteinChat(fresh);
-    }, 2500);
-  }
-
-  async function useEinstein(name) {
-    const { scene, pin } = chat;
-    try {
-      const placed = await api(`/show/einstein/${chat.id}/accept`, { method: "POST", body: JSON.stringify({
-        image: name, scene: scene.id, at: pin.start, duration: Math.max(2.5, pin.end - pin.start) }) });
-      library = (await api("/show/library").catch(() => ({ items: [] }))).items || [];
-      Object.assign(scene, placed.scene);
-      closeEinstein();
-      selectedOverlay = placed.overlay;
-      renderScene();
-      remakePreview(scene);
-      showToast("Placed where you say it. Drag it, pull its corner, or click it for more tools.");
-      const element = $(`[data-overlay="${placed.overlay}"]`);
-      if (element) { const box = element.getBoundingClientRect(); openTools(placed.overlay, box.right + 8, box.top); }
-    } catch (error) { $("#einsteinStatus").textContent = error.message; }
-  }
-
-  function closeEinstein() {
-    if (chat) clearTimeout(chat.timer);
-    chat = null;
-    const box = $("#showEinstein");
-    if (box) box.hidden = true;
   }
 
   // ---- "What you say": click a word to go there; select words, right-click to animate them --
@@ -633,7 +795,8 @@
     const span = Math.max(0.5, picked.end - picked.start);
     const quoted = escape(picked.text.length > 34 ? `${picked.text.slice(0, 32)}…` : picked.text);
     const choices = [
-      ["einstein", "🎨 Create an image here with Einstein…", null],
+      ...(selectedEffect ? [["place", "Place selected effect on these words", null]] : []),
+      ["ai", "AI · create with Einstein…", null],
       ["drawing", `Draw “${quoted}”`, { kind: "drawing", subject: picked.text, style: "crayon", duration: Math.max(2, span) }],
       ["word", `Show “${quoted}” big`, { kind: "word", text: picked.text.toUpperCase().slice(0, 40), duration: Math.max(1.5, span) }],
       ["math", "Formulas around me here", { kind: "math", duration: Math.max(2, span) }],
@@ -644,8 +807,8 @@
     menu.innerHTML = `<strong>Create an animation over this selection</strong><small>${clock(picked.start)}–${clock(picked.end)}</small>
       <div class="show-actions-grid">${choices.map(([key, label]) => `<button type="button" data-say="${key}">${label}</button>`).join("")}</div>
       <label>Your drawing idea for this selection<textarea aria-label="Drawing idea for selected words" maxlength="2000" placeholder="For example: a clumsy hand-drawn sun peeking from the corner"></textarea></label>
-      <small>Saved as a proposal. Review it before asking for an effects preview.</small>
-      <div class="show-actions"><button type="button" data-say="idea">Add drawing idea</button><button type="button" data-say="copy">Copy</button></div>`;
+      <small>Generate this proposal in the scene first. Watch the result before accepting it.</small>
+      <div class="show-actions"><button type="button" data-say="idea">Create with Einstein…</button><button type="button" data-say="copy">Copy</button></div>`;
     menu.hidden = false;
     menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 8))}px`;
     menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8))}px`;
@@ -654,14 +817,16 @@
       if (!button) return;
       menu.hidden = true;
       const key = button.dataset.say;
+      if (key === "place") { await placeOnWords(picked); return; }
+      if (key === "ai") { ShowEinstein.open(scene,picked); return; }
+      if (key === "drawing") { ShowEinstein.open(scene,picked,`Draw ${picked.text}`); return; }
       if (key === "idea") {
         const input=menu.querySelector('textarea'),direction=input.value.trim();
         if(!direction){menu.hidden=false;input.focus();return;}
-        await addEffect(scene,{kind:"drawing",subject:direction.slice(0,80),direction,selected_text:picked.text,style:"crayon",at:picked.start,duration:Math.max(2,span)});
+        ShowEinstein.open(scene,picked,direction);
         return;
       }
       if (key === "copy") { await navigator.clipboard?.writeText(picked.text).catch(() => {}); return; }
-      if (key === "einstein") { einstein(scene, picked); return; }
       const choice = choices.find(([name]) => name === key);
       if (choice[2]) { await addEffect(scene, { ...choice[2], at: picked.start }); return; }
       // A close-up or a character needs its video: the Add form opens at this moment.
@@ -689,9 +854,19 @@
     const word = event.target instanceof Element ? event.target.closest("#showSaid [data-word]") : null;
     const scene = currentScene();
     if (!word || !scene || !window.getSelection()?.isCollapsed) return;
-    const at = Number(word.dataset.start) - scene.start;
-    if (mode(scene) === "effects" && effectsReady(scene)) playEffects(scene, at, true);
-    else { playQuick(scene, at); $("#showStageVideo").play().catch(() => {}); }
+    if (placingWords && selectedEffect) {
+      const index=Number(word.dataset.word);
+      if(firstWord===null) {firstWord=index; word.classList.add("placement-word"); wordPlacementControls();}
+      else {
+        const a=Math.min(firstWord,index), b=Math.max(firstWord,index), words=scene.words.slice(a,b+1);
+        pickedWords={text:words.map(w=>w[0]).join(" "),start:words[0][1],end:words.at(-1)[2]};
+        firstWord=null; wordPlacementControls(); highlightWords(pickedWords.start,pickedWords.end);
+      }
+      return;
+    }
+    if (wantEffects.has(scene.id)) { wantEffects.delete(scene.id); renderScene(); }
+    playQuick(scene, Number(word.dataset.start) - scene.start);
+    $("#showStageVideo").play().catch(() => {});
   });
 
   // Pictures placed on the scene: drag to move, corner to resize, right-click menu.
@@ -708,6 +883,7 @@
       return `<div class="show-overlay ${selectedOverlay === index ? "selected" : ""}" data-overlay="${index}" style="left:${overlay.x}%;top:${overlay.y}%;width:${overlay.width}%">
         <img src="${item ? item.url : ""}" alt="" draggable="false" style="${shapeStyle(overlay)}"><span class="show-resize" data-resize="${index}"></span></div>`;
     }).join("");
+    liveDrawings(scene);
   }
 
   async function saveOverlays(scene) {
@@ -717,7 +893,7 @@
       // Keep what the person changed while this save travelled; take the server's copy otherwise.
       if (JSON.stringify({ overlays: scene.overlays }) === sent) scene.overlays = updated.overlays;
       scene.decision = updated.decision;
-      remakePreview(scene);
+      invalidateLocal(scene);
     } catch (error) { showToast(error.message, true); }
   }
 
@@ -894,6 +1070,8 @@
   // ---- Effects (inside "Modify") ------------------------------------------------
 
   function card(item) {
+    const scene=currentScene();
+    const outside=scene && (item.at<scene.start || item.at>=scene.end || (item.duration>0 && item.at+item.duration<=scene.start));
     const needs = (item.needs || []).length ? `<p class="show-needs">Still needed: ${escape(item.needs.join(", "))}</p>` : "";
     const confidence = item.kind === "cutaway" ? `<span class="show-confidence" title="How clearly the picture matches what is said">match ${(item.confidence * 100).toFixed(1)}</span>` : "";
     return `<article class="show-card show-${item.status}" data-show-id="${item.id}">
@@ -901,11 +1079,14 @@
       <div class="show-card-body">
         <img src="${picture(item)}" alt="" loading="lazy">
         <div>
-          <p class="show-reason">${escape(item.reason)}</p>${needs}
+          <p class="show-reason">${escape(item.reason)}</p>${item.kind === "drawing" ? `<p class="show-hint">Image source: ${escape(item.params.image_engine || (item.params.picture ? "Your library" : "Local painter · DreamShaper"))}</p>` : ""}${needs}${outside?'<p class="show-needs">Outside this scene. Choose words to bring this effect back.</p>':''}
           <div class="show-actions">
-            <button type="button" class="icon-button small" data-show-preview="${item.id}">Preview</button>
+            ${item.kind === "drawing" ? `<button type="button" class="icon-button small" data-ai-edit="${item.id}">AI · change image…</button>` : ""}
+            <button type="button" class="icon-button small" data-place-words="${item.id}">Choose words</button>
+            <button type="button" class="icon-button small" data-locate-effect="${item.id}">Show on video & timeline</button>
+            <button type="button" class="icon-button small" data-show-preview="${item.id}">Preview in scene</button>
             <button type="button" class="icon-button small" data-show-adjust="${item.id}">${open.has(item.id) ? "Close" : "Adjust"}</button>
-            <button type="button" class="icon-button small" data-show-status="approved" data-id="${item.id}" ${(item.needs || []).length ? "disabled" : ""}>Approve</button>
+            <button type="button" class="icon-button small" data-show-status="approved" data-id="${item.id}" ${(item.needs || []).length || outside ? "disabled" : ""} title="Keep this effect for the render. Review the full scene separately.">Approve</button>
             <button type="button" class="icon-button small" data-show-status="discarded" data-id="${item.id}">Discard</button>
           </div>
         </div>
@@ -934,13 +1115,30 @@
     const preview = old.querySelector(".show-preview");
     fresh.querySelector(".show-preview").replaceWith(preview);
     old.replaceWith(fresh);
+    const editorState=editors.get(id);if(editorState){editorState.item=item;editorState.draw();}
   }
 
-  let saveTimer = null;
-  function saveSoon(id, changes) {
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => patch(id, changes).then(() => { refreshCard(id); markModified(); }).catch((error) => showToast(error.message, true)), 350);
+  let saveTimer=null,lastSaveError='';
+  const editQueue=new ShowEditQueue(async(id,changes)=>{
+    await patch(id,changes);refreshCard(id);await markModified(id);
+  });
+  function showSaveStatus(){
+    const box=$('#showSaveStatus');if(!box)return;
+    box.hidden=!lastSaveError;
+    box.innerHTML=lastSaveError?`${escape(lastSaveError)} <button type="button" data-retry-show-save>Retry saving</button>`:'';
   }
+  async function flushEdits(){
+    clearTimeout(saveTimer);
+    try{await editQueue.flush();lastSaveError='';}
+    catch(error){lastSaveError=error.message;throw error;}
+    finally{showSaveStatus();}
+  }
+  function saveSoon(id,changes){
+    editQueue.enqueue(id,changes);invalidateLocal(currentScene());
+    clearTimeout(saveTimer);
+    saveTimer=setTimeout(()=>flushEdits().catch(error=>showToast(error.message,true)),350);
+  }
+  document.addEventListener('click',event=>{if(event.target.closest?.('[data-retry-show-save]'))flushEdits().catch(error=>showToast(error.message,true));});
 
   // ---- Editors -----------------------------------------------------------
 
@@ -954,7 +1152,7 @@
     if (!item || !host) return;
     host.hidden = false;
     const p = item.params;
-    let html = `<div class="show-fields">${field("Starts at (s)", number("at", item.at))}${item.kind === "character" ? "" : field("Lasts (s)", number("duration", item.duration))}</div>`;
+    let html = `<p class="show-hint">Select words to place this effect, or drag its bar below the video. Drag either edge to change its duration.</p><details><summary>Exact timing (optional)</summary><div class="show-fields">${field("Starts at (s)", number("at", item.at))}${item.kind === "character" ? "" : field("Lasts (s)", number("duration", item.duration))}</div></details>`;
     if (item.kind === "cutaway") {
       const alternatives = (p.alternatives || []).map((alt, index) => `<button type="button" class="show-alt" data-alt="${index}" title="Use this close-up instead"><img src="${alt.thumb ? media(alt.thumb) : ""}" alt=""></button>`).join("");
       html += `<div class="show-fields">${field("From second", number("source_start", p.source_start))}${field("Zoom", range("zoom", p.zoom ?? 1, 1, 2.5, 0.05))}</div>
@@ -980,7 +1178,7 @@
     } else if (item.kind === "drawing" || item.kind === "word") {
       html += `<div class="show-fields">${item.kind === "word" ? field("Text", `<input type="text" data-field="text" value="${escape(p.text)}">`) : field("What is drawn", `<input type="text" data-field="subject" value="${escape(p.subject)}">`)}
         ${field("Position", `<select data-field="position">${["left", "top-left", "bottom-left", "right", "top-right", "bottom-right"].map((pos) => `<option ${p.position === pos ? "selected" : ""}>${pos}</option>`).join("")}</select>`)}
-        ${field("Size", range("size", p.size ?? 0.25, 0.1, 0.45, 0.01))}</div>`;
+        ${field("Size", range("size", p.size ?? 0.25, 0.02, 2, 0.01))}</div>`;
       if (item.kind === "drawing") {
         const pictures = library.filter((entry) => /\.(png|jpe?g|webp)$/i.test(entry.path));
         html += field("Picture", `<select data-field="picture"><option value="">Painted from the words</option>${pictures.map((entry) => `<option value="${escape(entry.path)}" ${p.picture === entry.path ? "selected" : ""}>${escape(entry.name)}</option>`).join("")}</select>`);
@@ -988,7 +1186,8 @@
       if (item.kind === "drawing" && p.subject) {
         html += `<div class="show-fields">${field("Style", `<select data-field="style">${Object.entries(DRAWING_STYLES).map(([key, label]) => `<option value="${key}" ${(p.style || "pencil") === key ? "selected" : ""}>${label}</option>`).join("")}</select>`)}</div>
           ${field("What the painter is asked (change it before it is painted)", `<textarea data-field="prompt" rows="3" maxlength="600"></textarea>`)}
-          <p class="show-hint">Nothing is painted until you press Preview or render the show. Each wording is a new drawing; the earlier one stays in the library. Empty: the style's own words.</p>`;
+          <p class="show-hint">Edit this drawing, then generate a preview to see it in context. Each wording is a new drawing; the earlier one stays in the library. Empty: the style's own words.</p>
+          <button type="button" class="icon-button small" data-preview-mode="effects">Generate &amp; preview this scene</button>`;
       }
     } else if (item.kind === "warp") {
       html += field("Warp", `<select data-field="warp">${["stretch", "swirl", "wave"].map((name) => `<option ${p.warp === name ? "selected" : ""}>${name}</option>`).join("")}</select>`);
@@ -1032,11 +1231,17 @@
     }
     Object.assign(item.params, changes);
     if ("at" in changes) item.at = changes.at;
+    if ("duration" in changes) item.duration = changes.duration;
+    if (name === "position") {changes.image_center = null;item.params.image_center=null;}
+    if (name === "at" || name === "duration") {
+      const timing=fitTiming(currentScene(),item.at,item.duration); Object.assign(item,timing); Object.assign(changes,timing,{selected_text:''}); renderTimeline(currentScene());
+    }
     if ((name === "subject" || name === "style") && !item.params.prompt) {
       const host = $(`[data-show-id="${id}"] .show-editor`);
       if (host) fillPrompt(item, host);
     }
-    editors.get(id)?.draw();
+    const editorState=editors.get(id);if(editorState){editorState.item=item;editorState.draw();}
+    liveDrawings(currentScene());
     saveSoon(id, changes);
   }
 
@@ -1188,6 +1393,49 @@
     return lower.slice(0, -1).concat(upper.slice(0, -1));
   }
 
+  document.addEventListener("contextmenu", event => {
+    if (!review || $("#showReviewBox")?.hidden || !(event.target instanceof Element)) return;
+    if (event.target.closest("#showSaid, [data-overlay], canvas, input, textarea")) return;
+    const scene = currentScene();
+    if (!scene || !event.target.closest("#showStage, [data-show-id]")) return;
+    event.preventDefault();
+    let menu = $("#showEffectMenu");
+    if (!menu) { menu = document.createElement("div"); menu.id="showEffectMenu"; menu.className="show-context-menu"; menu.setAttribute("role","menu"); document.body.append(menu); }
+    (timelineDialog?.open ? timelineDialog : document.body).append(menu);
+    const ownId=event.target.closest("[data-show-id]")?.dataset.showId || event.target.closest("[data-live-effect]")?.dataset.liveEffect;
+    const items=sceneEffects(scene).filter(item => !ownId || item.id===ownId);
+    menu.innerHTML = `<strong>Scene effects</strong>${items.map(item => `<div><span>${escape(item.params.subject || item.params.text || KIND_LABELS[item.kind] || item.kind)}</span><button type="button" data-effect-action="change" data-id="${item.id}">Change / replace…</button><button type="button" data-effect-action="remove" data-id="${item.id}">${item.status === "discarded" ? "Restore effect" : "Remove effect"}</button></div>`).join("") || "<p>No effect in this scene.</p>"}<button type="button" data-effect-action="preview">Generate scene preview</button>`;
+    menu.hidden=false;
+    menu.style.left=`${Math.max(8,Math.min(event.clientX,innerWidth-menu.offsetWidth-8))}px`;
+    menu.style.top=`${Math.max(8,Math.min(event.clientY,innerHeight-menu.offsetHeight-8))}px`;
+    menu.onclick=async e => {
+      const button=e.target.closest("[data-effect-action]"); if(!button)return;
+      menu.hidden=true;
+      try {
+        await flushEdits();
+        const item=review.proposals.find(item=>item.id===button.dataset.id);
+        if(button.dataset.effectAction==="preview") { await requestScenePreview(scene); return; }
+        if(button.dataset.effectAction==="remove") {
+          await patch(item.id,{status:item.status==="discarded"?"proposed":"discarded"});
+          await markModified(); renderScene();
+        } else {
+          closeTimeline();open.add(scene.id); open.add(item.id); renderScene();
+          const field=$(`[data-show-id="${item.id}"] [data-field="${item.kind === "drawing" ? "prompt" : "at"}"]`);
+          field?.focus();
+        }
+      } catch(error){showToast(error.message,true);}
+    };
+  });
+  document.addEventListener("click", event => { const menu=$("#showEffectMenu"); if(menu && !event.target.closest?.("#showEffectMenu"))menu.hidden=true; });
+  document.addEventListener("keydown", event => { if(event.key==="Escape"){ const menu=$("#showEffectMenu");if(menu)menu.hidden=true;} });
+
+  document.addEventListener('click',event=>{
+    const button=event.target.closest?.('[data-ai-edit]');if(!button)return;
+    const item=review.proposals.find(item=>item.id===button.dataset.aiEdit);
+    const scene=currentScene();if(!item||!scene)return;
+    ShowEinstein.open(scene,{text:item.params.selected_text||scene.text,start:item.at,end:Math.min(scene.end,item.at+item.duration)},item.params.ai_direction || item.params.subject,item.id,{style:item.params.style,position:item.params.position});
+  });
+
   // ---- Actions -----------------------------------------------------------------
 
   document.addEventListener("click", async (event) => {
@@ -1204,7 +1452,8 @@
       else if (target.hasAttribute("data-watch-all")) watchAll();
       else if (target.dataset.previewMode) {
         const scene = currentScene();
-        choice.set(scene.id, target.dataset.previewMode);
+        if (target.dataset.previewMode === "effects") { await requestScenePreview(scene); return; }
+        else { wantEffects.delete(scene.id); if(target.dataset.previewMode === "quick") { wantQuick.add(scene.id); wantSaved.delete(scene.id); } else { wantQuick.delete(scene.id); wantSaved.add(scene.id); } }
         $("#showPanel").querySelectorAll("[data-preview-mode]").forEach((button) => button.classList.toggle("active", button === target));
         showScenePicture(scene);
       }
@@ -1256,35 +1505,44 @@
         drawOverlays(scene);
         await saveOverlays(scene);
       } else if (target.id === "showRenderNow") {
+        await flushEdits();
         target.disabled = true;
         const started = await api("/show/review/render", { method: "POST", body: "{}" });
         window.resumeAfterShowReview?.(started);
       } else if (target.dataset.showAdjust) {
+        closeTimeline();
+        open.add(currentScene().id);
         const id = target.dataset.showAdjust;
         if (open.has(id)) { open.delete(id); editors.delete(id); } else open.add(id);
         renderScene();
       } else if (target.dataset.showStatus) {
+        await flushEdits();
         await patch(target.dataset.id, { status: target.dataset.showStatus });
         refreshCard(target.dataset.id);
         await markModified();
+        renderTimeline(currentScene());liveDrawings(currentScene());
       } else if (target.dataset.showPreview) {
-        const id = target.dataset.showPreview;
-        const video = $(`[data-show-id="${id}"] .show-preview`);
-        target.disabled = true; target.textContent = "Rendering preview…";
-        const made = await api(`/show/review/${encodeURIComponent(id)}/preview`, { method: "POST", body: "{}" });
-        video.hidden = false; video.src = made.url; video.play().catch(() => {});
-        target.textContent = "Preview";
+        await flushEdits();
+        const item=review.proposals.find(p=>p.id===target.dataset.showPreview);
+        if(item.needs?.length)throw Error('Complete this effect first: '+item.needs.join(', '));
+        target.disabled=true;target.textContent='Preparing effect preview…';
+        const result=await api(`/show/review/${encodeURIComponent(item.id)}/preview`,{method:'POST',body:'{}'});
+        showVideo(result.url,'This effect, rendered with a little context. Generate scene preview to review every effect together.');
+        previewOrigin=Math.max(0,item.at-1.5);
+        $('#showStageLayer').querySelector('.show-picture-placement')?.remove();
+        $('#showStageVideo').play().catch(()=>{});
       }
     } catch (error) {
       showToast(error.message, true);
       if (target.dataset.showPreview) target.textContent = "Preview";
     } finally {
       if (target.dataset.showPreview || target.id === "showRenderNow") target.disabled = false;
+      if (target.dataset.showPreview) target.textContent=target.closest("#showTimeline")?"Render effect preview":"Preview in scene";
     }
   });
 
   document.addEventListener("keydown", (event) => {
-    if (!review || $("#showReviewBox")?.hidden) return;
+    if (!review || $("#showReviewBox")?.hidden || timelineDialog?.open) return;
     if (event.target instanceof Element && event.target.closest("input, textarea, select, canvas, [contenteditable='true']")) return;
     if (event.key === "ArrowRight" && !event.metaKey && !event.ctrlKey) { step = Math.min(stepNames().length - 1, step + 1); render(); }
     if (event.key === "ArrowLeft" && !event.metaKey && !event.ctrlKey) { step = Math.max(0, step - 1); render(); }
@@ -1309,6 +1567,22 @@
 
   window.ShowReview = {
     open: openReview, openWorkspace, hull, refreshLibrary, addToScene,
+    async imageApplied(item,sceneId) {
+      const scene=scenes().find(s=>s.id===sceneId); if(!scene)throw Error("Open the image's scene before applying it");
+      const index=review.proposals.findIndex(p=>p.id===item.id);
+      if(index>=0)review.proposals[index]=item;else review.proposals.push(item);
+      if(!scene.effects.includes(item.id))scene.effects.push(item.id);
+      scene.decision="modified"; invalidateLocal(scene);
+      step=scenes().indexOf(scene)+2; open.add(scene.id); open.add(item.id); render();
+      selectedEffect=item.id; placingWords=true; firstWord=null; pickedWords=null;
+      wordPlacementControls();
+      $("#showSaid").scrollIntoView({block:"nearest"});
+    },
+    async localImageIdea(sceneId,picked,direction,style) {
+      const scene=scenes().find(s=>s.id===sceneId);if(!scene)throw Error("This scene is no longer open");
+      step=scenes().indexOf(scene)+2;
+      return addEffect(scene,{kind:"drawing",subject:direction.slice(0,80),direction,selected_text:picked.text,style,at:picked.start,duration:Math.max(.1,picked.end-picked.start)});
+    },
     voices: () => (review?.resources || []).flatMap((resource) => (resource.speech || []).map((line) => ({ source: resource.path, start: line.start, length: Math.round((line.end - line.start) * 100) / 100, text: line.text }))),
     sources: () => [review?.source, ...(review?.resources || []).map((item) => item.path)].filter(Boolean),
     resources: () => (review?.resources || []).filter((item) => item.kind !== "photo").map((item) => item.path),

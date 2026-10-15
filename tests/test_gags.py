@@ -163,7 +163,7 @@ def test_a_drawing_the_painter_could_not_clean_is_left_out_with_a_note(tmp_path,
     assert "a thumbs up" in notes[0]
 
 
-def test_a_blob_kept_from_before_is_painted_again(tmp_path, monkeypatch):
+def test_a_blob_from_an_older_recipe_is_preserved_but_not_reused(tmp_path, monkeypatch):
     style = gag_paint.STYLES["marker"].label
     folder = tmp_path / "Painted" / style
     folder.mkdir(parents=True)
@@ -174,7 +174,7 @@ def test_a_blob_kept_from_before_is_painted_again(tmp_path, monkeypatch):
     fresh.paste((200, 40, 40), (150, 150, 360, 360))
     monkeypatch.setattr(gag_paint, "paint_clean", lambda subject, style, seed=0, step=None, prompt=None: fresh)
     sticker = gags.painted_picture("a thumbs up", "marker", library_root=tmp_path)
-    assert not gag_paint.mostly_black(sticker) and not gag_paint.mostly_black(Image.open(old))
+    assert not gag_paint.mostly_black(sticker) and gag_paint.mostly_black(Image.open(old))  # old recipe remains recoverable
 
 
 def test_a_drawing_is_painted_with_the_prompt_the_person_wrote(tmp_path, monkeypatch):
@@ -205,6 +205,27 @@ def test_the_painter_uses_the_written_prompt_or_the_style_s_own(monkeypatch):
     gag_paint.paint("a guitar", "crayon")
     gag_paint.paint("a guitar", "crayon", prompt="my own words")
     assert sent == [gag_paint.prompt_for("a guitar", "crayon"), "my own words"]
+
+
+def test_painter_steps_report_real_progress_and_can_cancel(tmp_path, monkeypatch):
+    monkeypatch.setattr(gag_paint, 'can_paint', lambda: True)
+    def paint(subject, style, **kwargs):
+        kwargs['step'](1, 4)
+        kwargs['step'](4, 4)
+        return Image.new('RGBA', (40, 40), (200, 30, 30, 255))
+    monkeypatch.setattr(gags, 'painted_picture', paint)
+    plan = [{'kind':'drawing','at':1,'duration':2,'subject':'a sofa','style':'crayon','position':'left','size':.25,'effect':'pop'}]
+    events = []
+    gags.make_items(plan, tmp_path, progress=lambda fraction, message: events.append((fraction, message)))
+    assert [fraction for fraction, _ in events[:3]] == [0, .25, 1]
+    assert 'step 1/4' in events[1][1] and 'Wax crayons' in events[1][1]
+    checks = []
+    def cancel():
+        checks.append(True)
+        if len(checks) == 2:
+            raise InterruptedError('superseded')
+    with pytest.raises(InterruptedError, match='superseded'):
+        gags.make_items(plan, tmp_path, cancel=cancel)
 
 
 def test_each_storyboard_gag_says_whether_it_was_pictured(tmp_path, monkeypatch):

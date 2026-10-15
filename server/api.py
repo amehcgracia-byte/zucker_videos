@@ -2009,16 +2009,24 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 while not scene_worker["stop"].is_set():
                     with scene_lock:
                         if not scene_queue:
+                            scene_worker["thread"] = None
                             return
                         item_project, scene_id = scene_queue.pop(0)
                         key = _scene_key(item_project, scene_id)
-                        scene_previews[key] = {"status": "rendering"}
+                        ticket = scene_previews[key] = {"status": "rendering", "message": "Rendering the scene cut"}
+
+                    def report(_fraction, message):
+                        with scene_lock:
+                            if scene_previews.get(key) is ticket:
+                                ticket["message"] = message
 
                     def stop() -> None:
-                        if scene_worker["stop"].is_set():
-                            raise InterruptedError("Scene previews stopped")
+                        with scene_lock:
+                            stale = scene_previews.get(key) is not ticket
+                        if stale or scene_worker["stop"].is_set():
+                            raise InterruptedError("Scene preview superseded or stopped")
                     try:
-                        path = preview_scene(item_project, scene_id, cancel=stop)
+                        path = preview_scene(item_project, scene_id, cancel=stop, progress=report)
                         result = {"status": "ready", "url": f"/api/v1/show/media?path={quote(str(path))}"}
                     except InterruptedError:
                         result = {"status": "stopped"}
@@ -2026,7 +2034,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                         LOGGER.exception("Scene preview failed")
                         result = {"status": "failed", "error": str(exc)}
                     with scene_lock:
-                        scene_previews[key] = result
+                        # An edit during rendering invalidates this exact ticket.
+                        # Never publish an old result over a newer queued revision.
+                        if scene_previews.get(key) is ticket:
+                            scene_previews[key] = result
             scene_worker["thread"] = threading.Thread(target=work, daemon=True, name="zucker-show-scene-previews")
             scene_worker["thread"].start()
 
@@ -2036,6 +2047,18 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def _invalidate_scene(project: Project, scene_id: str) -> None:
         with scene_lock:
             scene_previews.pop(_scene_key(project, scene_id), None)
+
+    def _effect_changed(project, proposal_id):
+        from core import show_scenes
+        path = _scene_files(project)
+        if not path.is_file():
+            return
+        document = show_scenes.load(path)
+        for scene in document["scenes"]:
+            if proposal_id in scene["effects"]:
+                scene["decision"] = "modified"
+                _invalidate_scene(project, scene["id"])
+        show_scenes.save(path, document)
 
     def _saved_show_render(project):
         # The saved snapshot belongs to this project, never an arbitrary path.
@@ -2173,82 +2196,6 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("invalid_clay", str(exc), 400)
         return jsonify(_clay_state(project))
 
-    # ---- Einstein: pictures drawn by the person's own ChatGPT (Codex CLI, no API key) ----
-
-    def _einstein(project: Project, chat_id: str | None = None):
-        from core.show_image_chat import ImageChat
-        return ImageChat(project.cache_dir / "image_chat", chat_id)
-
-    def _einstein_view(chat) -> dict[str, Any]:
-        data = chat.load()
-        for message in data["messages"]:
-            message["images"] = [{"name": name, "url": f"/api/v1/show/einstein/{chat.id}/{name}"} for name in message.get("images") or []]
-        return data
-
-    @app.get("/api/v1/show/einstein/status")
-    def api_einstein_status() -> Response:
-        from core.show_image_chat import painter_ready, status
-        return jsonify({**status(), "painter": painter_ready()})
-
-    @app.post("/api/v1/show/einstein")
-    def api_einstein_send() -> Response:
-        """A message to Einstein (a new chat when no ``chat`` is given); it draws in the background."""
-        project = _require_project(state)
-        body = request.get_json(silent=True) or {}
-        try:
-            chat = _einstein(project, str(body["chat"]) if body.get("chat") else None)
-            chat.send(str(body.get("message") or ""), context=str(body.get("context") or ""), engine=str(body.get("engine") or "chatgpt"))
-        except ValueError as exc:
-            return error_response("bad_request", str(exc), 400)
-        return jsonify(_einstein_view(chat)), 202
-
-    @app.get("/api/v1/show/einstein/<chat_id>")
-    def api_einstein_chat(chat_id: str) -> Response:
-        try:
-            return jsonify(_einstein_view(_einstein(_require_project(state), chat_id)))
-        except ValueError as exc:
-            return error_response("not_found", str(exc), 404)
-
-    @app.get("/api/v1/show/einstein/<chat_id>/<name>")
-    def api_einstein_image(chat_id: str, name: str):
-        try:
-            return send_file(str(_einstein(_require_project(state), chat_id).image(name)), mimetype="image/png")
-        except ValueError as exc:
-            return error_response("not_found", str(exc), 404)
-
-    @app.post("/api/v1/show/einstein/<chat_id>/accept")
-    def api_einstein_accept(chat_id: str) -> Response:
-        """Keep the chosen picture in the library and place it on the scene at the pinned moment."""
-        from core import show_scenes
-        from core.gag_library import library_dir
-        project = _require_project(state)
-        body = request.get_json(silent=True) or {}
-        try:
-            chat = _einstein(project, chat_id)
-            title = str(body.get("title") or next((m["text"] for m in chat.load()["messages"] if m["role"] == "person"), "Einstein drawing"))
-            asset = chat.accept(str(body.get("image") or ""), library_dir(), title)
-        except ValueError as exc:
-            return error_response("bad_request", str(exc), 400)
-        document = show_scenes.load(_scene_files(project))
-        scene = next((item for item in document["scenes"] if item["id"] == str(body.get("scene") or "")), None)
-        if scene is None:
-            return error_response("not_found", "That scene is not in this Show", 404)
-        at = max(scene["start"], min(scene["end"] - 0.5, float(body.get("at", scene["start"]))))
-        duration = max(1.5, min(scene["end"] - at, float(body.get("duration") or 3.0)))
-        # Beside the host rather than over the face: the side with more room.
-        _, plan_path = _show_review_files(project)
-        plan = json.loads(plan_path.read_text(encoding="utf-8"))
-        from core.show_framing import face_on_screen
-        face = face_on_screen(plan, at)
-        x = 8.0 if face is None or face[0] >= 0.5 else 64.0
-        scene["overlays"].append({"asset": str(asset), "x": x, "y": 14.0, "width": 28.0, "at": round(at, 2), "duration": round(duration, 2),
-                                  "effect": "pop", "action": "none", "intensity": 1.0})
-        if scene["decision"] in ("pending", "plain"):
-            scene["decision"] = "modified"
-        show_scenes.save(_scene_files(project), document)
-        _invalidate_scene(project, scene["id"])
-        return jsonify({"asset": str(asset), "scene": scene, "overlay": len(scene["overlays"]) - 1})
-
     @app.post("/api/v1/show/scenes/<scene_id>/decision")
     def api_show_scene_decision(scene_id: str) -> Response:
         from core import show_proposals, show_scenes
@@ -2267,7 +2214,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("bad_request", str(exc), 400)
         show_scenes.save(_scene_files(project), document)
         show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
-        _invalidate_scene(project, scene_id)
+        if body.get("decision") != "accepted":
+            _invalidate_scene(project, scene_id)
         return jsonify(scene)
 
     @app.post("/api/v1/show/scenes/<scene_id>/preview")
@@ -2276,8 +2224,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         preview already made for what a scene shows now is not made again."""
         from core.show import scene_preview_ready
         project = _require_project(state)
+        from core import show_scenes
+        if not any(scene["id"] == scene_id for scene in show_scenes.load(_scene_files(project))["scenes"]):
+            return error_response("not_found", "That scene is not in this Show", 404)
         body = request.get_json(silent=True) or {}
-        wanted = [scene_id] + [str(item) for item in body.get("next") or []][:3]
+        known = {scene["id"] for scene in show_scenes.load(_scene_files(project))["scenes"]}
+        wanted = [scene_id] + [str(item) for item in body.get("next") or [] if str(item) in known][:3]
         missing = [item for item in wanted if not scene_preview_ready(project, item)]
         for item in missing:
             with scene_lock:
@@ -2361,7 +2313,137 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             for path in sorted(root.rglob("*")):
                 if path.is_file() and path.suffix.lower() in {".png", ".webp", ".jpg", ".jpeg"}:
                     items.append({"name": path.stem, "path": str(path.resolve()), "folder": path.parent.name})
+        ai_root = project.folder / "assets" / "show-ai"
+        if ai_root.is_dir():
+            for picture in ai_root.glob("*/image.png"):
+                try:
+                    meta = json.loads((picture.parent / "request.json").read_text())
+                    if meta.get("status") == "ready":
+                        items.append({"name": meta.get("direction", "ChatGPT image")[:80], "path": str(picture.resolve()), "folder": "ChatGPT images"})
+                except (OSError, ValueError):
+                    continue
         return items
+
+    ai_jobs_lock = threading.Lock()
+    ai_jobs = set()
+
+    @app.get("/api/v1/show/ai/images")
+    def api_show_ai_versions():
+        from core import show_ai_images
+        project = _require_project(state)
+        items = []
+        root = project.folder / "assets" / "show-ai"
+        for path in sorted(root.glob("*/request.json"), key=lambda p:p.stat().st_mtime, reverse=True):
+            try:
+                job = show_ai_images.load(project, path.parent.name)
+            except (OSError, ValueError):
+                continue
+            if job["scene_id"] != request.args.get("scene_id"):
+                continue
+            if job["status"] == "ready":
+                job["url"] = f"/api/v1/show/ai/images/{job['id']}/image"
+            items.append(job)
+            if len(items) >= 20:
+                break
+        return jsonify({"items":items})
+
+    @app.post("/api/v1/show/ai/images")
+    def api_show_ai_create():
+        from core import show_ai_images, show_scenes
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        document = show_scenes.load(_scene_files(project))
+        scene = next((s for s in document["scenes"] if s["id"] == body.get("scene_id")), None)
+        if not scene:
+            return error_response("not_found", "Choose a scene first", 404)
+        if body.get("replace_id") and body["replace_id"] not in scene["effects"]:
+            return error_response("bad_request", "That effect is not in this scene", 400)
+        key = str(project.folder)
+        with ai_jobs_lock:
+            if key in ai_jobs:
+                return error_response("busy", "One image is already being generated for this project", 409)
+            try:
+                job = show_ai_images.create(project, scene, body)
+            except (ValueError, TypeError, OSError) as exc:
+                return error_response("bad_request", str(exc), 400)
+            ai_jobs.add(key)
+        def work():
+            try:
+                show_ai_images.run(project, job["id"])
+            finally:
+                with ai_jobs_lock:
+                    ai_jobs.discard(key)
+        threading.Thread(target=work, daemon=True, name="show-chatgpt-image").start()
+        return jsonify(job), 202
+
+    def _ai_request(project, job_id):
+        from core import show_ai_images
+        return show_ai_images.load(project, job_id)
+
+    @app.get("/api/v1/show/ai/images/<job_id>")
+    def api_show_ai_status(job_id):
+        project = _require_project(state)
+        try:
+            job = _ai_request(project, job_id)
+        except (ValueError, OSError):
+            return error_response("not_found", "Unknown image request", 404)
+        if job["status"] == "ready":
+            job["url"] = f"/api/v1/show/ai/images/{job_id}/image"
+        elif job["status"] in {"queued", "generating"}:
+            with ai_jobs_lock:
+                if str(project.folder) not in ai_jobs:
+                    job.update(status="failed", error="The app restarted before this image finished. Retry your request.")
+        return jsonify(job)
+
+    @app.get("/api/v1/show/ai/images/<job_id>/image")
+    def api_show_ai_image(job_id):
+        from core import show_ai_images
+        project = _require_project(state)
+        try:
+            job = _ai_request(project, job_id)
+            if job["status"] != "ready":
+                raise ValueError("Not ready")
+            return send_file(show_ai_images.folder(project, job_id)/"image.png")
+        except (ValueError, OSError):
+            return error_response("not_found", "This image is not ready", 404)
+
+    @app.post("/api/v1/show/ai/images/<job_id>/apply")
+    def api_show_ai_apply(job_id):
+        from core import show_ai_images, show_proposals, show_scenes
+        project = _require_project(state)
+        try:
+            job = _ai_request(project, job_id)
+        except (ValueError, OSError):
+            return error_response("not_found", "Unknown image request", 404)
+        if job["status"] != "ready":
+            return error_response("not_ready", "Review a completed image first", 409)
+        document = show_scenes.load(_scene_files(project))
+        scene = next((s for s in document["scenes"] if s["id"] == job["scene_id"]), None)
+        if not scene:
+            return error_response("not_found", "This scene no longer exists", 404)
+        proposals_path, _ = _show_review_files(project)
+        stored = show_proposals.load(proposals_path)
+        params = dict(picture=str(show_ai_images.folder(project, job_id)/"image.png"), image_engine=job["engine"],
+                      subject=job["direction"][:80], prompt=job["direction"][:600], ai_direction=job["direction"], selected_text=job["selected_text"],
+                      style=job["style"], position=job["position"], size=.25, effect="pop", kind="drawing")
+        prior = job.get("applied_id") or job.get("replace_id")
+        item = next((p for p in stored["proposals"] if p["id"] == prior and p["id"] in scene["effects"]), None)
+        if item:
+            # Changing the artwork must not reset the user's animation or sizing.
+            params.pop("size", None)
+            params.pop("effect", None)
+            item["params"].update(params)
+            item.update(status="proposed", needs=[])
+        else:
+            item = show_proposals.proposal("drawing", job["at"], job["duration"], reason="Your idea · ChatGPT image", **params)
+            stored["proposals"].append(item)
+            show_scenes.attach(document, item)
+            show_scenes.save(_scene_files(project), document)
+        show_proposals.save(proposals_path, stored["proposals"], **{k:v for k,v in stored.items() if k not in ("proposals","version")})
+        _effect_changed(project, item["id"])
+        job["applied_id"] = item["id"]
+        show_ai_images.save(show_ai_images.folder(project, job_id)/"request.json", job)
+        return jsonify(item)
 
     @app.get("/api/v1/show/source")
     def api_show_source() -> Response:
@@ -2574,8 +2656,33 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         stored = show_proposals.load(proposals_path)
         allowed = {"status", "at", "duration", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action",
                    "amount", "offset", "voice", "hold", "subject", "text", "style", "position", "size", "effect", "warp", "point", "anchor", "scale",
-                   "entrance", "prompt", "picture"}
+                   "entrance", "prompt", "picture", "selected_text", "image_center"}
         changes = {key: value for key, value in body.items() if key in allowed}
+        # All storyboard tools share the edited clock. Reject impossible placements
+        # instead of silently accepting an image beyond its owning scene.
+        try:
+            current = next(p for p in stored["proposals"] if p["id"] == proposal_id)
+            if "at" in changes or "duration" in changes:
+                at = float(changes.get("at", current["at"]))
+                duration = float(changes.get("duration", current["duration"]))
+                if not math.isfinite(at + duration) or at < 0 or duration < 0 or (duration == 0 and current["kind"] != "character"):
+                    raise ValueError("Choose a positive duration and a finite start time")
+                scene_path = _scene_files(project)
+                if scene_path.is_file():
+                    from core import show_scenes
+                    owner = next((s for s in show_scenes.load(scene_path)["scenes"] if proposal_id in s["effects"]), None)
+                    if owner and (at < owner["start"] - .001 or at + duration > owner["end"] + .001):
+                        raise ValueError("Place this effect within its scene: select words in What you say or drag its timeline bar")
+            if "image_center" in changes and changes["image_center"] is not None:
+                point = changes["image_center"]
+                if not isinstance(point, list) or len(point) != 2 or not all(isinstance(n, (int, float)) and math.isfinite(n) and -1 <= n <= 2 for n in point):
+                    raise ValueError("Choose a valid picture position")
+            if "selected_text" in changes and (not isinstance(changes["selected_text"], str) or len(changes["selected_text"]) > 400):
+                raise ValueError("Select up to 400 characters of the transcript")
+        except StopIteration:
+            return error_response("not_found", "That effect is not in this review", 404)
+        except (ValueError, TypeError) as exc:
+            return error_response("bad_request", str(exc), 400)
         if changes.get("picture") and changes["picture"] not in {item["path"] for item in _show_library_items(project)}:
             return error_response("bad_request", "Choose one of the pictures in your library", 400)
         if "prompt" in changes and (not isinstance(changes["prompt"], str) or len(changes["prompt"]) > 600):
@@ -2590,6 +2697,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except (ValueError, TypeError) as exc:
             return error_response("bad_request", str(exc), 400)
         show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
+        _effect_changed(project, proposal_id)
         return jsonify(item)
 
     @app.get("/api/v1/show/drawing-prompt")
@@ -2661,6 +2769,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             document = show_scenes.load(scenes_path)
             show_scenes.attach(document, item)
             show_scenes.save(scenes_path, document)
+            _effect_changed(project, item["id"])
         return jsonify(item), 201
 
     @app.post("/api/v1/show/review/<proposal_id>/preview")

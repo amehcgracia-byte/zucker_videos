@@ -100,7 +100,7 @@ def painted_picture(subject: str, style: str, *, seed: int = 3, library_root: Pa
     from core.gag_library import library_dir
     style = style if style in gag_paint.STYLES else "pencil"
     folder = (library_root or library_dir()) / "Painted" / gag_paint.STYLES[style].label
-    key = f"{subject}|{style}|{seed}" + (f"|{prompt}" if prompt else "")
+    key = f"{subject}|{style}|{seed}|rough-art-v2|{gag_paint.STYLES[style].prompt}" + (f"|{prompt}" if prompt else "")
     target = folder / f"{_slug(subject)} {hashlib.sha1(key.encode()).hexdigest()[:6]}.png"
     if target.is_file():
         kept = Image.open(target).convert("RGBA")
@@ -189,10 +189,17 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
                 continue
             painted += 1
             style = gag.get("style") if gag.get("style") in gag_paint.STYLES else "pencil"
+            label = {"pencil": "Pencil", "crayon": "Wax crayons", "marker": "Felt-tip marker"}.get(style, style)
+            message = f"Painting {painted}/{to_paint}: {gag['subject']} ({label})"
             if progress:
-                progress(painted / max(1, to_paint), f"Painting {painted}/{to_paint}: {gag['subject']} ({gag_paint.STYLES[style].label})")
+                progress((painted - 1) / max(1, to_paint), message)
+            def paint_step(done, total):
+                if cancel:
+                    cancel()
+                if progress:
+                    progress((painted - 1 + done / max(1, total)) / max(1, to_paint), f"{message} — step {done}/{total}")
             try:
-                picture = painted_picture(gag["subject"], style, seed=3 + index % 2, prompt=gag.get("prompt") or None)
+                picture = painted_picture(gag["subject"], style, seed=3 + index % 2, prompt=gag.get("prompt") or None, step=paint_step)
             except gag_paint.UnusableDrawing:
                 unusable.append(gag["subject"])
                 result(gag, "failed", "The painter could not draw it on a clean background")
@@ -214,13 +221,16 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
         image.save(path)
         size = float(gag.get("size") or 0.25)
         x, y = centre(position, face)
+        explicit = gag.get("image_center")
+        if explicit is not None:
+            x, y = map(float, explicit)
         half_w, half_h = size / 2, size * width * image.height / image.width / height / 2
-        if half_h > 0.45:  # very tall picture: narrower so it fits the height
+        if half_h > 0.45 and explicit is None:  # automatic placement fits; explicit placement may leave the frame
             size *= 0.45 / half_h
             half_w, half_h = size / 2, 0.45
         items.append({"image": str(path), "at": gag["at"], "duration": gag["duration"], "width": round(size, 4),
-                      "x": round(min(max(x, half_w + 0.01), 1 - half_w - 0.01), 4),
-                      "y": round(min(max(y, half_h + 0.01), 1 - half_h - 0.01), 4),
+                      "x": round(x if explicit is not None else min(max(x, half_w + 0.01), 1 - half_w - 0.01), 4),
+                      "y": round(y if explicit is not None else min(max(y, half_h + 0.01), 1 - half_h - 0.01), 4),
                       "effect": gag.get("effect") or "pop", "kind": kind})
     if not painter and to_paint:
         notes.append(f"{to_paint} drawings were skipped: download the drawing painter (2.1 GB, once) to get them.")

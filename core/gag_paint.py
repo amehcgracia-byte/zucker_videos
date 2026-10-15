@@ -65,12 +65,12 @@ class Style:
 # drawing floats on white and the negative prompt names those things.
 NEGATIVE = ("photo, photograph, photo of paper, paper at an angle, paper sheet, notebook, desk, table, pencils, pens, markers, crayons, perspective, cast shadow, "
             "3d render, realistic, smooth shading, gradient, glossy, plush, sticker, vector art, clean perfect lines, "
-            "digital painting, frame, border, text, watermark")
+            "anime, manga, chibi, kawaii, big shiny eyes, polished illustration, digital painting, frame, border, text, watermark")
 
 STYLES: dict[str, Style] = {
-    "pencil": Style("Lápiz", "rough graphite pencil sketch of {subject}, messy imperfect wobbly lines, unfinished doodle, childlike and funny, flat scan, isolated on white background"),
-    "crayon": Style("Ceras", "wax crayon drawing of {subject} by a child, scribbly uneven colouring with white gaps, naive and silly, flat scan, isolated on white background"),
-    "marker": Style("Rotulador", "felt-tip marker doodle of {subject}, thick wobbly black outlines, flat uneven colouring with gaps, silly cartoon, flat scan, isolated on white background"),
+    "pencil": Style("Lápiz", "rough graphite pencil sketch of {subject}, messy imperfect wobbly lines, unfinished doodle, amateur and funny, flat scan, isolated on white background"),
+    "crayon": Style("Ceras", "{subject}, crude amateur wax crayon scribble, wobbly broken outlines, uneven flat colour with white gaps, awkward naive proportions, unfinished handmade doodle, isolated on white background"),
+    "marker": Style("Rotulador", "felt-tip marker doodle of {subject}, thick wobbly black outlines, flat uneven colouring with gaps, clumsy amateur scribble, flat scan, isolated on white background"),
 }
 
 
