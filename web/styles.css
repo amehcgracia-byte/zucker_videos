@@ -2084,3 +2084,26 @@ pre {
 .show-review { min-width: 0; width: 100%; }
 .show-review > .show-steps { min-width: 0; max-width: 100%; }
 #step4:has(> #showReviewBox:not([hidden])) > .step-header { display: none; }
+
+/* Einstein: pictures drawn by the person's own ChatGPT, pinned to what they say. */
+.show-einstein { position: fixed; inset: 0; z-index: 70; background: rgba(0, 0, 0, .55); display: grid; place-items: center; padding: 16px; }
+.show-einstein[hidden] { display: none; }
+.show-einstein-card { width: min(640px, 100%); max-height: calc(100vh - 32px); display: grid; grid-template-rows: auto auto auto 1fr auto auto; gap: 8px;
+  padding: 14px 16px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+.show-einstein-card header { display: flex; align-items: baseline; gap: 8px; }
+.show-einstein-card header button { margin-left: auto; }
+.show-einstein-card header small, .show-einstein-pin { color: var(--muted); margin: 0; }
+.show-einstein-messages { overflow: auto; min-height: 120px; display: grid; gap: 8px; align-content: start; padding: 4px; }
+.show-einstein-message { max-width: 85%; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); display: grid; gap: 6px; }
+.show-einstein-message.person { justify-self: end; background: var(--highlight-bg); }
+.show-einstein-message.einstein { justify-self: start; background: var(--panel-strong); }
+.show-einstein-message.busy span { font-style: italic; color: var(--muted); }
+.show-einstein-message figure { margin: 0; display: grid; gap: 6px; justify-items: start; }
+.show-einstein-message img { max-width: 100%; max-height: 260px; border-radius: 8px;
+  background: repeating-conic-gradient(#d9d9d9 0 25%, #f4f4f4 0 50%) 0 0 / 16px 16px; }
+.show-einstein-form { display: flex; gap: 8px; align-items: end; }
+.show-einstein-form textarea { flex: 1; resize: vertical; font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+.show-pin { font-size: .85em; margin-right: 2px; }
+.show-einstein-send { display: grid; gap: 6px; }
+.show-einstein-send select { font: inherit; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+.show-context-menu { max-height: calc(100vh - 16px); overflow: auto; }

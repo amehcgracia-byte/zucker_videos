@@ -180,9 +180,11 @@
     const effects = sceneEffects(scene);
     const preview = scene.preview || { status: "none" };
     const words = scene.words || [];
+    // A pin before the word where each placed picture enters.
+    const pins = new Set((scene.overlays || []).map((overlay) => words.findIndex(([, start]) => start >= Number(overlay.at ?? scene.start) - 0.05)).filter((index) => index >= 0));
     $("#showPanel").innerHTML = `<h3>${escape(scene.name)} <small>${clock(scene.start)}–${clock(scene.end)}</small></h3>
       <div class="show-said" id="showSaid"><strong>What you say</strong> <small>Click a word to go there. Select some words and right-click them to add an animation over them.</small>
-        <p class="show-said-text">${words.length ? words.map(([text, start, end], index) => `<span data-word="${index}" data-start="${start}" data-end="${end}">${escape(text)}</span>`).join(" ") : escape(scene.text)}</p></div>
+        <p class="show-said-text">${words.length ? words.map(([text, start, end], index) => `${pins.has(index) ? `<span class="show-pin" title="A picture enters here">📍</span>` : ""}<span data-word="${index}" data-start="${start}" data-end="${end}">${escape(text)}</span>`).join(" ") : escape(scene.text)}</p></div>
       <div class="show-preview-mode">
         <button type="button" class="icon-button small ${mode(scene) === "effects" ? "active" : ""}" data-preview-mode="effects" title="Your scene with its zooms, close-ups, drawings and Show Studio effects, made small and quick">Preview with effects</button>
         <button type="button" class="icon-button small ${mode(scene) === "quick" ? "active" : ""}" data-preview-mode="quick" title="Your cut, played from the original video at once">Quick: the cut only</button>
@@ -331,7 +333,9 @@
   function playQuick(scene, from = 0, onEnd = null) {
     stopQuick();
     const saved = useSaved(scene);
-    const segments = saved ? [[scene.start, scene.end]] : (scene.segments || []);
+    // In the saved render the scene sits later by what was inserted before it (title card, intro, characters).
+    const later = (t) => (review.saved_render?.inserted || []).reduce((sum, [at, length]) => sum + (at <= t ? length : 0), 0);
+    const segments = saved ? [[scene.start + later(scene.start), scene.end + later(scene.start)]] : (scene.segments || []);
     const source = saved ? review.saved_render.url : review.source_url;
     if (!source || !segments.length) return false;
     const video = $("#showStageVideo");
@@ -503,6 +507,108 @@
     } catch (error) { showToast(error.message, true); return null; }
   }
 
+  // ---- Einstein: a picture drawn by the person's own ChatGPT, pinned to what they say ----
+
+  let chat = null;            // {id, scene, pin, timer}
+  async function einstein(scene, pin) {
+    let box = $("#showEinstein");
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "showEinstein";
+      box.className = "show-einstein";
+      box.setAttribute("role", "dialog");
+      box.setAttribute("aria-modal", "true");
+      box.setAttribute("aria-label", "Einstein draws for you");
+      document.body.append(box);
+    }
+    chat = { id: null, scene, pin, timer: null };
+    box.innerHTML = `<div class="show-einstein-card">
+        <header><strong>Einstein</strong><small>draws with your ChatGPT</small><button type="button" class="icon-button small" data-einstein="close">Close</button></header>
+        <p class="show-einstein-pin">📍 ${clock(pin.start)} · “${escape(pin.text.length > 90 ? `${pin.text.slice(0, 88)}…` : pin.text)}”</p>
+        <p class="show-hint" id="einsteinStatus">Checking that your ChatGPT is ready…</p>
+        <div class="show-einstein-messages" id="einsteinMessages" aria-live="polite"></div>
+        <form id="einsteinForm" class="show-einstein-form">
+          <textarea name="message" rows="2" maxlength="2000" placeholder="What should Einstein draw? For example: a lazy guy on a sofa"></textarea>
+          <div class="show-einstein-send">
+            <select name="engine" aria-label="Who draws it"><option value="chatgpt">Your ChatGPT</option><option value="local">This computer (free, slower)</option></select>
+            <button type="submit" class="primary icon-button small">Ask Einstein</button>
+          </div>
+        </form>
+        <p class="show-hint">Einstein draws in your rough crayon style on a transparent background. Ask for changes as many times as you like; “Use this one” places it here and you can move, resize, stretch or turn it.</p>
+      </div>`;
+    box.hidden = false;
+    const form = box.querySelector("#einsteinForm");
+    form.elements.message.focus();
+    box.onclick = (event) => {
+      const target = event.target instanceof Element ? event.target.closest("[data-einstein], [data-einstein-use]") : null;
+      if (!target) return;
+      if (target.dataset.einstein === "close") closeEinstein();
+      if (target.dataset.einsteinUse) useEinstein(target.dataset.einsteinUse);
+    };
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      const message = form.elements.message.value.trim();
+      if (!message) return;
+      form.elements.message.value = "";
+      try {
+        const data = await api("/show/einstein", { method: "POST", body: JSON.stringify({ chat: chat.id, message, context: pin.text, engine: form.elements.engine.value }) });
+        chat.id = data.id;
+        showEinsteinChat(data);
+      } catch (error) { $("#einsteinStatus").textContent = error.message; }
+    };
+    const ready = await api("/show/einstein/status").catch((error) => ({ ready: false, painter: false, detail: error.message }));
+    const engine = form.elements.engine;
+    engine.querySelector('[value="chatgpt"]').disabled = !ready.ready;
+    engine.querySelector('[value="local"]').disabled = !ready.painter;
+    engine.value = ready.ready ? "chatgpt" : ready.painter ? "local" : "chatgpt";
+    $("#einsteinStatus").textContent = ready.ready ? "Ready: your ChatGPT draws it (about a minute per picture). Or pick this computer's own painter."
+      : `${ready.detail}${ready.painter ? " Meanwhile this computer's own painter can draw it." : ""}`;
+    form.querySelector("button").disabled = !ready.ready && !ready.painter;
+  }
+
+  function showEinsteinChat(data) {
+    const list = $("#einsteinMessages");
+    if (!list) return;
+    list.innerHTML = data.messages.map((message) => `<div class="show-einstein-message ${message.role}">
+        <span>${escape(message.text)}</span>
+        ${(message.images || []).map((image) => `<figure><img src="${image.url}" alt="Einstein's drawing"><button type="button" class="primary icon-button small" data-einstein-use="${image.name}">Use this one</button></figure>`).join("")}
+      </div>`).join("") + (data.busy ? `<div class="show-einstein-message einstein busy"><span>Einstein is drawing… (about a minute)</span></div>` : "")
+      + (data.error ? `<p class="show-needs">${escape(data.error)}</p>` : "");
+    list.scrollTop = list.scrollHeight;
+    const button = $("#einsteinForm button[type=submit]");
+    if (button) button.disabled = data.busy;
+    clearTimeout(chat.timer);
+    if (data.busy) chat.timer = setTimeout(async () => {
+      if (!chat?.id) return;
+      const fresh = await api(`/show/einstein/${chat.id}`).catch(() => null);
+      if (fresh) showEinsteinChat(fresh);
+    }, 2500);
+  }
+
+  async function useEinstein(name) {
+    const { scene, pin } = chat;
+    try {
+      const placed = await api(`/show/einstein/${chat.id}/accept`, { method: "POST", body: JSON.stringify({
+        image: name, scene: scene.id, at: pin.start, duration: Math.max(2.5, pin.end - pin.start) }) });
+      library = (await api("/show/library").catch(() => ({ items: [] }))).items || [];
+      Object.assign(scene, placed.scene);
+      closeEinstein();
+      selectedOverlay = placed.overlay;
+      renderScene();
+      remakePreview(scene);
+      showToast("Placed where you say it. Drag it, pull its corner, or click it for more tools.");
+      const element = $(`[data-overlay="${placed.overlay}"]`);
+      if (element) { const box = element.getBoundingClientRect(); openTools(placed.overlay, box.right + 8, box.top); }
+    } catch (error) { $("#einsteinStatus").textContent = error.message; }
+  }
+
+  function closeEinstein() {
+    if (chat) clearTimeout(chat.timer);
+    chat = null;
+    const box = $("#showEinstein");
+    if (box) box.hidden = true;
+  }
+
   // ---- "What you say": click a word to go there; select words, right-click to animate them --
   function saidSelection() {
     const said = $("#showSaid .show-said-text");
@@ -527,6 +633,7 @@
     const span = Math.max(0.5, picked.end - picked.start);
     const quoted = escape(picked.text.length > 34 ? `${picked.text.slice(0, 32)}…` : picked.text);
     const choices = [
+      ["einstein", "🎨 Create an image here with Einstein…", null],
       ["drawing", `Draw “${quoted}”`, { kind: "drawing", subject: picked.text, style: "crayon", duration: Math.max(2, span) }],
       ["word", `Show “${quoted}” big`, { kind: "word", text: picked.text.toUpperCase().slice(0, 40), duration: Math.max(1.5, span) }],
       ["math", "Formulas around me here", { kind: "math", duration: Math.max(2, span) }],
@@ -554,6 +661,7 @@
         return;
       }
       if (key === "copy") { await navigator.clipboard?.writeText(picked.text).catch(() => {}); return; }
+      if (key === "einstein") { einstein(scene, picked); return; }
       const choice = choices.find(([name]) => name === key);
       if (choice[2]) { await addEffect(scene, { ...choice[2], at: picked.start }); return; }
       // A close-up or a character needs its video: the Add form opens at this moment.
@@ -587,19 +695,27 @@
   });
 
   // Pictures placed on the scene: drag to move, corner to resize, right-click menu.
+  // Stretch, turn, mirror and see-through, as the render applies them to the picture.
+  function shapeStyle(overlay) {
+    const stretch = Number(overlay.stretch ?? 1), turn = Number(overlay.rotate ?? 0);
+    return `transform:rotate(${turn}deg) scale(${overlay.flip ? -1 : 1}, ${stretch});opacity:${Number(overlay.opacity ?? 1)};transform-origin:center`;
+  }
+
   function drawOverlays(scene) {
     const layer = $("#showStageLayer");
     layer.innerHTML = scene.overlays.map((overlay, index) => {
       const item = library.find((entry) => entry.path === overlay.asset);
       return `<div class="show-overlay ${selectedOverlay === index ? "selected" : ""}" data-overlay="${index}" style="left:${overlay.x}%;top:${overlay.y}%;width:${overlay.width}%">
-        <img src="${item ? item.url : ""}" alt="" draggable="false"><span class="show-resize" data-resize="${index}"></span></div>`;
+        <img src="${item ? item.url : ""}" alt="" draggable="false" style="${shapeStyle(overlay)}"><span class="show-resize" data-resize="${index}"></span></div>`;
     }).join("");
   }
 
   async function saveOverlays(scene) {
     try {
-      const updated = await api(`/show/scenes/${encodeURIComponent(scene.id)}/overlays`, { method: "POST", body: JSON.stringify({ overlays: scene.overlays }) });
-      scene.overlays = updated.overlays;
+      const sent = JSON.stringify({ overlays: scene.overlays });
+      const updated = await api(`/show/scenes/${encodeURIComponent(scene.id)}/overlays`, { method: "POST", body: sent });
+      // Keep what the person changed while this save travelled; take the server's copy otherwise.
+      if (JSON.stringify({ overlays: scene.overlays }) === sent) scene.overlays = updated.overlays;
       scene.decision = updated.decision;
       remakePreview(scene);
     } catch (error) { showToast(error.message, true); }
@@ -657,6 +773,9 @@
     $("#showIntensity").value = overlay.intensity ?? 1;
     showEntrance(overlay, talkable);
     $("#showOverlayAt").value = Number(overlay.at ?? scene.start).toFixed(1);
+    $("#showOverlayStretch").value = overlay.stretch ?? 1;
+    $("#showOverlayRotate").value = overlay.rotate ?? 0;
+    $("#showOverlayOpacity").value = overlay.opacity ?? 1;
     $("#showOverlayDuration").value = Number(overlay.duration ?? 4).toFixed(1);
     menu.hidden = false;
     // Beside the element, but always whole on screen (an element low in the frame opened it off the bottom).
@@ -680,7 +799,21 @@
     if (event.target.id === "showEntrance") overlay.entrance = event.target.value;
     if (event.target.id === "showOverlayAt") overlay.at = Math.max(scene.start, Math.min(scene.end - 0.5, Number(event.target.value)));
     if (event.target.id === "showOverlayDuration") overlay.duration = Math.max(0.5, Number(event.target.value));
-    saveOverlays(scene);
+    // One save after the person stops adjusting (saves sent one after another overwrote each other).
+    clearTimeout(shapeSave);
+    shapeSave = setTimeout(() => saveOverlays(scene), 400);
+  });
+  let shapeSave = null;
+  // Shape sliders change the picture on the stage as they move; saved when let go.
+  document.addEventListener("input", (event) => {
+    if (!(event.target instanceof Element) || !["showOverlayStretch", "showOverlayRotate", "showOverlayOpacity"].includes(event.target.id)) return;
+    const scene = currentScene();
+    const overlay = scene && selectedOverlay != null ? scene.overlays[selectedOverlay] : null;
+    if (!overlay) return;
+    const key = { showOverlayStretch: "stretch", showOverlayRotate: "rotate", showOverlayOpacity: "opacity" }[event.target.id];
+    overlay[key] = Number(event.target.value);
+    const image = $(`[data-overlay="${selectedOverlay}"] img`);
+    if (image) image.style.cssText = shapeStyle(overlay);
   });
 
   // A path: click points on the video, Enter (or double-click) to finish.
@@ -1108,6 +1241,14 @@
         menu.hidden = true;
         if (selectedOverlay == null || !scene) return;
         const overlay = scene.overlays[selectedOverlay];
+        if (target.dataset.menu === "flip" || target.dataset.menu === "reset") {
+          if (target.dataset.menu === "flip") overlay.flip = !overlay.flip;
+          else Object.assign(overlay, { stretch: 1, rotate: 0, flip: false, opacity: 1 });
+          menu.hidden = false;                                                  // keep the tools open
+          drawOverlays(scene);
+          await saveOverlays(scene);
+          return;
+        }
         if (target.dataset.menu === "remove") scene.overlays.splice(selectedOverlay, 1);
         if (target.dataset.menu === "bigger") overlay.width = Math.min(100, overlay.width * 1.2);
         if (target.dataset.menu === "smaller") overlay.width = Math.max(3, overlay.width / 1.2);

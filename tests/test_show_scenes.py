@@ -285,3 +285,27 @@ def test_the_last_step_lists_what_the_render_does_with_each_show_studio_effect(t
     status = {item["id"]: item["status"] for item in data["effects"]}
     assert status == {"zoom1": "superseded", "spiral1": "applied", "gone": "failed"}      # source 496 s was cut
     assert data["counts"] == {"superseded": 1, "applied": 1, "failed": 1}
+
+
+def test_a_placed_picture_can_be_stretched_turned_mirrored_and_see_through(tmp_path):
+    import numpy as np
+    from PIL import Image
+
+    from core.gag_render import PREPARED_SCALE, load_sticker
+    picture = tmp_path / "guy.png"
+    image = Image.new("RGBA", (100, 50), (0, 0, 0, 0))
+    image.paste((255, 0, 0, 255), (0, 0, 50, 50))                                  # red on the left half
+    image.save(picture)
+    scene = {"id": "s", "start": 0.0, "end": 10.0, "decision": "accepted", "overlays": [
+        {"asset": str(picture), "x": 10, "y": 10, "width": 20, "at": 1.0, "duration": 2.0, "stretch": 2.0, "rotate": 90, "flip": True, "opacity": 0.5}]}
+    item = show_scenes.overlay_items({"scenes": [scene]})[0]
+    assert (item["stretch"], item["rotate"], item["flip"], item["opacity"]) == (2.0, 90, True, 0.5)
+    plain = load_sticker({**item, "stretch": 1, "rotate": 0, "flip": False, "opacity": 1}, 1000, 563)
+    shaped = load_sticker(item, 1000, 563)
+    h, w = plain.pixels.shape[:2]
+    assert shaped.pixels.shape[0] == pytest.approx(w, abs=3) and shaped.pixels.shape[1] == pytest.approx(2 * h, abs=3)   # stretched, then turned
+    assert shaped.pixels[..., 3].max() == pytest.approx(0.5, abs=0.02)
+    # Mirrored (red to the right), then turned a quarter clockwise like the stage's CSS: red ends at the bottom.
+    rows = shaped.pixels[..., 0].mean(axis=1)
+    assert rows[len(rows) // 2:].mean() > rows[: len(rows) // 2].mean()
+    assert plain.width_px == pytest.approx(200) and PREPARED_SCALE > 1

@@ -2047,7 +2047,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             for entry in manifest.get("exports", []):
                 path = Path(str(entry.get("path") or "")).resolve()
                 if root in path.parents and path.is_file() and path.suffix.lower() == ".mp4":
-                    return {"path": path, "url": f"/api/v1/show/rendered/video?file={quote(path.name)}", "filename": path.name}
+                    return {"path": path, "url": f"/api/v1/show/rendered/video?file={quote(path.name)}", "filename": path.name,
+                            "inserted": (manifest.get("show") or {}).get("inserted") or []}
         except (OSError, ValueError, TypeError):
             pass
         return None
@@ -2172,6 +2173,82 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("invalid_clay", str(exc), 400)
         return jsonify(_clay_state(project))
 
+    # ---- Einstein: pictures drawn by the person's own ChatGPT (Codex CLI, no API key) ----
+
+    def _einstein(project: Project, chat_id: str | None = None):
+        from core.show_image_chat import ImageChat
+        return ImageChat(project.cache_dir / "image_chat", chat_id)
+
+    def _einstein_view(chat) -> dict[str, Any]:
+        data = chat.load()
+        for message in data["messages"]:
+            message["images"] = [{"name": name, "url": f"/api/v1/show/einstein/{chat.id}/{name}"} for name in message.get("images") or []]
+        return data
+
+    @app.get("/api/v1/show/einstein/status")
+    def api_einstein_status() -> Response:
+        from core.show_image_chat import painter_ready, status
+        return jsonify({**status(), "painter": painter_ready()})
+
+    @app.post("/api/v1/show/einstein")
+    def api_einstein_send() -> Response:
+        """A message to Einstein (a new chat when no ``chat`` is given); it draws in the background."""
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        try:
+            chat = _einstein(project, str(body["chat"]) if body.get("chat") else None)
+            chat.send(str(body.get("message") or ""), context=str(body.get("context") or ""), engine=str(body.get("engine") or "chatgpt"))
+        except ValueError as exc:
+            return error_response("bad_request", str(exc), 400)
+        return jsonify(_einstein_view(chat)), 202
+
+    @app.get("/api/v1/show/einstein/<chat_id>")
+    def api_einstein_chat(chat_id: str) -> Response:
+        try:
+            return jsonify(_einstein_view(_einstein(_require_project(state), chat_id)))
+        except ValueError as exc:
+            return error_response("not_found", str(exc), 404)
+
+    @app.get("/api/v1/show/einstein/<chat_id>/<name>")
+    def api_einstein_image(chat_id: str, name: str):
+        try:
+            return send_file(str(_einstein(_require_project(state), chat_id).image(name)), mimetype="image/png")
+        except ValueError as exc:
+            return error_response("not_found", str(exc), 404)
+
+    @app.post("/api/v1/show/einstein/<chat_id>/accept")
+    def api_einstein_accept(chat_id: str) -> Response:
+        """Keep the chosen picture in the library and place it on the scene at the pinned moment."""
+        from core import show_scenes
+        from core.gag_library import library_dir
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        try:
+            chat = _einstein(project, chat_id)
+            title = str(body.get("title") or next((m["text"] for m in chat.load()["messages"] if m["role"] == "person"), "Einstein drawing"))
+            asset = chat.accept(str(body.get("image") or ""), library_dir(), title)
+        except ValueError as exc:
+            return error_response("bad_request", str(exc), 400)
+        document = show_scenes.load(_scene_files(project))
+        scene = next((item for item in document["scenes"] if item["id"] == str(body.get("scene") or "")), None)
+        if scene is None:
+            return error_response("not_found", "That scene is not in this Show", 404)
+        at = max(scene["start"], min(scene["end"] - 0.5, float(body.get("at", scene["start"]))))
+        duration = max(1.5, min(scene["end"] - at, float(body.get("duration") or 3.0)))
+        # Beside the host rather than over the face: the side with more room.
+        _, plan_path = _show_review_files(project)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        from core.show_framing import face_on_screen
+        face = face_on_screen(plan, at)
+        x = 8.0 if face is None or face[0] >= 0.5 else 64.0
+        scene["overlays"].append({"asset": str(asset), "x": x, "y": 14.0, "width": 28.0, "at": round(at, 2), "duration": round(duration, 2),
+                                  "effect": "pop", "action": "none", "intensity": 1.0})
+        if scene["decision"] in ("pending", "plain"):
+            scene["decision"] = "modified"
+        show_scenes.save(_scene_files(project), document)
+        _invalidate_scene(project, scene["id"])
+        return jsonify({"asset": str(asset), "scene": scene, "overlay": len(scene["overlays"]) - 1})
+
     @app.post("/api/v1/show/scenes/<scene_id>/decision")
     def api_show_scene_decision(scene_id: str) -> Response:
         from core import show_proposals, show_scenes
@@ -2254,6 +2331,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                              "duration": max(0.5, min(scene["end"] - scene["start"], float(raw.get("duration", 4.0)))),
                              "effect": str(raw.get("effect") or "pop"),
                              "action": str(raw.get("action") or "none"), "intensity": max(0.2, min(3.0, float(raw.get("intensity", 1.0)))),
+                             "stretch": max(0.25, min(4.0, float(raw.get("stretch", 1.0)))), "rotate": max(-180.0, min(180.0, float(raw.get("rotate", 0.0)))),
+                             "flip": bool(raw.get("flip", False)), "opacity": max(0.05, min(1.0, float(raw.get("opacity", 1.0)))),
                              **({"entrance": raw["entrance"]} if raw.get("entrance") in show_scenes.ENTRANCES else {}),
                              **({"path": [[max(0.0, min(1.0, float(a))), float(x), float(y)] for a, x, y in raw["path"][:40]],
                                  "hops": max(0, min(20, int(raw.get("hops", 4))))} if isinstance(raw.get("path"), list) and raw["path"] else {}),
@@ -2542,7 +2621,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if kind in {"character", "cutaway"} and _show_allowed_source(project, source) is None:
             return error_response("bad_request", "Choose one of this Show's videos or photos", 400)
         if kind == "steam":
-            item = show_proposals.proposal("steam", at, float(body.get("duration") or 4.0), reason="Added by you", point=[0.35, 0.75], anchor=None, scale=1.0)
+            # Over the cup Show Studio marked at this moment, if any; otherwise a starting point to click on the mug.
+            from core.show_bridge import studio_cup_at
+            cup = studio_cup_at(project.folder, plan, at)
+            item = show_proposals.proposal("steam", at, float(body.get("duration") or 4.0),
+                                           reason="Added by you" + (" · over the cup marked in Show Studio" if cup else ""),
+                                           point=list(cup) if cup else [0.35, 0.75], anchor=None, scale=1.0)
         elif kind == "character":
             item = show_proposals.proposal("character", at, 0.0, reason="Added by you", source=source, still_time=float(body.get("still_time") or 0),
                                            zoom=1.25, focus=[0.5, 0.5], zoom_sec=1.2, region=None, action="mouth", amount=0.02,

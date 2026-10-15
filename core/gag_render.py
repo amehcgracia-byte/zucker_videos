@@ -101,7 +101,17 @@ def load_sticker(raw: dict[str, Any], width: int, height: int) -> Sticker:
     prepared_w = max(8, int(round(target * PREPARED_SCALE)))
     prepared_h = max(8, int(round(image.height * prepared_w / image.width)))
     image = image.resize((prepared_w, prepared_h), Image.LANCZOS)
+    if not raw.get("mouth"):
+        # Placed pictures can be stretched, mirrored and turned (a talking one keeps its mouth where it is).
+        stretch = max(0.25, min(4.0, float(raw.get("stretch") or 1.0)))
+        if abs(stretch - 1.0) > 1e-3:
+            image = image.resize((prepared_w, max(8, int(round(prepared_h * stretch)))), Image.LANCZOS)
+        if raw.get("flip"):
+            image = image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        if float(raw.get("rotate") or 0.0):
+            image = image.rotate(-float(raw["rotate"]), resample=Image.BICUBIC, expand=True)
     pixels = np.asarray(image).astype(np.float32) / 255.0
+    pixels[..., 3] *= max(0.0, min(1.0, float(raw.get("opacity", 1.0))))
     pixels[..., :3] *= pixels[..., 3:4]
     box = raw.get("from_box")
     sticker = Sticker(

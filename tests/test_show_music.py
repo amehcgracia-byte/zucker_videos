@@ -109,4 +109,4 @@ def test_a_jingle_proposal_reaches_the_render_as_a_sound_not_a_picture():
     item = proposal("jingle", 12.0, 2.0, reason="Added by you", path="/m/x.mp3", start=0.0, volume=0.7, fade=0.1, duck=0.4, title="X")
     item["status"] = "approved"
     _, layer, gags = render_inputs([item])
-    assert layer == [{"jingle": "/m/x.mp3", "at": 12.0, "duration": 2.0, "start": 0.0, "volume": 0.7, "fade": 0.1, "duck": 0.4}] and gags == []
+    assert layer == [{"proposal": item["id"], "jingle": "/m/x.mp3", "at": 12.0, "duration": 2.0, "start": 0.0, "volume": 0.7, "fade": 0.1, "duck": 0.4}] and gags == []

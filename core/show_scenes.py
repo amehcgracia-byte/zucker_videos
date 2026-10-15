@@ -160,8 +160,9 @@ def overlay_items(document: dict[str, Any], frame_aspect: float = 16 / 9) -> lis
         for overlay in scene["overlays"]:
             # Placed like the storyboard: top-left corner and width in percent of the frame.
             width = float(overlay.get("width", 23)) / 100
+            stretch = float(overlay.get("stretch") or 1.0)
             with Image.open(overlay["asset"]) as image:
-                height = width * frame_aspect * image.height / image.width
+                height = width * frame_aspect * image.height / image.width * stretch
             x = float(overlay.get("x", 12)) / 100 + width / 2
             y = float(overlay.get("y", 12)) / 100 + height / 2
             action = overlay.get("action") if overlay.get("action") in ACTIONS else ("none" if overlay.get("effect") is None else "custom")
@@ -169,7 +170,8 @@ def overlay_items(document: dict[str, Any], frame_aspect: float = 16 / 9) -> lis
             amount = float(overlay.get("intensity", 1.0))
             item: dict[str, Any] = {"image": overlay["asset"], "at": float(overlay.get("at", scene["start"])),
                                     "duration": float(overlay.get("duration", min(4.0, scene["end"] - scene["start"]))),
-                                    "x": x, "y": y, "width": width, "effect": effect}
+                                    "x": x, "y": y, "width": width, "effect": effect,
+                                    **{key: overlay[key] for key in ("stretch", "rotate", "flip", "opacity") if key in overlay}}
             if preset in ("up", "down"):
                 shift = 0.15 * amount * (-1 if preset == "up" else 1)
                 item["path"] = [[0.0, x, y], [1.0, x, y + shift]]

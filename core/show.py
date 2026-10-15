@@ -214,6 +214,8 @@ def _publish(project, plan: dict[str, Any], destination: Path, *, style_name: st
         "platform": "show",
         "exports": [{"path": str(destination), "platform": "show", "duration_sec": round(duration, 3)}],
         "show": {"source_duration_sec": plan["source_duration"], "edited_duration_sec": round(duration, 3),
+                 # Title card, intro and characters' turns pushed the edit later by these (at, seconds).
+                 "inserted": [[round(at, 3), round(length, 3)] for at, length in spans],
                  "cuts": plan["cuts"], "removed_words": plan["removed_words"], "captions": len(cues),
                  "elapsed_sec": round(time.monotonic() - started, 1), **(summary or {})},
         "warnings": list(warnings or []),

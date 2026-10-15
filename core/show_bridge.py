@@ -495,3 +495,32 @@ def studio_fingerprint(project_folder: str | Path) -> str:
         stat = path.stat()
         digest.update(f"{path.relative_to(base)}:{stat.st_size}:{stat.st_mtime_ns}".encode())
     return digest.hexdigest()[:12]
+
+
+def studio_cup_at(project_folder: str | Path, plan: dict[str, Any], at: float) -> tuple[float, float] | None:
+    """Where Show Studio's marked cup is at edited second ``at`` (shares of the source
+    picture), when a saved section covers that moment and marks the cup visible."""
+    from core import show_bridge_draw as draw
+    from core.show_studio_store import StudioStore
+    source = edited_to_source(plan, at)
+    if source is None:
+        return None
+    for section, start in SECTION_STARTS.items():
+        try:
+            recipe = StudioStore(Path(project_folder), section).state()["composition"] or {}
+        except (ValueError, OSError, json.JSONDecodeError):
+            continue
+        t = source - start
+        for event in recipe.get("events") or []:
+            if event.get("type") != "coffee" or event.get("enabled") is False or not event.get("positionKeys"):
+                continue
+            if not float(event.get("start") or 0) <= t < float(event.get("end") or 0):
+                continue
+            visible = False
+            for time_key, on in event.get("visibleKeys") or []:
+                if time_key <= t:
+                    visible = bool(on)
+            if visible:
+                x, y = draw.point_at(event["positionKeys"], t)
+                return (round(x / STUDIO_W, 4), round(y / STUDIO_H, 4))
+    return None
