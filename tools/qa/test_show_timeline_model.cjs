@@ -22,3 +22,12 @@ const trim={events:[{id:'tv',type:'video',start:10,end:20,sourceIn:4,linkId:'tri
  assert.strictEqual(r.events[1].start,6);assert.strictEqual(r.events[1].end,8);
  console.log('PASS: effect copies/splits share a lane, preserve gesture time, and allow explicit independent layers');
 }
+
+{
+ const source={id:'bull',type:'image',start:2,end:8,motionKeys:[{time:2,x:-.2},{time:8,x:1.2}]};
+ const pasted=M.segment(source,2,8,12,'bull-copy');
+ assert.deepEqual(pasted.motionKeys,[{time:12,x:-.2},{time:18,x:1.2}]);
+ pasted.motionKeys[0].x=0;assert.equal(source.motionKeys[0].x,-.2);
+ const trimmed=M.segment(source,4,8,4,'bull-trim');assert.equal(trimmed.motionKeys[0].time,2);
+ console.log('PASS: keyframed material paste retimes independent keys; trimming preserves its trajectory');
+}

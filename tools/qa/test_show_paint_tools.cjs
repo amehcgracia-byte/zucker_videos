@@ -33,3 +33,11 @@ console.log('PASS: head/region scale and rotation preserve their source anchor a
  assert.deepStrictEqual(timedTrails(runs,21,25,640,360)[1].points,[[200,200],[220,220]]);
  assert.strictEqual(timedTrails(runs,-1,25,640,360).length,0);
 }
+{
+ const {panCamera}=require('./show_paint_tools.js');
+ assert.deepStrictEqual(panCamera({scale:2,x:320,y:180},0,0),{x:.5,y:.5});
+ assert.deepStrictEqual(panCamera({scale:2,x:320,y:180},128,-72),{x:.45,y:.55});
+ assert.deepStrictEqual(panCamera({scale:2,x:320,y:180},1e6,-1e6),{x:.25,y:.75});
+ assert.deepStrictEqual(panCamera({scale:1,x:0,y:0},200,200),{x:.5,y:.5});
+ console.log('PASS: camera drag uses inverse image motion, preserves framing and clamps source edges');
+}

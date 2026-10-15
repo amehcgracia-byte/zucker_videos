@@ -1,0 +1,10 @@
+const assert=require('node:assert/strict'),B=require('./show_background_model.js'),T=require('./show_timeline_model.js');
+const e={id:'subject',type:'cutout',start:10,end:20,backgroundSourceIn:1};
+assert.deepEqual(B.time(e,12,4),{target:3,finished:false});
+assert.deepEqual(B.time(e,14,4),{target:1,finished:false});
+assert.deepEqual(B.time({...e,backgroundLoop:false},14,4),{target:3.96,finished:true});
+const trimmed=T.segment(e,12,20,12,'trim'),pasted=T.segment(e,10,20,20,'copy');
+assert.deepEqual(B.time(trimmed,13,4),B.time(e,13,4));
+assert.deepEqual(B.time(pasted,23,4),B.time(e,13,4));
+assert.equal(B.time(e,12,NaN),null);
+console.log('PASS: video backdrop loops, endpoint freeze, source offset, trim and paste synchronisation');

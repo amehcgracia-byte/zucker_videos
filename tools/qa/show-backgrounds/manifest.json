@@ -1,0 +1,47 @@
+[
+  {
+    "id": "bullring",
+    "title": "Spain \u00b7 bullring",
+    "file": "bullring.png",
+    "origin": "AI-generated with built-in image generation; not a photograph of an actual event",
+    "tags": [
+      "spain",
+      "spanish",
+      "espa\u00f1a",
+      "bullring"
+    ]
+  },
+  {
+    "id": "space",
+    "title": "Space station",
+    "file": "space.png",
+    "origin": "AI-generated with built-in image generation; not a photograph of an actual event",
+    "tags": [
+      "future",
+      "space",
+      "time"
+    ]
+  },
+  {
+    "id": "laboratory",
+    "title": "Thinking \u00b7 study",
+    "file": "laboratory.png",
+    "origin": "AI-generated with built-in image generation; not a photograph of an actual event",
+    "tags": [
+      "think",
+      "thinking",
+      "mathematics"
+    ]
+  },
+  {
+    "id": "landscape",
+    "title": "Mountain meadow",
+    "file": "landscape.png",
+    "origin": "AI-generated with built-in image generation; not a photograph of an actual event",
+    "tags": [
+      "outside",
+      "nature",
+      "mountain"
+    ]
+  }
+]

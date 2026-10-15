@@ -14,5 +14,6 @@ function timedTrails(runs,frame,fps,width,height,tailSeconds=4){
  if(points.length>1)out.push({points,opacity:Math.max(0,Math.min(1,(run.at(-1)[0]+fps*tailSeconds-frame)/fps))});
  }return out;
 }
-const api={timedTrails,hash,resample,shape,pigment,reveal,partMatrix};root.ShowPaint=api;if(typeof module!=='undefined')module.exports=api;
+function panCamera(map,dx,dy){const s=map.scale,hw=640/s,hh=360/s;return {x:Math.max(hw,Math.min(1280-hw,map.x+hw-dx/s))/1280,y:Math.max(hh,Math.min(720-hh,map.y+hh-dy/s))/720}}
+const api={panCamera,timedTrails,hash,resample,shape,pigment,reveal,partMatrix};root.ShowPaint=api;if(typeof module!=='undefined')module.exports=api;
 })(typeof window==='undefined'?globalThis:window);
