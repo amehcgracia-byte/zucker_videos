@@ -2055,19 +2055,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         stored = show_proposals.load(proposals_path)
         for item in stored["proposals"]:
             item["needs"] = show_proposals.check(item)
-        ids = [scene["id"] for scene in document["scenes"]]
-        current = str(request.args.get("current") or (ids[0] if ids else ""))
-        if current in ids:
-            index = ids.index(current)
-            _prepare_scenes(project, ids[index:index + 3])
+        # Each scene plays at once from the original video, its cuts skipped in the page;
+        # the preview with zooms and effects is rendered only when the person asks for it.
+        from core.show import edited_words, scene_segments
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        timed = edited_words(plan) if plan.get("words") else []
         with scene_lock:
             for scene in document["scenes"]:
                 scene["preview"] = scene_previews.get(_scene_key(project, scene["id"]), {"status": "none"})
+                scene["segments"] = scene_segments(plan, float(scene["start"]), float(scene["end"])) if plan.get("shots") else []
+                scene["words"] = [[text, a, b] for text, a, b in timed if scene["start"] <= a < scene["end"]]
         wizard = project.data.get("settings", {}).get("wizard", {})
         logo = Path(str(wizard.get("reel_logo_path") or ""))
         return jsonify({**document, "proposals": stored["proposals"], "resources": stored.get("resources") or [], "source": stored.get("source"),
                         "project_logo": str(logo) if logo.is_file() else None,
-                        "plan": {"edited_duration": json.loads(plan_path.read_text(encoding="utf-8"))["edited_duration"]}})
+                        "plan": {"edited_duration": plan["edited_duration"]},
+                        "source_url": f"/api/v1/show/source?path={quote(str(plan.get('source') or ''))}"})
 
     @app.post("/api/v1/show/scenes/<scene_id>/decision")
     def api_show_scene_decision(scene_id: str) -> Response:

@@ -9,6 +9,9 @@ from pathlib import Path
 from flask import Response, abort, request, send_file
 
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)$")
+# A player asks for "bytes=0-" (the whole rest of the file): it is answered in parts
+# of at most this size and asks for the next one; a long original is never read whole.
+MAX_RANGE_BYTES = 8 * 1024 * 1024
 
 
 def send_file_with_range(path: str) -> Response:
@@ -39,7 +42,7 @@ def send_file_with_range(path: str) -> Response:
         end = int(end_text) if end_text else size - 1
     if start >= size or end < start:
         abort(416)
-    end = min(end, size - 1)
+    end = min(end, size - 1, start + MAX_RANGE_BYTES - 1)
     length = end - start + 1
     with file_path.open("rb") as fh:
         fh.seek(start)

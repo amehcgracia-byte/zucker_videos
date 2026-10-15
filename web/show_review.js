@@ -43,6 +43,7 @@
 
   // ---- Storyboard -------------------------------------------------------------
 
+  const wantEffects = new Set();      // scenes whose preview with effects was asked for
   const scenes = () => review.scenes || [];
   const stepNames = () => ["Identity", "Intro", ...scenes().map((scene) => scene.name), "Review & render"];
   const currentScene = () => (step >= 2 && step < 2 + scenes().length ? scenes()[step - 2] : null);
@@ -51,6 +52,7 @@
     if (!review) return;
     clearTimeout(poll);
     stopWatching();
+    stopQuick();
     const names = stepNames();
     $("#showSteps").innerHTML = names.map((name, index) => {
       const scene = index >= 2 && index < names.length - 1 ? scenes()[index - 2] : null;
@@ -78,6 +80,7 @@
   }
 
   function showVideo(url, status = "") {
+    stopQuick();
     const video = $("#showStageVideo");
     $("#showStageCard").hidden = true;
     video.hidden = !url;
@@ -157,9 +160,15 @@
     const scene = currentScene();
     const effects = sceneEffects(scene);
     const preview = scene.preview || { status: "none" };
+    const words = scene.words || [];
     $("#showPanel").innerHTML = `<h3>${escape(scene.name)} <small>${clock(scene.start)}–${clock(scene.end)}</small></h3>
+      <div class="show-said" id="showSaid"><strong>What you say</strong> <small>Click a word to go there. Select some words and right-click them to add an animation over them.</small>
+        <p class="show-said-text">${words.length ? words.map(([text, start, end], index) => `<span data-word="${index}" data-start="${start}" data-end="${end}">${escape(text)}</span>`).join(" ") : escape(scene.text)}</p></div>
+      <div class="show-preview-mode">
+        <button type="button" class="icon-button small ${wantEffects.has(scene.id) ? "" : "active"}" data-preview-mode="quick" title="Your cut, played from the original video at once">Quick: the cut only</button>
+        <button type="button" class="icon-button small ${wantEffects.has(scene.id) ? "active" : ""}" data-preview-mode="effects" title="Rendered with zooms, close-ups and drawings: it takes a while">Preview with effects</button>
+      </div>
       <p class="show-proposal">${escape(scene.proposal)}</p>
-      <details class="show-said"><summary>What you say</summary><p>${escape(scene.text)}</p></details>
       <div class="show-decide">
         <button type="button" class="primary icon-button small" data-scene-decision="accepted" data-then-next>Accept and next →</button>
         <button type="button" class="icon-button small" data-scene-decision="accepted">Accept</button>
@@ -184,11 +193,58 @@
     for (const id of open) if (scene.effects.includes(id)) mountEditor(id);
     bindAddForm(scene);
     drawOverlays(scene);
-    if (preview.status === "ready") showVideo(preview.url);
-    else {
-      showVideo("", preview.status === "failed" ? `The preview failed: ${preview.error}` : "Preparing this scene's preview…");
-      poll = setTimeout(refreshBoard, 3000);
+    showScenePicture(scene);
+  }
+
+  // The picture of a scene: at once its cut from the original video; with effects only when asked.
+  function showScenePicture(scene) {
+    const preview = scene.preview || { status: "none" };
+    if (!wantEffects.has(scene.id)) {
+      if (!playQuick(scene)) showVideo("", "This scene has no picture to play.");
+      return;
     }
+    if (preview.status === "ready") { showVideo(preview.url, "With its zooms, close-ups and drawings."); return; }
+    showVideo("", preview.status === "failed" ? `The preview failed: ${preview.error}` : "Rendering this scene with its effects… it can take a few minutes. The quick view stays available.");
+    poll = setTimeout(refreshBoard, 3000);
+  }
+
+  // ---- Quick view: the scene's cut played from the original, nothing rendered ----------
+  let quick = null;
+  function stopQuick() { if (quick) { cancelAnimationFrame(quick.frame); quick = null; } }
+  function playQuick(scene, from = 0, onEnd = null) {
+    stopQuick();
+    const segments = scene.segments || [];
+    if (!review.source_url || !segments.length) return false;
+    const video = $("#showStageVideo");
+    $("#showStageCard").hidden = true;
+    video.hidden = false;
+    if (video.getAttribute("src") !== review.source_url) { video.src = review.source_url; video.load(); }
+    quick = { scene, segments, index: 0, frame: 0 };
+    const seek = (index, offset = 0) => { quick.index = index; video.currentTime = segments[index][0] + offset; };
+    const start = () => { if (quick) { const [index, offset] = sourceAt(segments, from); seek(index, offset); } };
+    if (video.readyState >= 1) start(); else video.addEventListener("loadedmetadata", start, { once: true });
+    const tick = () => {
+      if (!quick) return;
+      const end = segments[quick.index][1];
+      if (!video.seeking && video.currentTime >= end - 0.02) {
+        if (quick.index + 1 < segments.length) seek(quick.index + 1);          // skip what was cut
+        else if (onEnd) { stopQuick(); onEnd(); return; }
+        else { video.pause(); seek(0); }
+      }
+      quick.frame = requestAnimationFrame(tick);
+    };
+    quick.frame = requestAnimationFrame(tick);
+    $("#showStageStatus").textContent = "Quick view: your cut, played from the original video, without zooms or effects.";
+    return true;
+  }
+  // Seconds into the scene's edit → (segment, offset in it).
+  function sourceAt(segments, seconds) {
+    let left = Math.max(0, seconds);
+    for (const [index, [a, b]] of segments.entries()) {
+      if (left < b - a) return [index, left];
+      left -= b - a;
+    }
+    return [0, 0];
   }
 
   async function refreshBoard() {
@@ -198,8 +254,9 @@
     if (!fresh) return;
     review = fresh;
     const updated = currentScene();
-    if (updated?.preview?.status === "ready") showVideo(updated.preview.url);
-    else if (updated?.preview?.status === "failed") showVideo("", `The preview failed: ${updated.preview.error}`);
+    if (!updated || !wantEffects.has(updated.id)) return;
+    if (updated.preview?.status === "ready") showVideo(updated.preview.url, "With its zooms, close-ups and drawings.");
+    else if (updated.preview?.status === "failed") showVideo("", `The preview failed: ${updated.preview.error}`);
     else poll = setTimeout(refreshBoard, 3000);
     $("#showSteps").querySelectorAll("[data-show-step]").forEach((button) => button.classList.toggle("active", Number(button.dataset.showStep) === step));
   }
@@ -253,10 +310,11 @@
     if (part.kind === "scene") {
       const scene = part.scene;
       label = `${scene.name} · ${DECISION_LABELS[scene.decision]}${scene.decision === "pending" ? " (shown with its proposals; rendered without them until you decide)" : ""}`;
-      url = scene.preview?.status === "ready" ? scene.preview.url : "";
-      if (!url) {
-        showVideo("", `${scene.name}: its preview is still being prepared, skipped · ${where}`);
-        watching.timer = setTimeout(playNext, 1500);
+      url = wantEffects.has(scene.id) && scene.preview?.status === "ready" ? scene.preview.url : "";
+      if (!url) {                                   // the cut itself, at once, from the original video
+        if (!playQuick(scene, 0, playNext)) { watching.timer = setTimeout(playNext, 500); return; }
+        $("#showStageStatus").textContent = `${scene.name} · ${DECISION_LABELS[scene.decision]} · its cut, without effects · ${where}`;
+        video.play().catch(() => { $("#showStageStatus").textContent = `${label}: press play to continue.`; });
         return;
       }
     }
@@ -295,16 +353,96 @@
       if (kind === "character") Object.assign(body, { source: form.elements.source.value, still_time: Number(form.elements.source_time.value) || 0 });
       if (kind === "cutaway") Object.assign(body, { source: form.elements.source.value, source_start: Number(form.elements.source_time.value) || 0 });
       if (kind === "drawing") Object.assign(body, { subject: form.elements.subject.value || "a guitar", style: form.elements.style.value });
-      try {
-        const item = await api("/show/review/add", { method: "POST", body: JSON.stringify(body) });
-        review.proposals.push(item);
-        scene.effects.push(item.id);
-        scene.decision = "modified";
-        open.add(scene.id); open.add(item.id);
-        renderScene();
-      } catch (error) { showToast(error.message, true); }
+      await addEffect(scene, body);
     };
   }
+
+  async function addEffect(scene, body) {
+    try {
+      const item = await api("/show/review/add", { method: "POST", body: JSON.stringify(body) });
+      review.proposals.push(item);
+      scene.effects.push(item.id);
+      scene.decision = "modified";
+      open.add(scene.id); open.add(item.id);
+      renderScene();
+      return item;
+    } catch (error) { showToast(error.message, true); return null; }
+  }
+
+  // ---- "What you say": click a word to go there; select words, right-click to animate them --
+  function saidSelection() {
+    const said = $("#showSaid .show-said-text");
+    const selection = window.getSelection();
+    if (!said || !selection || selection.isCollapsed || !said.contains(selection.anchorNode)) return null;
+    const spans = [...said.querySelectorAll("[data-word]")].filter((span) => selection.containsNode(span, true));
+    if (!spans.length) return null;
+    return { text: selection.toString().trim().replace(/\s+/g, " ").slice(0, 80),
+      start: Number(spans[0].dataset.start), end: Number(spans[spans.length - 1].dataset.end) };
+  }
+
+  function sayMenu(x, y, picked) {
+    const scene = currentScene();
+    let menu = $("#showSayMenu");
+    if (!menu) {
+      menu = document.createElement("div");
+      menu.id = "showSayMenu";
+      menu.className = "show-context-menu";
+      menu.setAttribute("role", "menu");
+      document.body.append(menu);
+    }
+    const span = Math.max(0.5, picked.end - picked.start);
+    const quoted = escape(picked.text.length > 34 ? `${picked.text.slice(0, 32)}…` : picked.text);
+    const choices = [
+      ["drawing", `Draw “${quoted}”`, { kind: "drawing", subject: picked.text, style: "crayon", duration: Math.max(2, span) }],
+      ["word", `Show “${quoted}” big`, { kind: "word", text: picked.text.toUpperCase().slice(0, 40), duration: Math.max(1.5, span) }],
+      ["math", "Formulas around me here", { kind: "math", duration: Math.max(2, span) }],
+      ["steam", "Rainbow steam here", { kind: "steam", duration: Math.max(2, span) }],
+      ["cutaway", "A close-up here…", null],
+      ["character", "A character speaks here…", null],
+    ];
+    menu.innerHTML = `<strong>Create an animation over this selection</strong><small>${clock(picked.start)}–${clock(picked.end)}</small>
+      <div class="show-actions-grid">${choices.map(([key, label]) => `<button type="button" data-say="${key}">${label}</button>`).join("")}</div>
+      <div class="show-actions"><button type="button" data-say="copy">Copy</button></div>`;
+    menu.hidden = false;
+    menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8))}px`;
+    menu.onclick = async (event) => {
+      const button = event.target instanceof Element ? event.target.closest("[data-say]") : null;
+      if (!button) return;
+      menu.hidden = true;
+      const key = button.dataset.say;
+      if (key === "copy") { await navigator.clipboard?.writeText(picked.text).catch(() => {}); return; }
+      const choice = choices.find(([name]) => name === key);
+      if (choice[2]) { await addEffect(scene, { ...choice[2], at: picked.start }); return; }
+      // A close-up or a character needs its video: the Add form opens at this moment.
+      open.add(scene.id);
+      renderScene();
+      const form = $("#showSceneAdd");
+      form.elements.kind.value = key;
+      form.elements.at.value = picked.start.toFixed(1);
+      form.elements.kind.dispatchEvent(new Event("change"));
+      form.scrollIntoView({ block: "center" });
+      form.elements.source.focus();
+    };
+  }
+
+  document.addEventListener("contextmenu", (event) => {
+    if (!(event.target instanceof Element) || !event.target.closest("#showSaid")) return;
+    const picked = saidSelection();
+    if (!picked) return;                       // nothing selected: the usual menu
+    event.preventDefault();
+    sayMenu(event.clientX, event.clientY, picked);
+  });
+  document.addEventListener("click", (event) => {
+    const menu = $("#showSayMenu");
+    if (menu && !menu.hidden && !(event.target instanceof Element && event.target.closest("#showSayMenu"))) menu.hidden = true;
+    const word = event.target instanceof Element ? event.target.closest("#showSaid [data-word]") : null;
+    const scene = currentScene();
+    if (!word || !scene || !window.getSelection()?.isCollapsed) return;
+    if (wantEffects.has(scene.id)) { wantEffects.delete(scene.id); renderScene(); }
+    playQuick(scene, Number(word.dataset.start) - scene.start);
+    $("#showStageVideo").play().catch(() => {});
+  });
 
   // Pictures placed on the scene: drag to move, corner to resize, right-click menu.
   function drawOverlays(scene) {
@@ -746,7 +884,7 @@
     const menu = $("#showContextMenu");
     // The click that ends a plain press on an element is the one that opened its tools.
     if (menu && !menu.hidden && !(event.target instanceof Element && event.target.closest("#showContextMenu, [data-overlay]"))) menu.hidden = true;
-    const target = event.target instanceof Element ? event.target.closest("[data-show-step], #showBack, #showNext, [data-scene-decision], [data-scene-modify], [data-library], [data-menu], [data-animate], #showRenderNow, [data-show-preview], [data-show-adjust], [data-show-status], [data-watch-all], [data-first-pending]") : null;
+    const target = event.target instanceof Element ? event.target.closest("[data-show-step], #showBack, #showNext, [data-scene-decision], [data-scene-modify], [data-library], [data-menu], [data-animate], #showRenderNow, [data-show-preview], [data-show-adjust], [data-show-status], [data-watch-all], [data-first-pending], [data-preview-mode]") : null;
     if (!target || !review) return;
     try {
       if (target.dataset.showStep) { step = Number(target.dataset.showStep); render(); }
@@ -754,6 +892,19 @@
       else if (target.id === "showNext") { step = Math.min(stepNames().length - 1, step + 1); render(); }
       else if (target.dataset.sceneDecision) await decideScene(target.dataset.sceneDecision, target.hasAttribute("data-then-next"));
       else if (target.hasAttribute("data-watch-all")) watchAll();
+      else if (target.dataset.previewMode) {
+        const scene = currentScene();
+        if (target.dataset.previewMode === "effects") {
+          wantEffects.add(scene.id);
+          if (scene.preview?.status !== "ready") {
+            await api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, { method: "POST" });
+            scene.preview = { status: "queued" };
+          }
+        } else wantEffects.delete(scene.id);
+        $("#showPanel").querySelectorAll("[data-preview-mode]").forEach((button) => button.classList.toggle("active", button === target));
+        clearTimeout(poll);
+        showScenePicture(scene);
+      }
       else if (target.hasAttribute("data-first-pending")) {
         const first = scenes().findIndex((scene) => scene.decision === "pending");
         if (first >= 0) { step = first + 2; render(); }

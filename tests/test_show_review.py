@@ -81,6 +81,12 @@ def test_only_reviewed_effects_are_rendered_and_captions_follow_the_interruption
     assert after[0]["start"] >= character_at + inserted - 0.05       # later ones wait for the character
 
 
+def test_a_scene_plays_its_source_stretches_in_order_without_the_cuts():
+    plan = {"fps": 25, "shots": [{"start_frame": 0, "end_frame": 50}, {"start_frame": 100, "end_frame": 175}, {"start_frame": 300, "end_frame": 350}]}
+    assert show.scene_segments(plan, 0.0, 5.0) == [[0.0, 2.0], [4.0, 7.0]]          # 2 s + 3 s of edit
+    assert show.scene_segments(plan, 3.0, 7.0) == [[5.0, 7.0], [12.0, 14.0]]        # starts inside the second shot
+
+
 def test_a_window_of_the_edit_keeps_its_frames_and_moves_its_close_ups():
     plan = {"fps": 30, "edited_duration": 6.0, "shots": [{"start_frame": 0, "end_frame": 60}, {"start_frame": 100, "end_frame": 220}],
             "cutaways": [{"at": 3.0, "duration": 1.0, "source": "x"}, {"at": 0.2, "duration": 0.5, "source": "y"}]}

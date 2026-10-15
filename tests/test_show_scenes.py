@@ -135,17 +135,21 @@ def _storyboard(tmp_path, monkeypatch):
     return project, app.test_client(), document, rendered
 
 
-def test_the_storyboard_prepares_the_next_scenes_and_keeps_every_decision(tmp_path, monkeypatch):
+def test_the_storyboard_renders_effects_only_when_asked_and_keeps_every_decision(tmp_path, monkeypatch):
     import json
     import time
     project, client, document, rendered = _storyboard(tmp_path, monkeypatch)
     board = client.get("/api/v1/show/scenes").get_json()
     assert len(board["scenes"]) == len(document["scenes"]) >= 3
+    time.sleep(0.2)
+    assert rendered == []                                   # each scene plays from the original at once, nothing rendered
+    assert board["source_url"].startswith("/api/v1/show/source?path=") and "segments" in board["scenes"][0]
+    client.post(f"/api/v1/show/scenes/{board['scenes'][0]['id']}/preview")      # "Preview with effects"
     for _ in range(50):
-        if len(rendered) >= 3:
+        if rendered:
             break
         time.sleep(0.05)
-    assert rendered[:3] == [scene["id"] for scene in document["scenes"][:3]]        # current scene and the two next
+    assert rendered == [board["scenes"][0]["id"]]
     board = client.get("/api/v1/show/scenes").get_json()
     assert board["scenes"][0]["preview"]["status"] == "ready" and board["scenes"][0]["preview"]["url"]
     first = board["scenes"][0]["id"]
@@ -177,15 +181,22 @@ def test_the_scene_you_ask_for_is_prepared_next_and_only_once(tmp_path, monkeypa
     monkeypatch.setattr("core.show.preview_scene", slow_preview)
     ids = [scene["id"] for scene in client.get("/api/v1/show/scenes").get_json()["scenes"]]
     last = ids[-1]
+    first = client.post(f"/api/v1/show/scenes/{ids[1]}/preview")              # keeps the worker busy
+    assert first.status_code == 202
     for _ in range(3):                                     # asked again while it waits
         assert client.post(f"/api/v1/show/scenes/{last}/preview").status_code == 202
     busy.set()
-    for _ in range(100):
-        if len(rendered) >= 3:
-            break
-        time.sleep(0.05)
+
+    def wait_for(count):
+        for _ in range(100):
+            if len(rendered) >= count:
+                return
+            time.sleep(0.05)
+    wait_for(2)
+    client.post(f"/api/v1/show/scenes/{ids[0]}/preview")
+    wait_for(3)
     time.sleep(0.2)
-    assert rendered[:2] == [ids[0], last] and rendered.count(last) == 1
+    assert rendered[:3] == [ids[1], last, ids[0]] and rendered.count(last) == 1
 
 
 def test_identity_intro_and_pictures_come_only_from_the_project_and_its_library(tmp_path, monkeypatch):

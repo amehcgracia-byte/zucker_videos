@@ -388,6 +388,13 @@ def framed_layer(plan: dict[str, Any], layer: list[dict[str, Any]]) -> list[dict
     return out
 
 
+def scene_segments(plan: dict[str, Any], start: float, end: float) -> list[list[float]]:
+    """The source stretches (seconds) a scene of the edit plays, in order: the page
+    plays them from the original video, skipping what was cut, without rendering."""
+    fps = int(plan.get("fps") or 30)
+    return [[round(shot["start_frame"] / fps, 3), round(shot["end_frame"] / fps, 3)] for shot in window_plan(plan, start, end)["shots"]]
+
+
 def window_plan(plan: dict[str, Any], start: float, end: float) -> dict[str, Any]:
     """The part of the edit between ``start`` and ``end`` (edited seconds) as a plan of its own."""
     fps = int(plan.get("fps") or 30)

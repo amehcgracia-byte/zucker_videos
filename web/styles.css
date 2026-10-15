@@ -2050,3 +2050,11 @@ pre {
 @media (max-width: 760px) { .show-studio-split { grid-template-columns: 1fr; } }
 .show-progress { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 10px; margin: 0 0 8px; font-size: 0.9em; }
 .show-progress progress { width: 100%; accent-color: var(--accent); }
+.show-said { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; display: grid; gap: 4px; }
+.show-said small { color: var(--muted); }
+.show-said-text { margin: 0; line-height: 1.7; }
+.show-said-text [data-word] { cursor: pointer; border-radius: 4px; }
+.show-said-text [data-word]:hover { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.show-preview-mode { display: flex; flex-wrap: wrap; gap: 6px; }
+.show-preview-mode .active { background: var(--accent); color: #fff; }
+#showSayMenu small { color: var(--muted); }
