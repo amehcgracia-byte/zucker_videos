@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Zucker Editor</title>
     <link rel="icon" href="/logo_editor_green.png?v=editor-ui-4" />
-    <link rel="stylesheet" href="/styles.css?v=editor-ui-5" />
+    <link rel="stylesheet" href="/styles.css?v=editor-ui-6" />
     <script src="/theme.js?v=editor-ui-4"></script>
   </head>
   <body>
@@ -23,6 +23,7 @@
         <button class="step-nav" data-step-nav="6">Result</button>
       </div>
       <div class="nav-actions">
+        <button id="showWorkspaceOpen" class="icon-button small" type="button" title="Review the saved automatic Show, its transcript and scene decisions">Show storyboard</button>
         <button id="showStudioOpen" class="icon-button small" type="button" title="The Show editing desk for the open project">Show Studio</button>
         <button id="projectLibrary" class="icon-button small" type="button">Project library</button>
         <button id="themeToggle" class="icon-button small" type="button">Dark mode</button>
@@ -341,15 +342,15 @@
           <div class="review-actions"><button id="replaceRejected" class="icon-button">Replace rejected</button><button id="renderReviewed" class="primary icon-button">Render Frames</button></div>
         </div>
         <div id="showReviewBox" class="review-box show-review" hidden>
-          <div class="review-ready-notice" role="status"><strong>Your show, scene by scene</strong><span>Each scene plays at once as you cut it and explains what it proposes: accept it, modify it or leave it without effect; not every moment needs decorating. To add something of your own, select words in “What you say” and right-click them. Ask for “Preview with effects” to see a scene with its zooms and drawings. Nothing else is rendered until the last step.</span></div>
+          <details class="review-ready-notice show-workspace-help"><summary><strong>Your show, scene by scene</strong> · How it works</summary><span>Each scene plays at once as you cut it and explains what it proposes: accept it, modify it or leave it without effect; not every moment needs decorating. To add something of your own, select words in “What you say” and right-click them. Ask for “Preview with effects” to see a scene with its zooms and drawings. Nothing else is rendered until the last step.</span></details>
           <div id="showProgress" class="show-progress" aria-live="polite"><span></span><progress max="1" value="0"></progress></div>
           <nav id="showSteps" class="show-steps" aria-label="Show storyboard"></nav>
           <div class="show-board">
-            <div class="show-stage" id="showStage">
+            <div class="show-stage-wrap"><div class="show-stage" id="showStage">
               <video id="showStageVideo" controls playsinline></video>
               <canvas id="showStageCard" width="1280" height="720" hidden></canvas>
               <div id="showStageLayer" class="show-stage-layer"></div>
-              <p id="showStageStatus" class="show-stage-status" role="status"></p>
+              </div><p id="showStageStatus" class="show-stage-status" role="status"></p>
             </div>
             <aside id="showPanel" class="show-panel"></aside>
           </div>
@@ -494,8 +495,8 @@
     <script src="/native_bridge.js?v=editor-ui-4"></script>
     <link rel="stylesheet" href="/tutorial.css" />
     <script src="/tutorial.js"></script>
-    <script src="/app.js?v=editor-ui-9"></script>
-    <script src="/show_review.js?v=10"></script>
+    <script src="/app.js?v=editor-ui-10"></script>
+    <script src="/show_review.js?v=12"></script>
     <script src="/show_characters.js?v=4"></script>
     <script src="/project_library.js?v=1"></script>
   </body>

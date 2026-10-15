@@ -189,8 +189,8 @@
     header.append(line);
     if (inProject) {
       const back = document.createElement('a');
-      back.href = '/';
-      back.textContent = '← Zucker';
+      back.href = '/?show=storyboard';
+      back.textContent = '← Show storyboard';
       back.className = 'studioBack';
       header.prepend(back);
       line.textContent = 'Opening the project…';

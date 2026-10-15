@@ -41,8 +41,22 @@
     render();
   }
 
+  async function openWorkspace({sceneId=null}={}) {
+    const state = await api("/wizard/status");
+    if (["running", "cancelling"].includes(state.status)) throw new Error("Wait for the current job before editing the storyboard.");
+    await openReview();
+    if (sceneId) {
+      const index=review.scenes.findIndex(scene=>scene.id===sceneId);
+      if (index>=0) { step=index+2; render(); }
+    }
+    window.enterShowWorkspace();
+  }
+  document.getElementById("showWorkspaceOpen")?.addEventListener("click",()=>openWorkspace().catch(error=>showToast(error.message,true)));
+
   // ---- Storyboard -------------------------------------------------------------
 
+  const wantQuick = new Set();
+  const useSaved = scene => !!review.saved_render && !wantEffects.has(scene.id) && !wantQuick.has(scene.id);
   const wantEffects = new Set();      // scenes whose preview with effects was asked for
   const scenes = () => review.scenes || [];
   const stepNames = () => ["Identity", "Intro", ...scenes().map((scene) => scene.name), "Review & render"];
@@ -165,7 +179,8 @@
       <div class="show-said" id="showSaid"><strong>What you say</strong> <small>Click a word to go there. Select some words and right-click them to add an animation over them.</small>
         <p class="show-said-text">${words.length ? words.map(([text, start, end], index) => `<span data-word="${index}" data-start="${start}" data-end="${end}">${escape(text)}</span>`).join(" ") : escape(scene.text)}</p></div>
       <div class="show-preview-mode">
-        <button type="button" class="icon-button small ${wantEffects.has(scene.id) ? "" : "active"}" data-preview-mode="quick" title="Your cut, played from the original video at once">Quick: the cut only</button>
+        ${review.saved_render ? `<button type="button" class="icon-button small ${useSaved(scene) ? "active" : ""}" data-preview-mode="saved" title="The last completed export, including its captions and effects">Saved render</button>` : ""}
+        <button type="button" class="icon-button small ${!wantEffects.has(scene.id) && !useSaved(scene) ? "active" : ""}" data-preview-mode="quick" title="Your cut, played from the original video at once">Quick: the cut only</button>
         <button type="button" class="icon-button small ${wantEffects.has(scene.id) ? "active" : ""}" data-preview-mode="effects" title="Rendered with zooms, close-ups and drawings: it takes a while">Preview with effects</button>
       </div>
       <p class="show-proposal">${escape(scene.proposal)}</p>
@@ -213,20 +228,22 @@
   function stopQuick() { if (quick) { cancelAnimationFrame(quick.frame); quick = null; } }
   function playQuick(scene, from = 0, onEnd = null) {
     stopQuick();
-    const segments = scene.segments || [];
-    if (!review.source_url || !segments.length) return false;
+    const saved = useSaved(scene);
+    const segments = saved ? [[scene.start, scene.end]] : (scene.segments || []);
+    const source = saved ? review.saved_render.url : review.source_url;
+    if (!source || !segments.length) return false;
     const video = $("#showStageVideo");
     $("#showStageCard").hidden = true;
     video.hidden = false;
-    if (video.getAttribute("src") !== review.source_url) { video.src = review.source_url; video.load(); }
+    if (video.getAttribute("src") !== source) { video.src = source; video.load(); }
     quick = { scene, segments, index: 0, frame: 0 };
     const seek = (index, offset = 0) => { quick.index = index; video.currentTime = segments[index][0] + offset; };
     const start = () => { if (quick) { const [index, offset] = sourceAt(segments, from); seek(index, offset); } };
     if (video.readyState >= 1) start(); else video.addEventListener("loadedmetadata", start, { once: true });
     const tick = () => {
       if (!quick) return;
-      const end = segments[quick.index][1];
-      if (!video.seeking && video.currentTime >= end - 0.02) {
+      const end = Math.min(segments[quick.index][1], Number.isFinite(video.duration) ? video.duration : Infinity);
+      if (!video.seeking && (video.ended || video.currentTime >= end - 0.04)) {
         if (quick.index + 1 < segments.length) seek(quick.index + 1);          // skip what was cut
         else if (onEnd) { stopQuick(); onEnd(); return; }
         else { video.pause(); seek(0); }
@@ -234,7 +251,7 @@
       quick.frame = requestAnimationFrame(tick);
     };
     quick.frame = requestAnimationFrame(tick);
-    $("#showStageStatus").textContent = "Quick view: your cut, played from the original video, without zooms or effects.";
+    $("#showStageStatus").textContent = saved ? "Saved render: the last completed edit, with its captions and effects. New decisions need a new effects preview/render." : "Quick view: your cut, played from the original video, without zooms or effects.";
     return true;
   }
   // Seconds into the scene's edit → (segment, offset in it).
@@ -402,7 +419,9 @@
     ];
     menu.innerHTML = `<strong>Create an animation over this selection</strong><small>${clock(picked.start)}–${clock(picked.end)}</small>
       <div class="show-actions-grid">${choices.map(([key, label]) => `<button type="button" data-say="${key}">${label}</button>`).join("")}</div>
-      <div class="show-actions"><button type="button" data-say="copy">Copy</button></div>`;
+      <label>Your drawing idea for this selection<textarea aria-label="Drawing idea for selected words" maxlength="2000" placeholder="For example: a clumsy hand-drawn sun peeking from the corner"></textarea></label>
+      <small>Saved as a proposal. Review it before asking for an effects preview.</small>
+      <div class="show-actions"><button type="button" data-say="idea">Add drawing idea</button><button type="button" data-say="copy">Copy</button></div>`;
     menu.hidden = false;
     menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 8))}px`;
     menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8))}px`;
@@ -411,6 +430,12 @@
       if (!button) return;
       menu.hidden = true;
       const key = button.dataset.say;
+      if (key === "idea") {
+        const input=menu.querySelector('textarea'),direction=input.value.trim();
+        if(!direction){menu.hidden=false;input.focus();return;}
+        await addEffect(scene,{kind:"drawing",subject:direction.slice(0,80),direction,selected_text:picked.text,style:"crayon",at:picked.start,duration:Math.max(2,span)});
+        return;
+      }
       if (key === "copy") { await navigator.clipboard?.writeText(picked.text).catch(() => {}); return; }
       const choice = choices.find(([name]) => name === key);
       if (choice[2]) { await addEffect(scene, { ...choice[2], at: picked.start }); return; }
@@ -895,12 +920,13 @@
       else if (target.dataset.previewMode) {
         const scene = currentScene();
         if (target.dataset.previewMode === "effects") {
+          wantQuick.delete(scene.id);
           wantEffects.add(scene.id);
           if (scene.preview?.status !== "ready") {
             await api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, { method: "POST" });
             scene.preview = { status: "queued" };
           }
-        } else wantEffects.delete(scene.id);
+        } else { wantEffects.delete(scene.id); if(target.dataset.previewMode === "quick") wantQuick.add(scene.id); else wantQuick.delete(scene.id); }
         $("#showPanel").querySelectorAll("[data-preview-mode]").forEach((button) => button.classList.toggle("active", button === target));
         clearTimeout(poll);
         showScenePicture(scene);
@@ -997,7 +1023,7 @@
   document.getElementById("showStudioOpen")?.addEventListener("click", () => { window.location.href = "/show-studio/"; });
 
   window.ShowReview = {
-    open: openReview, hull, refreshLibrary, addToScene,
+    open: openReview, openWorkspace, hull, refreshLibrary, addToScene,
     voices: () => (review?.resources || []).flatMap((resource) => (resource.speech || []).map((line) => ({ source: resource.path, start: line.start, length: Math.round((line.end - line.start) * 100) / 100, text: line.text }))),
     sources: () => [review?.source, ...(review?.resources || []).map((item) => item.path)].filter(Boolean),
     resources: () => (review?.resources || []).filter((item) => item.kind !== "photo").map((item) => item.path),

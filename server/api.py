@@ -2037,6 +2037,28 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         with scene_lock:
             scene_previews.pop(_scene_key(project, scene_id), None)
 
+    def _saved_show_render(project):
+        # The saved snapshot belongs to this project, never an arbitrary path.
+        try:
+            manifest = json.loads((project.artifacts_dir / "export_manifest.json").read_text(encoding="utf-8"))
+            if manifest.get("platform") != "show":
+                return None
+            root = project.exports_dir.resolve()
+            for entry in manifest.get("exports", []):
+                path = Path(str(entry.get("path") or "")).resolve()
+                if root in path.parents and path.is_file() and path.suffix.lower() == ".mp4":
+                    return {"path": path, "url": f"/api/v1/show/rendered/video?file={quote(path.name)}", "filename": path.name}
+        except (OSError, ValueError, TypeError):
+            pass
+        return None
+
+    @app.get("/api/v1/show/rendered/video")
+    def api_show_saved_render():
+        saved = _saved_show_render(_require_project(state))
+        if not saved or request.args.get("file") != saved["filename"]:
+            return error_response("not_found", "No matching saved Show render in this project", 404)
+        return send_file_with_range(str(saved["path"]))
+
     @app.get("/api/v1/show/scenes")
     def api_show_scenes() -> Response:
         """The storyboard: identity, intro, scenes with their effects and previews.
@@ -2070,7 +2092,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         return jsonify({**document, "proposals": stored["proposals"], "resources": stored.get("resources") or [], "source": stored.get("source"),
                         "project_logo": str(logo) if logo.is_file() else None,
                         "plan": {"edited_duration": plan["edited_duration"]},
-                        "source_url": f"/api/v1/show/source?path={quote(str(plan.get('source') or ''))}"})
+                        "source_url": f"/api/v1/show/source?path={quote(str(plan.get('source') or ''))}",
+                        "saved_render": ({k: v for k, v in saved.items() if k != "path"} if (saved := _saved_show_render(project)) else None)})
 
     @app.post("/api/v1/show/scenes/<scene_id>/decision")
     def api_show_scene_decision(scene_id: str) -> Response:
@@ -2447,7 +2470,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 return error_response("bad_request", "Say what is drawn", 400)
             style = str(body.get("style") or "crayon") if str(body.get("style") or "crayon") in gag_paint.STYLES else "crayon"
             item = show_proposals.proposal("drawing", at, float(body.get("duration") or 3.0), reason="Added by you", kind="drawing",
-                                           subject=subject, style=style, prompt="", says="", text="", query="",
+                                           subject=subject, style=style,
+                                           prompt=(gag_paint.prompt_for(subject, style) + "\nAdditional direction: " + str(body["direction"]).strip()[:2000]) if str(body.get("direction") or "").strip() else "",
+                                           selected_text=str(body.get("selected_text") or "")[:400], says="", text="", query="",
                                            position="left", size=0.25, effect="pop")
         elif kind == "word":
             item = show_proposals.proposal("word", at, float(body.get("duration") or 2.0), reason="Added by you", kind="word",
