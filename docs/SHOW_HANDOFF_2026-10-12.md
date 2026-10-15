@@ -394,3 +394,7 @@ The UI is English. No private user assets or landmarks are committed. No primary
 ### Project library storage follow-up
 
 The real Flask application now has a Project library panel backed by `core/project_library.py`: project-owned content-addressed imports, a metadata-only cross-project catalogue, verified copy-on-reuse and recoverable preview-only maintenance. Seven storage/API tests pass locally. No automatic asset purge or migration from the static pilot's IndexedDB is claimed. The new panel is additive; existing import/generation routes must still be wired to it. See the 15 October Claude handoff for API paths, migration precautions and the distinction between moving to Trash and actually reclaiming disk space.
+
+### Mask interaction repair
+
+The latest 15 October section of `SHOW_HANDOFF_CLAUDE_2026-10-15.md` supersedes the earlier exact-frame-only mask visibility policy: masks now hold a detected pose during gaps so they remain present for their clip. It documents actual on-picture drag, contextual mouth controls, automatic local face-oval clipping, one-frame trims and fitting Bill Gates to “Spanish”. This is still preview-only, not phoneme lip sync, hair matting or proof of continuous tracking.
