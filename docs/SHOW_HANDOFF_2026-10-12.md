@@ -398,3 +398,7 @@ The real Flask application now has a Project library panel backed by `core/proje
 ### Mask interaction repair
 
 The latest 15 October section of `SHOW_HANDOFF_CLAUDE_2026-10-15.md` supersedes the earlier exact-frame-only mask visibility policy: masks now hold a detected pose during gaps so they remain present for their clip. It documents actual on-picture drag, contextual mouth controls, automatic local face-oval clipping, one-frame trims and fitting Bill Gates to “Spanish”. This is still preview-only, not phoneme lip sync, hair matting or proof of continuous tracking.
+
+### Opening section and usable precision
+
+See the latest Claude handoff for the actual mouse-edge 0.04-second trim validation, time-window zoom, audio-envelope mouth synchronisation and marked-face clip tracking. The independent 88-second opening (`?section=opening`) starts at the original recording's 0:00; the prior 7:46 workshop edits remain in their original recipe. The opening's six review cards, proxy, cached transcript and detected face/hand data are prepared privately. Preview/analysis files are not part of the PR, and no final-MP4 capability is implied.
