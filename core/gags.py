@@ -225,7 +225,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
         if explicit is not None:
             x, y = map(float, explicit)
         half_w, half_h = size / 2, size * width * image.height / image.width / height / 2
-        if half_h > 0.45:  # very tall picture: narrower so it fits the height
+        if half_h > 0.45 and explicit is None:  # automatic placement fits; explicit placement may leave the frame
             size *= 0.45 / half_h
             half_w, half_h = size / 2, 0.45
         items.append({"image": str(path), "at": gag["at"], "duration": gag["duration"], "width": round(size, 4),

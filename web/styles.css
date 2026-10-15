@@ -2123,3 +2123,27 @@ pre {
 .show-timeline-seek input {flex:1;min-width:0;}
 .show-timeline-seek output {min-width:46px;}
 .show-time-track::after {content:'';position:absolute;left:var(--playhead,0%);top:0;bottom:0;border-left:1px solid #fff8;pointer-events:none;}
+
+/* A single player is moved into this modal; its clock and edits stay shared. */
+#showTimelineDialog {width:min(1180px,96vw);max-width:96vw;max-height:94vh;padding:0;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:auto;}
+#showTimelineDialog::backdrop {background:#000b;}
+#showTimelineDialog > header {position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--panel);padding:12px 16px;border-bottom:1px solid var(--line);}
+#showTimelineDialog > header div {display:grid;gap:3px;}
+#showTimelineDialog > header small {color:var(--muted);}
+#showTimelineDialog > header button {font-size:24px;line-height:1;padding:6px 12px;}
+#showTimelineDialog [data-scene-editor-body] {padding:12px;}
+#showTimelineDialog .show-stage-wrap {position:static;}
+#showTimelineDialog .show-stage {max-height:none;width:min(100%,calc(48vh * 16 / 9));margin-inline:auto;aspect-ratio:16/9;}
+#showTimelineDialog #showTimeline {margin-top:8px;}
+#showTimelineLauncher {width:100%;margin-top:10px;}
+.show-picture-placement {outline:0;}
+.show-picture-placement.selected {outline:2px dashed #ffdc77;}
+.show-picture-placement .picture-corner {display:none;}
+.show-picture-placement.selected .picture-corner {display:block;}
+.show-picture-placement[hidden], .show-overlay[hidden] {display:none;}
+#showTimeline[hidden], #showTimelineLauncher[hidden] {display:none;}
+.show-timeline-tools {display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;align-items:center;}
+.show-timeline-tools strong {font-size:12px;flex:1 1 100%;overflow-wrap:anywhere;}
+.show-scene-transport {display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:8px 0;}
+.show-scene-transport output {color:var(--muted);font-size:12px;}
+.show-scene-transport[hidden] {display:none;}

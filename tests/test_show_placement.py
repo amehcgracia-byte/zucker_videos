@@ -95,3 +95,12 @@ def test_incomplete_character_can_be_retimed_before_its_voice_is_chosen(desk):
     response=client.patch(f'/api/v1/show/review/{ident}',json={'at':12})
     assert response.status_code==200
     assert set(response.get_json()['needs'])=={'region','voice'}
+
+
+def test_manually_sized_picture_can_extend_outside_frame(tmp_path):
+    image=tmp_path/'tall.png'
+    Image.new('RGBA',(20,100),(255,0,0,255)).save(image)
+    recipe=dict(kind='drawing',picture=str(image),at=1,duration=.2,size=.5,image_center=[-.1,.5])
+    items,_=gags.make_items([recipe],tmp_path/'pictures')
+    assert items[0]['width']==.5
+    assert (items[0]['x'],items[0]['y'])==(-.1,.5)
