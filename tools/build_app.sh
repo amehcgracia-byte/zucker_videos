@@ -89,6 +89,11 @@ PY
   --add-data "/System/Library/Fonts/Supplemental/BigCaslon.ttf:assets/fonts" \
   --add-data "$BUILD_INFO:." \
   --add-data "$ROOT/README_APP.md:." \
+  --add-data "$ROOT/tools/qa/show_pilot_editor.html:tools/qa" \
+  --add-data "$ROOT/tools/qa/show_*.js:tools/qa" \
+  --add-data "$ROOT/tools/qa/show-backgrounds:tools/qa/show-backgrounds" \
+  --add-data "$ROOT/tools/qa/show-masks:tools/qa/show-masks" \
+  --add-data "$ROOT/tools/qa/show-elements:tools/qa/show-elements" \
   --collect-submodules demucs \
   --collect-data demucs \
   --hidden-import torchaudio \

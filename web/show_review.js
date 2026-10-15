@@ -842,6 +842,9 @@
     renderScene();
   }
 
+  // The Show editing desk works on the open project, in this same window.
+  document.getElementById("showStudioOpen")?.addEventListener("click", () => { window.location.href = "/show-studio/"; });
+
   window.ShowReview = {
     open: openReview, hull, refreshLibrary, addToScene,
     voices: () => (review?.resources || []).flatMap((resource) => (resource.speech || []).map((line) => ({ source: resource.path, start: line.start, length: Math.round((line.end - line.start) * 100) / 100, text: line.text }))),

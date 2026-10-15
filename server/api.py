@@ -3554,6 +3554,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         LOGGER.exception("Unhandled API error")
         return error_response("internal_error", str(exc), 500)
 
+    from server.project_library_api import register_library_routes
+    register_library_routes(app, state, lambda: app_home() / "Library" / "projects.json")
+    from server.show_studio_api import register_show_studio_routes
+    register_show_studio_routes(app, state, root)
     return app
 
 
@@ -4157,6 +4161,8 @@ def _project_audio_trim(project: Project) -> tuple[float, float]:
 def _enable_cors(app: Flask) -> None:
     @app.after_request
     def add_cors(response: Response) -> Response:
+        if "Access-Control-Allow-Origin" in response.headers:
+            return response                      # a route's own, narrower policy (Show Studio) stays
         response.headers["Access-Control-Allow-Origin"] = "*"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Range"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"

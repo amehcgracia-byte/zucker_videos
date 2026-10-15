@@ -1,4 +1,5 @@
 """Text and paths drawn by FFmpeg filters survive every character a title can hold."""
+import os
 import subprocess
 
 import pytest
@@ -43,6 +44,11 @@ def test_option_values_escape_both_parsing_levels():
 def test_360_motion_commands_load_from_any_project_folder(tmp_path, monkeypatch, folder):
     import core.stages.export as export
     ffmpeg = _drawtext_supported()
+    # Windows already supplies a real drive colon in tmp_path. A colon in a
+    # directory component is illegal there and would never reach FFmpeg.
+    if folder == "drive C:" and os.name == "nt":
+        assert tmp_path.drive.endswith(":"), tmp_path
+        folder = "drive-path"
     commands = tmp_path / folder / "segment.sendcmd.txt"
     commands.parent.mkdir()
     # The real commands drive v360; a drawbox command proves the file loads.
