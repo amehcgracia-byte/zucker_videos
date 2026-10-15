@@ -52,6 +52,12 @@ def test_every_effect_gets_a_result_and_nothing_is_replaced_silently():
     assert report["gates"]["status"] == "unsupported" and "image" in report["gates"]["detail"]     # no picture drawer given here
     assert report["lost"]["status"] == "failed" and "cut" in report["lost"]["detail"]   # its moment was cut from the edit
     assert "base" not in report
+    mixed = show_bridge.plan_effects({"events": [{"id": "base-audio", "type": "audio", "source": "baseAudio", "variant": "mix", "start": 0, "end": 44}]},
+                                     section="workshop", source_start=0.0, plan=PLAN)[1]
+    assert mixed[0]["status"] == "superseded" and "own sound" in mixed[0]["detail"]          # said, not silently dropped
+    voice = show_bridge.plan_effects({"events": [{"id": "base-audio", "type": "audio", "source": "baseAudio", "variant": "voice", "start": 0, "end": 44}]},
+                                     section="workshop", source_start=0.0, plan=PLAN)[1]
+    assert voice == []                                                          # speech only: the same voice the edit keeps
     unknown = show_bridge.plan_effects({"events": [{"id": "x", "type": "part", "start": 10, "end": 11}]}, section="workshop",
                                        source_start=0.0, plan=PLAN)[1][0]
     assert unknown["status"] == "unsupported" and "part" in unknown["detail"]

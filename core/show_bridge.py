@@ -153,6 +153,9 @@ def plan_effects(recipe: dict[str, Any], *, section: str, source_start: float, p
     inks = [_span(e) for e in events if e.get("autoHands") and e.get("enabled") is not False and not serious]
     for event in events:
         kind = event.get("type")
+        if (event.get("id") == "base-audio" or kind == "audio" and event.get("source") == "baseAudio") and event.get("variant", "mix") == "mix":
+            report.append(_result(event, section, "superseded", "The automatic edit's own sound is kept; Studio's speech + music mix is not used"))
+            continue
         if event.get("id") in ("base", "base-audio") or kind in ("video", "audio") and event.get("source") in ("original", "baseAudio"):
             continue                                                       # the section's own picture and voice
         if event.get("enabled") is False:
