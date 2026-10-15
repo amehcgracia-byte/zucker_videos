@@ -19,6 +19,7 @@ Every effect gets a result, never a silent substitute:
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -30,6 +31,12 @@ FACE_HEIGHT = 0.38            # the render's default vertical focus (core.show_r
 # "Previous workshop · 7:46–8:30" and "Beginning · 0:00–1:28").
 SECTION_STARTS = {"workshop": 466.0, "opening": 0.0}
 DRAWINGS = ("finger", "spiral", "paint", "math", "coffee")     # what Studio's serious mode hides
+NOT_YET = {
+    "cutout": "Cut-out people and their background are not drawn by the render yet",
+    "part": "Moving body parts are not drawn by the render yet",
+    "video": "Added videos are not composited by the render yet",
+    "audio": "Added music and sounds are not mixed into the render yet",
+}
 
 
 # ---- Clocks ----------------------------------------------------------------------
@@ -160,15 +167,12 @@ def plan_effects(recipe: dict[str, Any], *, section: str, source_start: float, p
         if kind == "caption":
             report.append(_result(event, section, "superseded", "The automatic captions are kept"))
             continue
-        if event.get("maskAsset") is not None or event.get("faceTrack"):
-            report.append(_result(event, section, "unsupported", "Photo masks are not drawn by the render yet"))
-            continue
         if event.get("parent") not in (None, "base"):
             report.append(_result(event, section, "unsupported", "It sits on an added video, which the render does not show yet"))
             continue
         prepare = drawers.get(kind)
         if prepare is None:
-            report.append(_result(event, section, "unsupported", f"The render does not draw “{kind}” effects yet"))
+            report.append(_result(event, section, "unsupported", NOT_YET.get(kind, f"The render does not draw “{kind}” effects yet")))
             continue
         muted: list[tuple[float, float]] = []
         if kind in ("finger", "spiral") and not event.get("autoHands"):
@@ -189,26 +193,34 @@ def plan_effects(recipe: dict[str, Any], *, section: str, source_start: float, p
             report.append(_result(event, section, "disabled", "Hidden by the automatic finger ink wherever the edit keeps it, as in Show Studio's preview"))
             continue
         try:
-            drawer, detail = prepare(event)
+            prepared = prepare(event)
         except ValueError as exc:
             report.append(_result(event, section, "failed", str(exc)))
             continue
+        drawer, detail = prepared[0], prepared[1]
+        warning = len(prepared) > 2 and bool(prepared[2])
         layers.append(Layer(event["id"], kind, [(a, b, sa - source_start) for a, b, sa, _ in pieces], dict(event), drawer,
                             list(hidden or []), muted, section))
         note = f"{len(pieces)} kept part{'s' if len(pieces) != 1 else ''}, {kept:.2f} of {end - start:.2f} s"
         if shown < kept - 1e-6:
             note += f"; hidden for {kept - shown:.2f} s under the automatic finger ink"
-        report.append(_result(event, section, "applied", f"{note}{'; ' + detail if detail else ''}"))
+        report.append({**_result(event, section, "applied", f"{note}{'; ' + detail if detail else ''}"), **({"warning": True} if warning else {})})
     return layers, report
 
 
 # ---- Drawing ---------------------------------------------------------------------------
 
-def studio_drawers(analysis: Callable[[str], Any]) -> dict[str, Callable[[dict[str, Any]], tuple[Any, str]]]:
+def studio_drawers(analysis: Callable[[str], Any], source: Callable[[str], Path | None] = lambda name: None,
+                   materials: Callable[[], list[dict[str, Any]]] = lambda: [],
+                   asset: Callable[[str], Path] | None = None) -> dict[str, Callable[[dict[str, Any]], tuple]]:
     """How each Studio effect is drawn: ``analysis(name)`` reads the section's
-    tracking data (None when it is missing). A drawer is draw(frame, section seconds, view,
-    edited seconds)."""
+    tracking data (None when it is missing), ``source(name)`` finds its source
+    files (the voice), ``materials()`` the project's own masks and ``asset(id)``
+    a library file. A drawer is draw(frame, section seconds, view, edited seconds)."""
+    import numpy as np
+
     from core import show_bridge_draw as draw
+    from core import show_bridge_masks as masks
 
     def style(event: dict[str, Any], brush: str, color: str, width: float) -> dict[str, Any]:
         return {"brush": event.get("brush") or brush, "color": event.get("color") or color, "width": float(event.get("width") or width)}
@@ -283,7 +295,112 @@ def studio_drawers(analysis: Callable[[str], Any]) -> dict[str, Callable[[dict[s
             draw.coffee(frame, cup, view, elapsed=t - start + float(event.get("effectOffset") or 0), radius=radius)
         return steam, f"{len(keys)} cup positions; drawn only while the cup is marked visible and in the frame"
 
-    return {"finger": finger, "spiral": spiral, "coffee": coffee}
+    voice: dict[str, Any] = {}
+
+    def envelope():
+        if "data" not in voice:
+            path = source("voice")
+            try:
+                voice["data"] = masks.envelope(masks.decode_first_channel(path), 48000) if path else None
+            except (OSError, RuntimeError, ValueError, Exception):   # an unreadable voice leaves the jaw still, reported
+                voice["data"] = None
+        return voice["data"]
+
+    def picture_of(mask_id: str):
+        own = next((item for item in materials() if item.get("id") == mask_id and item.get("kind") == "mask"), None)
+        record = own or masks.builtin_masks().get(mask_id)
+        if record is None:
+            raise ValueError("Its mask photo is not in the project or the built-in masks")
+        if own and own.get("asset"):
+            if asset is None:
+                raise ValueError("Its mask photo is in a project library this render cannot open")
+            path = asset(own["asset"])
+        else:
+            path = masks.studio_files() / "show-masks" / str((own or {}).get("builtin") or record.get("file") or "")
+        if not path.is_file():
+            raise ValueError(f"Its mask photo {path.name} is missing")
+        return masks.head_picture(masks.load_rgb(path), record.get("polygon"), record.get("mouth")), record
+
+    def image(event: dict[str, Any]):
+        if event.get("maskAsset") is not None:
+            (rgba, box), record = picture_of(str(event["maskAsset"]))
+            height, width = rgba.shape[:2]
+            faces = analysis("face-track") or {}
+            track = event.get("faceTrack") or faces.get("points") or []
+            fps = float(faces.get("fps") or masks.FACE_FPS)
+            speech = event.get("mouthMode") in ("speech", None)
+            jaw = bool(event.get("animateMouth") and box)
+            warn = jaw and speech and envelope() is None
+
+            def mask(frame, t, view, *_):
+                e = masks.motion_at(event, t)
+                face = masks.face_at(track, t * fps, True) if track else None
+                p = masks.placement(e, face)
+                picture = rgba
+                if jaw:
+                    value = masks.voice_at(envelope(), t) if speech else p["mouth"]
+                    opened = masks.mouth_open({**e, "mouthMode": "detected" if speech else e.get("mouthMode")}, t, value)
+                    drop = opened * min(box[3] * 0.8, height * 0.08)
+                    if drop > 0.5:
+                        picture, _ = masks.with_jaw(rgba, box, drop)
+                masks.place(frame, picture, (p["x"], p["y"]), (width / 2, height / 2), p["width"] / width, p["angle"], view,
+                            float(masks._or(e.get("opacity"), 1)))
+            follows = (f"follows the selected face ({len(event['faceTrack'])} samples)" if event.get("faceTrack")
+                       else f"follows the section's face track ({len(track)} samples)" if track and event.get("followFace") is not False
+                       else "placed where it was put")
+            moves = f", {len(event['motionKeys'])} keyframes" if event.get("motionKeys") else ""
+            mouth = ("" if not jaw else "; the voice track is missing, so the jaw stays still" if warn
+                     else "; the jaw moves with the voice" if speech else f"; the mouth is {event.get('mouthMode')}")
+            return mask, f"{record.get('title') or event['maskAsset']} mask, {follows}{moves}{mouth}", warn
+        if event.get("libraryAsset") == "flying-bull":
+            path = masks.studio_files() / "show-elements" / "flying-bull-clean.png"
+        else:
+            raise ValueError("Its picture was attached in the browser only; attach it again in Show Studio inside Zucker")
+        if not path.is_file():
+            raise ValueError(f"Its picture {path.name} is missing")
+        rgb = masks.load_rgb(path).astype(np.float32) / 255
+        rgba = rgb if rgb.shape[2] == 4 else np.dstack([rgb, np.ones(rgb.shape[:2], np.float32)])
+        rgba = np.dstack([rgba[..., :3] * rgba[..., 3:4], rgba[..., 3:4]])
+
+        def picture(frame, t, view, *_):
+            e = masks.motion_at(event, t)
+            w = float(e.get("radius") or 0.12) * STUDIO_W
+            masks.place(frame, rgba, (float(e.get("x", 0.5)) * STUDIO_W, float(e.get("y", 0.5)) * STUDIO_H),
+                        (rgba.shape[1] / 2, rgba.shape[0] / 2), w / rgba.shape[1], (e.get("rotation") or 0) * math.pi / 180, view,
+                        float(masks._or(e.get("opacity"), 1)))
+        return picture, f"{path.stem}{', ' + str(len(event['motionKeys'])) + ' keyframes' if event.get('motionKeys') else ''}"
+
+    def paint(event: dict[str, Any]):
+        paths = [path for path in event.get("paths") or [] if path]
+        if not paths:
+            raise ValueError("It has no strokes")
+        ink = style(event, "crayon", "#e7b64c", 5)
+        start = float(event.get("start") or 0)
+
+        def strokes(frame, t, view, *_):
+            for index, path in enumerate(paths):
+                progress = max(0.0, min(1.0, (t - start - index * 0.25) / 1.1))
+                draw.pigment(frame, draw.reveal([tuple(p) for p in path], progress), view, **ink)
+        return strokes, f"{len(paths)} hand-drawn stroke{'s' if len(paths) != 1 else ''}, {ink['brush']}, revealed in order"
+
+    def lettering(kind: str):
+        def prepare(event: dict[str, Any]):
+            from core import show_bridge_text as text
+            main, _ = text.fonts_for(event.get("style") or "classic", 40)
+            if main is None:
+                raise ValueError("No font for its words on this computer")
+            if kind == "text" and not str(event.get("text") or "").strip():
+                raise ValueError("It has no words")
+            font = Path(main.path).stem
+
+            def letters(frame, t, view, *_):
+                (text.thinking if kind == "math" else text.words)(frame, event, t, view)
+            what = f"{int(event.get('count') or 10)} formulas" if kind == "math" else f"“{str(event.get('text'))[:40]}”"
+            return letters, f"{what} in {font}"
+        return prepare
+
+    return {"finger": finger, "spiral": spiral, "coffee": coffee, "image": image, "paint": paint,
+            "math": lettering("math"), "text": lettering("text")}
 
 
 class StudioDrawings:
@@ -337,8 +454,21 @@ def studio_layers(project_folder: str | Path, plan: dict[str, Any], *,
                 return store.load_analysis(kind)
             except (ValueError, OSError, json.JSONDecodeError):
                 return None
-        found, results = plan_effects(recipe, section=name, source_start=SECTION_STARTS[name], plan=plan,
-                                      hidden=hidden, drawers=studio_drawers(analysis))
+
+        def source(kind: str, store=store) -> Path | None:
+            try:
+                found = store.state()["sources"].get(kind)
+                return store.asset_path(found) if found else None
+            except (ValueError, OSError):
+                return None
+
+        def materials(store=store) -> list[dict[str, Any]]:
+            try:
+                return store.state()["materials"]
+            except (ValueError, OSError, json.JSONDecodeError):
+                return []
+        found, results = plan_effects(recipe, section=name, source_start=SECTION_STARTS[name], plan=plan, hidden=hidden,
+                                      drawers=studio_drawers(analysis, source, materials, store.asset_path))
         layers += found
         report += results
     from core.show_clay import clay_layers
@@ -349,7 +479,7 @@ def studio_layers(project_folder: str | Path, plan: dict[str, Any], *,
 def studio_warnings(report: list[dict[str, Any]]) -> list[str]:
     """One plain line per Studio effect the render could not draw."""
     return [f"Show Studio · {item['name']} ({item['section']}): {item['detail']}"
-            for item in report if item["status"] in ("failed", "unsupported")]
+            for item in report if item["status"] in ("failed", "unsupported") or item.get("warning")]
 
 
 def studio_fingerprint(project_folder: str | Path) -> str:

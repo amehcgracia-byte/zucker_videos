@@ -58,6 +58,12 @@ def resample(points: list[tuple[float, float]], spacing: float = 1.5) -> list[tu
     return out
 
 
+def reveal(path: list[tuple[float, float]], progress: float) -> list[tuple[float, float]]:
+    """show_paint_tools.js reveal(): the first part of a stroke, as if being drawn."""
+    points = resample(path, 1.4)
+    return points[:max(1, math.ceil(len(points) * max(0.0, min(1.0, progress))))]
+
+
 def timed_trails(runs: list[list[list[float]]], frame: float, fps: float, width: int, height: int,
                  tail: float = 4.0) -> list[tuple[list[tuple[float, float]], float]]:
     """The detected fingertip runs as trails at ``frame`` (Studio pixels): the last

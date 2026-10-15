@@ -29,7 +29,9 @@ QA = ROOT / "tools" / "qa"
 sys.path.insert(0, str(ROOT))
 
 # The preview's drawing functions, taken from the editor as they are.
-EDITOR_FUNCTIONS = ("cupVisible", "stroke", "pointAt", "finger", "spiral", "cupInFrame", "coffee")
+EDITOR_FUNCTIONS = ("cupVisible", "stroke", "pointAt", "finger", "spiral", "cupInFrame", "coffee", "imageLayer", "formula", "words", "thinking")
+MASK_FUNCTIONS = ("head", "sourceFrame", "face")
+MODULES = ("show_paint_tools.js", "show_mask_geometry.js", "show_voice_envelope.js", "show_motion_model.js")
 
 
 def _block(text: str, start: int) -> str:
@@ -53,9 +55,22 @@ def preview_functions() -> str:
         if not found:
             raise ValueError(f"The editor no longer defines {name}()")
         parts.append(_block(editor, found.start()))
+    found = re.search(r"const formulas=\[[^\]]*\];?", editor)
+    parts.append(found.group(0).rstrip(";") + ";")
+    tools = (QA / "show_studio_tools.js").read_text(encoding="utf-8")
+    parts.append(_block(tools, tools.index("function drawPaint(")))
     workshop = (QA / "show_scene_workshop.js").read_text(encoding="utf-8")
     found = workshop.index("const priorFinger=finger;")
     parts.append(_block(workshop, found) + ";")        # the automatic finger ink wraps finger()
+    library = (QA / "show_mask_library.js").read_text(encoding="utf-8")
+    for name in MASK_FUNCTIONS:
+        found = re.search(rf"(async )?function {name}\(", library)
+        if not found:
+            raise ValueError(f"The mask library no longer defines {name}()")
+        parts.append(_block(library, found.start()))
+    parts.append(_block(library, library.index("const oldImage=imageLayer;")) + ";")      # photo masks wrap imageLayer()
+    motion = (QA / "show_motion_editor.js").read_text(encoding="utf-8")
+    parts.append(_block(motion, motion.index("const originalImage=imageLayer;")) + ";")  # keyframed paths wrap it again
     return "\n".join(parts)
 
 
@@ -123,10 +138,30 @@ def frames(project: str, out: str, name: str, times: list[float]) -> None:
         Image.fromarray(frame).save(target / f"{tag}-py.png")
         cases = [case for case in cases if case["tag"] != tag] + [{"tag": tag, "view": list(view), "layers": layers}]
     cases_path.write_text(json.dumps(cases), encoding="utf-8")
-    for kind in ("automatic-hands", "finger-track"):
+    for kind in ("automatic-hands", "finger-track", "face-track"):
         (target / f"{kind}.json").write_text(json.dumps(store.load_analysis(kind) or ([] if kind == "finger-track" else {})), encoding="utf-8")
+    # The photo masks these frames use, and the section's voice for the jaw.
+    from core import show_bridge_masks
+    used = {layer["event"]["maskAsset"] for case in cases for layer in case["layers"] if layer["event"].get("maskAsset") is not None}
+    own = {item["id"]: item for item in store.state()["materials"] if item.get("kind") == "mask"}
+    records = []
+    for mask_id in sorted(used):
+        record = own.get(mask_id) or show_bridge_masks.builtin_masks().get(mask_id)
+        if not record:
+            continue
+        path = store.asset_path(record["asset"]) if record.get("asset") else QA / "show-masks" / str(record.get("builtin") or record["file"])
+        shutil.copy(path, target / f"mask-{mask_id}{path.suffix}")
+        records.append({"id": mask_id, "url": f"mask-{mask_id}{path.suffix}", "polygon": record.get("polygon"), "mouth": record.get("mouth")})
+    (target / "masks.json").write_text(json.dumps(records), encoding="utf-8")
+    voice = store.state()["sources"].get("voice")
+    if voice:
+        shutil.copy(store.asset_path(voice), target / "voice.m4a")
+    (target / "elements").mkdir(exist_ok=True)
+    for element in (QA / "show-elements").glob("*.png"):
+        shutil.copy(element, target / "elements" / element.name)                # the request tools' library pictures
     (target / "preview_functions.js").write_text(preview_functions(), encoding="utf-8")
-    shutil.copy(QA / "show_paint_tools.js", target / "show_paint_tools.js")
+    for module in MODULES:
+        shutil.copy(QA / module, target / module)
     shutil.copy(QA / "show_render_parity.html", target / "show_render_parity.html")
     print(f"{len(cases)} frames in {target}; serve it and open show_render_parity.html")
 

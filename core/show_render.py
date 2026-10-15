@@ -163,10 +163,17 @@ def render_show(source: str | Path, plan: dict[str, Any], output: str | Path, *,
     pending = output.with_name(f".{output.stem}.part{output.suffix}")
     frames = sum(b - a for a, b in kept_ranges(plan))
     extra_inputs, chains, last = cutaway_filters(plan, 2, width, height)
-    graph = ";".join([f"[0:v]{video_filter(plan, width, height)}[v]", *chains])
+    # A part of the edit far into the recording (a scene preview) starts decoding a
+    # second before its first frame instead of at the start of the recording.
+    fps = int(plan.get("fps") or 30)
+    skip = max(0, min((int(shot["start_frame"]) for shot in plan["shots"]), default=0) - fps)
+    seek = ["-ss", f"{skip / fps:.6f}"] if skip else []
+    local = {**plan, "shots": [{**shot, "start_frame": int(shot["start_frame"]) - skip, "end_frame": int(shot["end_frame"]) - skip}
+                               for shot in plan["shots"]]}
+    graph = ";".join([f"[0:v]{video_filter(local, width, height)}[v]", *chains])
     command = [
         ffmpeg, "-y", "-v", "error", "-nostdin", "-progress", "pipe:2",
-        "-i", str(source),
+        *seek, "-i", str(source),
         "-f", "f32le", "-ar", str(SAMPLE_RATE), "-ac", "2", "-i", "pipe:0",
         *extra_inputs,
         "-filter_complex", graph,

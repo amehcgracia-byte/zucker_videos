@@ -47,6 +47,20 @@ def test_each_output_frame_comes_from_its_planned_source_frame(tmp_path):
     assert decoded == [n % 50 for n in expected]
 
 
+def test_a_part_far_into_the_recording_starts_there_with_the_same_frames(tmp_path):
+    ffmpeg = _ffmpeg()
+    source = tmp_path / "numbered.mp4"
+    subprocess.run([ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", "nullsrc=s=320x180:r=30:d=12",
+                    "-f", "lavfi", "-i", "sine=f=440:d=12", "-vf", "geq=lum='20+4*mod(N,50)':cb=128:cr=128",
+                    "-c:v", "libx264", "-qp", "0", "-g", "45", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(source)], check=True)
+    shots = [(250, 270, 1.0), (300, 320, 1.18)]                                  # 8.3 s in: decoding starts a second earlier
+    output = render_show(source, _plan(shots), tmp_path / "late.mp4", ffmpeg=ffmpeg, width=320, height=180)
+    frames = _frames(ffmpeg, output, 320, 180)
+    reference = [frame[60:120, 100:220].mean() for frame in _frames(ffmpeg, source, 320, 180)[:50]]
+    decoded = [int(np.argmin([abs(frame[60:120, 100:220].mean() - grey) for grey in reference])) for frame in frames]
+    assert decoded == [n % 50 for a, b, _ in shots for n in range(a, b)]
+
+
 def test_punch_ins_enlarge_the_picture_by_their_zoom(tmp_path):
     ffmpeg = _ffmpeg()
     source = tmp_path / "box.mp4"

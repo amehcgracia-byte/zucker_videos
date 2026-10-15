@@ -49,7 +49,7 @@ def test_every_effect_gets_a_result_and_nothing_is_replaced_silently():
     assert report["zoom1"]["status"] == "superseded"                            # the automatic framing is kept
     assert report["cap"]["status"] == "superseded"                              # the automatic captions are kept
     assert report["ink"]["status"] == "disabled"
-    assert report["gates"]["status"] == "unsupported" and "mask" in report["gates"]["detail"]
+    assert report["gates"]["status"] == "unsupported" and "image" in report["gates"]["detail"]     # no picture drawer given here
     assert report["lost"]["status"] == "failed" and "cut" in report["lost"]["detail"]   # its moment was cut from the edit
     assert "base" not in report
     unknown = show_bridge.plan_effects({"events": [{"id": "x", "type": "part", "start": 10, "end": 11}]}, section="workshop",
@@ -164,3 +164,105 @@ def test_a_missing_resource_is_reported_plainly_and_nothing_is_drawn_instead(tmp
     assert show_bridge.studio_fingerprint(project.folder) != before                # previews are made again
     drawings, report = show_bridge.studio_layers(project.folder, plan)
     assert {item["id"]: item["status"] for item in report}["ink"] == "applied" and drawings
+
+
+# Reference values from tools/qa/show_mask_geometry.js, show_motion_model.js and show_voice_envelope.js run in Node.
+def test_mask_geometry_motion_and_voice_match_the_preview():
+    import numpy as np
+
+    from core import show_bridge_masks as masks
+    points = [[10, 100, 200, 80, 90, 0.1, 0.3], [11, 102, 201, 81, 91, 0.12, 0.5], [20, 150, 220, 90, 95, -0.2, 0.1]]
+    assert [(masks.face_at(points, f, True) or [None])[0] for f in (5, 10, 10.5, 11, 12, 15, 19, 20, 25)] == [10, 10, 10, 11, 11, 11, 20, 20, 20]
+    assert [(masks.face_at(points, f) or [None])[0] for f in (12, 15, 19, 21.5)] == [11, None, 20, None]
+    assert masks.placement({"followFace": True, "maskScale": 1.6, "maskOffsetX": 5, "maskOffsetY": -3, "maskRotation": 10}, points[1]) == \
+        pytest.approx({"x": 107, "y": 198, "width": 129.6, "angle": 0.29453292519943297, "mouth": 0.5})
+    assert masks.placement({"x": .4, "y": .6, "radius": .1, "maskScale": 2}, None) == pytest.approx({"x": 512, "y": 432, "width": 256, "angle": 0, "mouth": 0})
+    assert masks.placement({"followFace": False, "x": .4, "y": .6, "radius": .1, "rotation": 15}, points[1]) == \
+        pytest.approx({"x": 512, "y": 432, "width": 128, "angle": 0.2617993877991494, "mouth": 0})
+    assert masks.placement({}, None) == pytest.approx({"x": 640, "y": 360, "width": 153.6, "angle": 0, "mouth": 0})
+    assert [masks.mouth_open({"mouthMode": "detected", "mouthOpening": 1.5}, 0, .5), masks.mouth_open({"mouthMode": "manual"}, 0, .9),
+            masks.mouth_open({"mouthMode": "continuous", "start": 1}, 1.3), masks.mouth_open({"animateMouth": False}, 0, 1)] == \
+        pytest.approx([0.75, 0.5, 0.03709265883613394, 0])
+    e = {"x": .2, "y": .3, "radius": .1, "start": 0, "end": 4,
+         "motionKeys": [{"time": 0, "x": .2, "y": .3}, {"time": 2, "x": .6, "y": .1, "rotation": 30}, {"time": 4, "x": 1, "y": .5}]}
+    moved = [masks.motion_at(e, t) for t in (0, 0.5, 1, 2, 3, 5)]
+    assert [(m["x"], m["y"], m.get("rotation")) for m in moved] == [
+        (0.2, 0.3, None), (pytest.approx(0.2625), pytest.approx(0.26875), None), (pytest.approx(0.4), pytest.approx(0.2), None),
+        (0.6, 0.1, 30), (pytest.approx(0.8), pytest.approx(0.3), 30), (1, 0.5, None)]
+    assert masks.motion_at({**e, "motionEase": "linear"}, 0.5)["x"] == pytest.approx(0.3)
+    rate = 48000
+    t = np.arange(rate * 2) / rate
+    samples = (np.where((t > 0.5) & (t < 1.2), 0.3, 0.005) * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    data = masks.envelope(samples, rate)
+    assert (len(data["rms"]), data["floor"], data["ceiling"]) == (50, pytest.approx(0.003511, abs=2e-6), pytest.approx(0.213948, abs=2e-6))
+    assert [masks.voice_at(data, s) for s in (0, 0.4, 0.52, 0.8, 1.21, 1.5, -1, 5)] == pytest.approx(
+        [0, 0.000134, 0.915202, 0.992527, 0.248664, 0.000154, 0, 0], abs=2e-5)
+
+
+def test_a_photo_mask_follows_the_face_and_drops_its_jaw_with_the_voice(tmp_path):
+    import numpy as np
+    import soundfile
+
+    from core import show_bridge_masks as masks
+    rate = 48000
+    t = np.arange(rate * 2) / rate
+    voice = tmp_path / "voice.wav"
+    soundfile.write(str(voice), (np.where(t > 1.0, 0.3, 0.002) * np.sin(2 * np.pi * 200 * t)).astype(np.float32), rate)
+    track = [[f, 600 + f, 300, 160, 190, 0.0, 0.2] for f in range(0, 50)]           # a face drifting right, 25 fps frames
+    mask = {"id": "m", "type": "image", "start": 0, "end": 2, "maskAsset": "bill-gates", "maskScale": 1.6, "animateMouth": True,
+            "mouthOpening": 1, "opacity": 1}
+    drawers = show_bridge.studio_drawers(lambda name: {"fps": 25, "points": track} if name == "face-track" else None,
+                                         lambda name: voice if name == "voice" else None)
+    draw, detail, warning = drawers["image"](mask)
+    assert "face track" in detail and "voice" in detail and not warning
+    quiet, loud = np.zeros((720, 1280, 3), np.uint8), np.zeros((720, 1280, 3), np.uint8)
+    draw(quiet, 0.5, (0.0, 0.0, 1.0))
+    draw(loud, 1.5, (0.0, 0.0, 1.0))
+    ys, xs = np.nonzero(quiet.sum(axis=2))
+    assert abs((xs.min() + xs.max()) / 2 - (600 + 12.5)) < 25 and abs(ys.mean() - 300) < 60   # on the face at frame 12.5
+    _, lxs = np.nonzero(loud.sum(axis=2))
+    assert (lxs.min() + lxs.max()) / 2 > (xs.min() + xs.max()) / 2 + 15          # it moved with the face
+    assert np.nonzero(loud.sum(axis=2))[0].max() > ys.max()                      # the jaw hangs lower while he speaks
+    silent = show_bridge.studio_drawers(lambda name: {"fps": 25, "points": track} if name == "face-track" else None)
+    assert silent["image"](mask)[2] is True                                      # no voice: drawn, jaw still, and reported
+    with pytest.raises(ValueError, match="mask photo"):
+        drawers["image"]({**mask, "maskAsset": "nobody"})
+    with pytest.raises(ValueError, match="browser only"):
+        drawers["image"]({"id": "p", "type": "image", "start": 0, "end": 1, "x": .5, "y": .5, "radius": .2})
+
+
+def test_painted_strokes_formulas_and_words_are_drawn_as_in_the_preview():
+    import numpy as np
+
+    from core import show_bridge_draw as draw
+    from core import show_bridge_text as text
+    # Reference values from tools/qa/show_paint_tools.js reveal() run in Node.
+    assert [v for point in draw.reveal([(0, 0), (10, 0)], 0.5) for v in point] == pytest.approx([0, 0, 1.4, 0, 2.8, 0, 4.2, 0])
+    assert len(draw.reveal([(0, 0), (10, 0)], 0)) == 1 and len(draw.reveal([(0, 0), (10, 0), (10, 10)], 1)) == 15
+    drawers = show_bridge.studio_drawers(lambda name: None)
+    paint, detail = drawers["paint"]({"id": "p", "type": "paint", "start": 0, "end": 3, "brush": "crayon", "color": "#f2bd52", "width": 6,
+                                      "paths": [[[100, 100], [300, 100]], [[100, 300], [300, 300]]]})
+    assert "2 hand-drawn strokes" in detail
+    early, late = np.zeros((720, 1280, 3), np.uint8), np.zeros((720, 1280, 3), np.uint8)
+    paint(early, 0.5, (0.0, 0.0, 1.0))
+    paint(late, 2.0, (0.0, 0.0, 1.0))
+    # 0.5 s in: the first stroke 45% drawn, the second (0.25 s later) 23%.
+    assert early[95:106, 100:180].any() and not early[90:111, 230:300].any()
+    assert early[295:306, 100:130].any() and not early[290:311, 180:300].any()
+    assert late[95:106, 280:300].any() and late[290:310, 280:300].any()          # both strokes complete
+    with pytest.raises(ValueError):
+        drawers["paint"]({"id": "p", "type": "paint", "start": 0, "end": 1, "paths": []})
+    words, detail = drawers["text"]({"id": "t", "type": "text", "start": 0, "end": 2, "x": .5, "y": .5, "fontSize": 40, "text": "Wait… what?"})
+    frame = np.zeros((720, 1280, 3), np.uint8)
+    words(frame, 1.0, (0.0, 0.0, 1.0))
+    ys, xs = np.nonzero(frame.sum(axis=2))
+    assert abs((xs.min() + xs.max()) / 2 - 640) < 6 and abs((ys.min() + ys.max()) / 2 - 360) < 14   # centred on its point
+    main, fallbacks = text.fonts_for("classic", 40)
+    assert text._has(main, "A") and not text._has(main, "")
+    maths, detail = drawers["math"]({"id": "m", "type": "math", "start": 0, "end": 6, "x": .64, "y": .3, "count": 10, "radius": .21,
+                                     "fontSize": 33, "opacity": .85, "motion": .35})
+    assert "10 formulas" in detail
+    few, many = np.zeros((720, 1280, 3), np.uint8), np.zeros((720, 1280, 3), np.uint8)
+    maths(few, 0.2, (0.0, 0.0, 1.0))
+    maths(many, 3.0, (0.0, 0.0, 1.0))
+    assert 0 < np.count_nonzero(few.sum(axis=2)) < np.count_nonzero(many.sum(axis=2))   # they appear one by one
