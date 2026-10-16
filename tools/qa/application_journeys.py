@@ -139,8 +139,25 @@ def journey(browser, mode, media, output, *, real_media=False):
         # Decode the complete output, not only its first thumbnail.
         run(['ffmpeg','-v','error','-i',str(path),'-f','null','-'],timeout=180)
         shutil.copy2(path,folder/'render.mp4')
+        # preload=metadata does not promise a decoded frame, especially for
+        # HEVC. Exercise Play rather than mistaking a paused metadata-only
+        # element for a decoder failure.
+        if page.locator('#composePlayPause').is_visible():
+            page.locator('#composePlayPause').click()
+        elif page.locator('#result360Play').is_visible():
+            page.locator('#result360Play').click()
+        else:
+            page.locator('#resultVideo').press('Space')
         page.wait_for_function("""() => [...document.querySelectorAll('#composeVideo, #resultVideo, #result360Video')].some(v => v.getClientRects().length && v.readyState >= 2 && v.videoWidth > 0 && !v.error)""", timeout=60000)
         report['browser_player_loaded'] = True
+        # Show content away from the first frame's intentional fade to black.
+        sample = page.evaluate("""() => {
+            const v=[...document.querySelectorAll('#composeVideo, #resultVideo, #result360Video')].find(v=>v.getClientRects().length && v.videoWidth>0);
+            v.pause(); const t=v.duration*.4; v.currentTime=t; return {id:v.id,time:t};
+        }""")
+        page.wait_for_function("sample=>{const v=document.getElementById(sample.id);return !v.seeking && v.readyState>=2 && Math.abs(v.currentTime-sample.time)<.1;}",arg=sample,timeout=15000)
+        page.wait_for_timeout(100)
+        report['browser_sample'] = sample
         capture('04-rendered')
         if mode=='reel':
             if not page.locator('#captionText').is_visible(): page.locator('[data-step-nav="5"]').click()
@@ -176,7 +193,12 @@ def journey(browser, mode, media, output, *, real_media=False):
         assert not errors,errors
         report.update(passed=True,duration=probe['format']['duration'],result=result,review_actions=sorted(actions))
     except Exception:
-        report['error']=traceback.format_exc(); capture('failure')
+        report['error']=traceback.format_exc()
+        try:
+            report['players']=page.evaluate("""() => [...document.querySelectorAll('video')].map(v=>({id:v.id,src:v.currentSrc,readyState:v.readyState,networkState:v.networkState,width:v.videoWidth,height:v.videoHeight,error:v.error?{code:v.error.code,message:v.error.message}:null,hevc:v.canPlayType('video/mp4; codecs="hvc1.1.6.L120.B0"')}))""")
+        except Exception:
+            report['players_unavailable']=True
+        capture('failure')
     finally:
         report.update(page_errors=errors,http_failures=failures)
         (folder/'report.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
