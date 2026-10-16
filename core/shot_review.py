@@ -12,6 +12,7 @@ import sys
 import subprocess
 import tempfile
 import threading
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -773,13 +774,27 @@ def _run_thumbnail_command(command: list[str]) -> None:
     subprocess.run(command, check=True, capture_output=True, text=True, timeout=45)
 
 
-_THUMBNAIL_LOCKS = [threading.Lock() for _ in range(64)]
+_THUMBNAIL_LOCKS = weakref.WeakValueDictionary()
+_THUMBNAIL_LOCKS_GUARD = threading.Lock()
+
+
+def _thumbnail_lock(output):
+    # Unrelated assets must not share a hash stripe: with two workers a stripe
+    # collision serialises both renders. Waiting/active callers own strong
+    # references, and idle locks disappear instead of accumulating forever.
+    key = str(Path(output).resolve())
+    with _THUMBNAIL_LOCKS_GUARD:
+        lock = _THUMBNAIL_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _THUMBNAIL_LOCKS[key] = lock
+        return lock
 
 
 def _render_thumbnail_to_path(project, segment, source, timestamp, output, root, ffmpeg, color_profile):
     # API preview requests and the foreground pipeline can target the same
     # asset. Check again after acquiring its bounded, process-local lock.
-    with _THUMBNAIL_LOCKS[int(hashlib.sha256(str(output).encode()).hexdigest()[:8], 16) % len(_THUMBNAIL_LOCKS)]:
+    with _thumbnail_lock(output):
         if output.is_file() and output.stat().st_size > 0:
             return
         render_source = source
