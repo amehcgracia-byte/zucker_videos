@@ -263,7 +263,9 @@
         <button type="button" class="icon-button small" data-scene-modify>Modify</button>
         <button type="button" class="icon-button small" data-scene-decision="plain">Leave without effect</button>
         <span class="show-decision show-${scene.decision}">${DECISION_LABELS[scene.decision]}</span>
+        <button type="button" class="icon-button small" data-open-library>Library</button>
       </div>
+      ${sceneDrawings(scene, effects)}
       <div id="showClay" class="show-clay"></div>
       <div id="showSceneEffects" class="show-review-list" ${open.has(scene.id) ? "" : "hidden"}>${effects.map(card).join("") || "<p class=\"show-hint\">No effect in this scene.</p>"}
         <form id="showSceneAdd" class="show-review-add"><strong>Add</strong>
@@ -274,7 +276,7 @@
           <select name="source">${[review.source, ...(review.resources || []).map((item) => item.path)].map((path) => `<option value="${escape(path)}">${escape(baseName(path))}</option>`).join("")}</select>
           <label>from <input name="source_time" type="number" min="0" step="0.1" value="0"> s of it</label>
           <button class="icon-button small" type="submit">Add &amp; preview</button></form>
-        <h4>Your drawings &amp; stickers</h4><p class="show-hint">Choose a picture to add it as an editable timeline clip. Right-click a picture to remove it.</p><button type="button" data-toggle-retired>${showRetired?"Hide retired images":`Retired images (${retiredCount})`}</button>
+        <h4>Your drawings &amp; stickers</h4><p class="show-hint">Choose a picture to add it as an editable timeline clip. Right-click a picture to remove it.</p><button type="button" class="icon-button small" data-open-library>Open the whole library…</button> <button type="button" data-toggle-retired>${showRetired?"Hide retired images":`Retired images (${retiredCount})`}</button>
         <div class="show-library">${library.slice(0, 80).map((item, index) => `<div class="show-library-entry"><button type="button" data-library="${index}" aria-label="Add ${escape(item.name)}" title="${escape(item.name)}" ${item.retired?"disabled":""}><img src="${item.url}" alt="" loading="lazy">${escape(item.name)}</button><small>${escape(item.origin||"Your library")}</small><button type="button" data-library-retire="${index}">${item.retired?"Restore":"Remove from library"}</button></div>`).join("") || "<p class=\"show-hint\">The library is empty: add images in Overlay &amp; Captions, or keep painted drawings.</p>"}</div>
         <p class="show-hint">Drag a picture on the video to move it, its corner to resize it; click it for its tools.</p>
         <button type="button" class="icon-button small" data-studio="open">Cut out a photo / create a layer</button>
@@ -287,6 +289,7 @@
     renderTimeline(scene);
     wordPlacementControls();
     showSaveStatus();
+    fillSuggestions();
   }
 
   // The production storyboard uses edited seconds, including transcript and bars.
@@ -456,9 +459,10 @@
     const selected=timelineItems(scene).find(item=>item.id===selectedEffect);
     const rows=timelineItems(scene).filter(item=>item.status!=='discarded');
     box.innerHTML=`<header><strong>Scene timeline</strong><small>${clock(scene.start)}–${clock(scene.end)}</small></header>
+      <button type="button" class="icon-button small" data-open-library>Library</button>
       <details class="show-sticker-picker"><summary>Add sticker</summary><div class="show-library">${library.map((asset,index)=>asset.retired?'':`<button type="button" data-library="${index}" aria-label="Add ${escape(asset.name)}"><img src="${asset.url}" alt="" loading="lazy">${escape(asset.name)}</button>`).join('')}</div></details>
       <p>Play or scrub to check when a picture appears and disappears. Drag a bar to move it; drag either edge to trim.</p>
-      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
+      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${selected.kind==='drawing'?`<button type="button" data-open-library="${selected.id}">Choose from library</button>`:''}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
       <div class="show-time-row"><span>Video</span><div class="show-time-source" data-scene-seek>Original video · your cut</div></div>
       <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
       ${rows.map(item=>{
@@ -762,7 +766,7 @@
     dirtyScenes.delete(scene.id);
     $("#showPanel").querySelectorAll('[data-show-status="approved"]').forEach(button => {
       const item=review.proposals.find(item=>item.id===button.dataset.id);
-      button.disabled=!!item?.needs?.length;
+      button.disabled=!!item?.needs?.length || (item?.kind==='drawing' && !!item.params.subject && !item.params.picture);
     });
     $("#showPanel").querySelectorAll('[data-scene-decision="accepted"]').forEach(button => button.disabled = false);
   });
@@ -1289,7 +1293,7 @@
     const draft = !drawable ? "" : drawing ? `<p class="show-hint">Being drawn… it appears here and in the preview when it is ready.</p>`
       : item.drafting?.status === "failed" ? `<p class="show-needs">Could not be drawn: ${escape(item.drafting.error || "try again")}</p>`
       : unseen ? `<p class="show-hint">Not drawn yet: draw it to see it before approving it.</p>`
-      : item.params.draft && item.status !== "approved" ? `<p class="show-hint">Draft: approve it to keep it in the video, or draw another.</p>` : "";
+      : item.params.draft && item.status !== "approved" ? `<p class="show-hint">${String(item.params.image_engine || "").startsWith("Your library") ? "From your library: approve it, choose another one, or draw a new one." : "Draft: approve it to keep it in the video, or draw another."}</p>` : "";
     return `<article class="show-card show-${item.status}" data-show-id="${item.id}">
       <header><time>${clock(item.at)}</time><span class="show-kind">${item.params.reaction ? "Reaction" : (KIND_LABELS[item.kind] || item.kind)}</span>${confidence}<span class="show-status">${STATUS_LABELS[item.status]}</span></header>
       <div class="show-card-body">
@@ -1298,6 +1302,7 @@
           <p class="show-reason">${escape(item.reason)}</p>${item.kind === "drawing" ? `<p class="show-hint">Image source: ${escape(item.params.picture ? (item.params.image_engine || "Your library") : "No picture selected")}</p>` : ""}${draft}${needs}${outside?'<p class="show-needs">Outside this scene. Choose words to bring this effect back.</p>':''}
           <div class="show-actions">
             ${drawable ? `<button type="button" class="icon-button small" data-draw-it="${item.id}" ${drawing ? "disabled" : ""} ${item.params.picture ? 'data-again="1"' : ""}>${drawing ? "Drawing…" : item.params.picture ? "Draw another" : "Draw it"}</button>` : ""}
+            ${item.kind === "drawing" ? `<button type="button" class="icon-button small" data-open-library="${item.id}">Choose from library</button>` : ""}
             ${item.kind === "drawing" ? `<button type="button" class="icon-button small" data-ai-edit="${item.id}">AI · change image…</button>` : ""}
             <button type="button" class="icon-button small" data-place-words="${item.id}">Choose words</button>
             <button type="button" class="icon-button small" data-locate-effect="${item.id}">Show on video & timeline</button>
@@ -1308,6 +1313,7 @@
           </div>
         </div>
       </div>
+      ${drawable && (item.status !== "approved" || !item.params.picture) ? `<div class="show-lib-suggest" data-suggest-for="${item.id}"></div>` : ""}
       <video class="show-preview" controls playsinline hidden></video>
       <div class="show-editor" ${open.has(item.id) ? "" : "hidden"}></div>
     </article>`;
@@ -1400,7 +1406,8 @@
         html += field("Appears", `<select data-field="effect">${[["pop", "Pops in"], ["draw", "Draws itself, stroke by stroke"], ["rise", "Rises from below"], ["drop", "Drops from above"], ["none", "Just appears"]]
           .map(([key, label]) => `<option value="${key}" ${(p.effect || "pop") === key ? "selected" : ""}>${label}</option>`).join("")}</select>`);
         const pictures = library.filter((entry) => /\.(png|jpe?g|webp)$/i.test(entry.path));
-        html += field("Picture", `<select data-field="picture"><option value="">Choose a picture first</option>${pictures.map((entry) => `<option value="${escape(entry.path)}" ${p.picture === entry.path ? "selected" : ""}>${escape(entry.name)}</option>`).join("")}</select>`);
+        const current = p.picture && !pictures.some((entry) => entry.path === p.picture) ? `<option value="${escape(p.picture)}" selected>${escape(p.draft ? "This draft" : baseName(p.picture))}</option>` : "";
+        html += field("Picture", `<select data-field="picture"><option value="">Choose a picture first</option>${current}${pictures.map((entry) => `<option value="${escape(entry.path)}" ${p.picture === entry.path ? "selected" : ""}>${escape(entry.name)}</option>`).join("")}</select>`);
       }
       if (item.kind === "drawing" && p.subject) {
         html += `<div class="show-fields">${field("Style", `<select data-field="style">${Object.entries(DRAWING_STYLES).map(([key, label]) => `<option value="${key}" ${(p.style || "pencil") === key ? "selected" : ""}>${label}</option>`).join("")}</select>`)}</div>
@@ -1756,7 +1763,9 @@
         renderScene();
       } else if (target.dataset.library) {
         const scene = currentScene();
-        scene.overlays.push({ id:crypto.randomUUID(),asset: library[Number(target.dataset.library)].path, x: 8, y: 10, width: 22, at: scene.start, duration: Math.min(4, scene.end - scene.start), effect: "pop" });
+        const own = await projectCopy(library[Number(target.dataset.library)]);
+        scene.overlays.push({ id:crypto.randomUUID(),asset: own.path, x: 8, y: 10, width: 22, at: scene.start, duration: Math.min(4, scene.end - scene.start), effect: "pop" });
+        if (own !== library[Number(target.dataset.library)]) await loadLibrary();
         if(await saveOverlays(scene))locateEffect(timelineItems(scene).at(-1));
       } else if (target.dataset.animate) {
         const scene = currentScene();
@@ -1801,6 +1810,8 @@
         await flushEdits();
         await patch(target.dataset.id, { status: target.dataset.showStatus });
         refreshCard(target.dataset.id);
+        refreshSceneDrawings();
+        if (target.dataset.showStatus === "approved") suggestions.clear();
         await markModified();
         renderTimeline(currentScene());liveDrawings(currentScene());
       } else if (target.dataset.showPreview) {
@@ -1929,8 +1940,225 @@
     };
   }
 
+  // ---- Library: what you already have, to use again instead of drawing it again ------------
+  // This project (your pictures and every drawing you approved), the recurring shelves (there
+  // in every project) and the other projects' libraries. A picture from a shelf or another
+  // project is copied into this project when you use it. Matching is by name: offered, never
+  // approved for you.
+  const LIBRARY_TABS = { project: "This project", recurring: "Recurring", other: "Other projects", hidden: "Hidden" };
+  let libraryDialog = null, libraryAll = [], libraryShelves = [], libraryTab = "project", libraryFor = null, libraryQuery = "";
+  const suggestions = new Map();       // subject -> Promise of matching pictures
+
+  const libraryKey = (text) => String(text || "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  function libraryGroups() {
+    const visible = libraryAll.filter((item) => !item.retired);
+    return {
+      project: visible.filter((item) => item.section === "project"),
+      recurring: visible.filter((item) => item.section === "recurring"),
+      other: visible.filter((item) => item.section === "other"),
+      hidden: libraryAll.filter((item) => item.retired),
+    };
+  }
+
+  async function loadLibraryAll() {
+    const data = await api("/show/library?others=1&retired=1");
+    libraryAll = data.items || [];
+    libraryShelves = data.shelves || [];
+  }
+
+  async function libraryChanged() {
+    suggestions.clear();
+    await Promise.all([loadLibrary(), libraryDialog?.open ? loadLibraryAll() : null]).catch(() => {});
+    if (libraryDialog?.open) drawLibrary();
+    if (currentScene()) renderScene();
+  }
+
+  async function openLibrary(forProposal = null) {
+    libraryFor = forProposal ? review?.proposals.find((item) => item.id === forProposal) || null : null;
+    if (!libraryDialog) {
+      libraryDialog = document.createElement("dialog");
+      libraryDialog.id = "showLibraryDialog";
+      libraryDialog.setAttribute("aria-label", "Library");
+      libraryDialog.innerHTML = `<header><div><strong>Library</strong><small>Pictures you already have. Use them instead of drawing them again; mark the ones you use often as recurring.</small></div>
+        <input type="search" data-lib-search placeholder="Search: sofa, plant, fridge…" aria-label="Search the library">
+        <label class="icon-button small show-lib-add">Add pictures…<input type="file" data-lib-files accept="image/png,image/jpeg,image/webp" multiple hidden></label>
+        <button type="button" aria-label="Close library" data-lib-close>×</button></header>
+        <nav class="show-lib-tabs" data-lib-tabs></nav><div class="show-lib-body" data-lib-body></div>`;
+      document.body.append(libraryDialog);
+      libraryDialog.addEventListener("click", (event) => onLibraryClick(event).catch((error) => showToast(error.message, true)));
+      libraryDialog.addEventListener("change", (event) => onLibraryChange(event).catch((error) => showToast(error.message, true)));
+      libraryDialog.querySelector("[data-lib-search]").addEventListener("input", (event) => { libraryQuery = event.target.value; drawLibrary(); });
+      libraryDialog.addEventListener("dragover", (event) => { if (fileDrag(event)) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } });
+      libraryDialog.addEventListener("drop", (event) => { if (!fileDrag(event)) return; event.preventDefault(); addLibraryFiles([...event.dataTransfer.files]); });
+    }
+    libraryDialog.querySelector("[data-lib-body]").innerHTML = `<p class="show-hint">Reading your library…</p>`;
+    if (!libraryDialog.open) libraryDialog.showModal();
+    try { await loadLibraryAll(); } catch (error) { libraryDialog.querySelector("[data-lib-body]").innerHTML = `<p class="show-needs">${escape(error.message)}</p>`; return; }
+    if (libraryFor) libraryTab = libraryGroups().project.length ? "project" : "other";
+    drawLibrary();
+  }
+
+  function libraryCard(item) {
+    const scene = currentScene();
+    const index = libraryAll.indexOf(item);
+    const where = item.section === "other" ? `from ${item.project}` : item.section === "recurring" ? `Recurring · ${item.shelf}` : (item.origin || "Your library");
+    const shelfControl = item.section === "recurring"
+      ? (libraryShelves.includes(item.shelf) ? `<button type="button" class="icon-button small" data-lib-unrecur="${index}">Take off the shelf</button>` : "")
+      : item.recurring ? `<span class="show-lib-badge">★ Recurring · ${escape(item.recurring)}</span>`
+      : `<select data-lib-recur="${index}" aria-label="Make ${escape(item.name)} recurring"><option value="">★ Make recurring…</option>${libraryShelves.map((shelf) => `<option value="${escape(shelf)}" ${item.character && shelf === "Characters" ? "selected" : ""}>${escape(shelf)}</option>`).join("")}</select>`;
+    return `<figure class="show-lib-card ${item.retired ? "hidden-item" : ""}">
+      <img src="${item.url}" alt="" loading="lazy">
+      <figcaption><b title="${escape(item.name)}">${escape(item.name)}</b><small>${escape(where)}${item.approved ? " · approved" : ""}</small></figcaption>
+      <div class="show-lib-actions">
+        ${libraryFor ? `<button type="button" class="icon-button small primary" data-lib-use-for="${escape(libraryFor.id)}" data-lib-path="${escape(item.path)}">Use for this drawing</button>` : ""}
+        ${scene && !item.retired ? `<button type="button" class="icon-button small" data-lib-place="${index}">Place in scene</button>` : ""}
+        ${item.retired ? "" : shelfControl}
+        ${item.section === "other" ? "" : `<button type="button" class="icon-button small" data-lib-hide="${index}">${item.retired ? "Show again" : "Hide"}</button>`}
+      </div></figure>`;
+  }
+
+  function drawLibrary() {
+    if (!libraryDialog) return;
+    const groups = libraryGroups();
+    libraryDialog.querySelector("[data-lib-tabs]").innerHTML = Object.entries(LIBRARY_TABS).map(([key, label]) =>
+      `<button type="button" class="icon-button small ${libraryTab === key ? "active" : ""}" data-lib-tab="${key}">${label} (${groups[key].length})</button>`).join("");
+    const query = libraryKey(libraryQuery).trim();
+    const shown = groups[libraryTab].filter((item) => !query || libraryKey(`${item.name} ${item.origin} ${item.project || ""} ${item.shelf || ""}`).includes(query));
+    const by = libraryTab === "recurring" ? "shelf" : libraryTab === "other" ? "project" : null;
+    const heads = by ? [...new Set(shown.map((item) => item[by]))] : [null];
+    const empty = { project: "Nothing here yet. Drop pictures on this window or on the video, or approve a drawing: it stays here.",
+      recurring: "No recurring pictures yet. Choose “★ Make recurring…” on any picture to keep it on a shelf for every project.",
+      other: "No pictures in your other projects.", hidden: "Nothing hidden." }[libraryTab];
+    const banner = libraryFor ? `<div class="show-lib-for"><p>Choosing the picture for <b>“${escape(libraryFor.params.subject || "this drawing")}”</b>.</p><div class="show-lib-grid" data-lib-matches><p class="show-hint">Looking for matches…</p></div></div>` : "";
+    libraryDialog.querySelector("[data-lib-body]").innerHTML = banner + (shown.length ? heads.map((head) =>
+      `${head ? `<h4>${escape(head)}</h4>` : ""}<div class="show-lib-grid">${shown.filter((item) => !by || item[by] === head).map(libraryCard).join("")}</div>`).join("")
+      : `<p class="show-hint">${query ? "Nothing with that name here; try the other tabs." : empty}</p>`);
+    if (libraryFor) {
+      matchesFor(libraryFor.params.subject).then((found) => {
+        const box = libraryDialog.querySelector("[data-lib-matches]");
+        if (!box) return;
+        const cards = found.map((match) => libraryAll.find((item) => item.path === match.path) || { ...match }).filter(Boolean);
+        cards.forEach((item) => { if (!libraryAll.includes(item)) libraryAll.push(item); });
+        box.innerHTML = cards.length ? cards.map(libraryCard).join("") : `<p class="show-hint">Nothing in your library is called like that yet. Look through the tabs, or close this and draw it.</p>`;
+      });
+    }
+  }
+
+  function matchesFor(subject) {
+    const key = libraryKey(subject).trim();
+    if (!key) return Promise.resolve([]);
+    if (!suggestions.has(key)) suggestions.set(key, api(`/show/library/suggest?subject=${encodeURIComponent(subject)}`).then((data) => data.items || []).catch(() => []));
+    return suggestions.get(key);
+  }
+
+  // A library picture as one of this project's own (copied in once when it comes from elsewhere).
+  async function projectCopy(item) {
+    if (item.section === "project" || !item.section) return item;
+    return api("/show/library/use", { method: "POST", body: JSON.stringify({ path: item.path }) });
+  }
+
+  async function useForDrawing(proposalId, path) {
+    const updated = await api(`/show/review/${encodeURIComponent(proposalId)}/picture`, { method: "POST", body: JSON.stringify({ path }) });
+    const index = review.proposals.findIndex((item) => item.id === proposalId);
+    if (index >= 0) review.proposals[index] = updated;
+    const scene = scenes().find((entry) => entry.effects.includes(proposalId));
+    if (scene) { scene.decision = "modified"; invalidateLocal(scene); }
+    libraryDialog?.open && libraryDialog.close();
+    await libraryChanged();
+    showToast(`“${updated.params.subject}” now uses ${updated.params.image_engine.replace(/^Your library · /, "")}. It plays in the scene's preview${updated.status === "approved" ? "" : "; approve it when you have seen it"}.`);
+  }
+
+  async function addLibraryFiles(files) {
+    const pictures = files.filter((file) => /\.(png|jpe?g|webp)$/i.test(file.name));
+    if (!pictures.length) { showToast("Add PNG, WEBP or JPEG pictures.", true); return; }
+    for (const file of pictures) {
+      const form = new FormData();
+      form.append("file", file, file.name);
+      const response = await fetch("/api/v1/show/library/pictures", { method: "POST", body: form });
+      if (!response.ok) { const answer = await response.json().catch(() => ({})); showToast(answer.error?.message || `Could not add ${file.name}`, true); }
+    }
+    libraryTab = "project";
+    await libraryChanged();
+    showToast(`${pictures.length} picture${pictures.length > 1 ? "s" : ""} added to this project's library.`);
+  }
+
+  async function onLibraryClick(event) {
+    const target = event.target instanceof Element ? event.target.closest("[data-lib-close],[data-lib-tab],[data-lib-use-for],[data-lib-place],[data-lib-unrecur],[data-lib-hide]") : null;
+    if (!target) return;
+    if (target.hasAttribute("data-lib-close")) { libraryDialog.close(); return; }
+    if (target.dataset.libTab) { libraryTab = target.dataset.libTab; drawLibrary(); return; }
+    if (target.dataset.libUseFor) { target.disabled = true; await useForDrawing(target.dataset.libUseFor, target.dataset.libPath); return; }
+    const item = libraryAll[Number(target.dataset.libPlace ?? target.dataset.libUnrecur ?? target.dataset.libHide)];
+    if (!item) return;
+    if (target.dataset.libPlace !== undefined) {
+      target.disabled = true;
+      const own = await projectCopy(item);
+      libraryDialog.close();
+      await addToScene(own.path);
+      await libraryChanged();
+      showToast(`${item.name} is on the video. Drag it to move it; drag its bar to time it.`);
+    } else if (target.dataset.libUnrecur !== undefined) {
+      if (!confirm(`Take “${item.name}” off the ${item.shelf} shelf? It goes to the Trash (recoverable); projects that used it keep their own copy.`)) return;
+      await api("/show/library/recurring", { method: "POST", body: JSON.stringify({ path: item.path, recurring: false }) });
+      await libraryChanged();
+    } else {
+      await api("/show/library/visibility", { method: "POST", body: JSON.stringify({ path: item.path, retired: !item.retired }) });
+      await libraryChanged();
+    }
+  }
+
+  async function onLibraryChange(event) {
+    if (event.target.matches?.("[data-lib-files]")) { await addLibraryFiles([...event.target.files]); event.target.value = ""; return; }
+    const select = event.target.closest?.("[data-lib-recur]");
+    if (!select || !select.value) return;
+    const item = libraryAll[Number(select.dataset.libRecur)];
+    select.disabled = true;
+    await api("/show/library/recurring", { method: "POST", body: JSON.stringify({ path: item.path, shelf: select.value, name: item.name }) });
+    await libraryChanged();
+    showToast(`${item.name} is on the ${select.value} shelf: it is in the library of every project now.`);
+  }
+
+  // Under each drawing still to be pictured: what the library already has with that name.
+  function fillSuggestions() {
+    document.querySelectorAll("[data-suggest-for]").forEach((box) => {
+      const item = review?.proposals.find((entry) => entry.id === box.dataset.suggestFor);
+      if (!item?.params.subject) return;
+      matchesFor(item.params.subject).then((found) => {
+        const others = found.filter((match) => match.path !== item.params.picture).slice(0, 3);
+        box.innerHTML = others.length ? `<span>In your library:</span>${others.map((match) => `<button type="button" class="show-lib-chip" data-lib-use-for="${escape(item.id)}" data-lib-path="${escape(match.path)}" title="Use ${escape(match.name)} for this drawing${match.section === "other" ? ` (from ${escape(match.project)})` : ""}"><img src="${match.url}" alt="" loading="lazy">${escape(match.name)}</button>`).join("")}` : "";
+      });
+    });
+  }
+  document.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("[data-open-library],.show-lib-chip") : null;
+    if (!target || !review || target.closest("#showLibraryDialog")) return;
+    if (target.classList.contains("show-lib-chip")) { target.disabled = true; useForDrawing(target.dataset.libUseFor, target.dataset.libPath).catch((error) => { target.disabled = false; showToast(error.message, true); }); }
+    else openLibrary(target.dataset.openLibrary || null).catch((error) => showToast(error.message, true));
+  });
+
+  function refreshSceneDrawings() {
+    const box = $("#showSceneDrawings"), scene = currentScene();
+    if (!box || !scene) return;
+    box.outerHTML = sceneDrawings(scene, sceneEffects(scene));
+    fillSuggestions();
+  }
+
+  // The drawings of this scene, with what the library has for each (always in sight).
+  function sceneDrawings(scene, effects) {
+    const drawings = effects.filter((item) => item.kind === "drawing" && item.status !== "discarded" && item.params.subject && ["drawing", "character", undefined].includes(item.params.kind));
+    if (!drawings.length) return `<div id="showSceneDrawings" hidden></div>`;
+    return `<div id="showSceneDrawings" class="show-scene-drawings"><strong>Drawings in this scene</strong>${drawings.map((item) => {
+      const pictured = !!item.params.picture, done = item.status === "approved" && pictured;
+      const state = item.status === "approved" ? (pictured ? "Approved" : "Approved, but it has no picture: it is left out of the video") : item.drafting?.status === "drawing" ? "Being drawn…" : item.params.picture ? (item.params.draft ? "Draft to approve" : "Picture chosen, to approve") : "No picture yet";
+      return `<div class="show-scene-drawing">${item.params.picture ? `<img src="/api/v1/show/library/file?path=${encodeURIComponent(item.params.picture)}" alt="" loading="lazy">` : `<span class="show-scene-drawing-empty">?</span>`}
+        <div><b>“${escape(item.params.subject)}”</b> <small>${escape(state)}${item.params.image_engine ? ` · ${escape(item.params.image_engine)}` : ""}</small>
+        <div class="show-actions"><button type="button" class="icon-button small" data-open-library="${escape(item.id)}">Choose from library</button>${done ? "" : `<button type="button" class="icon-button small" data-draw-it="${escape(item.id)}" ${item.drafting?.status === "drawing" ? "disabled" : ""} ${item.params.picture ? 'data-again="1"' : ""}>${item.params.picture ? "Draw another" : "Draw it"}</button>${pictured && item.status !== "approved" ? `<button type="button" class="icon-button small" data-show-status="approved" data-id="${escape(item.id)}" ${(item.needs || []).length ? "disabled" : ""}>Approve</button>` : ""}`}</div>
+        ${done ? "" : `<div class="show-lib-suggest" data-suggest-for="${escape(item.id)}"></div>`}</div></div>`;
+    }).join("")}</div>`;
+  }
+
   window.ShowReview = {
-    open: openReview, openWorkspace, hull, refreshLibrary, addToScene,
+    open: openReview, openWorkspace, hull, refreshLibrary, addToScene, openLibrary,
     async imageApplied(item,sceneId) {
       const scene=scenes().find(s=>s.id===sceneId); if(!scene)throw Error("Open the image's scene before applying it");
       const index=review.proposals.findIndex(p=>p.id===item.id);
