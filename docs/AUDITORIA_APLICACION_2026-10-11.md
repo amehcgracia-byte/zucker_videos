@@ -157,7 +157,7 @@ The targeted remote checks reported 79 passed / 6 skipped on each OS. The separa
 
 ## Fallo reproducido y corrección
 
-La ruta de textos/fórmulas de Show (`core/show_bridge_text.py`) trataba todos los sistemas distintos de Windows como macOS. En Linux buscaba exclusivamente fuentes de Apple y fallaba con `No font for its words on this computer`. **`9845f3d2`** separa Linux y busca DejaVu/Liberation, manteniendo las rutas de Windows/macOS. Los 13 tests locales de `test_show_bridge.py` pasan. La confirmación en Ubuntu está pendiente de `38865264847` / `38865271207`; no se afirma todavía que la suite completa esté reparada.
+La ruta de textos/fórmulas de Show (`core/show_bridge_text.py`) trataba todos los sistemas distintos de Windows como macOS. En Linux buscaba exclusivamente fuentes de Apple y fallaba con `No font for its words on this computer`. **`9845f3d2`** separa Linux y busca DejaVu/Liberation, manteniendo las rutas de Windows/macOS. Los 13 tests locales de `test_show_bridge.py` pasan. Confirmado en el job rápido de Ubuntu `116856507140` (ejecución `38865264847`): **28 fallos / 945 aprobados**, frente a 29 / 944 antes. El test de textos/fórmulas deja de fallar; la suite completa continúa roja. Los skips/xfail existentes no se han aumentado.
 
 ## Ronda privada con grabaciones reales
 
@@ -165,9 +165,8 @@ La ruta de textos/fórmulas de Show (`core/show_bridge_text.py`) trataba todos l
 
 Se han extraído localmente, por copia de streams, solo 24 s de C0271 y 12 s de C0274, más su audio. No se renderiza localmente. Los fragmentos no están en Git ni en artefactos del repositorio público: se transportan como un asset de release de un repositorio **privado**, con verificación previa de visibilidad. El repositorio privado contiene únicamente el workflow; los medios no se añaden a su historial Git. Los resultados de los runners se retienen allí durante tres días para la revisión. No se publicarán capturas ni trazas privadas en PR #30.
 
-Ejecución privada **`38865498621`**, código congelado `883ab5cbebcb904cd1b8bc84a6c7c0fdf8cdb3b4`: cuatro recorridos por sistema (YouTube, Reel, Medley, Backstage), **en curso, sin resultado aún**. Debe recogerse la evidencia antes de eliminar el asset temporal. La fuente 360 real está pendiente: RAWVideos no está conectado y no se utiliza una grabación plana como sustituto. El recorrido 360 sintético no demuestra la calidad de una cámara 360 real.
+Ejecución privada **`38865498621`**, código congelado `883ab5cbebcb904cd1b8bc84a6c7c0fdf8cdb3b4`: cuatro recorridos por sistema (YouTube, Reel, Medley, Backstage), **en curso, sin resultado aún**. El SHA-256 del asset privado coincide con el archivo local (`b8161addcabca0c97305e71cbe0b76050c9c289d11f1fda9aa825882e29542fb`); tras comprobarlo se eliminaron las copias temporales locales. Debe recogerse la evidencia antes de eliminar el asset remoto temporal. Un test adicional comprueba que una fuente privada ausente aborta antes de abrir el navegador o generar fixtures; ese test y los 13 del bridge pasan localmente (14 en total). La fuente 360 real está pendiente: RAWVideos no está conectado y no se utiliza una grabación plana como sustituto. El recorrido 360 sintético no demuestra la calidad de una cámara 360 real.
 
 Se ha solicitado también un nuevo paquete Windows y su selftest de arranque en **`38865306308`**, con esa misma revisión. El anterior paquete aprobado en `38533337837` no certifica el código nuevo. Los diálogos nativos de archivos, permisos de micrófono, sustitución/actualización del ejecutable y comportamiento de menús nativos requieren validación del paquete; Chromium headless no los certifica. No se instala este paquete sobre la aplicación del usuario.
 
 La repetición sintética tras el cambio de harness está en **`38865264815`**. La auditoría permanece **abierta** hasta recoger y revisar esas ejecuciones; este seguimiento no se pausa todavía.
-
