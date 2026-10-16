@@ -267,9 +267,9 @@
       </div>
       ${sceneDrawings(scene, effects)}
       <div id="showClay" class="show-clay"></div>
-      <div id="showSceneEffects" class="show-review-list" ${open.has(scene.id) ? "" : "hidden"}>${effects.map(card).join("") || "<p class=\"show-hint\">No effect in this scene.</p>"}
+      <div id="showSceneEffects" class="show-review-list">${effects.map(card).join("") || "<p class=\"show-hint\">No effect in this scene.</p>"}
         <form id="showSceneAdd" class="show-review-add"><strong>Add</strong>
-          <select name="kind"><option value="drawing">A drawing</option><option value="steam">Rainbow steam over a mug</option><option value="character">A character that speaks</option><option value="cutaway">A close-up</option><option value="math">Formulas around you</option><option value="word">A shouted word</option></select>
+          <select name="kind"><option value="drawing">A drawing</option><option value="steam">Rainbow steam over a mug</option><option value="character">A character that speaks</option><option value="cutaway">A close-up</option><option value="math">Formulas around you</option><option value="word">A shouted word</option><option value="photo_edit">Realistic photo of me</option><option value="cutout">Cut out a person / background</option><option value="silhouette">Black silhouette / change background</option><option value="clay">Clay memory · Simón</option><option value="captions">Normal speech captions</option></select>
           <label>at <input name="at" type="number" step="0.1" min="${scene.start}" max="${scene.end}" value="${scene.start.toFixed(1)}"> s</label>
           <label>of <input name="subject" type="text" maxlength="80" placeholder="a guitar"></label>
           <select name="style">${Object.entries(DRAWING_STYLES).map(([key, label]) => `<option value="${key}" ${key === "crayon" ? "selected" : ""}>${label}</option>`).join("")}</select>
@@ -472,6 +472,7 @@
       ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${selected.kind==='drawing'?`<button type="button" data-open-library="${selected.id}">Choose from library</button>`:''}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
       <div class="show-time-row"><span>Video</span><div class="show-time-source" data-scene-seek>Original video · your cut</div></div>
       <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
+      ${(clay?.placements||[]).filter(p=>p.enabled!==false).flatMap(p=>(p.edited||[]).filter(([a,b])=>a<scene.end&&b>scene.start).map(([a,b])=>`<div class="show-time-row"><span>Clay memory</span><div class="show-time-track"><button type="button" class="show-caption-time" data-clay-at="${a}" style="left:${pct(Math.max(a,scene.start))}%;width:${Math.max(.2,pct(Math.min(b,scene.end))-pct(Math.max(a,scene.start)))}%">Simón · ${escape(CLAY_MODES[p.mode]||p.mode)}</button></div></div>`)).join('')}
       <div class="show-time-row"><span>Speech captions</span><div class="show-time-track show-caption-track">${(scene.captions||[]).map(cue=>`<button type="button" class="show-caption-time" data-caption-at="${Math.max(scene.start,cue.start)}" style="left:${pct(Math.max(scene.start,cue.start))}%;width:${Math.max(.2,pct(Math.min(scene.end,cue.end))-pct(Math.max(scene.start,cue.start)))}%" title="${escape(cue.lines.join(' '))} · click to edit on the video">${escape(cue.lines.join(' '))}</button>`).join('')}</div></div>
       ${rows.map(item=>{
         const a=Math.max(scene.start,item.at),b=Math.min(scene.end,item.at+item.duration),outside=b<=a;
@@ -489,6 +490,7 @@
       playQuick(scene,Math.max(0,Number(button.dataset.captionAt)-scene.start+.02));$('#showStageVideo').pause();
       syncPlayback();
     });
+    box.querySelectorAll('[data-clay-at]').forEach(button=>button.onclick=()=>{seekTo(Number(button.dataset.clayAt));showToast('Clay timing and display controls are in Clay memory below the scene.');});
     box.querySelector('[data-timeline-seek]').oninput=event=>seekTo(Number(event.target.value));
     box.onpointerdown=event=>{
       const clip=event.target.closest('[data-time-clip]');if(!clip)return;
@@ -546,7 +548,10 @@
   async function clayBlock(scene) {
     const box = $("#showClay");
     if (!box) return;
-    clay = await api("/show/clay").catch(() => null);
+    const loaded = await api("/show/clay").catch(() => null);
+    if(currentScene()?.id !== scene.id)return;
+    clay = loaded;
+    renderTimeline(scene);
     if (!clay || !clay.stories.length || currentScene()?.id !== scene.id) { box.innerHTML = ""; return; }
     const inScene = (item) => item.edited.some(([a, b]) => a < scene.end && b > scene.start);
     const shown = clay.placements.map((item, index) => [item, index]).filter(([item]) => inScene(item));
@@ -559,8 +564,8 @@
         <legend><label><input type="checkbox" data-clay-field="enabled" ${item.enabled !== false ? "checked" : ""}> ${escape(CLAY_MODES[item.mode] || item.mode)}</label> <small>${span(item)}</small></legend>
         ${field("Mode", `<select data-clay-field="mode">${clay.modes.map((mode) => `<option value="${mode}" ${mode === item.mode ? "selected" : ""}>${CLAY_MODES[mode] || mode}</option>`).join("")}</select>`)}
         <div class="show-fields">
-          ${field("From (s)", `<input type="number" data-clay-field="start" value="${item.start}" step="0.05" min="0" max="${story?.duration ?? 60}">`)}
-          ${field("To (s)", `<input type="number" data-clay-field="end" value="${item.end}" step="0.05" min="0" max="${story?.duration ?? 60}">`)}
+          ${field("From (s)", `<input type="number" data-clay-field="start" value="${item.start}" step="0.05" min="0" max="${clay.stories.find(s=>s.id===item.story)?.duration ?? 60}">`)}
+          ${field("To (s)", `<input type="number" data-clay-field="end" value="${item.end}" step="0.05" min="0" max="${clay.stories.find(s=>s.id===item.story)?.duration ?? 60}">`)}
           ${field("Fade (s)", `<input type="number" data-clay-field="fade" value="${item.fade ?? 0.3}" step="0.05" min="0" max="2">`)}
         </div>
         <div class="show-fields">
@@ -917,8 +922,26 @@
         ShowEinstein.open(scene,{text:scene.text,start:body.at,end:Math.min(scene.end,body.at+3)},form.elements.subject.value,null,{style:form.elements.style.value});
         return;
       }
+      if(await extraTool(kind,scene,{text:scene.text,start:body.at,end:Math.min(scene.end,body.at+3)}))return;
       await addEffect(scene, body);
     };
+  }
+
+  async function extraTool(kind,scene,picked) {
+    if(kind==='photo_edit') {ShowEinstein.open(scene,picked,'A realistic photo of me with long hair',null,{purpose:'photo_edit'});return true;}
+    if(kind==='cutout'||kind==='silhouette') {const [index,offset]=sourceAt(scene.segments,picked.start-scene.start);await ShowPhotoStudio.openAt(review.source,scene.segments[index][0]+offset,kind==='silhouette');return true;}
+    if(kind==='captions') {enterLiveTiming(scene,picked.start);playQuick(scene,Math.max(0,picked.start-scene.start));openTimeline();showToast('Speech captions follow the words. Drag the caption on the video or resize its corner.');return true;}
+    if(kind==='clay') {
+      let dialog=document.getElementById('showClayPicker');if(dialog)dialog.remove();
+      dialog=document.createElement('dialog');dialog.id='showClayPicker';
+      dialog.innerHTML='<h2>Clay memory · Simón</h2><p>Reuse the existing countryside story with Simón’s green cap and yellow coat over these words. This is a reusable sample, not a newly generated memory. It stops at the next source cut.</p><label>Display <select><option value="bubble">Thought bubble</option><option value="full">Full clay shot</option><option value="pip">Small clay window</option><option value="blend">Blend over me</option></select></label><div class="show-actions"><button data-clay-place>Place sample on these words</button><button data-clay-cancel>Cancel</button></div><p role="status"></p>';
+      document.body.append(dialog);dialog.querySelector('[data-clay-cancel]').onclick=()=>dialog.close();
+      dialog.querySelector('[data-clay-place]').onclick=async event=>{event.target.disabled=true;try{
+        await api('/show/clay/sample',{method:'POST',body:JSON.stringify({project_id:review.project_id,scene_id:scene.id,at:picked.start,end:picked.end,mode:dialog.querySelector('select').value})});
+        invalidateLocal(scene);dialog.close();await clayBlock(scene);await requestScenePreview(scene);showToast('Clay sample added. Its placement controls are below the scene.');
+      }catch(error){dialog.querySelector('[role=status]').textContent=error.message;event.target.disabled=false;}};dialog.showModal();return true;
+    }
+    return false;
   }
 
   async function addEffect(scene, body) {
@@ -961,6 +984,11 @@
     const choices = [
       ...(selectedEffect ? [["place", "Place selected effect on these words", null]] : []),
       ["ai", "AI · create with Einstein…", null],
+      ["photo_edit", "Realistic photo of me…", null],
+      ["cutout", "Cut out a person / background…", null],
+      ["silhouette", "Black silhouette / change background…", null],
+      ["clay", "Clay memory · Simón…", null],
+      ["captions", "Normal speech captions · edit on video", null],
       ["drawing", `Draw “${quoted}”`, { kind: "drawing", subject: picked.text, style: "crayon", duration: Math.max(2, span) }],
       ["word", `Show “${quoted}” big`, { kind: "word", text: picked.text.toUpperCase().slice(0, 40), duration: Math.max(1.5, span) }],
       ["math", "Formulas around me here", { kind: "math", duration: Math.max(2, span) }],
@@ -981,6 +1009,7 @@
       if (!button) return;
       menu.hidden = true;
       const key = button.dataset.say;
+      if(await extraTool(key,scene,picked))return;
       if (key === "place") { await placeOnWords(picked); return; }
       if (key === "ai") { ShowEinstein.open(scene,picked); return; }
       if (key === "drawing") { ShowEinstein.open(scene,picked,`Draw ${picked.text}`); return; }

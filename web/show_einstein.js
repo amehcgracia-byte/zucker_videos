@@ -79,19 +79,21 @@
     dialog.querySelector('[data-ai-style]').value=settings.style || 'crayon';
     dialog.querySelector('[data-ai-position]').value=settings.position || 'left';
     dialog.querySelector('[data-ai-face]').checked=/my face|mi cara|version of me/i.test(idea);
-    const lettering=settings.purpose==='lettering';
+    const lettering=settings.purpose==='lettering', photo=settings.purpose==='photo_edit';
     dialog.querySelector('[data-ai-lettering-label]').hidden=!lettering;
     dialog.querySelector('[data-ai-lettering]').value=settings.letteringText||'';
-    dialog.querySelector('header h2').textContent=lettering?'Draw these words':'Create with Einstein';
+    dialog.querySelector('header h2').textContent=lettering?'Draw these words':photo?'Realistic photo edit':'Create with Einstein';
     dialog.querySelector('header p').textContent=lettering?'Original lettering, reviewed before use':'What should happen when you say this?';
     dialog.querySelector('.show-hint').textContent=lettering?'These words become a new drawing. Review it before using it; its timing is linked to your phrase. Drag and resize the result on the video.':'Explain the joke, who appears, and how it should look. I will make an image first; you choose whether to use it. Then choose words for its timing and drag it on the video.';
     dialog.querySelector('[data-ai-apply]').textContent=lettering?'Use lettering':'Use image & choose words';
-    dialog.querySelector('[data-ai-face]').closest('label').nextElementSibling.hidden=lettering;
+    dialog.querySelector('[data-ai-face]').closest('label').nextElementSibling.hidden=lettering||photo;
 
-    dialog.querySelector('[data-ai-claude]').hidden=lettering;
-    dialog.querySelector('[data-ai-local]').hidden=lettering;
-    dialog.querySelector('[data-ai-face]').closest('label').hidden=lettering;
+    dialog.querySelector('[data-ai-claude]').hidden=lettering||photo;
+    dialog.querySelector('[data-ai-local]').hidden=lettering||photo;
+    dialog.querySelector('[data-ai-face]').closest('label').hidden=lettering||photo;
     if(lettering)dialog.querySelector('[data-ai-face]').checked=false;
+    if(photo){dialog.querySelector('[data-ai-face]').checked=true;dialog.querySelector('.show-hint').textContent='Edit a photo of you from these words. Describe the change (for example, long hair). Review the still image before placing it; this does not animate your face in the source video.';}
+    dialog.querySelector('[data-ai-style]').closest('label').hidden=photo;
 
     dialog.querySelector('[data-ai-result]').hidden=true;
     readyControls();status('Describe the image you want. Generating does not replace anything until you use the result.');

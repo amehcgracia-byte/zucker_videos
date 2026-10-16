@@ -77,6 +77,7 @@ PY
   --workpath "$BUILD" \
   --specpath "$BUILD" \
   --add-data "$ROOT/web:web" \
+  --add-data "$ROOT/assets/clay:assets/clay" \
   --add-data "$ROOT/assets/intro_card_watermark.png:assets" \
   --add-data "$ROOT/assets/models:assets/models" \
   --add-data "$ROOT/captions/presets.json:captions" \

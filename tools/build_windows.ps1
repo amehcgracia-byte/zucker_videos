@@ -37,6 +37,7 @@ $common = @(
   "--distpath", $PyInstallerDist, "--workpath", $PyInstallerBuild, "--specpath", $PyInstallerBuild,
   "--runtime-hook", "$Root\tools\windows_runtime_hook.py",
   "--add-data", "$Root\web;web",
+  "--add-data", "$Root\assets\clay;assets/clay",
   "--add-data", "$Root\assets\models;assets\models",
   "--add-data", "$Root\captions\presets.json;captions",
   "--add-data", "$Root\tools\qa\show_pilot_editor.html;tools\qa",

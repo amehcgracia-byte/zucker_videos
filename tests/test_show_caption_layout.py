@@ -84,3 +84,35 @@ assert.equal(clock.unshift(5,[[1,3]]),2);
 assert.equal(clock.unshift(9,[[1,3],[3,2]]),4);
 """
     subprocess.run(['node','-e',program],check=True,capture_output=True,text=True)
+
+
+def test_realistic_edit_uses_identity_without_doodle_instructions(board):
+    p,c,_=board
+    job=show_ai_images.create(p,dict(id='s1',start=0,end=3),dict(direction='Me with long hair',purpose='photo_edit',at=.2,duration=1))
+    assert job['use_face'] and job['purpose']=='photo_edit'
+    prompt=show_ai_images.prompt_for(job)
+    assert 'photorealistically' in prompt and 'long hair' in prompt
+    assert 'five-minute drawing' not in prompt
+    with pytest.raises(ValueError):
+        show_ai_images.create(p,dict(id='s1',start=0,end=3),dict(direction='Long hair',purpose='photo_edit',engine='claude'))
+
+
+def test_clay_sample_is_placed_on_new_words_not_original_recording_clock(board):
+    from core import show_clay, show_bridge
+    p,c,plan=board
+    request=dict(project_id=str(p.folder),scene_id='s1',at=.2,end=1.2,mode='bubble')
+    result=c.post('/api/v1/show/clay/sample',json=request)
+    assert result.status_code==200, result.get_json()
+    placed=result.get_json()['placements'][-1]
+    assert placed['edited'][0][:2]==[.2,1.2]
+    layers,report=show_bridge.studio_layers(p.folder,plan)
+    assert report[-1]['status']=='applied', report
+    import numpy as np
+    frame=np.zeros((180,320,3),dtype=np.uint8)
+    layers.draw(frame,.7)
+    assert frame.max()>0
+    data=show_clay.ClayStore(p.folder).load()
+    assert data['stories'][0]['story']['source_start']==.2
+    assert data['stories'][0]['story']['duration']==pytest.approx(1)
+    assert c.post('/api/v1/show/clay/sample',json={**request,'project_id':'old'}).status_code==409
+    assert c.post('/api/v1/show/clay/sample',json={**request,'end':9}).status_code==400

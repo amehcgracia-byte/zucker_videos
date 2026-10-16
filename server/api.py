@@ -2257,6 +2257,30 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         edited moments each placement reaches)."""
         return jsonify(_clay_state(_require_project(state)))
 
+    @app.post("/api/v1/show/clay/sample")
+    @_proposals_locked
+    def api_show_clay_sample() -> Response:
+        from core.show_clay import place_bundled_sample
+        import sys
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        if body.get("project_id") != str(project.folder):
+            return error_response("stale_project", "Reopen the current project before placing clay", 409)
+        from core import show_scenes
+        scene = next((s for s in show_scenes.load(_scene_files(project))["scenes"] if s["id"] == body.get("scene_id")), None)
+        try:
+            at, end = float(body["at"]), float(body["end"])
+            if not scene or not scene["start"] <= at < end <= scene["end"]:
+                raise ValueError("Choose words inside this scene")
+            _, plan_path = _show_review_files(project)
+            plan = json.loads(plan_path.read_text())
+            root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+            place_bundled_sample(project, plan, at, end, str(body.get("mode") or "bubble"), root)
+            _invalidate_scene(project, scene["id"])
+        except (ValueError, TypeError, KeyError) as exc:
+            return error_response("invalid_clay", str(exc), 400)
+        return jsonify(_clay_state(project))
+
     @app.put("/api/v1/show/clay/placements")
     def api_show_clay_placements() -> Response:
         from core import show_clay
@@ -2871,12 +2895,16 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         mask = show_characters.apply_strokes(mask, body.get("strokes") or [])
         if body.get("background"):
             mask = 1.0 - mask
-        key = hashlib.sha1(json.dumps([base_key, body.get("strokes") or [], bool(body.get("background"))]).encode()).hexdigest()[:16]
+        key = hashlib.sha1(json.dumps([base_key, body.get("strokes") or [], bool(body.get("background")), bool(body.get("silhouette"))]).encode()).hexdigest()[:16]
         np.save(folder / f"{key}.npy", mask)
         try:
             picture, crop = show_characters.cutout(photo, mask)
         except ValueError as exc:
             return error_response("bad_request", str(exc), 400)
+        if body.get("silhouette"):
+            original_alpha = picture.getchannel("A")
+            picture.paste((0, 0, 0, 0), (0, 0, picture.width, picture.height))
+            picture.putalpha(original_alpha)
         preview = folder / f"{key}.png"
         picture.save(preview)
         return jsonify({"mask": key, "method": method, "crop": list(crop), "size": list(picture.size),
@@ -2911,6 +2939,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             folder.mkdir(parents=True, exist_ok=True)
             target = folder / f"cutout-{uuid.uuid4().hex}.png"
             picture, crop = show_characters.cutout(photo, mask)
+            if body.get("silhouette"):
+                original_alpha = picture.getchannel("A")
+                picture.paste((0, 0, 0, 0), (0, 0, picture.width, picture.height))
+                picture.putalpha(original_alpha)
             picture.save(target)
             catalog_path = folder / "catalog.json"
             try:
@@ -2918,7 +2950,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             except (OSError, ValueError):
                 catalog = {}
             catalog[str(target)] = {"name": str(body.get("name") or source.get("name") or "Photo cutout"),
-                                    "origin": "Your photo · original pixels", "retired": False,
+                                    "origin": "Your photo · black silhouette" if body.get("silhouette") else "Your photo · original pixels", "retired": False,
                                     "source_photo": str(photo), "crop": list(crop)}
             atomic_write_json(catalog_path, catalog)
             return jsonify({"cutout": str(target), "name": catalog[str(target)]["name"]}), 201

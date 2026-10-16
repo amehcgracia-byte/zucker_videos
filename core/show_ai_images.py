@@ -67,6 +67,10 @@ def create(project, scene: dict, body: dict) -> dict:
             raise ValueError('Choose a completed image from this scene to refine')
         job['previous_id'] = previous['id']
         job['previous_direction'] = previous['direction']
+    if body.get('purpose') == 'photo_edit':
+        if job['provider'] != 'chatgpt':
+            raise ValueError('Use ChatGPT for a realistic photo edit')
+        job.update(purpose='photo_edit', use_face=True)
     if body.get('purpose') == 'lettering':
         text = str(body.get('lettering_text') or '').strip()
         if not text or len(text) > 120:
@@ -88,6 +92,11 @@ def create(project, scene: dict, body: dict) -> dict:
 
 
 def prompt_for(job: dict) -> str:
+    if job.get('purpose') == 'photo_edit':
+        return ('Edit the attached photograph photorealistically. Preserve the SAME adult person, facial identity, age, expression, camera angle, lighting and clothing except changes explicitly requested. '
+                'Real photographic skin and hair, no cartoon, anime, clay, crayon, illustration or sticker border. '
+                'Use a transparent background around the edited person for a video overlay. This is a still photograph, not a generated video. '
+                f"Spoken context: {job['selected_text']}\nRequested change: {job['direction']}")
     if job.get('purpose') == 'lettering':
         return ('Create a transparent PNG of ORIGINAL HAND-DRAWN LETTERING for a comedy video. '
                 'Draw every letter as if an ordinary person painted a spontaneous protest placard. '
