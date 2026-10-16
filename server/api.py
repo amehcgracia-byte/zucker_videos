@@ -2325,7 +2325,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 try:
                     meta = json.loads((picture.parent / "request.json").read_text())
                     if meta.get("status") == "ready":
-                        items.append({"name": meta.get("direction", "ChatGPT image")[:80], "path": str(picture.resolve()), "folder": "ChatGPT images"})
+                        claude = meta.get("provider") == "claude"
+                        items.append({"name": meta.get("direction", "Einstein image")[:80], "path": str(picture.resolve()),
+                                      "folder": "Claude drawings" if claude else "ChatGPT images", "engine": meta.get("engine")})
                 except (OSError, ValueError):
                     continue
         catalog_path = project.folder / "assets" / "show-library" / "catalog.json"
@@ -2333,11 +2335,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             catalog = json.loads(catalog_path.read_text())
         except (OSError, ValueError):
             catalog = {}
+        # The catalog names its pictures by full path; a project that was moved or copied
+        # still finds its own library pictures by their place inside assets/show-library.
+        library_root = (project.folder / "assets" / "show-library").resolve()
+        by_name = {Path(key).name: meta for key, meta in catalog.items() if Path(key).parent.name == "show-library"}
         for item in items:
-            meta = catalog.get(item["path"], {})
+            meta = catalog.get(item["path"]) or (by_name.get(Path(item["path"]).name, {}) if Path(item["path"]).parent == library_root else {})
             local = "Painted" in Path(item["path"]).parts
-            item.update(origin=meta.get("origin") or ("Local painter" if local else "ChatGPT" if item["folder"] == "ChatGPT images" else "Your library"),
-                        retired=bool(meta.get("retired", local)))
+            if meta.get("origin"):
+                origin = meta["origin"]
+            elif local:
+                origin = "Local painter"
+            elif item["folder"] in ("ChatGPT images", "Claude drawings"):
+                origin = item.get("engine") or ("ChatGPT" if item["folder"] == "ChatGPT images" else "Claude")
+            else:
+                origin = "Your library"
+            item.update(origin=origin, retired=bool(meta.get("retired", local)))
             item["name"] = meta.get("name") or item["name"]
         return items
 
