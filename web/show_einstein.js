@@ -6,6 +6,7 @@
   function readyControls() {
     const busy=job && ['queued','generating'].includes(job.status);
     dialog.querySelector('[data-ai-generate]').disabled=!!busy;
+    dialog.querySelector('[data-ai-claude]').disabled=!!busy;
     dialog.querySelector('[data-ai-apply]').hidden=job?.status!=='ready';
     dialog.querySelector('[data-ai-refine-label]').hidden=job?.status!=='ready';
   }
@@ -29,8 +30,8 @@
       <label>Your idea<textarea rows="4" maxlength="4000" data-ai-direction aria-label="Your idea for Einstein" placeholder="An adult version of me slouching lazily on a sofa, rough wax-crayon lines, on the left…"></textarea></label>
       <div class="show-fields"><label>Drawing style<select data-ai-style><option value="crayon">Rough wax crayons</option><option value="pencil">Messy pencil</option><option value="marker">Clumsy felt-tip pen</option></select></label><label>Position<select data-ai-position><option>left</option><option>right</option><option>top-left</option><option>top-right</option><option>bottom-left</option><option>bottom-right</option></select></label></div>
       <label><input type="checkbox" data-ai-face> Use my face from this moment</label><p class="show-hint">If selected, one video frame is sent to ChatGPT as an identity reference. Your video is not uploaded.</p>
-      <label data-ai-refine-label hidden><input type="checkbox" data-ai-refine checked> Keep this image as a reference when I ask for changes</label><div class="show-actions"><button type="button" data-ai-generate class="primary">Generate with ChatGPT</button><button type="button" data-ai-local>Try the local painter instead</button></div>
-      <p class="show-hint">ChatGPT uses Codex signed in on this computer and its usage limits. The local painter is a separate model; it will never be substituted silently.</p>
+      <label data-ai-refine-label hidden><input type="checkbox" data-ai-refine checked> Keep this image as a reference when I ask for changes</label><div class="show-actions"><button type="button" data-ai-generate class="primary">Generate with ChatGPT</button><button type="button" data-ai-claude class="primary">Draw with Claude</button><button type="button" data-ai-local>Try the local painter instead</button></div>
+      <p class="show-hint">ChatGPT uses Codex signed in on this computer and its usage limits. Claude uses your Claude Code subscription: it draws a rough crayon doodle stroke by stroke, and it can draw itself on the video. The local painter is a separate model. None is ever substituted silently for another.</p>
       <p role="status" data-ai-status></p><img data-ai-result hidden alt="Generated image to review before using it" class="ai-result">
       <div class="show-actions"><button type="button" data-ai-apply class="primary" hidden>Use image &amp; choose words</button></div>`;
     document.body.append(dialog);
@@ -45,18 +46,20 @@
       dialog.querySelector('[data-ai-position]').value=job.position;
       dialog.querySelector('[data-ai-face]').checked=job.use_face;
     };
-    dialog.querySelector('[data-ai-generate]').onclick=async()=>{
+    const generate=async engine=>{
       const direction=dialog.querySelector('[data-ai-direction]').value.trim();
       if(!direction){status('Describe your idea first.');return;}
-      dialog.querySelector('[data-ai-generate]').disabled=true;
-      status('Sending this image request to ChatGPT…');
+      dialog.querySelector('[data-ai-generate]').disabled=true;dialog.querySelector('[data-ai-claude]').disabled=true;
+      status(engine==='claude'?'Asking Claude to draw it (about half a minute)…':'Sending this image request to ChatGPT…');
       try {
         job=await api('/show/ai/images',{method:'POST',body:JSON.stringify({scene_id:context.scene.id,selected_text:context.picked.text,at:context.picked.start,
           duration:Math.max(.1,context.picked.end-context.picked.start),direction,style:dialog.querySelector('[data-ai-style]').value,
-          position:dialog.querySelector('[data-ai-position]').value,use_face:dialog.querySelector('[data-ai-face]').checked,replace_id:context.replaceId,previous_id:job?.status==='ready' && dialog.querySelector('[data-ai-refine]').checked ? job.id : null})});
+          position:dialog.querySelector('[data-ai-position]').value,use_face:dialog.querySelector('[data-ai-face]').checked,replace_id:context.replaceId,engine,previous_id:job?.status==='ready' && dialog.querySelector('[data-ai-refine]').checked ? job.id : null})});
         localStorage.setItem('zucker.show.last-ai-image',job.id); await poll();
-      } catch(error){status(error.message);dialog.querySelector('[data-ai-generate]').disabled=false;}
+      } catch(error){status(error.message);dialog.querySelector('[data-ai-generate]').disabled=false;dialog.querySelector('[data-ai-claude]').disabled=false;}
     };
+    dialog.querySelector('[data-ai-generate]').onclick=()=>generate('chatgpt');
+    dialog.querySelector('[data-ai-claude]').onclick=()=>generate('claude');
     dialog.querySelector('[data-ai-apply]').onclick=async()=>{
       const button=dialog.querySelector('[data-ai-apply]');button.disabled=true;
       try {const item=await api(`/show/ai/images/${job.id}/apply`,{method:'POST',body:'{}'});await ShowReview.imageApplied(item,job.scene_id);dialog.close();}

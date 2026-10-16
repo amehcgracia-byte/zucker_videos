@@ -54,7 +54,11 @@ def create(project, scene: dict, body: dict) -> dict:
            'selected_text': str(body.get('selected_text') or '')[:400], 'style': style,
            'at': at, 'duration': duration, 'position': str(body.get('position') or 'left'),
            'replace_id': body.get('replace_id'), 'use_face': bool(body.get('use_face')),
-           'status': 'queued', 'engine': 'ChatGPT via Codex'}
+           'status': 'queued', 'provider': 'chatgpt', 'engine': 'ChatGPT via Codex'}
+    if str(body.get('engine') or 'chatgpt') == 'claude':
+        job.update(provider='claude', engine='Claude · drawn stroke by stroke')
+    elif str(body.get('engine') or 'chatgpt') != 'chatgpt':
+        raise ValueError('Choose ChatGPT or Claude')
     if job['position'] not in ('left', 'right', 'top-left', 'top-right', 'bottom-left', 'bottom-right'):
         raise ValueError('Choose a picture position')
     if body.get('previous_id'):
@@ -80,8 +84,50 @@ def prompt_for(job: dict) -> str:
             + f"User art direction / requested change: {job['direction']}")
 
 
+def plain_failure(log: str) -> str:
+    """What Codex said when it refused, in plain words (a used-up allowance says until when)."""
+    import re
+    for line in reversed(log.splitlines()):
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        message = event.get('message') or (event.get('error') or {}).get('message') or ''
+        if 'usage limit' in message.lower():
+            until = re.search(r'try again at ([^.]+(?:\.\d+)?[^.]*)', message)
+            return ('Your ChatGPT plan has used up its Codex allowance for now'
+                    + (f'; it is available again at {until.group(1).strip().rstrip(".")}' if until else '')
+                    + '. You can ask Claude to draw it meanwhile.')
+        if message and event.get('type') in ('error', 'turn.failed'):
+            return f'Codex could not make the image: {message[:300]}'
+    return 'Codex image generation failed. Check your Codex sign-in and usage limits, then retry. No local-model fallback was used.'
+
+
+def run_claude(project, job_id: str) -> None:
+    """The drawing asked of the person's own Claude, drawn here with the crayon stamp."""
+    from core import show_claude_drawing as claude
+    job = load(project, job_id)
+    path = folder(project, job_id)
+    try:
+        job.update(status='generating', message='Claude is drawing it, stroke by stroke. The scene stays unchanged until you use the result.')
+        save(path/'request.json', job)
+        previous = None
+        if job.get('previous_id') and (folder(project, job['previous_id'])/'strokes.json').is_file():
+            previous = json.loads((folder(project, job['previous_id'])/'strokes.json').read_text())
+        drawing = claude.ask(claude.prompt_for(job, previous, claude.identity_hint(project) if job['use_face'] else ''))
+        (path/'strokes.json').write_text(json.dumps(drawing))
+        Image.fromarray(claude.render(drawing), 'RGBA').save(path/'image.png')
+        job.update(status='ready', message='Claude drew it. Review it before using it in the scene; it can draw itself on the video.')
+    except Exception as exc:
+        job.update(status='failed', error=str(exc))
+    save(path/'request.json', job)
+
+
 def run(project, job_id: str, *, executable: str | None = None) -> None:
     job = load(project, job_id)
+    if job.get('provider') == 'claude':
+        run_claude(project, job_id)
+        return
     path = folder(project, job_id)
     try:
         executable = executable or shutil.which('codex')
@@ -140,7 +186,7 @@ def run(project, job_id: str, *, executable: str | None = None) -> None:
                     proc.wait()
                 raise RuntimeError('ChatGPT did not finish within 7 minutes. Retry this request; no local-model fallback was used.')
         if proc.returncode:
-            raise RuntimeError('Codex image generation failed. Check your Codex sign-in and usage limits, then retry. No local-model fallback was used.')
+            raise RuntimeError(plain_failure((path/'provider.log').read_text(errors='replace')))
         candidate = Path(json.loads((path/'result.json').read_text())['image_path'])
         candidate = (path/candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
         if path.resolve() not in candidate.parents:

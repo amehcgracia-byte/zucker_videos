@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 import io
 import logging
 import math
@@ -1115,6 +1116,7 @@ def _invalidate_stale_sync_on_open(project: Project) -> None:
 # and this used to block it even in the desktop app whenever the drag-drop
 # path-detection fell through to the upload fallback.
 BROWSER_UPLOAD_MAX_BYTES = 512 * 1024 * 1024
+SHOW_PICTURE_SUFFIXES = {".png", ".webp", ".jpg", ".jpeg"}
 DESKTOP_UPLOAD_MAX_BYTES = None
 
 
@@ -1979,68 +1981,90 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         return Path(raw) if raw in allowed and Path(raw).is_file() else None
 
     scene_previews: dict[str, dict[str, Any]] = {}
-    scene_queue: list[tuple[Project, str]] = []
     scene_lock = threading.Lock()
-    scene_worker: dict[str, Any] = {"thread": None, "stop": threading.Event()}
+    # Two lanes: "now" for the scene the person is working on, "ahead" preparing every
+    # other scene in the background. The scene being edited never waits behind another
+    # scene; a cut or a painting both lanes need is made once (core.show / core.gags locks).
+    scene_lanes: dict[str, dict[str, Any]] = {name: {"queue": [], "thread": None, "current": None} for name in ("now", "ahead")}
+    scene_stop = threading.Event()
 
     def _scene_key(project: Project, scene_id: str) -> str:
         return f"{project.folder}|{scene_id}"
 
     def _prepare_scenes(project: Project, scene_ids: list[str], *, first: bool = False) -> None:
-        """Render previews of these scenes in the background, in order (next scenes
-        first). ``first``: the person asked for it, so it goes before the others."""
-        from core.show import preview_scene
+        """Render previews of these scenes in the background, in order. ``first``: the
+        person asked for the first of them, so it goes in the "now" lane."""
         with scene_lock:
-            for scene_id in reversed(scene_ids) if first else scene_ids:
+            for position, scene_id in enumerate(scene_ids):
                 key = _scene_key(project, scene_id)
                 status = scene_previews.get(key, {}).get("status")
-                if status in {"rendering", "ready"} or (status == "queued" and not first):
+                lane = "now" if first and position == 0 else "ahead"
+                if status in {"rendering", "ready"} or (status == "queued" and lane == "ahead"):
                     continue
-                scene_queue[:] = [entry for entry in scene_queue if _scene_key(*entry) != key]     # never twice
+                for other in scene_lanes.values():                              # never twice
+                    other["queue"][:] = [entry for entry in other["queue"] if _scene_key(*entry) != key]
                 scene_previews[key] = {"status": "queued"}
-                if first:
-                    scene_queue.insert(0, (project, scene_id))
+                if lane == "now":
+                    scene_lanes["now"]["queue"].insert(0, (project, scene_id))
+                    # The person moved to another scene: the one being made for them goes on
+                    # in the background lane instead of holding this one up.
+                    current = scene_lanes["now"]["current"]
+                    if current and current["key"] != key and scene_previews.get(current["key"]) is current["ticket"]:
+                        current["ticket"]["preempted"] = True
+                        scene_previews[current["key"]] = {"status": "queued"}
+                        scene_lanes["ahead"]["queue"].insert(0, (current["project"], current["scene_id"]))
                 else:
-                    scene_queue.append((project, scene_id))
-            if scene_worker["thread"] and scene_worker["thread"].is_alive():
-                return
-            scene_worker["stop"].clear()
+                    scene_lanes["ahead"]["queue"].append((project, scene_id))
+            scene_stop.clear()
+            for name, lane in scene_lanes.items():
+                if lane["queue"] and not (lane["thread"] and lane["thread"].is_alive()):
+                    lane["thread"] = threading.Thread(target=_scene_lane, args=(name,), daemon=True, name=f"zucker-show-previews-{name}")
+                    lane["thread"].start()
 
-            def work() -> None:
-                while not scene_worker["stop"].is_set():
-                    with scene_lock:
-                        if not scene_queue:
-                            scene_worker["thread"] = None
-                            return
-                        item_project, scene_id = scene_queue.pop(0)
-                        key = _scene_key(item_project, scene_id)
-                        ticket = scene_previews[key] = {"status": "rendering", "message": "Rendering the scene cut"}
+    def _scene_lane(name: str) -> None:
+        from core.show import preview_scene
+        lane = scene_lanes[name]
+        while not scene_stop.is_set():
+            with scene_lock:
+                if not lane["queue"]:
+                    lane["thread"] = None
+                    return
+                item_project, scene_id = lane["queue"].pop(0)
+                key = _scene_key(item_project, scene_id)
+                if scene_previews.get(key, {}).get("status") != "queued":
+                    continue                                                # taken by the other lane
+                ticket = scene_previews[key] = {"status": "rendering", "message": "Rendering the scene cut"}
+                lane["current"] = {"key": key, "ticket": ticket, "project": item_project, "scene_id": scene_id}
 
-                    def report(_fraction, message):
-                        with scene_lock:
-                            if scene_previews.get(key) is ticket:
-                                ticket["message"] = message
+            def report(_fraction, message, key=key, ticket=ticket):
+                with scene_lock:
+                    if scene_previews.get(key) is ticket:
+                        ticket["message"] = message
 
-                    def stop() -> None:
-                        with scene_lock:
-                            stale = scene_previews.get(key) is not ticket
-                        if stale or scene_worker["stop"].is_set():
-                            raise InterruptedError("Scene preview superseded or stopped")
-                    try:
-                        path = preview_scene(item_project, scene_id, cancel=stop, progress=report)
-                        result = {"status": "ready", "url": f"/api/v1/show/media?path={quote(str(path))}"}
-                    except InterruptedError:
-                        result = {"status": "stopped"}
-                    except Exception as exc:  # shown on the scene; the review stays usable
-                        LOGGER.exception("Scene preview failed")
-                        result = {"status": "failed", "error": str(exc)}
-                    with scene_lock:
-                        # An edit during rendering invalidates this exact ticket.
-                        # Never publish an old result over a newer queued revision.
-                        if scene_previews.get(key) is ticket:
-                            scene_previews[key] = result
-            scene_worker["thread"] = threading.Thread(target=work, daemon=True, name="zucker-show-scene-previews")
-            scene_worker["thread"].start()
+            def stop(key=key, ticket=ticket) -> None:
+                with scene_lock:
+                    stale = scene_previews.get(key) is not ticket
+                if stale or ticket.get("preempted") or scene_stop.is_set():
+                    raise InterruptedError("Scene preview superseded or stopped")
+
+            def stop_cut(ticket=ticket) -> None:
+                # An edit changes neither the cut nor the paintings: they finish and serve the next preview.
+                if ticket.get("preempted") or scene_stop.is_set():
+                    raise InterruptedError("Scene preview stopped")
+            try:
+                path = preview_scene(item_project, scene_id, cancel=stop, cancel_cut=stop_cut, progress=report)
+                result = {"status": "ready", "url": f"/api/v1/show/media?path={quote(str(path))}"}
+            except InterruptedError:
+                result = {"status": "stopped"}
+            except Exception as exc:  # shown on the scene; the review stays usable
+                LOGGER.exception("Scene preview failed")
+                result = {"status": "failed", "error": str(exc)}
+            with scene_lock:
+                lane["current"] = None
+                # An edit during rendering invalidates this exact ticket.
+                # Never publish an old result over a newer queued revision.
+                if scene_previews.get(key) is ticket:
+                    scene_previews[key] = result
 
     def _scene_files(project: Project) -> Path:
         return project.artifacts_dir / "show_scenes.json"
@@ -2071,7 +2095,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             for entry in manifest.get("exports", []):
                 path = Path(str(entry.get("path") or "")).resolve()
                 if root in path.parents and path.is_file() and path.suffix.lower() == ".mp4":
-                    return {"path": path, "url": f"/api/v1/show/rendered/video?file={quote(path.name)}", "filename": path.name}
+                    return {"path": path, "url": f"/api/v1/show/rendered/video?file={quote(path.name)}", "filename": path.name,
+                            "inserted": (manifest.get("show") or {}).get("inserted") or []}
         except (OSError, ValueError, TypeError):
             pass
         return None
@@ -2106,9 +2131,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         from core.show import edited_words, scene_segments
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
         timed = edited_words(plan) if plan.get("words") else []
+        from core.show import scene_preview_notes, scene_preview_ready
         with scene_lock:
             for scene in document["scenes"]:
-                scene["preview"] = scene_previews.get(_scene_key(project, scene["id"]), {"status": "none"})
+                made = scene_preview_ready(project, scene["id"])
+                known = scene_previews.get(_scene_key(project, scene["id"]), {"status": "none"})
+                # A preview made for what the scene shows now; an older one does not count.
+                scene["preview"] = ({"status": "ready", "url": f"/api/v1/show/media?path={quote(str(made))}", "left_out": scene_preview_notes(made)} if made
+                                    else known if known.get("status") in ("queued", "rendering", "failed") else {"status": "none"})
                 scene["segments"] = scene_segments(plan, float(scene["start"]), float(scene["end"])) if plan.get("shots") else []
                 scene["words"] = [[text, a, b] for text, a, b in timed if scene["start"] <= a < scene["end"]]
         wizard = project.data.get("settings", {}).get("wizard", {})
@@ -2213,14 +2243,42 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             _invalidate_scene(project, scene_id)
         return jsonify(scene)
 
+    @app.post("/api/v1/show/scenes/prefetch")
+    def api_show_scenes_prefetch() -> Response:
+        """Every scene's preview with effects, prepared in the background from the scene
+        the person is on (then the following ones, then the earlier ones)."""
+        from core import show_scenes
+        from core.show import scene_preview_ready
+        project = _require_project(state)
+        ids = [scene["id"] for scene in show_scenes.load(_scene_files(project))["scenes"]]
+        start = str((request.get_json(silent=True) or {}).get("from") or "")
+        order = ids[ids.index(start):] + ids[:ids.index(start)] if start in ids else ids
+        missing = [scene_id for scene_id in order if not scene_preview_ready(project, scene_id)]
+        if missing:
+            _prepare_scenes(project, missing)
+        return jsonify({"queued": len(missing), "ready": len(ids) - len(missing)}), 202
+
     @app.post("/api/v1/show/scenes/<scene_id>/preview")
     def api_show_scene_preview(scene_id: str) -> Response:
+        """Prepare this scene's preview with effects first, then ``next`` ones; a
+        preview already made for what a scene shows now is not made again."""
+        from core.show import scene_preview_ready
         project = _require_project(state)
         from core import show_scenes
         if not any(scene["id"] == scene_id for scene in show_scenes.load(_scene_files(project))["scenes"]):
             return error_response("not_found", "That scene is not in this Show", 404)
-        _prepare_scenes(project, [scene_id], first=True)
-        return jsonify({"status": "queued"}), 202
+        body = request.get_json(silent=True) or {}
+        known = {scene["id"] for scene in show_scenes.load(_scene_files(project))["scenes"]}
+        wanted = [scene_id] + [str(item) for item in body.get("next") or [] if str(item) in known][:3]
+        missing = [item for item in wanted if not scene_preview_ready(project, item)]
+        for item in missing:
+            with scene_lock:
+                if scene_previews.get(_scene_key(project, item), {}).get("status") in ("ready", "failed", "stopped"):
+                    scene_previews.pop(_scene_key(project, item), None)
+        if missing:
+            # The asked scene goes in the "now" lane; the next ones are prepared ahead.
+            _prepare_scenes(project, missing, first=scene_id in missing)
+        return jsonify({"status": "ready" if scene_id not in missing else "queued"}), 202
 
     @app.patch("/api/v1/show/scenes/identity")
     def api_show_scene_identity() -> Response:
@@ -2273,6 +2331,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                              "at": at, "duration": duration, "selected_text": str(raw.get("selected_text") or "")[:400],
                              "effect": str(raw.get("effect") or "pop"),
                              "action": str(raw.get("action") or "none"), "intensity": max(0.2, min(3.0, float(raw.get("intensity", 1.0)))),
+                             "stretch": max(0.25, min(4.0, float(raw.get("stretch", 1.0)))), "rotate": max(-180.0, min(180.0, float(raw.get("rotate", 0.0)))),
+                             "flip": bool(raw.get("flip", False)), "opacity": max(0.05, min(1.0, float(raw.get("opacity", 1.0)))),
                              **({"entrance": raw["entrance"]} if raw.get("entrance") in show_scenes.ENTRANCES else {}),
                              **({"path": [[max(0.0, min(1.0, float(a))), float(x), float(y)] for a, x, y in raw["path"][:40]],
                                  "hops": max(0, min(20, int(raw.get("hops", 4))))} if isinstance(raw.get("path"), list) and raw["path"] else {}),
@@ -2314,7 +2374,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 try:
                     meta = json.loads((picture.parent / "request.json").read_text())
                     if meta.get("status") == "ready":
-                        items.append({"name": meta.get("direction", "ChatGPT image")[:80], "path": str(picture.resolve()), "folder": "ChatGPT images"})
+                        claude = meta.get("provider") == "claude"
+                        items.append({"name": meta.get("direction", "Einstein image")[:80], "path": str(picture.resolve()),
+                                      "folder": "Claude drawings" if claude else "ChatGPT images", "engine": meta.get("engine")})
                 except (OSError, ValueError):
                     continue
         catalog_path = project.folder / "assets" / "show-library" / "catalog.json"
@@ -2322,11 +2384,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             catalog = json.loads(catalog_path.read_text())
         except (OSError, ValueError):
             catalog = {}
+        # The catalog names its pictures by full path; a project that was moved or copied
+        # still finds its own library pictures by their place inside assets/show-library.
+        library_root = (project.folder / "assets" / "show-library").resolve()
+        by_name = {Path(key).name: meta for key, meta in catalog.items() if Path(key).parent.name == "show-library"}
         for item in items:
-            meta = catalog.get(item["path"], {})
+            meta = catalog.get(item["path"]) or (by_name.get(Path(item["path"]).name, {}) if Path(item["path"]).parent == library_root else {})
             local = "Painted" in Path(item["path"]).parts
-            item.update(origin=meta.get("origin") or ("Local painter" if local else "ChatGPT" if item["folder"] == "ChatGPT images" else "Your library"),
-                        retired=bool(meta.get("retired", local)))
+            if meta.get("origin"):
+                origin = meta["origin"]
+            elif local:
+                origin = "Local painter"
+            elif item["folder"] in ("ChatGPT images", "Claude drawings"):
+                origin = item.get("engine") or ("ChatGPT" if item["folder"] == "ChatGPT images" else "Claude")
+            else:
+                origin = "Your library"
+            item.update(origin=origin, retired=bool(meta.get("retired", local)))
             item["name"] = meta.get("name") or item["name"]
         return items
 
@@ -2429,9 +2502,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("not_found", "This scene no longer exists", 404)
         proposals_path, _ = _show_review_files(project)
         stored = show_proposals.load(proposals_path)
+        strokes = show_ai_images.folder(project, job_id)/"strokes.json"
         params = dict(picture=str(show_ai_images.folder(project, job_id)/"image.png"), image_engine=job["engine"],
                       subject=job["direction"][:80], prompt=job["direction"][:600], ai_direction=job["direction"], selected_text=job["selected_text"],
-                      style=job["style"], position=job["position"], size=.25, effect="pop", kind="drawing")
+                      style=job["style"], position=job["position"], size=.25, kind="drawing",
+                      # Claude's drawings draw themselves on the video, line by line.
+                      effect="draw" if strokes.is_file() else "pop", **({"strokes": str(strokes)} if strokes.is_file() else {}))
         prior = job.get("applied_id") or job.get("replace_id")
         item = next((p for p in stored["proposals"] if p["id"] == prior and p["id"] in scene["effects"]), None)
         if item:
@@ -2775,6 +2851,90 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         return jsonify({"items": [{**item, "url": f"/api/v1/show/library/file?path={quote(item['path'])}"} for item in items if request.args.get("retired") == "1" or not item["retired"]],
                         "retired_count": sum(item["retired"] for item in items)})
 
+    def _catalog_picture(project: Project, path: Path, **entry: Any) -> None:
+        catalog_path = project.folder / "assets" / "show-library" / "catalog.json"
+        try:
+            catalog = json.loads(catalog_path.read_text())
+        except (OSError, ValueError):
+            catalog = {}
+        catalog[str(path.resolve())] = {**catalog.get(str(path.resolve()), {}), **entry}
+        temp = catalog_path.with_suffix(".tmp")
+        temp.write_text(json.dumps(catalog, ensure_ascii=False, indent=2))
+        temp.replace(catalog_path)
+
+    def _keep_picture(project: Project, payload: bytes, filename: str, *, origin: str, cut_out: bool = False) -> dict[str, Any]:
+        """A picture of the person's own, kept in the project's library (an identical one is
+        reused, never overwritten): whether it is already cut out, and where it is."""
+        from PIL import Image
+        folder = project.folder / "assets" / "show-library" / "yours"
+        folder.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(payload).hexdigest()
+        target = next((path for path in sorted(folder.iterdir()) if path.is_file() and path.suffix.lower() in SHOW_PICTURE_SUFFIXES
+                       and hashlib.sha256(path.read_bytes()).hexdigest() == digest), None)
+        if target is None:
+            stem = re.sub(r"[^\w .-]+", "", Path(filename).stem).strip()[:60] or "picture"
+            target = unique_destination(folder / f"{stem}{Path(filename).suffix.lower()}")
+            target.write_bytes(payload)
+        with Image.open(target) as image:
+            width, height = image.size
+            alpha = image.getchannel("A") if "A" in image.getbands() else None
+            # Cut out: a real share of it is see-through (not just a few soft corners).
+            cut = cut_out or bool(alpha is not None and sum(alpha.point(lambda v: 255 if v < 250 else 0).histogram()[255:]) > 0.01 * width * height)
+        name = re.sub(r"[_-]+", " ", target.stem).strip().capitalize()
+        _catalog_picture(project, target, name=name, origin=origin, retired=False, sha256=digest, source=filename)
+        return {"path": str(target.resolve()), "url": f"/api/v1/show/library/file?path={quote(str(target.resolve()))}",
+                "name": name, "cutout": cut, "width": width, "height": height}
+
+    # A plain photo's subject is worked out as soon as it arrives (macOS loads its model
+    # the first time, which takes a while), so "Cut out the subject" is usually instant.
+    picture_masks: dict[str, Any] = {}
+    mask_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="zucker-cutout")
+
+    @app.post("/api/v1/show/library/pictures")
+    def api_show_library_add_picture() -> Response:
+        """A picture dropped from the computer: kept in this project's library as it is."""
+        from PIL import Image, UnidentifiedImageError
+        project = _require_project(state)
+        storage = request.files.get("file")
+        if not storage or not storage.filename:
+            return error_response("bad_request", "Drop a picture file", 400)
+        if Path(storage.filename).suffix.lower() not in SHOW_PICTURE_SUFFIXES:
+            return error_response("bad_request", "Pictures can be PNG, WEBP or JPEG", 400)
+        payload = storage.read()
+        if len(payload) > 80 * 1024 * 1024:
+            return error_response("bad_request", "That picture is larger than 80 MB", 400)
+        try:
+            with Image.open(io.BytesIO(payload)) as image:
+                image.verify()
+        except (UnidentifiedImageError, OSError, SyntaxError):
+            return error_response("bad_request", f"{storage.filename} is not a picture this app can read", 400)
+        kept = _keep_picture(project, payload, storage.filename, origin="Your picture")
+        if not kept["cutout"] and kept["path"] not in picture_masks:
+            from core import show_characters
+            picture_masks[kept["path"]] = mask_pool.submit(show_characters.auto_mask, kept["path"])
+        return jsonify(kept)
+
+    @app.post("/api/v1/show/library/pictures/cutout")
+    def api_show_library_cutout() -> Response:
+        """The subject of one of the person's photos, cut out with the Mac's own subject
+        lifting (GrabCut where it is missing), kept beside the photo in the library."""
+        from core import show_characters
+        project = _require_project(state)
+        raw = str((request.get_json(silent=True) or {}).get("path") or "")
+        if raw not in {item["path"] for item in _show_library_items(project)}:
+            return error_response("not_found", "Not in this library", 404)
+        waiting = picture_masks.pop(raw, None)
+        mask, method = waiting.result() if waiting is not None else show_characters.auto_mask(raw)
+        try:
+            picture, _box = show_characters.cutout(raw, mask)
+        except ValueError as exc:
+            return error_response("cutout_failed", str(exc), 422)
+        buffer = io.BytesIO()
+        picture.save(buffer, "PNG")
+        kept = _keep_picture(project, buffer.getvalue(), f"{Path(raw).stem} cut out.png",
+                             origin="Your picture · cut out" + (" by macOS" if method == "macos-vision" else ""), cut_out=True)
+        return jsonify({**kept, "method": method})
+
     @app.post("/api/v1/show/library/visibility")
     def api_show_library_visibility() -> Response:
         project = _require_project(state)
@@ -2910,7 +3070,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if kind in {"character", "cutaway"} and _show_allowed_source(project, source) is None:
             return error_response("bad_request", "Choose one of this Show's videos or photos", 400)
         if kind == "steam":
-            item = show_proposals.proposal("steam", at, float(body.get("duration") or 4.0), reason="Added by you", point=[0.35, 0.75], anchor=None, scale=1.0)
+            # Over the cup Show Studio marked at this moment, if any; otherwise a starting point to click on the mug.
+            from core.show_bridge import studio_cup_at
+            cup = studio_cup_at(project.folder, plan, at)
+            item = show_proposals.proposal("steam", at, float(body.get("duration") or 4.0),
+                                           reason="Added by you" + (" · over the cup marked in Show Studio" if cup else ""),
+                                           point=list(cup) if cup else [0.35, 0.75], anchor=None, scale=1.0)
         elif kind == "character":
             item = show_proposals.proposal("character", at, 0.0, reason="Added by you", source=source, still_time=float(body.get("still_time") or 0),
                                            zoom=1.25, focus=[0.5, 0.5], zoom_sec=1.2, region=None, action="mouth", amount=0.02,
@@ -2964,7 +3129,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.post("/api/v1/show/review/render")
     def api_show_review_render() -> Response:
         project = _require_project(state)
-        scene_worker["stop"].set()      # the final render needs the computer, not previews
+        scene_stop.set()                # the final render needs the computer, not previews
+        with scene_lock:
+            for lane in scene_lanes.values():
+                lane["queue"].clear()
         try:
             job = state.wizard.render_show_review(project)
         except RuntimeError as exc:

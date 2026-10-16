@@ -272,3 +272,18 @@ def test_painted_strokes_formulas_and_words_are_drawn_as_in_the_preview():
     maths(few, 0.2, (0.0, 0.0, 1.0))
     maths(many, 3.0, (0.0, 0.0, 1.0))
     assert 0 < np.count_nonzero(few.sum(axis=2)) < np.count_nonzero(many.sum(axis=2))   # they appear one by one
+
+
+def test_steam_added_in_the_storyboard_goes_over_the_cup_studio_marked(tmp_path, monkeypatch):
+    from core.project import create_project
+    from core.show_studio_store import StudioStore
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path / "data"))
+    project = create_project("Show", str(tmp_path / "Cup.zuckervid"))
+    StudioStore(project.folder).save_composition({"version": 2, "mode": "mixed", "duration": 44.0, "events": [
+        {"id": "base", "type": "video", "start": 0, "end": 44, "source": "original", "trackId": "base"},
+        {"id": "cup", "type": "coffee", "start": 0, "end": 44, "parent": "base", "visibleKeys": [[0, True], [5, False]],
+         "positionKeys": [[0, 640, 360], [4, 1280, 720]]}]}, revision=0)
+    plan = {"fps": 30, "shots": [{"start_frame": 466 * 30, "end_frame": 476 * 30, "zoom": 1.0}]}   # edited 0-10 s = source 466-476 s
+    assert show_bridge.studio_cup_at(project.folder, plan, 2.0) == (0.75, 0.75)                 # halfway between the marks
+    assert show_bridge.studio_cup_at(project.folder, plan, 6.0) is None                        # marked not visible from 5 s
+    assert show_bridge.studio_cup_at(project.folder, plan, 20.0) is None                       # outside the edit

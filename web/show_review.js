@@ -1,6 +1,6 @@
 // Show storyboard: identity -> intro -> scenes -> review and render.
-// Each scene explains what it proposes; watch it (a real preview, prepared in
-// the background), then accept it, modify it or leave it without effect. Inside
+// Each scene explains what it proposes. Watch an explicitly requested preview,
+// then accept it, modify it or leave it without effect. Inside
 // "Modify", every effect has its own editor: regions are kept in the
 // coordinates of their own picture, outlines exist only in the editor, and the
 // pixels that move are the originals. Nothing is rendered until the last step.
@@ -66,13 +66,50 @@
   const dirtyScenes = new Set();
   const viewedScenes = new Set();
   const wantQuick = new Set();
+  const wantSaved = new Set();        // the person chose the saved render for this scene
   const useSaved = scene => !!review.saved_render && !wantEffects.has(scene.id) && !wantQuick.has(scene.id);
   const wantEffects = new Set();      // scenes whose preview with effects was asked for
   const scenes = () => review.scenes || [];
   const stepNames = () => ["Identity", "Intro", ...scenes().map((scene) => scene.name), "Review & render"];
   const currentScene = () => (step >= 2 && step < 2 + scenes().length ? scenes()[step - 2] : null);
 
+  // Wide windows: the storyboard fits the window and its two sides scroll on their own,
+  // so the wheel moves what is under the pointer (the video side or the scene panel), never the other.
+  const FITS = "(min-width: 1000px) and (min-height: 600px)";
+  function spaceBelow(element) {
+    let total = 0;
+    for (let node = element; node && node !== document.documentElement; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      total += parseFloat(style.marginBottom) || 0;
+      if (node !== element) total += (parseFloat(style.paddingBottom) || 0) + (parseFloat(style.borderBottomWidth) || 0);
+      for (let next = node.nextElementSibling; next; next = next.nextElementSibling) {
+        const after = getComputedStyle(next);
+        if (after.display === "none" || after.position === "fixed" || after.position === "absolute") continue;
+        total += next.offsetHeight + (parseFloat(after.marginTop) || 0) + (parseFloat(after.marginBottom) || 0);
+      }
+    }
+    return total;
+  }
+  function fitBoard() {
+    const box = $("#showReviewBox");
+    if (!box || box.hidden) return;
+    box.classList.toggle("show-fit", matchMedia(FITS).matches);      // first: its tighter margins move the box
+    const height = Math.floor(innerHeight - (box.getBoundingClientRect().top + scrollY) - spaceBelow(box));
+    if (height < 460) box.classList.remove("show-fit");
+    if (!box.classList.contains("show-fit")) return;
+    box.style.setProperty("--show-fit-h", `${height}px`);
+    // The picture as large as the video side allows, with the lines under it still in view.
+    const wrap = box.querySelector(".show-stage-wrap"), stage = $("#showStage");
+    const others = [...wrap.children].filter((child) => child !== stage && child.offsetParent)
+      .reduce((sum, child) => sum + child.offsetHeight + (parseFloat(getComputedStyle(child).marginTop) || 0) + (parseFloat(getComputedStyle(child).marginBottom) || 0), 0);
+    box.style.setProperty("--show-stage-h", `${Math.max(160, wrap.clientHeight - others - 4)}px`);
+  }
+  addEventListener("resize", () => fitBoard());
+  matchMedia(FITS).addEventListener?.("change", () => fitBoard());
+  document.addEventListener("toggle", (event) => { if (event.target.closest?.("#showReviewBox")) fitBoard(); }, true);
+
   function render() {
+    setTimeout(fitBoard);
     if (!review) return;
     clearTimeout(poll);
     closeTimeline();
@@ -199,14 +236,17 @@
   }
 
   function renderScene() {
+    setTimeout(fitBoard);
     const scene = currentScene();
     if(selectedEffect && !timelineItems(scene).some(item=>item.id===selectedEffect)){selectedEffect=null;placingWords=false;firstWord=null;pickedWords=null;}
     const effects = sceneEffects(scene);
     const preview = scene.preview || { status: "none" };
     const words = scene.words || [];
+    // A pin before the word where each placed picture enters.
+    const pins = new Set((scene.overlays || []).map((overlay) => words.findIndex(([, start]) => start >= Number(overlay.at ?? scene.start) - 0.05)).filter((index) => index >= 0));
     $("#showPanel").innerHTML = `<p id="showSaveStatus" class="show-needs" role="alert" hidden></p><h3>${escape(scene.name)} <small>${clock(scene.start)}–${clock(scene.end)}</small></h3>
       <div class="show-said" id="showSaid"><strong>What you say</strong> <small>Click a word to go there. Select words, then choose Animation for selection. Ordinary right-click keeps the text menu.</small><button type="button" class="icon-button small" id="showSayTools">Animation for selection…</button>
-        <div id="showWordPlacement" class="show-actions"></div><p class="show-said-text">${words.length ? words.map(([text, start, end], index) => `<span data-word="${index}" data-start="${start}" data-end="${end}">${escape(text)}</span>`).join(" ") : escape(scene.text)}</p></div>
+        <div id="showWordPlacement" class="show-actions"></div><p class="show-said-text">${words.length ? words.map(([text, start, end], index) => `${pins.has(index) ? `<span class="show-pin" title="A picture enters here">📍</span>` : ""}<span data-word="${index}" data-start="${start}" data-end="${end}">${escape(text)}</span>`).join(" ") : escape(scene.text)}</p></div>
       <div class="show-preview-mode">
         ${review.saved_render ? `<button type="button" class="icon-button small ${useSaved(scene) ? "active" : ""}" data-preview-mode="saved" title="The last completed export, including its captions and effects">Saved render</button>` : ""}
         <button type="button" class="icon-button small ${!wantEffects.has(scene.id) && !useSaved(scene) ? "active" : ""}" data-preview-mode="quick" title="Your cut and chosen pictures, with immediate timing updates">Live timing preview</button>
@@ -308,6 +348,7 @@
       $('#showTimeline').hidden=false;$('#showTimelineLauncher').hidden=true;
       timelineDialog.showModal();
     }
+    watchEditorEffects(currentScene());
   }
   function restoreStage() {
     if(stageHome){stageHome.replaceWith($('.show-stage-wrap'));stageHome=null;}
@@ -316,6 +357,8 @@
   }
   function closeTimeline() {
     $("#showContextMenu").hidden=true;
+    clearTimeout(editorPoll);
+    if(quick?.effects){const scene=quick.scene;playQuick(scene,Math.max(0,editedPlayhead()-scene.start));$('#showStageVideo').pause();}
     if(timelineDialog?.open)timelineDialog.close();
     restoreStage();
     // Context menus mounted on body cannot stay above a modal's top layer.
@@ -326,7 +369,10 @@
     selectedEffect=item.id;
     wantEffects.delete(scene.id);wantQuick.add(scene.id);
     $('#showPanel').querySelectorAll('[data-preview-mode]').forEach(button=>button.classList.toggle('active',button.dataset.previewMode==='quick'));
-    playQuick(scene,Math.max(0,Math.min(scene.end-.04,item.at)-scene.start));
+    // A little inside the effect: the source video lands on whole frames, and its first
+    // frame can fall a few milliseconds before the effect begins (it would look absent).
+    const inside=Math.min(.06,Math.max(0,(item.duration||0)/2));
+    playQuick(scene,Math.max(0,Math.min(scene.end-.04,item.at+inside)-scene.start));
     $('#showStageVideo').pause();
     drawOverlays(scene);
     renderTimeline(scene);wordPlacementControls();
@@ -409,7 +455,7 @@
     box.innerHTML=`<header><strong>Scene timeline</strong><small>${clock(scene.start)}–${clock(scene.end)}</small></header>
       <details class="show-sticker-picker"><summary>Add sticker</summary><div class="show-library">${library.map((asset,index)=>asset.retired?'':`<button type="button" data-library="${index}" aria-label="Add ${escape(asset.name)}"><img src="${asset.url}" alt="" loading="lazy">${escape(asset.name)}</button>`).join('')}</div></details>
       <p>Play or scrub to check when a picture appears and disappears. Drag a bar to move it; drag either edge to trim.</p>
-      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${selected.kind==='drawing'&&!selected.params.picture?'<small>This local drawing needs a rendered preview. It is not drawn in the live timing view.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
+      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
       <div class="show-time-row"><span>Video</span><div class="show-time-source" data-scene-seek>Original video · your cut</div></div>
       <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
       ${rows.map(item=>{
@@ -520,7 +566,8 @@
     claySaving = setTimeout(async () => {
       try {
         clay = await api("/show/clay/placements", { method: "PUT", body: JSON.stringify({ revision: clay.revision, placements: clay.placements }) });
-        $("#showClayStatus").textContent = "Saved in the project. “Preview with effects” renders it again.";
+        $("#showClayStatus").textContent = "Saved in the project. Use Preview with effects when you want a rendered check.";
+        invalidateLocal(scene);
         if (name === "mode" || name === "start" || name === "end") clayBlock(scene);
       } catch (error) {
         $("#showClayStatus").textContent = `Not saved: ${error.message}`;
@@ -529,14 +576,20 @@
     }, 350);
   }
 
-  // The picture of a scene: at once its cut from the original video; with effects only when asked.
+  // Rendering is explicit. Opening, scrubbing and editing only compose the source
+  // and already chosen images; they must never start the painter or FFmpeg.
+  function autoPreview(scene) {
+    if (!wantEffects.has(scene.id)) wantQuick.add(scene.id);
+  }
+
   function showScenePicture(scene) {
+    autoPreview(scene);
     const preview = scene.preview || { status: "none" };
     if (!wantEffects.has(scene.id)) {
       if (!playQuick(scene)) showVideo("", "This scene has no picture to play.");
       return;
     }
-    if (preview.status === "ready") { showVideo(preview.url, "Current scene preview. Watch it, then accept or change it."); return; }
+    if (preview.status === "ready") { showVideo(preview.url, "Current scene preview (low quality, to be quick). Watch it, then accept or change it." + leftOut(preview)); return; }
     playQuick(scene); // Keep the source picture usable while the new effect is prepared.
     $("#showStageStatus").textContent = ["failed", "stopped"].includes(preview.status)
       ? `The preview is not ready: ${preview.error || "Stopped; generate it again to retry."}`
@@ -547,23 +600,29 @@
   // ---- Quick view: the scene's cut played from the original, nothing rendered ----------
   let quick = null;
   function stopQuick() { if (quick) { cancelAnimationFrame(quick.frame); quick = null; } }
-  function playQuick(scene, from = 0, onEnd = null) {
+  function playQuick(scene, from = 0, onEnd = null, withEffects = false) {
     stopQuick();
     const saved = useSaved(scene);
-    const segments = saved ? [[scene.start, scene.end]] : (scene.segments || []);
-    const source = saved ? review.saved_render.url : review.source_url;
+    // In the scene editor, the scene's own preview with every effect, when it is ready for what the timeline holds.
+    const effects = !saved && withEffects && effectsReady(scene);
+    // In the saved render the scene sits later by what was inserted before it (title card, intro, characters).
+    const later = (t) => (review.saved_render?.inserted || []).reduce((sum, [at, length]) => sum + (at <= t ? length : 0), 0);
+    const segments = saved ? [[scene.start + later(scene.start), scene.end + later(scene.start)]]
+      : effects ? [[0, scene.end - scene.start]] : (scene.segments || []);
+    const source = saved ? review.saved_render.url : effects ? scene.preview.url : review.source_url;
     if (!source || !segments.length) return false;
     const video = $("#showStageVideo");
     $("#showStageCard").hidden = true;
     video.hidden = false;
     if (video.getAttribute("src") !== source) { video.src = source; video.load(); }
-    quick = { scene, segments, saved, index: 0, frame: 0, pending:scene.start+from };
+    quick = { scene, segments, saved: saved || effects, effects, index: 0, frame: 0, pending:scene.start+from };
     const session=quick;
     liveDrawings(scene);
     video.controls=false;
     let transport=$('#showSceneTransport');
-    if(!transport){transport=document.createElement('div');transport.id='showSceneTransport';transport.className='show-scene-transport';transport.innerHTML='<button type="button" data-scene-play>Play scene</button><output data-scene-clock></output>';$('#showStageStatus').after(transport);transport.querySelector('button').onclick=()=>{if(video.paused){if(editedPlayhead()>=scene.end-.05)playQuick(scene);video.play().catch(error=>showToast(error.message,true));}else video.pause();};}
+    if(!transport){transport=document.createElement('div');transport.id='showSceneTransport';transport.className='show-scene-transport';transport.innerHTML='<button type="button" data-scene-play>Play scene</button><output data-scene-clock></output>';$('#showStageStatus').after(transport);transport.querySelector('button').onclick=()=>playScene();}
     transport.hidden=false;
+    editorEffectsLabel();
     const seek = (index, offset = 0) => { if(quick!==session)return;quick.index = index;quick.pending=scene.start+segments.slice(0,index).reduce((sum,[a,b])=>sum+b-a,0)+offset;video.currentTime = segments[index][0] + offset;syncPlayback(); };
     const start = () => { if (quick===session) { const [index, offset] = sourceAt(segments, from); seek(index, offset); } };
     if (video.readyState >= 1) start(); else video.addEventListener("loadedmetadata", start, { once: true });
@@ -583,9 +642,71 @@
       quick.frame = requestAnimationFrame(tick);
     };
     quick.frame = requestAnimationFrame(tick);
-    $("#showStageStatus").textContent = saved ? "Saved render: the last completed edit, with its captions and effects. New decisions need a new effects preview/render." : "Live timing preview: your cut and chosen pictures. Pictures appear only inside their bars; render a preview to check all camera and animation effects.";
+    $("#showStageStatus").textContent = effects ? "Playing with every effect (this scene's preview). Pause to move or resize pictures." + leftOut(scene.preview)
+      : saved ? "Saved render: the last completed edit, with its captions and effects. New decisions need a new effects preview/render."
+      : timelineDialog?.open ? "Live view: your cut and chosen pictures, updated as you edit. Preview with effects renders the remaining effects on request."
+      : "Live timing preview: your cut and chosen pictures. Pictures appear only inside their bars; render a preview to check all camera and animation effects.";
     return true;
   }
+
+  // ---- The scene editor plays the real effects --------------------------------------------
+  // Play shows the scene's preview with every effect (words, zooms, animations, painted
+  // drawings, steam…) when it is ready for what the timeline holds; pausing returns to the
+  // live view, where pictures can be dragged. An edit shows at once in the live view while
+  // a baked effects preview is only prepared when explicitly requested.
+  let editorPoll = null, editStamp = 0;
+  // What a ready preview could not show yet (an effect needing settings, a drawing the painter could not make).
+  const leftOut = (preview) => preview?.left_out?.length ? ` Not in it yet: ${preview.left_out.join("; ")}.` : "";      // editStamp: an answer asked before an edit is old news
+  const effectsReady = (scene) => !!(timelineDialog?.open && scene && scene.preview?.status === "ready" && scene.preview.url);
+  function editorEffectsLabel() {
+    const transport = $("#showSceneTransport"), scene = currentScene();
+    if (!transport || !scene) return;
+    let label = transport.querySelector("[data-effects-state]");
+    if (!label) { label = document.createElement("small"); label.dataset.effectsState = ""; transport.append(label); }
+    const preview = scene.preview || {};
+    label.hidden = !timelineDialog?.open;
+    label.textContent = quick?.effects ? "With every effect" : effectsReady(scene) ? "Effects ready: press Play scene"
+      : preview.status === "failed" ? `Effects preview failed: ${preview.error || "try again"}`
+      : !["queued", "rendering"].includes(preview.status) ? "Live images · Preview with effects renders the remaining effects on request"
+      : `Effects preview: ${preview.message && /%/.test(preview.message) ? preview.message.replace(/^.*?(\d+%).*$/, "$1") : ""}`.trim();
+  }
+  function playScene() {
+    const scene = currentScene(), video = $("#showStageVideo");
+    if (!scene) return;
+    if (!video.paused) { video.pause(); return; }
+    let at = editedPlayhead();
+    if (at >= scene.end - 0.05) at = scene.start;
+    if (effectsReady(scene) && !quick?.effects) playQuick(scene, at - scene.start, null, true);
+    else if (at === scene.start && editedPlayhead() >= scene.end - 0.05) playQuick(scene);
+    video.play().catch((error) => showToast(error.message, true));
+  }
+  async function watchEditorEffects(scene) {
+    clearTimeout(editorPoll);
+    if (!timelineDialog?.open || !scene || currentScene()?.id !== scene.id) return;
+    editorEffectsLabel();
+    if (effectsReady(scene)) return;
+    if (!["queued", "rendering"].includes(scene.preview?.status)) return;
+    const asked = editStamp;
+    const fresh = await api(`/show/scenes?current=${encodeURIComponent(scene.id)}`).catch(() => null);
+    const updated = fresh?.scenes?.find((entry) => entry.id === scene.id);
+    if (updated && asked === editStamp && currentScene()?.id === scene.id && !editQueue.pending.size) scene.preview = updated.preview;
+    if (effectsReady(scene)) {
+      // Already playing the live view: carry on, now with the effects.
+      const video = $("#showStageVideo");
+      if (quick && !quick.saved && !video.paused) { playQuick(scene, editedPlayhead() - scene.start, null, true); video.play().catch(() => {}); }
+      editorEffectsLabel();
+      return;
+    }
+    if (scene.preview?.status === "failed") { editorEffectsLabel(); return; }
+    editorPoll = setTimeout(() => watchEditorEffects(scene), 1200);
+  }
+  $("#showStageVideo").addEventListener("pause", () => {
+    // Pausing the effects preview returns to the live view at the same moment, ready to edit.
+    if (!quick?.effects || !timelineDialog?.open) return;
+    const scene = quick.scene, at = editedPlayhead();
+    playQuick(scene, Math.max(0, Math.min(scene.end - scene.start - 0.04, at - scene.start)));
+    $("#showStageVideo").pause();
+  });
   // Seconds into the scene's edit → (segment, offset in it).
   const sourceAt=ShowClock.sourceAt;
 
@@ -620,13 +741,22 @@
 
   function invalidateLocal(scene) {
     if (!scene) return;
+    editStamp++;
     dirtyScenes.add(scene.id); viewedScenes.delete(scene.id);
     scene.preview = {status:"none"};
     wantEffects.delete(scene.id); wantQuick.add(scene.id);
     if (currentScene()?.id === scene.id) {
       clearTimeout(poll);
       $("#showPanel").querySelectorAll('[data-scene-decision="accepted"]').forEach(button => button.disabled = true);
-      $("#showStageStatus").textContent = quick && !quick.saved ? "Changes saved. Live picture timing is updated; render a preview to check the final camera and animation effects." : "Changes saved. This rendered video is now out of date; open the scene editor for live picture timing or generate a new preview.";
+      $("#showStageStatus").textContent = quick && !quick.saved ? "Changes saved. Live picture timing is updated; press “Preview with effects” for a rendered check." : "Changes saved. This rendered video is now out of date; open the scene editor for live picture timing, or request a new effects preview.";
+    }
+    if (timelineDialog?.open && currentScene()?.id === scene.id) {
+      if (quick?.effects) {
+        const video = $("#showStageVideo"), at = editedPlayhead(), playing = !video.paused;
+        playQuick(scene, Math.max(0, at - scene.start));
+        if (playing) video.play().catch(() => {});
+      }
+      watchEditorEffects(scene);
     }
   }
 
@@ -862,20 +992,28 @@
   });
 
   // Pictures placed on the scene: drag to move, corner to resize, right-click menu.
+  // Stretch, turn, mirror and see-through, as the render applies them to the picture.
+  function shapeStyle(overlay) {
+    const stretch = Number(overlay.stretch ?? 1), turn = Number(overlay.rotate ?? 0);
+    return `transform:rotate(${turn}deg) scale(${overlay.flip ? -1 : 1}, ${stretch});opacity:${Number(overlay.opacity ?? 1)};transform-origin:center`;
+  }
+
   function drawOverlays(scene) {
     const layer = $("#showStageLayer");
     layer.innerHTML = scene.overlays.map((overlay, index) => {
       const item = library.find((entry) => entry.path === overlay.asset);
       return `<div class="show-overlay ${selectedOverlay === index || selectedEffect==='sticker:'+overlay.id ? "selected" : ""}" data-overlay="${index}" style="left:${overlay.x}%;top:${overlay.y}%;width:${overlay.width}%">
-        <img src="${item ? item.url : `/api/v1/show/library/file?path=${encodeURIComponent(overlay.asset)}`}" alt="" draggable="false"><span class="show-resize" data-resize="${index}"></span></div>`;
+        <img src="${item ? item.url : `/api/v1/show/library/file?path=${encodeURIComponent(overlay.asset)}`}" alt="" draggable="false" style="${shapeStyle(overlay)}"><span class="show-resize" data-resize="${index}"></span></div>`;
     }).join("");
     liveDrawings(scene);
   }
 
   async function saveOverlays(scene) {
     try {
-      const updated = await api(`/show/scenes/${encodeURIComponent(scene.id)}/overlays`, { method: "POST", body: JSON.stringify({ overlays: scene.overlays }) });
-      scene.overlays = updated.overlays;
+      const sent = JSON.stringify({ overlays: scene.overlays });
+      const updated = await api(`/show/scenes/${encodeURIComponent(scene.id)}/overlays`, { method: "POST", body: sent });
+      // Keep what the person changed while this save travelled; take the server's copy otherwise.
+      if (JSON.stringify({ overlays: scene.overlays }) === sent) scene.overlays = updated.overlays;
       scene.decision = updated.decision;
       invalidateLocal(scene);
       renderTimeline(scene);wordPlacementControls();return true;
@@ -912,7 +1050,7 @@
     else openTools(index, event.clientX, event.clientY);     // a plain click shows the element's tools beside it
   });
   const ANIMATIONS = { none: "Still", up: "Move up", down: "Move down", jump: "Jump", grow: "Grow", grow_return: "Grow and back",
-    pulse: "Grow and shrink", swing: "Swing", spin: "Spin", talk: "Talk", look: "Look left and right", path: "Follow a path" };
+    pulse: "Grow and shrink", swing: "Swing", spin: "Spin", talk: "Talk", look: "Look left and right", path: "Follow a path", draw: "Draws itself" };
   let drawingPath = null;
   let layerClipboard = null;
   const layerUndo = [];
@@ -976,6 +1114,9 @@
     $("#showIntensity").value = overlay.intensity ?? 1;
     showEntrance(overlay, talkable);
     $("#showOverlayAt").value = Number(overlay.at ?? scene.start).toFixed(1);
+    $("#showOverlayStretch").value = overlay.stretch ?? 1;
+    $("#showOverlayRotate").value = overlay.rotate ?? 0;
+    $("#showOverlayOpacity").value = overlay.opacity ?? 1;
     $("#showOverlayDuration").value = Number(overlay.duration ?? 4).toFixed(1);
     menu.classList.toggle("show-menu-left", x + 600 > innerWidth);
     menu.querySelector('[data-menu="regions"]').hidden = !talkable;
@@ -1011,7 +1152,21 @@
     if (event.target.id === "showEntrance") overlay.entrance = event.target.value;
     if (event.target.id === "showOverlayAt") Object.assign(overlay,fitTiming(scene,Number(event.target.value),overlay.duration));
     if (event.target.id === "showOverlayDuration") Object.assign(overlay,fitTiming(scene,overlay.at,Number(event.target.value)));
-    saveOverlays(scene);
+    // One save after the person stops adjusting (saves sent one after another overwrote each other).
+    clearTimeout(shapeSave);
+    shapeSave = setTimeout(() => saveOverlays(scene), 400);
+  });
+  let shapeSave = null;
+  // Shape sliders change the picture on the stage as they move; saved when let go.
+  document.addEventListener("input", (event) => {
+    if (!(event.target instanceof Element) || !["showOverlayStretch", "showOverlayRotate", "showOverlayOpacity"].includes(event.target.id)) return;
+    const scene = currentScene();
+    const overlay = scene && selectedOverlay != null ? scene.overlays[selectedOverlay] : null;
+    if (!overlay) return;
+    const key = { showOverlayStretch: "stretch", showOverlayRotate: "rotate", showOverlayOpacity: "opacity" }[event.target.id];
+    overlay[key] = Number(event.target.value);
+    const image = $(`[data-overlay="${selectedOverlay}"] img`);
+    if (image) image.style.cssText = shapeStyle(overlay);
   });
 
   // A path: click points on the video, Enter (or double-click) to finish.
@@ -1101,7 +1256,7 @@
       <div class="show-card-body">
         <img src="${picture(item)}" alt="" loading="lazy">
         <div>
-          <p class="show-reason">${escape(item.reason)}</p>${item.kind === "drawing" ? `<p class="show-hint">Image source: ${escape(item.params.image_engine || (item.params.picture ? "Your library" : "Local painter · DreamShaper"))}</p>` : ""}${needs}${outside?'<p class="show-needs">Outside this scene. Choose words to bring this effect back.</p>':''}
+          <p class="show-reason">${escape(item.reason)}</p>${item.kind === "drawing" ? `<p class="show-hint">Image source: ${escape(item.params.picture ? (item.params.image_engine || "Your library") : "No picture selected")}</p>` : ""}${needs}${outside?'<p class="show-needs">Outside this scene. Choose words to bring this effect back.</p>':''}
           <div class="show-actions">
             ${item.kind === "drawing" ? `<button type="button" class="icon-button small" data-ai-edit="${item.id}">AI · change image…</button>` : ""}
             <button type="button" class="icon-button small" data-place-words="${item.id}">Choose words</button>
@@ -1202,14 +1357,16 @@
         ${field("Position", `<select data-field="position">${["left", "top-left", "bottom-left", "right", "top-right", "bottom-right"].map((pos) => `<option ${p.position === pos ? "selected" : ""}>${pos}</option>`).join("")}</select>`)}
         ${field("Size", range("size", p.size ?? 0.25, 0.02, 2, 0.01))}</div>`;
       if (item.kind === "drawing") {
+        html += field("Appears", `<select data-field="effect">${[["pop", "Pops in"], ["draw", "Draws itself, stroke by stroke"], ["rise", "Rises from below"], ["drop", "Drops from above"], ["none", "Just appears"]]
+          .map(([key, label]) => `<option value="${key}" ${(p.effect || "pop") === key ? "selected" : ""}>${label}</option>`).join("")}</select>`);
         const pictures = library.filter((entry) => /\.(png|jpe?g|webp)$/i.test(entry.path));
-        html += field("Picture", `<select data-field="picture"><option value="">Painted from the words</option>${pictures.map((entry) => `<option value="${escape(entry.path)}" ${p.picture === entry.path ? "selected" : ""}>${escape(entry.name)}</option>`).join("")}</select>`);
+        html += field("Picture", `<select data-field="picture"><option value="">Choose a picture first</option>${pictures.map((entry) => `<option value="${escape(entry.path)}" ${p.picture === entry.path ? "selected" : ""}>${escape(entry.name)}</option>`).join("")}</select>`);
       }
       if (item.kind === "drawing" && p.subject) {
         html += `<div class="show-fields">${field("Style", `<select data-field="style">${Object.entries(DRAWING_STYLES).map(([key, label]) => `<option value="${key}" ${(p.style || "pencil") === key ? "selected" : ""}>${label}</option>`).join("")}</select>`)}</div>
-          ${field("What the painter is asked (change it before it is painted)", `<textarea data-field="prompt" rows="3" maxlength="600"></textarea>`)}
-          <p class="show-hint">Edit this drawing, then generate a preview to see it in context. Each wording is a new drawing; the earlier one stays in the library. Empty: the style's own words.</p>
-          <button type="button" class="icon-button small" data-preview-mode="effects">Generate &amp; preview this scene</button>`;
+          ${field("Image request (for a separate generation)", `<textarea data-field="prompt" rows="3" maxlength="600"></textarea>`)}
+          <p class="show-hint">Choose a library picture or use Einstein to create one, then select the result. Changing these request notes does not regenerate or replace an attached picture. Scene previews only use saved pictures.</p>
+          <button type="button" class="icon-button small" data-preview-mode="effects">Preview saved pictures in scene</button>`;
       }
     } else if (item.kind === "warp") {
       html += field("Warp", `<select data-field="warp">${["stretch", "swirl", "wave"].map((name) => `<option ${p.warp === name ? "selected" : ""}>${name}</option>`).join("")}</select>`);
@@ -1515,9 +1672,8 @@
       else if (target.dataset.previewMode) {
         const scene = currentScene();
         if (target.dataset.previewMode === "effects") { await requestScenePreview(scene); return; }
-        else { wantEffects.delete(scene.id); if(target.dataset.previewMode === "quick") wantQuick.add(scene.id); else wantQuick.delete(scene.id); }
+        else { wantEffects.delete(scene.id); if(target.dataset.previewMode === "quick") { wantQuick.add(scene.id); wantSaved.delete(scene.id); } else { wantQuick.delete(scene.id); wantSaved.add(scene.id); } }
         $("#showPanel").querySelectorAll("[data-preview-mode]").forEach((button) => button.classList.toggle("active", button === target));
-        clearTimeout(poll);
         showScenePicture(scene);
       }
       else if (target.hasAttribute("data-first-pending")) {
@@ -1549,6 +1705,16 @@
         await saveOverlays(scene);
       } else if (target.dataset.menu) {
         menu.hidden = true;
+        const scene = currentScene();
+        const overlay = scene?.overlays[selectedOverlay];
+        if (overlay && (target.dataset.menu === "flip" || target.dataset.menu === "reset")) {
+          if (target.dataset.menu === "flip") overlay.flip = !overlay.flip;
+          else Object.assign(overlay, { stretch: 1, rotate: 0, flip: false, opacity: 1 });
+          menu.hidden = false;                                                  // keep the tools open
+          drawOverlays(scene);
+          await saveOverlays(scene);
+          return;
+        }
         await layerCommand(target.dataset.menu);
       } else if (target.id === "showRenderNow") {
         await flushEdits();
@@ -1615,6 +1781,83 @@
 
   // The Show editing desk works on the open project, in this same window.
   document.getElementById("showStudioOpen")?.addEventListener("click", () => { window.location.href = "/show-studio/"; });
+
+  // ---- Your own pictures: drop one from the computer onto the scene ------------------------
+  // It is kept in the project's library and placed where it was dropped, at the playhead.
+  // A cut-out picture (see-through around its subject) goes on the video as it is; a plain
+  // photo too, with an offer to cut out its subject (macOS subject lifting).
+  const fileDrag = (event) => [...(event.dataTransfer?.types || [])].includes("Files");
+  const dropArea = (event) => event.target instanceof Element && !!event.target.closest("#showReviewBox, #showTimelineDialog");
+  document.addEventListener("dragover", (event) => {
+    if (!review || !currentScene() || !fileDrag(event) || !dropArea(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    $("#showStage")?.classList.add("show-drop-ready");
+  });
+  document.addEventListener("dragleave", (event) => {
+    if (!event.relatedTarget || !(event.relatedTarget instanceof Element) || !event.relatedTarget.closest("#showReviewBox, #showTimelineDialog"))
+      $("#showStage")?.classList.remove("show-drop-ready");
+  });
+  document.addEventListener("drop", (event) => {
+    $("#showStage")?.classList.remove("show-drop-ready");
+    if (!review || !currentScene() || !fileDrag(event) || !dropArea(event)) return;
+    event.preventDefault();
+    const file = [...event.dataTransfer.files].find((item) => /\.(png|jpe?g|webp)$/i.test(item.name));
+    if (!file) { showToast("Drop a PNG, WEBP or JPEG picture to put it on the video.", true); return; }
+    const box = $("#showStage").getBoundingClientRect();
+    const inside = event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom;
+    addOwnPicture(currentScene(), file, inside ? (event.clientX - box.left) / box.width : 0.5, inside ? (event.clientY - box.top) / box.height : 0.5)
+      .catch((error) => showToast(error.message, true));
+  });
+
+  async function addOwnPicture(scene, file, cx, cy) {
+    $("#showStageStatus").textContent = `Adding ${file.name}…`;
+    const form = new FormData();
+    form.append("file", file, file.name);
+    const response = await fetch("/api/v1/show/library/pictures", { method: "POST", body: form });
+    const kept = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(kept.error?.message || `Could not add ${file.name}`);
+    await loadLibrary().catch(() => {});
+    const width = kept.cutout ? 22 : 30, height = width * 16 / 9 * kept.height / kept.width;
+    const at = Math.max(scene.start, Math.min(scene.end - 0.1, editedPlayhead()));
+    const overlay = { id: crypto.randomUUID(), asset: kept.path, width, at, duration: Math.min(3, scene.end - at), effect: "pop",
+      x: Math.max(0, Math.min(100 - width, cx * 100 - width / 2)), y: Math.max(0, Math.min(Math.max(0, 100 - height), cy * 100 - height / 2)) };
+    scene.overlays.push(overlay);
+    if (!await saveOverlays(scene)) return;
+    locateEffect(timelineItems(scene).find((item) => item.overlay?.id === overlay.id) || timelineItems(scene).at(-1));
+    if (kept.cutout) showToast(`${kept.name} is on the video from ${clock(at)}. Drag it to move it; drag its bar to time it.`);
+    else offerCutout(scene, overlay.id, kept);
+  }
+
+  function offerCutout(scene, overlayId, kept) {
+    let offer = $("#showCutoutOffer");
+    if (!offer) { offer = document.createElement("div"); offer.id = "showCutoutOffer"; offer.className = "show-cutout-offer"; }
+    $("#showStage").after(offer);
+    offer.hidden = false;
+    offer.innerHTML = `<span>${escape(kept.name)} is on the video as a whole photo.</span>
+      <button type="button" class="icon-button small primary" data-cutout-yes>Cut out the subject</button>
+      <button type="button" class="icon-button small" data-cutout-no>Keep the whole photo</button>`;
+    offer.querySelector("[data-cutout-no]").onclick = () => { offer.hidden = true; };
+    offer.querySelector("[data-cutout-yes]").onclick = async () => {
+      offer.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+      offer.querySelector("span").textContent = "Cutting out the subject…";
+      try {
+        const cut = await api("/show/library/pictures/cutout", { method: "POST", body: JSON.stringify({ path: kept.path }) });
+        const overlay = scene.overlays.find((item) => item.id === overlayId);
+        if (overlay) {
+          // Same width and centre, the cut-out's own height.
+          const centre = overlay.y + overlay.width * 16 / 9 * kept.height / kept.width / 2;
+          Object.assign(overlay, { asset: cut.path, y: Math.max(0, centre - overlay.width * 16 / 9 * cut.height / cut.width / 2) });
+          await loadLibrary().catch(() => {});
+          if (await saveOverlays(scene)) { drawOverlays(scene); showToast("Subject cut out. To use the whole photo instead, drop it again and choose Keep the whole photo."); }
+        }
+        offer.hidden = true;
+      } catch (error) {
+        offer.querySelector("span").textContent = `Could not cut it out: ${error.message}`;
+        offer.querySelectorAll("button").forEach((button) => { button.disabled = false; });
+      }
+    };
+  }
 
   window.ShowReview = {
     open: openReview, openWorkspace, hull, refreshLibrary, addToScene,

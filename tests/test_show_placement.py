@@ -81,7 +81,7 @@ def test_individual_preview_reaches_renderer_without_a_progress_callback(desk, t
         show.preview_proposal(project,ident)
     # A failed late audio pass must not become a successful cache hit.
     assert show.preview_proposal(project,ident).read_bytes()==b'preview'
-    assert calls == [None, None]
+    assert calls == [None]          # the cut itself was fine: kept, only the failed pass is done again
 
 
 def test_incomplete_character_can_be_retimed_before_its_voice_is_chosen(desk):
