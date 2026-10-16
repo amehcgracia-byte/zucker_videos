@@ -2325,6 +2325,55 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except (ValueError, TypeError) as exc:
             return error_response("invalid_reference", str(exc), 400)
 
+    @app.post("/api/v1/show/references/video/<reference_id>/download")
+    @_proposals_locked
+    def api_show_reference_download(reference_id: str) -> Response:
+        """A saved video reference's chosen seconds, downloaded into the project (yt-dlp) and put
+        on its words as a clip: it plays whole with its own sound while the host pauses."""
+        from core import show_clips, show_proposals, show_scenes
+        from core.project import atomic_write_json
+        project = _require_project(state)
+        reference_path = project.artifacts_dir / "show_references.json"
+        references = json.loads(reference_path.read_text()) if reference_path.is_file() else []
+        reference = next((item for item in references if item.get("id") == reference_id), None)
+        if reference is None:
+            return error_response("not_found", "That video reference is not in this project", 404)
+        tools = tool_status()
+        try:
+            clip = show_clips.download(project, reference, str(tools.get("ffmpeg_path") or "ffmpeg"))
+            length = show_clips.length(clip, str(tools.get("ffprobe_path") or "ffprobe"))
+        except ValueError as exc:
+            return error_response("invalid_reference", str(exc), 400)
+        except (RuntimeError, OSError, subprocess.CalledProcessError) as exc:
+            return error_response("clip_download_failed", str(exc)[:400], 502)
+        proposals_path, _ = _show_review_files(project)
+        stored = show_proposals.load(proposals_path)
+        item = next((entry for entry in stored["proposals"] if entry["kind"] == "clip" and entry["params"].get("reference") == reference_id
+                     and entry["status"] != "discarded"), None)
+        if item is None:
+            item = show_proposals.proposal("clip", float(reference.get("at") or 0.0), length, reason=f"Clip from {reference['url']}",
+                                           clip=str(clip), clip_start=0.0, clip_length=length, reference=reference_id,
+                                           url=reference["url"], source_start=reference["start"], selected_text=reference.get("selected_text", ""))
+            item["status"] = "approved"          # chosen and downloaded by the person, like a picture they place
+            stored["proposals"].append(item)
+            # Its frames can be shown (thumbnails, close-ups) like any other video of the project.
+            resources = stored.setdefault("resources", [])
+            if not any(entry.get("path") == str(clip) for entry in resources):
+                resources.append({"path": str(clip), "kind": "video", "duration": length, "speech": [], "version": 1, "intervals": [],
+                                  "origin": f"Clip from {reference['url']}"})
+            show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
+            scene_path = _scene_files(project)
+            if scene_path.is_file():
+                document = show_scenes.load(scene_path)
+                show_scenes.attach(document, item)
+                show_scenes.save(scene_path, document)
+                for scene in document["scenes"]:
+                    if item["id"] in scene["effects"]:
+                        _invalidate_scene(project, scene["id"])
+        reference.update(status="downloaded", clip=str(clip))
+        atomic_write_json(reference_path, references)
+        return jsonify({"reference": reference, "proposal": item}), 201
+
     @app.post("/api/v1/show/clay/sample")
     @_proposals_locked
     def api_show_clay_sample() -> Response:

@@ -118,6 +118,8 @@ PY
   --hidden-import ctranslate2 \
   --collect-submodules server \
   --collect-submodules core \
+  --collect-submodules yt_dlp \
+  --hidden-import certifi \
   --collect-submodules diffusers \
   --copy-metadata diffusers \
   --hidden-import transformers \

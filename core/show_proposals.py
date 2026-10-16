@@ -26,7 +26,7 @@ from typing import Any
 
 PROPOSALS_VERSION = 1
 STATUSES = ("proposed", "approved", "discarded")
-KINDS = ("cutaway", "character", "drawing", "word", "warp", "steam", "math", "jingle")
+KINDS = ("cutaway", "character", "drawing", "word", "warp", "steam", "math", "jingle", "clip")
 # Measured on a real talk: matches above ~0.015 mostly showed what was said;
 # below it they were close to random. Spaced out so not every line is decorated.
 CUTAWAY_MIN_GAP = 12.0
@@ -116,6 +116,8 @@ def check(item: dict[str, Any]) -> list[str]:
     needs = []
     if item['kind'] == 'word' and params.get('lettering_text') and (not params.get('picture') or params.get('text') != params['lettering_text']):
         needs.append('regenerate lettering for the changed text')
+    if item["kind"] == "clip" and not Path(str(params.get("clip") or "")).is_file():
+        needs.append("the clip's video file")
     if item["kind"] == "character":
         if not params.get("region"):
             needs.append("region")
@@ -183,6 +185,10 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
                               "hold": params.get("hold", 2.0), "region": params.get("region"), "action": params.get("action", "mouth"),
                               "amount": params.get("amount", 0.02), "offset": params.get("offset", [0.0, 0.0]),
                               "entrance": params.get("entrance", "zoom")})
+        elif item["kind"] == "clip":
+            # A video clip played whole with its own sound while the host pauses (core.show_inserts.load_clip).
+            items_out.append({"proposal": item["id"], "insert": "clip", "at": item["at"], "source": params["clip"],
+                              "clip_start": params.get("clip_start", 0.0), "clip_length": params["clip_length"]})
         elif item["kind"] == "steam":
             items_out.append({"proposal": item["id"], "steam": params["point"], "anchor": params.get("anchor"), "at": item["at"], "duration": item["duration"],
                               "scale": params.get("scale", 1.0)})

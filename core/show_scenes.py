@@ -27,7 +27,8 @@ DECISIONS = ("pending", "accepted", "modified", "plain")
 TARGET_SEC, MIN_SEC, MAX_SEC = 25.0, 10.0, 45.0
 KIND_WORDS = {"cutaway": "a close-up", "character": "a character answering with its own voice", "drawing": "a drawing",
               "word": "a shouted word", "warp": "the picture bending", "steam": "rainbow steam over the mug",
-              "math": "formulas around you", "jingle": "a jingle"}
+              "math": "formulas around you", "jingle": "a jingle",
+              "clip": "a video clip with its own sound"}
 
 
 def split(words: list[tuple[str, float, float]], pauses: list[float], duration: float) -> list[tuple[float, float]]:
