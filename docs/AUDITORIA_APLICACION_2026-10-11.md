@@ -145,3 +145,29 @@ At `09afc2eb`, [journey run 38654782318](https://github.com/amehcgracia-byte/zuc
 The targeted remote checks reported 79 passed / 6 skipped on each OS. The separate full fast suite [38654788370](https://github.com/amehcgracia-byte/zucker_videos/actions/runs/38654788370) remains red: 27 failed, 756 passed, 9 skipped, 16 deselected and one existing xfail. This follow-up does not claim that the historical full-suite failures have been repaired.
 
 [Windows package run 38533337837](https://github.com/amehcgracia-byte/zucker_videos/actions/runs/38533337837) completed successfully at `7c9c561c`; that confirms that revision's package build/startup checks, not the latest head or full native-dialog interaction. Real-recording private transport/testing, remaining trace/video review and current-head packaged/native validation are still pending. No private clips were uploaded in this follow-up. The scheduled audit is not complete.
+# Seguimiento del 16 de octubre — revisión actual `883ab5cb`
+
+## Resultados recogidos, sin reinstalar ni cerrar la aplicación
+
+- PR #30 sigue abierto, sin comentarios ni reviews nuevos. PR #31 sigue en `841d7a46` y PR #32 en `fc106448`; no hay una nueva revisión de Claude en esos PR que integrar.
+- El reintento de `38654782318` terminó correctamente (attempt 2). El anterior `ERR_NO_BUFFER_SPACE` no reapareció en ese reintento; no se ha modificado el producto para ocultarlo.
+- En **`38822618202`, revisión `b2dfb50a`**, pasan los diez recorridos sintéticos: YouTube, Reel, Medley, 360 y Backstage en macOS y Windows. En ambos sistemas pasan los 79 checks dirigidos (6 skips ya existentes). Los logs confirman reproductor cargado en los diez y verificación del MP4 final con captions en ambos Reel.
+- Se descargaron y revisaron además las capturas, un fotograma del master y las trazas completas de 360/macOS y Backstage/Windows de esa ejecución. Ninguna traza contiene errores de acciones ni respuestas HTTP >=400. La imagen del reproductor ya muestra contenido, no una pantalla negra. Esto no equivale a revisar visualmente cada segundo de los diez masters.
+- La suite completa sigue roja: **`38822618204`: 29 fallos, 944 aprobados, 10 skips, 1 xfail, 16 deseleccionados**. Los tres fallos adicionales respecto a los 26 reproducidos localmente en el padre son el selftest con CLIP, la aserción de píxeles de subtítulos en Ubuntu y la selección de fuentes de Show. No se contabilizan los diez recorridos aprobados como una suite completa verde.
+
+## Fallo reproducido y corrección
+
+La ruta de textos/fórmulas de Show (`core/show_bridge_text.py`) trataba todos los sistemas distintos de Windows como macOS. En Linux buscaba exclusivamente fuentes de Apple y fallaba con `No font for its words on this computer`. **`9845f3d2`** separa Linux y busca DejaVu/Liberation, manteniendo las rutas de Windows/macOS. Los 13 tests locales de `test_show_bridge.py` pasan. La confirmación en Ubuntu está pendiente de `38865264847` / `38865271207`; no se afirma todavía que la suite completa esté reparada.
+
+## Ronda privada con grabaciones reales
+
+**`883ab5cb`** añade `--media` al harness. Usa exclusivamente los archivos indicados y falla si falta alguno, sin sustituirlos por patrones sintéticos. El informe etiqueta el origen real/sintético. YouTube y Reel usan la única cámara hablada disponible, sin fingir que una toma de detalle no sincronizada es una segunda cámara de concierto.
+
+Se han extraído localmente, por copia de streams, solo 24 s de C0271 y 12 s de C0274, más su audio. No se renderiza localmente. Los fragmentos no están en Git ni en artefactos del repositorio público: se transportan como un asset de release de un repositorio **privado**, con verificación previa de visibilidad. El repositorio privado contiene únicamente el workflow; los medios no se añaden a su historial Git. Los resultados de los runners se retienen allí durante tres días para la revisión. No se publicarán capturas ni trazas privadas en PR #30.
+
+Ejecución privada **`38865498621`**, código congelado `883ab5cbebcb904cd1b8bc84a6c7c0fdf8cdb3b4`: cuatro recorridos por sistema (YouTube, Reel, Medley, Backstage), **en curso, sin resultado aún**. Debe recogerse la evidencia antes de eliminar el asset temporal. La fuente 360 real está pendiente: RAWVideos no está conectado y no se utiliza una grabación plana como sustituto. El recorrido 360 sintético no demuestra la calidad de una cámara 360 real.
+
+Se ha solicitado también un nuevo paquete Windows y su selftest de arranque en **`38865306308`**, con esa misma revisión. El anterior paquete aprobado en `38533337837` no certifica el código nuevo. Los diálogos nativos de archivos, permisos de micrófono, sustitución/actualización del ejecutable y comportamiento de menús nativos requieren validación del paquete; Chromium headless no los certifica. No se instala este paquete sobre la aplicación del usuario.
+
+La repetición sintética tras el cambio de harness está en **`38865264815`**. La auditoría permanece **abierta** hasta recoger y revisar esas ejecuciones; este seguimiento no se pausa todavía.
+
