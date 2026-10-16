@@ -13,6 +13,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
+import zlib
 from pathlib import Path
 from typing import Any, Callable
 
@@ -93,23 +95,58 @@ def _slug(text: str) -> str:
     return re.sub(r"[^\w -]+", "", text).strip()[:60] or "gag"
 
 
+def paint_seed(gag: dict[str, Any], index: int) -> int:
+    """The painting's seed: fixed by the storyboard effect it belongs to, so its own
+    preview, the scene's preview and the final render show one and the same picture
+    (by its place in the list only for gags that are not storyboard effects)."""
+    if gag.get("proposal"):
+        return 3 + zlib.crc32(str(gag["proposal"]).encode()) % 2
+    return 3 + index % 2
+
+
+_painting: dict[str, threading.Lock] = {}
+_painting_guard = threading.Lock()
+
+
 def painted_picture(subject: str, style: str, *, seed: int = 3, library_root: Path | None = None,
                     step: Callable[[int, int], None] | None = None, prompt: str | None = None) -> Image.Image:
     """A painted sticker, reused from the gag library when it was painted before
-    (a drawing with the person's own prompt is another drawing)."""
+    (a drawing with the person's own prompt is another drawing). Two previews that
+    need the same painting at once paint it once: the second waits and reuses it."""
     from core.gag_library import library_dir
     style = style if style in gag_paint.STYLES else "pencil"
     folder = (library_root or library_dir()) / "Painted" / gag_paint.STYLES[style].label
     key = f"{subject}|{style}|{seed}|rough-art-v2|{gag_paint.STYLES[style].prompt}" + (f"|{prompt}" if prompt else "")
     target = folder / f"{_slug(subject)} {hashlib.sha1(key.encode()).hexdigest()[:6]}.png"
+    with _painting_guard:
+        lock = _painting.setdefault(str(target), threading.Lock())
+    with lock:
+        return _paint_once(target, subject, style, seed, step, prompt)
+
+
+def _paint_once(target: Path, subject: str, style: str, seed: int, step: Callable[[int, int], None] | None,
+                prompt: str | None) -> Image.Image:
+    folder = target.parent
     if target.is_file():
         kept = Image.open(target).convert("RGBA")
         if not gag_paint.mostly_black(kept):          # painted before the blob check: paint it again
             return kept
+    # A drawing the painter could not make cleanly is not tried again by every preview.
+    failed = target.with_name(f".{target.stem}.unusable")
+    if failed.is_file():
+        raise gag_paint.UnusableDrawing(f"No clean drawing of {subject} (tried before)")
     # The drawing itself, its paper removed: no white sticker rim, only a soft shadow to read on video.
-    sticker = _shadowed(gag_paint.cut_out(gag_paint.paint_clean(subject, style, seed=seed, step=step, prompt=prompt)))
+    try:
+        painting = gag_paint.paint_clean(subject, style, seed=seed, step=step, prompt=prompt)
+    except gag_paint.UnusableDrawing:
+        folder.mkdir(parents=True, exist_ok=True)
+        failed.write_text(subject, encoding="utf-8")
+        raise
+    sticker = _shadowed(gag_paint.cut_out(painting))
     folder.mkdir(parents=True, exist_ok=True)
-    sticker.save(target)
+    pending = target.with_name(f".{target.stem}.part.png")
+    sticker.save(pending)
+    pending.replace(target)                           # never a half-written painting in the library
     return sticker
 
 
@@ -201,7 +238,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
                 if progress:
                     progress((painted - 1 + done / max(1, total)) / max(1, to_paint), f"{message} — step {done}/{total}")
             try:
-                picture = painted_picture(gag["subject"], style, seed=3 + index % 2, prompt=gag.get("prompt") or None, step=paint_step)
+                picture = painted_picture(gag["subject"], style, seed=paint_seed(gag, index), prompt=gag.get("prompt") or None, step=paint_step)
             except gag_paint.UnusableDrawing:
                 unusable.append(gag["subject"])
                 result(gag, "failed", "The painter could not draw it on a clean background")

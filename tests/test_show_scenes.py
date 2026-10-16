@@ -209,8 +209,9 @@ def test_the_scene_you_ask_for_is_prepared_at_once_and_only_once(tmp_path, monke
     client.post(f"/api/v1/show/scenes/{ids[0]}/preview")
     wait_for(3)
     time.sleep(0.2)
-    # The asked scene stopped the other one, which was prepared right after it.
-    assert rendered[:3] == [last, ids[1], ids[0]] and rendered.count(last) == 1
+    # The asked scene stopped the other one, which went on in the background lane.
+    assert sorted(rendered[:2]) == sorted([last, ids[1]]) and rendered[2] == ids[0]
+    assert rendered.count(last) == 1 and rendered.count(ids[1]) == 1
 
 
 def test_identity_intro_and_pictures_come_only_from_the_project_and_its_library(tmp_path, monkeypatch):
@@ -326,7 +327,7 @@ def test_edit_during_render_never_publishes_stale_preview_and_duplicate_requests
     assert calls == [sid] and scene['preview']['status'] == 'none'
 
 
-def test_scene_preview_reports_missing_drawings_instead_of_publishing_incomplete_video(tmp_path, monkeypatch):
+def test_scene_preview_shows_the_rest_and_says_which_drawing_is_missing(tmp_path, monkeypatch):
     import json
     from core import show, show_proposals
     project, _, document, _ = _storyboard(tmp_path, monkeypatch)
@@ -340,20 +341,25 @@ def test_scene_preview_reports_missing_drawings_instead_of_publishing_incomplete
     show_scenes.save(project.artifacts_dir/'show_scenes.json', document)
     monkeypatch.setattr(show, 'render_show', lambda source, part, output, **kwargs: output.write_bytes(b'cut'))
     monkeypatch.setattr('core.gags.make_items', lambda *args, **kwargs: ([], ['Drawing painter is not installed']))
-    with pytest.raises(RuntimeError, match='preview is incomplete.*not installed'):
-        render_scene_preview(project, document['scenes'][0]['id'])
-    assert not list((project.cache_dir/'show_previews').glob('scene-01-*.mp4')) or all(p.name.endswith('-cut.mp4') for p in (project.cache_dir/'show_previews').glob('scene-01-*.mp4'))
+    # One drawing the painter cannot make no longer hides the whole scene: it is listed instead.
+    preview = render_scene_preview(project, document['scenes'][0]['id'])
+    assert preview.read_bytes() == b'cut' and show.scene_preview_notes(preview) == ['Drawing painter is not installed']
 
 
-def test_scene_preview_rejects_an_unfinished_character_before_rendering(tmp_path, monkeypatch):
-    from core import show_proposals
+def test_scene_preview_leaves_out_an_unfinished_character_and_says_so(tmp_path, monkeypatch):
+    import json
+    from core import show, show_proposals
     project, _, document, _ = _storyboard(tmp_path, monkeypatch)
+    plan_path = project.artifacts_dir/'show_plan.json'
+    plan = json.loads(plan_path.read_text()); plan['words'] = []; plan_path.write_text(json.dumps(plan))
     character = show_proposals.proposal('character', 1, 2, reason='Speaks', source='person.mp4')
     show_proposals.save(project.artifacts_dir/'show_proposals.json', [character])
     document['scenes'][0]['effects'] = [character['id']]
     show_scenes.save(project.artifacts_dir/'show_scenes.json', document)
-    with pytest.raises(ValueError, match='Finish or remove.*region, voice'):
-        render_scene_preview(project, document['scenes'][0]['id'])
+    monkeypatch.setattr(show, 'render_show', lambda source, part, output, **kwargs: output.write_bytes(b'cut'))
+    preview = render_scene_preview(project, document['scenes'][0]['id'])
+    assert preview.read_bytes() == b'cut'                                      # the scene itself, without the character
+    assert show.scene_preview_notes(preview) == ['Talking character at 1.0 s needs its region and voice']
 
 
 def test_failed_final_preview_pass_is_not_reused_as_a_completed_cache(tmp_path, monkeypatch):

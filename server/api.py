@@ -1981,84 +1981,90 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         return Path(raw) if raw in allowed and Path(raw).is_file() else None
 
     scene_previews: dict[str, dict[str, Any]] = {}
-    scene_queue: list[tuple[Project, str]] = []
     scene_lock = threading.Lock()
-    scene_worker: dict[str, Any] = {"thread": None, "stop": threading.Event(), "current": None}
+    # Two lanes: "now" for the scene the person is working on, "ahead" preparing every
+    # other scene in the background. The scene being edited never waits behind another
+    # scene; a cut or a painting both lanes need is made once (core.show / core.gags locks).
+    scene_lanes: dict[str, dict[str, Any]] = {name: {"queue": [], "thread": None, "current": None} for name in ("now", "ahead")}
+    scene_stop = threading.Event()
 
     def _scene_key(project: Project, scene_id: str) -> str:
         return f"{project.folder}|{scene_id}"
 
     def _prepare_scenes(project: Project, scene_ids: list[str], *, first: bool = False) -> None:
-        """Render previews of these scenes in the background, in order (next scenes
-        first). ``first``: the person asked for it, so it goes before the others."""
-        from core.show import preview_scene
+        """Render previews of these scenes in the background, in order. ``first``: the
+        person asked for the first of them, so it goes in the "now" lane."""
         with scene_lock:
-            for scene_id in reversed(scene_ids) if first else scene_ids:
+            for position, scene_id in enumerate(scene_ids):
                 key = _scene_key(project, scene_id)
                 status = scene_previews.get(key, {}).get("status")
-                if status in {"rendering", "ready"} or (status == "queued" and not first):
+                lane = "now" if first and position == 0 else "ahead"
+                if status in {"rendering", "ready"} or (status == "queued" and lane == "ahead"):
                     continue
-                scene_queue[:] = [entry for entry in scene_queue if _scene_key(*entry) != key]     # never twice
+                for other in scene_lanes.values():                              # never twice
+                    other["queue"][:] = [entry for entry in other["queue"] if _scene_key(*entry) != key]
                 scene_previews[key] = {"status": "queued"}
-                if first:
-                    scene_queue.insert(0, (project, scene_id))
+                if lane == "now":
+                    scene_lanes["now"]["queue"].insert(0, (project, scene_id))
+                    # The person moved to another scene: the one being made for them goes on
+                    # in the background lane instead of holding this one up.
+                    current = scene_lanes["now"]["current"]
+                    if current and current["key"] != key and scene_previews.get(current["key"]) is current["ticket"]:
+                        current["ticket"]["preempted"] = True
+                        scene_previews[current["key"]] = {"status": "queued"}
+                        scene_lanes["ahead"]["queue"].insert(0, (current["project"], current["scene_id"]))
                 else:
-                    scene_queue.append((project, scene_id))
-            # The scene the person is looking at does not wait behind another scene's
-            # preview: that one stops and goes back in the queue.
-            current = scene_worker["current"]
-            asked = _scene_key(project, scene_ids[0]) if scene_ids else None
-            if first and current and asked and current["key"] != asked and scene_previews.get(asked, {}).get("status") == "queued":
-                current["ticket"]["preempted"] = True
-                if scene_previews.get(current["key"]) is current["ticket"]:
-                    scene_previews[current["key"]] = {"status": "queued"}
-                    scene_queue.append((current["project"], current["scene_id"]))
-            if scene_worker["thread"] and scene_worker["thread"].is_alive():
-                return
-            scene_worker["stop"].clear()
+                    scene_lanes["ahead"]["queue"].append((project, scene_id))
+            scene_stop.clear()
+            for name, lane in scene_lanes.items():
+                if lane["queue"] and not (lane["thread"] and lane["thread"].is_alive()):
+                    lane["thread"] = threading.Thread(target=_scene_lane, args=(name,), daemon=True, name=f"zucker-show-previews-{name}")
+                    lane["thread"].start()
 
-            def work() -> None:
-                while not scene_worker["stop"].is_set():
-                    with scene_lock:
-                        if not scene_queue:
-                            scene_worker["thread"] = None
-                            return
-                        item_project, scene_id = scene_queue.pop(0)
-                        key = _scene_key(item_project, scene_id)
-                        ticket = scene_previews[key] = {"status": "rendering", "message": "Rendering the scene cut"}
-                        scene_worker["current"] = {"key": key, "ticket": ticket, "project": item_project, "scene_id": scene_id}
+    def _scene_lane(name: str) -> None:
+        from core.show import preview_scene
+        lane = scene_lanes[name]
+        while not scene_stop.is_set():
+            with scene_lock:
+                if not lane["queue"]:
+                    lane["thread"] = None
+                    return
+                item_project, scene_id = lane["queue"].pop(0)
+                key = _scene_key(item_project, scene_id)
+                if scene_previews.get(key, {}).get("status") != "queued":
+                    continue                                                # taken by the other lane
+                ticket = scene_previews[key] = {"status": "rendering", "message": "Rendering the scene cut"}
+                lane["current"] = {"key": key, "ticket": ticket, "project": item_project, "scene_id": scene_id}
 
-                    def report(_fraction, message):
-                        with scene_lock:
-                            if scene_previews.get(key) is ticket:
-                                ticket["message"] = message
+            def report(_fraction, message, key=key, ticket=ticket):
+                with scene_lock:
+                    if scene_previews.get(key) is ticket:
+                        ticket["message"] = message
 
-                    def stop() -> None:
-                        with scene_lock:
-                            stale = scene_previews.get(key) is not ticket
-                        if stale or ticket.get("preempted") or scene_worker["stop"].is_set():
-                            raise InterruptedError("Scene preview superseded or stopped")
+            def stop(key=key, ticket=ticket) -> None:
+                with scene_lock:
+                    stale = scene_previews.get(key) is not ticket
+                if stale or ticket.get("preempted") or scene_stop.is_set():
+                    raise InterruptedError("Scene preview superseded or stopped")
 
-                    def stop_cut() -> None:
-                        # An edit does not change the cut: it finishes and serves the next preview.
-                        if ticket.get("preempted") or scene_worker["stop"].is_set():
-                            raise InterruptedError("Scene preview stopped")
-                    try:
-                        path = preview_scene(item_project, scene_id, cancel=stop, cancel_cut=stop_cut, progress=report)
-                        result = {"status": "ready", "url": f"/api/v1/show/media?path={quote(str(path))}"}
-                    except InterruptedError:
-                        result = {"status": "stopped"}
-                    except Exception as exc:  # shown on the scene; the review stays usable
-                        LOGGER.exception("Scene preview failed")
-                        result = {"status": "failed", "error": str(exc)}
-                    with scene_lock:
-                        scene_worker["current"] = None
-                        # An edit during rendering invalidates this exact ticket.
-                        # Never publish an old result over a newer queued revision.
-                        if scene_previews.get(key) is ticket:
-                            scene_previews[key] = result
-            scene_worker["thread"] = threading.Thread(target=work, daemon=True, name="zucker-show-scene-previews")
-            scene_worker["thread"].start()
+            def stop_cut(ticket=ticket) -> None:
+                # An edit changes neither the cut nor the paintings: they finish and serve the next preview.
+                if ticket.get("preempted") or scene_stop.is_set():
+                    raise InterruptedError("Scene preview stopped")
+            try:
+                path = preview_scene(item_project, scene_id, cancel=stop, cancel_cut=stop_cut, progress=report)
+                result = {"status": "ready", "url": f"/api/v1/show/media?path={quote(str(path))}"}
+            except InterruptedError:
+                result = {"status": "stopped"}
+            except Exception as exc:  # shown on the scene; the review stays usable
+                LOGGER.exception("Scene preview failed")
+                result = {"status": "failed", "error": str(exc)}
+            with scene_lock:
+                lane["current"] = None
+                # An edit during rendering invalidates this exact ticket.
+                # Never publish an old result over a newer queued revision.
+                if scene_previews.get(key) is ticket:
+                    scene_previews[key] = result
 
     def _scene_files(project: Project) -> Path:
         return project.artifacts_dir / "show_scenes.json"
@@ -2125,13 +2131,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         from core.show import edited_words, scene_segments
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
         timed = edited_words(plan) if plan.get("words") else []
-        from core.show import scene_preview_ready
+        from core.show import scene_preview_notes, scene_preview_ready
         with scene_lock:
             for scene in document["scenes"]:
                 made = scene_preview_ready(project, scene["id"])
                 known = scene_previews.get(_scene_key(project, scene["id"]), {"status": "none"})
                 # A preview made for what the scene shows now; an older one does not count.
-                scene["preview"] = ({"status": "ready", "url": f"/api/v1/show/media?path={quote(str(made))}"} if made
+                scene["preview"] = ({"status": "ready", "url": f"/api/v1/show/media?path={quote(str(made))}", "left_out": scene_preview_notes(made)} if made
                                     else known if known.get("status") in ("queued", "rendering", "failed") else {"status": "none"})
                 scene["segments"] = scene_segments(plan, float(scene["start"]), float(scene["end"])) if plan.get("shots") else []
                 scene["words"] = [[text, a, b] for text, a, b in timed if scene["start"] <= a < scene["end"]]
@@ -2237,6 +2243,21 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             _invalidate_scene(project, scene_id)
         return jsonify(scene)
 
+    @app.post("/api/v1/show/scenes/prefetch")
+    def api_show_scenes_prefetch() -> Response:
+        """Every scene's preview with effects, prepared in the background from the scene
+        the person is on (then the following ones, then the earlier ones)."""
+        from core import show_scenes
+        from core.show import scene_preview_ready
+        project = _require_project(state)
+        ids = [scene["id"] for scene in show_scenes.load(_scene_files(project))["scenes"]]
+        start = str((request.get_json(silent=True) or {}).get("from") or "")
+        order = ids[ids.index(start):] + ids[:ids.index(start)] if start in ids else ids
+        missing = [scene_id for scene_id in order if not scene_preview_ready(project, scene_id)]
+        if missing:
+            _prepare_scenes(project, missing)
+        return jsonify({"queued": len(missing), "ready": len(ids) - len(missing)}), 202
+
     @app.post("/api/v1/show/scenes/<scene_id>/preview")
     def api_show_scene_preview(scene_id: str) -> Response:
         """Prepare this scene's preview with effects first, then ``next`` ones; a
@@ -2255,7 +2276,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 if scene_previews.get(_scene_key(project, item), {}).get("status") in ("ready", "failed", "stopped"):
                     scene_previews.pop(_scene_key(project, item), None)
         if missing:
-            _prepare_scenes(project, missing, first=True)
+            # The asked scene goes in the "now" lane; the next ones are prepared ahead.
+            _prepare_scenes(project, missing, first=scene_id in missing)
         return jsonify({"status": "ready" if scene_id not in missing else "queued"}), 202
 
     @app.patch("/api/v1/show/scenes/identity")
@@ -3107,7 +3129,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.post("/api/v1/show/review/render")
     def api_show_review_render() -> Response:
         project = _require_project(state)
-        scene_worker["stop"].set()      # the final render needs the computer, not previews
+        scene_stop.set()                # the final render needs the computer, not previews
+        with scene_lock:
+            for lane in scene_lanes.values():
+                lane["queue"].clear()
         try:
             job = state.wizard.render_show_review(project)
         except RuntimeError as exc:

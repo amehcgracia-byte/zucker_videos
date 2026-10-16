@@ -47,6 +47,9 @@
     }
     step = 0;
     render();
+    // Every scene's preview with effects is prepared in the background, from the first on;
+    // the scene being edited always goes first.
+    api("/show/scenes/prefetch", { method: "POST", body: JSON.stringify({ from: review.scenes?.[0]?.id }) }).catch(() => {});
   }
 
   async function openWorkspace({sceneId=null}={}) {
@@ -609,7 +612,7 @@
       if (!playQuick(scene)) showVideo("", "This scene has no picture to play.");
       return;
     }
-    if (preview.status === "ready") { showVideo(preview.url, "Current scene preview (low quality, to be quick). Watch it, then accept or change it."); return; }
+    if (preview.status === "ready") { showVideo(preview.url, "Current scene preview (low quality, to be quick). Watch it, then accept or change it." + leftOut(preview)); return; }
     playQuick(scene); // Keep the source picture usable while the new effect is prepared.
     $("#showStageStatus").textContent = ["failed", "stopped"].includes(preview.status)
       ? `The preview is not ready: ${preview.error || "Stopped; generate it again to retry."}`
@@ -662,7 +665,7 @@
       quick.frame = requestAnimationFrame(tick);
     };
     quick.frame = requestAnimationFrame(tick);
-    $("#showStageStatus").textContent = effects ? "Playing with every effect (this scene's preview). Pause to move or resize pictures."
+    $("#showStageStatus").textContent = effects ? "Playing with every effect (this scene's preview). Pause to move or resize pictures." + leftOut(scene.preview)
       : saved ? "Saved render: the last completed edit, with its captions and effects. New decisions need a new effects preview/render."
       : timelineDialog?.open ? "Live view: your cut and chosen pictures, updated as you edit. Press Play scene to watch it with every effect."
       : "Live timing preview: your cut and chosen pictures. Pictures appear only inside their bars; render a preview to check all camera and animation effects.";
@@ -674,7 +677,9 @@
   // drawings, steam…) when it is ready for what the timeline holds; pausing returns to the
   // live view, where pictures can be dragged. An edit shows at once in the live view while
   // the effects are prepared again in the background (seconds: the scene's cut is kept).
-  let editorPoll = null, editorAsked = null, editorAskedAt = 0, editStamp = 0;      // editStamp: an answer asked before an edit is old news
+  let editorPoll = null, editorAsked = null, editorAskedAt = 0, editStamp = 0;
+  // What a ready preview could not show yet (an effect needing settings, a drawing the painter could not make).
+  const leftOut = (preview) => preview?.left_out?.length ? ` Not in it yet: ${preview.left_out.join("; ")}.` : "";      // editStamp: an answer asked before an edit is old news
   const effectsReady = (scene) => !!(timelineDialog?.open && scene && scene.preview?.status === "ready" && scene.preview.url);
   function editorEffectsLabel() {
     const transport = $("#showSceneTransport"), scene = currentScene();

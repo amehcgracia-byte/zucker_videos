@@ -268,3 +268,41 @@ def test_a_talking_character_keeps_your_exact_picture_and_gets_its_bubble(tmp_pa
     assert notes == []                                                          # nothing was waiting for the painter
     assert outcomes["p1"] == ("applied", "your picture teen.png")
     assert shown.tobytes() == gags.character_with_bubble(Image.open(own).convert("RGBA"), "Whatever", side="left", seed=0).tobytes()
+
+
+def test_a_storyboard_drawing_is_painted_once_for_every_preview(tmp_path, monkeypatch):
+    import threading
+    import time
+    from core import gag_paint, gags
+    gag = {"kind": "drawing", "subject": "a tiny potato", "proposal": "drawing-1234"}
+    # The same effect gets the same picture alone, in its scene or in the final render.
+    assert gags.paint_seed(gag, 0) == gags.paint_seed(gag, 7) == gags.paint_seed(gag, 8)
+    assert gags.paint_seed({"kind": "drawing"}, 0) != gags.paint_seed({"kind": "drawing"}, 1)
+    painted = []
+
+    def slow_paint(subject, style, **kwargs):
+        painted.append(subject)
+        time.sleep(0.3)
+        return Image.new("RGB", (64, 64), (200, 40, 40))
+    monkeypatch.setattr(gag_paint, "paint_clean", slow_paint)
+    monkeypatch.setattr(gag_paint, "cut_out", lambda image: image.convert("RGBA"))
+    pictures = []
+    threads = [threading.Thread(target=lambda: pictures.append(gags.painted_picture("a tiny potato", "crayon", seed=3, library_root=tmp_path)))
+               for _ in range(3)]
+    [thread.start() for thread in threads]
+    [thread.join() for thread in threads]
+    assert painted == ["a tiny potato"] and len(pictures) == 3                 # three previews, one painting
+
+
+def test_a_drawing_the_painter_cannot_make_is_not_retried_by_every_preview(tmp_path, monkeypatch):
+    from core import gag_paint, gags
+    tries = []
+
+    def unusable(subject, style, **kwargs):
+        tries.append(subject)
+        raise gag_paint.UnusableDrawing("blob")
+    monkeypatch.setattr(gag_paint, "paint_clean", unusable)
+    for _ in range(3):
+        with pytest.raises(gag_paint.UnusableDrawing):
+            gags.painted_picture("a tiny bald man", "crayon", seed=3, library_root=tmp_path)
+    assert tries == ["a tiny bald man"]

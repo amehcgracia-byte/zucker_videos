@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -428,9 +429,21 @@ def _cached_cut(source: Path, part: dict[str, Any], folder: Path, name: str, *, 
     cuts = folder / "cuts"
     cuts.mkdir(parents=True, exist_ok=True)
     cut = cuts / f"{name}-{key}.mp4"
-    if cut.is_file():
-        return cut
-    pending = cuts / f"{name}-{key}-building.mp4"
+    with _CUTTING_GUARD:
+        lock = _CUTTING.setdefault(str(cut), threading.Lock())
+    with lock:                                          # two previews of one window cut it once
+        if cut.is_file():
+            return cut
+        return _cut_once(source, part, cut, cuts, name, ffmpeg=ffmpeg, width=width, height=height, cancel=cancel, progress=progress)
+
+
+_CUTTING: dict[str, threading.Lock] = {}
+_CUTTING_GUARD = threading.Lock()
+
+
+def _cut_once(source: Path, part: dict[str, Any], cut: Path, cuts: Path, name: str, *, ffmpeg: str, width: int, height: int,
+              cancel: Callable[[], None] | None, progress: Callable[[float], None] | None) -> Path:
+    pending = cut.with_name(f"{cut.stem}-building.mp4")
     render_show(source, part, pending, ffmpeg=ffmpeg, width=width, height=height, cancel=cancel, **PREVIEW_ENCODING, progress=progress)
     pending.replace(cut)
     # A few cuts per window are kept (an edit of a close-up and its undo); older ones go.
@@ -478,7 +491,7 @@ def preview_proposal(project, proposal_id: str, *, width: int | None = None, hei
     plan["cutaways"] = cutaways
     part = window_plan(plan, start, end)
     from core.show_bridge import studio_fingerprint
-    signature = hashlib.sha1(json.dumps(["placement-preview-v2", trial, start, end, width, height, studio_fingerprint(project.folder)], sort_keys=True,
+    signature = hashlib.sha1(json.dumps(["placement-preview-v3", trial, start, end, width, height, studio_fingerprint(project.folder)], sort_keys=True,
                                         default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     folder.mkdir(parents=True, exist_ok=True)
@@ -516,7 +529,7 @@ def preview_proposal(project, proposal_id: str, *, width: int | None = None, hei
 def _scene_preview_inputs(project, scene_id: str, width: int, height: int, only_sticker_id: str | None = None):
     """What a scene's preview shows, and the file it is (or will be) rendered to;
     ``only_sticker_id``: that placed picture alone, with a little context around it.
-    Raises ValueError while one of its effects still needs settings."""
+    An effect that still needs the person's settings is left out of it, and said so."""
     import hashlib
 
     from core import gag_paint, show_proposals, show_scenes
@@ -534,9 +547,8 @@ def _scene_preview_inputs(project, scene_id: str, width: int, height: int, only_
         item["needs"] = show_proposals.check(item)
     incomplete = [item for item in items if scene["decision"] != "plain" and item["id"] in scene["effects"]
                   and item["status"] != "discarded" and item["needs"]]
-    if incomplete:
-        raise ValueError("Finish or remove these effects before previewing: " + "; ".join(
-            f"{item['kind']}: {', '.join(item['needs'])}" for item in incomplete))
+    # The rest of the scene is still worth seeing: what needs settings waits, and is listed.
+    left_out = [f"{KIND_NAMES.get(item['kind'], item['kind'])} at {item['at']:.1f} s needs its {' and '.join(item['needs'])}" for item in incomplete]
     live = [] if scene["decision"] == "plain" else [
         {**item, "status": "approved"} for item in items
         if item["id"] in scene["effects"] and item["status"] != "discarded" and not item.get("needs")]
@@ -544,10 +556,23 @@ def _scene_preview_inputs(project, scene_id: str, width: int, height: int, only_
     start, end = float(scene["start"]), float(scene["end"])
     local_art_recipe = [gag_paint.NEGATIVE, {key: vars(style) for key, style in gag_paint.STYLES.items()}] if any(
         item["kind"] == "drawing" and not item["params"].get("picture") for item in live) else None
-    signature = hashlib.sha1(json.dumps(["scene-preview-v2", live, overlays, start, end, width, height, studio_fingerprint(project.folder),
+    signature = hashlib.sha1(json.dumps(["scene-preview-v3", live, overlays, start, end, width, height, studio_fingerprint(project.folder),
                                          local_art_recipe], sort_keys=True, default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
-    return plan, live, overlays, start, end, folder, folder / f"{scene_id}-{signature}.mp4"
+    return plan, live, overlays, start, end, folder, left_out, folder / f"{scene_id}-{signature}.mp4"
+
+
+KIND_NAMES = {"character": "Talking character", "drawing": "Drawing", "word": "Word", "cutaway": "Close-up", "warp": "Warp",
+              "steam": "Steam", "math": "Formulas", "jingle": "Jingle"}
+
+
+def scene_preview_notes(preview: Path) -> list[str]:
+    """What a finished scene preview left out (an effect still needing settings, a drawing
+    the painter could not make), kept beside it."""
+    try:
+        return list(json.loads(preview.with_suffix(".json").read_text(encoding="utf-8")).get("left_out") or [])
+    except (OSError, ValueError):
+        return []
 
 
 def scene_preview_path(project, scene_id: str, *, width: int | None = None, height: int | None = None) -> Path:
@@ -576,7 +601,7 @@ def preview_scene(project, scene_id: str, *, width: int | None = None, height: i
     from core.gag_render import render_gags
     from core.show_framing import face_on_screen
     width, height = width or PREVIEW_SIZE[0], height or PREVIEW_SIZE[1]
-    plan, live, overlays, start, end, folder, completed = _scene_preview_inputs(project, scene_id, width, height, only_sticker_id)
+    plan, live, overlays, start, end, folder, left_out, completed = _scene_preview_inputs(project, scene_id, width, height, only_sticker_id)
     folder.mkdir(parents=True, exist_ok=True)
     if completed.is_file():
         return completed
@@ -596,10 +621,10 @@ def preview_scene(project, scene_id: str, *, width: int | None = None, height: i
     if director:
         moved = [{**gag, "at": round(gag["at"] - start, 3)} for gag in director]
         face = "right" if sum(shot.get("focus", [0.5])[0] for shot in plan["shots"]) / max(1, len(plan["shots"])) >= 0.5 else "left"
-        pictures, notes = gag_module.make_items(moved, folder / f"{scene_id}-gags", face=face, cancel=cancel, progress=progress, frame_size=(width, height),
+        pictures, notes = gag_module.make_items(moved, folder / f"{scene_id}-gags", face=face, progress=progress, frame_size=(width, height),
+                                                cancel=cancel_cut if cancel_cut is not None else cancel,
                                                 face_at=lambda at: face_on_screen(plan, at + start))
-        if notes:
-            raise RuntimeError("The scene preview is incomplete: " + "; ".join(notes))
+        left_out += notes                              # a drawing the painter could not make: the rest is shown
     if progress:
         progress(0, "Compositing this scene with its effects")
     from core.show_bridge import studio_layers
@@ -610,5 +635,6 @@ def preview_scene(project, scene_id: str, *, width: int | None = None, height: i
     else:
         shutil.copyfile(cut, output)
     _lay_jingles(output, jingles, spans, ffmpeg)
+    completed.with_suffix(".json").write_text(json.dumps({"left_out": left_out}, ensure_ascii=False), encoding="utf-8")
     output.replace(completed)
     return completed
