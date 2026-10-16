@@ -44,7 +44,7 @@ def free_port():
         s.bind(('127.0.0.1',0)); return s.getsockname()[1]
 
 
-def journey(browser, mode, media, output):
+def journey(browser, mode, media, output, *, real_media=False):
     folder=output/mode; folder.mkdir(parents=True,exist_ok=True)
     port=free_port(); url=f'http://127.0.0.1:{port}'
     env={**os.environ,'ZUCKER_DATA_ROOT':str(folder/'data'),'PYTHONUNBUFFERED':'1'}
@@ -54,7 +54,8 @@ def journey(browser, mode, media, output):
     context=browser.new_context(viewport={'width':1440,'height':1000},record_video_dir=str(folder/'browser-video'))
     context.tracing.start(screenshots=True,snapshots=True,sources=True)
     page=context.new_page(); page.set_default_timeout(45000)
-    errors=[]; failures=[]; report={'mode':mode,'os':platform.platform(),'passed':False}
+    errors=[]; failures=[]; report={'mode':mode,'os':platform.platform(),'passed':False,
+                                  'media_kind': 'real' if real_media else 'synthetic'}
     page.on('pageerror',lambda error:errors.append(str(error)))
     page.on('response',lambda response:failures.append({'url':response.url,'status':response.status}) if response.status>=400 and '/api/' in response.url else None)
     def capture(name): page.screenshot(path=str(folder/f'{name}.png'),full_page=True)
@@ -77,6 +78,10 @@ def journey(browser, mode, media, output):
         page.locator('#editTypeDialog').wait_for(state='hidden')
         page.locator('#videoName').fill('QA '+mode)
         files=[media/'camera-a.mp4',media/'camera-b.mp4']
+        if real_media and mode in {'youtube', 'reel'}:
+            # The private fixture has one talking camera and an unsynchronised
+            # detail shot. Do not pretend these are two synced concert cameras.
+            files=[media/'camera-a.mp4']
         if mode in {'youtube','reel'}: files.append(media/'master.wav')
         if mode=='360': files=[media/'sphere-360.mp4',media/'master.wav']
         if mode=='backstage': files=[media/'interview.mp4']
@@ -181,17 +186,27 @@ def journey(browser, mode, media, output):
 
 
 def main():
-    parser=argparse.ArgumentParser(); parser.add_argument('--output',type=Path,required=True); parser.add_argument('--mode',choices=['youtube','reel','medley','360','backstage']); args=parser.parse_args()
+    parser=argparse.ArgumentParser(); parser.add_argument('--output',type=Path,required=True); parser.add_argument('--mode',choices=['youtube','reel','medley','360','backstage'])
+    parser.add_argument('--media', type=Path, help='Existing private fixture directory; never uploaded by this script')
+    args=parser.parse_args()
     output=args.output.resolve(); output.mkdir(parents=True,exist_ok=True)
-    media=output/'fixtures'
-    if not (media/'ready').exists():
+    media=args.media.resolve() if args.media else output/'fixtures'
+    if args.media:
+        required = {'youtube': ['camera-a.mp4', 'master.wav'], 'reel': ['camera-a.mp4', 'master.wav'],
+                    'medley': ['camera-a.mp4', 'camera-b.mp4'], '360': ['sphere-360.mp4', 'master.wav'],
+                    'backstage': ['interview.mp4']}
+        names = {name for mode in ([args.mode] if args.mode else required) for name in required[mode]}
+        missing = sorted(name for name in names if not (media/name).is_file())
+        if missing:
+            parser.error(f'Private fixtures missing: {missing}; no synthetic replacement is made')
+    elif not (media/'ready').exists():
         fixtures(media)
         (media/'ready').write_text('ready', encoding='utf-8')
     from playwright.sync_api import sync_playwright
     with sync_playwright() as pw:
         browser=pw.chromium.launch(); reports=[]
         for mode in ([args.mode] if args.mode else ['youtube','reel','medley','360','backstage']):
-            reports.append(journey(browser,mode,media,output))
+            reports.append(journey(browser,mode,media,output,real_media=bool(args.media)))
         browser.close()
     (output/(f'{args.mode}-summary.json' if args.mode else 'summary.json')).write_text(json.dumps(reports,indent=2),encoding='utf-8')
     print(json.dumps(reports,indent=2),flush=True)
