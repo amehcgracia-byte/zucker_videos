@@ -1,0 +1,14 @@
+{
+  "id": "simon-plant-character",
+  "version": 1,
+  "status": "user-selected-identity",
+  "reference": "simon-clay-proposal-v1.png",
+  "author_of_original": "Simón",
+  "style": "Child-built lumpy matte plasticine; preserve green grooved cap, round pale face, dot eyes, pink cheeks, mustard yellow coat, dark zipper and brown pocket trims.",
+  "rules": [
+    "Always attach this reference; no old bearded presenter.",
+    "Other cast members use the same handmade material but their own identity references.",
+    "Gestures occur once on spoken cues with held pauses; no automatic looping."
+  ],
+  "generation": "Built-in image generation, derived from user-confirmed figurine; new generated art, not original camera footage."
+}

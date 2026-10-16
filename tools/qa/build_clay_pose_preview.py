@@ -50,10 +50,16 @@ def render(plan: Path, voice: Path, output: Path, ffmpeg: str, ffprobe: str) -> 
                     for key in keys[1:]:
                         expr = f"if(gte(t+{shot['start']},{key['time']}),{coordinate(key['pose'])},{expr})"
                     return expr
-                filters = f"crop={tile_w}:{tile_h}:x='{expression('x')}':y='{expression('y')}',scale=1280:720"
-                if shot.get('close'):
-                    # Match the tool's 4% x / 10% y, 80% crop exactly.
-                    filters += ',crop=1024:576:51:72,scale=1280:720'
+                filters = f"crop={tile_w}:{tile_h}:x='{expression('x')}':y='{expression('y')}'"
+                if shot.get('fit') == 'contain':
+                    if shot.get('close'):
+                        filters += ',crop=iw*0.8:ih*0.8:iw*0.04:ih*0.1'
+                    filters += ',scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=0x172019'
+                else:
+                    filters += ',scale=1280:720'
+                    if shot.get('close'):
+                        # Preserve the existing wide-sheet render recipe.
+                        filters += ',crop=1024:576:51:72,scale=1280:720'
                 filters += ',setsar=1'
                 count = round(shot['end']*25)-round(shot['start']*25)
                 subprocess.run([ffmpeg, '-hide_banner', '-v', 'error', '-y', '-filter_threads', '1', '-loop', '1', '-framerate', '25', '-i', str(sheet), '-vf', filters, '-frames:v', str(count), '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p', str(folder/f'{i}.mp4')], check=True)

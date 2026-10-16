@@ -1,0 +1,15 @@
+# Prompt de traspaso a Claude: animaciones de Simón
+
+Continúa desde la rama `codex/crossplatform-ui-audit`, PR #30, con los últimos commits. Lee `docs/CLAUDE_HANDOFF_SHOW_CURRENT_2026-10-16.md` y `assets/clay/simon/README.md` antes de reconstruir. Conserva las mejoras actuales de storyboard, herramientas, edición por palabras, líneas de tiempo, bibliotecas y generación Einstein/ChatGPT; no copies una versión vieja de la maqueta encima.
+
+El usuario ha sustituido el antiguo presentador de plastilina: ahora su avatar es el muñeco de la planta hecho por Simón, con gorro verde y abrigo amarillo. Usa exactamente `assets/clay/simon/character.json` y su PNG de referencia en cada nueva generación. No vuelvas al personaje con barba/gafas ni a imágenes genéricas del pintor local. Los vecinos del ejemplo son anónimos; para representar personas concretas harán falta sus referencias.
+
+Ya hay dos hojas de poses nuevas y una receta de cuatro escenas en `assets/clay/simon/story-simon-v1.json`: soñar con el campo, reunirse con vecinos, preguntarse por la ciudad y llegar a un pueblo. Las acciones están ligadas a las frases originales, con poses quietas entre gestos, sin ciclo automático. Es animación por poses generadas; no afirmes que es vídeo generativo continuo ni sincronización de labios.
+
+El proyecto local `work/show-motion-sample/Application Review.zuckervid` contiene la nueva historia en `show_studio/clay.json`, con cinco colocaciones editables: plano completo, pensamiento, ventana pequeña y mezcla, con huecos para volver al hablante. El recorte fotográfico original permanece en `assets/show-library/plant-character.png`; no lo sustituyas por la versión generada. El inventario privado `work/show-motion-sample/CLAUDE_ASSET_HANDOFF_2026-10-16.json` fija referencias y hashes.
+
+Para verlo, abre la muestra local en http://127.0.0.1:8793/ mientras su servidor esté activo. Los MP4 privados están en `work/show-motion-sample/pilot/clay-memory/`: `nature-story-simon-v1.mp4` y `nature-story-context-simon-v1.mp4`. La segunda dura 29,29 s con su voz original y cuatro segundos de vídeo antes y después. Las antiguas animaciones del presentador están retiradas del recorrido activo y archivadas fuera, no deben reaparecer por fallback.
+
+`fit: contain` conserva las proporciones en el compositor, el render de muestra y el canvas. Respeta ese parámetro al integrar; no estires la cara al convertir las celdas cuadradas a 16:9. Prueba el importador, las cinco colocaciones, los cambios de plano y la voz en un render real de tu versión integrada. No basta mostrar una captura o cambiar el título.
+
+El PR contiene los nuevos dibujos generados, recetas, referencias de identidad, ajuste de encuadre y tests. Las grabaciones, voces y originales fotográficos siguen privados. No los subas al repositorio ni a artefactos públicos. No instales una reconstrucción antigua: comprueba primero el commit y conserva las decisiones ya guardadas por el usuario. Entrega claramente qué está integrado y qué has probado.

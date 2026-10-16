@@ -11,7 +11,7 @@ En el proyecto privado, `assets/show-library/plant-character.png` conserva la ru
 
 `assets/character-references/simon-character.json` fija identidad, procedencia y reglas. `simon-clay-proposal-v1.png` es una **propuesta generada para revisión**, no una foto ni un diseño ya aprobado. Mantiene gorro verde irregular, cara redonda, ojos de punto, mejillas rosadas, abrigo amarillo, cremallera oscura y bolsillos marrones. Usar siempre el original como referencia visual; cambiar vestuario no debe cambiar identidad. Los futuros personajes compartirán el acabado infantil de plastilina imperfecta, con referencias propias.
 
-La maqueta `pilot/clay-memory/character.json` apunta a la nueva identidad; el antiguo descriptor queda en `character-presenter-v2-archived.json`. **Los vídeos y poses de la historia anterior todavía no se han regenerado**: no presentarlos como si ya mostrasen al personaje de Simón. La página lo señala. Animar por acciones ligadas a la narración y pausas, no con un ciclo mecánico continuo. Las imágenes y vídeos privados permanecen fuera de GitHub.
+La maqueta `pilot/clay-memory/character.json` apunta a la nueva identidad; el antiguo descriptor queda en `character-presenter-v2-archived.json`. **Actualización: ya se han regenerado las dos hojas de poses y las cuatro escenas con Simón**, en `assets/clay/simon/`. El MP4 privado de 21,28 s y la versión con contexto de 29,29 s ya usan el nuevo personaje. Las versiones antiguas están retiradas del recorrido activo. Animar por acciones ligadas a la narración y pausas, no con un ciclo mecánico continuo. Las imágenes y vídeos privados permanecen fuera de GitHub.
 
 ## Actualización: pegatinas y biblioteca limpia
 
