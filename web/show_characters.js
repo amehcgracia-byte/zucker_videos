@@ -220,7 +220,7 @@
     const owner={step:1,strokes:[],undo:[],eyes:[],mouth:null,background:false,silhouette};state=owner;
     $('#showCharacterStudio').hidden=false;$('#showStudioBody').innerHTML='<p role="status">Taking a photo at your selected words…</p>';
     try {const photo=await api('/show/photos',{method:'POST',body:JSON.stringify({source,second,name:silhouette?'Black silhouette':'Selected words cutout'})});
-      if(state!==owner)return;state.photo={...photo,url:'/api/v1/show/photo?path='+encodeURIComponent(photo.photo)};show(2);await cut();
+      if(state!==owner)return;state.photo={...photo,url:'/api/v1/show/photo?path='+encodeURIComponent(photo.photo)};show(2);
     } catch(error){if(state===owner)$('#showStudioBody').textContent=error.message;}
   },edit: async asset => {
     const result=await api('/show/characters/edit?asset='+encodeURIComponent(asset));

@@ -27,3 +27,11 @@ The effect list no longer disappears solely because Modify was collapsed. Saved 
 Version 2.6.4 identifies the unified build. Verify installed Resources/build_info.json AND live captions JS, library controls, and bundled Simón resources; checking only the version label is insufficient. Installation uses a verified backup before replacement.
 
 See SHOW_LIVE_CAPTIONS_2026-10-16.md for the caption contract. Do not replace these files with older counterparts when merging.
+
+### Verification evidence
+
+- Show suite: 190 passed (95.74 s), followed by 12 targeted caption/pixel-layer tests (7.83 s) after the silhouette addition.
+- Node clock and edit queue checks passed; JS syntax and diff whitespace checks passed.
+- Browser, isolated four-second lab: opened Scene Editor, saw caption bars and live text, opened Realistic photo edit, placed the bundled clay sample and obtained actual project controls/preview. This is not a complete-show performance benchmark.
+- `test_storage`: 21 passed, one pre-existing failure. The failing first-launch fixture replaces `sys.modules['webview']` with a SimpleNamespace and omits `webview.menu`; real installed pywebview imports Menu/MenuAction successfully. No production fallback was added to hide it.
+- An extra duplicate cutout request introduced during integration was caught by browser review and removed before packaging.
