@@ -172,7 +172,7 @@ def test_the_storyboard_renders_effects_only_when_asked_and_keeps_every_decision
     assert "attachment" in exported.headers["Content-Disposition"] and exported.get_json()["scenes"][0]["decision"] == "plain"
 
 
-def test_the_scene_you_ask_for_is_prepared_next_and_only_once(tmp_path, monkeypatch):
+def test_the_scene_you_ask_for_is_prepared_at_once_and_only_once(tmp_path, monkeypatch):
     import threading
     import time
     project, client, document, rendered = _storyboard(tmp_path, monkeypatch)
@@ -180,7 +180,11 @@ def test_the_scene_you_ask_for_is_prepared_next_and_only_once(tmp_path, monkeypa
 
     def slow_preview(project, scene_id, **kwargs):
         if not rendered:
-            busy.wait(5)                                   # the first preview keeps the worker busy
+            for _ in range(250):                           # the first preview keeps the worker busy…
+                kwargs["cancel"]()                         # …until the scene the person asks for stops it
+                if busy.is_set():
+                    break
+                time.sleep(0.02)
         from core.show import scene_preview_path
         rendered.append(scene_id)
         out = scene_preview_path(project, scene_id)
@@ -205,7 +209,8 @@ def test_the_scene_you_ask_for_is_prepared_next_and_only_once(tmp_path, monkeypa
     client.post(f"/api/v1/show/scenes/{ids[0]}/preview")
     wait_for(3)
     time.sleep(0.2)
-    assert rendered[:3] == [ids[1], last, ids[0]] and rendered.count(last) == 1
+    # The asked scene stopped the other one, which was prepared right after it.
+    assert rendered[:3] == [last, ids[1], ids[0]] and rendered.count(last) == 1
 
 
 def test_identity_intro_and_pictures_come_only_from_the_project_and_its_library(tmp_path, monkeypatch):
@@ -372,7 +377,8 @@ def test_failed_final_preview_pass_is_not_reused_as_a_completed_cache(tmp_path, 
         render_scene_preview(project, document['scenes'][0]['id'])
     monkeypatch.setattr(show, '_lay_jingles', lambda *args: None)
     result = render_scene_preview(project, document['scenes'][0]['id'])
-    assert result.read_bytes() == b'render 2'
+    # Only the failed last pass is done again: the scene's cut was fine and is kept.
+    assert result.read_bytes() == b'render 1' and len(renders) == 1
     assert '-building' not in result.name
 
 

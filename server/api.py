@@ -1980,7 +1980,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     scene_previews: dict[str, dict[str, Any]] = {}
     scene_queue: list[tuple[Project, str]] = []
     scene_lock = threading.Lock()
-    scene_worker: dict[str, Any] = {"thread": None, "stop": threading.Event()}
+    scene_worker: dict[str, Any] = {"thread": None, "stop": threading.Event(), "current": None}
 
     def _scene_key(project: Project, scene_id: str) -> str:
         return f"{project.folder}|{scene_id}"
@@ -2001,6 +2001,15 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                     scene_queue.insert(0, (project, scene_id))
                 else:
                     scene_queue.append((project, scene_id))
+            # The scene the person is looking at does not wait behind another scene's
+            # preview: that one stops and goes back in the queue.
+            current = scene_worker["current"]
+            asked = _scene_key(project, scene_ids[0]) if scene_ids else None
+            if first and current and asked and current["key"] != asked and scene_previews.get(asked, {}).get("status") == "queued":
+                current["ticket"]["preempted"] = True
+                if scene_previews.get(current["key"]) is current["ticket"]:
+                    scene_previews[current["key"]] = {"status": "queued"}
+                    scene_queue.append((current["project"], current["scene_id"]))
             if scene_worker["thread"] and scene_worker["thread"].is_alive():
                 return
             scene_worker["stop"].clear()
@@ -2014,6 +2023,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                         item_project, scene_id = scene_queue.pop(0)
                         key = _scene_key(item_project, scene_id)
                         ticket = scene_previews[key] = {"status": "rendering", "message": "Rendering the scene cut"}
+                        scene_worker["current"] = {"key": key, "ticket": ticket, "project": item_project, "scene_id": scene_id}
 
                     def report(_fraction, message):
                         with scene_lock:
@@ -2023,10 +2033,15 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                     def stop() -> None:
                         with scene_lock:
                             stale = scene_previews.get(key) is not ticket
-                        if stale or scene_worker["stop"].is_set():
+                        if stale or ticket.get("preempted") or scene_worker["stop"].is_set():
                             raise InterruptedError("Scene preview superseded or stopped")
+
+                    def stop_cut() -> None:
+                        # An edit does not change the cut: it finishes and serves the next preview.
+                        if ticket.get("preempted") or scene_worker["stop"].is_set():
+                            raise InterruptedError("Scene preview stopped")
                     try:
-                        path = preview_scene(item_project, scene_id, cancel=stop, progress=report)
+                        path = preview_scene(item_project, scene_id, cancel=stop, cancel_cut=stop_cut, progress=report)
                         result = {"status": "ready", "url": f"/api/v1/show/media?path={quote(str(path))}"}
                     except InterruptedError:
                         result = {"status": "stopped"}
@@ -2034,6 +2049,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                         LOGGER.exception("Scene preview failed")
                         result = {"status": "failed", "error": str(exc)}
                     with scene_lock:
+                        scene_worker["current"] = None
                         # An edit during rendering invalidates this exact ticket.
                         # Never publish an old result over a newer queued revision.
                         if scene_previews.get(key) is ticket:

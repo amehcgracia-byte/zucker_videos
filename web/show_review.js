@@ -348,6 +348,7 @@
       $('#showTimeline').hidden=false;$('#showTimelineLauncher').hidden=true;
       timelineDialog.showModal();
     }
+    editorAsked=null;watchEditorEffects(currentScene());
   }
   function restoreStage() {
     if(stageHome){stageHome.replaceWith($('.show-stage-wrap'));stageHome=null;}
@@ -356,6 +357,8 @@
   }
   function closeTimeline() {
     $("#showContextMenu").hidden=true;
+    clearTimeout(editorPoll);
+    if(quick?.effects){const scene=quick.scene;playQuick(scene,Math.max(0,editedPlayhead()-scene.start));$('#showStageVideo').pause();}
     if(timelineDialog?.open)timelineDialog.close();
     restoreStage();
     // Context menus mounted on body cannot stay above a modal's top layer.
@@ -596,7 +599,7 @@
     backgroundPreview = setTimeout(async () => {
       await flushEdits().catch(() => {});
       api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, { method: "POST", body: "{}" }).catch(() => {});
-    }, 2000);
+    }, 1000);
   }
 
   function showScenePicture(scene) {
@@ -617,25 +620,29 @@
   // ---- Quick view: the scene's cut played from the original, nothing rendered ----------
   let quick = null;
   function stopQuick() { if (quick) { cancelAnimationFrame(quick.frame); quick = null; } }
-  function playQuick(scene, from = 0, onEnd = null) {
+  function playQuick(scene, from = 0, onEnd = null, withEffects = false) {
     stopQuick();
     const saved = useSaved(scene);
+    // In the scene editor, the scene's own preview with every effect, when it is ready for what the timeline holds.
+    const effects = !saved && withEffects && effectsReady(scene);
     // In the saved render the scene sits later by what was inserted before it (title card, intro, characters).
     const later = (t) => (review.saved_render?.inserted || []).reduce((sum, [at, length]) => sum + (at <= t ? length : 0), 0);
-    const segments = saved ? [[scene.start + later(scene.start), scene.end + later(scene.start)]] : (scene.segments || []);
-    const source = saved ? review.saved_render.url : review.source_url;
+    const segments = saved ? [[scene.start + later(scene.start), scene.end + later(scene.start)]]
+      : effects ? [[0, scene.end - scene.start]] : (scene.segments || []);
+    const source = saved ? review.saved_render.url : effects ? scene.preview.url : review.source_url;
     if (!source || !segments.length) return false;
     const video = $("#showStageVideo");
     $("#showStageCard").hidden = true;
     video.hidden = false;
     if (video.getAttribute("src") !== source) { video.src = source; video.load(); }
-    quick = { scene, segments, saved, index: 0, frame: 0, pending:scene.start+from };
+    quick = { scene, segments, saved: saved || effects, effects, index: 0, frame: 0, pending:scene.start+from };
     const session=quick;
     liveDrawings(scene);
     video.controls=false;
     let transport=$('#showSceneTransport');
-    if(!transport){transport=document.createElement('div');transport.id='showSceneTransport';transport.className='show-scene-transport';transport.innerHTML='<button type="button" data-scene-play>Play scene</button><output data-scene-clock></output>';$('#showStageStatus').after(transport);transport.querySelector('button').onclick=()=>{if(video.paused){if(editedPlayhead()>=scene.end-.05)playQuick(scene);video.play().catch(error=>showToast(error.message,true));}else video.pause();};}
+    if(!transport){transport=document.createElement('div');transport.id='showSceneTransport';transport.className='show-scene-transport';transport.innerHTML='<button type="button" data-scene-play>Play scene</button><output data-scene-clock></output>';$('#showStageStatus').after(transport);transport.querySelector('button').onclick=()=>playScene();}
     transport.hidden=false;
+    editorEffectsLabel();
     const seek = (index, offset = 0) => { if(quick!==session)return;quick.index = index;quick.pending=scene.start+segments.slice(0,index).reduce((sum,[a,b])=>sum+b-a,0)+offset;video.currentTime = segments[index][0] + offset;syncPlayback(); };
     const start = () => { if (quick===session) { const [index, offset] = sourceAt(segments, from); seek(index, offset); } };
     if (video.readyState >= 1) start(); else video.addEventListener("loadedmetadata", start, { once: true });
@@ -655,9 +662,74 @@
       quick.frame = requestAnimationFrame(tick);
     };
     quick.frame = requestAnimationFrame(tick);
-    $("#showStageStatus").textContent = saved ? "Saved render: the last completed edit, with its captions and effects. New decisions need a new effects preview/render." : "Live timing preview: your cut and chosen pictures. Pictures appear only inside their bars; render a preview to check all camera and animation effects.";
+    $("#showStageStatus").textContent = effects ? "Playing with every effect (this scene's preview). Pause to move or resize pictures."
+      : saved ? "Saved render: the last completed edit, with its captions and effects. New decisions need a new effects preview/render."
+      : timelineDialog?.open ? "Live view: your cut and chosen pictures, updated as you edit. Press Play scene to watch it with every effect."
+      : "Live timing preview: your cut and chosen pictures. Pictures appear only inside their bars; render a preview to check all camera and animation effects.";
     return true;
   }
+
+  // ---- The scene editor plays the real effects --------------------------------------------
+  // Play shows the scene's preview with every effect (words, zooms, animations, painted
+  // drawings, steam…) when it is ready for what the timeline holds; pausing returns to the
+  // live view, where pictures can be dragged. An edit shows at once in the live view while
+  // the effects are prepared again in the background (seconds: the scene's cut is kept).
+  let editorPoll = null, editorAsked = null, editorAskedAt = 0, editStamp = 0;      // editStamp: an answer asked before an edit is old news
+  const effectsReady = (scene) => !!(timelineDialog?.open && scene && scene.preview?.status === "ready" && scene.preview.url);
+  function editorEffectsLabel() {
+    const transport = $("#showSceneTransport"), scene = currentScene();
+    if (!transport || !scene) return;
+    let label = transport.querySelector("[data-effects-state]");
+    if (!label) { label = document.createElement("small"); label.dataset.effectsState = ""; transport.append(label); }
+    const preview = scene.preview || {};
+    label.hidden = !timelineDialog?.open;
+    label.textContent = quick?.effects ? "With every effect" : effectsReady(scene) ? "Effects ready: press Play scene"
+      : preview.status === "failed" ? `Effects preview failed: ${preview.error || "try again"}`
+      : `Updating the effects… ${preview.message && /%/.test(preview.message) ? preview.message.replace(/^.*?(\d+%).*$/, "$1") : ""}`.trim();
+  }
+  function playScene() {
+    const scene = currentScene(), video = $("#showStageVideo");
+    if (!scene) return;
+    if (!video.paused) { video.pause(); return; }
+    let at = editedPlayhead();
+    if (at >= scene.end - 0.05) at = scene.start;
+    if (effectsReady(scene) && !quick?.effects) playQuick(scene, at - scene.start, null, true);
+    else if (at === scene.start && editedPlayhead() >= scene.end - 0.05) playQuick(scene);
+    video.play().catch((error) => showToast(error.message, true));
+  }
+  async function watchEditorEffects(scene) {
+    clearTimeout(editorPoll);
+    if (!timelineDialog?.open || !scene || currentScene()?.id !== scene.id) return;
+    editorEffectsLabel();
+    if (effectsReady(scene)) return;
+    // Asked when the editor opened or after an edit (2 s later); asked again if nothing started.
+    if (!["queued", "rendering", "failed"].includes(scene.preview?.status) && (editorAsked !== scene.id || Date.now() - editorAskedAt > 6000)) {
+      editorAsked = scene.id; editorAskedAt = Date.now();
+      await flushEdits().catch(() => {});
+      await api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, { method: "POST", body: "{}" }).catch(() => {});
+    }
+    const asked = editStamp;
+    const fresh = await api(`/show/scenes?current=${encodeURIComponent(scene.id)}`).catch(() => null);
+    const updated = fresh?.scenes?.find((entry) => entry.id === scene.id);
+    if (updated && asked === editStamp && currentScene()?.id === scene.id && !editQueue.pending.size) scene.preview = updated.preview;
+    if (effectsReady(scene)) {
+      editorAsked = null;
+      // Already playing the live view: carry on, now with the effects.
+      const video = $("#showStageVideo");
+      if (quick && !quick.saved && !video.paused) { playQuick(scene, editedPlayhead() - scene.start, null, true); video.play().catch(() => {}); }
+      editorEffectsLabel();
+      return;
+    }
+    if (scene.preview?.status === "failed") { editorAsked = null; editorEffectsLabel(); return; }
+    editorPoll = setTimeout(() => watchEditorEffects(scene), 1200);
+  }
+  $("#showStageVideo").addEventListener("pause", () => {
+    // Pausing the effects preview returns to the live view at the same moment, ready to edit.
+    if (!quick?.effects || !timelineDialog?.open) return;
+    const scene = quick.scene, at = editedPlayhead();
+    playQuick(scene, Math.max(0, Math.min(scene.end - scene.start - 0.04, at - scene.start)));
+    $("#showStageVideo").pause();
+  });
   // Seconds into the scene's edit → (segment, offset in it).
   const sourceAt=ShowClock.sourceAt;
 
@@ -692,6 +764,7 @@
 
   function invalidateLocal(scene) {
     if (!scene) return;
+    editStamp++;
     dirtyScenes.add(scene.id); viewedScenes.delete(scene.id);
     scene.preview = {status:"none"};
     wantEffects.delete(scene.id); wantQuick.add(scene.id);
@@ -701,6 +774,15 @@
       $("#showStageStatus").textContent = quick && !quick.saved ? "Changes saved. Live picture timing is updated; a new preview with effects is being prepared — press “Preview with effects” to watch it." : "Changes saved. This rendered video is now out of date; a new preview is being prepared — open the scene editor for live picture timing meanwhile.";
     }
     prepareInBackground(scene);
+    if (timelineDialog?.open && currentScene()?.id === scene.id) {
+      editorAsked = scene.id; editorAskedAt = Date.now();            // prepareInBackground asks for it
+      if (quick?.effects) {
+        const video = $("#showStageVideo"), at = editedPlayhead(), playing = !video.paused;
+        playQuick(scene, Math.max(0, at - scene.start));
+        if (playing) video.play().catch(() => {});
+      }
+      watchEditorEffects(scene);
+    }
   }
 
   async function requestScenePreview(scene) {

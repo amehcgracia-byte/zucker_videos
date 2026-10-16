@@ -33,8 +33,10 @@ from __future__ import annotations
 
 import json
 import math
+import queue
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -500,6 +502,53 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
             "-shortest", "-movflags", "+faststart", str(pending)], stdin=subprocess.PIPE, stderr=encode_log)
         pending_inserts = list(inserts)
         written = 0
+        # Decoding, drawing and encoding overlap: one thread reads frames ahead from the
+        # decoder and another feeds the encoder, so neither ffmpeg waits for the drawing.
+        ahead: queue.Queue = queue.Queue(maxsize=16)
+        behind: queue.Queue = queue.Queue(maxsize=16)
+        halt = threading.Event()
+        broken: list[BaseException] = []
+
+        def hand(line: queue.Queue, item: Any) -> None:
+            while not halt.is_set():
+                try:
+                    line.put(item, timeout=0.2)
+                    return
+                except queue.Full:
+                    continue
+
+        def read_frames() -> None:
+            try:
+                while not halt.is_set():
+                    raw = decoder.stdout.read(frame_bytes)
+                    if len(raw) < frame_bytes:
+                        break
+                    hand(ahead, raw)
+            except (OSError, ValueError):
+                pass
+            finally:
+                hand(ahead, None)
+
+        def write_frames() -> None:
+            try:
+                while True:
+                    try:
+                        chunk = behind.get(timeout=0.2)
+                    except queue.Empty:
+                        if halt.is_set():
+                            return
+                        continue
+                    if chunk is None:
+                        return
+                    encoder.stdin.write(chunk)
+            except (OSError, ValueError) as exc:
+                broken.append(exc)
+                halt.set()
+
+        def send(chunk: bytes) -> None:
+            if broken:
+                raise RuntimeError(f"Gag render failed: the encoder stopped ({broken[0]})")
+            hand(behind, chunk)
 
         def write_inserts(before_frame: int | None) -> None:
             nonlocal written
@@ -507,16 +556,27 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
                 insert = pending_inserts.pop(0)
                 fitted = fit(insert.still, width, height)
                 for k in range(insert.frames):
-                    encoder.stdin.write(insert_frame(insert, k, fitted).tobytes())
+                    send(insert_frame(insert, k, fitted).tobytes())
                     written += 1
                     if written % 30 == 0 and cancel:
                         cancel()
+        reader = threading.Thread(target=read_frames, daemon=True, name="gag-render-read")
+        writer = threading.Thread(target=write_frames, daemon=True, name="gag-render-write")
         try:
             assert decoder.stdout is not None and encoder.stdin is not None
+            reader.start()
+            writer.start()
             index = 0
             while True:
-                raw = decoder.stdout.read(frame_bytes)
-                if len(raw) < frame_bytes:
+                try:
+                    raw = ahead.get(timeout=0.5)
+                except queue.Empty:
+                    if broken:
+                        raise RuntimeError(f"Gag render failed: the encoder stopped ({broken[0]})")
+                    if reader.is_alive():
+                        continue
+                    raw = None
+                if raw is None:
                     break
                 write_inserts(index)
                 t = index / fps
@@ -538,7 +598,7 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
                     for sticker in live:
                         draw_sticker(frame, sticker, t)
                     raw = frame.tobytes()
-                encoder.stdin.write(raw)
+                send(raw)
                 index += 1
                 written += 1
                 if index % 30 == 0:
@@ -547,6 +607,10 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
                     if progress:
                         progress(min(1.0, written / max(1, total)))
             write_inserts(None)   # interventions after the last frame
+            hand(behind, None)
+            writer.join()
+            if broken:
+                raise RuntimeError(f"Gag render failed: the encoder stopped ({broken[0]})")
             encoder.stdin.close()
             decoder.wait()
             if encoder.wait() != 0 or decoder.returncode != 0:
@@ -555,8 +619,12 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
                 raise RuntimeError("Gag render failed: " + (encode_log.read() + decode_log.read()).decode(errors="replace")[-1500:])
             pending.replace(output)
         finally:
+            halt.set()
             for process in (decoder, encoder):
                 if process.poll() is None:
                     process.kill()
+            for thread in (reader, writer):
+                if thread.is_alive():
+                    thread.join(timeout=2)
             pending.unlink(missing_ok=True)
     return output

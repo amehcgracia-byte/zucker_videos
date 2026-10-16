@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -415,6 +416,31 @@ def scene_segments(plan: dict[str, Any], start: float, end: float) -> list[list[
     return [[round(shot["start_frame"] / fps, 3), round(shot["end_frame"] / fps, 3)] for shot in window_plan(plan, start, end)["shots"]]
 
 
+def _cached_cut(source: Path, part: dict[str, Any], folder: Path, name: str, *, ffmpeg: str, width: int, height: int,
+                cancel: Callable[[], None] | None, progress: Callable[[float], None] | None) -> Path:
+    """The window's cut (its framing, close-ups and voice, no effects), kept between edits:
+    stickers, drawings and words do not change it, so after an edit a preview only
+    composites the effects again instead of cutting the source video again."""
+    import hashlib
+    stat = source.stat()
+    key = hashlib.sha1(json.dumps(["preview-cut-v1", str(source), stat.st_size, stat.st_mtime_ns, part, width, height, PREVIEW_ENCODING],
+                                  sort_keys=True, default=str).encode()).hexdigest()[:12]
+    cuts = folder / "cuts"
+    cuts.mkdir(parents=True, exist_ok=True)
+    cut = cuts / f"{name}-{key}.mp4"
+    if cut.is_file():
+        return cut
+    pending = cuts / f"{name}-{key}-building.mp4"
+    render_show(source, part, pending, ffmpeg=ffmpeg, width=width, height=height, cancel=cancel, **PREVIEW_ENCODING, progress=progress)
+    pending.replace(cut)
+    # A few cuts per window are kept (an edit of a close-up and its undo); older ones go.
+    kept = sorted((path for path in cuts.glob(f"{name}-*.mp4") if not path.stem.endswith("-building")),
+                  key=lambda path: path.stat().st_mtime, reverse=True)
+    for old in kept[3:]:
+        old.unlink(missing_ok=True)
+    return cut
+
+
 def window_plan(plan: dict[str, Any], start: float, end: float) -> dict[str, Any]:
     """The part of the edit between ``start`` and ``end`` (edited seconds) as a plan of its own."""
     fps = int(plan.get("fps") or 30)
@@ -461,9 +487,8 @@ def preview_proposal(project, proposal_id: str, *, width: int | None = None, hei
         return completed
     output = folder / f"{proposal_id}-{signature}-building.mp4"
     ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
-    cut = folder / f"{proposal_id}-{signature}-cut.mp4"
-    render_show(Path(plan["source"]), part, cut, ffmpeg=ffmpeg, width=width, height=height, cancel=cancel, **PREVIEW_ENCODING,
-                progress=(lambda fraction: progress(fraction, f"Rendering the scene cut — {fraction:.0%}")) if progress else None)
+    cut = _cached_cut(Path(plan["source"]), part, folder, proposal_id, ffmpeg=ffmpeg, width=width, height=height, cancel=cancel,
+                      progress=(lambda fraction: progress(fraction, f"Rendering the scene cut — {fraction:.0%}")) if progress else None)
     shifted = [{**entry, "at": round(entry["at"] - start, 3)} for entry in framed_layer(plan, layer)]
     jingles = [entry for entry in shifted if entry.get("jingle")]
     shifted = [entry for entry in shifted if not entry.get("jingle")]
@@ -481,9 +506,8 @@ def preview_proposal(project, proposal_id: str, *, width: int | None = None, hei
     spans: list[tuple[float, float]] = []
     if pictures or shifted or studio:
         render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio, **PREVIEW_ENCODING)
-        cut.unlink(missing_ok=True)
     else:
-        cut.replace(output)
+        shutil.copyfile(cut, output)
     _lay_jingles(output, jingles, spans, ffmpeg)
     output.replace(completed)
     return completed
@@ -541,10 +565,12 @@ def scene_preview_ready(project, scene_id: str, *, width: int | None = None, hei
 
 
 def preview_scene(project, scene_id: str, *, width: int | None = None, height: int | None = None, only_sticker_id: str | None = None,
-                  cancel: Callable[[], None] | None = None,
+                  cancel: Callable[[], None] | None = None, cancel_cut: Callable[[], None] | None = None,
                   progress: Callable[[float, str], None] | None = None) -> Path:
     """A real render of one scene with the effects it proposes (or the person kept),
-    small and quick to make; published only once complete."""
+    small and quick to make; published only once complete. ``cancel_cut`` (default
+    ``cancel``) alone stops cutting the source: an edit to a sticker, drawing or word
+    does not change the cut, so it may finish and serve the next preview."""
     from core import gags as gag_module
     from core import show_proposals
     from core.gag_render import render_gags
@@ -560,9 +586,9 @@ def preview_scene(project, scene_id: str, *, width: int | None = None, height: i
     plan["cutaways"] = cutaways
     part = window_plan(plan, start, end)
     ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
-    cut = folder / f"{scene_id}-{signature}-cut.mp4"
-    render_show(Path(plan["source"]), part, cut, ffmpeg=ffmpeg, width=width, height=height, cancel=cancel, **PREVIEW_ENCODING,
-                progress=(lambda fraction: progress(fraction, f"Rendering the scene cut — {fraction:.0%}")) if progress else None)
+    cut = _cached_cut(Path(plan["source"]), part, folder, scene_id if only_sticker_id is None else f"{scene_id}-{only_sticker_id[:8]}",
+                      ffmpeg=ffmpeg, width=width, height=height, cancel=cancel_cut if cancel_cut is not None else cancel,
+                      progress=(lambda fraction: progress(fraction, f"Rendering the scene cut — {fraction:.0%}")) if progress else None)
     shifted = [{**entry, "at": round(entry["at"] - start, 3)} for entry in between_words(plan, framed_layer(plan, layer) + overlays)]
     jingles = [entry for entry in shifted if entry.get("jingle")]
     shifted = [entry for entry in shifted if not entry.get("jingle")]
@@ -581,9 +607,8 @@ def preview_scene(project, scene_id: str, *, width: int | None = None, height: i
     spans: list[tuple[float, float]] = []
     if pictures or shifted or studio:
         render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio, **PREVIEW_ENCODING)
-        cut.unlink(missing_ok=True)
     else:
-        cut.replace(output)
+        shutil.copyfile(cut, output)
     _lay_jingles(output, jingles, spans, ffmpeg)
     output.replace(completed)
     return completed
