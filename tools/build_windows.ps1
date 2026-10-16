@@ -63,6 +63,7 @@ $common = @(
   "--collect-data", "pythonnet", "--collect-binaries", "pythonnet",
   "--collect-submodules", "clr_loader",
   "--collect-submodules", "server", "--collect-submodules", "core",
+  "--collect-submodules", "yt_dlp", "--hidden-import", "certifi",
   "--exclude-module", "pytest", "--exclude-module", "tests",
   "$Root\app.py"
 )

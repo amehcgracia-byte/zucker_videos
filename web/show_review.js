@@ -5,7 +5,7 @@
 // coordinates of their own picture, outlines exist only in the editor, and the
 // pixels that move are the originals. Nothing is rendered until the last step.
 (() => {
-  const KIND_LABELS = { sticker:"Sticker", cutaway: "Close-up", character: "Character speaks", drawing: "Drawing", word: "Word", warp: "Warp", steam: "Rainbow steam", math: "Formulas around you" };
+  const KIND_LABELS = { sticker:"Sticker", cutaway: "Close-up", character: "Character speaks", drawing: "Drawing", word: "Word", warp: "Warp", steam: "Rainbow steam", math: "Formulas around you", clip: "Video clip" };
   const STATUS_LABELS = { proposed: "Proposed", approved: "Approved", discarded: "Discarded" };
   const DECISION_LABELS = { pending: "To decide", accepted: "Accepted", modified: "Needs review", plain: "Without effect" };
   const ACTIONS = { mouth: "Mouth (with the voice)", nod: "Nod", side: "Sideways", turn: "Turn" };
@@ -35,6 +35,7 @@
     const p = item.params;
     if (item.kind === "cutaway") return p.thumb ? media(p.thumb) : still(p.source, p.source_start);
     if (item.kind === "character") return still(p.source, p.still_time);
+    if (item.kind === "clip") return still(p.clip, Math.min(0.3, (p.clip_length || 1) / 2));
     if (["drawing", "word"].includes(item.kind) && p.picture) return `/api/v1/show/library/file?path=${encodeURIComponent(p.picture)}`;
     return `/api/v1/show/frame?t=${encodeURIComponent(item.at)}`;
   }
@@ -265,7 +266,7 @@
         <span class="show-decision show-${scene.decision}">${DECISION_LABELS[scene.decision]}</span>
         <button type="button" class="icon-button small" data-open-library>Library</button>
       </div>
-      ${(scene.references||[]).length?`<details class="show-scene-drawings"><summary>Video references · links only (${scene.references.length})</summary>${scene.references.map(ref=>`<p>${escape(ref.url)} · ${ref.start}–${ref.end} s<br><small>No footage downloaded or placed.</small></p>`).join('')}</details>`:''}
+      ${(scene.references||[]).length?`<details class="show-scene-drawings" open><summary>Video references (${scene.references.length})</summary>${scene.references.map(ref=>`<p>${escape(ref.url)} · ${ref.start}–${ref.end} s<br>${ref.status==='downloaded'?'<small>Downloaded: it plays on its words with its own sound (see the timeline).</small>':`<small>Only the link is saved.</small> <button type="button" class="icon-button small" data-ref-download="${escape(ref.id)}">Download these seconds &amp; put them in</button>`}</p>`).join('')}</details>`:''}
       ${sceneDrawings(scene, effects)}
       <div id="showClay" class="show-clay"></div>
       <div id="showSceneEffects" class="show-review-list">${effects.map(card).join("") || "<p class=\"show-hint\">No effect in this scene.</p>"}
@@ -1008,7 +1009,7 @@
       ["original_mouth", "Animate original mouth…", null],
       ["original_part", "Move original part (sideways)…", null],
       ["references", "Search internet references…", null],
-      ["video_reference", "Video reference · link & times…", null],
+      ["video_reference", "Video clip from a link (YouTube / Vimeo)…", null],
       ["generate_video", "Create video · external prompt…", null],
       ["photo_edit", "Realistic photo of me…", null],
       ["cutout", "Cut out a person / background (photo)…", null],
@@ -2260,6 +2261,30 @@
     }).join("")}</div>`;
   }
 
+  // A video reference's seconds downloaded into the project: a clip on its words, with its own
+  // sound (the host pauses). The timeline opens on it so it is clear that it was created.
+  async function downloadReference(id) {
+    showToast("Downloading only the chosen seconds of the clip…");
+    clipAdded(await api(`/show/references/video/${encodeURIComponent(id)}/download`, { method: "POST", body: "{}" }));
+  }
+  function clipAdded({ reference, proposal }) {
+    const scene = scenes().find((entry) => entry.id === reference.scene_id) || scenes().find((entry) => entry.start <= proposal.at && proposal.at < entry.end);
+    if (scene) scene.references = (scene.references || []).map((ref) => ref.id === reference.id ? reference : ref);
+    if (!review.proposals.some((item) => item.id === proposal.id)) review.proposals.push(proposal);
+    if (scene && !scene.effects.includes(proposal.id)) scene.effects.push(proposal.id);
+    if (scene) { scene.decision = "modified"; invalidateLocal(scene); }
+    if (scene && currentScene()?.id !== scene.id) step = scenes().indexOf(scene) + 2;
+    render();
+    locateEffect(timelineItem(proposal.id));
+    showToast(`The clip is on “${reference.selected_text || "these words"}”: it plays with its own sound while you pause. Watch it in the scene preview.`);
+  }
+  document.addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("[data-ref-download]") : null;
+    if (!button || !review) return;
+    button.disabled = true;
+    downloadReference(button.dataset.refDownload).catch((error) => { button.disabled = false; showToast(error.message, true); });
+  });
+
   window.ShowReview = {
     open: openReview, openWorkspace, hull, refreshLibrary, addToScene, openLibrary,
     async rigSaved(asset,placement){
@@ -2270,6 +2295,7 @@
       if(!await saveOverlays(scene)){Object.assign(overlay,before);throw Error('The character is saved, but the layer update failed.');}
       renderScene();
     },
+    clipAdded,
     referenceSaved(record){const scene=scenes().find(s=>s.id===record.scene_id);if(!scene)return;scene.references=[...(scene.references||[]).filter(r=>r.id!==record.id),record];if(currentScene()?.id===scene.id)renderScene();},
     captionSaved(result){
       review.caption_revision=result.revision;

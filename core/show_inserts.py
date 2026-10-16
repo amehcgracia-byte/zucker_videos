@@ -153,6 +153,7 @@ class Insert:
     overlays: list[Any] = field(default_factory=list)   # stickers drawn on it (a cut-out character talking)
     entrance: str = "zoom"
     backdrop: np.ndarray | None = None   # the frozen host behind a photo that bounces in (fitted, RGB)
+    clip: np.ndarray | None = None       # a video clip's frames at the output size (memory-mapped), played whole
 
     @property
     def frames(self) -> int:
@@ -163,9 +164,47 @@ class Insert:
         return self.frames / self.fps
 
 
+def load_clip(raw: dict[str, Any], width: int, height: int, fps: float, ffmpeg: str) -> Insert:
+    """A video clip (``insert`` "clip") played whole with its own sound while the host
+    pauses, as a meme cut does: ``source`` from ``clip_start`` for ``clip_length`` seconds,
+    letterboxed into the frame. Its frames wait in a memory-mapped scratch file, not in RAM."""
+    import os
+    import tempfile
+    source, start, length = str(raw["source"]), float(raw.get("clip_start") or 0.0), float(raw["clip_length"])
+    if not Path(source).is_file():
+        raise ValueError(f"The clip {Path(source).name} is missing")
+    size = width * height * 3
+    scratch = tempfile.NamedTemporaryFile(prefix="zucker-clip-", suffix=".rgb", delete=False)
+    try:
+        with scratch, subprocess.Popen([ffmpeg, "-v", "error", "-nostdin", "-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", source, "-an",
+                                        "-vf", f"fps={fps},scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                                               f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black",
+                                        "-pix_fmt", "rgb24", "-f", "rawvideo", "-"], stdout=subprocess.PIPE) as decoder:
+            assert decoder.stdout is not None
+            while chunk := decoder.stdout.read(size * 8):
+                scratch.write(chunk)
+        frames = os.path.getsize(scratch.name) // size
+        if frames == 0:
+            raise ValueError(f"The clip {Path(source).name} has no picture to play")
+        clip = np.memmap(scratch.name, dtype=np.uint8, mode="r", shape=(frames, height, width, 3))
+    finally:
+        os.unlink(scratch.name)            # the mapping stays readable; nothing is left behind
+    try:
+        voice = decode_voice(source, start, frames / fps, ffmpeg)
+    except subprocess.CalledProcessError:
+        voice = None                       # a clip without sound plays silent
+    insert = Insert(at=float(raw["at"]), still=np.asarray(clip[0]), width=width, height=height, fps=fps, zoom=1.0,
+                    zoom_frames=0, hold_frames=frames, voice=voice, entrance="cut")
+    insert.clip = clip
+    insert.envelope = np.zeros(frames, dtype=np.float32)
+    return insert
+
+
 def load_insert(raw: dict[str, Any], width: int, height: int, fps: float, ffmpeg: str, video: str | Path | None = None) -> Insert:
     """``source`` "host" freezes the show's own picture at ``at`` (a character
-    then talks over it); otherwise a close-up's frame or a photo."""
+    then talks over it); otherwise a close-up's frame or a photo. A clip plays whole."""
+    if raw.get("insert") == "clip":
+        return load_clip(raw, width, height, fps, ffmpeg)
     source = raw["source"]
     if source == "host":
         if video is None:
@@ -220,6 +259,8 @@ def insert_frame(insert: Insert, index: int, fitted: np.ndarray | None = None) -
     """Frame ``index`` of the intervention, RGB at the output size: the still
     with any character drawn on it (so a push-in brings both closer), its region
     moving; a photo that bounces in is a card over the frozen host."""
+    if insert.clip is not None:
+        return np.asarray(insert.clip[min(index, len(insert.clip) - 1)])
     fitted = fitted if fitted is not None else fit(insert.still, insert.width, insert.height)
     if insert.overlays:
         from core.gag_render import draw_sticker
