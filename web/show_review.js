@@ -270,7 +270,7 @@
       <div id="showClay" class="show-clay"></div>
       <div id="showSceneEffects" class="show-review-list">${effects.map(card).join("") || "<p class=\"show-hint\">No effect in this scene.</p>"}
         <form id="showSceneAdd" class="show-review-add"><strong>Add</strong>
-          <select name="kind"><option value="drawing">A drawing</option><option value="steam">Rainbow steam over a mug</option><option value="character">A character that speaks</option><option value="cutaway">A close-up</option><option value="math">Formulas around you</option><option value="word">A shouted word</option><option value="references">Search internet references</option><option value="video_reference">Video reference · link &amp; times</option><option value="generate_video">Create video · external prompt</option><option value="photo_edit">Realistic photo of me</option><option value="cutout">Cut out a person / background (photo)</option><option value="silhouette">Black silhouette (photo)</option><option value="clay">Clay memory · Simón</option><option value="captions">Normal speech captions</option></select>
+          <select name="kind"><option value="drawing">A drawing</option><option value="steam">Rainbow steam over a mug</option><option value="character">A character that speaks</option><option value="cutaway">A close-up</option><option value="math">Formulas around you</option><option value="word">A shouted word</option><option value="library">Take from the library</option><option value="references">Search internet references</option><option value="video_reference">Video reference · link &amp; times</option><option value="generate_video">Create video · external prompt</option><option value="photo_edit">Realistic photo of me</option><option value="cutout">Cut out a person / background (photo)</option><option value="silhouette">Black silhouette (photo)</option><option value="clay">Clay memory · Simón</option><option value="captions">Normal speech captions</option></select>
           <label>at <input name="at" type="number" step="0.1" min="${scene.start}" max="${scene.end}" value="${scene.start.toFixed(1)}"> s</label>
           <label>of <input name="subject" type="text" maxlength="80" placeholder="a guitar"></label>
           <select name="style">${Object.entries(DRAWING_STYLES).map(([key, label]) => `<option value="${key}" ${key === "crayon" ? "selected" : ""}>${label}</option>`).join("")}</select>
@@ -931,6 +931,7 @@
   }
 
   async function extraTool(kind,scene,picked) {
+    if(kind==='library'){await openLibrary(null,picked);return true;}
     if(["references","video_reference","generate_video"].includes(kind)){ShowReferences.open(scene,picked,review.project_id,kind==='references'?'photos':kind==='video_reference'?'video':'generate');return true;}
     if(kind==='photo_edit') {ShowEinstein.open(scene,picked,'A realistic photo of me with long hair',null,{purpose:'photo_edit'});return true;}
     if(kind==='cutout'||kind==='silhouette') {const [index,offset]=sourceAt(scene.segments,picked.start-scene.start);await ShowPhotoStudio.openAt(review.source,scene.segments[index][0]+offset,kind==='silhouette',{sceneId:scene.id,at:picked.start,duration:picked.end-picked.start});return true;}
@@ -988,6 +989,7 @@
     const choices = [
       ...(selectedEffect ? [["place", "Place selected effect on these words", null]] : []),
       ["ai", "AI · create with Einstein…", null],
+      ["library", "Take from the library…", null],
       ["references", "Search internet references…", null],
       ["video_reference", "Video reference · link & times…", null],
       ["generate_video", "Create video · external prompt…", null],
@@ -1999,6 +2001,7 @@
   // approved for you.
   const LIBRARY_TABS = { project: "This project", recurring: "Recurring", other: "Other projects", hidden: "Hidden" };
   let libraryDialog = null, libraryAll = [], libraryShelves = [], libraryTab = "project", libraryFor = null, libraryQuery = "";
+  let libraryWords = null;             // selected words a chosen picture goes on: {text, start, end}
   const suggestions = new Map();       // subject -> Promise of matching pictures
 
   const libraryKey = (text) => String(text || "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase();
@@ -2025,8 +2028,9 @@
     if (currentScene()) renderScene();
   }
 
-  async function openLibrary(forProposal = null) {
+  async function openLibrary(forProposal = null, words = null) {
     libraryFor = forProposal ? review?.proposals.find((item) => item.id === forProposal) || null : null;
+    libraryWords = !libraryFor && words?.end > words?.start ? words : null;
     if (!libraryDialog) {
       libraryDialog = document.createElement("dialog");
       libraryDialog.id = "showLibraryDialog";
@@ -2046,8 +2050,9 @@
     libraryDialog.querySelector("[data-lib-body]").innerHTML = `<p class="show-hint">Reading your library…</p>`;
     if (!libraryDialog.open) libraryDialog.showModal();
     try { await loadLibraryAll(); } catch (error) { libraryDialog.querySelector("[data-lib-body]").innerHTML = `<p class="show-needs">${escape(error.message)}</p>`; return; }
-    if (libraryFor) libraryTab = libraryGroups().project.length ? "project" : "other";
+    if (libraryFor || libraryWords) { const groups = libraryGroups(); libraryTab = groups.project.length ? "project" : groups.recurring.length ? "recurring" : "other"; }
     drawLibrary();
+    if (libraryWords) libraryDialog.querySelector("[data-lib-search]").focus();
   }
 
   function libraryCard(item) {
@@ -2063,7 +2068,8 @@
       <figcaption><b title="${escape(item.name)}">${escape(item.name)}</b><small>${escape(where)}${item.approved ? " · approved" : ""}</small></figcaption>
       <div class="show-lib-actions">
         ${libraryFor ? `<button type="button" class="icon-button small primary" data-lib-use-for="${escape(libraryFor.id)}" data-lib-path="${escape(item.path)}">Use for this drawing</button>` : ""}
-        ${scene && !item.retired ? `<button type="button" class="icon-button small" data-lib-place="${index}">Place in scene</button>` : ""}
+        ${libraryWords && !item.retired ? `<button type="button" class="icon-button small primary" data-lib-words="${index}">Put on “${escape(libraryWords.text.length > 24 ? `${libraryWords.text.slice(0, 22)}…` : libraryWords.text)}”</button>`
+          : scene && !item.retired ? `<button type="button" class="icon-button small" data-lib-place="${index}">Place in scene</button>` : ""}
         ${item.retired ? "" : shelfControl}
         ${item.section === "other" ? "" : `<button type="button" class="icon-button small" data-lib-hide="${index}">${item.retired ? "Show again" : "Hide"}</button>`}
       </div></figure>`;
@@ -2075,23 +2081,28 @@
     libraryDialog.querySelector("[data-lib-tabs]").innerHTML = Object.entries(LIBRARY_TABS).map(([key, label]) =>
       `<button type="button" class="icon-button small ${libraryTab === key ? "active" : ""}" data-lib-tab="${key}">${label} (${groups[key].length})</button>`).join("");
     const query = libraryKey(libraryQuery).trim();
-    const shown = groups[libraryTab].filter((item) => !query || libraryKey(`${item.name} ${item.origin} ${item.project || ""} ${item.shelf || ""}`).includes(query));
-    const by = libraryTab === "recurring" ? "shelf" : libraryTab === "other" ? "project" : null;
+    // A search looks through this project, the shelves and the other projects at once.
+    const pool = query && libraryTab !== "hidden" ? [...groups.project, ...groups.recurring, ...groups.other] : groups[libraryTab];
+    const shown = pool.filter((item) => !query || libraryKey(`${item.name} ${item.origin} ${item.project || ""} ${item.shelf || ""}`).includes(query));
+    const place = (item) => item.section === "other" ? `From ${item.project}` : item.section === "recurring" ? `Recurring · ${item.shelf}` : "This project";
+    const by = query && libraryTab !== "hidden" ? "place" : libraryTab === "recurring" ? "shelf" : libraryTab === "other" ? "project" : null;
+    shown.forEach((item) => { item.place = place(item); });
     const heads = by ? [...new Set(shown.map((item) => item[by]))] : [null];
     const empty = { project: "Nothing here yet. Drop pictures on this window or on the video, or approve a drawing: it stays here.",
       recurring: "No recurring pictures yet. Choose “★ Make recurring…” on any picture to keep it on a shelf for every project.",
       other: "No pictures in your other projects.", hidden: "Nothing hidden." }[libraryTab];
-    const banner = libraryFor ? `<div class="show-lib-for"><p>Choosing the picture for <b>“${escape(libraryFor.params.subject || "this drawing")}”</b>.</p><div class="show-lib-grid" data-lib-matches><p class="show-hint">Looking for matches…</p></div></div>` : "";
+    const banner = libraryFor ? `<div class="show-lib-for"><p>Choosing the picture for <b>“${escape(libraryFor.params.subject || "this drawing")}”</b>.</p><div class="show-lib-grid" data-lib-matches><p class="show-hint">Looking for matches…</p></div></div>`
+      : libraryWords ? `<div class="show-lib-for"><p>Choose a picture to put on <b>“${escape(libraryWords.text)}”</b> (${clock(libraryWords.start)}–${clock(libraryWords.end)}). Search by name or look through the tabs.</p><div class="show-lib-grid" data-lib-matches></div></div>` : "";
     libraryDialog.querySelector("[data-lib-body]").innerHTML = banner + (shown.length ? heads.map((head) =>
       `${head ? `<h4>${escape(head)}</h4>` : ""}<div class="show-lib-grid">${shown.filter((item) => !by || item[by] === head).map(libraryCard).join("")}</div>`).join("")
-      : `<p class="show-hint">${query ? "Nothing with that name here; try the other tabs." : empty}</p>`);
-    if (libraryFor) {
-      matchesFor(libraryFor.params.subject).then((found) => {
+      : `<p class="show-hint">${query ? "Nothing with that name in your library." : empty}</p>`);
+    if (libraryFor || (libraryWords && !query)) {
+      matchesFor(libraryFor ? libraryFor.params.subject : libraryWords.text).then((found) => {
         const box = libraryDialog.querySelector("[data-lib-matches]");
         if (!box) return;
         const cards = found.map((match) => libraryAll.find((item) => item.path === match.path) || { ...match }).filter(Boolean);
         cards.forEach((item) => { if (!libraryAll.includes(item)) libraryAll.push(item); });
-        box.innerHTML = cards.length ? cards.map(libraryCard).join("") : `<p class="show-hint">Nothing in your library is called like that yet. Look through the tabs, or close this and draw it.</p>`;
+        box.innerHTML = cards.length ? cards.map(libraryCard).join("") : libraryFor ? `<p class="show-hint">Nothing in your library is called like that yet. Look through the tabs, or close this and draw it.</p>` : "";
       });
     }
   }
@@ -2120,6 +2131,23 @@
     showToast(`“${updated.params.subject}” now uses ${updated.params.image_engine.replace(/^Your library · /, "")}. It plays in the scene's preview${updated.status === "approved" ? "" : "; approve it when you have seen it"}.`);
   }
 
+  // A library picture on the selected words: it enters with the first word and stays while
+  // they are said (at least two seconds), then the scene editor opens on its clip.
+  async function putOnWords(item, words) {
+    const scene = currentScene();
+    if (!scene || !words) return;
+    const own = await projectCopy(item);
+    const at = Math.max(scene.start, Math.min(scene.end - 0.1, words.start));
+    const duration = Math.min(scene.end - at, Math.max(2, words.end - words.start));
+    const overlay = { id: crypto.randomUUID(), asset: own.path, x: 62, y: 12, width: 22, at, duration, effect: "pop", selected_text: words.text };
+    scene.overlays.push(overlay);
+    if (!await saveOverlays(scene)) { scene.overlays = scene.overlays.filter((entry) => entry.id !== overlay.id); return; }
+    libraryDialog.close();
+    await libraryChanged();
+    locateEffect(timelineItems(scene).find((entry) => entry.overlay?.id === overlay.id));
+    showToast(`${item.name} is on “${words.text}” (${clock(at)}). Drag it on the video to move it, its corner to resize it, its bar to time it.`);
+  }
+
   async function addLibraryFiles(files) {
     const pictures = files.filter((file) => /\.(png|jpe?g|webp)$/i.test(file.name));
     if (!pictures.length) { showToast("Add PNG, WEBP or JPEG pictures.", true); return; }
@@ -2135,14 +2163,17 @@
   }
 
   async function onLibraryClick(event) {
-    const target = event.target instanceof Element ? event.target.closest("[data-lib-close],[data-lib-tab],[data-lib-use-for],[data-lib-place],[data-lib-unrecur],[data-lib-hide]") : null;
+    const target = event.target instanceof Element ? event.target.closest("[data-lib-close],[data-lib-tab],[data-lib-use-for],[data-lib-words],[data-lib-place],[data-lib-unrecur],[data-lib-hide]") : null;
     if (!target) return;
     if (target.hasAttribute("data-lib-close")) { libraryDialog.close(); return; }
     if (target.dataset.libTab) { libraryTab = target.dataset.libTab; drawLibrary(); return; }
     if (target.dataset.libUseFor) { target.disabled = true; await useForDrawing(target.dataset.libUseFor, target.dataset.libPath); return; }
-    const item = libraryAll[Number(target.dataset.libPlace ?? target.dataset.libUnrecur ?? target.dataset.libHide)];
+    const item = libraryAll[Number(target.dataset.libWords ?? target.dataset.libPlace ?? target.dataset.libUnrecur ?? target.dataset.libHide)];
     if (!item) return;
-    if (target.dataset.libPlace !== undefined) {
+    if (target.dataset.libWords !== undefined) {
+      target.disabled = true;
+      await putOnWords(item, libraryWords);
+    } else if (target.dataset.libPlace !== undefined) {
       target.disabled = true;
       const own = await projectCopy(item);
       libraryDialog.close();

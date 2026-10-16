@@ -170,3 +170,16 @@ def test_accepting_a_scene_uses_what_the_library_has_instead_of_drawing_it(tmp_p
     assert Path(linked["picture"]).read_bytes() == sofa.read_bytes() and linked["draft"] is True
     assert linked["image_engine"] == "Your library · lazy man on sofa"
     assert items[sofa_drawing["id"]]["status"] == "proposed"                         # offered, still to approve
+
+
+def test_take_from_the_library_is_offered_for_selected_words_and_in_the_add_list():
+    import subprocess
+    script = Path("web/show_review.js").read_text()
+    menu = script[script.index("  function sayMenu("):script.index("  document.addEventListener('pointerdown',event=>{if(event.target.closest?.('#showSayTools'))")]
+    assert '["library", "Take from the library…", null]' in menu
+    assert '<option value="library">Take from the library</option>' in script
+    tool = script[script.index("  async function extraTool("):script.index("  async function addEffect(")]
+    program = ("const calls = []; const openLibrary = async (...args) => calls.push(args);\n" + tool +
+               "extraTool('library', {id: 'scene-1'}, {text: 'good morning', start: 3, end: 4}).then((handled) => {"
+               " if (!handled || calls.length !== 1 || calls[0][0] !== null || calls[0][1].text !== 'good morning') process.exit(1); });")
+    subprocess.run(["node", "-e", program], check=True)
