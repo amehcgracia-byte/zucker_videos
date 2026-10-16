@@ -2149,3 +2149,10 @@ pre {
 .show-scene-transport {display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:8px 0;}
 .show-scene-transport output {color:var(--muted);font-size:12px;}
 .show-scene-transport[hidden] {display:none;}
+.show-library-entry {display:grid;gap:4px;min-width:0;}
+.show-library-entry > button {font-size:11px;overflow-wrap:anywhere;}
+.show-library-entry > small {font-size:10px;color:var(--muted);}
+.show-library-entry img {width:100%;max-height:120px;object-fit:contain;}
+.show-sticker-picker {margin:8px 0;}
+.show-sticker-picker summary {cursor:pointer;font-weight:600;}
+.show-sticker-picker .show-library {margin-top:8px;}

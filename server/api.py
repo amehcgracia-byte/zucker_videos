@@ -2277,10 +2277,17 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         for raw in body.get("overlays") or []:
             if not isinstance(raw, dict) or str(raw.get("asset") or "") not in library:
                 return error_response("bad_request", "Pictures must come from the library", 400)
-            overlays.append({"asset": str(raw["asset"]), "x": max(-20.0, min(100.0, float(raw.get("x", 12)))),
+            import uuid
+            try:
+                at = float(raw.get("at", scene["start"]))
+                duration = float(raw.get("duration", min(4.0, scene["end"] - at)))
+            except (ValueError, TypeError):
+                return error_response("bad_request", "Choose valid sticker start and duration", 400)
+            if not math.isfinite(at + duration) or at < scene["start"] or duration <= 0 or at + duration > scene["end"] + .001:
+                return error_response("bad_request", "Keep each sticker inside its scene with a positive duration", 400)
+            overlays.append({"id": str(raw.get("id") or uuid.uuid4().hex)[:80], "asset": str(raw["asset"]), "x": max(-20.0, min(100.0, float(raw.get("x", 12)))),
                              "y": max(-20.0, min(100.0, float(raw.get("y", 12)))), "width": max(3.0, min(100.0, float(raw.get("width", 23)))),
-                             "at": max(scene["start"], min(scene["end"] - 0.5, float(raw.get("at", scene["start"])))),
-                             "duration": max(0.5, min(scene["end"] - scene["start"], float(raw.get("duration", 4.0)))),
+                             "at": at, "duration": duration, "selected_text": str(raw.get("selected_text") or "")[:400],
                              "effect": str(raw.get("effect") or "pop"),
                              "action": str(raw.get("action") or "none"), "intensity": max(0.2, min(3.0, float(raw.get("intensity", 1.0)))),
                              "stretch": max(0.25, min(4.0, float(raw.get("stretch", 1.0)))), "rotate": max(-180.0, min(180.0, float(raw.get("rotate", 0.0)))),
@@ -2292,8 +2299,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                                            max(0.2, min(60.0, float(raw["voice"][2])))]}
                                 if isinstance(raw.get("voice"), list) and len(raw["voice"]) == 3 and _show_allowed_source(project, str(raw["voice"][0])) else {})})
         scene["overlays"] = overlays
-        if scene["decision"] in ("pending", "plain") and overlays:
-            scene["decision"] = "modified"
+        scene["decision"] = "modified"
         show_scenes.save(_scene_files(project), document)
         _invalidate_scene(project, scene_id)
         return jsonify(scene)
@@ -2302,7 +2308,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         """Pictures to place: the flyer library and the drawings painted for gags."""
         from core.gag_library import library_dir
         items = []
-        roots = [app_home() / "ReelOverlays"]
+        roots = [app_home() / "ReelOverlays", project.folder / "assets" / "show-library"]
         try:
             roots.append(library_dir())
         except OSError:
@@ -2322,6 +2328,17 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                         items.append({"name": meta.get("direction", "ChatGPT image")[:80], "path": str(picture.resolve()), "folder": "ChatGPT images"})
                 except (OSError, ValueError):
                     continue
+        catalog_path = project.folder / "assets" / "show-library" / "catalog.json"
+        try:
+            catalog = json.loads(catalog_path.read_text())
+        except (OSError, ValueError):
+            catalog = {}
+        for item in items:
+            meta = catalog.get(item["path"], {})
+            local = "Painted" in Path(item["path"]).parts
+            item.update(origin=meta.get("origin") or ("Local painter" if local else "ChatGPT" if item["folder"] == "ChatGPT images" else "Your library"),
+                        retired=bool(meta.get("retired", local)))
+            item["name"] = meta.get("name") or item["name"]
         return items
 
     ai_jobs_lock = threading.Lock()
@@ -2611,10 +2628,46 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         changes = {key: body[key] for key in ("mouth", "pivot", "voice", "name") if key in body}
         return jsonify(show_characters.rig(folder, **changes))
 
+    @app.post("/api/v1/show/scenes/<scene_id>/stickers/<sticker_id>/preview")
+    def api_show_sticker_preview(scene_id: str, sticker_id: str) -> Response:
+        from core import show_scenes
+        from core.show import preview_scene
+        project = _require_project(state)
+        try:
+            scene = next(s for s in show_scenes.load(_scene_files(project))["scenes"] if s["id"] == scene_id)
+            sticker = next(o for o in scene["overlays"] if o.get("id") == sticker_id)
+            path = preview_scene(project, scene_id, only_sticker_id=sticker_id)
+        except StopIteration:
+            return error_response("not_found", "This sticker is no longer in the scene", 404)
+        except Exception as exc:
+            return error_response("preview_failed", str(exc), 500)
+        return jsonify({"url": f"/api/v1/show/media?path={quote(str(path))}", "origin": max(scene["start"], sticker["at"] - 1.5)})
+
     @app.get("/api/v1/show/library")
     def api_show_library() -> Response:
         project = _require_project(state)
-        return jsonify({"items": [{**item, "url": f"/api/v1/show/library/file?path={quote(item['path'])}"} for item in _show_library_items(project)]})
+        items = _show_library_items(project)
+        return jsonify({"items": [{**item, "url": f"/api/v1/show/library/file?path={quote(item['path'])}"} for item in items if request.args.get("retired") == "1" or not item["retired"]],
+                        "retired_count": sum(item["retired"] for item in items)})
+
+    @app.post("/api/v1/show/library/visibility")
+    def api_show_library_visibility() -> Response:
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        raw = str(body.get("path") or "")
+        if raw not in {item["path"] for item in _show_library_items(project)}:
+            return error_response("not_found", "Not in this library", 404)
+        path = project.folder / "assets" / "show-library" / "catalog.json"
+        try:
+            catalog = json.loads(path.read_text())
+        except (OSError, ValueError):
+            catalog = {}
+        catalog.setdefault(raw, {})["retired"] = bool(body.get("retired", True))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_suffix(".tmp")
+        temp.write_text(json.dumps(catalog, ensure_ascii=False, indent=2))
+        temp.replace(path)
+        return jsonify({"path": raw, "retired": catalog[raw]["retired"]})
 
     @app.get("/api/v1/show/library/file")
     def api_show_library_file() -> Response:

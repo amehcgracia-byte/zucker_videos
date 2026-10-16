@@ -363,14 +363,14 @@
             </div>
           </div>
           <div id="showContextMenu" class="show-context-menu" role="dialog" aria-label="Element tools" hidden>
-            <strong>Animate</strong>
+            <strong>Animate</strong><small>Move and time the sticker live. Render its preview to check animation motion.</small>
             <div class="show-actions-grid" id="showActionButtons"></div>
             <label class="show-field"><span>Intensity</span><input type="range" id="showIntensity" min="0.2" max="3" step="0.1" value="1"></label>
             <label class="show-field" id="showEntranceField" hidden><span>Enters</span><select id="showEntrance"><option value="cut">Straight cut: talks at once</option><option value="zoom">The camera pushes in on it</option><option value="bounce">Rises from below with a little jump</option></select></label>
             <div class="show-fields"><label class="show-field"><span>Enters at (s)</span><input type="number" id="showOverlayAt" step="0.1"></label><label class="show-field"><span>Lasts (s)</span><input type="number" id="showOverlayDuration" step="0.1" min="0.5"></label></div>
             <div class="show-fields"><label class="show-field"><span>Stretch</span><input type="range" id="showOverlayStretch" min="0.25" max="3" step="0.05" value="1"></label><label class="show-field"><span>Turn</span><input type="range" id="showOverlayRotate" min="-180" max="180" step="1" value="0"></label></div>
             <div class="show-fields"><label class="show-field"><span>See-through</span><input type="range" id="showOverlayOpacity" min="0.1" max="1" step="0.05" value="1"></label><button type="button" data-menu="flip">Mirror</button><button type="button" data-menu="reset">Undo shape</button></div>
-            <div class="show-actions"><button type="button" data-menu="bigger">Bigger</button><button type="button" data-menu="smaller">Smaller</button><button type="button" data-menu="remove">Remove</button></div>
+            <div class="show-actions"><button type="button" data-menu="bigger">Bigger</button><button type="button" data-menu="smaller">Smaller</button><button type="button" data-menu="remove">Remove sticker</button></div>
           </div>
         </div>
         <div id="paperEditBox" class="review-box paper-edit-box" hidden>
@@ -500,8 +500,8 @@
     <script src="/app.js?v=editor-ui-11"></script>
     <script src="/show_edit_queue.js?v=1"></script>
     <script src="/show_clock.js?v=1"></script>
-    <script src="/show_review.js?v=25"></script>
-    <script src="/show_einstein.js?v=5"></script>
+    <script src="/show_review.js?v=26"></script>
+    <script src="/show_einstein.js?v=6"></script>
     <script src="/show_characters.js?v=4"></script>
     <script src="/project_library.js?v=1"></script>
   </body>
