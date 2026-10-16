@@ -73,7 +73,43 @@
   const stepNames = () => ["Identity", "Intro", ...scenes().map((scene) => scene.name), "Review & render"];
   const currentScene = () => (step >= 2 && step < 2 + scenes().length ? scenes()[step - 2] : null);
 
+  // Wide windows: the storyboard fits the window and its two sides scroll on their own,
+  // so the wheel moves what is under the pointer (the video side or the scene panel), never the other.
+  const FITS = "(min-width: 1000px) and (min-height: 600px)";
+  function spaceBelow(element) {
+    let total = 0;
+    for (let node = element; node && node !== document.documentElement; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      total += parseFloat(style.marginBottom) || 0;
+      if (node !== element) total += (parseFloat(style.paddingBottom) || 0) + (parseFloat(style.borderBottomWidth) || 0);
+      for (let next = node.nextElementSibling; next; next = next.nextElementSibling) {
+        const after = getComputedStyle(next);
+        if (after.display === "none" || after.position === "fixed" || after.position === "absolute") continue;
+        total += next.offsetHeight + (parseFloat(after.marginTop) || 0) + (parseFloat(after.marginBottom) || 0);
+      }
+    }
+    return total;
+  }
+  function fitBoard() {
+    const box = $("#showReviewBox");
+    if (!box || box.hidden) return;
+    box.classList.toggle("show-fit", matchMedia(FITS).matches);      // first: its tighter margins move the box
+    const height = Math.floor(innerHeight - (box.getBoundingClientRect().top + scrollY) - spaceBelow(box));
+    if (height < 460) box.classList.remove("show-fit");
+    if (!box.classList.contains("show-fit")) return;
+    box.style.setProperty("--show-fit-h", `${height}px`);
+    // The picture as large as the video side allows, with the lines under it still in view.
+    const wrap = box.querySelector(".show-stage-wrap"), stage = $("#showStage");
+    const others = [...wrap.children].filter((child) => child !== stage && child.offsetParent)
+      .reduce((sum, child) => sum + child.offsetHeight + (parseFloat(getComputedStyle(child).marginTop) || 0) + (parseFloat(getComputedStyle(child).marginBottom) || 0), 0);
+    box.style.setProperty("--show-stage-h", `${Math.max(160, wrap.clientHeight - others - 4)}px`);
+  }
+  addEventListener("resize", () => fitBoard());
+  matchMedia(FITS).addEventListener?.("change", () => fitBoard());
+  document.addEventListener("toggle", (event) => { if (event.target.closest?.("#showReviewBox")) fitBoard(); }, true);
+
   function render() {
+    setTimeout(fitBoard);
     if (!review) return;
     clearTimeout(poll);
     closeTimeline();
@@ -200,6 +236,7 @@
   }
 
   function renderScene() {
+    setTimeout(fitBoard);
     const scene = currentScene();
     if(selectedEffect && !timelineItems(scene).some(item=>item.id===selectedEffect)){selectedEffect=null;placingWords=false;firstWord=null;pickedWords=null;}
     const effects = sceneEffects(scene);
