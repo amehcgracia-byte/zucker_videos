@@ -83,8 +83,10 @@ def decide(document: dict[str, Any], proposals: list[dict[str, Any]], scene_id: 
         raise KeyError(scene_id)
     own = [item for item in proposals if item["id"] in scene["effects"]]
     if decision == "accepted":
+        from core.show_drafts import needs_drawing
         for item in own:
-            if item["status"] != "discarded" and not item.get("needs"):
+            # A drawing with no picture yet is not approved blind: it is drawn as a draft first.
+            if item["status"] != "discarded" and not item.get("needs") and not needs_drawing(item):
                 item["status"] = "approved"
     elif decision == "plain":
         for item in own:

@@ -1,6 +1,6 @@
 // Show storyboard: identity -> intro -> scenes -> review and render.
-// Each scene explains what it proposes. Watch an explicitly requested preview,
-// then accept it, modify it or leave it without effect. Inside
+// Each scene explains what it proposes; watch it (a real preview, prepared in
+// the background), then accept it, modify it or leave it without effect. Inside
 // "Modify", every effect has its own editor: regions are kept in the
 // coordinates of their own picture, outlines exist only in the editor, and the
 // pixels that move are the originals. Nothing is rendered until the last step.
@@ -35,7 +35,7 @@
     const p = item.params;
     if (item.kind === "cutaway") return p.thumb ? media(p.thumb) : still(p.source, p.source_start);
     if (item.kind === "character") return still(p.source, p.still_time);
-    if (item.kind === "drawing" && p.picture) return `/api/v1/show/library/file?path=${encodeURIComponent(p.picture)}`;
+    if (["drawing", "word"].includes(item.kind) && p.picture) return `/api/v1/show/library/file?path=${encodeURIComponent(p.picture)}`;
     return `/api/v1/show/frame?t=${encodeURIComponent(item.at)}`;
   }
 
@@ -47,6 +47,9 @@
     }
     step = 0;
     render();
+    // Every scene's preview with effects is prepared in the background, from the first on;
+    // the scene being edited always goes first.
+    api("/show/scenes/prefetch", { method: "POST", body: JSON.stringify({ from: review.scenes?.[0]?.id }) }).catch(() => {});
   }
 
   async function openWorkspace({sceneId=null}={}) {
@@ -348,7 +351,7 @@
       $('#showTimeline').hidden=false;$('#showTimelineLauncher').hidden=true;
       timelineDialog.showModal();
     }
-    watchEditorEffects(currentScene());
+    editorAsked=null;watchEditorEffects(currentScene());
   }
   function restoreStage() {
     if(stageHome){stageHome.replaceWith($('.show-stage-wrap'));stageHome=null;}
@@ -387,12 +390,14 @@
     const layer=$('#showStageLayer');
     layer.querySelectorAll('.show-picture-placement').forEach(element=>element.remove());
     if(!quick || quick.saved)return;
-    for(const item of sceneEffects(scene).filter(item=>item.kind==='drawing' && item.params.picture && item.status!=='discarded')) {
+    for(const item of sceneEffects(scene).filter(item=>['drawing','word'].includes(item.kind) && item.status!=='discarded')) {
       const p=item.params,pos=drawingPosition(item);
       const element=document.createElement('div');element.className='show-picture-placement';element.dataset.liveEffect=item.id;
       element.classList.toggle('selected',item.id===selectedEffect);
       element.style.cssText=`left:${pos[0]*100}%;top:${pos[1]*100}%;width:${(p.size||.25)*100}%`;
-      element.innerHTML=`<img src="${picture(item)}" draggable="false" alt="${escape(p.subject||'Drawing')}"><span class="picture-corner" title="Drag to resize"></span>`;
+      element.innerHTML=p.picture?`<img src="${picture(item)}" draggable="false" alt="${escape(p.subject||p.text||'Drawing')}"><span class="picture-corner" title="Drag to resize"></span>`
+        :item.kind==='word'?`<span class="show-word-live-text">${escape(p.text)}</span><span class="picture-corner" title="Drag to resize"></span>`:'';
+      if(!element.innerHTML)continue;
       layer.append(element);
       element.onpointerdown=event=>{
         event.preventDefault();event.stopPropagation();element.setPointerCapture(event.pointerId);
@@ -421,9 +426,11 @@
     const scene=currentScene(),video=$('#showStageVideo');if(!scene)return 0;
     if(quick?.scene.id===scene.id){
       if(quick.pending!=null)return quick.pending;
+      if(quick.effects)return scene.start+ShowCaptionClock.unshift(video.currentTime,scene.preview?.inserted||[]);
       return ShowClock.editedAt(scene,quick.segments,video.currentTime,quick.index,quick.pending);
     }
-    return previewOrigin+video.currentTime;
+    const rendered=scene.preview?.url && video.getAttribute('src')===scene.preview.url;
+    return previewOrigin+(rendered?ShowCaptionClock.unshift(video.currentTime,scene.preview.inserted||[]):video.currentTime);
   }
   function syncPlayback() {
     const scene=currentScene();if(!scene)return;
@@ -440,6 +447,9 @@
       const start=item?.at??scene.start,end=start+(item?.duration??scene.end-scene.start);
       element.hidden=!quick || quick.saved || at<start || at>=end;
     });
+    window.ShowLiveCaptions?.sync({scene,at,video:$('#showStageVideo'),projectId:review.project_id,revision:review.caption_revision,
+      saved:!!quick?.saved&&!quick?.effects,
+      replaced:sceneEffects(scene).filter(item=>item.kind==='word'&&item.status!=='discarded'&&item.params.picture&&ShowClock.visible(item,at)).map(item=>item.params.replaces_caption)});
     const input=box?.querySelector('[data-timeline-seek]');
     if(input){input.value=at;box.querySelector('[data-playhead-label]').textContent=clock(at);box.style.setProperty('--playhead',`${Math.max(0,Math.min(100,100*(at-scene.start)/(scene.end-scene.start)))}%`);}
   }
@@ -458,6 +468,7 @@
       ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
       <div class="show-time-row"><span>Video</span><div class="show-time-source" data-scene-seek>Original video · your cut</div></div>
       <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
+      <div class="show-time-row"><span>Speech captions</span><div class="show-time-track show-caption-track">${(scene.captions||[]).map(cue=>`<button type="button" class="show-caption-time" data-caption-at="${Math.max(scene.start,cue.start)}" style="left:${pct(Math.max(scene.start,cue.start))}%;width:${Math.max(.2,pct(Math.min(scene.end,cue.end))-pct(Math.max(scene.start,cue.start)))}%" title="${escape(cue.lines.join(' '))} · click to edit on the video">${escape(cue.lines.join(' '))}</button>`).join('')}</div></div>
       ${rows.map(item=>{
         const a=Math.max(scene.start,item.at),b=Math.min(scene.end,item.at+item.duration),outside=b<=a;
         const name=item.params.subject||item.params.text||KIND_LABELS[item.kind]||item.kind;
@@ -469,6 +480,11 @@
       playQuick(scene,Math.max(0,Math.min(duration-.04,time-scene.start)));
       syncPlayback();
     };
+    box.querySelectorAll('[data-caption-at]').forEach(button=>button.onclick=()=>{
+      wantEffects.delete(scene.id);wantQuick.add(scene.id);
+      playQuick(scene,Math.max(0,Number(button.dataset.captionAt)-scene.start+.02));$('#showStageVideo').pause();
+      syncPlayback();
+    });
     box.querySelector('[data-timeline-seek]').oninput=event=>seekTo(Number(event.target.value));
     box.onpointerdown=event=>{
       const clip=event.target.closest('[data-time-clip]');if(!clip)return;
@@ -566,8 +582,9 @@
     claySaving = setTimeout(async () => {
       try {
         clay = await api("/show/clay/placements", { method: "PUT", body: JSON.stringify({ revision: clay.revision, placements: clay.placements }) });
-        $("#showClayStatus").textContent = "Saved in the project. Use Preview with effects when you want a rendered check.";
+        $("#showClayStatus").textContent = "Saved in the project. A new preview with effects is being prepared.";
         invalidateLocal(scene);
+        prepareInBackground(scene);
         if (name === "mode" || name === "start" || name === "end") clayBlock(scene);
       } catch (error) {
         $("#showClayStatus").textContent = `Not saved: ${error.message}`;
@@ -576,10 +593,29 @@
     }, 350);
   }
 
-  // Rendering is explicit. Opening, scrubbing and editing only compose the source
-  // and already chosen images; they must never start the painter or FFmpeg.
+  // A scene opened without a chosen view prepares its preview with effects on its own
+  // (and the next scene's), small and quick, and shows it when ready; until then its cut plays.
   function autoPreview(scene) {
-    if (!wantEffects.has(scene.id)) wantQuick.add(scene.id);
+    const preview = scene.preview || { status: "none" };
+    if (wantEffects.has(scene.id) || wantQuick.has(scene.id) || wantSaved.has(scene.id)) return;
+    if (preview.status === "failed" || preview.status === "stopped") return;
+    wantEffects.add(scene.id);
+    if (preview.status === "ready") return;
+    const index = scenes().indexOf(scene);
+    const next = scenes().slice(index + 1, index + 2).map((item) => item.id);
+    scene.preview = { status: "queued", message: "Preparing the preview with effects (about half a minute)" };
+    api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, { method: "POST", body: JSON.stringify({ next }) })
+      .then((answer) => { if (answer?.status === "ready") refreshBoard(); }).catch(() => {});
+  }
+
+  // After edits the live view stays; the new preview is prepared in the background meanwhile.
+  let backgroundPreview = null;
+  function prepareInBackground(scene) {
+    clearTimeout(backgroundPreview);
+    backgroundPreview = setTimeout(async () => {
+      await flushEdits().catch(() => {});
+      api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, { method: "POST", body: "{}" }).catch(() => {});
+    }, 1000);
   }
 
   function showScenePicture(scene) {
@@ -608,7 +644,7 @@
     // In the saved render the scene sits later by what was inserted before it (title card, intro, characters).
     const later = (t) => (review.saved_render?.inserted || []).reduce((sum, [at, length]) => sum + (at <= t ? length : 0), 0);
     const segments = saved ? [[scene.start + later(scene.start), scene.end + later(scene.start)]]
-      : effects ? [[0, scene.end - scene.start]] : (scene.segments || []);
+      : effects ? [[0, scene.end - scene.start+(scene.preview.inserted||[]).reduce((n,[a,d])=>n+d,0)]] : (scene.segments || []);
     const source = saved ? review.saved_render.url : effects ? scene.preview.url : review.source_url;
     if (!source || !segments.length) return false;
     const video = $("#showStageVideo");
@@ -623,8 +659,8 @@
     if(!transport){transport=document.createElement('div');transport.id='showSceneTransport';transport.className='show-scene-transport';transport.innerHTML='<button type="button" data-scene-play>Play scene</button><output data-scene-clock></output>';$('#showStageStatus').after(transport);transport.querySelector('button').onclick=()=>playScene();}
     transport.hidden=false;
     editorEffectsLabel();
-    const seek = (index, offset = 0) => { if(quick!==session)return;quick.index = index;quick.pending=scene.start+segments.slice(0,index).reduce((sum,[a,b])=>sum+b-a,0)+offset;video.currentTime = segments[index][0] + offset;syncPlayback(); };
-    const start = () => { if (quick===session) { const [index, offset] = sourceAt(segments, from); seek(index, offset); } };
+    const seek = (index, offset = 0) => { if(quick!==session)return;quick.index = index;quick.pending=scene.start+(effects?ShowCaptionClock.unshift(offset,scene.preview.inserted||[]):segments.slice(0,index).reduce((sum,[a,b])=>sum+b-a,0)+offset);video.currentTime = segments[index][0] + offset;syncPlayback(); };
+    const start = () => { if (quick===session) { const [index, offset] = sourceAt(segments, effects?ShowCaptionClock.shift(from,scene.preview.inserted||[]):from); seek(index, offset); } };
     if (video.readyState >= 1) start(); else video.addEventListener("loadedmetadata", start, { once: true });
     const tick = () => {
       if (!quick) return;
@@ -644,7 +680,7 @@
     quick.frame = requestAnimationFrame(tick);
     $("#showStageStatus").textContent = effects ? "Playing with every effect (this scene's preview). Pause to move or resize pictures." + leftOut(scene.preview)
       : saved ? "Saved render: the last completed edit, with its captions and effects. New decisions need a new effects preview/render."
-      : timelineDialog?.open ? "Live view: your cut and chosen pictures, updated as you edit. Preview with effects renders the remaining effects on request."
+      : timelineDialog?.open ? "Live view: your cut and chosen pictures, updated as you edit. Press Play scene to watch it with every effect."
       : "Live timing preview: your cut and chosen pictures. Pictures appear only inside their bars; render a preview to check all camera and animation effects.";
     return true;
   }
@@ -653,8 +689,8 @@
   // Play shows the scene's preview with every effect (words, zooms, animations, painted
   // drawings, steam…) when it is ready for what the timeline holds; pausing returns to the
   // live view, where pictures can be dragged. An edit shows at once in the live view while
-  // a baked effects preview is only prepared when explicitly requested.
-  let editorPoll = null, editStamp = 0;
+  // the effects are prepared again in the background (seconds: the scene's cut is kept).
+  let editorPoll = null, editorAsked = null, editorAskedAt = 0, editStamp = 0;
   // What a ready preview could not show yet (an effect needing settings, a drawing the painter could not make).
   const leftOut = (preview) => preview?.left_out?.length ? ` Not in it yet: ${preview.left_out.join("; ")}.` : "";      // editStamp: an answer asked before an edit is old news
   const effectsReady = (scene) => !!(timelineDialog?.open && scene && scene.preview?.status === "ready" && scene.preview.url);
@@ -667,8 +703,7 @@
     label.hidden = !timelineDialog?.open;
     label.textContent = quick?.effects ? "With every effect" : effectsReady(scene) ? "Effects ready: press Play scene"
       : preview.status === "failed" ? `Effects preview failed: ${preview.error || "try again"}`
-      : !["queued", "rendering"].includes(preview.status) ? "Live images · Preview with effects renders the remaining effects on request"
-      : `Effects preview: ${preview.message && /%/.test(preview.message) ? preview.message.replace(/^.*?(\d+%).*$/, "$1") : ""}`.trim();
+      : `Updating the effects… ${preview.message && /%/.test(preview.message) ? preview.message.replace(/^.*?(\d+%).*$/, "$1") : ""}`.trim();
   }
   function playScene() {
     const scene = currentScene(), video = $("#showStageVideo");
@@ -685,19 +720,25 @@
     if (!timelineDialog?.open || !scene || currentScene()?.id !== scene.id) return;
     editorEffectsLabel();
     if (effectsReady(scene)) return;
-    if (!["queued", "rendering"].includes(scene.preview?.status)) return;
+    // Asked when the editor opened or after an edit (2 s later); asked again if nothing started.
+    if (!["queued", "rendering", "failed"].includes(scene.preview?.status) && (editorAsked !== scene.id || Date.now() - editorAskedAt > 6000)) {
+      editorAsked = scene.id; editorAskedAt = Date.now();
+      await flushEdits().catch(() => {});
+      await api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, { method: "POST", body: "{}" }).catch(() => {});
+    }
     const asked = editStamp;
     const fresh = await api(`/show/scenes?current=${encodeURIComponent(scene.id)}`).catch(() => null);
     const updated = fresh?.scenes?.find((entry) => entry.id === scene.id);
     if (updated && asked === editStamp && currentScene()?.id === scene.id && !editQueue.pending.size) scene.preview = updated.preview;
     if (effectsReady(scene)) {
+      editorAsked = null;
       // Already playing the live view: carry on, now with the effects.
       const video = $("#showStageVideo");
       if (quick && !quick.saved && !video.paused) { playQuick(scene, editedPlayhead() - scene.start, null, true); video.play().catch(() => {}); }
       editorEffectsLabel();
       return;
     }
-    if (scene.preview?.status === "failed") { editorEffectsLabel(); return; }
+    if (scene.preview?.status === "failed") { editorAsked = null; editorEffectsLabel(); return; }
     editorPoll = setTimeout(() => watchEditorEffects(scene), 1200);
   }
   $("#showStageVideo").addEventListener("pause", () => {
@@ -748,9 +789,11 @@
     if (currentScene()?.id === scene.id) {
       clearTimeout(poll);
       $("#showPanel").querySelectorAll('[data-scene-decision="accepted"]').forEach(button => button.disabled = true);
-      $("#showStageStatus").textContent = quick && !quick.saved ? "Changes saved. Live picture timing is updated; press “Preview with effects” for a rendered check." : "Changes saved. This rendered video is now out of date; open the scene editor for live picture timing, or request a new effects preview.";
+      $("#showStageStatus").textContent = quick && !quick.saved ? "Changes saved. Live picture timing is updated; a new preview with effects is being prepared — press “Preview with effects” to watch it." : "Changes saved. This rendered video is now out of date; a new preview is being prepared — open the scene editor for live picture timing meanwhile.";
     }
+    prepareInBackground(scene);
     if (timelineDialog?.open && currentScene()?.id === scene.id) {
+      editorAsked = scene.id; editorAskedAt = Date.now();            // prepareInBackground asks for it
       if (quick?.effects) {
         const video = $("#showStageVideo"), at = editedPlayhead(), playing = !video.paused;
         playQuick(scene, Math.max(0, at - scene.start));
@@ -775,11 +818,13 @@
     const scene = currentScene();
     if (decision === "accepted" && !viewedScenes.has(scene.id)) throw new Error("Generate and watch this scene preview before accepting it.");
     const updated = await api(`/show/scenes/${encodeURIComponent(scene.id)}/decision`, { method: "POST", body: JSON.stringify({ decision }) });
+    if (updated.drafts) showToast(`${updated.drafts} drawing${updated.drafts > 1 ? "s are" : " is"} being drawn as drafts. They appear in the scene's preview; approve each one when you have seen it.`);
     Object.assign(scene, updated, { preview: { status: "none" } });
-    if (thenNext) step = Math.min(stepNames().length - 1, step + 1);
+    if (thenNext && !updated.drafts) step = Math.min(stepNames().length - 1, step + 1);   // stay to see the drafts
     const next = currentScene();
     review = await api(`/show/scenes?current=${encodeURIComponent((next || scene).id)}`);
     render();
+    watchDrafts();
   }
 
   // ---- The whole show, one step after another --------------------------------------
@@ -1251,19 +1296,27 @@
     const outside=scene && (item.at<scene.start || item.at>=scene.end || (item.duration>0 && item.at+item.duration<=scene.start));
     const needs = (item.needs || []).length ? `<p class="show-needs">Still needed: ${escape(item.needs.join(", "))}</p>` : "";
     const confidence = item.kind === "cutaway" ? `<span class="show-confidence" title="How clearly the picture matches what is said">match ${(item.confidence * 100).toFixed(1)}</span>` : "";
+    // A drawing is seen before it is approved: drawn as a draft (by Claude), then approved or drawn again.
+    const drawable = item.kind === "drawing" && item.params.subject && ["drawing", "character", undefined].includes(item.params.kind);
+    const drawing = item.drafting?.status === "drawing", unseen = drawable && !item.params.picture;
+    const draft = !drawable ? "" : drawing ? `<p class="show-hint">Being drawn… it appears here and in the preview when it is ready.</p>`
+      : item.drafting?.status === "failed" ? `<p class="show-needs">Could not be drawn: ${escape(item.drafting.error || "try again")}</p>`
+      : unseen ? `<p class="show-hint">Not drawn yet: draw it to see it before approving it.</p>`
+      : item.params.draft && item.status !== "approved" ? `<p class="show-hint">Draft: approve it to keep it in the video, or draw another.</p>` : "";
     return `<article class="show-card show-${item.status}" data-show-id="${item.id}">
       <header><time>${clock(item.at)}</time><span class="show-kind">${item.params.reaction ? "Reaction" : (KIND_LABELS[item.kind] || item.kind)}</span>${confidence}<span class="show-status">${STATUS_LABELS[item.status]}</span></header>
       <div class="show-card-body">
         <img src="${picture(item)}" alt="" loading="lazy">
         <div>
-          <p class="show-reason">${escape(item.reason)}</p>${item.kind === "drawing" ? `<p class="show-hint">Image source: ${escape(item.params.picture ? (item.params.image_engine || "Your library") : "No picture selected")}</p>` : ""}${needs}${outside?'<p class="show-needs">Outside this scene. Choose words to bring this effect back.</p>':''}
+          <p class="show-reason">${escape(item.reason)}</p>${item.kind === "drawing" ? `<p class="show-hint">Image source: ${escape(item.params.picture ? (item.params.image_engine || "Your library") : "No picture selected")}</p>` : ""}${draft}${needs}${outside?'<p class="show-needs">Outside this scene. Choose words to bring this effect back.</p>':''}
           <div class="show-actions">
-            ${item.kind === "drawing" ? `<button type="button" class="icon-button small" data-ai-edit="${item.id}">AI · change image…</button>` : ""}
+            ${drawable ? `<button type="button" class="icon-button small" data-draw-it="${item.id}" ${drawing ? "disabled" : ""} ${item.params.picture ? 'data-again="1"' : ""}>${drawing ? "Drawing…" : item.params.picture ? "Draw another" : "Draw it"}</button>` : ""}
+            ${["drawing","word"].includes(item.kind) ? `<button type="button" class="icon-button small" data-ai-edit="${item.id}">${item.kind==='word'?'Draw lettering…':'AI · change image…'}</button>` : ""}
             <button type="button" class="icon-button small" data-place-words="${item.id}">Choose words</button>
             <button type="button" class="icon-button small" data-locate-effect="${item.id}">Show on video & timeline</button>
             <button type="button" class="icon-button small" data-show-preview="${item.id}">Preview in scene</button>
             <button type="button" class="icon-button small" data-show-adjust="${item.id}">${open.has(item.id) ? "Close" : "Adjust"}</button>
-            <button type="button" class="icon-button small" data-show-status="approved" data-id="${item.id}" ${(item.needs || []).length || outside ? "disabled" : ""} title="Keep this effect for the render. Review the full scene separately.">Approve</button>
+            <button type="button" class="icon-button small" data-show-status="approved" data-id="${item.id}" ${(item.needs || []).length || outside || unseen ? "disabled" : ""} title="${unseen ? "Draw it first: you approve the drawing you have seen" : "Keep this effect for the render. Review the full scene separately."}">Approve</button>
             <button type="button" class="icon-button small" data-show-status="discarded" data-id="${item.id}">Discard</button>
           </div>
         </div>
@@ -1632,11 +1685,42 @@
   document.addEventListener("click", event => { const menu=$("#showEffectMenu"); if(menu && !event.target.closest?.("#showEffectMenu"))menu.hidden=true; });
   document.addEventListener("keydown", event => { if(event.key==="Escape"){ const menu=$("#showEffectMenu");if(menu)menu.hidden=true;} });
 
+  // Drafts: a drawing is drawn on request (or when its scene is accepted), shown, then approved.
+  let draftPoll = null;
+  function watchDrafts() {
+    clearTimeout(draftPoll);
+    const scene = currentScene();
+    if (!scene || !review.proposals.some((item) => scene.effects.includes(item.id) && item.drafting?.status === "drawing")) return;
+    draftPoll = setTimeout(async () => {
+      const fresh = await api(`/show/scenes?current=${encodeURIComponent(scene.id)}`).catch(() => null);
+      if (fresh && currentScene()?.id === scene.id && !editQueue.pending.size) {
+        const was = review.proposals.filter((item) => item.drafting?.status === "drawing").map((item) => item.id);
+        review.proposals = fresh.proposals;
+        if (was.some((id) => review.proposals.find((item) => item.id === id)?.drafting?.status !== "drawing")) renderScene();
+      }
+      watchDrafts();
+    }, 3000);
+  }
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest?.("[data-draw-it]");
+    if (!button || !review) return;
+    const item = review.proposals.find((entry) => entry.id === button.dataset.drawIt);
+    if (!item) return;
+    try {
+      await flushEdits();
+      await api(`/show/review/${encodeURIComponent(item.id)}/draft`, { method: "POST", body: JSON.stringify({ again: !!button.dataset.again }) });
+      item.drafting = { status: "drawing" };
+      renderScene();
+      watchDrafts();
+    } catch (error) { showToast(error.message, true); }
+  });
+
   document.addEventListener('click',event=>{
     const button=event.target.closest?.('[data-ai-edit]');if(!button)return;
     const item=review.proposals.find(item=>item.id===button.dataset.aiEdit);
     const scene=currentScene();if(!item||!scene)return;
-    ShowEinstein.open(scene,{text:item.params.selected_text||scene.text,start:item.at,end:Math.min(scene.end,item.at+item.duration)},item.params.ai_direction || item.params.subject,item.id,{style:item.params.style,position:item.params.position});
+    ShowEinstein.open(scene,{text:item.params.selected_text||scene.text,start:item.at,end:Math.min(scene.end,item.at+item.duration)},item.kind==='word'?'Hand-painted lettering, like a spontaneous protest placard.':item.params.ai_direction || item.params.subject,item.id,
+      {style:item.params.style,position:item.params.position,...(item.kind==='word'?{purpose:'lettering',letteringText:item.params.text}: {})});
   });
 
   document.addEventListener('click',async event=>{
@@ -1861,6 +1945,10 @@
 
   window.ShowReview = {
     open: openReview, openWorkspace, hull, refreshLibrary, addToScene,
+    captionSaved(result){
+      review.caption_revision=result.revision;
+      for(const scene of scenes())scene.captions=(scene.captions||[]).map(c=>c.id===result.cue.id?result.cue:c);
+    },
     async imageApplied(item,sceneId) {
       const scene=scenes().find(s=>s.id===sceneId); if(!scene)throw Error("Open the image's scene before applying it");
       const index=review.proposals.findIndex(p=>p.id===item.id);
@@ -1868,6 +1956,7 @@
       if(!scene.effects.includes(item.id))scene.effects.push(item.id);
       scene.decision="modified"; invalidateLocal(scene);
       step=scenes().indexOf(scene)+2; open.add(scene.id); open.add(item.id); render();
+      if(item.kind==='word'&&item.params.lettering_text){selectedEffect=item.id;locateEffect(timelineItem(item.id),true);return;}
       selectedEffect=item.id; placingWords=true; firstWord=null; pickedWords=null;
       wordPlacementControls();
       $("#showSaid").scrollIntoView({block:"nearest"});

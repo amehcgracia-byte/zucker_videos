@@ -267,3 +267,28 @@ def extract_audio(video_path: str, output_path: str) -> None:
         raise FFmpegError(f"ffmpeg audio extraction timed out after {MEDIA_COMMAND_TIMEOUT_SEC}s for {video_path}") from exc
     if result.returncode != 0:
         raise FFmpegError(result.stderr.strip() or f"ffmpeg failed for {video_path}")
+
+
+@lru_cache(maxsize=4)
+def hardware_h264(ffmpeg: str) -> bool:
+    """Whether this FFmpeg encodes H.264 on the Mac's own hardware (tried once on a
+    tiny test picture; anything else answers no)."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        # A real picture size and pixel format: it refuses tiny RGB test pictures.
+        trial = subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=30:duration=0.3",
+                                "-pix_fmt", "yuv420p", "-c:v", "h264_videotoolbox", "-b:v", "4M", "-f", "null", "-"], capture_output=True, timeout=30)
+        return trial.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def h264_args(ffmpeg: str, *, preset: str, crf: int, width: int, height: int, fps: float = 30.0, hardware: bool = False) -> list[str]:
+    """Encoder arguments: the Mac's hardware encoder for a final render when it is
+    there (several times faster, at a generous bitrate), else libx264."""
+    if hardware and hardware_h264(ffmpeg):
+        rate = max(4_000_000, int(width * height * fps * 0.14))          # ~8.7 Mb/s at 1080p30
+        return ["-c:v", "h264_videotoolbox", "-b:v", str(rate), "-maxrate", str(int(rate * 1.5)),
+                "-bufsize", str(rate * 2), "-profile:v", "high", "-pix_fmt", "yuv420p"]
+    return ["-c:v", "libx264", "-preset", preset, "-crf", str(crf)]

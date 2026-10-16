@@ -201,7 +201,13 @@ def _publish(project, plan: dict[str, Any], destination: Path, *, style_name: st
     (with the result of every Show Studio effect)."""
     from core.show_inserts import shift
     spans = spans or []
-    cues = edited_captions(plan, style_name)
+    from core import show_caption_layout
+    cues = show_caption_layout.apply(edited_captions(plan, style_name), show_caption_layout.load(project))
+    proposal_path = project.artifacts_dir / 'show_proposals.json'
+    if proposal_path.is_file():
+        from core.show_proposals import load as load_proposals
+        applied_ids = {e['id'] for e in effects or [] if e.get('status') == 'applied'}
+        cues = show_caption_layout.without_artwork(cues, load_proposals(proposal_path)['proposals'], applied_ids)
     if spans:
         for cue in cues:
             cue["start"], cue["end"] = round(shift(cue["start"], spans), 3), round(shift(cue["end"] - 1e-3, spans) + 1e-3, 3)
@@ -315,6 +321,23 @@ def prepare_show(project, source: str, resources: list[str], *, style_name: str 
             "edited_duration_sec": plan["edited_duration"], "cuts": plan["cuts"]}
 
 
+HARDWARE_ENCODER_TROUBLE = ("videotoolbox", "compression session", "error while opening encoder", "could not open encoder",
+                            "the encoder stopped", "error submitting video frame", "generic error in an external library")
+
+
+def _encoded(render: Callable[[bool], Any]) -> Any:
+    """A final render step on the Mac's hardware encoder, again with libx264 only if the
+    hardware encoder itself failed (any other error is reported as it is)."""
+    import logging
+    try:
+        return render(True)
+    except RuntimeError as exc:
+        if not any(sign in str(exc).lower() for sign in HARDWARE_ENCODER_TROUBLE):
+            raise
+        logging.getLogger(__name__).warning("Hardware encoding failed; rendering again with libx264: %s", str(exc)[-300:])
+        return render(False)
+
+
 def render_reviewed_show(project, *, progress: Callable[[int, str], None], cancel: Callable[[], None]) -> tuple[Path, dict[str, Any]]:
     """Render the edit with the approved effects only."""
     from core import gags as gag_module
@@ -340,7 +363,8 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
     destination = _destination(project)
     cut = project.cache_dir / "show-cut.mp4"
     progress(2, f"Rendering {plan['cuts']} cuts and {len(cutaways)} close-ups")
-    render_show(path, plan, cut, ffmpeg=ffmpeg, cancel=cancel, progress=lambda value: progress(2 + int(value * 48), "Rendering the show"))
+    _encoded(lambda hardware: render_show(path, plan, cut, ffmpeg=ffmpeg, cancel=cancel, hardware=hardware,
+                                          progress=lambda value: progress(2 + int(value * 48), "Rendering the show")))
     face = "right" if sum(shot.get("focus", [0.5])[0] for shot in plan["shots"]) / max(1, len(plan["shots"])) >= 0.5 else "left"
     notes: list[str] = []
     pictures: list[dict[str, Any]] = []
@@ -351,6 +375,13 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
                                                 face_at=lambda at: face_on_screen(plan, at), outcomes=outcomes,
                                                 progress=lambda share, text: progress(50 + int(share * 30), text))
     show_effects = show_proposals.results(items, outcomes)
+    # Drawn as drafts but never approved: not in the video, and said so.
+    if document:
+        kept_scenes = [scene for scene in document["scenes"] if scene["decision"] in ("accepted", "modified")]
+        unapproved = [item for item in items if item["kind"] == "drawing" and item["status"] == "proposed"
+                      and any(item["id"] in scene["effects"] for scene in kept_scenes)]
+        notes += [f"Not in the video: drawing “{item['params'].get('subject') or item['id']}” at {item['at']:.1f} s was "
+                  + ("drawn but not approved" if item["params"].get("picture") else "never drawn") for item in unapproved]
     notes += [f"Storyboard · {line['kind']} “{line['name']}” at {line['at']:.1f} s ({line['id']}): {line['detail']}"
               for line in show_effects if line["status"] == "failed"]
     from core.show_bridge import studio_layers, studio_warnings
@@ -360,8 +391,8 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
     body = project.cache_dir / "show-body.mp4"
     if pictures or layer or studio:
         progress(80, "Drawing the effects on the video")
-        render_gags(cut, pictures + layer, body, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio,
-                    progress=lambda share: progress(80 + int(share * 15), "Drawing the effects on the video"))
+        _encoded(lambda hardware: render_gags(cut, pictures + layer, body, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio,
+                                              hardware=hardware, progress=lambda share: progress(80 + int(share * 15), "Drawing the effects on the video")))
         cut.unlink(missing_ok=True)
     else:
         cut.replace(body)
@@ -550,16 +581,28 @@ def _scene_preview_inputs(project, scene_id: str, width: int, height: int, only_
     # The rest of the scene is still worth seeing: what needs settings waits, and is listed.
     left_out = [f"{KIND_NAMES.get(item['kind'], item['kind'])} at {item['at']:.1f} s needs its {' and '.join(item['needs'])}" for item in incomplete]
     live = [] if scene["decision"] == "plain" else [
-        {**item, "status": "approved"} for item in items
-        if item["id"] in scene["effects"] and item["status"] != "discarded" and not item.get("needs")]
+        {**item, "status": "approved", "params": {**item["params"], "suggested": True} if _drawn_later(item) else item["params"]}
+        for item in items if item["id"] in scene["effects"] and item["status"] != "discarded" and not item.get("needs")]
+    suggested = sum(1 for item in live if item["params"].get("suggested"))
+    if suggested:
+        left_out.append(f"{suggested} suggested drawing{'s are' if suggested > 1 else ' is'} shown as a card: "
+                        f"{'each is' if suggested > 1 else 'it is'} drawn when you accept it")
     overlays = show_scenes.overlay_items({"scenes": [{**scene, "decision": "accepted"}]}) if scene["decision"] != "plain" else []
     start, end = float(scene["start"]), float(scene["end"])
-    local_art_recipe = [gag_paint.NEGATIVE, {key: vars(style) for key, style in gag_paint.STYLES.items()}] if any(
+    from core.gags import drawing_engine
+    local_art_recipe = [drawing_engine(), gag_paint.NEGATIVE, {key: vars(style) for key, style in gag_paint.STYLES.items()}] if any(
         item["kind"] == "drawing" and not item["params"].get("picture") for item in live) else None
-    signature = hashlib.sha1(json.dumps(["scene-preview-v4-approved-assets", live, overlays, start, end, width, height, studio_fingerprint(project.folder),
+    signature = hashlib.sha1(json.dumps(["scene-preview-v5-caption-clock", live, overlays, start, end, width, height, studio_fingerprint(project.folder),
                                          local_art_recipe], sort_keys=True, default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     return plan, live, overlays, start, end, folder, left_out, folder / f"{scene_id}-{signature}.mp4"
+
+
+def _drawn_later(item: dict[str, Any]) -> bool:
+    """A suggested drawing nobody accepted yet: a card in previews, drawn on acceptance
+    (drawing every suggestion took most of an hour on a six-minute show)."""
+    return (item["status"] != "approved" and item["kind"] == "drawing" and not item["params"].get("picture")
+            and item["params"].get("kind", "drawing") in ("drawing", "character"))
 
 
 KIND_NAMES = {"character": "Talking character", "drawing": "Drawing", "word": "Word", "cutaway": "Close-up", "warp": "Warp",
@@ -635,6 +678,6 @@ def preview_scene(project, scene_id: str, *, width: int | None = None, height: i
     else:
         shutil.copyfile(cut, output)
     _lay_jingles(output, jingles, spans, ffmpeg)
-    completed.with_suffix(".json").write_text(json.dumps({"left_out": left_out}, ensure_ascii=False), encoding="utf-8")
+    completed.with_suffix(".json").write_text(json.dumps({"left_out": left_out, "inserted": spans}, ensure_ascii=False), encoding="utf-8")
     output.replace(completed)
     return completed

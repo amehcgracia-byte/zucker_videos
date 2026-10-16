@@ -33,6 +33,7 @@ from captions.effects import FUN_EFFECTS
 from core.gag_paint import STYLES
 
 KINDS = ("drawing", "character", "word", "photo", "warp", "math")
+DRAWING_GAP = 20.0     # seconds between drawings/characters: each one is drawn, which takes a while
 POSITIONS = ("left", "right", "top-left", "top-right", "bottom-left", "bottom-right")
 EFFECTS = tuple(name for name in FUN_EFFECTS if name != "none")
 WARPS = ("stretch", "swirl", "wave")
@@ -78,6 +79,7 @@ BRIEF = """Plan the visual gags for this edited talk.
 Rules:
 - About one gag every 6 to 9 seconds; more around jokes, punchlines, exclamations and things the host names; none in the first 1.5 s.
 - Never two pictures on screen at once: each starts after the previous one ends (a warp may run under a picture).
+- Drawings and characters are drawn one by one and take time: at most one of them every {drawing_gap} seconds, on the strongest moments. Between them use shouted words, formulas and warps.
 - The host's face is on the {face_side} of the frame: put pictures on the {free_side} side ("{free_side}", "top-{free_side}", "bottom-{free_side}"), small ones only on the other side.
 - "drawing": a picture of something said or implied; "subject" says what to paint (English, concrete: "a crying cup of coffee", not "sadness"). Literal or absurd, both work.
 - "character": someone who reacts to the host (the person they talk about, a random witness, an animal, an object with a face...). "subject" describes them visually (English); "says" is their short funny reply, in the language of the talk.
@@ -118,7 +120,7 @@ def build_prompt(words: list[dict[str, Any]], library: list[dict[str, Any]], *, 
     transcript = "\n".join(f"[{a:6.2f}-{b:6.2f}] {text}" for a, b, text in _timed_lines(words))
     names = [f"- {Path(entry['path']).stem}" for entry in library[:200]]
     free_side = "left" if face_side == "right" else "right"
-    return BRIEF.format(styles=", ".join(STYLE_NAMES), library="\n".join(names) or "- (empty)", transcript=transcript,
+    return BRIEF.format(drawing_gap=int(DRAWING_GAP), styles=", ".join(STYLE_NAMES), library="\n".join(names) or "- (empty)", transcript=transcript,
                         face_side=face_side, free_side=free_side)
 
 
@@ -323,8 +325,9 @@ def keyword_gags(words: list[dict[str, Any]], library: list[dict[str, Any]], *, 
 
 
 def clean_gags(raw: list[Any], duration: float, *, face_side: str = "right") -> list[dict[str, Any]]:
-    """Valid, sorted gags inside the video: pictures never overlap, warps at
-    most every 30 s, styles never repeated back to back."""
+    """Valid, sorted gags inside the video: pictures never overlap, drawings and
+    characters at most one every DRAWING_GAP seconds, warps at most every 30 s,
+    styles never repeated back to back."""
     free = "left" if face_side == "right" else "right"
     pictures, warps = [], []
     for item in raw:
@@ -365,9 +368,14 @@ def clean_gags(raw: list[Any], duration: float, *, face_side: str = "right") -> 
         })
     pictures.sort(key=lambda gag: gag["at"])
     kept: list[dict[str, Any]] = []
+    drawn_at = -DRAWING_GAP
     for gag in pictures:
         if kept and gag["at"] < kept[-1]["at"] + kept[-1]["duration"] + 0.2:
             continue
+        if gag["kind"] in ("drawing", "character"):
+            if gag["at"] < drawn_at + DRAWING_GAP:          # each one is drawn: few, on the best moments
+                continue
+            drawn_at = gag["at"]
         kept.append(gag)
     rotation = list(STYLE_NAMES)
     random.Random(len(kept)).shuffle(rotation)

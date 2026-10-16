@@ -19,6 +19,8 @@ from typing import Any, Callable
 
 import numpy as np
 
+from core.ffmpeg import h264_args
+
 SAMPLE_RATE = 48000
 CROSSFADE_SEC = 0.008
 FACE_HEIGHT = 0.42   # framing centre, share of the picture height
@@ -152,8 +154,10 @@ def cutaway_filters(plan: dict[str, Any], first_input: int, width: int, height: 
 
 def render_show(source: str | Path, plan: dict[str, Any], output: str | Path, *, ffmpeg: str = "ffmpeg",
                 width: int = 1920, height: int = 1080, progress: Callable[[float], None] | None = None,
-                cancel: Callable[[], None] | None = None, preset: str = "veryfast", crf: int = 20) -> Path:
+                cancel: Callable[[], None] | None = None, preset: str = "veryfast", crf: int = 20,
+                hardware: bool = False) -> Path:
     """Render the plan. ``cancel`` raises to stop: FFmpeg is stopped at once.
+    ``hardware``: encode on the Mac's own H.264 hardware when it is there (final renders).
     The picture is rendered first and the edited sound joined to it after: fed
     together, FFmpeg can spin for minutes on a part of the edit (a scene preview)."""
     import threading
@@ -180,7 +184,7 @@ def render_show(source: str | Path, plan: dict[str, Any], output: str | Path, *,
         *extra_inputs,
         "-filter_complex", graph,
         "-map", f"[{last}]", "-frames:v", str(frames), "-an",
-        "-c:v", "libx264", "-preset", preset, "-crf", str(crf), str(picture),
+        *h264_args(ffmpeg, preset=preset, crf=crf, width=width, height=height, fps=fps, hardware=hardware), str(picture),
     ]
     process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stderr=subprocess.PIPE, text=False)
     errors: list[bytes] = []

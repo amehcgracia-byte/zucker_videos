@@ -67,6 +67,20 @@ def create(project, scene: dict, body: dict) -> dict:
             raise ValueError('Choose a completed image from this scene to refine')
         job['previous_id'] = previous['id']
         job['previous_direction'] = previous['direction']
+    if body.get('purpose') == 'lettering':
+        text = str(body.get('lettering_text') or '').strip()
+        if not text or len(text) > 120:
+            raise ValueError('Choose a caption of 1–120 characters')
+        if job['provider'] != 'chatgpt':
+            raise ValueError('Use ChatGPT image generation for original hand lettering')
+        import math
+        centre = body.get('image_center') or [.5, .74]
+        size = float(body.get('size') or .55)
+        if (not isinstance(centre, list) or len(centre) != 2 or not all(isinstance(x, (int, float)) and math.isfinite(x) and -1 <= x <= 2 for x in centre)
+                or not math.isfinite(size) or not .02 <= size <= 2):
+            raise ValueError('Choose a valid lettering position and size')
+        job.update(purpose='lettering', lettering_text=text, replaces_caption=body.get('replaces_caption'), use_face=False,
+                   image_center=centre, size=size)
     path = folder(project, job['id'])
     path.mkdir(parents=True)
     save(path/'request.json', job)
@@ -74,6 +88,15 @@ def create(project, scene: dict, body: dict) -> dict:
 
 
 def prompt_for(job: dict) -> str:
+    if job.get('purpose') == 'lettering':
+        return ('Create a transparent PNG of ORIGINAL HAND-DRAWN LETTERING for a comedy video. '
+                'Draw every letter as if an ordinary person painted a spontaneous protest placard. '
+                'Uneven letter sizes, spacing and baselines, hesitant irregular outlines, visible dry marker/paint texture. '
+                'Clumsy but clearly legible. No typeset font, repeated identical glyphs, polished calligraphy, anime, glossy sticker border or extra words. '
+                'The background must be transparent; keep all letters inside the picture with breathing room. '
+                f"Material: {STYLE_BRIEFS[job['style']]}\n"
+                f"Write EXACTLY this text, preserving spelling and case: {json.dumps(job['lettering_text'], ensure_ascii=False)}\n"
+                f"Additional art direction (must not alter the text): {job['direction']}")
     reference = ('The attached frame is an identity reference only. Depict the SAME ADULT with his glasses, cap, facial hair and clothing. Do not copy the room. '
                  'Keep him visibly adult; childish drawing technique does NOT mean a child character. Reduce facial identity to a few recognisable marks in the same crude drawing style, never a detailed realistic portrait. ' if job['use_face'] else '')
     return (f"Create one transparent PNG image for a comedic video overlay. {STYLE_BRIEFS[job['style']]} "

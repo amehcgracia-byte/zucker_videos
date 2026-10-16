@@ -37,3 +37,7 @@ La rama local `claude/show-app-build` avanzó a `dc285d2e` después de nuestra b
 - «Cinco veces más rápido» no está verificado por esta revisión: el commit describe una medición anterior de 1 h 55 min, pero necesitamos el render comparable después, calidad visual y fase por fase para validar esa mejora.
 
 La revisión de dc285d2e ha sido estática, no una ejecución del nuevo motor ni una medición de su rendimiento. No se ha alterado el checkout activo de Claude ni la app instalada.
+
+## Captions: integración posterior sobre 3e943193
+
+Lee `docs/SHOW_LIVE_CAPTIONS_2026-10-16.md`: añade captions visibles/editables, una fila de localización en la línea de tiempo y generación de lettering original por frase. Se conserva la decisión de previews automáticos. No sobrescribas tu biblioteca nueva al integrar los cambios de archivos compartidos. El texto blanco es una vista provisional; solo un PNG generado y revisado es lettering original.
