@@ -286,8 +286,9 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
     to_paint = sum(1 for gag in gags if gag["kind"] in ("drawing", "character") and not gag.get("picture") and not gag.get("suggested"))
     drawings: dict[int, Any] = {}
     pool = None
-    if engine == "claude" and to_paint:
-        # Claude draws on its side, so up to three drawings are asked at once.
+    if allow_generation and engine == "claude" and to_paint:
+        # Claude draws on its side, so up to three drawings are asked at once. A reviewed
+        # preview or render (allow_generation=False) asks nobody: it uses linked pictures only.
         from concurrent.futures import ThreadPoolExecutor
         pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="zucker-claude-drawing")
         for index, gag in enumerate(gags):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import functools
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import io
@@ -19,7 +20,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -1988,6 +1989,28 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     scene_lanes: dict[str, dict[str, Any]] = {name: {"queue": [], "thread": None, "current": None} for name in ("now", "ahead")}
     scene_stop = threading.Event()
 
+    def _proposals_locked(view: Callable[..., Any]) -> Callable[..., Any]:
+        """One change to show_proposals.json at a time (a drawing finishing in the background included)."""
+        @functools.wraps(view)
+        def locked(*args: Any, **kwargs: Any) -> Any:
+            from core import show_proposals
+            with show_proposals.LOCK:
+                return view(*args, **kwargs)
+        return locked
+
+    def _draft_done(project: Project) -> Callable[[str], None]:
+        """When a drawing's draft is ready, its scene is previewed again (in the background)."""
+        def done(proposal_id: str) -> None:
+            from core import show_scenes
+            try:
+                for scene in show_scenes.load(_scene_files(project))["scenes"]:
+                    if proposal_id in scene["effects"]:
+                        _invalidate_scene(project, scene["id"])
+                        _prepare_scenes(project, [scene["id"]])
+            except (OSError, ValueError, KeyError):
+                pass
+        return done
+
     def _scene_key(project: Project, scene_id: str) -> str:
         return f"{project.folder}|{scene_id}"
 
@@ -2124,8 +2147,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             LOGGER.info("Show review not adopted: %s", exc)
         document = show_scenes.load(path)
         stored = show_proposals.load(proposals_path)
+        from core import show_drafts
         for item in stored["proposals"]:
             item["needs"] = show_proposals.check(item)
+            drafting = show_drafts.state(project, item["id"])
+            if drafting:
+                item["drafting"] = drafting                     # being drawn, or why it could not be
         # Each scene plays at once from the original video, its cuts skipped in the page;
         # the preview with zooms and effects is rendered only when the person asks for it.
         from core.show import edited_words, scene_segments
@@ -2222,6 +2249,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         return jsonify(_clay_state(project))
 
     @app.post("/api/v1/show/scenes/<scene_id>/decision")
+    @_proposals_locked
     def api_show_scene_decision(scene_id: str) -> Response:
         from core import show_proposals, show_scenes
         project = _require_project(state)
@@ -2241,7 +2269,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
         _invalidate_scene(project, scene_id)
         if body.get("decision") == "accepted":
-            # Its suggested drawings are now accepted: they are drawn in the background.
+            # Drawings with no picture yet are drawn as drafts, shown in the preview, then approved.
+            from core import show_drafts
+            waiting = [item["id"] for item in stored["proposals"] if item["id"] in scene["effects"] and show_drafts.needs_drawing(item)]
+            started = show_drafts.request(project, waiting, done=_draft_done(project))
+            scene = {**scene, "drafts": len(waiting), "drawing": started}
             from core.show import scene_preview_ready
             if not scene_preview_ready(project, scene_id):
                 _prepare_scenes(project, [scene_id])
@@ -2261,6 +2293,21 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if missing:
             _prepare_scenes(project, missing)
         return jsonify({"queued": len(missing), "ready": len(ids) - len(missing)}), 202
+
+    @app.post("/api/v1/show/review/<proposal_id>/draft")
+    def api_show_review_draft(proposal_id: str) -> Response:
+        """Draw this drawing now (or ``again``: another one), as a draft to see before approving it."""
+        from core import show_drafts, show_proposals
+        project = _require_project(state)
+        proposals_path, _ = _show_review_files(project)
+        item = next((entry for entry in show_proposals.load(proposals_path)["proposals"] if entry["id"] == proposal_id), None)
+        if item is None or item["kind"] != "drawing" or not item["params"].get("subject"):
+            return error_response("not_found", "No drawing to draw here", 404)
+        again = bool((request.get_json(silent=True) or {}).get("again"))
+        if item["params"].get("picture") and not again:
+            return jsonify({"status": "ready", "picture": item["params"]["picture"]})
+        started = show_drafts.request(project, [proposal_id], again=again, done=_draft_done(project))
+        return jsonify({"status": "drawing", "started": bool(started)}), 202
 
     @app.post("/api/v1/show/scenes/<scene_id>/preview")
     def api_show_scene_preview(scene_id: str) -> Response:
@@ -2491,6 +2538,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("not_found", "This image is not ready", 404)
 
     @app.post("/api/v1/show/ai/images/<job_id>/apply")
+    @_proposals_locked
     def api_show_ai_apply(job_id):
         from core import show_ai_images, show_proposals, show_scenes
         project = _require_project(state)
@@ -2993,6 +3041,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                                            "framing": plan.get("framing"), "language": plan.get("language")}})
 
     @app.patch("/api/v1/show/review/<proposal_id>")
+    @_proposals_locked
     def api_show_review_update(proposal_id: str) -> Response:
         from core import show_proposals
         project = _require_project(state)
@@ -3056,6 +3105,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                         "styles": {key: value.label for key, value in gag_paint.STYLES.items()}})
 
     @app.post("/api/v1/show/review/add")
+    @_proposals_locked
     def api_show_review_add() -> Response:
         """An effect the person adds: rainbow steam, a talking character, a close-up, formulas or a word."""
         from core import show_proposals

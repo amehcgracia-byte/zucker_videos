@@ -367,3 +367,32 @@ def test_when_claude_cannot_draw_the_drawing_is_left_out_and_said(tmp_path, monk
 def test_the_final_render_encoder_is_libx264_unless_hardware_is_asked():
     from core.ffmpeg import h264_args
     assert h264_args("ffmpeg", preset="veryfast", crf=20, width=1920, height=1080) == ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+
+
+def test_a_reviewed_render_asks_no_provider_even_with_claude_installed(tmp_path, monkeypatch):
+    from core import gag_paint, gags, show_claude_drawing
+    monkeypatch.setenv("ZUCKER_DRAWINGS", "claude")
+    monkeypatch.setattr("core.gag_library.library_dir", lambda: tmp_path / "library")
+    monkeypatch.setattr(show_claude_drawing, "ask", lambda *a, **k: (_ for _ in ()).throw(AssertionError("Claude was asked during a render")))
+    monkeypatch.setattr(gag_paint, "paint_clean", lambda *a, **k: (_ for _ in ()).throw(AssertionError("the painter ran during a render")))
+    outcomes = {}
+    items, notes = gags.make_items([{"kind": "drawing", "subject": "a guitar", "at": 1.0, "duration": 2.0, "proposal": "drawing-9"}],
+                                   tmp_path / "out", outcomes=outcomes, allow_generation=False)
+    assert items == [] and outcomes["drawing-9"][0] == "failed" and "no replacement was painted" in notes[0]
+
+
+def test_only_a_hardware_encoder_failure_renders_again_in_software():
+    from core.show import _encoded
+    runs = []
+
+    def encoder_refuses(hardware):
+        runs.append(hardware)
+        if hardware:
+            raise RuntimeError("[h264_videotoolbox] Cannot create compression session: -12903")
+        return "done"
+    assert _encoded(encoder_refuses) == "done" and runs == [True, False]
+
+    def drawing_breaks(hardware):
+        raise RuntimeError("A sticker picture is missing")
+    with pytest.raises(RuntimeError, match="sticker picture"):
+        _encoded(drawing_breaks)                                   # not repeated under a hardware excuse

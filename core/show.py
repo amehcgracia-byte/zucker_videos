@@ -315,15 +315,20 @@ def prepare_show(project, source: str, resources: list[str], *, style_name: str 
             "edited_duration_sec": plan["edited_duration"], "cuts": plan["cuts"]}
 
 
+HARDWARE_ENCODER_TROUBLE = ("videotoolbox", "compression session", "error while opening encoder", "could not open encoder",
+                            "the encoder stopped", "error submitting video frame", "generic error in an external library")
+
+
 def _encoded(render: Callable[[bool], Any]) -> Any:
-    """A final render step on the Mac's hardware encoder, again with libx264 if it fails."""
+    """A final render step on the Mac's hardware encoder, again with libx264 only if the
+    hardware encoder itself failed (any other error is reported as it is)."""
     import logging
     try:
         return render(True)
-    except InterruptedError:
-        raise
-    except Exception:  # an encoder refusing this picture: the software one always can
-        logging.getLogger(__name__).warning("Hardware encoding failed; rendering again with libx264", exc_info=True)
+    except RuntimeError as exc:
+        if not any(sign in str(exc).lower() for sign in HARDWARE_ENCODER_TROUBLE):
+            raise
+        logging.getLogger(__name__).warning("Hardware encoding failed; rendering again with libx264: %s", str(exc)[-300:])
         return render(False)
 
 
@@ -364,6 +369,13 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
                                                 face_at=lambda at: face_on_screen(plan, at), outcomes=outcomes,
                                                 progress=lambda share, text: progress(50 + int(share * 30), text))
     show_effects = show_proposals.results(items, outcomes)
+    # Drawn as drafts but never approved: not in the video, and said so.
+    if document:
+        kept_scenes = [scene for scene in document["scenes"] if scene["decision"] in ("accepted", "modified")]
+        unapproved = [item for item in items if item["kind"] == "drawing" and item["status"] == "proposed"
+                      and any(item["id"] in scene["effects"] for scene in kept_scenes)]
+        notes += [f"Not in the video: drawing “{item['params'].get('subject') or item['id']}” at {item['at']:.1f} s was "
+                  + ("drawn but not approved" if item["params"].get("picture") else "never drawn") for item in unapproved]
     notes += [f"Storyboard · {line['kind']} “{line['name']}” at {line['at']:.1f} s ({line['id']}): {line['detail']}"
               for line in show_effects if line["status"] == "failed"]
     from core.show_bridge import studio_layers, studio_warnings

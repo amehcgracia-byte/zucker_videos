@@ -18,6 +18,7 @@ close-up or photo), never of the screen, so re-framing does not move them;
 from __future__ import annotations
 
 import json
+import threading
 import re
 import uuid
 from pathlib import Path
@@ -32,6 +33,9 @@ CUTAWAY_MIN_GAP = 12.0
 CUTAWAY_MIN_SCORE = 0.015
 TALK_WORDS = re.compile(r"\b(speak|speaks|talk|talks|say|says|tell|tells|habla|hablar|dice|decir|cuenta)\b", re.I)
 
+
+# Every load-change-save of show_proposals.json (the person's edits, drawings finishing) holds it.
+LOCK = threading.RLock()
 
 def _id(kind: str) -> str:
     return f"{kind}-{uuid.uuid4().hex[:8]}"

@@ -1,6 +1,6 @@
 // Show storyboard: identity -> intro -> scenes -> review and render.
-// Each scene explains what it proposes. Watch an explicitly requested preview,
-// then accept it, modify it or leave it without effect. Inside
+// Each scene explains what it proposes; watch it (a real preview, prepared in
+// the background), then accept it, modify it or leave it without effect. Inside
 // "Modify", every effect has its own editor: regions are kept in the
 // coordinates of their own picture, outlines exist only in the editor, and the
 // pixels that move are the originals. Nothing is rendered until the last step.
@@ -47,6 +47,9 @@
     }
     step = 0;
     render();
+    // Every scene's preview with effects is prepared in the background, from the first on;
+    // the scene being edited always goes first.
+    api("/show/scenes/prefetch", { method: "POST", body: JSON.stringify({ from: review.scenes?.[0]?.id }) }).catch(() => {});
   }
 
   async function openWorkspace({sceneId=null}={}) {
@@ -348,7 +351,7 @@
       $('#showTimeline').hidden=false;$('#showTimelineLauncher').hidden=true;
       timelineDialog.showModal();
     }
-    watchEditorEffects(currentScene());
+    editorAsked=null;watchEditorEffects(currentScene());
   }
   function restoreStage() {
     if(stageHome){stageHome.replaceWith($('.show-stage-wrap'));stageHome=null;}
@@ -566,8 +569,9 @@
     claySaving = setTimeout(async () => {
       try {
         clay = await api("/show/clay/placements", { method: "PUT", body: JSON.stringify({ revision: clay.revision, placements: clay.placements }) });
-        $("#showClayStatus").textContent = "Saved in the project. Use Preview with effects when you want a rendered check.";
+        $("#showClayStatus").textContent = "Saved in the project. A new preview with effects is being prepared.";
         invalidateLocal(scene);
+        prepareInBackground(scene);
         if (name === "mode" || name === "start" || name === "end") clayBlock(scene);
       } catch (error) {
         $("#showClayStatus").textContent = `Not saved: ${error.message}`;
@@ -576,10 +580,29 @@
     }, 350);
   }
 
-  // Rendering is explicit. Opening, scrubbing and editing only compose the source
-  // and already chosen images; they must never start the painter or FFmpeg.
+  // A scene opened without a chosen view prepares its preview with effects on its own
+  // (and the next scene's), small and quick, and shows it when ready; until then its cut plays.
   function autoPreview(scene) {
-    if (!wantEffects.has(scene.id)) wantQuick.add(scene.id);
+    const preview = scene.preview || { status: "none" };
+    if (wantEffects.has(scene.id) || wantQuick.has(scene.id) || wantSaved.has(scene.id)) return;
+    if (preview.status === "failed" || preview.status === "stopped") return;
+    wantEffects.add(scene.id);
+    if (preview.status === "ready") return;
+    const index = scenes().indexOf(scene);
+    const next = scenes().slice(index + 1, index + 2).map((item) => item.id);
+    scene.preview = { status: "queued", message: "Preparing the preview with effects (about half a minute)" };
+    api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, { method: "POST", body: JSON.stringify({ next }) })
+      .then((answer) => { if (answer?.status === "ready") refreshBoard(); }).catch(() => {});
+  }
+
+  // After edits the live view stays; the new preview is prepared in the background meanwhile.
+  let backgroundPreview = null;
+  function prepareInBackground(scene) {
+    clearTimeout(backgroundPreview);
+    backgroundPreview = setTimeout(async () => {
+      await flushEdits().catch(() => {});
+      api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, { method: "POST", body: "{}" }).catch(() => {});
+    }, 1000);
   }
 
   function showScenePicture(scene) {
@@ -644,7 +667,7 @@
     quick.frame = requestAnimationFrame(tick);
     $("#showStageStatus").textContent = effects ? "Playing with every effect (this scene's preview). Pause to move or resize pictures." + leftOut(scene.preview)
       : saved ? "Saved render: the last completed edit, with its captions and effects. New decisions need a new effects preview/render."
-      : timelineDialog?.open ? "Live view: your cut and chosen pictures, updated as you edit. Preview with effects renders the remaining effects on request."
+      : timelineDialog?.open ? "Live view: your cut and chosen pictures, updated as you edit. Press Play scene to watch it with every effect."
       : "Live timing preview: your cut and chosen pictures. Pictures appear only inside their bars; render a preview to check all camera and animation effects.";
     return true;
   }
@@ -653,8 +676,8 @@
   // Play shows the scene's preview with every effect (words, zooms, animations, painted
   // drawings, steam…) when it is ready for what the timeline holds; pausing returns to the
   // live view, where pictures can be dragged. An edit shows at once in the live view while
-  // a baked effects preview is only prepared when explicitly requested.
-  let editorPoll = null, editStamp = 0;
+  // the effects are prepared again in the background (seconds: the scene's cut is kept).
+  let editorPoll = null, editorAsked = null, editorAskedAt = 0, editStamp = 0;
   // What a ready preview could not show yet (an effect needing settings, a drawing the painter could not make).
   const leftOut = (preview) => preview?.left_out?.length ? ` Not in it yet: ${preview.left_out.join("; ")}.` : "";      // editStamp: an answer asked before an edit is old news
   const effectsReady = (scene) => !!(timelineDialog?.open && scene && scene.preview?.status === "ready" && scene.preview.url);
@@ -667,8 +690,7 @@
     label.hidden = !timelineDialog?.open;
     label.textContent = quick?.effects ? "With every effect" : effectsReady(scene) ? "Effects ready: press Play scene"
       : preview.status === "failed" ? `Effects preview failed: ${preview.error || "try again"}`
-      : !["queued", "rendering"].includes(preview.status) ? "Live images · Preview with effects renders the remaining effects on request"
-      : `Effects preview: ${preview.message && /%/.test(preview.message) ? preview.message.replace(/^.*?(\d+%).*$/, "$1") : ""}`.trim();
+      : `Updating the effects… ${preview.message && /%/.test(preview.message) ? preview.message.replace(/^.*?(\d+%).*$/, "$1") : ""}`.trim();
   }
   function playScene() {
     const scene = currentScene(), video = $("#showStageVideo");
@@ -685,19 +707,25 @@
     if (!timelineDialog?.open || !scene || currentScene()?.id !== scene.id) return;
     editorEffectsLabel();
     if (effectsReady(scene)) return;
-    if (!["queued", "rendering"].includes(scene.preview?.status)) return;
+    // Asked when the editor opened or after an edit (2 s later); asked again if nothing started.
+    if (!["queued", "rendering", "failed"].includes(scene.preview?.status) && (editorAsked !== scene.id || Date.now() - editorAskedAt > 6000)) {
+      editorAsked = scene.id; editorAskedAt = Date.now();
+      await flushEdits().catch(() => {});
+      await api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, { method: "POST", body: "{}" }).catch(() => {});
+    }
     const asked = editStamp;
     const fresh = await api(`/show/scenes?current=${encodeURIComponent(scene.id)}`).catch(() => null);
     const updated = fresh?.scenes?.find((entry) => entry.id === scene.id);
     if (updated && asked === editStamp && currentScene()?.id === scene.id && !editQueue.pending.size) scene.preview = updated.preview;
     if (effectsReady(scene)) {
+      editorAsked = null;
       // Already playing the live view: carry on, now with the effects.
       const video = $("#showStageVideo");
       if (quick && !quick.saved && !video.paused) { playQuick(scene, editedPlayhead() - scene.start, null, true); video.play().catch(() => {}); }
       editorEffectsLabel();
       return;
     }
-    if (scene.preview?.status === "failed") { editorEffectsLabel(); return; }
+    if (scene.preview?.status === "failed") { editorAsked = null; editorEffectsLabel(); return; }
     editorPoll = setTimeout(() => watchEditorEffects(scene), 1200);
   }
   $("#showStageVideo").addEventListener("pause", () => {
@@ -748,9 +776,11 @@
     if (currentScene()?.id === scene.id) {
       clearTimeout(poll);
       $("#showPanel").querySelectorAll('[data-scene-decision="accepted"]').forEach(button => button.disabled = true);
-      $("#showStageStatus").textContent = quick && !quick.saved ? "Changes saved. Live picture timing is updated; press “Preview with effects” for a rendered check." : "Changes saved. This rendered video is now out of date; open the scene editor for live picture timing, or request a new effects preview.";
+      $("#showStageStatus").textContent = quick && !quick.saved ? "Changes saved. Live picture timing is updated; a new preview with effects is being prepared — press “Preview with effects” to watch it." : "Changes saved. This rendered video is now out of date; a new preview is being prepared — open the scene editor for live picture timing meanwhile.";
     }
+    prepareInBackground(scene);
     if (timelineDialog?.open && currentScene()?.id === scene.id) {
+      editorAsked = scene.id; editorAskedAt = Date.now();            // prepareInBackground asks for it
       if (quick?.effects) {
         const video = $("#showStageVideo"), at = editedPlayhead(), playing = !video.paused;
         playQuick(scene, Math.max(0, at - scene.start));
@@ -775,11 +805,13 @@
     const scene = currentScene();
     if (decision === "accepted" && !viewedScenes.has(scene.id)) throw new Error("Generate and watch this scene preview before accepting it.");
     const updated = await api(`/show/scenes/${encodeURIComponent(scene.id)}/decision`, { method: "POST", body: JSON.stringify({ decision }) });
+    if (updated.drafts) showToast(`${updated.drafts} drawing${updated.drafts > 1 ? "s are" : " is"} being drawn as drafts. They appear in the scene's preview; approve each one when you have seen it.`);
     Object.assign(scene, updated, { preview: { status: "none" } });
-    if (thenNext) step = Math.min(stepNames().length - 1, step + 1);
+    if (thenNext && !updated.drafts) step = Math.min(stepNames().length - 1, step + 1);   // stay to see the drafts
     const next = currentScene();
     review = await api(`/show/scenes?current=${encodeURIComponent((next || scene).id)}`);
     render();
+    watchDrafts();
   }
 
   // ---- The whole show, one step after another --------------------------------------
@@ -1251,19 +1283,27 @@
     const outside=scene && (item.at<scene.start || item.at>=scene.end || (item.duration>0 && item.at+item.duration<=scene.start));
     const needs = (item.needs || []).length ? `<p class="show-needs">Still needed: ${escape(item.needs.join(", "))}</p>` : "";
     const confidence = item.kind === "cutaway" ? `<span class="show-confidence" title="How clearly the picture matches what is said">match ${(item.confidence * 100).toFixed(1)}</span>` : "";
+    // A drawing is seen before it is approved: drawn as a draft (by Claude), then approved or drawn again.
+    const drawable = item.kind === "drawing" && item.params.subject && ["drawing", "character", undefined].includes(item.params.kind);
+    const drawing = item.drafting?.status === "drawing", unseen = drawable && !item.params.picture;
+    const draft = !drawable ? "" : drawing ? `<p class="show-hint">Being drawn… it appears here and in the preview when it is ready.</p>`
+      : item.drafting?.status === "failed" ? `<p class="show-needs">Could not be drawn: ${escape(item.drafting.error || "try again")}</p>`
+      : unseen ? `<p class="show-hint">Not drawn yet: draw it to see it before approving it.</p>`
+      : item.params.draft && item.status !== "approved" ? `<p class="show-hint">Draft: approve it to keep it in the video, or draw another.</p>` : "";
     return `<article class="show-card show-${item.status}" data-show-id="${item.id}">
       <header><time>${clock(item.at)}</time><span class="show-kind">${item.params.reaction ? "Reaction" : (KIND_LABELS[item.kind] || item.kind)}</span>${confidence}<span class="show-status">${STATUS_LABELS[item.status]}</span></header>
       <div class="show-card-body">
         <img src="${picture(item)}" alt="" loading="lazy">
         <div>
-          <p class="show-reason">${escape(item.reason)}</p>${item.kind === "drawing" ? `<p class="show-hint">Image source: ${escape(item.params.picture ? (item.params.image_engine || "Your library") : "No picture selected")}</p>` : ""}${needs}${outside?'<p class="show-needs">Outside this scene. Choose words to bring this effect back.</p>':''}
+          <p class="show-reason">${escape(item.reason)}</p>${item.kind === "drawing" ? `<p class="show-hint">Image source: ${escape(item.params.picture ? (item.params.image_engine || "Your library") : "No picture selected")}</p>` : ""}${draft}${needs}${outside?'<p class="show-needs">Outside this scene. Choose words to bring this effect back.</p>':''}
           <div class="show-actions">
+            ${drawable ? `<button type="button" class="icon-button small" data-draw-it="${item.id}" ${drawing ? "disabled" : ""} ${item.params.picture ? 'data-again="1"' : ""}>${drawing ? "Drawing…" : item.params.picture ? "Draw another" : "Draw it"}</button>` : ""}
             ${item.kind === "drawing" ? `<button type="button" class="icon-button small" data-ai-edit="${item.id}">AI · change image…</button>` : ""}
             <button type="button" class="icon-button small" data-place-words="${item.id}">Choose words</button>
             <button type="button" class="icon-button small" data-locate-effect="${item.id}">Show on video & timeline</button>
             <button type="button" class="icon-button small" data-show-preview="${item.id}">Preview in scene</button>
             <button type="button" class="icon-button small" data-show-adjust="${item.id}">${open.has(item.id) ? "Close" : "Adjust"}</button>
-            <button type="button" class="icon-button small" data-show-status="approved" data-id="${item.id}" ${(item.needs || []).length || outside ? "disabled" : ""} title="Keep this effect for the render. Review the full scene separately.">Approve</button>
+            <button type="button" class="icon-button small" data-show-status="approved" data-id="${item.id}" ${(item.needs || []).length || outside || unseen ? "disabled" : ""} title="${unseen ? "Draw it first: you approve the drawing you have seen" : "Keep this effect for the render. Review the full scene separately."}">Approve</button>
             <button type="button" class="icon-button small" data-show-status="discarded" data-id="${item.id}">Discard</button>
           </div>
         </div>
@@ -1631,6 +1671,36 @@
   });
   document.addEventListener("click", event => { const menu=$("#showEffectMenu"); if(menu && !event.target.closest?.("#showEffectMenu"))menu.hidden=true; });
   document.addEventListener("keydown", event => { if(event.key==="Escape"){ const menu=$("#showEffectMenu");if(menu)menu.hidden=true;} });
+
+  // Drafts: a drawing is drawn on request (or when its scene is accepted), shown, then approved.
+  let draftPoll = null;
+  function watchDrafts() {
+    clearTimeout(draftPoll);
+    const scene = currentScene();
+    if (!scene || !review.proposals.some((item) => scene.effects.includes(item.id) && item.drafting?.status === "drawing")) return;
+    draftPoll = setTimeout(async () => {
+      const fresh = await api(`/show/scenes?current=${encodeURIComponent(scene.id)}`).catch(() => null);
+      if (fresh && currentScene()?.id === scene.id && !editQueue.pending.size) {
+        const was = review.proposals.filter((item) => item.drafting?.status === "drawing").map((item) => item.id);
+        review.proposals = fresh.proposals;
+        if (was.some((id) => review.proposals.find((item) => item.id === id)?.drafting?.status !== "drawing")) renderScene();
+      }
+      watchDrafts();
+    }, 3000);
+  }
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest?.("[data-draw-it]");
+    if (!button || !review) return;
+    const item = review.proposals.find((entry) => entry.id === button.dataset.drawIt);
+    if (!item) return;
+    try {
+      await flushEdits();
+      await api(`/show/review/${encodeURIComponent(item.id)}/draft`, { method: "POST", body: JSON.stringify({ again: !!button.dataset.again }) });
+      item.drafting = { status: "drawing" };
+      renderScene();
+      watchDrafts();
+    } catch (error) { showToast(error.message, true); }
+  });
 
   document.addEventListener('click',event=>{
     const button=event.target.closest?.('[data-ai-edit]');if(!button)return;
