@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Fetch the CLIP ViT-B/32 (OpenAI, MIT licence) ONNX files used for scene
 # tagging, pinned to one Hugging Face revision and verified by SHA-256.
-#   tools/fetch_clip_model.sh          image encoder bundled into the app
-#   tools/fetch_clip_model.sh --text   also the text encoder + tokenizer, only
-#                                      needed to regenerate labels.json
+#   tools/fetch_clip_model.sh          image and text encoders + tokenizer,
+#                                      bundled into the app (scene tagging and
+#                                      the gag library's text search)
+#   tools/fetch_clip_model.sh --text   also a copy in tools/clip_text, used to
+#                                      regenerate labels.json
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,6 +32,10 @@ fetch() {
 
 fetch onnx/vision_model_quantized.onnx "$ROOT/assets/models/clip/vision_model_quantized.onnx" \
   583fd1110a514667812fee7d684952aaf82a99b959760c8d7dca7e0ab9839299
+fetch onnx/text_model_quantized.onnx "$ROOT/assets/models/clip/text_model_quantized.onnx" \
+  73baab855d406190da9faa498cfedf65f15cf309f4cc7385b7b032e6d08e5c3a
+fetch tokenizer.json "$ROOT/assets/models/clip/tokenizer.json" \
+  f7f3b7af117d467b58374797691a6438d3e6b9e9cef800dfd5dced7f697a90cd
 if [[ "${1:-}" == "--text" ]]; then
   fetch onnx/text_model_quantized.onnx "$ROOT/tools/clip_text/text_model_quantized.onnx" \
     73baab855d406190da9faa498cfedf65f15cf309f4cc7385b7b032e6d08e5c3a

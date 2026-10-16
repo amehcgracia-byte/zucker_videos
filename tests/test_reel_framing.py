@@ -129,3 +129,26 @@ def test_single_source_reel_mix_alternates_inside_one_continuous_cut():
         abs(float(left["clip_start_sec"]) + float(left["duration_sec"]) - float(right["clip_start_sec"])) < 1e-5
         for left, right in zip(segments, segments[1:])
     )
+
+
+def test_framing_cancellation_stops_before_next_source(monkeypatch):
+    import pytest
+    import core.reel_framing as framing
+    from server.wizard import WizardCancelled
+
+    visited = []
+    cancelled = WizardCancelled()
+
+    def analyze(record, progress):
+        visited.append(record['path'])
+        progress(10, 'Analysing')
+
+    def progress(*args):
+        raise cancelled
+
+    monkeypatch.setattr(framing, 'analyze_reel_framing_record', analyze)
+    records = [{'path': 'Sony_C001.MP4'}, {'path': 'Sony_C002.MP4'}]
+    with pytest.raises(WizardCancelled) as caught:
+        framing.analyze_reel_framing_records(records, progress)
+    assert caught.value is cancelled
+    assert visited == ['Sony_C001.MP4']

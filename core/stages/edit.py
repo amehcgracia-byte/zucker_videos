@@ -48,7 +48,7 @@ REEL_MAX_CUT_SEC = 2.0
 REEL_DEFAULT_CUT_TARGET_SEC = 1.75
 REEL_DEFAULT_CUTS_PER_SOURCE = 1.0
 REEL_SINGLE_SOURCE_MIX_INTERVAL_SEC = 5.0
-REEL_PLAN_VERSION = 6
+REEL_PLAN_VERSION = 7  # v7: shots avoid unreadable (zero-filled) stretches of their file
 MOTION_CATALOG = CATALOG
 MOTION_WEIGHTS = {name: 1.0 for name in MOTION_CATALOG}
 # The previous 1.32x fast setting was too abrupt.  Normal is now the fastest
@@ -221,10 +221,13 @@ class EditStage(Stage):
             coverage = _with_director_quality(project, coverage, progress_callback)
         if platform == "reel":
             progress_callback(40, "Scoring Reel source shots (cached when available)")
-            coverage = {**coverage, "sources": analyze_handheld_director_quality(project, coverage.get("sources") or [])}
+            coverage = {**coverage, "sources": analyze_handheld_director_quality(
+                project, coverage.get("sources") or [],
+                lambda fraction, detail: progress_callback(40 + int(14 * fraction), f"Scoring Reel source shots {detail}"))}
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, t("choosing_cameras"))
-            plan = _reel_promo_plan(coverage, beats, project.data.get("settings", {}), shot_ready=getattr(self, "shot_ready", None))
+            plan = _reel_promo_plan(coverage, beats, project.data.get("settings", {}), shot_ready=getattr(self, "shot_ready", None),
+                                    progress_callback=progress_callback)
         elif not real_multicam:
             plan = _simple_plan(coverage, project.data.get("settings", {}), recorded_moves=recorded_moves)
             beats = {"stage": self.name, "platform": platform, "beats_sec": [], "bars_sec": [], "sections_sec": [], "tempo": None, "placeholder_short_form": platform != "360"}
@@ -380,17 +383,23 @@ def _with_director_quality(project: Project, coverage: dict[str, Any], progress_
     sources = coverage.get("sources") or []
     if not sources:
         return coverage
-    progress_callback(50, "Scoring Sony director camera")
-    scored = analyze_handheld_director_quality(project, sources)
+    progress_callback(45, "Scoring Sony director camera")
+    scored = analyze_handheld_director_quality(
+        project, sources, lambda fraction, detail: progress_callback(45 + int(5 * fraction), f"Scoring Sony director camera {detail}"))
     scored = analyze_non_music_sources(project, scored)
     return {**coverage, "sources": scored}
 
 
-def _reel_quality_start(source, duration, used, fallback):
-    """Choose a complete source window; avoid reusing the same highlight."""
+def _reel_quality_start(source, duration, used, fallback, blocked=()):
+    """Choose a complete source window; avoid reusing the same highlight.
+
+    ``blocked`` spans (unreadable stretches) exclude any window that would
+    decode through them, including the reference frames just before it.
+    """
     limit = max(0.0, float(source.get("duration_sec") or duration) - duration)
     windows = (source.get("director_quality") or {}).get("windows") or []
     candidates = sorted({min(limit, max(0.0, float(w.get("clip_start_sec") or 0))) for w in windows})
+    candidates = [start for start in candidates if not _overlaps_blocked(start, duration, blocked)]
     if not candidates:
         return min(limit, fallback)
     offset = float(source.get("offset_sec") or 0)
@@ -403,11 +412,86 @@ def _reel_quality_start(source, duration, used, fallback):
     return max(candidates, key=rank)
 
 
+def _overlaps_blocked(start: float, duration: float, blocked) -> bool:
+    from core.media_integrity import REFERENCE_PREROLL_SEC
+    return any(start - REFERENCE_PREROLL_SEC < end and start + duration > begin for begin, end in blocked)
+
+
+def _readable_reel_start(source: dict[str, Any], duration: float, used: list, start: float,
+                         blocked: list, attempts: int = 8) -> tuple[float, bool]:
+    """Move a Reel shot off unreadable (zero-filled) stretches of its file.
+
+    Returns the start and whether damage was found. A shot inside damage
+    cannot be decoded: its review photo and its export segment would fail.
+    """
+    from core.media_integrity import damaged_spans
+    path = str(source.get("source_path") or source.get("path") or "")
+    limit = max(0.0, float(source.get("duration_sec") or duration) - duration)
+    found = False
+    for _ in range(attempts):
+        spans = damaged_spans(path, start, start + duration)
+        if not spans:
+            return start, found
+        found = True
+        # Block from the first damaged frame through the next second: damage
+        # comes in runs and the check above only reads this window.
+        blocked.extend((begin, end + 1.0) for begin, end in spans)
+        candidate = _reel_quality_start(source, duration, used, start, blocked)
+        if _overlaps_blocked(candidate, duration, blocked):
+            candidate = next((step / 2.0 for step in range(int(limit * 2) + 1)
+                              if not _overlaps_blocked(step / 2.0, duration, blocked)), None)
+        if candidate is None:
+            return start, found
+        start = candidate
+    return start, found
+
+
 def _reel_promo_plan(
     coverage: dict[str, Any],
     beats: dict[str, Any],
     settings: dict[str, Any] | None = None,
     shot_ready=None,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    """Plan once, check every chosen window for damage in parallel, then plan
+    again with those results cached. The plan is deterministic, so the second
+    pass only differs (and only re-checks) where a window was unreadable.
+    Checking 74 windows one by one on a USB disk took ~90 s; in parallel the
+    whole Reel plan stays well under half a minute."""
+    draft = _reel_promo_plan_pass(coverage, beats, settings, None, check_damage=False)
+    _prefetch_damage_checks(draft.get("segments") or [], progress_callback)
+    return _reel_promo_plan_pass(coverage, beats, settings, shot_ready, check_damage=True)
+
+
+def _prefetch_damage_checks(segments: list[dict[str, Any]], progress_callback: ProgressCallback | None = None,
+                            workers: int = 4) -> None:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from core.media_integrity import damaged_spans
+    windows = sorted({(str(segment.get("source_path") or segment.get("clip_path") or ""),
+                       float(segment.get("clip_start_sec") or 0.0),
+                       float(segment.get("clip_start_sec") or 0.0) + float(segment.get("duration_sec") or 0.0))
+                      for segment in segments if not segment.get("spherical_shot")})
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="reel-integrity") as pool:
+        futures = [pool.submit(damaged_spans, *window) for window in windows]
+        try:
+            for done, future in enumerate(as_completed(futures), 1):
+                future.result()
+                if progress_callback and (done % 10 == 0 or done == len(futures)):
+                    progress_callback(55 + int(5 * done / max(1, len(futures))),
+                                      f"Checking shots for damaged frames {done}/{len(futures)}")
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            raise
+
+
+def _reel_promo_plan_pass(
+    coverage: dict[str, Any],
+    beats: dict[str, Any],
+    settings: dict[str, Any] | None,
+    shot_ready,
+    *,
+    check_damage: bool,
 ) -> dict[str, Any]:
     """Build an unsynchronised, beat-cut promo plan.
 
@@ -523,6 +607,9 @@ def _reel_promo_plan(
     segments: list[dict[str, Any]] = []
     previous_source = None
     used_highlights = {}
+    # Unreadable stretches found per source while placing shots.
+    damaged_by_source: dict[str, list] = {}
+    damaged_sources: set[str] = set()
     fixed_index = 0
     for index, (master_start, master_end) in enumerate(zip(boundaries, boundaries[1:])):
         seg_duration = max(0.1, master_end - master_start)
@@ -536,7 +623,13 @@ def _reel_promo_plan(
         # Deterministic spread over each source, independent of master time.
         clip_start = max(0.0, ((index * 1.37) % max(0.1, source_duration - seg_duration))) if source_duration > seg_duration else 0.0
         used = used_highlights.setdefault(_source_id(source), [])
-        clip_start = _reel_quality_start(source, seg_duration, used, clip_start)
+        blocked = damaged_by_source.setdefault(_source_id(source), [])
+        clip_start = _reel_quality_start(source, seg_duration, used, clip_start, blocked)
+        damage_found = False
+        if check_damage:
+            clip_start, damage_found = _readable_reel_start(source, seg_duration, used, clip_start, blocked)
+        if damage_found:
+            damaged_sources.add(str(source.get("filename") or Path(str(source.get("path") or "video")).name))
         used.append((clip_start, clip_start + seg_duration))
         segment = {
             "title": window.get("title") or t("full_video"),
@@ -600,7 +693,11 @@ def _reel_promo_plan(
         "master_window_start_sec": round(start, 6),
         "master_window_end_sec": round(end, 6),
         "real_edit_logic": "reel unsynchronised promo: independent dynamic source selection on master beats",
-        "warnings": coverage.get("warnings") or [],
+        "warnings": list(coverage.get("warnings") or []) + [
+            f"{name} has damaged (unreadable) stretches; its shots were taken from the readable parts."
+            for name in sorted(damaged_sources)
+        ],
+        "damaged_sources": sorted(damaged_sources),
         "excluded_clips": coverage.get("excluded_clips") or [],
         "clip_diagnostics": coverage.get("clip_diagnostics") or [],
         "camera_usage": _camera_usage(segments),
@@ -2854,7 +2951,7 @@ def validate_plan_camera_source_consistency(plan: dict[str, Any]) -> None:
         # the invariant applies whenever a camera_id is present.
         if not camera_id:
             continue
-        render_camera = _camera_id_from_render_path(segment)
+        render_camera = _camera_id_from_render_path(segment).strip().lower()
         if camera_id != render_camera:
             raise ValueError(
                 f"Edit plan camera/source mismatch at segment {index}: "
@@ -2910,7 +3007,9 @@ def _camera_id(source: dict[str, Any]) -> str:
         return family
     if role == "360":
         return "360"
-    return path.stem.lower() or _source_id(source).lower()
+    # "Watching you .mp4" names the camera "watching you", like every other
+    # branch above, which already strips: the plan check compared the two.
+    return path.stem.strip().lower() or _source_id(source).strip().lower()
 
 
 def _camera_family(value: str) -> str:

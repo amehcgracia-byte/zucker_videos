@@ -89,10 +89,16 @@ PY
   --add-data "/System/Library/Fonts/Supplemental/BigCaslon.ttf:assets/fonts" \
   --add-data "$BUILD_INFO:." \
   --add-data "$ROOT/README_APP.md:." \
+  --add-data "$ROOT/tools/qa/show_pilot_editor.html:tools/qa" \
+  --add-data "$ROOT/tools/qa/show_*.js:tools/qa" \
+  --add-data "$ROOT/tools/qa/show-backgrounds:tools/qa/show-backgrounds" \
+  --add-data "$ROOT/tools/qa/show-masks:tools/qa/show-masks" \
+  --add-data "$ROOT/tools/qa/show-elements:tools/qa/show-elements" \
   --collect-submodules demucs \
   --collect-data demucs \
   --hidden-import torchaudio \
   --collect-data faster_whisper \
+  --collect-data cv2 \
   --collect-data whisper \
   --collect-data onnxruntime \
   --collect-data tokenizers \
@@ -111,6 +117,10 @@ PY
   --hidden-import ctranslate2 \
   --collect-submodules server \
   --collect-submodules core \
+  --collect-submodules diffusers \
+  --copy-metadata diffusers \
+  --hidden-import transformers \
+  --collect-submodules transformers.models.clip \
   --exclude-module pytest \
   --exclude-module tests \
   --exclude-module scipy.tests \

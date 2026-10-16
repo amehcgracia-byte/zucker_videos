@@ -1,0 +1,1641 @@
+// Show storyboard: identity -> intro -> scenes -> review and render.
+// Each scene explains what it proposes; watch it (a real preview, prepared in
+// the background), then accept it, modify it or leave it without effect. Inside
+// "Modify", every effect has its own editor: regions are kept in the
+// coordinates of their own picture, outlines exist only in the editor, and the
+// pixels that move are the originals. Nothing is rendered until the last step.
+(() => {
+  const KIND_LABELS = { sticker:"Sticker", cutaway: "Close-up", character: "Character speaks", drawing: "Drawing", word: "Word", warp: "Warp", steam: "Rainbow steam", math: "Formulas around you" };
+  const STATUS_LABELS = { proposed: "Proposed", approved: "Approved", discarded: "Discarded" };
+  const DECISION_LABELS = { pending: "To decide", accepted: "Accepted", modified: "Needs review", plain: "Without effect" };
+  const ACTIONS = { mouth: "Mouth (with the voice)", nod: "Nod", side: "Sideways", turn: "Turn" };
+  const DRAWING_STYLES = { pencil: "Pencil", crayon: "Wax crayons", marker: "Felt-tip marker" };
+  const ENTRANCES = { cut: "Straight cut: it talks at once", zoom: "Push in, then it talks", bounce: "The photo bounces in over the frozen host" };
+  let review = null;          // the storyboard: identity, intro, scenes, proposals, resources
+  let library = [];
+  let showRetired=false,retiredCount=0;
+  let step = 0;
+  let poll = null;
+  let selectedOverlay = null;
+  let previewOrigin = 0;
+  let timelineDialog = null, stageHome = null;
+  let selectedEffect = null, placingWords = false, firstWord = null, pickedWords = null;
+  const open = new Set();
+  const editors = new Map();
+
+  const $ = (selector, root = document) => root.querySelector(selector);
+  const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const clock = (seconds) => { const s = Math.max(0, Number(seconds) || 0); return `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`; };
+  const media = (path) => `/api/v1/show/media?path=${encodeURIComponent(path)}`;
+  const still = (source, t) => `/api/v1/show/still?source=${encodeURIComponent(source)}&t=${encodeURIComponent(Number(t) || 0)}`;
+  const isPhoto = (path) => /\.(jpe?g|png|webp|heic)$/i.test(String(path || ""));
+  const baseName = (path) => String(path || "").split(/[\\/]/).pop();
+
+  function picture(item) {
+    const p = item.params;
+    if (item.kind === "cutaway") return p.thumb ? media(p.thumb) : still(p.source, p.source_start);
+    if (item.kind === "character") return still(p.source, p.still_time);
+    if (item.kind === "drawing" && p.picture) return `/api/v1/show/library/file?path=${encodeURIComponent(p.picture)}`;
+    return `/api/v1/show/frame?t=${encodeURIComponent(item.at)}`;
+  }
+
+  async function openReview() {
+    review = await api("/show/scenes");
+    await loadLibrary();
+    for (const scene of review.scenes || []) {
+      if (["queued", "rendering", "ready"].includes(scene.preview?.status)) wantEffects.add(scene.id);
+    }
+    step = 0;
+    render();
+  }
+
+  async function openWorkspace({sceneId=null}={}) {
+    const state = await api("/wizard/status");
+    if (["running", "cancelling"].includes(state.status)) throw new Error("Wait for the current job before editing the storyboard.");
+    await openReview();
+    if (sceneId) {
+      const index=review.scenes.findIndex(scene=>scene.id===sceneId);
+      if (index>=0) { step=index+2; render(); }
+    }
+    window.enterShowWorkspace();
+  }
+  document.getElementById("showWorkspaceOpen")?.addEventListener("click",()=>openWorkspace().catch(error=>showToast(error.message,true)));
+
+  // ---- Storyboard -------------------------------------------------------------
+
+  const dirtyScenes = new Set();
+  const viewedScenes = new Set();
+  const wantQuick = new Set();
+  const useSaved = scene => !!review.saved_render && !wantEffects.has(scene.id) && !wantQuick.has(scene.id);
+  const wantEffects = new Set();      // scenes whose preview with effects was asked for
+  const scenes = () => review.scenes || [];
+  const stepNames = () => ["Identity", "Intro", ...scenes().map((scene) => scene.name), "Review & render"];
+  const currentScene = () => (step >= 2 && step < 2 + scenes().length ? scenes()[step - 2] : null);
+
+  function render() {
+    if (!review) return;
+    clearTimeout(poll);
+    closeTimeline();
+    stopWatching();
+    stopQuick();
+    const names = stepNames();
+    $("#showSteps").innerHTML = names.map((name, index) => {
+      const scene = index >= 2 && index < names.length - 1 ? scenes()[index - 2] : null;
+      const mark = scene ? ` <small class="show-decision show-${scene.decision}">${DECISION_LABELS[scene.decision]}</small>` : "";
+      const done = scene && ["accepted", "plain"].includes(scene.decision) ? "✓ " : "";
+      return `<button type="button" data-show-step="${index}" class="${index === step ? "active" : ""}">${done}${escape(name)}${mark}</button>`;
+    }).join("");
+    // How far along the show is: every decided scene counts, whatever was decided.
+    const decided = scenes().filter((scene) => ["accepted", "plain"].includes(scene.decision)).length;
+    const total = scenes().length;
+    $("#showProgress span").textContent = decided === total ? `All ${total} scenes decided ✓` : `${decided} of ${total} scenes decided · ${total - decided} to decide`;
+    Object.assign($("#showProgress progress"), { max: Math.max(1, total), value: decided });
+    $("#showStepCount").textContent = `${step + 1} of ${names.length}`;
+    $("#showBack").disabled = step === 0;
+    $("#showNext").hidden = step === names.length - 1;
+    const video = $("#showStageVideo");
+    video.pause();
+    $("#showStageLayer").innerHTML = "";
+    $("#showStageStatus").textContent = "";
+    selectedOverlay = null;
+    document.getElementById("showTimeline")?.remove();
+    document.getElementById("showTimelineLauncher")?.remove();
+    document.getElementById("showSceneTransport")?.remove();
+    if (step === 0) renderIdentity();
+    else if (step === 1) renderIntro();
+    else if (currentScene()) renderScene();
+    else renderFinal();
+  }
+
+  function showVideo(url, status = "") {
+    stopQuick();
+    $("#showStageLayer").querySelectorAll(".show-picture-placement").forEach(element=>element.remove());
+    previewOrigin=currentScene()?.start||0;
+    const video = $("#showStageVideo");
+    $("#showStageCard").hidden = true;
+    video.hidden = !url;
+    video.controls=true;
+    if($("#showSceneTransport"))$("#showSceneTransport").hidden=true;
+    if (url && video.getAttribute("src") !== url) { video.src = url; video.load(); }
+    if (!url) video.removeAttribute("src");
+    $("#showStageStatus").textContent = status;
+  }
+
+  function drawCard() {
+    const canvas = $("#showStageCard");
+    const ctx = canvas.getContext("2d");
+    const identity = review.identity;
+    canvas.hidden = false;
+    $("#showStageVideo").hidden = true;
+    ctx.fillStyle = "#101214";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const title = identity.title || "";
+    const writeTitle = (y) => {
+      if (!title) return;
+      ctx.font = "bold 64px 'Marker Felt', 'Segoe Print', 'Comic Sans MS', sans-serif";
+      ctx.textAlign = "center";
+      ctx.lineWidth = 8; ctx.strokeStyle = "#000"; ctx.strokeText(title, canvas.width / 2, y);
+      ctx.fillStyle = "#faf6eb"; ctx.fillText(title, canvas.width / 2, y);
+    };
+    if (identity.logo) {
+      const image = new Image();
+      image.onload = () => {
+        const k = Math.min(canvas.width * 0.32 / image.width, canvas.height * 0.38 / image.height);
+        ctx.drawImage(image, (canvas.width - image.width * k) / 2, canvas.height * 0.44 - image.height * k, image.width * k, image.height * k);
+        writeTitle(canvas.height * 0.62);
+      };
+      image.src = "/api/v1/wizard/logo/project";
+    } else writeTitle(canvas.height / 2 + 20);
+    $("#showStageStatus").textContent = title || identity.logo ? `Title card · ${identity.seconds || 2} s` : "No title card: the show starts straight away.";
+  }
+
+  function renderIdentity() {
+    const identity = review.identity;
+    $("#showPanel").innerHTML = `<h3>Your identity</h3>
+      <label class="show-field"><span>Title</span><input type="text" id="showTitle" maxlength="80" value="${escape(identity.title)}" placeholder="${escape(identity.suggested_title || "")}"></label>
+      <label><input type="checkbox" id="showUseLogo" ${identity.logo ? "checked" : ""} ${review.project_logo ? "" : "disabled"}> Show the project's logo ${review.project_logo ? "" : "(add one in Overlay &amp; Captions first)"}</label>
+      <label class="show-field"><span>Seconds on screen</span><input type="number" id="showCardSeconds" min="1" max="6" step="0.5" value="${identity.seconds || 2}"></label>
+      <p class="show-hint">The title card opens the show. Leave the title empty and the logo off to start straight away. The logo is shown as it is, never redrawn.</p>`;
+    const save = async (changes) => {
+      const result = await api("/show/scenes/identity", { method: "PATCH", body: JSON.stringify(changes) });
+      review.identity = result.identity;
+      drawCard();
+    };
+    $("#showTitle").oninput = (event) => { review.identity.title = event.target.value; drawCard(); clearTimeout(poll); poll = setTimeout(() => save({ title: event.target.value }).catch((error) => showToast(error.message, true)), 400); };
+    $("#showUseLogo").onchange = (event) => save({ use_logo: event.target.checked }).catch((error) => showToast(error.message, true));
+    $("#showCardSeconds").onchange = (event) => save({ seconds: Number(event.target.value) }).catch((error) => showToast(error.message, true));
+    drawCard();
+  }
+
+  function renderIntro() {
+    const videos = [review.source, ...(review.resources || []).map((item) => item.path)].filter(Boolean);
+    const chosen = review.intro?.path || "";
+    $("#showPanel").innerHTML = `<h3>Intro</h3>
+      <label class="show-field"><span>An intro you already made (one of this project's videos)</span>
+        <select id="showIntro"><option value="">No intro: go straight to the first scene</option>${videos.map((path) => `<option value="${escape(path)}" ${path === chosen ? "selected" : ""}>${escape(baseName(path))}</option>`).join("")}</select></label>
+      <p class="show-hint">It plays after the title card, with its own sound, framed to the show's size (never cropped).</p>`;
+    $("#showIntro").onchange = async (event) => {
+      try {
+        const result = await api("/show/scenes/identity", { method: "PATCH", body: JSON.stringify({ intro: event.target.value }) });
+        review.intro = result.intro;
+        renderIntro();
+      } catch (error) { showToast(error.message, true); }
+    };
+    showVideo(chosen ? `/api/v1/show/source?path=${encodeURIComponent(chosen)}` : "", chosen ? "" : "No intro.");
+  }
+
+  async function loadLibrary(){const data=await api('/show/library'+(showRetired?'?retired=1':''));library=data.items||[];retiredCount=data.retired_count||0;}
+  function timelineItems(scene){
+    if(!scene)return [];
+    return [...sceneEffects(scene),...scene.overlays.map(overlay=>{
+      overlay.id ||= crypto.randomUUID();
+      const asset=library.find(item=>item.path===overlay.asset);
+      return {id:'sticker:'+overlay.id,overlay,kind:'sticker',at:overlay.at??scene.start,duration:overlay.duration??4,status:'approved',params:{subject:asset?.name||baseName(overlay.asset),selected_text:overlay.selected_text||''}};
+    })];
+  }
+  const timelineItem=id=>timelineItems(currentScene()).find(item=>item.id===id);
+  function sceneEffects(scene) {
+    return review.proposals.filter((item) => scene.effects.includes(item.id));
+  }
+
+  function renderScene() {
+    const scene = currentScene();
+    if(selectedEffect && !timelineItems(scene).some(item=>item.id===selectedEffect)){selectedEffect=null;placingWords=false;firstWord=null;pickedWords=null;}
+    const effects = sceneEffects(scene);
+    const preview = scene.preview || { status: "none" };
+    const words = scene.words || [];
+    $("#showPanel").innerHTML = `<p id="showSaveStatus" class="show-needs" role="alert" hidden></p><h3>${escape(scene.name)} <small>${clock(scene.start)}–${clock(scene.end)}</small></h3>
+      <div class="show-said" id="showSaid"><strong>What you say</strong> <small>Click a word to go there. Select words, then choose Animation for selection. Ordinary right-click keeps the text menu.</small><button type="button" class="icon-button small" id="showSayTools">Animation for selection…</button>
+        <div id="showWordPlacement" class="show-actions"></div><p class="show-said-text">${words.length ? words.map(([text, start, end], index) => `<span data-word="${index}" data-start="${start}" data-end="${end}">${escape(text)}</span>`).join(" ") : escape(scene.text)}</p></div>
+      <div class="show-preview-mode">
+        ${review.saved_render ? `<button type="button" class="icon-button small ${useSaved(scene) ? "active" : ""}" data-preview-mode="saved" title="The last completed export, including its captions and effects">Saved render</button>` : ""}
+        <button type="button" class="icon-button small ${!wantEffects.has(scene.id) && !useSaved(scene) ? "active" : ""}" data-preview-mode="quick" title="Your cut and chosen pictures, with immediate timing updates">Live timing preview</button>
+        <button type="button" class="icon-button small ${wantEffects.has(scene.id) ? "active" : ""}" data-preview-mode="effects" title="Generate this scene with your current proposed effects before accepting">Generate scene preview</button>
+      </div>
+      <p class="show-proposal">${escape(scene.proposal)}</p>
+      <p class="show-hint" role="status">${dirtyScenes.has(scene.id) ? "Changes saved. Generate a new scene preview to see them before accepting." : "Generate this scene with its effects, watch it, then accept or change it."}</p>
+      <div class="show-decide">
+        <button type="button" class="primary icon-button small" data-scene-decision="accepted" data-then-next ${viewedScenes.has(scene.id) ? "" : "disabled"}>Accept and next →</button>
+        <button type="button" class="icon-button small" data-scene-decision="accepted" ${viewedScenes.has(scene.id) ? "" : "disabled"}>Accept</button>
+        <button type="button" class="icon-button small" data-scene-modify>Modify</button>
+        <button type="button" class="icon-button small" data-scene-decision="plain">Leave without effect</button>
+        <span class="show-decision show-${scene.decision}">${DECISION_LABELS[scene.decision]}</span>
+      </div>
+      <div id="showClay" class="show-clay"></div>
+      <div id="showSceneEffects" class="show-review-list" ${open.has(scene.id) ? "" : "hidden"}>${effects.map(card).join("") || "<p class=\"show-hint\">No effect in this scene.</p>"}
+        <form id="showSceneAdd" class="show-review-add"><strong>Add</strong>
+          <select name="kind"><option value="drawing">A drawing</option><option value="steam">Rainbow steam over a mug</option><option value="character">A character that speaks</option><option value="cutaway">A close-up</option><option value="math">Formulas around you</option><option value="word">A shouted word</option></select>
+          <label>at <input name="at" type="number" step="0.1" min="${scene.start}" max="${scene.end}" value="${scene.start.toFixed(1)}"> s</label>
+          <label>of <input name="subject" type="text" maxlength="80" placeholder="a guitar"></label>
+          <select name="style">${Object.entries(DRAWING_STYLES).map(([key, label]) => `<option value="${key}" ${key === "crayon" ? "selected" : ""}>${label}</option>`).join("")}</select>
+          <select name="source">${[review.source, ...(review.resources || []).map((item) => item.path)].map((path) => `<option value="${escape(path)}">${escape(baseName(path))}</option>`).join("")}</select>
+          <label>from <input name="source_time" type="number" min="0" step="0.1" value="0"> s of it</label>
+          <button class="icon-button small" type="submit">Add &amp; preview</button></form>
+        <h4>Your drawings &amp; stickers</h4><p class="show-hint">Choose a picture to add it as an editable timeline clip. Right-click a picture to remove it.</p><button type="button" data-toggle-retired>${showRetired?"Hide retired images":`Retired images (${retiredCount})`}</button>
+        <div class="show-library">${library.slice(0, 80).map((item, index) => `<div class="show-library-entry"><button type="button" data-library="${index}" aria-label="Add ${escape(item.name)}" title="${escape(item.name)}" ${item.retired?"disabled":""}><img src="${item.url}" alt="" loading="lazy">${escape(item.name)}</button><small>${escape(item.origin||"Your library")}</small><button type="button" data-library-retire="${index}">${item.retired?"Restore":"Remove from library"}</button></div>`).join("") || "<p class=\"show-hint\">The library is empty: add images in Overlay &amp; Captions, or keep painted drawings.</p>"}</div>
+        <p class="show-hint">Drag a picture on the video to move it, its corner to resize it; click it for its tools.</p>
+        <button type="button" class="icon-button small" data-studio="open">Cut out a photo / create a layer</button>
+      </div>`;
+    for (const id of open) if (scene.effects.includes(id)) mountEditor(id);
+    bindAddForm(scene);
+    drawOverlays(scene);
+    showScenePicture(scene);
+    clayBlock(scene);
+    renderTimeline(scene);
+    wordPlacementControls();
+    showSaveStatus();
+  }
+
+  // The production storyboard uses edited seconds, including transcript and bars.
+  const fitTiming=ShowClock.fit;
+  function highlightWords(start,end) {
+    document.querySelectorAll('#showSaid [data-word]').forEach(word=>word.classList.toggle('placement-word',Number(word.dataset.start)<end && Number(word.dataset.end)>start));
+  }
+  function wordPlacementControls() {
+    const box=$('#showWordPlacement'), scene=currentScene(); if(!box||!scene)return;
+    const item=timelineItem(selectedEffect);
+    if(!item){box.innerHTML='<small>Select an effect in the timeline to place it on words.</small>';return;}
+    box.innerHTML=`<strong>${escape(item.params.subject||item.params.text||KIND_LABELS[item.kind]||item.kind)}</strong>
+      <button type="button" data-start-word-placement>Choose words</button>
+      <button type="button" data-use-word-placement ${pickedWords?'':'disabled'}>Use these words</button>
+      ${placingWords?'<button type="button" data-cancel-word-placement>Cancel</button>':''}
+      <small>${pickedWords?`“${escape(pickedWords.text)}”`:placingWords?(firstWord===null?'Select a phrase, or click its first word, then its last word.':'Now click the last word.'):item.params.selected_text?`On: “${escape(item.params.selected_text)}”`:'Drag the bar or choose words.'}</small>`;
+    highlightWords(pickedWords?.start??item.at,pickedWords?.end??item.at+item.duration);
+  }
+  async function savePlacement(item, changes) {
+    const owner=currentScene()?.id;
+    await flushEdits();
+    if(item.overlay){
+      const old={...item.overlay};Object.assign(item.overlay,changes);
+      if(!await saveOverlays(currentScene())){Object.assign(item.overlay,old);throw Error('Sticker changes were not saved');}
+      drawOverlays(currentScene());renderTimeline(currentScene());wordPlacementControls();return timelineItem(item.id);
+    }
+    const updated=await patch(item.id,changes);
+    await markModified(item.id);
+    if(currentScene()?.id===owner){renderTimeline(currentScene()); refreshCard(item.id); wordPlacementControls();}
+    return updated;
+  }
+  async function placeOnWords(picked) {
+    const scene=currentScene(), item=timelineItem(selectedEffect);
+    if(!scene||!item||!picked)return;
+    const timing=fitTiming(scene,picked.start,picked.end-picked.start);
+    await savePlacement(item,{...timing,selected_text:picked.text});
+    placingWords=false;firstWord=null;pickedWords=null;wordPlacementControls();
+    locateEffect(timelineItem(item.id));
+    showToast('Placed on your selected words. Drag the bar edges to extend or shorten it.');
+  }
+  function enterLiveTiming(scene, at=editedPlayhead()) {
+    if(quick && !quick.saved)return;
+    wantEffects.delete(scene.id);wantQuick.add(scene.id);
+    $('#showPanel').querySelectorAll('[data-preview-mode]').forEach(button=>button.classList.toggle('active',button.dataset.previewMode==='quick'));
+    playQuick(scene,Math.max(0,Math.min(scene.end-scene.start-.04,at-scene.start)));
+  }
+  function openTimeline() {
+    if(!currentScene())return;
+    enterLiveTiming(currentScene());
+    if(!timelineDialog){
+      timelineDialog=document.createElement('dialog');timelineDialog.id='showTimelineDialog';timelineDialog.setAttribute('aria-label','Scene editor');
+      timelineDialog.innerHTML='<header><div><strong>Scene editor</strong><small>Video, voice and effect timing</small></div><button type="button" aria-label="Close scene editor" data-close-scene-editor>×</button></header><div data-scene-editor-body></div>';
+      document.body.append(timelineDialog);
+      timelineDialog.querySelector('[data-close-scene-editor]').onclick=closeTimeline;
+      timelineDialog.addEventListener('cancel',event=>{event.preventDefault();closeTimeline();});
+      timelineDialog.addEventListener('click',event=>{if(event.target!==timelineDialog)return;const r=timelineDialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)closeTimeline();});
+      timelineDialog.addEventListener('close',()=>{if(!timelineDialog.open)restoreStage();});
+    }
+    if(!timelineDialog.open){
+      const wrap=$('.show-stage-wrap');stageHome=document.createComment('Scene player home');wrap.before(stageHome);
+      timelineDialog.querySelector('[data-scene-editor-body]').append(wrap);
+      $('#showTimeline').hidden=false;$('#showTimelineLauncher').hidden=true;
+      timelineDialog.showModal();
+    }
+  }
+  function restoreStage() {
+    if(stageHome){stageHome.replaceWith($('.show-stage-wrap'));stageHome=null;}
+    if($('#showTimeline'))$('#showTimeline').hidden=true;
+    if($('#showTimelineLauncher'))$('#showTimelineLauncher').hidden=false;
+  }
+  function closeTimeline() {
+    $("#showContextMenu").hidden=true;
+    if(timelineDialog?.open)timelineDialog.close();
+    restoreStage();
+    // Context menus mounted on body cannot stay above a modal's top layer.
+    $('#showEffectMenu')?.setAttribute('hidden','');
+  }
+  function locateEffect(item, popup=true) {
+    const scene=currentScene();if(!scene||!item||!timelineItems(scene).some(entry=>entry.id===item.id))return;
+    selectedEffect=item.id;
+    wantEffects.delete(scene.id);wantQuick.add(scene.id);
+    $('#showPanel').querySelectorAll('[data-preview-mode]').forEach(button=>button.classList.toggle('active',button.dataset.previewMode==='quick'));
+    playQuick(scene,Math.max(0,Math.min(scene.end-.04,item.at)-scene.start));
+    $('#showStageVideo').pause();
+    drawOverlays(scene);
+    renderTimeline(scene);wordPlacementControls();
+    if(popup)openTimeline();
+  }
+  function drawingPosition(item) {
+    const p=item.params,vertical=p.position?.startsWith('top')?'top':p.position?.startsWith('bottom')?'bottom':'';
+    const preset={top:[.2,.24],bottom:[.22,.72],'':[.21,.42]}[vertical];
+    return p.image_center || [p.position?.endsWith('right')?1-preset[0]:preset[0],preset[1]];
+  }
+  function liveDrawings(scene) {
+    const layer=$('#showStageLayer');
+    layer.querySelectorAll('.show-picture-placement').forEach(element=>element.remove());
+    if(!quick || quick.saved)return;
+    for(const item of sceneEffects(scene).filter(item=>item.kind==='drawing' && item.params.picture && item.status!=='discarded')) {
+      const p=item.params,pos=drawingPosition(item);
+      const element=document.createElement('div');element.className='show-picture-placement';element.dataset.liveEffect=item.id;
+      element.classList.toggle('selected',item.id===selectedEffect);
+      element.style.cssText=`left:${pos[0]*100}%;top:${pos[1]*100}%;width:${(p.size||.25)*100}%`;
+      element.innerHTML=`<img src="${picture(item)}" draggable="false" alt="${escape(p.subject||'Drawing')}"><span class="picture-corner" title="Drag to resize"></span>`;
+      layer.append(element);
+      element.onpointerdown=event=>{
+        event.preventDefault();event.stopPropagation();element.setPointerCapture(event.pointerId);
+        selectedEffect=item.id;wordPlacementControls();
+        layer.querySelectorAll('.show-picture-placement').forEach(el=>el.classList.toggle('selected',el===element));
+        const bounds=$('#showStage').getBoundingClientRect(),start=[event.clientX,event.clientY],initial=[...drawingPosition(item)],width=p.size||.25,resize=event.target.classList.contains('picture-corner');
+        const playing=!$('#showStageVideo').paused;$('#showStageVideo').pause();
+        let changes={},moved=false;
+        element.onpointermove=e=>{
+          moved ||= Math.abs(e.clientX-start[0])+Math.abs(e.clientY-start[1])>2;
+          if(resize){changes={size:Math.max(.02,Math.min(2,width+2*(e.clientX-start[0])/bounds.width)),image_center:initial};element.style.width=`${changes.size*100}%`;}
+          else {changes={image_center:[Math.max(-1,Math.min(2,initial[0]+(e.clientX-start[0])/bounds.width)),Math.max(-1,Math.min(2,initial[1]+(e.clientY-start[1])/bounds.height))]};element.style.left=`${changes.image_center[0]*100}%`;element.style.top=`${changes.image_center[1]*100}%`;}
+        };
+        const finish=()=>{element.onpointermove=null;element.onpointerup=null;element.onpointercancel=null;};
+        element.onpointerup=async()=>{
+          finish();
+          try{if(moved)await savePlacement(item,changes);liveDrawings(scene);if(playing)$('#showStageVideo').play().catch(()=>{});}
+          catch(error){liveDrawings(scene);showToast(error.message,true);}
+        };
+        element.onpointercancel=()=>{finish();liveDrawings(scene);};
+      };
+    }
+    syncPlayback();
+  }
+  function editedPlayhead() {
+    const scene=currentScene(),video=$('#showStageVideo');if(!scene)return 0;
+    if(quick?.scene.id===scene.id){
+      if(quick.pending!=null)return quick.pending;
+      return ShowClock.editedAt(scene,quick.segments,video.currentTime,quick.index,quick.pending);
+    }
+    return previewOrigin+video.currentTime;
+  }
+  function syncPlayback() {
+    const scene=currentScene();if(!scene)return;
+    const at=Math.max(scene.start,Math.min(scene.end,editedPlayhead())),box=$('#showTimeline');
+    const transport=$('#showSceneTransport');
+    if(transport){transport.hidden=!quick;transport.querySelector('[data-scene-play]').textContent=$('#showStageVideo').paused?'Play scene':'Pause';transport.querySelector('[data-scene-clock]').textContent=`${clock(Math.max(scene.start,Math.min(scene.end,at)))} / ${clock(scene.end)} · edited time`;}
+
+    $('#showStageLayer').querySelectorAll('[data-live-effect]').forEach(element=>{
+      const item=review.proposals.find(p=>p.id===element.dataset.liveEffect);
+      element.hidden=!quick || quick.saved || !ShowClock.visible(item,at);
+    });
+    $('#showStageLayer').querySelectorAll('[data-overlay]').forEach(element=>{
+      const item=scene.overlays[Number(element.dataset.overlay)];
+      const start=item?.at??scene.start,end=start+(item?.duration??scene.end-scene.start);
+      element.hidden=!quick || quick.saved || at<start || at>=end;
+    });
+    const input=box?.querySelector('[data-timeline-seek]');
+    if(input){input.value=at;box.querySelector('[data-playhead-label]').textContent=clock(at);box.style.setProperty('--playhead',`${Math.max(0,Math.min(100,100*(at-scene.start)/(scene.end-scene.start)))}%`);}
+  }
+  function renderTimeline(scene) {
+    let box=$('#showTimeline');if(!box){box=document.createElement('section');box.id='showTimeline';box.setAttribute('aria-label','Scene timeline');$('.show-stage-wrap').append(box);}
+    box.hidden=!timelineDialog?.open;
+    let launcher=$('#showTimelineLauncher');if(!launcher){launcher=document.createElement('button');launcher.type='button';launcher.id='showTimelineLauncher';launcher.className='icon-button';launcher.textContent='Open scene editor · video & timeline';launcher.onclick=()=>{openTimeline();};$('.show-stage-wrap').append(launcher);}
+    launcher.hidden=!!timelineDialog?.open;
+    const duration=scene.end-scene.start;
+    const pct=t=>100*(t-scene.start)/duration;
+    const selected=timelineItems(scene).find(item=>item.id===selectedEffect);
+    const rows=timelineItems(scene).filter(item=>item.status!=='discarded');
+    box.innerHTML=`<header><strong>Scene timeline</strong><small>${clock(scene.start)}–${clock(scene.end)}</small></header>
+      <details class="show-sticker-picker"><summary>Add sticker</summary><div class="show-library">${library.map((asset,index)=>asset.retired?'':`<button type="button" data-library="${index}" aria-label="Add ${escape(asset.name)}"><img src="${asset.url}" alt="" loading="lazy">${escape(asset.name)}</button>`).join('')}</div></details>
+      <p>Play or scrub to check when a picture appears and disappears. Drag a bar to move it; drag either edge to trim.</p>
+      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${selected.kind==='drawing'&&!selected.params.picture?'<small>This local drawing needs a rendered preview. It is not drawn in the live timing view.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
+      <div class="show-time-row"><span>Video</span><div class="show-time-source" data-scene-seek>Original video · your cut</div></div>
+      <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
+      ${rows.map(item=>{
+        const a=Math.max(scene.start,item.at),b=Math.min(scene.end,item.at+item.duration),outside=b<=a;
+        const name=item.params.subject||item.params.text||KIND_LABELS[item.kind]||item.kind;
+        return `<div class="show-time-row"><button type="button" class="show-time-name" data-locate-effect="${item.id}" title="${escape(name)}">${escape(KIND_LABELS[item.kind]||item.kind)}</button><div class="show-time-track" data-track="${item.id}">
+        ${outside?item.kind==='character'&&item.duration<=0?`<button type="button" data-show-adjust="${item.id}" class="show-time-outside">Voice &amp; hold timing · Adjust</button>`:`<button type="button" data-place-words="${item.id}" class="show-time-outside">Outside this scene · choose words</button>`:`<div tabindex="0" role="button" aria-label="${escape(name)} timeline clip" class="show-time-clip ${selectedEffect===item.id?'selected':''}" data-time-clip="${item.id}" style="left:${pct(a)}%;width:${100*(b-a)/duration}%" title="${escape(name)} · ${clock(item.at)}–${clock(item.at+item.duration)}"><span data-trim="start" aria-label="Trim start"></span><b>${escape(name)}</b><span data-trim="end" aria-label="Trim end"></span></div>`}</div></div>`;
+      }).join('')}`;
+    const seekTo=time=>{
+      wantEffects.delete(scene.id);wantQuick.add(scene.id);
+      playQuick(scene,Math.max(0,Math.min(duration-.04,time-scene.start)));
+      syncPlayback();
+    };
+    box.querySelector('[data-timeline-seek]').oninput=event=>seekTo(Number(event.target.value));
+    box.onpointerdown=event=>{
+      const clip=event.target.closest('[data-time-clip]');if(!clip)return;
+      enterLiveTiming(scene);
+      event.preventDefault();clip.setPointerCapture(event.pointerId);
+      const item=timelineItem(clip.dataset.timeClip), track=clip.parentElement.getBoundingClientRect(),x=event.clientX,at=item.at,end=at+item.duration,edge=event.target.dataset.trim;
+      selectedEffect=item.id;wordPlacementControls();let moved=false,timing={at,duration:item.duration};
+      clip.onpointermove=e=>{
+        const delta=(e.clientX-x)/track.width*duration;moved ||= Math.abs(e.clientX-x)>2;
+        if(edge==='start'){const start=Math.max(scene.start,Math.min(end-.04,at+delta));timing={at:start,duration:end-start};}
+        else if(edge==='end')timing={at,duration:Math.max(.04,Math.min(scene.end,end+delta)-at)};
+        else timing=fitTiming(scene,at+delta,end-at);
+        clip.style.left=`${pct(timing.at)}%`;clip.style.width=`${100*timing.duration/duration}%`;
+        highlightWords(timing.at,timing.at+timing.duration);
+      };
+      clip.onpointerup=async()=>{
+        clip.onpointermove=null;clip.onpointerup=null;
+        try {if(moved){await savePlacement(item,{...fitTiming(scene,timing.at,timing.duration),selected_text:''});liveDrawings(scene);}
+          else locateEffect(item,false);}
+        catch(error){showToast(error.message,true);renderTimeline(scene);}
+      };
+      clip.onpointercancel=()=>{clip.onpointermove=null;renderTimeline(scene);};
+    };
+    box.onclick=event=>{
+      const track=event.target.closest('[data-scene-seek],[data-track]');
+      if(!track||event.target.closest('button,[data-time-clip]'))return;
+      const bounds=track.getBoundingClientRect();seekTo(scene.start+(event.clientX-bounds.left)/bounds.width*duration);
+    };
+    syncPlayback();
+    box.onkeydown=event=>{const clip=event.target.closest('[data-time-clip]');if(clip && ['Enter',' '].includes(event.key)){event.preventDefault();locateEffect(timelineItem(clip.dataset.timeClip));}};
+  }
+  for(const name of ['timeupdate','loadeddata','play','pause'])$('#showStageVideo').addEventListener(name,syncPlayback);
+  $('#showStageVideo').addEventListener('seeked',()=>{if(quick)quick.pending=null;syncPlayback();});
+  document.addEventListener('selectionchange',()=>{
+    if(!selectedEffect)return;const picked=saidSelection();if(!picked)return;
+    pickedWords=picked;wordPlacementControls();
+  });
+  document.addEventListener('click',async event=>{
+    const target=event.target.closest?.('[data-place-words],[data-locate-effect],[data-start-word-placement],[data-use-word-placement],[data-cancel-word-placement]');if(!target||!review)return;
+    try {
+      if(target.hasAttribute('data-cancel-word-placement')){placingWords=false;firstWord=null;pickedWords=null;wordPlacementControls();return;}
+      if(target.hasAttribute('data-use-word-placement')){await placeOnWords(pickedWords);return;}
+      selectedEffect=target.dataset.placeWords||target.dataset.locateEffect||selectedEffect;
+      if(target.dataset.locateEffect){locateEffect(timelineItem(selectedEffect));return;}
+      closeTimeline();placingWords=true;firstWord=null;pickedWords=null;wordPlacementControls();$('#showSaid').scrollIntoView({block:'nearest'});
+    }catch(error){showToast(error.message,true);}
+  });
+
+  // ---- Clay memories: placements of an approved clay story over this scene ----------
+
+  const CLAY_MODES = { full: "Full clay shot", pip: "Small clay window", bubble: "Thought bubble", blend: "Brief blend over you" };
+  let clay = null;
+  let claySaving = null;
+
+  async function clayBlock(scene) {
+    const box = $("#showClay");
+    if (!box) return;
+    clay = await api("/show/clay").catch(() => null);
+    if (!clay || !clay.stories.length || currentScene()?.id !== scene.id) { box.innerHTML = ""; return; }
+    const inScene = (item) => item.edited.some(([a, b]) => a < scene.end && b > scene.start);
+    const shown = clay.placements.map((item, index) => [item, index]).filter(([item]) => inScene(item));
+    const story = clay.stories.find((item) => clay.placements.some((p) => p.story === item.id && inScene(p))) || null;
+    if (!story && !shown.length) { box.innerHTML = ""; return; }
+    const span = (item) => item.edited.length ? `${clock(item.edited[0][0])}–${clock(item.edited[item.edited.length - 1][1])} in the show` : "cut from the show";
+    box.innerHTML = `<h4>Clay memory <small>${escape(story?.quote || "")}</small></h4>
+      <p class="show-hint">Over your own voice and captions. Times are on the story's clock (seconds of what you say), so a cut in your edit skips that moment of the story too. Gaps between placements go back to you.</p>
+      ${shown.map(([item, index]) => `<fieldset class="show-clay-row" data-clay="${index}">
+        <legend><label><input type="checkbox" data-clay-field="enabled" ${item.enabled !== false ? "checked" : ""}> ${escape(CLAY_MODES[item.mode] || item.mode)}</label> <small>${span(item)}</small></legend>
+        ${field("Mode", `<select data-clay-field="mode">${clay.modes.map((mode) => `<option value="${mode}" ${mode === item.mode ? "selected" : ""}>${CLAY_MODES[mode] || mode}</option>`).join("")}</select>`)}
+        <div class="show-fields">
+          ${field("From (s)", `<input type="number" data-clay-field="start" value="${item.start}" step="0.05" min="0" max="${story?.duration ?? 60}">`)}
+          ${field("To (s)", `<input type="number" data-clay-field="end" value="${item.end}" step="0.05" min="0" max="${story?.duration ?? 60}">`)}
+          ${field("Fade (s)", `<input type="number" data-clay-field="fade" value="${item.fade ?? 0.3}" step="0.05" min="0" max="2">`)}
+        </div>
+        <div class="show-fields">
+          ${field("Across", `<input type="range" data-clay-field="x" value="${item.x}" min="0" max="1" step="0.01">`)}
+          ${field("Down", `<input type="range" data-clay-field="y" value="${item.y}" min="0" max="1" step="0.01">`)}
+          ${field("Size", `<input type="range" data-clay-field="size" value="${item.size}" min="0.1" max="1" step="0.01">`)}
+          ${field("Opacity", `<input type="range" data-clay-field="opacity" value="${item.opacity}" min="0" max="1" step="0.05">`)}
+        </div>
+        ${["pip", "bubble"].includes(item.mode) ? `<label class="show-field"><input type="checkbox" data-clay-field="avoidFace" ${item.avoidFace !== false ? "checked" : ""}> Move aside when it would cover your face</label>` : ""}
+      </fieldset>`).join("") || "<p class=\"show-hint\">No clay placement reaches this scene.</p>"}
+      <p class="show-hint">${story ? story.shots.map((shot) => `${escape(shot.title || "")}: ${shot.cues.map(([time, , cue]) => `${time.toFixed(2)} s ${escape(cue)}`).join(", ")}`).join(" · ") : ""}</p>
+      <p class="show-hint" id="showClayStatus" role="status">The poses change on these word cues and hold still in between. Ask for “Preview with effects” to see it.</p>`;
+    box.querySelectorAll("[data-clay-field]").forEach((input) => input.addEventListener("change", () => clayChange(scene, input)));
+  }
+
+  function clayChange(scene, input) {
+    const index = Number(input.closest("[data-clay]").dataset.clay);
+    const item = clay.placements[index];
+    const name = input.dataset.clayField;
+    item[name] = name === "enabled" || name === "avoidFace" ? input.checked : name === "mode" ? input.value : Number(input.value);
+    clearTimeout(claySaving);
+    $("#showClayStatus").textContent = "Saving…";
+    claySaving = setTimeout(async () => {
+      try {
+        clay = await api("/show/clay/placements", { method: "PUT", body: JSON.stringify({ revision: clay.revision, placements: clay.placements }) });
+        $("#showClayStatus").textContent = "Saved in the project. “Preview with effects” renders it again.";
+        if (name === "mode" || name === "start" || name === "end") clayBlock(scene);
+      } catch (error) {
+        $("#showClayStatus").textContent = `Not saved: ${error.message}`;
+        clayBlock(scene);
+      }
+    }, 350);
+  }
+
+  // The picture of a scene: at once its cut from the original video; with effects only when asked.
+  function showScenePicture(scene) {
+    const preview = scene.preview || { status: "none" };
+    if (!wantEffects.has(scene.id)) {
+      if (!playQuick(scene)) showVideo("", "This scene has no picture to play.");
+      return;
+    }
+    if (preview.status === "ready") { showVideo(preview.url, "Current scene preview. Watch it, then accept or change it."); return; }
+    playQuick(scene); // Keep the source picture usable while the new effect is prepared.
+    $("#showStageStatus").textContent = ["failed", "stopped"].includes(preview.status)
+      ? `The preview is not ready: ${preview.error || "Stopped; generate it again to retry."}`
+      : `${preview.message || "Queued: preparing this scene and its drawings"}. Showing the source cut until it is ready.`;
+    if (!["failed", "stopped"].includes(preview.status)) poll = setTimeout(refreshBoard, 1500);
+  }
+
+  // ---- Quick view: the scene's cut played from the original, nothing rendered ----------
+  let quick = null;
+  function stopQuick() { if (quick) { cancelAnimationFrame(quick.frame); quick = null; } }
+  function playQuick(scene, from = 0, onEnd = null) {
+    stopQuick();
+    const saved = useSaved(scene);
+    const segments = saved ? [[scene.start, scene.end]] : (scene.segments || []);
+    const source = saved ? review.saved_render.url : review.source_url;
+    if (!source || !segments.length) return false;
+    const video = $("#showStageVideo");
+    $("#showStageCard").hidden = true;
+    video.hidden = false;
+    if (video.getAttribute("src") !== source) { video.src = source; video.load(); }
+    quick = { scene, segments, saved, index: 0, frame: 0, pending:scene.start+from };
+    const session=quick;
+    liveDrawings(scene);
+    video.controls=false;
+    let transport=$('#showSceneTransport');
+    if(!transport){transport=document.createElement('div');transport.id='showSceneTransport';transport.className='show-scene-transport';transport.innerHTML='<button type="button" data-scene-play>Play scene</button><output data-scene-clock></output>';$('#showStageStatus').after(transport);transport.querySelector('button').onclick=()=>{if(video.paused){if(editedPlayhead()>=scene.end-.05)playQuick(scene);video.play().catch(error=>showToast(error.message,true));}else video.pause();};}
+    transport.hidden=false;
+    const seek = (index, offset = 0) => { if(quick!==session)return;quick.index = index;quick.pending=scene.start+segments.slice(0,index).reduce((sum,[a,b])=>sum+b-a,0)+offset;video.currentTime = segments[index][0] + offset;syncPlayback(); };
+    const start = () => { if (quick===session) { const [index, offset] = sourceAt(segments, from); seek(index, offset); } };
+    if (video.readyState >= 1) start(); else video.addEventListener("loadedmetadata", start, { once: true });
+    const tick = () => {
+      if (!quick) return;
+      if(!video.seeking){
+        const actual=segments.findIndex(([a,b])=>a<=video.currentTime && video.currentTime<b);
+        if(actual>=0)quick.index=actual;
+      }
+      const end = Math.min(segments[quick.index][1], Number.isFinite(video.duration) ? video.duration : Infinity);
+      if (!video.seeking && (video.ended || video.currentTime >= end - 0.04)) {
+        if (quick.index + 1 < segments.length) seek(quick.index + 1);          // skip what was cut
+        else if (onEnd) { stopQuick(); onEnd(); return; }
+        else { video.pause(); if(video.currentTime>end+.04)seek(segments.length-1,Math.max(0,end-segments.at(-1)[0]-.04)); }
+      }
+      syncPlayback();
+      quick.frame = requestAnimationFrame(tick);
+    };
+    quick.frame = requestAnimationFrame(tick);
+    $("#showStageStatus").textContent = saved ? "Saved render: the last completed edit, with its captions and effects. New decisions need a new effects preview/render." : "Live timing preview: your cut and chosen pictures. Pictures appear only inside their bars; render a preview to check all camera and animation effects.";
+    return true;
+  }
+  // Seconds into the scene's edit → (segment, offset in it).
+  const sourceAt=ShowClock.sourceAt;
+
+  async function refreshBoard() {
+    const scene = currentScene();
+    if (!scene) return;
+    const fresh = await api(`/show/scenes?current=${encodeURIComponent(scene.id)}`).catch(() => null);
+    if (!fresh) return;
+    review = fresh;
+    const updated = currentScene();
+    if (!updated || !wantEffects.has(updated.id)) return;
+    if (["ready", "failed", "stopped"].includes(updated.preview?.status)) renderScene();
+    else {
+      $("#showStageStatus").textContent = `${updated.preview?.message || "Queued: preparing this scene and its drawings"}. Showing the source cut until it is ready.`;
+      poll = setTimeout(refreshBoard, 1500);
+    }
+    $("#showSteps").querySelectorAll("[data-show-step]").forEach((button) => button.classList.toggle("active", Number(button.dataset.showStep) === step));
+  }
+
+  $("#showStageVideo").addEventListener("loadeddata", () => {
+    const scene = currentScene();
+    if (!scene || !wantEffects.has(scene.id) || scene.preview?.status !== "ready") return;
+    if ($("#showStageVideo").getAttribute("src") !== scene.preview.url) return;
+    viewedScenes.add(scene.id);
+    dirtyScenes.delete(scene.id);
+    $("#showPanel").querySelectorAll('[data-show-status="approved"]').forEach(button => {
+      const item=review.proposals.find(item=>item.id===button.dataset.id);
+      button.disabled=!!item?.needs?.length;
+    });
+    $("#showPanel").querySelectorAll('[data-scene-decision="accepted"]').forEach(button => button.disabled = false);
+  });
+
+  function invalidateLocal(scene) {
+    if (!scene) return;
+    dirtyScenes.add(scene.id); viewedScenes.delete(scene.id);
+    scene.preview = {status:"none"};
+    wantEffects.delete(scene.id); wantQuick.add(scene.id);
+    if (currentScene()?.id === scene.id) {
+      clearTimeout(poll);
+      $("#showPanel").querySelectorAll('[data-scene-decision="accepted"]').forEach(button => button.disabled = true);
+      $("#showStageStatus").textContent = quick && !quick.saved ? "Changes saved. Live picture timing is updated; render a preview to check the final camera and animation effects." : "Changes saved. This rendered video is now out of date; open the scene editor for live picture timing or generate a new preview.";
+    }
+  }
+
+  async function requestScenePreview(scene) {
+    await flushEdits();
+    wantQuick.delete(scene.id); wantEffects.add(scene.id);
+    if (scene.preview?.status !== "ready") {
+      await api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, {method:"POST",body:"{}"});
+      scene.preview = {status:"queued"};
+    }
+    renderScene();
+  }
+
+  async function decideScene(decision, thenNext = false) {
+    await flushEdits();
+    const scene = currentScene();
+    if (decision === "accepted" && !viewedScenes.has(scene.id)) throw new Error("Generate and watch this scene preview before accepting it.");
+    const updated = await api(`/show/scenes/${encodeURIComponent(scene.id)}/decision`, { method: "POST", body: JSON.stringify({ decision }) });
+    Object.assign(scene, updated, { preview: { status: "none" } });
+    if (thenNext) step = Math.min(stepNames().length - 1, step + 1);
+    const next = currentScene();
+    review = await api(`/show/scenes?current=${encodeURIComponent((next || scene).id)}`);
+    render();
+  }
+
+  // ---- The whole show, one step after another --------------------------------------
+
+  let watching = null;
+
+  function stopWatching() {
+    if (!watching) return;
+    clearTimeout(watching.timer);
+    watching = null;
+    $("#showStageVideo").pause();
+  }
+
+  function watchAll() {
+    stopWatching();
+    const identity = review.identity;
+    const parts = [];
+    if (identity.title || identity.logo) parts.push({ kind: "card" });
+    if (review.intro?.path) parts.push({ kind: "video", label: "Intro", url: `/api/v1/show/source?path=${encodeURIComponent(review.intro.path)}` });
+    scenes().forEach((scene) => parts.push({ kind: "scene", scene }));
+    watching = { parts, index: -1, timer: null };
+    playNext();
+  }
+
+  function playNext() {
+    if (!watching) return;
+    const index = ++watching.index;
+    const part = watching.parts[index];
+    if (!part) { stopWatching(); showVideo("", "End of the show. Render it when it looks right."); return; }
+    const video = $("#showStageVideo");
+    const where = `${index + 1} of ${watching.parts.length}`;
+    if (part.kind === "card") {
+      drawCard();
+      $("#showStageStatus").textContent = `Title card · ${where}`;
+      watching.timer = setTimeout(playNext, (review.identity.seconds || 2) * 1000);
+      return;
+    }
+    let url = part.url, label = part.label;
+    if (part.kind === "scene") {
+      const scene = part.scene;
+      label = `${scene.name} · ${DECISION_LABELS[scene.decision]}${scene.decision === "pending" ? " (shown with its proposals; rendered without them until you decide)" : ""}`;
+      url = wantEffects.has(scene.id) && scene.preview?.status === "ready" ? scene.preview.url : "";
+      if (!url) {                                   // the cut itself, at once, from the original video
+        if (!playQuick(scene, 0, playNext)) { watching.timer = setTimeout(playNext, 500); return; }
+        $("#showStageStatus").textContent = `${scene.name} · ${DECISION_LABELS[scene.decision]} · its cut, without effects · ${where}`;
+        video.play().catch(() => { $("#showStageStatus").textContent = `${label}: press play to continue.`; });
+        return;
+      }
+    }
+    showVideo(url, `${label} · ${where}`);
+    video.play().catch(() => { $("#showStageStatus").textContent = `${label}: press play to continue.`; });
+  }
+
+  $("#showStageVideo").addEventListener("ended", () => { if (watching) playNext(); });
+
+  async function markModified(proposalId = null) {
+    const scene = proposalId ? scenes().find(scene => scene.effects.includes(proposalId)) : currentScene();
+    invalidateLocal(scene);
+    if (scene && scene.decision !== "modified") {
+      await api(`/show/scenes/${encodeURIComponent(scene.id)}/decision`, { method: "POST", body: JSON.stringify({ decision: "modified" }) }).catch(() => {});
+      scene.decision = "modified";
+      if (currentScene()?.id === scene.id) $("#showPanel .show-decide .show-decision").textContent = DECISION_LABELS.modified;
+    }
+  }
+
+  function bindAddForm(scene) {
+    const form = $("#showSceneAdd");
+    if (!form) return;
+    const sync = () => {
+      const needsSource = ["character", "cutaway"].includes(form.elements.kind.value);
+      form.elements.source.hidden = !needsSource;
+      form.elements.source_time.parentElement.hidden = !needsSource;
+      const drawing = form.elements.kind.value === "drawing";
+      form.elements.subject.parentElement.hidden = !drawing;
+      form.elements.style.hidden = !drawing;
+    };
+    form.elements.kind.onchange = sync;
+    sync();
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      const kind = form.elements.kind.value;
+      const body = { kind, at: Number(form.elements.at.value) || scene.start };
+      if (kind === "character") Object.assign(body, { source: form.elements.source.value, still_time: Number(form.elements.source_time.value) || 0 });
+      if (kind === "cutaway") Object.assign(body, { source: form.elements.source.value, source_start: Number(form.elements.source_time.value) || 0 });
+      if (kind === "drawing") {
+        ShowEinstein.open(scene,{text:scene.text,start:body.at,end:Math.min(scene.end,body.at+3)},form.elements.subject.value,null,{style:form.elements.style.value});
+        return;
+      }
+      await addEffect(scene, body);
+    };
+  }
+
+  async function addEffect(scene, body) {
+    try {
+      const item = await api("/show/review/add", { method: "POST", body: JSON.stringify(body) });
+      review.proposals.push(item);
+      scene.effects.push(item.id);
+      scene.decision = "modified";
+      invalidateLocal(scene);
+      open.add(scene.id); open.add(item.id);
+      renderScene();
+      if (!(item.needs || []).length) await requestScenePreview(scene);
+      return item;
+    } catch (error) { showToast(error.message, true); return null; }
+  }
+
+  // ---- "What you say": click a word to go there; select words, right-click to animate them --
+  function saidSelection() {
+    const said = $("#showSaid .show-said-text");
+    const selection = window.getSelection();
+    if (!said || !selection || selection.isCollapsed || !said.contains(selection.anchorNode)) return null;
+    const spans = [...said.querySelectorAll("[data-word]")].filter((span) => selection.containsNode(span, true));
+    if (!spans.length) return null;
+    return { text: selection.toString().trim().replace(/\s+/g, " ").slice(0, 80),
+      start: Number(spans[0].dataset.start), end: Number(spans[spans.length - 1].dataset.end) };
+  }
+
+  function sayMenu(x, y, picked) {
+    const scene = currentScene();
+    let menu = $("#showSayMenu");
+    if (!menu) {
+      menu = document.createElement("div");
+      menu.id = "showSayMenu";
+      menu.className = "show-context-menu";
+      menu.setAttribute("role", "menu");
+      document.body.append(menu);
+    }
+    const span = Math.max(0.5, picked.end - picked.start);
+    const quoted = escape(picked.text.length > 34 ? `${picked.text.slice(0, 32)}…` : picked.text);
+    const choices = [
+      ...(selectedEffect ? [["place", "Place selected effect on these words", null]] : []),
+      ["ai", "AI · create with Einstein…", null],
+      ["drawing", `Draw “${quoted}”`, { kind: "drawing", subject: picked.text, style: "crayon", duration: Math.max(2, span) }],
+      ["word", `Show “${quoted}” big`, { kind: "word", text: picked.text.toUpperCase().slice(0, 40), duration: Math.max(1.5, span) }],
+      ["math", "Formulas around me here", { kind: "math", duration: Math.max(2, span) }],
+      ["steam", "Rainbow steam here", { kind: "steam", duration: Math.max(2, span) }],
+      ["cutaway", "A close-up here…", null],
+      ["character", "A character speaks here…", null],
+    ];
+    menu.innerHTML = `<strong>Create an animation over this selection</strong><small>${clock(picked.start)}–${clock(picked.end)}</small>
+      <div class="show-actions-grid">${choices.map(([key, label]) => `<button type="button" data-say="${key}">${label}</button>`).join("")}</div>
+      <label>Your drawing idea for this selection<textarea aria-label="Drawing idea for selected words" maxlength="2000" placeholder="For example: a clumsy hand-drawn sun peeking from the corner"></textarea></label>
+      <small>Generate this proposal in the scene first. Watch the result before accepting it.</small>
+      <div class="show-actions"><button type="button" data-say="idea">Create with Einstein…</button><button type="button" data-say="copy">Copy</button></div>`;
+    menu.hidden = false;
+    menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8))}px`;
+    menu.onclick = async (event) => {
+      const button = event.target instanceof Element ? event.target.closest("[data-say]") : null;
+      if (!button) return;
+      menu.hidden = true;
+      const key = button.dataset.say;
+      if (key === "place") { await placeOnWords(picked); return; }
+      if (key === "ai") { ShowEinstein.open(scene,picked); return; }
+      if (key === "drawing") { ShowEinstein.open(scene,picked,`Draw ${picked.text}`); return; }
+      if (key === "idea") {
+        const input=menu.querySelector('textarea'),direction=input.value.trim();
+        if(!direction){menu.hidden=false;input.focus();return;}
+        ShowEinstein.open(scene,picked,direction);
+        return;
+      }
+      if (key === "copy") { await navigator.clipboard?.writeText(picked.text).catch(() => {}); return; }
+      const choice = choices.find(([name]) => name === key);
+      if (choice[2]) { await addEffect(scene, { ...choice[2], at: picked.start }); return; }
+      // A close-up or a character needs its video: the Add form opens at this moment.
+      open.add(scene.id);
+      renderScene();
+      const form = $("#showSceneAdd");
+      form.elements.kind.value = key;
+      form.elements.at.value = picked.start.toFixed(1);
+      form.elements.kind.dispatchEvent(new Event("change"));
+      form.scrollIntoView({ block: "center" });
+      form.elements.source.focus();
+    };
+  }
+
+  document.addEventListener('pointerdown',event=>{if(event.target.closest?.('#showSayTools'))event.preventDefault();});
+  document.addEventListener('click',event=>{
+    const button=event.target.closest?.('#showSayTools');if(!button)return;
+    const picked=saidSelection();if(!picked){showToast('Select some words first.');return;}
+    const box=button.getBoundingClientRect();sayMenu(box.left,box.bottom,picked);
+  });
+
+  document.addEventListener("contextmenu", (event) => {
+    if (!(event.target instanceof Element) || !event.target.closest("#showSaid")) return;
+    const picked = saidSelection();
+    if (!picked || !event.altKey) return;        // Native Copy/Select remains available; Alt-right-click opens animation tools.
+    event.preventDefault();
+    sayMenu(event.clientX, event.clientY, picked);
+  });
+  document.addEventListener("click", (event) => {
+    const menu = $("#showSayMenu");
+    if (menu && !menu.hidden && !(event.target instanceof Element && event.target.closest("#showSayMenu"))) menu.hidden = true;
+    const word = event.target instanceof Element ? event.target.closest("#showSaid [data-word]") : null;
+    const scene = currentScene();
+    if (!word || !scene || !window.getSelection()?.isCollapsed) return;
+    if (placingWords && selectedEffect) {
+      const index=Number(word.dataset.word);
+      if(firstWord===null) {firstWord=index; word.classList.add("placement-word"); wordPlacementControls();}
+      else {
+        const a=Math.min(firstWord,index), b=Math.max(firstWord,index), words=scene.words.slice(a,b+1);
+        pickedWords={text:words.map(w=>w[0]).join(" "),start:words[0][1],end:words.at(-1)[2]};
+        firstWord=null; wordPlacementControls(); highlightWords(pickedWords.start,pickedWords.end);
+      }
+      return;
+    }
+    if (wantEffects.has(scene.id)) { wantEffects.delete(scene.id); renderScene(); }
+    playQuick(scene, Number(word.dataset.start) - scene.start);
+    $("#showStageVideo").play().catch(() => {});
+  });
+
+  // Pictures placed on the scene: drag to move, corner to resize, right-click menu.
+  function drawOverlays(scene) {
+    const layer = $("#showStageLayer");
+    layer.innerHTML = scene.overlays.map((overlay, index) => {
+      const item = library.find((entry) => entry.path === overlay.asset);
+      return `<div class="show-overlay ${selectedOverlay === index || selectedEffect==='sticker:'+overlay.id ? "selected" : ""}" data-overlay="${index}" style="left:${overlay.x}%;top:${overlay.y}%;width:${overlay.width}%">
+        <img src="${item ? item.url : `/api/v1/show/library/file?path=${encodeURIComponent(overlay.asset)}`}" alt="" draggable="false"><span class="show-resize" data-resize="${index}"></span></div>`;
+    }).join("");
+    liveDrawings(scene);
+  }
+
+  async function saveOverlays(scene) {
+    try {
+      const updated = await api(`/show/scenes/${encodeURIComponent(scene.id)}/overlays`, { method: "POST", body: JSON.stringify({ overlays: scene.overlays }) });
+      scene.overlays = updated.overlays;
+      scene.decision = updated.decision;
+      invalidateLocal(scene);
+      renderTimeline(scene);wordPlacementControls();return true;
+    } catch (error) { showToast(error.message, true);return false; }
+  }
+
+  let dragging = null;
+  document.addEventListener("pointerdown", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("[data-overlay], [data-resize]") : null;
+    const scene = review && currentScene();
+    if (!target || !scene) return;
+    event.preventDefault();
+    const index = Number(target.dataset.overlay ?? target.dataset.resize);
+    const box = $("#showStageLayer").getBoundingClientRect();
+    selectedOverlay = index;
+    const stage = $("#showStage"); if(stage){stage.tabIndex=0;stage.focus({preventScroll:true});}
+    dragging = { index, resize: target.hasAttribute("data-resize"), box, x: event.clientX, y: event.clientY, start: { ...scene.overlays[index] } };
+  });
+  document.addEventListener("pointermove", (event) => {
+    if (!dragging) return;
+    const scene = currentScene();
+    const overlay = scene.overlays[dragging.index];
+    const dx = (event.clientX - dragging.x) / dragging.box.width * 100, dy = (event.clientY - dragging.y) / dragging.box.height * 100;
+    if (dragging.resize) overlay.width = Math.max(3, Math.min(100, dragging.start.width + dx));
+    else { overlay.x = dragging.start.x + dx; overlay.y = dragging.start.y + dy; }
+    drawOverlays(scene);
+  });
+  document.addEventListener("pointerup", (event) => {
+    if (!dragging) return;
+    const moved = Math.hypot(event.clientX - dragging.x, event.clientY - dragging.y) > 3;
+    const index = dragging.index;
+    dragging = null;
+    if (moved) saveOverlays(currentScene());
+    else openTools(index, event.clientX, event.clientY);     // a plain click shows the element's tools beside it
+  });
+  const ANIMATIONS = { none: "Still", up: "Move up", down: "Move down", jump: "Jump", grow: "Grow", grow_return: "Grow and back",
+    pulse: "Grow and shrink", swing: "Swing", spin: "Spin", talk: "Talk", look: "Look left and right", path: "Follow a path" };
+  let drawingPath = null;
+  let layerClipboard = null;
+  const layerUndo = [];
+  async function layerCommand(action, scene=currentScene()) {
+    if(!scene)return;
+    const overlay=scene.overlays[selectedOverlay];
+    if(action==='regions'){if(overlay)await window.ShowPhotoStudio.edit(overlay.asset);return;}
+    if(action==='copy'){if(overlay)layerClipboard=structuredClone(overlay);return;}
+    if(action==='undo'){
+      const index=layerUndo.findLastIndex(entry=>entry.scene===scene.id);
+      if(index<0)return;
+      scene.overlays=layerUndo.splice(index,1)[0].overlays;selectedOverlay=null;
+    } else {
+      const source=action==='paste'?layerClipboard:overlay;
+      if(!source)return;
+      layerUndo.push({scene:scene.id,overlays:structuredClone(scene.overlays)});
+      if(layerUndo.length>50)layerUndo.shift();
+      if(action==='paste'||action==='duplicate'){
+        scene.overlays.push({...structuredClone(source),id:crypto.randomUUID(),...fitTiming(scene,source.at,source.duration)});
+        selectedOverlay=scene.overlays.length-1;
+      } else if(action==='cut'||action==='remove'){
+        if(action==='cut')layerClipboard=structuredClone(overlay);
+        scene.overlays.splice(selectedOverlay,1);selectedOverlay=null;selectedEffect=null;
+      } else if(action==='bigger')overlay.width=Math.min(100,overlay.width*1.2);
+      else if(action==='smaller')overlay.width=Math.max(3,overlay.width/1.2);
+    }
+    drawOverlays(scene);await saveOverlays(scene);
+  }
+
+
+  document.addEventListener('show-voice-ready', event => {
+    const id = event.target.dataset.voiceEffect;
+    const item = review?.proposals.find(item => item.id === id);
+    if (!item) return;
+    item.params.voices = [...(item.params.voices || []), event.detail];
+    item.params.voice = event.detail;
+    const select = event.target.parentElement.querySelector('[data-field="voice"]');
+    if (select) { const option = document.createElement('option'); option.value = item.params.voices.length-1; option.textContent=event.detail.text; select.append(option);select.value=option.value; }
+    saveSoon(id, {voice:event.detail});
+  });
+
+  // A talking character interrupts the host: how it comes in.
+  function showEntrance(overlay, talkable) {
+    $("#showEntranceField").hidden = !(talkable && overlay.action === "talk");
+    $("#showEntrance").value = overlay.entrance || "cut";
+  }
+
+  function isCharacter(asset) { return /[\\/]Characters[\\/][^\\/]+[\\/]cutout\.png$/.test(String(asset || "")); }
+
+  function openTools(index, x, y) {
+    const scene = currentScene();
+    const overlay = scene.overlays[index];
+    selectedOverlay = index;
+    const stage = $("#showStage"); if(stage){stage.tabIndex=0;stage.focus({preventScroll:true});}
+    const menu = $("#showContextMenu");
+    (timelineDialog?.open?timelineDialog:document.body).append(menu);
+    const talkable = isCharacter(overlay.asset);
+    $("#showActionButtons").innerHTML = Object.entries(ANIMATIONS)
+      .filter(([key]) => !["talk", "look"].includes(key) || talkable)
+      .map(([key, label]) => `<button type="button" data-animate="${key}" class="${(overlay.action || "none") === key ? "active" : ""}">${label}</button>`).join("");
+    $("#showIntensity").value = overlay.intensity ?? 1;
+    showEntrance(overlay, talkable);
+    $("#showOverlayAt").value = Number(overlay.at ?? scene.start).toFixed(1);
+    $("#showOverlayDuration").value = Number(overlay.duration ?? 4).toFixed(1);
+    menu.classList.toggle("show-menu-left", x + 600 > innerWidth);
+    menu.querySelector('[data-menu="regions"]').hidden = !talkable;
+    menu.querySelector('[data-menu="paste"]').disabled = !layerClipboard;
+    menu.querySelector('[data-menu="undo"]').disabled = !layerUndo.length;
+    menu.hidden = false;
+    // Beside the element, but always whole on screen (an element low in the frame opened it off the bottom).
+    menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8))}px`;
+  }
+
+  document.addEventListener('keydown', event => {
+    if (event.target.closest?.('input,textarea,select,[contenteditable="true"]')) return;
+    if (!event.target.closest?.('#showStage,#showContextMenu')) return;
+    if (!(event.ctrlKey || event.metaKey)) return;
+    const action = {c:'copy',x:'cut',v:'paste',d:'duplicate',z:'undo'}[event.key.toLowerCase()];
+    if(action && (selectedOverlay!=null || ['paste','undo'].includes(action))){event.preventDefault();layerCommand(action).catch(error=>showToast(error.message,true));}
+  });
+
+  document.addEventListener("contextmenu", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("[data-overlay]") : null;
+    if (!target || !review) return;
+    event.preventDefault();
+    openTools(Number(target.dataset.overlay), event.clientX, event.clientY);
+  });
+
+  document.addEventListener("change", (event) => {
+    if (!(event.target instanceof Element) || !event.target.closest("#showContextMenu")) return;
+    const scene = currentScene();
+    const overlay = scene && selectedOverlay != null ? scene.overlays[selectedOverlay] : null;
+    if (!overlay) return;
+    if (event.target.id === "showIntensity") overlay.intensity = Number(event.target.value);
+    if (event.target.id === "showEntrance") overlay.entrance = event.target.value;
+    if (event.target.id === "showOverlayAt") Object.assign(overlay,fitTiming(scene,Number(event.target.value),overlay.duration));
+    if (event.target.id === "showOverlayDuration") Object.assign(overlay,fitTiming(scene,overlay.at,Number(event.target.value)));
+    saveOverlays(scene);
+  });
+
+  // A path: click points on the video, Enter (or double-click) to finish.
+  document.addEventListener("click", (event) => {
+    if (!drawingPath || !(event.target instanceof Element) || !event.target.closest("#showStage")) return;
+    const box = $("#showStageLayer").getBoundingClientRect();
+    drawingPath.points.push([(event.clientX - box.left) / box.width * 100, (event.clientY - box.top) / box.height * 100]);
+    $("#showStageStatus").textContent = `Path: ${drawingPath.points.length} point(s). Enter or double-click to finish, Escape to cancel.`;
+  }, true);
+  async function finishPath(cancelled = false) {
+    if (!drawingPath) return;
+    const { index, points } = drawingPath;
+    drawingPath = null;
+    const scene = currentScene();
+    if (cancelled || points.length < 2) { $("#showStageStatus").textContent = cancelled ? "" : "A path needs two points."; return; }
+    const overlay = scene.overlays[index];
+    overlay.action = "path";
+    overlay.path = points.map(([x, y], i) => [i / (points.length - 1), x, y]);
+    overlay.hops = overlay.hops ?? 4;
+    $("#showStageStatus").textContent = "Path saved.";
+    await saveOverlays(scene);
+  }
+  document.addEventListener("dblclick", (event) => { if (drawingPath && event.target instanceof Element && event.target.closest("#showStage")) finishPath(); });
+  document.addEventListener("keydown", (event) => {
+    if (!drawingPath) return;
+    if (event.key === "Enter") { event.preventDefault(); finishPath(); }
+    if (event.key === "Escape") finishPath(true);
+  });
+
+  function renderFinal() {
+    const identity = review.identity;
+    const order = [identity.title || identity.logo ? `Title card${identity.title ? `: ${identity.title}` : ""}` : "No title card",
+      review.intro ? `Intro: ${baseName(review.intro.path)}` : "No intro",
+      ...scenes().map((scene) => `${scene.name} · ${DECISION_LABELS[scene.decision]}`)];
+    const pending = scenes().filter((scene) => scene.decision === "pending").length;
+    $("#showPanel").innerHTML = `<h3>Order of the show</h3><ol class="show-order">${order.map((line) => `<li>${escape(line)}</li>`).join("")}</ol>
+      ${pending ? `<p class="show-needs">${pending} scene${pending === 1 ? "" : "s"} still to decide: they will be rendered without their proposals.</p>` : ""}
+      <p><a class="icon-button small" href="/api/v1/show/scenes/decisions" download="show-storyboard.json">Download decisions (.json)</a></p>
+      <p class="show-hint">The decisions are saved in the project. The JSON is a copy without any media.</p>
+      <div class="show-actions"><button type="button" class="icon-button" data-watch-all>▶ Watch the whole show</button>
+        ${pending ? `<button type="button" class="icon-button" data-first-pending>Go to the first scene to decide</button>` : ""}</div>
+      <p class="show-hint">The whole show plays the title card, the intro and each scene's preview one after another.</p>
+      <div id="showStudioEffects" class="show-studio-effects" aria-live="polite"></div>
+      <button type="button" id="showRenderNow" class="primary icon-button">Render the show</button>`;
+    showVideo("", "The final render joins the title card, the intro and every scene with what you accepted.");
+    studioEffects();
+  }
+
+  const STUDIO_STATUS = {
+    applied: "Drawn in the render", disabled: "Off or hidden in Show Studio", superseded: "The automatic edit's version is kept",
+    failed: "Could not be drawn", unsupported: "Not drawn by the render yet",
+  };
+
+  // What the render does with each Show Studio effect, so nothing is replaced or dropped silently.
+  async function studioEffects() {
+    const box = $("#showStudioEffects");
+    if (!box) return;
+    const data = await api("/show/studio-effects").catch(() => null);
+    if (!data || !data.effects.length) { box.innerHTML = ""; return; }
+    const rows = [];
+    const captions = new Map();
+    for (const item of data.effects) {
+      if (item.type === "caption") {
+        const key = `${item.section}|${item.status}|${item.detail}`;
+        captions.set(key, { ...item, count: (captions.get(key)?.count || 0) + 1 });
+      } else rows.push(item);
+    }
+    for (const item of captions.values()) rows.push({ ...item, name: `Captions · ${item.count}` });
+    const order = ["failed", "unsupported", "applied", "disabled", "superseded"];
+    rows.sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
+    box.innerHTML = `<h3>Show Studio edits</h3>
+      <ul class="show-studio-list">${rows.map((item) => `<li class="studio-${item.status}${item.warning ? " studio-warning" : ""}">
+        <strong>${escape(item.name)}</strong> <span class="show-hint">${escape(item.section)}</span>
+        <span class="studio-status">${escape(STUDIO_STATUS[item.status] || item.status)}</span>
+        <span class="show-hint">${escape(item.detail)}</span></li>`).join("")}</ul>`;
+  }
+
+  // ---- Effects (inside "Modify") ------------------------------------------------
+
+  function card(item) {
+    const scene=currentScene();
+    const outside=scene && (item.at<scene.start || item.at>=scene.end || (item.duration>0 && item.at+item.duration<=scene.start));
+    const needs = (item.needs || []).length ? `<p class="show-needs">Still needed: ${escape(item.needs.join(", "))}</p>` : "";
+    const confidence = item.kind === "cutaway" ? `<span class="show-confidence" title="How clearly the picture matches what is said">match ${(item.confidence * 100).toFixed(1)}</span>` : "";
+    return `<article class="show-card show-${item.status}" data-show-id="${item.id}">
+      <header><time>${clock(item.at)}</time><span class="show-kind">${item.params.reaction ? "Reaction" : (KIND_LABELS[item.kind] || item.kind)}</span>${confidence}<span class="show-status">${STATUS_LABELS[item.status]}</span></header>
+      <div class="show-card-body">
+        <img src="${picture(item)}" alt="" loading="lazy">
+        <div>
+          <p class="show-reason">${escape(item.reason)}</p>${item.kind === "drawing" ? `<p class="show-hint">Image source: ${escape(item.params.image_engine || (item.params.picture ? "Your library" : "Local painter · DreamShaper"))}</p>` : ""}${needs}${outside?'<p class="show-needs">Outside this scene. Choose words to bring this effect back.</p>':''}
+          <div class="show-actions">
+            ${item.kind === "drawing" ? `<button type="button" class="icon-button small" data-ai-edit="${item.id}">AI · change image…</button>` : ""}
+            <button type="button" class="icon-button small" data-place-words="${item.id}">Choose words</button>
+            <button type="button" class="icon-button small" data-locate-effect="${item.id}">Show on video & timeline</button>
+            <button type="button" class="icon-button small" data-show-preview="${item.id}">Preview in scene</button>
+            <button type="button" class="icon-button small" data-show-adjust="${item.id}">${open.has(item.id) ? "Close" : "Adjust"}</button>
+            <button type="button" class="icon-button small" data-show-status="approved" data-id="${item.id}" ${(item.needs || []).length || outside ? "disabled" : ""} title="Keep this effect for the render. Review the full scene separately.">Approve</button>
+            <button type="button" class="icon-button small" data-show-status="discarded" data-id="${item.id}">Discard</button>
+          </div>
+        </div>
+      </div>
+      <video class="show-preview" controls playsinline hidden></video>
+      <div class="show-editor" ${open.has(item.id) ? "" : "hidden"}></div>
+    </article>`;
+  }
+
+  async function patch(id, changes) {
+    const updated = await api(`/show/review/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(changes) });
+    const index = review.proposals.findIndex((item) => item.id === id);
+    if (index >= 0) review.proposals[index] = updated;
+    return updated;
+  }
+
+  function refreshCard(id) {
+    const item = review.proposals.find((entry) => entry.id === id);
+    const old = $(`[data-show-id="${id}"]`);
+    if (!item || !old) return;
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = card(item);
+    const fresh = wrapper.firstElementChild;
+    const editor = old.querySelector(".show-editor");
+    fresh.querySelector(".show-editor").replaceWith(editor);   // keep the open editor and its canvas
+    const preview = old.querySelector(".show-preview");
+    fresh.querySelector(".show-preview").replaceWith(preview);
+    old.replaceWith(fresh);
+    const editorState=editors.get(id);if(editorState){editorState.item=item;editorState.draw();}
+  }
+
+  let saveTimer=null,lastSaveError='';
+  const editQueue=new ShowEditQueue(async(id,changes)=>{
+    await patch(id,changes);refreshCard(id);await markModified(id);
+  });
+  function showSaveStatus(){
+    const box=$('#showSaveStatus');if(!box)return;
+    box.hidden=!lastSaveError;
+    box.innerHTML=lastSaveError?`${escape(lastSaveError)} <button type="button" data-retry-show-save>Retry saving</button>`:'';
+  }
+  async function flushEdits(){
+    clearTimeout(saveTimer);
+    try{await editQueue.flush();lastSaveError='';}
+    catch(error){lastSaveError=error.message;throw error;}
+    finally{showSaveStatus();}
+  }
+  function saveSoon(id,changes){
+    editQueue.enqueue(id,changes);invalidateLocal(currentScene());
+    clearTimeout(saveTimer);
+    saveTimer=setTimeout(()=>flushEdits().catch(error=>showToast(error.message,true)),350);
+  }
+  document.addEventListener('click',event=>{if(event.target.closest?.('[data-retry-show-save]'))flushEdits().catch(error=>showToast(error.message,true));});
+
+  // ---- Editors -----------------------------------------------------------
+
+  function field(label, html) { return `<label class="show-field"><span>${label}</span>${html}</label>`; }
+  function number(name, value, step = 0.1, min = 0) { return `<input type="number" data-field="${name}" value="${Number(value ?? 0)}" step="${step}" min="${min}">`; }
+  function range(name, value, min, max, step) { return `<input type="range" data-field="${name}" value="${Number(value ?? 0)}" min="${min}" max="${max}" step="${step}">`; }
+
+  function mountEditor(id) {
+    const item = review.proposals.find((entry) => entry.id === id);
+    const host = $(`[data-show-id="${id}"] .show-editor`);
+    if (!item || !host) return;
+    host.hidden = false;
+    const p = item.params;
+    let html = `<p class="show-hint">Select words to place this effect, or drag its bar below the video. Drag either edge to change its duration.</p><details><summary>Exact timing (optional)</summary><div class="show-fields">${field("Starts at (s)", number("at", item.at))}${item.kind === "character" ? "" : field("Lasts (s)", number("duration", item.duration))}</div></details>`;
+    if (item.kind === "cutaway") {
+      const alternatives = (p.alternatives || []).map((alt, index) => `<button type="button" class="show-alt" data-alt="${index}" title="Use this close-up instead"><img src="${alt.thumb ? media(alt.thumb) : ""}" alt=""></button>`).join("");
+      html += `<div class="show-fields">${field("From second", number("source_start", p.source_start))}${field("Zoom", range("zoom", p.zoom ?? 1, 1, 2.5, 0.05))}</div>
+        <p class="show-hint">Click the picture to centre the zoom.</p><canvas class="show-canvas" data-canvas="focus"></canvas>
+        ${alternatives ? `<p class="show-hint">Other close-ups that may fit:</p><div class="show-alts">${alternatives}</div>` : ""}`;
+    } else if (item.kind === "character") {
+      const voices = (p.voices || []).map((voice, index) => `<option value="${index}" ${p.voice && p.voice.start === voice.start && p.voice.source === voice.source ? "selected" : ""}>${escape(voice.text.slice(0, 70))} (${clock(voice.start)}, ${voice.length.toFixed(1)} s)</option>`).join("");
+      html += `<div class="show-fields">${isPhoto(p.source) ? field("Holds (s)", number("hold", p.hold ?? 2)) : field("Frozen frame at (s)", number("still_time", p.still_time))}
+          ${field("Push-in (s)", number("zoom_sec", p.zoom_sec ?? 1.2))}${field("Zoom", range("zoom", p.zoom ?? 1.25, 1, 2.5, 0.05))}</div>
+        <div class="show-fields">${field("Enters", `<select data-field="entrance">${Object.entries(ENTRANCES).map(([key, label]) => `<option value="${key}" ${(p.entrance || "zoom") === key ? "selected" : ""}>${label}</option>`).join("")}</select>`)}</div>
+        <div class="show-fields">${field("Moves", `<select data-field="action">${Object.entries(ACTIONS).map(([key, label]) => `<option value="${key}" ${p.action === key ? "selected" : ""}>${label}</option>`).join("")}</select>`)}
+          ${field("How much", range("amount", p.amount ?? 0.02, 0, 0.1, 0.005))}${field("Shift X", range("offset_x", (p.offset || [0, 0])[0], -0.15, 0.15, 0.005))}${field("Shift Y", range("offset_y", (p.offset || [0, 0])[1], -0.15, 0.15, 0.005))}</div>
+        ${field("Its voice", `<select data-field="voice"><option value="">— choose or record a voice —</option>${voices}</select>`)}<div data-voice-input data-voice-effect="${escape(item.id)}"></div>
+        <div class="show-tools">
+          <select data-tool><option value="rect">Rectangle (drag)</option><option value="points">Points (advanced)</option></select>
+          <button type="button" class="icon-button small" data-region="close">Close shape</button>
+          <button type="button" class="icon-button small" data-region="undo">Undo</button>
+          <button type="button" class="icon-button small" data-region="redo">Redo</button>
+          <button type="button" class="icon-button small" data-region="clear">New selection</button>
+        </div>
+        <p class="show-hint">Select what moves (the mouth or jaw): drag a rectangle, or click points and close the shape (first point, Enter or the button; it keeps the outer outline). Its own pixels move and black shows behind. Shift-click sets the zoom centre. The dashed box is what the zoom shows. Cmd/Ctrl+Z undoes; copy, cut and paste work on the picture.</p>
+        <canvas class="show-canvas" tabindex="0" data-canvas="region"></canvas>`;
+    } else if (item.kind === "drawing" || item.kind === "word") {
+      html += `<div class="show-fields">${item.kind === "word" ? field("Text", `<input type="text" data-field="text" value="${escape(p.text)}">`) : field("What is drawn", `<input type="text" data-field="subject" value="${escape(p.subject)}">`)}
+        ${field("Position", `<select data-field="position">${["left", "top-left", "bottom-left", "right", "top-right", "bottom-right"].map((pos) => `<option ${p.position === pos ? "selected" : ""}>${pos}</option>`).join("")}</select>`)}
+        ${field("Size", range("size", p.size ?? 0.25, 0.02, 2, 0.01))}</div>`;
+      if (item.kind === "drawing") {
+        const pictures = library.filter((entry) => /\.(png|jpe?g|webp)$/i.test(entry.path));
+        html += field("Picture", `<select data-field="picture"><option value="">Painted from the words</option>${pictures.map((entry) => `<option value="${escape(entry.path)}" ${p.picture === entry.path ? "selected" : ""}>${escape(entry.name)}</option>`).join("")}</select>`);
+      }
+      if (item.kind === "drawing" && p.subject) {
+        html += `<div class="show-fields">${field("Style", `<select data-field="style">${Object.entries(DRAWING_STYLES).map(([key, label]) => `<option value="${key}" ${(p.style || "pencil") === key ? "selected" : ""}>${label}</option>`).join("")}</select>`)}</div>
+          ${field("What the painter is asked (change it before it is painted)", `<textarea data-field="prompt" rows="3" maxlength="600"></textarea>`)}
+          <p class="show-hint">Edit this drawing, then generate a preview to see it in context. Each wording is a new drawing; the earlier one stays in the library. Empty: the style's own words.</p>
+          <button type="button" class="icon-button small" data-preview-mode="effects">Generate &amp; preview this scene</button>`;
+      }
+    } else if (item.kind === "warp") {
+      html += field("Warp", `<select data-field="warp">${["stretch", "swirl", "wave"].map((name) => `<option ${p.warp === name ? "selected" : ""}>${name}</option>`).join("")}</select>`);
+    } else if (item.kind === "steam") {
+      html += `<p class="show-hint">Click where the steam rises (the top of the mug); drag a box around the mug so the steam follows it.</p><canvas class="show-canvas" data-canvas="steam"></canvas>
+        ${field("Size", range("scale", p.scale ?? 1, 0.4, 2, 0.05))}`;
+    }
+    host.innerHTML = html;
+    fillPrompt(item, host);
+    host.addEventListener("input", (event) => onField(item.id, event));
+    host.addEventListener("change", (event) => onField(item.id, event));
+    const canvas = host.querySelector("canvas");
+    if (canvas) editors.set(item.id, new PictureEditor(canvas, item));
+    host.querySelectorAll("[data-alt]").forEach((button) => button.addEventListener("click", () => useAlternative(item.id, Number(button.dataset.alt))));
+  }
+
+  // The words the painter will get: the person's own, or the style's for this subject.
+  async function fillPrompt(item, host) {
+    const box = host.querySelector("textarea[data-field=prompt]");
+    if (!box) return;
+    if (item.params.prompt) { box.value = item.params.prompt; return; }
+    const query = new URLSearchParams({ subject: item.params.subject || "", style: item.params.style || "pencil" });
+    try { box.value = (await api(`/show/drawing-prompt?${query}`)).prompt; } catch (error) { box.placeholder = error.message; }
+  }
+
+  function onField(id, event) {
+    const target = event.target;
+    if (!target.dataset || !target.dataset.field) return;
+    const item = review.proposals.find((entry) => entry.id === id);
+    const name = target.dataset.field;
+    let value = target.type === "number" || target.type === "range" ? Number(target.value) : target.value;
+    const changes = {};
+    if (name === "offset_x" || name === "offset_y") {
+      const offset = [...(item.params.offset || [0, 0])];
+      offset[name === "offset_x" ? 0 : 1] = value;
+      changes.offset = offset;
+    } else if (name === "voice") {
+      changes.voice = value === "" ? null : item.params.voices[Number(value)];
+    } else {
+      changes[name] = value;
+    }
+    Object.assign(item.params, changes);
+    if ("at" in changes) item.at = changes.at;
+    if ("duration" in changes) item.duration = changes.duration;
+    if (name === "position") {changes.image_center = null;item.params.image_center=null;}
+    if (name === "at" || name === "duration") {
+      const timing=fitTiming(currentScene(),item.at,item.duration); Object.assign(item,timing); Object.assign(changes,timing,{selected_text:''}); renderTimeline(currentScene());
+    }
+    if ((name === "subject" || name === "style") && !item.params.prompt) {
+      const host = $(`[data-show-id="${id}"] .show-editor`);
+      if (host) fillPrompt(item, host);
+    }
+    const editorState=editors.get(id);if(editorState){editorState.item=item;editorState.draw();}
+    liveDrawings(currentScene());
+    saveSoon(id, changes);
+  }
+
+  async function useAlternative(id, index) {
+    const item = review.proposals.find((entry) => entry.id === id);
+    const alt = item.params.alternatives[index];
+    const resource = review.resources[alt.resource];
+    const interval = resource.intervals[alt.interval];
+    const length = interval.end - interval.start;
+    const changes = { source: resource.path, source_start: Math.round((interval.start + Math.max(0, length - item.duration) / 2) * 100) / 100,
+      thumb: interval.thumb, alternatives: item.params.alternatives.filter((_, i) => i !== index) };
+    await patch(id, changes).catch((error) => showToast(error.message, true));
+    open.add(id);
+    renderScene();
+  }
+
+  // Picture editor: the still (or a frame) with the region, focus or steam on it.
+  class PictureEditor {
+    constructor(canvas, item) {
+      this.canvas = canvas; this.item = item; this.image = new Image(); this.drag = null;
+      this.points = []; this.closed = false; this.undo = []; this.redo = [];
+      const region = item.params.region;
+      if (region?.rect) { const [x, y, w, h] = region.rect; this.points = [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }]; this.closed = true; }
+      else if (region?.polygon) { this.points = region.polygon.map(([x, y]) => ({ x, y })); this.closed = true; }
+      this.image.onload = () => { this.canvas.width = 960; this.canvas.height = Math.round(960 * this.image.height / this.image.width) || 540; this.draw(); };
+      this.image.src = picture(item);
+      canvas.addEventListener("pointerdown", (event) => this.down(event));
+      canvas.addEventListener("pointermove", (event) => this.move(event));
+      canvas.addEventListener("pointerup", () => this.up());
+      canvas.addEventListener("keydown", (event) => this.key(event));
+      canvas.addEventListener("copy", (event) => this.copy(event, false));
+      canvas.addEventListener("cut", (event) => this.copy(event, true));
+      canvas.addEventListener("paste", (event) => this.paste(event));
+      const tools = canvas.parentElement.querySelectorAll("[data-region]");
+      tools.forEach((button) => button.addEventListener("click", () => this.command(button.dataset.region)));
+    }
+    get tool() { return this.canvas.parentElement.querySelector("[data-tool]")?.value || "rect"; }
+    point(event) { const box = this.canvas.getBoundingClientRect(); return { x: Math.min(1, Math.max(0, (event.clientX - box.left) / box.width)), y: Math.min(1, Math.max(0, (event.clientY - box.top) / box.height)) }; }
+    snapshot() { return JSON.stringify({ points: this.points, closed: this.closed }); }
+    remember() { this.undo.push(this.snapshot()); this.redo.length = 0; }
+    restore(value) { const state = JSON.parse(value); this.points = state.points; this.closed = state.closed; this.draw(); this.save(); }
+    command(name) {
+      if (name === "undo" && this.undo.length) { this.redo.push(this.snapshot()); this.restore(this.undo.pop()); }
+      if (name === "redo" && this.redo.length) { this.undo.push(this.snapshot()); this.restore(this.redo.pop()); }
+      if (name === "clear") { this.remember(); this.points = []; this.closed = false; this.draw(); this.save(); }
+      if (name === "close") this.close();
+      this.canvas.focus();
+    }
+    close() {
+      const outline = hull(this.points);
+      if (outline.length < 3) { showToast("Three points that enclose an area are needed", true); return; }
+      this.remember(); this.points = outline; this.closed = true; this.draw(); this.save();
+    }
+    down(event) {
+      this.canvas.focus();
+      const p = this.point(event);
+      const kind = this.canvas.dataset.canvas;
+      if (kind === "focus" || (kind === "region" && event.shiftKey)) { this.setFocus(p); return; }
+      if (kind === "steam") { this.drag = { start: p, steam: true }; this.canvas.setPointerCapture(event.pointerId); return; }
+      if (this.tool === "rect") { this.remember(); this.drag = { start: p }; this.closed = false; this.points = []; this.canvas.setPointerCapture(event.pointerId); return; }
+      if (this.closed) { showToast("Choose New selection to start another", true); return; }
+      if (this.points.length >= 3) {
+        const box = this.canvas.getBoundingClientRect();
+        if (Math.hypot((p.x - this.points[0].x) * box.width, (p.y - this.points[0].y) * box.height) < 12) { this.close(); return; }
+      }
+      this.remember(); this.points.push(p); this.draw();
+    }
+    move(event) {
+      if (!this.drag) return;
+      const p = this.point(event), s = this.drag.start;
+      const x = Math.min(p.x, s.x), y = Math.min(p.y, s.y), xx = Math.max(p.x, s.x), yy = Math.max(p.y, s.y);
+      this.points = [{ x, y }, { x: xx, y }, { x: xx, y: yy }, { x, y: yy }];
+      this.draw();
+    }
+    up() {
+      if (!this.drag) return;
+      const wasSteam = this.drag.steam, start = this.drag.start;
+      this.drag = null;
+      if (wasSteam) {
+        const [a, , c] = this.points.length ? this.points : [start, start, start];
+        const small = Math.abs(c.x - a.x) < 0.01 && Math.abs(c.y - a.y) < 0.01;
+        const changes = small ? { point: [start.x, start.y] } : { anchor: [a.x, a.y, c.x - a.x, c.y - a.y], point: [(a.x + c.x) / 2, a.y] };
+        Object.assign(this.item.params, changes); this.points = []; this.draw(); saveSoon(this.item.id, changes);
+        return;
+      }
+      if (hull(this.points).length >= 3 && Math.abs(this.points[2].x - this.points[0].x) > 0.003) { this.closed = true; this.save(); }
+      else if (this.undo.length) { this.restore(this.undo.pop()); }
+      this.draw();
+    }
+    key(event) {
+      const mod = event.metaKey || event.ctrlKey;
+      if (mod && event.key.toLowerCase() === "z") { event.preventDefault(); this.command(event.shiftKey ? "redo" : "undo"); }
+      else if (mod && event.key.toLowerCase() === "y") { event.preventDefault(); this.command("redo"); }
+      else if (event.key === "Enter") { event.preventDefault(); this.close(); }
+      else if (event.key === "Escape" && !this.closed) { this.remember(); this.points = []; this.draw(); }
+    }
+    copy(event, cut) {
+      if (!this.points.length) return;
+      event.preventDefault();
+      event.clipboardData.setData("text/plain", JSON.stringify({ type: "show-selection-v1", polygon: this.points, closed: this.closed }));
+      if (cut) { this.remember(); this.points = []; this.closed = false; this.draw(); this.save(); }
+    }
+    paste(event) {
+      try {
+        const data = JSON.parse(event.clipboardData.getData("text/plain"));
+        if (data.type !== "show-selection-v1" || !Array.isArray(data.polygon) || !data.polygon.every((p) => p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1)) return;
+        event.preventDefault(); this.remember(); this.points = data.polygon; this.closed = Boolean(data.closed) && data.polygon.length >= 3; this.draw(); this.save();
+      } catch { /* not a selection */ }
+    }
+    setFocus(p) { this.item.params.focus = [p.x, p.y]; this.draw(); saveSoon(this.item.id, { focus: [p.x, p.y] }); }
+    save() {
+      if (this.canvas.dataset.canvas !== "region") return;
+      const region = this.closed && this.points.length >= 3 ? { polygon: this.points.map((p) => [p.x, p.y]) } : null;
+      this.item.params.region = region;
+      saveSoon(this.item.id, { region });
+    }
+    draw() {
+      const ctx = this.canvas.getContext("2d"), w = this.canvas.width, h = this.canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      if (this.image.complete && this.image.naturalWidth) ctx.drawImage(this.image, 0, 0, w, h);
+      const p = this.item.params;
+      const zoom = Number(p.zoom || 1), focus = p.focus || [0.5, 0.5];
+      if ((this.canvas.dataset.canvas === "region" || this.canvas.dataset.canvas === "focus") && zoom > 1) {
+        const ww = 1 / zoom, x0 = Math.min(Math.max(focus[0] - ww / 2, 0), 1 - ww), y0 = Math.min(Math.max(focus[1] - ww / 2, 0), 1 - ww);
+        ctx.save(); ctx.setLineDash([8, 6]); ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2; ctx.strokeRect(x0 * w, y0 * h, ww * w, ww * h); ctx.restore();
+      }
+      if (this.points.length) {
+        ctx.save(); ctx.beginPath();
+        this.points.forEach((q, i) => (i ? ctx.lineTo(q.x * w, q.y * h) : ctx.moveTo(q.x * w, q.y * h)));
+        if (this.closed || this.drag) ctx.closePath();
+        ctx.strokeStyle = "#f3d478"; ctx.lineWidth = 2; ctx.stroke();
+        this.points.forEach((q) => { ctx.beginPath(); ctx.arc(q.x * w, q.y * h, 3.5, 0, Math.PI * 2); ctx.fillStyle = "#f3d478"; ctx.fill(); });
+        ctx.restore();
+      }
+      if (this.canvas.dataset.canvas === "steam") {
+        if (p.anchor) { ctx.save(); ctx.strokeStyle = "#7dd3fc"; ctx.lineWidth = 2; ctx.strokeRect(p.anchor[0] * w, p.anchor[1] * h, p.anchor[2] * w, p.anchor[3] * h); ctx.restore(); }
+        if (p.point) { ctx.beginPath(); ctx.arc(p.point[0] * w, p.point[1] * h, 6, 0, Math.PI * 2); ctx.fillStyle = "#f472b6"; ctx.fill(); }
+      }
+    }
+  }
+
+  function hull(points) {
+    const unique = [...new Map(points.map((p) => [`${p.x},${p.y}`, p])).values()].sort((a, b) => a.x - b.x || a.y - b.y);
+    if (unique.length < 3) return unique;
+    const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    const lower = [], upper = [];
+    for (const p of unique) { while (lower.length > 1 && cross(lower.at(-2), lower.at(-1), p) <= 0) lower.pop(); lower.push(p); }
+    for (const p of [...unique].reverse()) { while (upper.length > 1 && cross(upper.at(-2), upper.at(-1), p) <= 0) upper.pop(); upper.push(p); }
+    return lower.slice(0, -1).concat(upper.slice(0, -1));
+  }
+
+  document.addEventListener('wheel', event => {
+    const video = event.target.closest?.('#showStage video');
+    if (!video || !Number.isFinite(video.duration) || !video.duration) return;
+    event.preventDefault(); event.stopPropagation(); video.pause();
+    video.currentTime = Math.max(0,Math.min(video.duration,video.currentTime + (event.deltaY>0?.2:-.2)));
+  }, {passive:false});
+
+  document.addEventListener("contextmenu", event => {
+    if (!review || $("#showReviewBox")?.hidden || !(event.target instanceof Element)) return;
+    if (event.target.closest("#showSaid, [data-overlay], canvas, input, textarea")) return;
+    const scene = currentScene();
+    if (!scene || !event.target.closest("#showStage, [data-show-id], [data-time-clip], [data-track], [data-scene-seek]")) return;
+    event.preventDefault();
+    let menu = $("#showEffectMenu");
+    if (!menu) { menu = document.createElement("div"); menu.id="showEffectMenu"; menu.className="show-context-menu"; menu.setAttribute("role","menu"); document.body.append(menu); }
+    (timelineDialog?.open ? timelineDialog : document.body).append(menu);
+    const ownId=event.target.closest("[data-time-clip]")?.dataset.timeClip || event.target.closest("[data-show-id]")?.dataset.showId || event.target.closest("[data-live-effect]")?.dataset.liveEffect;
+    if(ownId?.startsWith('sticker:')){openTools(currentScene().overlays.findIndex(overlay=>'sticker:'+overlay.id===ownId),event.clientX,event.clientY);return;}
+    const items=sceneEffects(scene).filter(item => !ownId || item.id===ownId);
+    menu.classList.toggle('show-menu-left',event.clientX+600>innerWidth);
+    menu.innerHTML = `<strong>${ownId?'Selected effect':'Video / scene'}</strong>
+      <div class="show-context-edit"><button type="button" data-effect-action="paste-layer" ${layerClipboard?'':'disabled'}>Paste image layer</button><button type="button" data-effect-action="undo-layer" ${layerUndo.some(entry=>entry.scene===scene.id)?'':'disabled'}>Undo layer edit</button></div>
+      <details class="show-submenu"><summary>Effects ▸</summary><div>${items.map(item => `<div><span>${escape(item.params.subject || item.params.text || KIND_LABELS[item.kind] || item.kind)}</span><button type="button" data-effect-action="change" data-id="${item.id}">Edit / replace…</button><button type="button" data-effect-action="remove" data-id="${item.id}">${item.status === "discarded" ? "Restore effect" : "Remove effect"}</button></div>`).join("") || "<p>No effect in this scene.</p>"}<button type="button" data-effect-action="add">Add an effect…</button><button type="button" data-effect-action="cutout">Cut out a photo / original parts…</button></div></details>
+      <details class="show-submenu"><summary>Cuts and audio ▸</summary><div><button type="button" data-effect-action="closeup">Add a close-up…</button><button type="button" data-effect-action="cutting-desk">Open video / audio cutting desk…</button></div></details>
+      <button type="button" data-effect-action="preview">Generate scene preview</button>`;
+    menu.hidden=false;
+    menu.style.left=`${Math.max(8,Math.min(event.clientX,innerWidth-menu.offsetWidth-8))}px`;
+    menu.style.top=`${Math.max(8,Math.min(event.clientY,innerHeight-menu.offsetHeight-8))}px`;
+    menu.onclick=async e => {
+      const button=e.target.closest("[data-effect-action]"); if(!button)return;
+      menu.hidden=true;
+      try {
+        await flushEdits();
+        const item=review.proposals.find(item=>item.id===button.dataset.id);
+        const action=button.dataset.effectAction;
+        if(action==='paste-layer'){await layerCommand('paste',scene);return;}
+        if(action==='undo-layer'){await layerCommand('undo',scene);return;}
+        if(action==='cutout'){document.querySelector('[data-studio="open"]')?.click();return;}
+        if(action==='cutting-desk'){window.location.href='/show-studio/';return;}
+        if(action==='add'||action==='closeup'){
+          closeTimeline();open.add(scene.id);renderScene();
+          const form=$('#showSceneAdd');
+          if(action==='closeup'){form.elements.kind.value='cutaway';form.elements.kind.dispatchEvent(new Event('change'));}
+          form.scrollIntoView({block:'nearest'});return;
+        }
+        if(action==="preview") { await requestScenePreview(scene); return; }
+        if(button.dataset.effectAction==="remove") {
+          await patch(item.id,{status:item.status==="discarded"?"proposed":"discarded"});
+          await markModified(); renderScene();
+        } else {
+          closeTimeline();open.add(scene.id); open.add(item.id); renderScene();
+          const field=$(`[data-show-id="${item.id}"] [data-field="${item.kind === "drawing" ? "prompt" : "at"}"]`);
+          field?.focus();
+        }
+      } catch(error){showToast(error.message,true);}
+    };
+  });
+  document.addEventListener("click", event => { const menu=$("#showEffectMenu"); if(menu && !event.target.closest?.("#showEffectMenu"))menu.hidden=true; });
+  document.addEventListener("keydown", event => { if(event.key==="Escape"){ const menu=$("#showEffectMenu");if(menu)menu.hidden=true;} });
+
+  document.addEventListener('click',event=>{
+    const button=event.target.closest?.('[data-ai-edit]');if(!button)return;
+    const item=review.proposals.find(item=>item.id===button.dataset.aiEdit);
+    const scene=currentScene();if(!item||!scene)return;
+    ShowEinstein.open(scene,{text:item.params.selected_text||scene.text,start:item.at,end:Math.min(scene.end,item.at+item.duration)},item.params.ai_direction || item.params.subject,item.id,{style:item.params.style,position:item.params.position});
+  });
+
+  document.addEventListener('click',async event=>{
+    const target=event.target.closest?.('[data-toggle-retired],[data-library-retire],[data-remove-sticker]');if(!target)return;
+    try{
+      if(target.hasAttribute('data-toggle-retired')){showRetired=!showRetired;await loadLibrary();renderScene();}
+      else if(target.hasAttribute('data-library-retire')){
+        const item=library[Number(target.dataset.libraryRetire)];
+        await api('/show/library/visibility',{method:'POST',body:JSON.stringify({path:item.path,retired:!item.retired})});
+        await loadLibrary();renderScene();
+      }else{
+        const scene=currentScene(),item=timelineItem(target.dataset.removeSticker);if(!item?.overlay)return;
+        scene.overlays=scene.overlays.filter(overlay=>overlay.id!==item.overlay.id);selectedEffect=null;
+        await saveOverlays(scene);drawOverlays(scene);renderTimeline(scene);
+      }
+    }catch(error){showToast(error.message,true);}
+  });
+
+  // ---- Actions -----------------------------------------------------------------
+
+  document.addEventListener("click", async (event) => {
+    const menu = $("#showContextMenu");
+    // The click that ends a plain press on an element is the one that opened its tools.
+    if (menu && !menu.hidden && !(event.target instanceof Element && event.target.closest("#showContextMenu, [data-overlay]"))) menu.hidden = true;
+    const target = event.target instanceof Element ? event.target.closest("[data-show-step], #showBack, #showNext, [data-scene-decision], [data-scene-modify], [data-library], [data-menu], [data-animate], #showRenderNow, [data-show-preview], [data-show-adjust], [data-show-status], [data-watch-all], [data-first-pending], [data-preview-mode]") : null;
+    if (!target || !review) return;
+    try {
+      if (target.dataset.showStep) { step = Number(target.dataset.showStep); render(); }
+      else if (target.id === "showBack") { step = Math.max(0, step - 1); render(); }
+      else if (target.id === "showNext") { step = Math.min(stepNames().length - 1, step + 1); render(); }
+      else if (target.dataset.sceneDecision) await decideScene(target.dataset.sceneDecision, target.hasAttribute("data-then-next"));
+      else if (target.hasAttribute("data-watch-all")) watchAll();
+      else if (target.dataset.previewMode) {
+        const scene = currentScene();
+        if (target.dataset.previewMode === "effects") { await requestScenePreview(scene); return; }
+        else { wantEffects.delete(scene.id); if(target.dataset.previewMode === "quick") wantQuick.add(scene.id); else wantQuick.delete(scene.id); }
+        $("#showPanel").querySelectorAll("[data-preview-mode]").forEach((button) => button.classList.toggle("active", button === target));
+        clearTimeout(poll);
+        showScenePicture(scene);
+      }
+      else if (target.hasAttribute("data-first-pending")) {
+        const first = scenes().findIndex((scene) => scene.decision === "pending");
+        if (first >= 0) { step = first + 2; render(); }
+      }
+      else if (target.hasAttribute("data-scene-modify")) {
+        const scene = currentScene();
+        if (open.has(scene.id)) open.delete(scene.id); else open.add(scene.id);
+        renderScene();
+      } else if (target.dataset.library) {
+        const scene = currentScene();
+        scene.overlays.push({ id:crypto.randomUUID(),asset: library[Number(target.dataset.library)].path, x: 8, y: 10, width: 22, at: scene.start, duration: Math.min(4, scene.end - scene.start), effect: "pop" });
+        if(await saveOverlays(scene))locateEffect(timelineItems(scene).at(-1));
+      } else if (target.dataset.animate) {
+        const scene = currentScene();
+        const overlay = scene.overlays[selectedOverlay];
+        if (!overlay) return;
+        if (target.dataset.animate === "path") {
+          menu.hidden = true;
+          drawingPath = { index: selectedOverlay, points: [] };
+          $("#showStageStatus").textContent = "Click the points of the path on the video; Enter or double-click to finish.";
+          return;
+        }
+        overlay.action = target.dataset.animate;
+        delete overlay.path;
+        menu.querySelectorAll("[data-animate]").forEach((button) => button.classList.toggle("active", button === target));
+        showEntrance(overlay, isCharacter(overlay.asset));
+        await saveOverlays(scene);
+      } else if (target.dataset.menu) {
+        menu.hidden = true;
+        await layerCommand(target.dataset.menu);
+      } else if (target.id === "showRenderNow") {
+        await flushEdits();
+        target.disabled = true;
+        const started = await api("/show/review/render", { method: "POST", body: "{}" });
+        window.resumeAfterShowReview?.(started);
+      } else if (target.dataset.showAdjust) {
+        closeTimeline();
+        open.add(currentScene().id);
+        const id = target.dataset.showAdjust;
+        if (open.has(id)) { open.delete(id); editors.delete(id); } else open.add(id);
+        renderScene();
+      } else if (target.dataset.showStatus) {
+        await flushEdits();
+        await patch(target.dataset.id, { status: target.dataset.showStatus });
+        refreshCard(target.dataset.id);
+        await markModified();
+        renderTimeline(currentScene());liveDrawings(currentScene());
+      } else if (target.dataset.showPreview) {
+        await flushEdits();
+        const item=timelineItem(target.dataset.showPreview);
+        if(item.needs?.length)throw Error('Complete this effect first: '+item.needs.join(', '));
+        target.disabled=true;target.textContent='Preparing effect preview…';
+        const previewRoute=item.overlay?`/show/scenes/${currentScene().id}/stickers/${encodeURIComponent(item.overlay.id)}/preview`:`/show/review/${encodeURIComponent(item.id)}/preview`;
+        const result=await api(previewRoute,{method:'POST',body:'{}'});
+        showVideo(result.url,'This effect, rendered with a little context. Generate scene preview to review every effect together.');
+        previewOrigin=result.origin??Math.max(0,item.at-1.5);
+        $('#showStageLayer').querySelector('.show-picture-placement')?.remove();
+        $('#showStageVideo').play().catch(()=>{});
+      }
+    } catch (error) {
+      showToast(error.message, true);
+      if (target.dataset.showPreview) target.textContent = "Preview";
+    } finally {
+      if (target.dataset.showPreview || target.id === "showRenderNow") target.disabled = false;
+      if (target.dataset.showPreview) target.textContent=target.closest("#showTimeline")?"Render effect preview":"Preview in scene";
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (!review || $("#showReviewBox")?.hidden || timelineDialog?.open) return;
+    if (event.target instanceof Element && event.target.closest("input, textarea, select, canvas, [contenteditable='true']")) return;
+    if (event.key === "ArrowRight" && !event.metaKey && !event.ctrlKey) { step = Math.min(stepNames().length - 1, step + 1); render(); }
+    if (event.key === "ArrowLeft" && !event.metaKey && !event.ctrlKey) { step = Math.max(0, step - 1); render(); }
+  });
+
+  async function refreshLibrary() {
+    await loadLibrary();
+    if (currentScene()) renderScene();
+  }
+
+  async function addToScene(asset) {
+    const scene = currentScene();
+    if (!scene) { showToast("Open a scene to place it", true); return; }
+    const placed={ id:crypto.randomUUID(),asset, x: 62, y: 35, width: 12, at: scene.start, duration: Math.min(4, scene.end - scene.start), action: "none", intensity: 1 };
+    scene.overlays.push(placed);
+    if (!await saveOverlays(scene)) {
+      scene.overlays=scene.overlays.filter(item=>item.id!==placed.id);
+      throw Error("The image is saved in the gallery, but could not be placed in this scene. Check its existing library references and try again.");
+    }
+    open.add(scene.id);
+    renderScene();
+  }
+
+  // The Show editing desk works on the open project, in this same window.
+  document.getElementById("showStudioOpen")?.addEventListener("click", () => { window.location.href = "/show-studio/"; });
+
+  window.ShowReview = {
+    open: openReview, openWorkspace, hull, refreshLibrary, addToScene,
+    async imageApplied(item,sceneId) {
+      const scene=scenes().find(s=>s.id===sceneId); if(!scene)throw Error("Open the image's scene before applying it");
+      const index=review.proposals.findIndex(p=>p.id===item.id);
+      if(index>=0)review.proposals[index]=item;else review.proposals.push(item);
+      if(!scene.effects.includes(item.id))scene.effects.push(item.id);
+      scene.decision="modified"; invalidateLocal(scene);
+      step=scenes().indexOf(scene)+2; open.add(scene.id); open.add(item.id); render();
+      selectedEffect=item.id; placingWords=true; firstWord=null; pickedWords=null;
+      wordPlacementControls();
+      $("#showSaid").scrollIntoView({block:"nearest"});
+    },
+    async localImageIdea(sceneId,picked,direction,style) {
+      const scene=scenes().find(s=>s.id===sceneId);if(!scene)throw Error("This scene is no longer open");
+      step=scenes().indexOf(scene)+2;
+      return addEffect(scene,{kind:"drawing",subject:direction.slice(0,80),direction,selected_text:picked.text,style,at:picked.start,duration:Math.max(.1,picked.end-picked.start)});
+    },
+    voices: () => (review?.resources || []).flatMap((resource) => (resource.speech || []).map((line) => ({ source: resource.path, start: line.start, length: Math.round((line.end - line.start) * 100) / 100, text: line.text }))),
+    sources: () => [review?.source, ...(review?.resources || []).map((item) => item.path)].filter(Boolean),
+    resources: () => (review?.resources || []).filter((item) => item.kind !== "photo").map((item) => item.path),
+  };
+})();

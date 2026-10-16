@@ -1,0 +1,189 @@
+{
+  "version": 4,
+  "id": "simon-nature-memory-v1",
+  "character_id": "simon-plant-character",
+  "character_version": 1,
+  "duration": 21.28,
+  "source": "C0271.MP4",
+  "source_start": 223.62,
+  "source_end": 244.9,
+  "quote": "I really dream about it… everyone… do we really want to be in a city forever? …live in nature.",
+  "evidence": "Cached Whisper transcript; quoted here as an abbreviated cue, not new transcription.",
+  "shots": [
+    {
+      "title": "Imagine the countryside",
+      "start": 0,
+      "end": 4.24,
+      "sheet": "meadow-poses-v1.png",
+      "poses": [
+        0,
+        2,
+        3,
+        4,
+        5,
+        0
+      ],
+      "quote": "I really dream about it. Dream about the day…",
+      "direction": "Simón’s green-cap puppet in the tiny clay meadow: tilt the head and gesture toward the house.",
+      "poseKeys": [
+        {
+          "time": 0,
+          "pose": 0,
+          "cue": "listen / hold"
+        },
+        {
+          "time": 0.61,
+          "pose": 2,
+          "cue": "dream"
+        },
+        {
+          "time": 1,
+          "pose": 3,
+          "cue": "imagine the house"
+        },
+        {
+          "time": 1.6,
+          "pose": 4,
+          "cue": "finish gesture"
+        },
+        {
+          "time": 1.88,
+          "pose": 0,
+          "cue": "quiet hold"
+        }
+      ],
+      "fit": "contain",
+      "close": false
+    },
+    {
+      "title": "Everyone comes together",
+      "start": 4.24,
+      "end": 8.96,
+      "sheet": "neighbours-poses-v1.png",
+      "poses": [
+        0,
+        1,
+        2,
+        1
+      ],
+      "quote": "…everyone is coming down and saying…",
+      "direction": "Anonymous clay neighbours approach the green-cap character and gather in a crude city street. Keep all clothes and faces consistent.",
+      "poseKeys": [
+        {
+          "time": 4.24,
+          "pose": 0,
+          "cue": "everyone"
+        },
+        {
+          "time": 5.16,
+          "pose": 1,
+          "cue": "coming down"
+        },
+        {
+          "time": 5.95,
+          "pose": 2,
+          "cue": "group gathered"
+        },
+        {
+          "time": 6.25,
+          "pose": 1,
+          "cue": "saying / thinking"
+        },
+        {
+          "time": 7.45,
+          "pose": 2,
+          "cue": "what…?"
+        },
+        {
+          "time": 8.25,
+          "pose": 2,
+          "cue": "quiet hold"
+        }
+      ],
+      "fit": "contain",
+      "close": false
+    },
+    {
+      "title": "Do we want to stay in the city?",
+      "start": 8.96,
+      "end": 16.08,
+      "sheet": "neighbours-poses-v1.png",
+      "poses": [
+        1,
+        2,
+        1,
+        0
+      ],
+      "close": false,
+      "quote": "Do we really want to be in a city forever? Or do we want to…",
+      "direction": "Cut closer on the same group. Thoughtful gestures, heads turn; no new characters or costume changes.",
+      "poseKeys": [
+        {
+          "time": 8.96,
+          "pose": 1,
+          "cue": "do we really / thinking"
+        },
+        {
+          "time": 11.93,
+          "pose": 2,
+          "cue": "city / question"
+        },
+        {
+          "time": 13.69,
+          "pose": 1,
+          "cue": "forever / reflective pause"
+        },
+        {
+          "time": 14.55,
+          "pose": 2,
+          "cue": "or… alternative"
+        }
+      ],
+      "fit": "contain"
+    },
+    {
+      "title": "A little village in nature",
+      "start": 16.08,
+      "end": 21.28,
+      "sheet": "neighbours-poses-v1.png",
+      "poses": [
+        3,
+        4,
+        5,
+        4
+      ],
+      "quote": "…come back…100 people in a little town…live in nature.",
+      "direction": "Same group in a tiny rough clay village: small step and open hands toward the houses. Preserve the handmade child-built material.",
+      "poseKeys": [
+        {
+          "time": 16.08,
+          "pose": 3,
+          "cue": "come back / show village"
+        },
+        {
+          "time": 17.17,
+          "pose": 4,
+          "cue": "100 people / step"
+        },
+        {
+          "time": 19.25,
+          "pose": 5,
+          "cue": "little town / welcome"
+        },
+        {
+          "time": 20.07,
+          "pose": 5,
+          "cue": "live in nature / hold"
+        }
+      ],
+      "fit": "contain",
+      "close": false
+    }
+  ],
+  "limitations": [
+    "Generated held poses, not continuous AI video or a rigged 3D puppet.",
+    "Anonymous neighbours are not portraits of band members.",
+    "Voiced context preview stays private; repository contains generated art and the timed recipe only."
+  ],
+  "motion": "source-word-timed cues, one-off gestures and holds; no looping"
+}

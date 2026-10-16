@@ -24,7 +24,7 @@ from typing import Any
 from core.build_info import build_info
 from core.camera_moves import clip_curve_for_segment, interpolate_curve, limit_yaw_velocity, load_camera_moves, normalize_recorded_samples, recorded_move_covering, recorded_shot_for_segment
 from core.operator_avoidance import count_avoidance_adjustments
-from core.ffmpeg import FFmpegError, ffprobe, tool_status
+from core.ffmpeg import FFmpegError, ffprobe, filter_option_value, tool_status
 from core.messages import t
 from core.media_validation import record_is_usable_camera_video, record_media_path
 from core.normalization import EVEN_SDR_FILTER, NORMALIZATION_VERSION, SDR_TONEMAP_FILTER, global_cache_root, global_segment_path, source_cache_key
@@ -3469,7 +3469,7 @@ def _v360_sendcmd_filter(shot: dict[str, Any] | None, duration: float | None, co
     if not commands:
         return ""
     command_path.write_text("".join(commands), encoding="utf-8")
-    return f"sendcmd=f={_escape_filter_path(command_path)},"
+    return f"sendcmd=f={filter_option_value(str(command_path))},"
 
 
 def _v360_motion_commands(shot: dict[str, Any], duration: float, aspect_ratio: float = 16.0 / 9.0) -> list[str]:
@@ -3747,10 +3747,6 @@ def _signed_yaw(value: float) -> float:
     return value
 
 
-def _escape_filter_path(path: Path) -> str:
-    return str(path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
-
-
 def _export_source_filter(probe: dict[str, Any], shot: dict[str, Any] | None = None, duration: float | None = None, command_path: Path | None = None) -> str:
     """Prepare source pixels for export while leaving fps conversion to the segment timing filter."""
     view = view_parameters(
@@ -3998,7 +3994,7 @@ def _segment_filtergraph(
             # transparent canvas moves as one layer and settles at x=0.
             overlay_x = f"if(lt(t\\,{enter_end:.3f})\\,-overlay_w+overlay_w*(t-{start:.3f})/0.25\\,0)"
         elif fade == "scale":
-            source_transform = f"scale=w='trunc(iw*if(lt(t,{enter_end:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':h='trunc(ih*if(lt(t,{enter_end:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':eval=frame,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0,"
+            source_transform = f"scale=w='trunc(iw*if(lt(t,{enter_end:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':h='trunc(ih*if(lt(t,{enter_end:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':eval=frame,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0:eval=frame,"
         overlay_graph.append(
             f"[{input_index}:v]format=rgba,{source_transform}{fade_in}{fade_out}setpts=PTS-STARTPTS[reel_src_{index}];"
             f"[{current_label}][reel_src_{index}]overlay=x='{overlay_x}':y=0:enable='between(t,{start:.3f},{float(item.get('end_sec') or duration):.3f})':format=auto[{output_label}]"
@@ -4068,7 +4064,7 @@ def _render_reel_overlays(
         elif animation == "slide":
             overlay_x = f"if(lt(t\\,{start + 0.25:.3f})\\,-overlay_w+overlay_w*(t-{start:.3f})/0.25\\,0)"
         elif animation == "scale":
-            source_transform = f"scale=w='trunc(iw*if(lt(t,{start + 0.25:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':h='trunc(ih*if(lt(t,{start + 0.25:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':eval=frame,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0,"
+            source_transform = f"scale=w='trunc(iw*if(lt(t,{start + 0.25:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':h='trunc(ih*if(lt(t,{start + 0.25:.3f}),0.75+0.25*(t-{start:.3f})/0.25,1)/2)*2':eval=frame,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0:eval=frame,"
         graph_parts.append(
             f"[{input_index}:v]format=rgba,{source_transform}{fade_in}{fade_out}setpts=PTS-STARTPTS[reel_src_{index}];"
             f"[{current}][reel_src_{index}]overlay=x='{overlay_x}':y='{overlay_y}':enable='between(t,{start:.3f},{end:.3f})':format=auto[{label}]"
@@ -5149,10 +5145,11 @@ def _text_filters(platform: str, duration: float, config: dict[str, Any]) -> lis
 
 def _drawtext(text: str, placement: str) -> str:
     font = _font_path()
-    font_part = f"fontfile='{_escape_filter_value(str(font))}':" if font else ""
+    font_part = f"fontfile={filter_option_value(str(font))}:" if font else ""
+    # expansion=none: a title is literal text ("100% live" is not a %{} code).
     return (
         "drawtext="
-        f"{font_part}text='{_escape_filter_value(text)}':"
+        f"{font_part}expansion=none:text={filter_option_value(text)}:"
         "fontcolor=white:shadowcolor=black@0.60:shadowx=2:shadowy=2:"
         f"{placement}"
     )
@@ -5306,10 +5303,6 @@ def _font_path(preferred: Any = None, weight: Any = None) -> Path | None:
         if candidate.exists():
             return candidate
     return None
-
-
-def _escape_filter_value(value: str) -> str:
-    return value.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
 
 
 def _concat_file_line(path: Path) -> str:

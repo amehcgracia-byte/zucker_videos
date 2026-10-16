@@ -462,6 +462,149 @@ class WizardRunner:
         finally:
             _release_job_project_lock(job)
 
+    def start_show(self, project: Project, source: str, style: str, language: str | None, gags: str = "claude",
+                   review: bool = False, resources: list[str] | None = None) -> WizardJob:
+        """Show in one go, or (``review``) prepared for a shot-by-shot review first."""
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                raise RuntimeError("A pipeline is already running")
+            job = WizardJob(id="current", message="Preparing your show", started_at=time.time())
+            _attach_project(job, project)
+            if not _acquire_job_project_lock(job, project):
+                raise RuntimeError("This project's pipeline is already running")
+            self._job = job
+            self._prepared_project = None
+            target, args = ((self._run_show_prepare, (job, project, source, style, language, gags, list(resources or [])))
+                            if review else (self._run_show, (job, project, source, style, language, gags)))
+            self._thread = threading.Thread(target=target, args=args, daemon=True, name="zucker-show")
+            self._thread.start()
+            return job
+
+    @staticmethod
+    def _show_hooks(job):
+        def cancel():
+            if job.cancel_event.is_set():
+                raise WizardCancelled()
+
+        def progress(value, detail, *, stage=None):
+            cancel()
+            job.progress = int(min(99, value))
+            job.stage = stage or ("edit" if value < 60 else "export")
+            job.message = "Show"
+            job.detail = detail
+            job.stage_progress = float(min(100, value))
+            job.progress_updated_at = time.time()
+            job.tasks = {"show": {"id": "show", "label": detail, "percent": int(min(100, value)), "detail": ""}}
+        return cancel, progress
+
+    def _finish_show(self, job, project, destination, manifest, started):
+        project.data["stages"]["export"].update(status="done", elapsed_seconds=round(time.monotonic() - started, 3), outputs={"export_manifest": str(project.artifacts_dir / "export_manifest.json")})
+        project.save()
+        summary = manifest.get("show") or {}
+        job.result = {"project_path": str(project.folder), "filename": destination.name, "path": str(destination), "media_url": "/api/v1/wizard/result",
+                      "platform": "show", "cut_count": summary.get("cuts", 0), "show": summary, "warnings": manifest.get("warnings", [])}
+        job.progress = 100
+        job.status = "done"
+        job.message = "Show ready"
+
+    def _run_show(self, job, project, source, style, language, gags="claude"):
+        from core.show import run_show
+        started = time.monotonic()
+        cancel, progress = self._show_hooks(job)
+        try:
+            project.data.setdefault("settings", {}).setdefault("wizard", {}).update(platform="show", show={"source": source, "style": style, "language": language or "", "gags": gags})
+            project.save()
+            destination, manifest = run_show(project, source, style_name=style, language=language, gags=gags, progress=progress, cancel=cancel)
+            self._finish_show(job, project, destination, manifest, started)
+        except WizardCancelled:
+            self._mark_cancelled(job)
+        except Exception as exc:
+            LOGGER.exception("Show failed")
+            job.status = "failed"
+            job.error = str(exc)
+            job.technical_details = traceback.format_exc()
+        finally:
+            _release_job_project_lock(job)
+
+    def _run_show_prepare(self, job, project, source, style, language, gags, resources):
+        from core.show import prepare_show
+        cancel, progress = self._show_hooks(job)
+        held = False
+        try:
+            project.data.setdefault("settings", {}).setdefault("wizard", {}).update(
+                platform="show", show={"source": source, "style": style, "language": language or "", "gags": gags, "review": True, "resources": resources})
+            project.save()
+            summary = prepare_show(project, source, resources, style_name=style, language=language, gags=gags,
+                                   progress=lambda value, detail: progress(value, detail, stage="edit"), cancel=cancel)
+            # Nothing is rendered before the person reviews every effect.
+            job.status = "waiting_show_review"
+            job.stage = "review"
+            job.progress = 60
+            job.message = "Review the show"
+            job.detail = f"{summary['proposals']} effects proposed: preview, adjust, approve or discard each one."
+            job.result = {"platform": "show", "show_review": summary}
+            held = True
+        except WizardCancelled:
+            self._mark_cancelled(job)
+        except Exception as exc:
+            LOGGER.exception("Show preparation failed")
+            job.status = "failed"
+            job.error = str(exc)
+            job.technical_details = traceback.format_exc()
+        finally:
+            if not held:
+                _release_job_project_lock(job)
+
+    def adopt_show_review(self, project: Project) -> WizardJob:
+        """Reattach to a prepared Show review (for example after reopening the app)."""
+        with self._lock:
+            if self._job and self._job.status in {"running", "waiting_show_review"}:
+                return self._job
+            job = WizardJob(id="current", status="waiting_show_review", progress=60, message="Review the show",
+                            detail="Preview, adjust, approve or discard each effect.", stage="review")
+            _attach_project(job, project)
+            if not _acquire_job_project_lock(job, project):
+                raise RuntimeError("This project's pipeline is already active; reconnect instead of starting another")
+            self._job = job
+            self._prepared_project = project
+            self._thread = None
+            return job
+
+    def render_show_review(self, project: Project) -> WizardJob:
+        """Render the edit with the approved effects only."""
+        with self._lock:
+            if not self._job or self._job.status != "waiting_show_review":
+                raise RuntimeError("There is no Show review waiting to be rendered")
+            if self._thread and self._thread.is_alive():
+                raise RuntimeError("A video is already being processed")
+            job = self._job
+            job.status = "running"
+            job.stage = "export"
+            job.progress = 0
+            job.message = "Rendering the reviewed show"
+            job.detail = "Only the approved effects"
+            job.cancel_event.clear()
+            self._thread = threading.Thread(target=self._render_show_review_job, args=(job, project), daemon=True, name="zucker-show-render")
+            self._thread.start()
+            return job
+
+    def _render_show_review_job(self, job, project):
+        from core.show import render_reviewed_show
+        started = time.monotonic()
+        cancel, progress = self._show_hooks(job)
+        try:
+            destination, manifest = render_reviewed_show(project, progress=lambda value, detail: progress(value, detail, stage="export"), cancel=cancel)
+            self._finish_show(job, project, destination, manifest, started)
+        except WizardCancelled:
+            self._mark_cancelled(job)
+        except Exception as exc:
+            LOGGER.exception("Reviewed Show render failed")
+            job.status = "failed"
+            job.error = str(exc)
+            job.technical_details = traceback.format_exc()
+        finally:
+            _release_job_project_lock(job)
+
     def _run_existing_from_scratch(self, *, job: WizardJob, project: Project, options: dict[str, Any]) -> None:
         try:
             platform = str(options.get("platform") or "youtube")
@@ -867,6 +1010,7 @@ class WizardRunner:
                 job.progress = 22
             if not ingest_only:
                 _warm_fillers(job, project, platform)
+            _warm_reel_scoring(job, project, platform)
             with self._lock:
                 self._prepared_project = project
             job.status = "waiting_choice"
@@ -1017,8 +1161,13 @@ class WizardRunner:
                 if review_prefetch:
                     review_prefetch.finish(review_progress)
                 review = review_items(project, progress_callback=review_progress)
-                if any(not item.get("thumbnail") for item in review):
+                # A failed photo (e.g. damaged source) is shown as such; the
+                # reviewer replaces that shot with Other frame.
+                if any(not item.get("thumbnail") and item.get("thumbnail_status") != "failed" for item in review):
                     raise RuntimeError("Shot review frames were not fully generated")
+                failed_photos = [item["index"] + 1 for item in review if item.get("thumbnail_status") == "failed"]
+                if failed_photos:
+                    _write_stage_log(project, "wizard", f"REVIEW PHOTOS FAILED for shots {failed_photos}; offered for replacement")
                 job.status = "waiting_review"
                 job.stage = "review"
                 job.progress = edit_end
@@ -1493,6 +1642,51 @@ def same_project_path(left: str | None, right: str | None) -> bool:
     if not left or not right:
         return False
     return str(Path(left).expanduser().resolve()) == str(Path(right).expanduser().resolve())
+
+
+def _warm_reel_scoring(job: WizardJob, project: Project, platform: str) -> None:
+    """Score Reel sources while the user is still on Parameters (cached for Edit).
+
+    A Reel scores every handheld source at 2 fps. Seventy-four long clips
+    took over an hour on a USB disk, all of it inside "Building the edit"
+    with no visible progress. Done here, the edit finds every score cached.
+    """
+    if platform != "reel":
+        return
+    from core.media_validation import record_is_usable_camera_video
+    from core.shot_quality import analyze_handheld_director_quality
+    fillers = filler_paths(project)
+    sources = [
+        {"path": str(record["path"]), "source_path": str(record["path"]),
+         "filename": record.get("filename") or Path(str(record["path"])).name,
+         "projection": record.get("projection") or (record.get("probe") or {}).get("projection"),
+         "probe": record.get("probe") or {}}
+        for record in project.data.get("inputs", {}).get("videos") or []
+        if record.get("path") and str(record["path"]) not in fillers and record_is_usable_camera_video(record)
+    ]
+    if not sources:
+        return
+    job.message = "Scoring Reel source shots"
+
+    def progress(fraction: float, detail: str) -> None:
+        if job.cancel_event.is_set():
+            raise WizardCancelled()
+        percent = round(100 * fraction, 1)
+        # Move the bar and the "last measured update" clock too; a changing
+        # text alone looked frozen ("Last measured update 13 min ago").
+        job.detail = f"{detail} · saved and reused by the edit"
+        job.stage_progress = percent
+        job.tasks["reel-scoring"] = {"id": "reel-scoring", "label": "Scoring Reel source shots",
+                                     "percent": percent, "detail": detail}
+        job.progress_updated_at = time.time()
+
+    try:
+        analyze_handheld_director_quality(project, sources, progress)
+        _write_stage_log(project, "wizard", f"REEL SCORING cached ahead of edit: {len(sources)} sources")
+    except WizardCancelled:
+        raise
+    except Exception:  # The edit stage scores anything still missing.
+        LOGGER.exception("Reel scoring warm-up failed; the edit stage will score the sources")
 
 
 def _warm_fillers(job: WizardJob, project: Project, platform: str) -> None:

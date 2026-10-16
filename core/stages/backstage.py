@@ -923,6 +923,7 @@ def _run_backstage_ffmpeg(
     *,
     progress_callback: ProgressCallback | None = None,
     cut_boundaries: list[float] | None = None,
+    cwd: str | Path | None = None,
 ) -> None:
     """Run Backstage ffmpeg with cancellation-safe, cut-level progress."""
     try:
@@ -932,6 +933,7 @@ def _run_backstage_ffmpeg(
             stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,
+            cwd=cwd,
         )
     except OSError as exc:
         raise FFmpegError(f"{type(exc).__name__}: {exc}") from exc
@@ -968,7 +970,7 @@ def _run_backstage_ffmpeg(
         progress_callback(90, f"Rendering cut {total_cuts} of {total_cuts}")
 
 
-def _run_backstage_ffmpeg_checked(command: list[str]) -> None:
+def _run_backstage_ffmpeg_checked(command: list[str], *, cwd: str | Path | None = None) -> None:
     """Run a non-progress Backstage ffmpeg pass without hiding OS errors."""
     try:
         process = subprocess.Popen(
@@ -977,6 +979,7 @@ def _run_backstage_ffmpeg_checked(command: list[str]) -> None:
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=True,
+            cwd=cwd,
         )
     except OSError as exc:
         raise FFmpegError(f"{type(exc).__name__}: {exc}") from exc
@@ -1300,10 +1303,6 @@ def _render_subtitle_track(directory: Path, entries: list[tuple[float, float, st
     return directory / "subtitle-%04d.png"
 
 
-def _filter_path(path: Path) -> str:
-    return str(path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
-
-
 def measure_backstage_av_drift(path: str | Path) -> list[float]:
     """Measure audio/video packet-edge drift at one, two and three thirds."""
     ffprobe = _ffprobe_path()
@@ -1403,7 +1402,10 @@ def _backstage_single_pass_filtergraph(
             current = f"paperout{card_index}"
         video_label = current
     if ass_path:
-        filters.append(f"[{video_label}]subtitles=filename='{_filter_path(ass_path)}'[vout]")
+        # Named relative to FFmpeg's working directory (the ASS file's own
+        # folder): an escaped absolute path breaks on apostrophes in the
+        # project name and on Windows drive letters.
+        filters.append(f"[{video_label}]subtitles=filename={Path(ass_path).name}[vout]")
     else:
         filters.append(f"[{video_label}]format=yuv420p[vout]")
     return inputs, ";".join(filters), video_label, content_duration, muted_ranges
@@ -1485,7 +1487,7 @@ class BackstageExportStage(Stage):
             )
             command = [str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:1", *graph_inputs, "-filter_complex", filtergraph, "-map", "[vout]", "-map", "[aout]", "-fps_mode", "cfr", "-r", "30", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-t", f"{content_duration:.3f}", str(output_path)]
             progress_callback(2, "Rendering Backstage in one FFmpeg pass")
-            _run_backstage_ffmpeg(command, progress_callback=progress_callback, cut_boundaries=[sum(float(item.get("duration_sec") or 0.0) for item in segments[:index + 1]) for index in range(len(segments))])
+            _run_backstage_ffmpeg(command, progress_callback=progress_callback, cut_boundaries=[sum(float(item.get("duration_sec") or 0.0) for item in segments[:index + 1]) for index in range(len(segments))], cwd=tmp_path)
             # Transcription is intentionally retained even when subtitle
             # burning is disabled: scoring and later paper-edit review depend
             # on it. It runs on the delivered MP4 and uses the configured
@@ -1643,11 +1645,11 @@ class BackstageExportStage(Stage):
                 ass_export_path = project.cache_dir / "subtitles" / f"{output_path.stem}.ass"
                 ass_export_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(ass, ass_export_path)
-                subtitle_path = str(ass).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
-                vf = f"subtitles=filename='{subtitle_path}'"
+                # Relative to FFmpeg's working directory, see the single-pass graph.
+                vf = f"subtitles=filename={ass.name}"
                 subtitle_cmd = [str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error", "-i", str(output_path), "-vf", vf, "-map", "0:v", "-map", "0:a?", "-t", f"{current_duration:.3f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "copy", "-movflags", "+faststart", str(subtitled)]
                 progress_callback(98, f"Burning English subtitles ({len(entries)} cues)")
-                _run_backstage_ffmpeg_checked(subtitle_cmd)
+                _run_backstage_ffmpeg_checked(subtitle_cmd, cwd=tmp)
                 shutil.copy2(subtitled, output_path)
         duration = float((ffprobe(str(output_path)).get("format") or {}).get("duration") or 0.0)
         policies = {}

@@ -13,3 +13,8 @@ pytest>=8.0
 pillow>=10.0
 
 demucs==4.0.1
+# Show gags: the drawing painter (Stable Diffusion on the CPU). transformers 5
+# needs a newer torch than Intel Macs have, and transformers 4 needs hub < 1.
+diffusers==0.31.0
+transformers>=4.46,<5
+huggingface_hub<1.0
