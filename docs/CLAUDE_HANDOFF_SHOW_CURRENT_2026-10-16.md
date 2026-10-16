@@ -88,3 +88,7 @@ El usuario confirma que lleva una **gorra verde ladeada con una pequeña visera 
 ## Recortes, ojos originales, voz en off y ratón
 
 Lee `docs/SHOW_PHOTO_LAYERS_VOICE_MOUSE_2026-10-16.md`: es el traspaso más reciente de estas herramientas. El personaje de la prueba de ojos es el **rojo con forma de bombilla y fondo naranja de la nevera**, no el de Simón. El recortador guarda directamente en la galería del proyecto sin exigir voz/boca; el rig permite ojos originales y previsualización de miradas. El micro y la importación/arrastre de audio asignan una voz real al control. Los menús agrupan efectos y cortes, conservan las operaciones de edición y permiten pegar sin otra capa seleccionada. Integra código, endpoints y compositor juntos; no basta copiar HTML. El menú nativo de texto se conserva, mientras las herramientas de la app usan menús contextuales HTML. Validación y límites están en el documento.
+
+## Revisión posterior del render completo
+
+La revisión más reciente está en `docs/SHOW_RENDER_PARITY_2026-10-16.md`; el prompt de integración está en `docs/CLAUDE_SHOW_PARITY_PROMPT_2026-10-16.md`. Parte de `claude/show-app-build` 77271072. Sustituye la recomendación anterior de generar automáticamente previews por el nuevo contrato: live para vídeo/imágenes elegidas y render con efectos solo por petición. El exportador incorpora ahora recortes con fondos estáticos guardados; los límites restantes están documentados.

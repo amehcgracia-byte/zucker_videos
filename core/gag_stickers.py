@@ -167,11 +167,11 @@ def character_with_bubble(character: Path | Image.Image, text: str, *, side: str
     return canvas
 
 
-def word_sticker(text: str, *, colour: str = "#ffffff", font_size: int = 170, tilt: float = -6.0, font: str = "marker") -> Image.Image:
+def word_sticker(text: str, *, colour: str = "#ffffff", font_size: int = 170, tilt: float = -6.0, font: str = "marker", handwritten: bool = False) -> Image.Image:
     """A big shouted word, hand lettered, thick dark outline, slightly tilted."""
     face = hand_font(font_size, font)
-    words = text.strip().upper()[:28] or "!"
-    stroke = max(4, font_size // 10)
+    words = (text.strip() if handwritten else text.strip().upper())[:28] or "!"
+    stroke = 1 if handwritten else max(4, font_size // 10)
     probe = ImageDraw.Draw(Image.new("RGBA", (10, 10)))
     left, top, right, bottom = probe.textbbox((0, 0), words, font=face, stroke_width=stroke)
     image = Image.new("RGBA", (right - left + 40, bottom - top + 40), (0, 0, 0, 0))

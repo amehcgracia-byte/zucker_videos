@@ -360,7 +360,7 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
     outcomes: dict[str, tuple[str, str]] = {}
     if director:
         from core.show_framing import face_on_screen
-        pictures, notes = gag_module.make_items(director, project.folder / "gags", face=face, cancel=cancel,
+        pictures, notes = gag_module.make_items(director, project.folder / "gags", face=face, cancel=cancel, allow_generation=False,
                                                 face_at=lambda at: face_on_screen(plan, at), outcomes=outcomes,
                                                 progress=lambda share, text: progress(50 + int(share * 30), text))
     show_effects = show_proposals.results(items, outcomes)
@@ -504,7 +504,7 @@ def preview_proposal(project, proposal_id: str, *, width: int | None = None, hei
     plan["cutaways"] = cutaways
     part = window_plan(plan, start, end)
     from core.show_bridge import studio_fingerprint
-    signature = hashlib.sha1(json.dumps(["placement-preview-v3", trial, start, end, width, height, studio_fingerprint(project.folder)], sort_keys=True,
+    signature = hashlib.sha1(json.dumps(["placement-preview-v4-approved-assets", trial, start, end, width, height, studio_fingerprint(project.folder)], sort_keys=True,
                                         default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     folder.mkdir(parents=True, exist_ok=True)
@@ -523,7 +523,7 @@ def preview_proposal(project, proposal_id: str, *, width: int | None = None, hei
         moved = [{**gag, "at": round(gag["at"] - start, 3)} for gag in director]
         face = "right" if sum(shot.get("focus", [0.5])[0] for shot in plan["shots"]) / max(1, len(plan["shots"])) >= 0.5 else "left"
         from core.show_framing import face_on_screen
-        pictures, notes = gag_module.make_items(moved, folder / f"{proposal_id}-{signature}-gags", face=face, cancel=cancel, frame_size=(width, height),
+        pictures, notes = gag_module.make_items(moved, folder / f"{proposal_id}-{signature}-gags", face=face, cancel=cancel, frame_size=(width, height), allow_generation=False,
                                             face_at=lambda at: face_on_screen(plan, at + start))
         if notes:
             raise RuntimeError("The effect preview is incomplete: " + "; ".join(notes))
@@ -574,7 +574,7 @@ def _scene_preview_inputs(project, scene_id: str, width: int, height: int, only_
     from core.gags import drawing_engine
     local_art_recipe = [drawing_engine(), gag_paint.NEGATIVE, {key: vars(style) for key, style in gag_paint.STYLES.items()}] if any(
         item["kind"] == "drawing" and not item["params"].get("picture") for item in live) else None
-    signature = hashlib.sha1(json.dumps(["scene-preview-v3", live, overlays, start, end, width, height, studio_fingerprint(project.folder),
+    signature = hashlib.sha1(json.dumps(["scene-preview-v4-approved-assets", live, overlays, start, end, width, height, studio_fingerprint(project.folder),
                                          local_art_recipe], sort_keys=True, default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     return plan, live, overlays, start, end, folder, left_out, folder / f"{scene_id}-{signature}.mp4"
@@ -646,7 +646,7 @@ def preview_scene(project, scene_id: str, *, width: int | None = None, height: i
     if director:
         moved = [{**gag, "at": round(gag["at"] - start, 3)} for gag in director]
         face = "right" if sum(shot.get("focus", [0.5])[0] for shot in plan["shots"]) / max(1, len(plan["shots"])) >= 0.5 else "left"
-        pictures, notes = gag_module.make_items(moved, folder / f"{scene_id}-gags", face=face, progress=progress, frame_size=(width, height),
+        pictures, notes = gag_module.make_items(moved, folder / f"{scene_id}-gags", face=face, progress=progress, frame_size=(width, height), allow_generation=False,
                                                 cancel=cancel_cut if cancel_cut is not None else cancel,
                                                 face_at=lambda at: face_on_screen(plan, at + start))
         left_out += notes                              # a drawing the painter could not make: the rest is shown
