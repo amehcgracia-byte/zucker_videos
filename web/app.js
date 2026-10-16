@@ -2855,11 +2855,11 @@ async function newProject() {
 }
 
 async function deleteProject(path, name, hasExport) {
-  if (!await window.UiFeedback.confirm(`Delete "${name || "this project"}"? This removes the project folder. Global cache stays untouched.`)) return;
-  const keepExports = hasExport ? await window.UiFeedback.confirm("This project has exports. Move them to ~/ZuckerVideos/Exports before deleting?", { alternateLabel: "Delete exports too" }) : false;
+  if (!await window.UiFeedback.confirm(`Move "${name || "this project"}" to recoverable Trash? Its recordings stay inside the recoverable folder. Global cache stays untouched.`)) return;
+  const keepExports = hasExport ? await window.UiFeedback.confirm("Keep its exports in your Exports folder? Otherwise they stay with the project in Trash.", { alternateLabel: "Keep exports with project" }) : false;
   if (keepExports === null) return;
-  await api("/wizard/projects/delete", { method: "POST", body: JSON.stringify({ path, keep_exports: Boolean(keepExports) }) });
-  showToast(S.projectDeleted || "Project deleted");
+  const result = await api("/wizard/projects/delete", { method: "POST", body: JSON.stringify({ path, keep_exports: Boolean(keepExports) }) });
+  showToast(`Project moved to recoverable Trash: ${result.trash_path}`);
   await loadProjects();
 }
 

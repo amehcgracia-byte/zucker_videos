@@ -9,6 +9,7 @@ from typing import Any
 from core.project import Project, ProjectError, load_project
 from server.inbox import app_home, load_global_config
 from core.storage import project_locations, require_available, media_signature
+from core.trash import move_to_trash
 
 
 def projects_root() -> Path:
@@ -116,7 +117,11 @@ def input_signature(master: str, songs: str | None, videos: list[str]) -> dict[s
 
 
 def delete_project_folder(project_path: str, keep_exports: bool = False) -> dict[str, Any]:
-    """Delete one project folder, optionally moving exports out first."""
+    """Retire a project recoverably, optionally keeping exports in their shelf.
+
+    Never fall back to recursive deletion if Trash access or a move fails: the
+    project may contain the only remaining copy of the user's recordings.
+    """
     folder = Path(project_path).expanduser().resolve()
     allowed = {root.resolve() for root in project_locations()}
     if folder.parent not in allowed or folder.suffix != ".zuckervid":
@@ -131,8 +136,10 @@ def delete_project_folder(project_path: str, keep_exports: bool = False) -> dict
                 target = destination / export.name
                 shutil.move(str(export), str(target))
                 kept_exports.append(str(target))
-    shutil.rmtree(folder)
-    return {"deleted": str(folder), "kept_exports": kept_exports}
+    destination = move_to_trash(folder)
+    if destination is None:
+        raise ValueError("The project could not be moved to Trash")
+    return {"deleted": str(folder), "kept_exports": kept_exports, "trash_path": str(destination)}
 
 
 def project_status(project: Project) -> str:

@@ -13,3 +13,7 @@ Para verlo, abre la muestra local en http://127.0.0.1:8793/ mientras su servidor
 `fit: contain` conserva las proporciones en el compositor, el render de muestra y el canvas. Respeta ese parámetro al integrar; no estires la cara al convertir las celdas cuadradas a 16:9. Prueba el importador, las cinco colocaciones, los cambios de plano y la voz en un render real de tu versión integrada. No basta mostrar una captura o cambiar el título.
 
 El PR contiene los nuevos dibujos generados, recetas, referencias de identidad, ajuste de encuadre y tests. Las grabaciones, voces y originales fotográficos siguen privados. No los subas al repositorio ni a artefactos públicos. No instales una reconstrucción antigua: comprueba primero el commit y conserva las decisiones ya guardadas por el usuario. Entrega claramente qué está integrado y qué has probado.
+
+## Aclaración posterior: la gorra
+
+El usuario confirma que lleva una **gorra verde ladeada con una pequeña visera delantera que sobresale**, parecida a la que lleva él en el vídeo. Debe separarse visualmente de la cabeza, con volumen y sombra bajo la visera; no es un casco, gorro ceñido ni pelo. La interpretación frontal de los PNG actuales es incompleta: esta corrección explícita tiene prioridad en futuras generaciones. El usuario acepta las animaciones actuales, que se conservan. No afirmar que ya se ha redibujado la visera.

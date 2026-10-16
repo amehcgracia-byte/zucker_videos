@@ -39,7 +39,7 @@
         <label>name <input name="name" type="text" value="thing"></label><button class="icon-button small" type="submit">Take it</button></form>`;
     $("#showStudioBody").querySelectorAll("[data-photo]").forEach((button) => button.onclick = () => {
       state.photo = photos[Number(button.dataset.photo)];
-      state.strokes = []; state.undo = []; state.box = null; state.cut = null;
+      state.strokes = []; state.undo = []; state.box = null; state.cut = null; state.eyes = []; state.mouth = null; state.background = false;
       show(2);
     });
     const filter = $("#showPhotoFilter");
@@ -70,13 +70,19 @@
   }
 
   async function cut() {
-    $("#showStudioStatus").textContent = "Cutting out… (the first time can take half a minute)";
+    const owner=state, request=Symbol('cutout');
+    owner.cutRequest=request; owner.cutPending=true; owner.cut=null;
+    const controls=[...document.querySelectorAll('#showStudioBody [data-studio="gallery"],#showStudioBody [data-studio="next3"]')];controls.forEach(button=>button.disabled=true);
+    const status=$("#showStudioStatus"), preview=$("#showStudioPreview");
+    if(status)status.textContent="Cutting out… (the first time can take half a minute)";
     try {
-      state.cut = await api("/show/characters/cutout", { method: "POST", body: JSON.stringify({ photo: state.photo.photo, box: state.box, strokes: state.strokes }) });
-      $("#showStudioStatus").textContent = `Cut out with ${state.cut.method === "macos-vision" ? "macOS subject lifting" : "a box (GrabCut)"}. Paint to keep or erase; only the edge changes, never the pixels.`;
-      drawPhoto();
-      $("#showStudioPreview").src = state.cut.url;
-    } catch (error) { $("#showStudioStatus").textContent = error.message; }
+      const result=await api("/show/characters/cutout",{method:"POST",body:JSON.stringify({photo:owner.photo.photo,box:owner.box,strokes:owner.strokes,background:owner.background})});
+      if(state!==owner || owner.cutRequest!==request)return;
+      owner.cut=result;
+      if(status?.isConnected)status.textContent=`Cut out with ${result.method==='macos-vision'?'macOS subject lifting':'a box (GrabCut)'}. Keep or erase the edge; original pixels stay unchanged.`;
+      drawPhoto(); if(preview?.isConnected)preview.src=result.url;
+    } catch(error){if(state===owner&&owner.cutRequest===request&&status?.isConnected)status.textContent=error.message;}
+    finally{if(owner.cutRequest===request){owner.cutPending=false;controls.forEach(button=>{if(button.isConnected)button.disabled=!owner.cut;});}}
   }
 
   function renderCutout() {
@@ -84,11 +90,13 @@
         <label><input type="radio" name="brush" value="keep" checked> Keep brush</label><label><input type="radio" name="brush" value="erase"> Erase brush</label>
         <label><input type="radio" name="brush" value="box"> Box (cut inside it)</label>
         <label>Size <input type="range" id="showBrushSize" min="0.005" max="0.08" step="0.005" value="0.02"></label>
+        <label><input type="checkbox" id="showKeepBackground" ${state.background ? "checked" : ""}> Keep background instead</label>
         <button type="button" class="icon-button small" data-studio="undo">Undo</button>
         <button type="button" class="icon-button small" data-studio="auto">Automatic again</button></div>
       <p id="showStudioStatus" class="show-hint"></p>
       <div class="show-studio-split"><canvas id="showStudioPhoto" class="show-canvas" width="960" height="540"></canvas><div class="show-checker"><img id="showStudioPreview" alt="Cut-out"></div></div>
-      <div class="show-actions"><button type="button" class="icon-button small" data-studio="back1">Another photo</button><button type="button" class="primary icon-button small" data-studio="next3">Looks right</button></div>`;
+      <div class="show-actions"><button type="button" class="icon-button small" data-studio="back1">Another photo</button><button type="button" class="primary icon-button small" data-studio="gallery">Save image to gallery</button><button type="button" class="icon-button small" data-studio="next3">Animate original parts…</button></div>`;
+    $("#showKeepBackground").onchange = (event) => { state.background = event.target.checked; cut(); };
     state.image = new Image();
     state.image.onload = () => drawPhoto();       // not with the load event as a stroke
     state.image.src = state.photo.url;
@@ -148,14 +156,17 @@
   }
 
   function renderRig() {
-    const voices = window.ShowReview.voices();
-    $("#showStudioBody").innerHTML = `<p class="show-hint">Drag a rectangle over its mouth (or jaw): those pixels will move with its voice and black shows behind. Then click once with "Pivot" on the point it stands or turns on.</p>
-      <div class="show-studio-tools"><label><input type="radio" name="rigtool" value="mouth" checked> Mouth</label><label><input type="radio" name="rigtool" value="pivot"> Pivot</label></div>
+    const voices = [...window.ShowReview.voices(), ...(state.savedVoice ? [state.savedVoice] : [])];
+    $("#showStudioBody").innerHTML = `<p class="show-hint">Mark original parts, without replacing them. Draw a tight rectangle around each eye with Eyes, or mark a mouth/jaw with Mouth. Save, then choose Look left and right or Talk in the element’s animation menu. Pivot sets its turning point.</p>
+      <div class="show-studio-tools"><label><input type="radio" name="rigtool" value="mouth" checked> Mouth</label><label><input type="radio" name="rigtool" value="eyes"> Eyes / original part</label><label><input type="radio" name="rigtool" value="pivot"> Pivot</label><button type="button" class="icon-button small" data-studio="clear-eyes">Clear eye regions</button><button type="button" class="icon-button small" data-studio="test-eyes">Test glance</button></div>
       <div class="show-checker show-rig"><canvas id="showRigCanvas" class="show-canvas"></canvas></div>
-      <div class="show-fields"><label class="show-field"><span>Name</span><input type="text" id="showCharacterName" value="${escape(state.photo.name)}"></label>
+      <video id="showEyePreview" controls playsinline hidden style="max-width:100%;max-height:240px"></video><p id="showEyeStatus" role="status"></p><div class="show-fields"><label class="show-field"><span>Name</span><input type="text" id="showCharacterName" value="${escape(state.name || state.photo.name)}"></label>
         <label class="show-field"><span>Its voice (from your videos)</span><select id="showCharacterVoice"><option value="">No voice yet</option>${voices.map((voice, index) => `<option value="${index}">${escape(voice.text.slice(0, 60))} (${escape(baseName(voice.source))} ${voice.start.toFixed(1)} s)</option>`).join("")}</select></label></div>
+      <div data-voice-input data-voice-character></div>
       <div class="show-actions"><button type="button" class="icon-button small" data-studio="back2">Back to the cut-out</button><button type="button" class="primary icon-button small" data-studio="save">Save in the library and place it</button></div>`;
+    if(state.editing)$('[data-studio="back2"]').disabled=true;
     state.voices = voices;
+    if(state.savedVoice)$("#showCharacterVoice").value=String(voices.length-1);
     const canvas = $("#showRigCanvas");
     const image = new Image();
     image.onload = () => {
@@ -164,20 +175,21 @@
       state.rigImage = image; drawRig();
     };
     image.src = state.cut.url;
-    let drag = null;
+    let drag = null, rigTool = null;
     const point = (event) => { const box = canvas.getBoundingClientRect(); return [(event.clientX - box.left) / box.width, (event.clientY - box.top) / box.height]; };
     canvas.onpointerdown = (event) => {
       const tool = document.querySelector("input[name=rigtool]:checked").value;
       if (tool === "pivot") { state.pivot = point(event); drawRig(); return; }
-      canvas.setPointerCapture(event.pointerId); drag = point(event);
+      canvas.setPointerCapture(event.pointerId); drag = point(event); rigTool = tool;
     };
     canvas.onpointermove = (event) => {
       if (!drag) return;
       const [x, y] = point(event);
-      state.mouth = { rect: [Math.min(x, drag[0]), Math.min(y, drag[1]), Math.abs(x - drag[0]), Math.abs(y - drag[1])] };
+      const region = { rect: [Math.min(x, drag[0]), Math.min(y, drag[1]), Math.abs(x - drag[0]), Math.abs(y - drag[1])] };
+      if (rigTool === "eyes") state.liveEye = region; else state.mouth = region;
       drawRig();
     };
-    canvas.onpointerup = () => { drag = null; };
+    canvas.onpointerup = () => { if (rigTool === "eyes" && state.liveEye) { state.eyes = [...(state.eyes || []), state.liveEye].slice(-8); state.liveEye = null; } drag = null; drawRig(); };
   }
 
   function drawRig() {
@@ -187,20 +199,37 @@
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(state.rigImage, 0, 0, canvas.width, canvas.height);
     if (state.mouth) { const [x, y, w, h] = state.mouth.rect; ctx.strokeStyle = "#f3d478"; ctx.lineWidth = 2; ctx.strokeRect(x * canvas.width, y * canvas.height, w * canvas.width, h * canvas.height); }
+    for (const region of [...(state.eyes || []), ...(state.liveEye ? [state.liveEye] : [])]) { const [x,y,w,h] = region.rect; ctx.strokeStyle = "#70d9ed"; ctx.lineWidth = 2; ctx.strokeRect(x*canvas.width,y*canvas.height,w*canvas.width,h*canvas.height); }
     if (state.pivot) { ctx.beginPath(); ctx.arc(state.pivot[0] * canvas.width, state.pivot[1] * canvas.height, 6, 0, Math.PI * 2); ctx.fillStyle = "#f472b6"; ctx.fill(); }
   }
 
   async function save() {
     const index = $("#showCharacterVoice").value;
     const voice = index === "" ? null : state.voices[Number(index)];
-    const saved = await api("/show/characters", { method: "POST", body: JSON.stringify({
+    const saved = await api("/show/characters", { method: state.editing ? "PATCH" : "POST", body: JSON.stringify({ folder:state.folder,
       photo: state.photo.photo, mask: state.cut.mask, method: state.cut.method, name: $("#showCharacterName").value,
-      mouth: state.mouth || null, pivot: state.pivot || [0.5, 1.0], voice: voice ? [voice.source, voice.start, voice.length] : null }) });
+      eyes: state.eyes || [], mouth: state.mouth || null, pivot: state.pivot || [0.5, 1.0], voice: voice ? [voice.source, voice.start, voice.length] : null }) });
     $("#showCharacterStudio").hidden = true;
     await window.ShowReview.refreshLibrary();
-    await window.ShowReview.addToScene(saved.cutout);
-    showToast(`${saved.name} is in the library and in this scene`);
+    if (!state.editing) await window.ShowReview.addToScene(saved.cutout);
+    showToast(state.editing ? `${saved.name} updated. Render its preview to check the changes.` : `${saved.name} is in the library and in this scene`);
   }
+
+  window.ShowPhotoStudio = {edit: async asset => {
+    const result=await api('/show/characters/edit?asset='+encodeURIComponent(asset));
+    const r=result.record;
+    state={step:3,editing:true,folder:r.folder,name:r.name,photo:{...result.photo,url:'/api/v1/show/photo?path='+encodeURIComponent(result.photo.photo)},cut:result.cut,
+      mouth:r.mouth,eyes:r.eyes||[],pivot:r.pivot,strokes:[],undo:[],savedVoice:r.voice?{source:r.voice[0],start:r.voice[1],length:r.voice[2],text:'Saved voice'}:null};
+    show(3);
+  }};
+
+  document.addEventListener("show-voice-ready", event => {
+    if (!event.target.matches('[data-voice-character]') || !state) return;
+    state.voices.push(event.detail);
+    const select = $("#showCharacterVoice"), option = document.createElement('option');
+    option.value = state.voices.length - 1; option.textContent = event.detail.text;
+    select.append(option); select.value = option.value;
+  });
 
   document.addEventListener("click", async (event) => {
     const target = event.target instanceof Element ? event.target.closest("[data-studio]") : null;
@@ -209,13 +238,31 @@
       const action = target.dataset.studio;
       if (action === "open") { state = { step: 1, strokes: [], undo: [] }; show(1); }
       else if (action === "close") $("#showCharacterStudio").hidden = true;
+      else if (action === "gallery") {
+        if (!state.cut || state.cutPending) return;
+        target.disabled = true;
+        const saved = await api("/show/characters", {method:"POST",body:JSON.stringify({photo:state.photo.photo,mask:state.cut.mask,gallery_only:true,name:state.photo.name})});
+        await window.ShowReview.refreshLibrary();
+        $("#showStudioStatus").textContent = `${saved.name} saved in this project’s gallery. You can reuse it in any scene.`;
+        target.disabled = false;
+      }
+      else if (action === "clear-eyes") { state.eyes = []; state.liveEye = null; drawRig(); }
+      else if (action === "test-eyes") {
+        if (!state.eyes?.length) { $("#showEyeStatus").textContent = "Mark an eye region first."; return; }
+        target.disabled = true; $("#showEyeStatus").textContent = "Preparing original-pixel glance…";
+        try {
+          const result = await api("/show/characters/eyes-preview",{method:"POST",body:JSON.stringify({photo:state.photo.photo,mask:state.cut.mask,eyes:state.eyes})});
+          const video = $("#showEyePreview"); video.src = result.url; video.hidden = false;
+          $("#showEyeStatus").textContent = "Original pixels move; only the small holes behind them are filled from their surroundings.";
+        } finally { target.disabled = false; }
+      }
       else if (action === "back1") show(1);
       else if (action === "back2") show(2);
-      else if (action === "next3") { if (!state.cut) return; show(3); }
+      else if (action === "next3") { if (!state.cut || state.cutPending) return; show(3); }
       else if (action === "undo" && state.undo.length) { const last = JSON.parse(state.undo.pop()); state.strokes = last.strokes; state.box = last.box; cut(); }
       else if (action === "auto") { state.undo.push(JSON.stringify({ strokes: state.strokes, box: state.box })); state.strokes = []; state.box = null; cut(); }
       else if (action === "save") { target.disabled = true; await save(); }
     } catch (error) { showToast(error.message, true); }
-    finally { if (target.dataset.studio === "save") target.disabled = false; }
+    finally { if (["save", "gallery", "test-eyes"].includes(target.dataset.studio)) target.disabled = false; }
   });
 })();
