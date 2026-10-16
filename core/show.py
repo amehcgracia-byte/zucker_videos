@@ -422,8 +422,8 @@ def _cached_cut(source: Path, part: dict[str, Any], folder: Path, name: str, *, 
     stickers, drawings and words do not change it, so after an edit a preview only
     composites the effects again instead of cutting the source video again."""
     import hashlib
-    stat = source.stat()
-    key = hashlib.sha1(json.dumps(["preview-cut-v1", str(source), stat.st_size, stat.st_mtime_ns, part, width, height, PREVIEW_ENCODING],
+    stat = source.stat() if source.exists() else None          # a changed source is another cut
+    key = hashlib.sha1(json.dumps(["preview-cut-v1", str(source), stat and stat.st_size, stat and stat.st_mtime_ns, part, width, height, PREVIEW_ENCODING],
                                   sort_keys=True, default=str).encode()).hexdigest()[:12]
     cuts = folder / "cuts"
     cuts.mkdir(parents=True, exist_ok=True)

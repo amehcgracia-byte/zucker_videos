@@ -2170,3 +2170,7 @@ main.wizard:has(#showReviewBox.show-fit) {padding-block:10px;}
 #showReviewBox.show-fit > .show-workspace-help {margin-block:0 6px;}
 #showReviewBox.show-fit > .show-workspace-help {padding:8px 12px;}
 body:has(#showReviewBox.show-fit) #backdropLogo {max-height:calc(100vh - 130px);}      /* the faint logo must not make the fitted page scroll */
+/* Your own pictures dropped on the scene. */
+.show-stage.show-drop-ready {outline:3px dashed #ffdc77;outline-offset:-3px;}
+.show-cutout-offer {display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel);}
+.show-cutout-offer span {flex:1 1 220px;}

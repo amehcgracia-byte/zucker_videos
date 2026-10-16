@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 import io
 import logging
 import math
@@ -1115,6 +1116,7 @@ def _invalidate_stale_sync_on_open(project: Project) -> None:
 # and this used to block it even in the desktop app whenever the drag-drop
 # path-detection fell through to the upload fallback.
 BROWSER_UPLOAD_MAX_BYTES = 512 * 1024 * 1024
+SHOW_PICTURE_SUFFIXES = {".png", ".webp", ".jpg", ".jpeg"}
 DESKTOP_UPLOAD_MAX_BYTES = None
 
 
@@ -2678,6 +2680,90 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         items = _show_library_items(project)
         return jsonify({"items": [{**item, "url": f"/api/v1/show/library/file?path={quote(item['path'])}"} for item in items if request.args.get("retired") == "1" or not item["retired"]],
                         "retired_count": sum(item["retired"] for item in items)})
+
+    def _catalog_picture(project: Project, path: Path, **entry: Any) -> None:
+        catalog_path = project.folder / "assets" / "show-library" / "catalog.json"
+        try:
+            catalog = json.loads(catalog_path.read_text())
+        except (OSError, ValueError):
+            catalog = {}
+        catalog[str(path.resolve())] = {**catalog.get(str(path.resolve()), {}), **entry}
+        temp = catalog_path.with_suffix(".tmp")
+        temp.write_text(json.dumps(catalog, ensure_ascii=False, indent=2))
+        temp.replace(catalog_path)
+
+    def _keep_picture(project: Project, payload: bytes, filename: str, *, origin: str, cut_out: bool = False) -> dict[str, Any]:
+        """A picture of the person's own, kept in the project's library (an identical one is
+        reused, never overwritten): whether it is already cut out, and where it is."""
+        from PIL import Image
+        folder = project.folder / "assets" / "show-library" / "yours"
+        folder.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(payload).hexdigest()
+        target = next((path for path in sorted(folder.iterdir()) if path.is_file() and path.suffix.lower() in SHOW_PICTURE_SUFFIXES
+                       and hashlib.sha256(path.read_bytes()).hexdigest() == digest), None)
+        if target is None:
+            stem = re.sub(r"[^\w .-]+", "", Path(filename).stem).strip()[:60] or "picture"
+            target = unique_destination(folder / f"{stem}{Path(filename).suffix.lower()}")
+            target.write_bytes(payload)
+        with Image.open(target) as image:
+            width, height = image.size
+            alpha = image.getchannel("A") if "A" in image.getbands() else None
+            # Cut out: a real share of it is see-through (not just a few soft corners).
+            cut = cut_out or bool(alpha is not None and sum(alpha.point(lambda v: 255 if v < 250 else 0).histogram()[255:]) > 0.01 * width * height)
+        name = re.sub(r"[_-]+", " ", target.stem).strip().capitalize()
+        _catalog_picture(project, target, name=name, origin=origin, retired=False, sha256=digest, source=filename)
+        return {"path": str(target.resolve()), "url": f"/api/v1/show/library/file?path={quote(str(target.resolve()))}",
+                "name": name, "cutout": cut, "width": width, "height": height}
+
+    # A plain photo's subject is worked out as soon as it arrives (macOS loads its model
+    # the first time, which takes a while), so "Cut out the subject" is usually instant.
+    picture_masks: dict[str, Any] = {}
+    mask_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="zucker-cutout")
+
+    @app.post("/api/v1/show/library/pictures")
+    def api_show_library_add_picture() -> Response:
+        """A picture dropped from the computer: kept in this project's library as it is."""
+        from PIL import Image, UnidentifiedImageError
+        project = _require_project(state)
+        storage = request.files.get("file")
+        if not storage or not storage.filename:
+            return error_response("bad_request", "Drop a picture file", 400)
+        if Path(storage.filename).suffix.lower() not in SHOW_PICTURE_SUFFIXES:
+            return error_response("bad_request", "Pictures can be PNG, WEBP or JPEG", 400)
+        payload = storage.read()
+        if len(payload) > 80 * 1024 * 1024:
+            return error_response("bad_request", "That picture is larger than 80 MB", 400)
+        try:
+            with Image.open(io.BytesIO(payload)) as image:
+                image.verify()
+        except (UnidentifiedImageError, OSError, SyntaxError):
+            return error_response("bad_request", f"{storage.filename} is not a picture this app can read", 400)
+        kept = _keep_picture(project, payload, storage.filename, origin="Your picture")
+        if not kept["cutout"] and kept["path"] not in picture_masks:
+            from core import show_characters
+            picture_masks[kept["path"]] = mask_pool.submit(show_characters.auto_mask, kept["path"])
+        return jsonify(kept)
+
+    @app.post("/api/v1/show/library/pictures/cutout")
+    def api_show_library_cutout() -> Response:
+        """The subject of one of the person's photos, cut out with the Mac's own subject
+        lifting (GrabCut where it is missing), kept beside the photo in the library."""
+        from core import show_characters
+        project = _require_project(state)
+        raw = str((request.get_json(silent=True) or {}).get("path") or "")
+        if raw not in {item["path"] for item in _show_library_items(project)}:
+            return error_response("not_found", "Not in this library", 404)
+        waiting = picture_masks.pop(raw, None)
+        mask, method = waiting.result() if waiting is not None else show_characters.auto_mask(raw)
+        try:
+            picture, _box = show_characters.cutout(raw, mask)
+        except ValueError as exc:
+            return error_response("cutout_failed", str(exc), 422)
+        buffer = io.BytesIO()
+        picture.save(buffer, "PNG")
+        kept = _keep_picture(project, buffer.getvalue(), f"{Path(raw).stem} cut out.png",
+                             origin="Your picture · cut out" + (" by macOS" if method == "macos-vision" else ""), cut_out=True)
+        return jsonify({**kept, "method": method})
 
     @app.post("/api/v1/show/library/visibility")
     def api_show_library_visibility() -> Response:

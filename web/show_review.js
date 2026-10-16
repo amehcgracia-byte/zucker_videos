@@ -1726,6 +1726,83 @@
   // The Show editing desk works on the open project, in this same window.
   document.getElementById("showStudioOpen")?.addEventListener("click", () => { window.location.href = "/show-studio/"; });
 
+  // ---- Your own pictures: drop one from the computer onto the scene ------------------------
+  // It is kept in the project's library and placed where it was dropped, at the playhead.
+  // A cut-out picture (see-through around its subject) goes on the video as it is; a plain
+  // photo too, with an offer to cut out its subject (macOS subject lifting).
+  const fileDrag = (event) => [...(event.dataTransfer?.types || [])].includes("Files");
+  const dropArea = (event) => event.target instanceof Element && !!event.target.closest("#showReviewBox, #showTimelineDialog");
+  document.addEventListener("dragover", (event) => {
+    if (!review || !currentScene() || !fileDrag(event) || !dropArea(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    $("#showStage")?.classList.add("show-drop-ready");
+  });
+  document.addEventListener("dragleave", (event) => {
+    if (!event.relatedTarget || !(event.relatedTarget instanceof Element) || !event.relatedTarget.closest("#showReviewBox, #showTimelineDialog"))
+      $("#showStage")?.classList.remove("show-drop-ready");
+  });
+  document.addEventListener("drop", (event) => {
+    $("#showStage")?.classList.remove("show-drop-ready");
+    if (!review || !currentScene() || !fileDrag(event) || !dropArea(event)) return;
+    event.preventDefault();
+    const file = [...event.dataTransfer.files].find((item) => /\.(png|jpe?g|webp)$/i.test(item.name));
+    if (!file) { showToast("Drop a PNG, WEBP or JPEG picture to put it on the video.", true); return; }
+    const box = $("#showStage").getBoundingClientRect();
+    const inside = event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom;
+    addOwnPicture(currentScene(), file, inside ? (event.clientX - box.left) / box.width : 0.5, inside ? (event.clientY - box.top) / box.height : 0.5)
+      .catch((error) => showToast(error.message, true));
+  });
+
+  async function addOwnPicture(scene, file, cx, cy) {
+    $("#showStageStatus").textContent = `Adding ${file.name}…`;
+    const form = new FormData();
+    form.append("file", file, file.name);
+    const response = await fetch("/api/v1/show/library/pictures", { method: "POST", body: form });
+    const kept = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(kept.error?.message || `Could not add ${file.name}`);
+    await loadLibrary().catch(() => {});
+    const width = kept.cutout ? 22 : 30, height = width * 16 / 9 * kept.height / kept.width;
+    const at = Math.max(scene.start, Math.min(scene.end - 0.1, editedPlayhead()));
+    const overlay = { id: crypto.randomUUID(), asset: kept.path, width, at, duration: Math.min(3, scene.end - at), effect: "pop",
+      x: Math.max(0, Math.min(100 - width, cx * 100 - width / 2)), y: Math.max(0, Math.min(Math.max(0, 100 - height), cy * 100 - height / 2)) };
+    scene.overlays.push(overlay);
+    if (!await saveOverlays(scene)) return;
+    locateEffect(timelineItems(scene).find((item) => item.overlay?.id === overlay.id) || timelineItems(scene).at(-1));
+    if (kept.cutout) showToast(`${kept.name} is on the video from ${clock(at)}. Drag it to move it; drag its bar to time it.`);
+    else offerCutout(scene, overlay.id, kept);
+  }
+
+  function offerCutout(scene, overlayId, kept) {
+    let offer = $("#showCutoutOffer");
+    if (!offer) { offer = document.createElement("div"); offer.id = "showCutoutOffer"; offer.className = "show-cutout-offer"; }
+    $("#showStage").after(offer);
+    offer.hidden = false;
+    offer.innerHTML = `<span>${escape(kept.name)} is on the video as a whole photo.</span>
+      <button type="button" class="icon-button small primary" data-cutout-yes>Cut out the subject</button>
+      <button type="button" class="icon-button small" data-cutout-no>Keep the whole photo</button>`;
+    offer.querySelector("[data-cutout-no]").onclick = () => { offer.hidden = true; };
+    offer.querySelector("[data-cutout-yes]").onclick = async () => {
+      offer.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+      offer.querySelector("span").textContent = "Cutting out the subject…";
+      try {
+        const cut = await api("/show/library/pictures/cutout", { method: "POST", body: JSON.stringify({ path: kept.path }) });
+        const overlay = scene.overlays.find((item) => item.id === overlayId);
+        if (overlay) {
+          // Same width and centre, the cut-out's own height.
+          const centre = overlay.y + overlay.width * 16 / 9 * kept.height / kept.width / 2;
+          Object.assign(overlay, { asset: cut.path, y: Math.max(0, centre - overlay.width * 16 / 9 * cut.height / cut.width / 2) });
+          await loadLibrary().catch(() => {});
+          if (await saveOverlays(scene)) { drawOverlays(scene); showToast("Subject cut out. To use the whole photo instead, drop it again and choose Keep the whole photo."); }
+        }
+        offer.hidden = true;
+      } catch (error) {
+        offer.querySelector("span").textContent = `Could not cut it out: ${error.message}`;
+        offer.querySelectorAll("button").forEach((button) => { button.disabled = false; });
+      }
+    };
+  }
+
   window.ShowReview = {
     open: openReview, openWorkspace, hull, refreshLibrary, addToScene,
     async imageApplied(item,sceneId) {
