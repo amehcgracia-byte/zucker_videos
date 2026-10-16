@@ -137,7 +137,7 @@ def _paint_once(target: Path, subject: str, style: str, seed: int, step: Callabl
         raise gag_paint.UnusableDrawing(f"No clean drawing of {subject} (tried before)")
     # The drawing itself, its paper removed: no white sticker rim, only a soft shadow to read on video.
     try:
-        painting = gag_paint.paint_clean(subject, style, seed=seed, step=step, prompt=prompt)
+        painting = gag_paint.paint_clean(subject, style, seed=seed, step=step, prompt=prompt, tries=1)
     except gag_paint.UnusableDrawing:
         folder.mkdir(parents=True, exist_ok=True)
         failed.write_text(subject, encoding="utf-8")
@@ -148,6 +148,84 @@ def _paint_once(target: Path, subject: str, style: str, seed: int, step: Callabl
     sticker.save(pending)
     pending.replace(target)                           # never a half-written painting in the library
     return sticker
+
+
+def drawing_engine() -> str:
+    """Who draws the storyboard's drawings: the person's own Claude (crude crayon doodles
+    drawn stroke by stroke; nothing heavy runs on this computer) when Claude Code is
+    here, else the local painter. ZUCKER_DRAWINGS=claude|painter chooses."""
+    import os
+    chosen = os.environ.get("ZUCKER_DRAWINGS", "").strip().lower()
+    if chosen in ("claude", "painter"):
+        return chosen
+    return "claude" if gag_director.claude_cli() else "painter"
+
+
+class DrawingFailed(RuntimeError):
+    """Claude could not draw it (a sign-in, usage limit or empty answer)."""
+
+
+_claude_failed: dict[str, tuple[float, str]] = {}
+
+
+def claude_picture(subject: str, style: str, *, seed: int = 3, prompt: str | None = None,
+                   library_root: Path | None = None) -> Image.Image:
+    """A drawing by the person's own Claude, kept in the gag library (drawn once per
+    storyboard effect, like the painter's), with its strokes beside it."""
+    import time
+    from core import show_claude_drawing as claude
+    from core.gag_library import library_dir
+    style = style if style in gag_paint.STYLES else "crayon"
+    folder = (library_root or library_dir()) / "Claude drawings" / gag_paint.STYLES[style].label
+    key = f"{subject}|{style}|{seed}|claude-crayon-v1" + (f"|{prompt}" if prompt else "")
+    target = folder / f"{_slug(subject)} {hashlib.sha1(key.encode()).hexdigest()[:6]}.png"
+    with _painting_guard:
+        lock = _painting.setdefault(str(target), threading.Lock())
+    with lock:
+        if target.is_file():
+            return Image.open(target).convert("RGBA")
+        failed = _claude_failed.get(str(target))
+        if failed and time.time() - failed[0] < 600:            # not asked again for ten minutes
+            raise DrawingFailed(failed[1])
+        job = {"direction": subject + (f". {prompt}" if prompt else ""), "style": style, "selected_text": "", "use_face": False}
+        try:
+            drawing = claude.ask(claude.prompt_for(job, None))
+        except RuntimeError as exc:
+            _claude_failed[str(target)] = (time.time(), str(exc))
+            raise DrawingFailed(str(exc)) from exc
+        picture = Image.fromarray(claude.render(drawing), "RGBA")
+        box = picture.getchannel("A").getbbox()
+        if box:                                                  # the doodle, not the empty sheet around it
+            pad = 24
+            picture = picture.crop((max(0, box[0] - pad), max(0, box[1] - pad), min(picture.width, box[2] + pad), min(picture.height, box[3] + pad)))
+        sticker = _shadowed(picture)
+        folder.mkdir(parents=True, exist_ok=True)
+        target.with_suffix(".json").write_text(json.dumps(drawing), encoding="utf-8")
+        pending = target.with_name(f".{target.stem}.part.png")
+        sticker.save(pending)
+        pending.replace(target)
+        return sticker
+
+
+def suggestion_card(subject: str, says: str = "") -> Image.Image:
+    """A suggested drawing in a preview: a card saying what would be drawn, drawn for
+    real only once the person accepts it."""
+    from PIL import ImageDraw
+    from core.gag_stickers import _font
+    import textwrap
+    title, body = _font(34), _font(42)
+    lines = textwrap.wrap(subject, 22)[:4] + ([f"“{says}”"] if says else [])
+    width = 560
+    height = 96 + 54 * len(lines)
+    card = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(card)
+    draw.rounded_rectangle((4, 4, width - 4, height - 4), radius=28, fill=(255, 255, 255, 215), outline=(40, 40, 40, 255), width=4)
+    for x in range(20, width - 20, 28):                         # a dashed top edge: not final art
+        draw.line((x, 4, x + 14, 4), fill=(255, 255, 255, 255), width=4)
+    draw.text((28, 22), "SUGGESTED DRAWING", font=title, fill=(110, 110, 110, 255))
+    for row, line in enumerate(lines):
+        draw.text((28, 72 + row * 54), line, font=body, fill=(30, 30, 30, 255))
+    return _shadowed(card)
 
 
 def math_items(gag: dict[str, Any], folder: Path, index: int, centre: tuple[float, float]) -> list[dict[str, Any]]:
@@ -189,12 +267,25 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
             outcomes[gag["proposal"]] = (status, detail)
     from core.gag_library import search
     folder.mkdir(parents=True, exist_ok=True)
-    painter = gag_paint.can_paint()
+    engine = drawing_engine()
+    painter = engine == "claude" or gag_paint.can_paint()
     notes: list[str] = []
     items: list[dict[str, Any]] = []
-    to_paint = sum(1 for gag in gags if gag["kind"] in ("drawing", "character") and not gag.get("picture"))
+    to_paint = sum(1 for gag in gags if gag["kind"] in ("drawing", "character") and not gag.get("picture") and not gag.get("suggested"))
+    drawings: dict[int, Any] = {}
+    pool = None
+    if engine == "claude" and to_paint:
+        # Claude draws on its side, so up to three drawings are asked at once.
+        from concurrent.futures import ThreadPoolExecutor
+        pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="zucker-claude-drawing")
+        for index, gag in enumerate(gags):
+            if gag["kind"] in ("drawing", "character") and not gag.get("picture") and not gag.get("suggested"):
+                style = gag.get("style") if gag.get("style") in gag_paint.STYLES else "crayon"
+                drawings[index] = pool.submit(claude_picture, gag["subject"], style, seed=paint_seed(gag, index), prompt=gag.get("prompt") or None)
+        pool.shutdown(wait=False)
     painted = 0
     unusable: list[str] = []
+    undrawn: list[str] = []
     width, height = frame_size
     for index, gag in enumerate(gags):
         if cancel:
@@ -222,6 +313,20 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
                 continue
             if kind == "character" and gag.get("says"):
                 image = character_with_bubble(image, gag["says"], side=side, seed=index)
+        elif kind in ("drawing", "character") and gag.get("suggested"):
+            # Suggested, not accepted yet: shown as what would be drawn, drawn on acceptance.
+            image = suggestion_card(gag["subject"], gag.get("says") or "")
+        elif kind in ("drawing", "character") and index in drawings:
+            painted += 1
+            if progress:
+                progress((painted - 1) / max(1, to_paint), f"Claude is drawing {painted}/{to_paint}: {gag['subject']}")
+            try:
+                picture = drawings[index].result()
+            except DrawingFailed as exc:
+                undrawn.append(f"{gag['subject']} ({str(exc)[:120]})")
+                result(gag, "failed", f"Claude could not draw it: {exc}")
+                continue
+            image = character_with_bubble(picture, gag["says"], side=side, seed=index) if kind == "character" and gag.get("says") else picture
         elif kind in ("drawing", "character"):
             if not painter:
                 result(gag, "failed", "The drawing painter is not installed")
@@ -276,5 +381,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
         notes.append(f"{to_paint} drawings were skipped: download the drawing painter (2.1 GB, once) to get them.")
     if unusable:
         notes.append(f"Left out, the painter could not draw them on a clean background: {', '.join(unusable)}.")
+    if undrawn:
+        notes.append(f"Left out, Claude could not draw them: {'; '.join(undrawn)}.")
     (folder / "gags.json").write_text(json.dumps({"gags": gags, "items": items}, ensure_ascii=False, indent=1), encoding="utf-8")
     return items, notes

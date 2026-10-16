@@ -315,6 +315,18 @@ def prepare_show(project, source: str, resources: list[str], *, style_name: str 
             "edited_duration_sec": plan["edited_duration"], "cuts": plan["cuts"]}
 
 
+def _encoded(render: Callable[[bool], Any]) -> Any:
+    """A final render step on the Mac's hardware encoder, again with libx264 if it fails."""
+    import logging
+    try:
+        return render(True)
+    except InterruptedError:
+        raise
+    except Exception:  # an encoder refusing this picture: the software one always can
+        logging.getLogger(__name__).warning("Hardware encoding failed; rendering again with libx264", exc_info=True)
+        return render(False)
+
+
 def render_reviewed_show(project, *, progress: Callable[[int, str], None], cancel: Callable[[], None]) -> tuple[Path, dict[str, Any]]:
     """Render the edit with the approved effects only."""
     from core import gags as gag_module
@@ -340,7 +352,8 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
     destination = _destination(project)
     cut = project.cache_dir / "show-cut.mp4"
     progress(2, f"Rendering {plan['cuts']} cuts and {len(cutaways)} close-ups")
-    render_show(path, plan, cut, ffmpeg=ffmpeg, cancel=cancel, progress=lambda value: progress(2 + int(value * 48), "Rendering the show"))
+    _encoded(lambda hardware: render_show(path, plan, cut, ffmpeg=ffmpeg, cancel=cancel, hardware=hardware,
+                                          progress=lambda value: progress(2 + int(value * 48), "Rendering the show")))
     face = "right" if sum(shot.get("focus", [0.5])[0] for shot in plan["shots"]) / max(1, len(plan["shots"])) >= 0.5 else "left"
     notes: list[str] = []
     pictures: list[dict[str, Any]] = []
@@ -360,8 +373,8 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
     body = project.cache_dir / "show-body.mp4"
     if pictures or layer or studio:
         progress(80, "Drawing the effects on the video")
-        render_gags(cut, pictures + layer, body, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio,
-                    progress=lambda share: progress(80 + int(share * 15), "Drawing the effects on the video"))
+        _encoded(lambda hardware: render_gags(cut, pictures + layer, body, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio,
+                                              hardware=hardware, progress=lambda share: progress(80 + int(share * 15), "Drawing the effects on the video")))
         cut.unlink(missing_ok=True)
     else:
         cut.replace(body)
@@ -550,16 +563,28 @@ def _scene_preview_inputs(project, scene_id: str, width: int, height: int, only_
     # The rest of the scene is still worth seeing: what needs settings waits, and is listed.
     left_out = [f"{KIND_NAMES.get(item['kind'], item['kind'])} at {item['at']:.1f} s needs its {' and '.join(item['needs'])}" for item in incomplete]
     live = [] if scene["decision"] == "plain" else [
-        {**item, "status": "approved"} for item in items
-        if item["id"] in scene["effects"] and item["status"] != "discarded" and not item.get("needs")]
+        {**item, "status": "approved", "params": {**item["params"], "suggested": True} if _drawn_later(item) else item["params"]}
+        for item in items if item["id"] in scene["effects"] and item["status"] != "discarded" and not item.get("needs")]
+    suggested = sum(1 for item in live if item["params"].get("suggested"))
+    if suggested:
+        left_out.append(f"{suggested} suggested drawing{'s are' if suggested > 1 else ' is'} shown as a card: "
+                        f"{'each is' if suggested > 1 else 'it is'} drawn when you accept it")
     overlays = show_scenes.overlay_items({"scenes": [{**scene, "decision": "accepted"}]}) if scene["decision"] != "plain" else []
     start, end = float(scene["start"]), float(scene["end"])
-    local_art_recipe = [gag_paint.NEGATIVE, {key: vars(style) for key, style in gag_paint.STYLES.items()}] if any(
+    from core.gags import drawing_engine
+    local_art_recipe = [drawing_engine(), gag_paint.NEGATIVE, {key: vars(style) for key, style in gag_paint.STYLES.items()}] if any(
         item["kind"] == "drawing" and not item["params"].get("picture") for item in live) else None
     signature = hashlib.sha1(json.dumps(["scene-preview-v3", live, overlays, start, end, width, height, studio_fingerprint(project.folder),
                                          local_art_recipe], sort_keys=True, default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     return plan, live, overlays, start, end, folder, left_out, folder / f"{scene_id}-{signature}.mp4"
+
+
+def _drawn_later(item: dict[str, Any]) -> bool:
+    """A suggested drawing nobody accepted yet: a card in previews, drawn on acceptance
+    (drawing every suggestion took most of an hour on a six-minute show)."""
+    return (item["status"] != "approved" and item["kind"] == "drawing" and not item["params"].get("picture")
+            and item["params"].get("kind", "drawing") in ("drawing", "character"))
 
 
 KIND_NAMES = {"character": "Talking character", "drawing": "Drawing", "word": "Word", "cutaway": "Close-up", "warp": "Warp",

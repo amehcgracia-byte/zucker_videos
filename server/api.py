@@ -2239,8 +2239,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("bad_request", str(exc), 400)
         show_scenes.save(_scene_files(project), document)
         show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
-        if body.get("decision") != "accepted":
-            _invalidate_scene(project, scene_id)
+        _invalidate_scene(project, scene_id)
+        if body.get("decision") == "accepted":
+            # Its suggested drawings are now accepted: they are drawn in the background.
+            from core.show import scene_preview_ready
+            if not scene_preview_ready(project, scene_id):
+                _prepare_scenes(project, [scene_id])
         return jsonify(scene)
 
     @app.post("/api/v1/show/scenes/prefetch")

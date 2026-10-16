@@ -336,6 +336,7 @@ def test_scene_preview_shows_the_rest_and_says_which_drawing_is_missing(tmp_path
     plan['words'] = []
     plan_path.write_text(json.dumps(plan))
     drawing = show_proposals.proposal('drawing', 1, 2, reason='Your idea', kind='drawing', subject='a man on a sofa', style='crayon')
+    drawing['status'] = 'approved'                     # accepted: drawn for real (a suggestion is only a card)
     show_proposals.save(project.artifacts_dir/'show_proposals.json', [drawing])
     document['scenes'][0]['effects'] = [drawing['id']]
     show_scenes.save(project.artifacts_dir/'show_scenes.json', document)

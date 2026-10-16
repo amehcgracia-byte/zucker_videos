@@ -32,7 +32,8 @@ def test_cleaning_keeps_one_picture_at_a_time_mixes_styles_and_clears_the_face()
     raw = [
         {"kind": "drawing", "at": 2, "duration": 3, "subject": "a cat", "style": "oil", "position": "right", "size": 0.3},
         {"kind": "drawing", "at": 3, "duration": 2, "subject": "a dog", "style": "oil"},            # overlaps: dropped
-        {"kind": "drawing", "at": 6, "duration": 2, "subject": "a fish", "style": "oil"},           # same style again
+        {"kind": "drawing", "at": 12, "duration": 2, "subject": "a bird", "style": "oil"},          # too soon after a drawing: dropped
+        {"kind": "drawing", "at": 23, "duration": 2, "subject": "a fish", "style": "oil"},          # same style again
         {"kind": "word", "at": 9, "duration": 2, "text": ""},                                        # empty: dropped
         {"kind": "warp", "at": 9, "duration": 3, "warp": "swirl"},
         {"kind": "warp", "at": 20, "duration": 3, "warp": "wave"},                                   # too soon: dropped
@@ -172,7 +173,7 @@ def test_a_blob_from_an_older_recipe_is_preserved_but_not_reused(tmp_path, monke
     Image.new("RGBA", (200, 200), (5, 5, 5, 255)).save(old)                # painted before the blob check
     fresh = Image.new("RGB", (512, 512), (245, 245, 240))
     fresh.paste((200, 40, 40), (150, 150, 360, 360))
-    monkeypatch.setattr(gag_paint, "paint_clean", lambda subject, style, seed=0, step=None, prompt=None: fresh)
+    monkeypatch.setattr(gag_paint, "paint_clean", lambda subject, style, seed=0, step=None, prompt=None, tries=3: fresh)
     sticker = gags.painted_picture("a thumbs up", "marker", library_root=tmp_path)
     assert not gag_paint.mostly_black(sticker) and gag_paint.mostly_black(Image.open(old))  # old recipe remains recoverable
 
@@ -180,7 +181,7 @@ def test_a_blob_from_an_older_recipe_is_preserved_but_not_reused(tmp_path, monke
 def test_a_drawing_is_painted_with_the_prompt_the_person_wrote(tmp_path, monkeypatch):
     asked = []
 
-    def fake_paint(subject, style, seed=0, step=None, prompt=None):
+    def fake_paint(subject, style, seed=0, step=None, prompt=None, tries=3):
         asked.append(prompt)
         picture = Image.new("RGB", (512, 512), (245, 245, 240))
         picture.paste((200, 40, 40), (150, 150, 360, 360))
@@ -306,3 +307,43 @@ def test_a_drawing_the_painter_cannot_make_is_not_retried_by_every_preview(tmp_p
         with pytest.raises(gag_paint.UnusableDrawing):
             gags.painted_picture("a tiny bald man", "crayon", seed=3, library_root=tmp_path)
     assert tries == ["a tiny bald man"]
+
+
+def test_a_suggestion_is_a_card_and_an_accepted_drawing_is_drawn_by_claude_once(tmp_path, monkeypatch):
+    import json as _json
+    from core import gag_paint, gags, show_claude_drawing
+    monkeypatch.setenv("ZUCKER_DRAWINGS", "claude")
+    monkeypatch.setattr("core.gag_library.library_dir", lambda: tmp_path / "library")
+    monkeypatch.setattr(gag_paint, "paint_clean", lambda *a, **k: (_ for _ in ()).throw(AssertionError("the local painter was used")))
+    asked = []
+    strokes = {"strokes": [{"kind": "line", "color": "#2b2118", "width": 10, "points": [[200, 200], [800, 800]]},
+                           {"kind": "line", "color": "#2b2118", "width": 10, "points": [[800, 200], [200, 800]]},
+                           {"kind": "fill", "color": "#d6402c", "width": 10, "points": [[300, 300], [700, 300], [700, 700], [300, 700]]}]}
+    monkeypatch.setattr(show_claude_drawing, "ask", lambda prompt, **kw: asked.append(prompt) or show_claude_drawing.clean(strokes))
+    suggested = {"kind": "drawing", "subject": "a tiny potato", "suggested": True, "at": 1.0, "duration": 2.0, "proposal": "drawing-1"}
+    accepted = {"kind": "drawing", "subject": "a guitar", "style": "crayon", "at": 4.0, "duration": 2.0, "proposal": "drawing-2"}
+    items, notes = gags.make_items([suggested, accepted], tmp_path / "out")
+    assert len(items) == 2 and notes == [] and len(asked) == 1 and "a guitar" in asked[0]   # the suggestion was not drawn
+    kept = list((tmp_path / "library" / "Claude drawings").rglob("*.png"))
+    assert len(kept) == 1 and _json.loads(kept[0].with_suffix(".json").read_text())["strokes"]
+    gags.make_items([accepted], tmp_path / "again")
+    assert len(asked) == 1                                                       # drawn once, reused after
+
+
+def test_when_claude_cannot_draw_the_drawing_is_left_out_and_said(tmp_path, monkeypatch):
+    from core import gags, show_claude_drawing
+    monkeypatch.setenv("ZUCKER_DRAWINGS", "claude")
+    monkeypatch.setattr("core.gag_library.library_dir", lambda: tmp_path / "library")
+    def refuse(prompt, **kw):
+        raise RuntimeError("Your Claude usage limit is reached")
+    monkeypatch.setattr(show_claude_drawing, "ask", refuse)
+    outcomes = {}
+    items, notes = gags.make_items([{"kind": "drawing", "subject": "a cat", "at": 1.0, "duration": 2.0, "proposal": "drawing-3"}],
+                                   tmp_path / "out", outcomes=outcomes)
+    assert items == [] and "Claude could not draw" in notes[0] and "usage limit" in notes[0]
+    assert outcomes["drawing-3"][0] == "failed"
+
+
+def test_the_final_render_encoder_is_libx264_unless_hardware_is_asked():
+    from core.ffmpeg import h264_args
+    assert h264_args("ffmpeg", preset="veryfast", crf=20, width=1920, height=1080) == ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
