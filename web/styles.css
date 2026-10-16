@@ -2239,3 +2239,10 @@ body:has(#showReviewBox.show-fit) #backdropLogo {max-height:calc(100vh - 130px);
 .show-scene-drawing-empty {display:grid;place-items:center;color:var(--muted);font-size:24px;}
 .show-scene-drawing small {color:var(--muted);}
 @media (max-width:600px){ .show-lib-grid {grid-template-columns:repeat(auto-fill,minmax(140px,1fr));} }
+
+#showReferenceDialog{width:min(1000px,96vw);max-height:90vh;overflow:auto;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:14px;padding:20px;}
+#showReferenceDialog::backdrop{background:#000b;}
+#showReferenceDialog header,#showReferenceDialog nav{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;}
+#showReferenceDialog input,#showReferenceDialog textarea{width:100%;} .show-ref-results{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin:12px 0;}
+.show-ref-results button{display:grid;gap:5px;overflow:hidden;} .show-ref-results img{width:100%;height:130px;object-fit:contain;}
+.show-ref-results span{font-size:12px;overflow-wrap:anywhere;} [data-ref-chosen]{max-width:160px;max-height:160px;object-fit:contain;}

@@ -216,7 +216,13 @@
     showToast(state.editing ? `${saved.name} updated. Render its preview to check the changes.` : `${saved.name} is in the library and in this scene`);
   }
 
-  window.ShowPhotoStudio = {openAt: async (source,second,silhouette=false,placement=null) => {
+  window.ShowPhotoStudio = {openPhoto: async (photo,settings={})=>{
+    const owner={step:2,strokes:[],undo:[],eyes:[],mouth:null,background:!!settings.background,silhouette:!!settings.silhouette,placement:settings.placement,photo:{...photo,url:'/api/v1/show/photo?path='+encodeURIComponent(photo.photo)}};
+    state=owner;$('#showCharacterStudio').hidden=false;
+    if(settings.head){const result=await api('/show/references/head-box',{method:'POST',body:JSON.stringify({photo:photo.photo})});if(state!==owner)return;owner.box=result.box||[.25,.05,.5,.45];}
+    show(2);
+    if(settings.head)showToast('Check the head outline. Use Box or the keep/erase brushes to correct it before saving.');
+  },openAt: async (source,second,silhouette=false,placement=null) => {
     const owner={step:1,strokes:[],undo:[],eyes:[],mouth:null,background:false,silhouette,placement};state=owner;
     $('#showCharacterStudio').hidden=false;$('#showStudioBody').innerHTML='<p role="status">Taking a photo at your selected words…</p>';
     try {const photo=await api('/show/photos',{method:'POST',body:JSON.stringify({source,second,name:silhouette?'Black silhouette':'Selected words cutout'})});

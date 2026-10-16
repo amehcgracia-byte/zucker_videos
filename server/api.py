@@ -2163,6 +2163,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         caption_layout = show_caption_layout.load(project)
         caption_cues = show_caption_layout.apply(edited_captions(plan, plan.get("style") or "choe"), caption_layout) if plan.get("words") else []
         from core.show import scene_preview_notes, scene_preview_ready
+        reference_path = project.artifacts_dir / "show_references.json"
+        references = json.loads(reference_path.read_text()) if reference_path.is_file() else []
         with scene_lock:
             for scene in document["scenes"]:
                 made = scene_preview_ready(project, scene["id"])
@@ -2178,6 +2180,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 scene["segments"] = scene_segments(plan, float(scene["start"]), float(scene["end"])) if plan.get("shots") else []
                 scene["words"] = [[text, a, b] for text, a, b in timed if scene["start"] <= a < scene["end"]]
                 scene["captions"] = [cue for cue in caption_cues if cue['start'] < scene['end'] and cue['end'] > scene['start']]
+                scene["references"] = [ref for ref in references if ref.get("scene_id") == scene["id"]]
         wizard = project.data.get("settings", {}).get("wizard", {})
         logo = Path(str(wizard.get("reel_logo_path") or ""))
         return jsonify({**document, "proposals": stored["proposals"], "resources": stored.get("resources") or [], "source": stored.get("source"),
@@ -2256,6 +2259,71 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         """The project's clay stories and their placements in the montage (with the
         edited moments each placement reaches)."""
         return jsonify(_clay_state(_require_project(state)))
+
+    @app.post("/api/v1/show/references/open")
+    def api_show_reference_open() -> Response:
+        import webbrowser
+        from urllib.parse import urlencode, urlsplit
+        body = request.get_json(silent=True) or {}
+        if body.get("kind") == "search":
+            query = str(body.get("query") or "").strip()[:160]
+            url = "https://www.google.com/search?" + urlencode({"q": query, "tbm": "vid"})
+        else:
+            url = str(body.get("url") or "")
+            parts = urlsplit(url)
+            if parts.scheme != "https" or parts.hostname not in {"youtube.com", "www.youtube.com", "youtu.be", "vimeo.com", "www.vimeo.com"} or parts.username or parts.password or parts.netloc not in {"youtube.com", "www.youtube.com", "youtu.be", "vimeo.com", "www.vimeo.com"}:
+                return error_response("invalid_reference", "Choose an HTTPS YouTube or Vimeo link", 400)
+        if not webbrowser.open(url):
+            return error_response("browser_unavailable", "Could not open your default browser", 502)
+        return jsonify(opened=True)
+
+    @app.post("/api/v1/show/references/head-box")
+    def api_show_reference_head_box() -> Response:
+        from core import show_references
+        project = _require_project(state)
+        photo = _allowed_photo(project, str((request.get_json(silent=True) or {}).get("photo") or ""))
+        if photo is None:
+            return error_response("invalid_reference", "Choose a photo in this project", 400)
+        return jsonify(box=show_references.head_box(photo))
+
+    @app.get("/api/v1/show/references/images")
+    def api_show_reference_images() -> Response:
+        from core import show_references
+        _require_project(state)
+        try:
+            return jsonify(items=show_references.search(request.args.get("q", "")))
+        except ValueError as exc:
+            return error_response("invalid_reference", str(exc), 400)
+        except (OSError, RuntimeError) as exc:
+            return error_response("reference_search_failed", f"Reference search unavailable: {exc}", 502)
+
+    @app.post("/api/v1/show/references/images")
+    @_proposals_locked
+    def api_show_reference_import() -> Response:
+        from core import show_references
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        if body.get("project_id") != str(project.folder):
+            return error_response("stale_project", "Reopen the current project", 409)
+        try:
+            return jsonify(show_references.import_photo(project, body.get("title"))), 201
+        except (ValueError, TypeError) as exc:
+            return error_response("invalid_reference", str(exc), 400)
+        except OSError as exc:
+            return error_response("reference_import_failed", f"Could not import this reference: {exc}", 502)
+
+    @app.post("/api/v1/show/references/video")
+    @_proposals_locked
+    def api_show_reference_video() -> Response:
+        from core import show_references
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        if body.get("project_id") != str(project.folder):
+            return error_response("stale_project", "Reopen the current project", 409)
+        try:
+            return jsonify(show_references.video_reference(project, body)), 201
+        except (ValueError, TypeError) as exc:
+            return error_response("invalid_reference", str(exc), 400)
 
     @app.post("/api/v1/show/clay/sample")
     @_proposals_locked

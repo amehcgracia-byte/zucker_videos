@@ -35,3 +35,15 @@ See SHOW_LIVE_CAPTIONS_2026-10-16.md for the caption contract. Do not replace th
 - Browser, isolated four-second lab: opened Scene Editor, saw caption bars and live text, opened Realistic photo edit, placed the bundled clay sample and obtained actual project controls/preview. This is not a complete-show performance benchmark.
 - `test_storage`: 21 passed, one pre-existing failure. The failing first-launch fixture replaces `sys.modules['webview']` with a SimpleNamespace and omits `webview.menu`; real installed pywebview imports Menu/MenuAction successfully. No production fallback was added to hide it.
 - An extra duplicate cutout request introduced during integration was caught by browser review and removed before packaging.
+
+## Internet references and external video requests
+
+User added this during integration. Both Add and Animation for selection now include Search internet references, Video reference (link + times), and Create video (external prompt). Storytelling mode is explicitly deferred.
+
+Photos: real Commons search thumbnails, explicit choice, full photo / person without background / head mask / background only / silhouette. Chosen images are copied into the project, with source, author and licence metadata, and are available to the existing cutout/brush/rig tools. Heads get a suggested face rectangle with keep/erase/box correction. A saved cutout is placed on the originally selected words, not always at the start of the scene. Imports only download from exact allowlisted Wikimedia HTTPS hosts, including each redirect, and bound bytes/pixels. No private footage is sent in a search.
+
+Video references: open a query or selected YouTube/Vimeo link in the OS default browser; save the source start/end and selected phrase in artifacts/show_references.json. Saved references appear below the scene. These are explicitly links, not downloaded video, not new media clips. A local source file remains necessary to include actual footage.
+
+External video generation: prepare/copy a shot prompt locally; NO connected video provider and no claims of free quota, automatic face replacement or generated footage. Wan2.2-Animate is a candidate to evaluate on a suitable GPU, not installed here. OpenAI's current deprecation page records Videos API/Sora shutdown on 2026-09-24. Sources: https://github.com/Wan-Video/Wan2.2 and https://developers.openai.com/api/docs/deprecations .
+
+Browser verification in an isolated project: real Bill Gates search produced 12 loaded photo thumbnails and the five import choices; selected a 2023 portrait (CC BY 4.0) and opened its head-mask editor. The actual image and mask stay local; no personal clips were added to Git. Reference import/deduplication/provenance/host validation and video link interval tests pass (19 caption/library/pixel tests, 33.11 s). No real actor face-swap or new video generation was tested.

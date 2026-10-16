@@ -116,3 +116,38 @@ def test_clay_sample_is_placed_on_new_words_not_original_recording_clock(board):
     assert data['stories'][0]['story']['duration']==pytest.approx(1)
     assert c.post('/api/v1/show/clay/sample',json={**request,'project_id':'old'}).status_code==409
     assert c.post('/api/v1/show/clay/sample',json={**request,'end':9}).status_code==400
+
+
+def test_reference_import_keeps_provenance_and_deduplicates_project_images(board,monkeypatch):
+    from core import show_references as refs
+    import io
+    p,c,_=board
+    image=io.BytesIO();Image.new('RGB',(80,100),(80,90,120)).save(image,format='PNG')
+    page={'query':{'pages':{'1':{'title':'File:Portrait.png','imageinfo':[{'url':'https://upload.wikimedia.org/test.png','descriptionurl':'https://commons.wikimedia.org/wiki/File:Portrait.png','mime':'image/png','extmetadata':{'Artist':{'value':'<b>Artist</b>'},'LicenseShortName':{'value':'CC BY 4.0'}}}]}}}}
+    monkeypatch.setattr(refs,'_query',lambda **kw:page)
+    monkeypatch.setattr(refs,'_fetch',lambda *args:image.getvalue())
+    result=c.post('/api/v1/show/references/images',json={'project_id':str(p.folder),'title':'File:Portrait.png'})
+    assert result.status_code==201,result.get_json()
+    data=result.get_json();assert Path(data['path']).is_relative_to(p.folder)
+    assert data['reference']['author']=='Artist' and data['reference']['license']=='CC BY 4.0'
+    assert c.post('/api/v1/show/references/images',json={'project_id':str(p.folder),'title':'File:Portrait.png'}).get_json()['path']==data['path']
+    assert len(json.loads((p.folder/'photos/photos.json').read_text()))==1
+    assert c.post('/api/v1/show/references/images',json={'project_id':'stale','title':'File:Portrait.png'}).status_code==409
+
+
+def test_reference_urls_and_video_intervals_are_validated(board,monkeypatch):
+    from core import show_references as refs
+    p,c,_=board
+    for url in ['http://upload.wikimedia.org/a','https://localhost/a','https://upload.wikimedia.org.evil.test/a','https://u:p@upload.wikimedia.org/a','https://upload.wikimedia.org:8443/a']:
+        with pytest.raises(ValueError):refs._checked(url)
+    body=dict(project_id=str(p.folder),url='https://www.youtube.com/watch?v=example',start=3,end=5,at=.2,scene_id='s1')
+    result=c.post('/api/v1/show/references/video',json=body)
+    assert result.status_code==201 and result.get_json()['status']=='link_only'
+    assert c.post('/api/v1/show/references/video',json={**body,'end':2}).status_code==400
+    assert c.post('/api/v1/show/references/video',json={**body,'url':'https://localhost/video'}).status_code==400
+    assert json.loads((p.artifacts_dir/'show_references.json').read_text())[0]['start']==3
+    import webbrowser
+    opened=[];monkeypatch.setattr(webbrowser,'open',lambda url:opened.append(url) or True)
+    assert c.post('/api/v1/show/references/open',json={'kind':'video','url':body['url']}).status_code==200
+    assert opened==[body['url']]
+    assert c.post('/api/v1/show/references/open',json={'kind':'video','url':'file:///etc/passwd'}).status_code==400

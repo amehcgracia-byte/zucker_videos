@@ -265,11 +265,12 @@
         <span class="show-decision show-${scene.decision}">${DECISION_LABELS[scene.decision]}</span>
         <button type="button" class="icon-button small" data-open-library>Library</button>
       </div>
+      ${(scene.references||[]).length?`<details class="show-scene-drawings"><summary>Video references · links only (${scene.references.length})</summary>${scene.references.map(ref=>`<p>${escape(ref.url)} · ${ref.start}–${ref.end} s<br><small>No footage downloaded or placed.</small></p>`).join('')}</details>`:''}
       ${sceneDrawings(scene, effects)}
       <div id="showClay" class="show-clay"></div>
       <div id="showSceneEffects" class="show-review-list">${effects.map(card).join("") || "<p class=\"show-hint\">No effect in this scene.</p>"}
         <form id="showSceneAdd" class="show-review-add"><strong>Add</strong>
-          <select name="kind"><option value="drawing">A drawing</option><option value="steam">Rainbow steam over a mug</option><option value="character">A character that speaks</option><option value="cutaway">A close-up</option><option value="math">Formulas around you</option><option value="word">A shouted word</option><option value="photo_edit">Realistic photo of me</option><option value="cutout">Cut out a person / background (photo)</option><option value="silhouette">Black silhouette (photo)</option><option value="clay">Clay memory · Simón</option><option value="captions">Normal speech captions</option></select>
+          <select name="kind"><option value="drawing">A drawing</option><option value="steam">Rainbow steam over a mug</option><option value="character">A character that speaks</option><option value="cutaway">A close-up</option><option value="math">Formulas around you</option><option value="word">A shouted word</option><option value="references">Search internet references</option><option value="video_reference">Video reference · link &amp; times</option><option value="generate_video">Create video · external prompt</option><option value="photo_edit">Realistic photo of me</option><option value="cutout">Cut out a person / background (photo)</option><option value="silhouette">Black silhouette (photo)</option><option value="clay">Clay memory · Simón</option><option value="captions">Normal speech captions</option></select>
           <label>at <input name="at" type="number" step="0.1" min="${scene.start}" max="${scene.end}" value="${scene.start.toFixed(1)}"> s</label>
           <label>of <input name="subject" type="text" maxlength="80" placeholder="a guitar"></label>
           <select name="style">${Object.entries(DRAWING_STYLES).map(([key, label]) => `<option value="${key}" ${key === "crayon" ? "selected" : ""}>${label}</option>`).join("")}</select>
@@ -930,6 +931,7 @@
   }
 
   async function extraTool(kind,scene,picked) {
+    if(["references","video_reference","generate_video"].includes(kind)){ShowReferences.open(scene,picked,review.project_id,kind==='references'?'photos':kind==='video_reference'?'video':'generate');return true;}
     if(kind==='photo_edit') {ShowEinstein.open(scene,picked,'A realistic photo of me with long hair',null,{purpose:'photo_edit'});return true;}
     if(kind==='cutout'||kind==='silhouette') {const [index,offset]=sourceAt(scene.segments,picked.start-scene.start);await ShowPhotoStudio.openAt(review.source,scene.segments[index][0]+offset,kind==='silhouette',{sceneId:scene.id,at:picked.start,duration:picked.end-picked.start});return true;}
     if(kind==='captions') {enterLiveTiming(scene,picked.start);playQuick(scene,Math.max(0,picked.start-scene.start));openTimeline();showToast('Speech captions follow the words. Drag the caption on the video or resize its corner.');return true;}
@@ -986,6 +988,9 @@
     const choices = [
       ...(selectedEffect ? [["place", "Place selected effect on these words", null]] : []),
       ["ai", "AI · create with Einstein…", null],
+      ["references", "Search internet references…", null],
+      ["video_reference", "Video reference · link & times…", null],
+      ["generate_video", "Create video · external prompt…", null],
       ["photo_edit", "Realistic photo of me…", null],
       ["cutout", "Cut out a person / background (photo)…", null],
       ["silhouette", "Black silhouette (photo)…", null],
@@ -2206,6 +2211,7 @@
 
   window.ShowReview = {
     open: openReview, openWorkspace, hull, refreshLibrary, addToScene, openLibrary,
+    referenceSaved(record){const scene=scenes().find(s=>s.id===record.scene_id);if(!scene)return;scene.references=[...(scene.references||[]).filter(r=>r.id!==record.id),record];if(currentScene()?.id===scene.id)renderScene();},
     captionSaved(result){
       review.caption_revision=result.revision;
       for(const scene of scenes())scene.captions=(scene.captions||[]).map(c=>c.id===result.cue.id?result.cue:c);
