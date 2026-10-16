@@ -205,7 +205,7 @@
     const preview = scene.preview || { status: "none" };
     const words = scene.words || [];
     $("#showPanel").innerHTML = `<p id="showSaveStatus" class="show-needs" role="alert" hidden></p><h3>${escape(scene.name)} <small>${clock(scene.start)}–${clock(scene.end)}</small></h3>
-      <div class="show-said" id="showSaid"><strong>What you say</strong> <small>Click a word to go there. Select some words and right-click them to add an animation over them.</small>
+      <div class="show-said" id="showSaid"><strong>What you say</strong> <small>Click a word to go there. Select words, then choose Animation for selection. Ordinary right-click keeps the text menu.</small><button type="button" class="icon-button small" id="showSayTools">Animation for selection…</button>
         <div id="showWordPlacement" class="show-actions"></div><p class="show-said-text">${words.length ? words.map(([text, start, end], index) => `<span data-word="${index}" data-start="${start}" data-end="${end}">${escape(text)}</span>`).join(" ") : escape(scene.text)}</p></div>
       <div class="show-preview-mode">
         ${review.saved_render ? `<button type="button" class="icon-button small ${useSaved(scene) ? "active" : ""}" data-preview-mode="saved" title="The last completed export, including its captions and effects">Saved render</button>` : ""}
@@ -234,7 +234,7 @@
         <h4>Your drawings &amp; stickers</h4><p class="show-hint">Choose a picture to add it as an editable timeline clip. Right-click a picture to remove it.</p><button type="button" data-toggle-retired>${showRetired?"Hide retired images":`Retired images (${retiredCount})`}</button>
         <div class="show-library">${library.slice(0, 80).map((item, index) => `<div class="show-library-entry"><button type="button" data-library="${index}" aria-label="Add ${escape(item.name)}" title="${escape(item.name)}" ${item.retired?"disabled":""}><img src="${item.url}" alt="" loading="lazy">${escape(item.name)}</button><small>${escape(item.origin||"Your library")}</small><button type="button" data-library-retire="${index}">${item.retired?"Restore":"Remove from library"}</button></div>`).join("") || "<p class=\"show-hint\">The library is empty: add images in Overlay &amp; Captions, or keep painted drawings.</p>"}</div>
         <p class="show-hint">Drag a picture on the video to move it, its corner to resize it; click it for its tools.</p>
-        <button type="button" class="icon-button small" data-studio="open">New character from a photo</button>
+        <button type="button" class="icon-button small" data-studio="open">Cut out a photo / create a layer</button>
       </div>`;
     for (const id of open) if (scene.effects.includes(id)) mountEditor(id);
     bindAddForm(scene);
@@ -826,10 +826,17 @@
     };
   }
 
+  document.addEventListener('pointerdown',event=>{if(event.target.closest?.('#showSayTools'))event.preventDefault();});
+  document.addEventListener('click',event=>{
+    const button=event.target.closest?.('#showSayTools');if(!button)return;
+    const picked=saidSelection();if(!picked){showToast('Select some words first.');return;}
+    const box=button.getBoundingClientRect();sayMenu(box.left,box.bottom,picked);
+  });
+
   document.addEventListener("contextmenu", (event) => {
     if (!(event.target instanceof Element) || !event.target.closest("#showSaid")) return;
     const picked = saidSelection();
-    if (!picked) return;                       // nothing selected: the usual menu
+    if (!picked || !event.altKey) return;        // Native Copy/Select remains available; Alt-right-click opens animation tools.
     event.preventDefault();
     sayMenu(event.clientX, event.clientY, picked);
   });
@@ -884,6 +891,7 @@
     const index = Number(target.dataset.overlay ?? target.dataset.resize);
     const box = $("#showStageLayer").getBoundingClientRect();
     selectedOverlay = index;
+    const stage = $("#showStage"); if(stage){stage.tabIndex=0;stage.focus({preventScroll:true});}
     dragging = { index, resize: target.hasAttribute("data-resize"), box, x: event.clientX, y: event.clientY, start: { ...scene.overlays[index] } };
   });
   document.addEventListener("pointermove", (event) => {
@@ -904,8 +912,47 @@
     else openTools(index, event.clientX, event.clientY);     // a plain click shows the element's tools beside it
   });
   const ANIMATIONS = { none: "Still", up: "Move up", down: "Move down", jump: "Jump", grow: "Grow", grow_return: "Grow and back",
-    pulse: "Grow and shrink", swing: "Swing", spin: "Spin", talk: "Talk", path: "Follow a path" };
+    pulse: "Grow and shrink", swing: "Swing", spin: "Spin", talk: "Talk", look: "Look left and right", path: "Follow a path" };
   let drawingPath = null;
+  let layerClipboard = null;
+  const layerUndo = [];
+  async function layerCommand(action, scene=currentScene()) {
+    if(!scene)return;
+    const overlay=scene.overlays[selectedOverlay];
+    if(action==='regions'){if(overlay)await window.ShowPhotoStudio.edit(overlay.asset);return;}
+    if(action==='copy'){if(overlay)layerClipboard=structuredClone(overlay);return;}
+    if(action==='undo'){
+      const index=layerUndo.findLastIndex(entry=>entry.scene===scene.id);
+      if(index<0)return;
+      scene.overlays=layerUndo.splice(index,1)[0].overlays;selectedOverlay=null;
+    } else {
+      const source=action==='paste'?layerClipboard:overlay;
+      if(!source)return;
+      layerUndo.push({scene:scene.id,overlays:structuredClone(scene.overlays)});
+      if(layerUndo.length>50)layerUndo.shift();
+      if(action==='paste'||action==='duplicate'){
+        scene.overlays.push({...structuredClone(source),id:crypto.randomUUID(),...fitTiming(scene,source.at,source.duration)});
+        selectedOverlay=scene.overlays.length-1;
+      } else if(action==='cut'||action==='remove'){
+        if(action==='cut')layerClipboard=structuredClone(overlay);
+        scene.overlays.splice(selectedOverlay,1);selectedOverlay=null;selectedEffect=null;
+      } else if(action==='bigger')overlay.width=Math.min(100,overlay.width*1.2);
+      else if(action==='smaller')overlay.width=Math.max(3,overlay.width/1.2);
+    }
+    drawOverlays(scene);await saveOverlays(scene);
+  }
+
+
+  document.addEventListener('show-voice-ready', event => {
+    const id = event.target.dataset.voiceEffect;
+    const item = review?.proposals.find(item => item.id === id);
+    if (!item) return;
+    item.params.voices = [...(item.params.voices || []), event.detail];
+    item.params.voice = event.detail;
+    const select = event.target.parentElement.querySelector('[data-field="voice"]');
+    if (select) { const option = document.createElement('option'); option.value = item.params.voices.length-1; option.textContent=event.detail.text; select.append(option);select.value=option.value; }
+    saveSoon(id, {voice:event.detail});
+  });
 
   // A talking character interrupts the host: how it comes in.
   function showEntrance(overlay, talkable) {
@@ -919,21 +966,34 @@
     const scene = currentScene();
     const overlay = scene.overlays[index];
     selectedOverlay = index;
+    const stage = $("#showStage"); if(stage){stage.tabIndex=0;stage.focus({preventScroll:true});}
     const menu = $("#showContextMenu");
     (timelineDialog?.open?timelineDialog:document.body).append(menu);
     const talkable = isCharacter(overlay.asset);
     $("#showActionButtons").innerHTML = Object.entries(ANIMATIONS)
-      .filter(([key]) => key !== "talk" || talkable)
+      .filter(([key]) => !["talk", "look"].includes(key) || talkable)
       .map(([key, label]) => `<button type="button" data-animate="${key}" class="${(overlay.action || "none") === key ? "active" : ""}">${label}</button>`).join("");
     $("#showIntensity").value = overlay.intensity ?? 1;
     showEntrance(overlay, talkable);
     $("#showOverlayAt").value = Number(overlay.at ?? scene.start).toFixed(1);
     $("#showOverlayDuration").value = Number(overlay.duration ?? 4).toFixed(1);
+    menu.classList.toggle("show-menu-left", x + 600 > innerWidth);
+    menu.querySelector('[data-menu="regions"]').hidden = !talkable;
+    menu.querySelector('[data-menu="paste"]').disabled = !layerClipboard;
+    menu.querySelector('[data-menu="undo"]').disabled = !layerUndo.length;
     menu.hidden = false;
     // Beside the element, but always whole on screen (an element low in the frame opened it off the bottom).
     menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 8))}px`;
     menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8))}px`;
   }
+
+  document.addEventListener('keydown', event => {
+    if (event.target.closest?.('input,textarea,select,[contenteditable="true"]')) return;
+    if (!event.target.closest?.('#showStage,#showContextMenu')) return;
+    if (!(event.ctrlKey || event.metaKey)) return;
+    const action = {c:'copy',x:'cut',v:'paste',d:'duplicate',z:'undo'}[event.key.toLowerCase()];
+    if(action && (selectedOverlay!=null || ['paste','undo'].includes(action))){event.preventDefault();layerCommand(action).catch(error=>showToast(error.message,true));}
+  });
 
   document.addEventListener("contextmenu", (event) => {
     const target = event.target instanceof Element ? event.target.closest("[data-overlay]") : null;
@@ -1127,7 +1187,7 @@
         <div class="show-fields">${field("Enters", `<select data-field="entrance">${Object.entries(ENTRANCES).map(([key, label]) => `<option value="${key}" ${(p.entrance || "zoom") === key ? "selected" : ""}>${label}</option>`).join("")}</select>`)}</div>
         <div class="show-fields">${field("Moves", `<select data-field="action">${Object.entries(ACTIONS).map(([key, label]) => `<option value="${key}" ${p.action === key ? "selected" : ""}>${label}</option>`).join("")}</select>`)}
           ${field("How much", range("amount", p.amount ?? 0.02, 0, 0.1, 0.005))}${field("Shift X", range("offset_x", (p.offset || [0, 0])[0], -0.15, 0.15, 0.005))}${field("Shift Y", range("offset_y", (p.offset || [0, 0])[1], -0.15, 0.15, 0.005))}</div>
-        ${isPhoto(p.source) ? "<p class=\"show-hint\">A photo has no voice of its own.</p>" : field("Its voice", `<select data-field="voice"><option value="">— choose a recorded line —</option>${voices}</select>`)}
+        ${field("Its voice", `<select data-field="voice"><option value="">— choose or record a voice —</option>${voices}</select>`)}<div data-voice-input data-voice-effect="${escape(item.id)}"></div>
         <div class="show-tools">
           <select data-tool><option value="rect">Rectangle (drag)</option><option value="points">Points (advanced)</option></select>
           <button type="button" class="icon-button small" data-region="close">Close shape</button>
@@ -1355,11 +1415,18 @@
     return lower.slice(0, -1).concat(upper.slice(0, -1));
   }
 
+  document.addEventListener('wheel', event => {
+    const video = event.target.closest?.('#showStage video');
+    if (!video || !Number.isFinite(video.duration) || !video.duration) return;
+    event.preventDefault(); event.stopPropagation(); video.pause();
+    video.currentTime = Math.max(0,Math.min(video.duration,video.currentTime + (event.deltaY>0?.2:-.2)));
+  }, {passive:false});
+
   document.addEventListener("contextmenu", event => {
     if (!review || $("#showReviewBox")?.hidden || !(event.target instanceof Element)) return;
     if (event.target.closest("#showSaid, [data-overlay], canvas, input, textarea")) return;
     const scene = currentScene();
-    if (!scene || !event.target.closest("#showStage, [data-show-id], [data-time-clip]")) return;
+    if (!scene || !event.target.closest("#showStage, [data-show-id], [data-time-clip], [data-track], [data-scene-seek]")) return;
     event.preventDefault();
     let menu = $("#showEffectMenu");
     if (!menu) { menu = document.createElement("div"); menu.id="showEffectMenu"; menu.className="show-context-menu"; menu.setAttribute("role","menu"); document.body.append(menu); }
@@ -1367,7 +1434,12 @@
     const ownId=event.target.closest("[data-time-clip]")?.dataset.timeClip || event.target.closest("[data-show-id]")?.dataset.showId || event.target.closest("[data-live-effect]")?.dataset.liveEffect;
     if(ownId?.startsWith('sticker:')){openTools(currentScene().overlays.findIndex(overlay=>'sticker:'+overlay.id===ownId),event.clientX,event.clientY);return;}
     const items=sceneEffects(scene).filter(item => !ownId || item.id===ownId);
-    menu.innerHTML = `<strong>Scene effects</strong>${items.map(item => `<div><span>${escape(item.params.subject || item.params.text || KIND_LABELS[item.kind] || item.kind)}</span><button type="button" data-effect-action="change" data-id="${item.id}">Change / replace…</button><button type="button" data-effect-action="remove" data-id="${item.id}">${item.status === "discarded" ? "Restore effect" : "Remove effect"}</button></div>`).join("") || "<p>No effect in this scene.</p>"}<button type="button" data-effect-action="preview">Generate scene preview</button>`;
+    menu.classList.toggle('show-menu-left',event.clientX+600>innerWidth);
+    menu.innerHTML = `<strong>${ownId?'Selected effect':'Video / scene'}</strong>
+      <div class="show-context-edit"><button type="button" data-effect-action="paste-layer" ${layerClipboard?'':'disabled'}>Paste image layer</button><button type="button" data-effect-action="undo-layer" ${layerUndo.some(entry=>entry.scene===scene.id)?'':'disabled'}>Undo layer edit</button></div>
+      <details class="show-submenu"><summary>Effects ▸</summary><div>${items.map(item => `<div><span>${escape(item.params.subject || item.params.text || KIND_LABELS[item.kind] || item.kind)}</span><button type="button" data-effect-action="change" data-id="${item.id}">Edit / replace…</button><button type="button" data-effect-action="remove" data-id="${item.id}">${item.status === "discarded" ? "Restore effect" : "Remove effect"}</button></div>`).join("") || "<p>No effect in this scene.</p>"}<button type="button" data-effect-action="add">Add an effect…</button><button type="button" data-effect-action="cutout">Cut out a photo / original parts…</button></div></details>
+      <details class="show-submenu"><summary>Cuts and audio ▸</summary><div><button type="button" data-effect-action="closeup">Add a close-up…</button><button type="button" data-effect-action="cutting-desk">Open video / audio cutting desk…</button></div></details>
+      <button type="button" data-effect-action="preview">Generate scene preview</button>`;
     menu.hidden=false;
     menu.style.left=`${Math.max(8,Math.min(event.clientX,innerWidth-menu.offsetWidth-8))}px`;
     menu.style.top=`${Math.max(8,Math.min(event.clientY,innerHeight-menu.offsetHeight-8))}px`;
@@ -1377,7 +1449,18 @@
       try {
         await flushEdits();
         const item=review.proposals.find(item=>item.id===button.dataset.id);
-        if(button.dataset.effectAction==="preview") { await requestScenePreview(scene); return; }
+        const action=button.dataset.effectAction;
+        if(action==='paste-layer'){await layerCommand('paste',scene);return;}
+        if(action==='undo-layer'){await layerCommand('undo',scene);return;}
+        if(action==='cutout'){document.querySelector('[data-studio="open"]')?.click();return;}
+        if(action==='cutting-desk'){window.location.href='/show-studio/';return;}
+        if(action==='add'||action==='closeup'){
+          closeTimeline();open.add(scene.id);renderScene();
+          const form=$('#showSceneAdd');
+          if(action==='closeup'){form.elements.kind.value='cutaway';form.elements.kind.dispatchEvent(new Event('change'));}
+          form.scrollIntoView({block:'nearest'});return;
+        }
+        if(action==="preview") { await requestScenePreview(scene); return; }
         if(button.dataset.effectAction==="remove") {
           await patch(item.id,{status:item.status==="discarded"?"proposed":"discarded"});
           await markModified(); renderScene();
@@ -1465,16 +1548,8 @@
         showEntrance(overlay, isCharacter(overlay.asset));
         await saveOverlays(scene);
       } else if (target.dataset.menu) {
-        const scene = currentScene();
         menu.hidden = true;
-        if (selectedOverlay == null || !scene) return;
-        const overlay = scene.overlays[selectedOverlay];
-        if (target.dataset.menu === "remove") {scene.overlays.splice(selectedOverlay, 1);selectedEffect=null;}
-        if (target.dataset.menu === "bigger") overlay.width = Math.min(100, overlay.width * 1.2);
-        if (target.dataset.menu === "smaller") overlay.width = Math.max(3, overlay.width / 1.2);
-        selectedOverlay = null;
-        drawOverlays(scene);
-        await saveOverlays(scene);
+        await layerCommand(target.dataset.menu);
       } else if (target.id === "showRenderNow") {
         await flushEdits();
         target.disabled = true;
@@ -1528,8 +1603,12 @@
   async function addToScene(asset) {
     const scene = currentScene();
     if (!scene) { showToast("Open a scene to place it", true); return; }
-    scene.overlays.push({ id:crypto.randomUUID(),asset, x: 62, y: 35, width: 12, at: scene.start, duration: Math.min(4, scene.end - scene.start), action: "none", intensity: 1 });
-    await saveOverlays(scene);
+    const placed={ id:crypto.randomUUID(),asset, x: 62, y: 35, width: 12, at: scene.start, duration: Math.min(4, scene.end - scene.start), action: "none", intensity: 1 };
+    scene.overlays.push(placed);
+    if (!await saveOverlays(scene)) {
+      scene.overlays=scene.overlays.filter(item=>item.id!==placed.id);
+      throw Error("The image is saved in the gallery, but could not be placed in this scene. Check its existing library references and try again.");
+    }
     open.add(scene.id);
     renderScene();
   }

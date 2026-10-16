@@ -129,7 +129,7 @@ ACTIONS = {
     # action: (fun effect, path preset) - what "Animate element" offers.
     "none": ("none", None), "up": ("none", "up"), "down": ("none", "down"), "jump": ("bounce", None), "grow": ("pop", None),
     "grow_return": ("jelly", None), "pulse": ("pulse", None), "swing": ("wobble", None), "spin": ("spin", None),
-    "talk": ("none", None), "path": ("none", "path"),
+    "talk": ("none", None), "look": ("none", None), "path": ("none", "path"),
 }
 
 
@@ -179,6 +179,9 @@ def overlay_items(document: dict[str, Any], frame_aspect: float = 16 / 9) -> lis
             rig = _character_rig(overlay["asset"])
             if rig.get("pivot"):
                 item["pivot"] = rig["pivot"]
+            if action == "look" and rig.get("eyes"):
+                item["eyes"] = rig["eyes"]
+                item["eye_movement"] = min(0.5, max(0.0, 0.05 * amount))
             if action == "talk" and rig.get("mouth"):
                 item["mouth"] = rig["mouth"]
                 item["mouth_open"] = 0.08 * amount

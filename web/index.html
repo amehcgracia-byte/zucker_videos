@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Zucker Editor</title>
     <link rel="icon" href="/logo_editor_green.png?v=editor-ui-4" />
-    <link rel="stylesheet" href="/styles.css?v=editor-ui-14" />
+    <link rel="stylesheet" href="/styles.css?v=editor-ui-15" />
     <script src="/theme.js?v=editor-ui-4"></script>
   </head>
   <body>
@@ -355,20 +355,20 @@
             <aside id="showPanel" class="show-panel"></aside>
           </div>
           <div class="show-step-buttons"><button id="showBack" class="icon-button small" type="button">Back</button><span id="showStepCount"></span><button id="showNext" class="primary icon-button small" type="button">Next</button></div>
-          <div id="showCharacterStudio" class="show-studio" role="dialog" aria-modal="true" aria-label="New character from a photo" hidden>
+          <div id="showCharacterStudio" class="show-studio" role="dialog" aria-modal="true" aria-label="Photo cutouts and original-pixel layers" hidden>
             <div class="show-studio-card">
-              <header><strong>New character from a photo</strong><button type="button" class="icon-button small" data-studio="close">Close</button></header>
-              <ol class="show-studio-steps"><li data-studio-step="1">Photo</li><li data-studio-step="2">Cut out</li><li data-studio-step="3">Mouth, pivot, voice</li></ol>
+              <header><strong>Photo cutouts and original-pixel layers</strong><button type="button" class="icon-button small" data-studio="close">Close</button></header>
+              <ol class="show-studio-steps"><li data-studio-step="1">Photo</li><li data-studio-step="2">Cut out</li><li data-studio-step="3">Eyes, mouth, motion</li></ol>
               <div id="showStudioBody"></div>
             </div>
           </div>
           <div id="showContextMenu" class="show-context-menu" role="dialog" aria-label="Element tools" hidden>
-            <strong>Animate</strong><small>Move and time the sticker live. Render its preview to check animation motion.</small>
-            <div class="show-actions-grid" id="showActionButtons"></div>
+            <strong>Selected image / layer</strong><div class="show-context-edit"><button type="button" data-menu="copy">Copy</button><button type="button" data-menu="cut">Cut</button><button type="button" data-menu="paste">Paste</button><button type="button" data-menu="duplicate">Duplicate</button><button type="button" data-menu="undo">Undo layer edit</button><button type="button" data-menu="remove">Remove layer</button></div><details class="show-submenu"><summary>Edit this effect ▸</summary><div>
+            <button type="button" data-menu="regions">Edit original eyes / mouth…</button><div class="show-actions-grid" id="showActionButtons"></div>
             <label class="show-field"><span>Intensity</span><input type="range" id="showIntensity" min="0.2" max="3" step="0.1" value="1"></label>
             <label class="show-field" id="showEntranceField" hidden><span>Enters</span><select id="showEntrance"><option value="cut">Straight cut: talks at once</option><option value="zoom">The camera pushes in on it</option><option value="bounce">Rises from below with a little jump</option></select></label>
-            <div class="show-fields"><label class="show-field"><span>Enters at (s)</span><input type="number" id="showOverlayAt" step="0.1"></label><label class="show-field"><span>Lasts (s)</span><input type="number" id="showOverlayDuration" step="0.1" min="0.5"></label></div>
-            <div class="show-actions"><button type="button" data-menu="bigger">Bigger</button><button type="button" data-menu="smaller">Smaller</button><button type="button" data-menu="remove">Remove sticker</button></div>
+            </div></details><details class="show-submenu"><summary>Timing ▸</summary><div class="show-fields"><label class="show-field"><span>Enters at (s)</span><input type="number" id="showOverlayAt" step="0.1"></label><label class="show-field"><span>Lasts (s)</span><input type="number" id="showOverlayDuration" step="0.1" min="0.5"></label></div></details>
+            <details class="show-submenu"><summary>Size ▸</summary><div class="show-actions"><button type="button" data-menu="bigger">Bigger</button><button type="button" data-menu="smaller">Smaller</button></div></details>
           </div>
         </div>
         <div id="paperEditBox" class="review-box paper-edit-box" hidden>
@@ -498,9 +498,10 @@
     <script src="/app.js?v=editor-ui-11"></script>
     <script src="/show_edit_queue.js?v=1"></script>
     <script src="/show_clock.js?v=1"></script>
-    <script src="/show_review.js?v=22"></script>
+    <script src="/show_review.js?v=23"></script>
     <script src="/show_einstein.js?v=3"></script>
-    <script src="/show_characters.js?v=4"></script>
+    <script src="/show_characters.js?v=5"></script>
+    <script src="/show_voice.js?v=1"></script>
     <script src="/project_library.js?v=1"></script>
   </body>
 </html>

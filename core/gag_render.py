@@ -68,6 +68,7 @@ class Sticker:
     mouth_drop: float = 0.0                        # largest drop, sprite pixels
     envelope: np.ndarray | None = None             # 0..1 per frame of the sticker: the voice's loudness
     fps: float = 30.0
+    eyes: Any = None                              # original-pixel layers with one-off glances
 
     def active(self, t: float) -> bool:
         return self.at <= t < self.at + self.duration
@@ -121,12 +122,17 @@ def load_sticker(raw: dict[str, Any], width: int, height: int) -> Sticker:
         cv2.fillConvexPoly(mask, polygon, 1)
         sticker.mouth = (mask > 0) & (pixels[..., 3] > 0.05)
         sticker.mouth_drop = float(raw.get("mouth_open") or 0.08) * prepared_h
+    if raw.get("eyes"):
+        from core.show_pixel_layers import LookingPixels
+        sticker.eyes = LookingPixels(pixels, raw["eyes"], float(raw.get("eye_movement", 0.05)))
     return sticker
 
 
 def talking_pixels(sticker: Sticker, t: float) -> np.ndarray:
     """The sprite with its mouth's own pixels dropped by the voice's loudness,
     black showing behind (only inside the cut-out)."""
+    if sticker.eyes is not None:
+        return sticker.eyes.frame((t - sticker.at) / sticker.duration)
     if sticker.mouth is None or sticker.envelope is None or not len(sticker.envelope):
         return sticker.pixels
     index = min(len(sticker.envelope) - 1, max(0, int((t - sticker.at) * sticker.fps)))

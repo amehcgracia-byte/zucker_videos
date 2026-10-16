@@ -2154,3 +2154,15 @@ pre {
 .show-sticker-picker {margin:8px 0;}
 .show-sticker-picker summary {cursor:pointer;font-weight:600;}
 .show-sticker-picker .show-library {margin-top:8px;}
+
+/* Mouse actions stay local; fly-outs group tools instead of covering the video. */
+.show-voice-input{border:1px dashed var(--line);padding:12px;border-radius:8px;margin:8px 0;display:grid;gap:6px}
+.show-voice-input input[type=file]{max-width:240px}.show-voice-input audio{width:100%}
+.show-library,.show-studio-card,.show-context-menu,#showTimelineDialog{overscroll-behavior:contain}
+.show-context-edit{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.show-submenu{position:relative}.show-submenu>summary{cursor:pointer;padding:7px;list-style:none}
+.show-submenu>div{display:none;position:absolute;left:calc(100% - 4px);top:0;width:270px;max-height:65vh;overflow:auto;overscroll-behavior:contain;padding:10px;background:var(--nav-bg);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 24px #0004;z-index:2}
+.show-submenu[open]>div,.show-submenu:hover>div,.show-submenu:focus-within>div{display:grid;gap:6px}
+@media(max-width:760px){.show-submenu>div{position:static;width:auto}}
+
+.show-menu-left .show-submenu>div{left:auto;right:calc(100% - 4px)}

@@ -1974,7 +1974,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not proposals_path.is_file():
             return None
         stored = show_proposals.load(proposals_path)
-        allowed = {str(stored.get("source") or "")} | {str(item.get("path")) for item in stored.get("resources") or []}
+        allowed = ({str(stored.get("source") or "")} | {str(item.get("path")) for item in stored.get("resources") or []}
+                   | {str(item["source"]) for item in _show_voices(project)})
         return Path(raw) if raw in allowed and Path(raw).is_file() else None
 
     scene_previews: dict[str, dict[str, Any]] = {}
@@ -2297,8 +2298,16 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if not root.is_dir():
                 continue
             for path in sorted(root.rglob("*")):
+                if path.name == "mask.png" and (path.parent / "character.json").is_file():
+                    continue
                 if path.is_file() and path.suffix.lower() in {".png", ".webp", ".jpg", ".jpeg"}:
-                    items.append({"name": path.stem, "path": str(path.resolve()), "folder": path.parent.name})
+                    name = path.stem
+                    if path.name == "cutout.png" and (path.parent / "character.json").is_file():
+                        try:
+                            name = str(json.loads((path.parent / "character.json").read_text()).get("name") or name) + " · photo character"
+                        except (OSError, ValueError):
+                            pass
+                    items.append({"name": name, "path": str(path.resolve()), "folder": path.parent.name})
         ai_root = project.folder / "assets" / "show-ai"
         if ai_root.is_dir():
             for picture in ai_root.glob("*/image.png"):
@@ -2463,6 +2472,54 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def _allowed_photo(project: Project, raw: str) -> Path | None:
         return Path(raw) if raw in {item["photo"] for item in _show_photos(project)} else None
 
+    show_voices_lock = threading.Lock()
+
+    def _show_voices(project: Project) -> list[dict[str, Any]]:
+        try:
+            return [item for item in json.loads((project.folder / "assets" / "show-voices" / "voices.json").read_text())
+                    if Path(item["source"]).is_file()]
+        except (OSError, ValueError, KeyError, TypeError):
+            return []
+
+    @app.post("/api/v1/show/voices")
+    def api_show_voice_upload() -> Response:
+        import uuid
+        import wave
+        from core.project import atomic_write_json
+        project = _require_project(state)
+        if not same_project_path(str(request.form.get("project_id") or ""), str(project.folder)):
+            return error_response("project_changed", "The project changed. Record or import the voice again.", 409)
+        upload = request.files.get("file")
+        if not upload:
+            return error_response("bad_request", "Choose an audio file or record a voice", 400)
+        payload = upload.read(32 * 1024 * 1024 + 1)
+        if not payload or len(payload) > 32 * 1024 * 1024:
+            return error_response("bad_request", "Use a voice clip smaller than 32 MB", 400)
+        folder = project.folder / "assets" / "show-voices"
+        folder.mkdir(parents=True, exist_ok=True)
+        key = uuid.uuid4().hex
+        raw, target = folder / f"{key}.upload", folder / f"{key}.wav"
+        raw.write_bytes(payload)
+        try:
+            ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
+            subprocess.run([ffmpeg, "-v", "error", "-y", "-i", str(raw), "-map", "0:a:0", "-t", "180", "-vn",
+                            "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", str(target)],
+                           capture_output=True, check=True, timeout=60)
+            with wave.open(str(target)) as sound:
+                duration = sound.getnframes() / sound.getframerate()
+            if duration <= 0:
+                raise ValueError("The clip has no audio")
+            voice = {"source": str(target), "start": 0, "length": duration,
+                     "text": Path(upload.filename or "Recorded voice").stem[:120]}
+            with show_voices_lock:
+                atomic_write_json(folder / "voices.json", _show_voices(project) + [voice])
+        except (OSError, ValueError, wave.Error, subprocess.SubprocessError):
+            target.unlink(missing_ok=True)
+            return error_response("invalid_audio", "Could not read this audio. Try WAV, MP3, M4A, OGG or WEBM.", 400)
+        finally:
+            raw.unlink(missing_ok=True)
+        return jsonify(voice), 201
+
     @app.get("/api/v1/show/photos")
     def api_show_photos() -> Response:
         """Photos of the things around the host (taken from the videos, or added)."""
@@ -2539,7 +2596,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         box = body.get("box")
         folder = project.cache_dir / "show_cutouts"
         folder.mkdir(parents=True, exist_ok=True)
-        base_key = hashlib.sha1(json.dumps([str(photo), box]).encode()).hexdigest()[:16]
+        # A newly supplied close-up can replace a photo at the same path. Never
+        # reuse the old silhouette merely because its filename stayed the same.
+        photo_digest = hashlib.sha256(photo.read_bytes()).hexdigest()
+        base_key = hashlib.sha256(json.dumps([str(photo), photo_digest, box]).encode()).hexdigest()[:24]
         base = folder / f"{base_key}-auto.npz"
         if base.is_file():
             stored = np.load(base)
@@ -2548,7 +2608,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             mask, method = show_characters.auto_mask(photo, box)
             np.savez_compressed(base, mask=mask, method=method)
         mask = show_characters.apply_strokes(mask, body.get("strokes") or [])
-        key = hashlib.sha1(json.dumps([base_key, body.get("strokes") or []]).encode()).hexdigest()[:16]
+        if body.get("background"):
+            mask = 1.0 - mask
+        key = hashlib.sha1(json.dumps([base_key, body.get("strokes") or [], bool(body.get("background"))]).encode()).hexdigest()[:16]
         np.save(folder / f"{key}.npy", mask)
         try:
             picture, crop = show_characters.cutout(photo, mask)
@@ -2580,29 +2642,115 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if photo is None or not key or not mask_path.is_file():
             return error_response("bad_request", "Cut the character out of one of this Show's photos first", 400)
         source = next((item for item in _show_photos(project) if item["photo"] == str(photo)), {})
-        folder = show_characters.save_character(str(body.get("name") or source.get("name") or "Character"), photo, np.load(mask_path),
+        mask = np.load(mask_path)
+        if body.get("gallery_only"):
+            import uuid
+            from core.project import atomic_write_json
+            folder = project.folder / "assets" / "show-library"
+            folder.mkdir(parents=True, exist_ok=True)
+            target = folder / f"cutout-{uuid.uuid4().hex}.png"
+            picture, crop = show_characters.cutout(photo, mask)
+            picture.save(target)
+            catalog_path = folder / "catalog.json"
+            try:
+                catalog = json.loads(catalog_path.read_text())
+            except (OSError, ValueError):
+                catalog = {}
+            catalog[str(target)] = {"name": str(body.get("name") or source.get("name") or "Photo cutout"),
+                                    "origin": "Your photo · original pixels", "retired": False,
+                                    "source_photo": str(photo), "crop": list(crop)}
+            atomic_write_json(catalog_path, catalog)
+            return jsonify({"cutout": str(target), "name": catalog[str(target)]["name"]}), 201
+        eyes = body.get("eyes") or []
+        if eyes:
+            from core.show_pixel_layers import LookingPixels
+            try:
+                picture, _ = show_characters.cutout(photo, mask)
+                LookingPixels(np.asarray(picture).astype(np.float32) / 255, eyes)
+            except (ValueError, TypeError, KeyError) as exc:
+                return error_response("bad_request", str(exc), 400)
+        folder = show_characters.save_character(str(body.get("name") or source.get("name") or "Character"), photo, mask,
                                                 method=str(body.get("method") or ""), mouth=body.get("mouth"), pivot=body.get("pivot"),
-                                                voice=body.get("voice"), provenance={"video": source.get("video"), "second": source.get("second")})
-        return jsonify(next(item for item in show_characters.list_characters() if item["folder"] == str(folder))), 201
+                                                voice=body.get("voice"), eyes=eyes,
+                                                root=project.folder / "assets" / "show-library" / "Characters",
+                                                provenance={"video": source.get("video"), "second": source.get("second")})
+        return jsonify(next(item for item in _show_characters(project) if item["folder"] == str(folder))), 201
+
+    @app.post("/api/v1/show/characters/eyes-preview")
+    def api_show_character_eyes_preview() -> Response:
+        import uuid
+        import numpy as np
+        from core import show_characters, show_pixel_layers
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        photo = _allowed_photo(project, str(body.get("photo") or ""))
+        key = re.sub(r"[^0-9a-f]", "", str(body.get("mask") or ""))
+        folder = project.cache_dir / "show_cutouts"
+        mask_path = folder / f"{key}.npy"
+        if photo is None or not key or not mask_path.is_file():
+            return error_response("bad_request", "Cut out a photo of this Show first", 400)
+        temporary = folder / f"eyes-{uuid.uuid4().hex}.png"
+        target = temporary.with_suffix(".mp4")
+        try:
+            picture, _ = show_characters.cutout(photo, np.load(mask_path))
+            picture.save(temporary)
+            show_pixel_layers.render_preview(temporary, body.get("eyes") or [], target,
+                                             str(tool_status().get("ffmpeg_path") or "ffmpeg"))
+        except (ValueError, TypeError, KeyError) as exc:
+            return error_response("bad_request", str(exc), 400)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return error_response("preview_failed", f"Could not render the glance: {exc}", 500)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return jsonify({"url": f"/api/v1/show/media?path={quote(str(target))}"})
+
+    def _show_characters(project: Project) -> list[dict[str, Any]]:
+        from core import show_characters
+        return show_characters.list_characters(project.folder / "assets" / "show-library" / "Characters") + show_characters.list_characters()
 
     @app.get("/api/v1/show/characters")
     def api_show_characters() -> Response:
         from core import show_characters
-        _require_project(state)
+        project = _require_project(state)
         return jsonify({"items": [{**item, "url": f"/api/v1/show/library/file?path={quote(str(Path(item['cutout']).resolve()))}"}
-                                  for item in show_characters.list_characters()]})
+                                  for item in _show_characters(project)]})
+
+    @app.get("/api/v1/show/characters/edit")
+    def api_show_character_edit() -> Response:
+        import uuid
+        import numpy as np
+        from PIL import Image
+        project = _require_project(state)
+        record = next((item for item in _show_characters(project) if item["cutout"] == request.args.get("asset")), None)
+        if not record or _allowed_photo(project, record["photo"]) is None:
+            return error_response("not_found", "The original photo is not available in this project", 404)
+        folder = project.cache_dir / "show_cutouts"
+        folder.mkdir(parents=True, exist_ok=True)
+        key = uuid.uuid4().hex
+        mask = np.asarray(Image.open(Path(record["folder"]) / "mask.png").convert("L"), dtype=np.float32) / 255
+        np.save(folder / f"{key}.npy", mask)
+        return jsonify({"record": record, "cut": {"mask": key, "method": record["method"], "url": f"/api/v1/show/library/file?path={quote(record['cutout'])}"},
+                        "photo": next(item for item in _show_photos(project) if item["photo"] == record["photo"])})
 
     @app.patch("/api/v1/show/characters")
     def api_show_character_rig() -> Response:
         """Mark the mouth, the pivot or the default voice once."""
         from core import show_characters
-        _require_project(state)
+        project = _require_project(state)
         body = request.get_json(silent=True) or {}
         folder = Path(str(body.get("folder") or ""))
-        known = {item["folder"] for item in show_characters.list_characters()}
+        known = {item["folder"] for item in _show_characters(project)}
         if str(folder) not in known:
             return error_response("not_found", "That character is not in the library", 404)
-        changes = {key: body[key] for key in ("mouth", "pivot", "voice", "name") if key in body}
+        changes = {key: body[key] for key in ("mouth", "eyes", "pivot", "voice", "name") if key in body}
+        if changes.get("eyes"):
+            import numpy as np
+            from PIL import Image
+            from core.show_pixel_layers import LookingPixels
+            try:
+                LookingPixels(np.asarray(Image.open(folder / "cutout.png").convert("RGBA"), dtype=np.float32) / 255, changes["eyes"])
+            except (ValueError, TypeError, KeyError) as exc:
+                return error_response("bad_request", str(exc), 400)
         return jsonify(show_characters.rig(folder, **changes))
 
     @app.post("/api/v1/show/scenes/<scene_id>/stickers/<sticker_id>/preview")
