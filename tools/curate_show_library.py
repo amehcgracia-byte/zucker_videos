@@ -4,6 +4,8 @@
 
 LIST.json: [{"source": "/path/picture.png", "name": "Sun · original crayon drawing",
              "origin": "Codex · chosen artwork", "file": "sun-crayon.png"}, ...]
+("file" may name a subfolder, e.g. "approved/money.png"; "retired": true keeps a
+picture out of the sticker picker while drawings can still be linked to it.)
 
 Each picture is copied into PROJECT/assets/show-library/ and checked byte for
 byte (SHA-256) against its source; the catalog the storyboard reads
@@ -44,10 +46,11 @@ def curate(project: Path, chosen: list[dict]) -> list[dict]:
             target = target.with_name(f"{Path(entry.get('file', source.name)).stem} {n}{target.suffix}")
             n += 1
         if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
         if sha256(target) != digest:
             raise SystemExit(f"Copy of {source} does not match its source")
-        catalog[str(target.resolve())] = {"name": entry["name"], "origin": entry["origin"], "retired": False,
+        catalog[str(target.resolve())] = {"name": entry["name"], "origin": entry["origin"], "retired": bool(entry.get("retired", False)),
                                           "sha256": digest, "source": str(source)}
         done.append({"path": str(target.resolve()), "sha256": digest, "source": str(source)})
     pending = catalog_path.with_suffix(".pending")

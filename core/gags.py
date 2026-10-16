@@ -155,7 +155,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
     painter = gag_paint.can_paint()
     notes: list[str] = []
     items: list[dict[str, Any]] = []
-    to_paint = sum(1 for gag in gags if gag["kind"] in ("drawing", "character"))
+    to_paint = sum(1 for gag in gags if gag["kind"] in ("drawing", "character") and not gag.get("picture"))
     painted = 0
     unusable: list[str] = []
     width, height = frame_size
@@ -175,7 +175,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
         position = gag.get("position") or ("left" if face == "right" else "right")
         side = "left" if centre(position, face)[0] < 0.5 else "right"
         image: Image.Image | None = None
-        if kind == "drawing" and gag.get("picture"):
+        if kind in ("drawing", "character") and gag.get("picture"):
             # The person chose one of their own approved pictures instead of a new painting.
             try:
                 with Image.open(gag["picture"]) as chosen:
@@ -183,6 +183,8 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
             except OSError:
                 result(gag, "failed", f"Your chosen picture {Path(str(gag['picture'])).name} is missing")
                 continue
+            if kind == "character" and gag.get("says"):
+                image = character_with_bubble(image, gag["says"], side=side, seed=index)
         elif kind in ("drawing", "character"):
             if not painter:
                 result(gag, "failed", "The drawing painter is not installed")
@@ -215,7 +217,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
         if image is None:
             result(gag, "failed", f"No picture in your library matches “{gag.get('query', '')}”" if kind == "photo" else "Nothing to show")
             continue
-        result(gag, "applied", f"your picture {Path(str(gag['picture'])).name}" if kind == "drawing" and gag.get("picture")
+        result(gag, "applied", f"your picture {Path(str(gag['picture'])).name}" if kind in ("drawing", "character") and gag.get("picture")
                else f"{kind}: {gag.get('subject') or gag.get('text') or gag.get('query') or ''}".rstrip(": "))
         path = folder / f"gag-{index:03d}.png"
         image.save(path)

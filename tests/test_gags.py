@@ -253,3 +253,18 @@ def test_a_drawing_can_use_one_of_your_own_pictures_instead_of_a_painting(tmp_pa
                                  "proposal": "p2"}], tmp_path / "out", outcomes=outcomes)
     assert len(items) == 1 and Image.open(items[0]["image"]).size == (200, 300)
     assert outcomes["p1"] == ("applied", "your picture bulb.png") and outcomes["p2"][0] == "failed" and "gone.png" in outcomes["p2"][1]
+
+
+def test_a_talking_character_keeps_your_exact_picture_and_gets_its_bubble(tmp_path, monkeypatch):
+    from core import gag_paint, gags
+    monkeypatch.setattr(gag_paint, "can_paint", lambda: False)                  # never repainted
+    monkeypatch.setattr(gags, "painted_picture", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("repainted")))
+    own = tmp_path / "teen.png"
+    Image.new("RGBA", (200, 300), (40, 120, 200, 255)).save(own)
+    gag = {"kind": "character", "subject": "a bored teenager", "says": "Whatever", "picture": str(own), "at": 1.0, "duration": 2.0, "proposal": "p1"}
+    outcomes = {}
+    items, notes = gags.make_items([gag], tmp_path / "out", outcomes=outcomes)
+    shown = Image.open(items[0]["image"])
+    assert notes == []                                                          # nothing was waiting for the painter
+    assert outcomes["p1"] == ("applied", "your picture teen.png")
+    assert shown.tobytes() == gags.character_with_bubble(Image.open(own).convert("RGBA"), "Whatever", side="left", seed=0).tobytes()
