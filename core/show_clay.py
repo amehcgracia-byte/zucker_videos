@@ -488,3 +488,44 @@ def clay_layers(project_folder: str | Path, plan: dict[str, Any], *, hidden: lis
                               f"{mode}, {len(pieces)} kept part{'s' if len(pieces) != 1 else ''}, {kept:.2f} of {b - a:.2f} s; "
                               "poses held between word cues; the host's voice and captions stay"))
     return layers, report
+
+
+def place_bundled_sample(project, plan: dict, at: float, end: float, mode: str, root: Path) -> dict:
+    """Explicit reuse of Simón's sample; align to one kept source shot, never old timestamps."""
+    import tempfile
+    import shutil
+    import uuid
+    from core.show_bridge import edited_to_source, _shots
+    if mode not in MODES or not all(map(math.isfinite, (at, end))) or end <= at:
+        raise ValueError('Choose a positive word interval and a clay display mode')
+    source = edited_to_source(plan, at)
+    if source is None:
+        raise ValueError('Choose words inside the current edit')
+    fps = float(plan.get('fps') or 30)
+    remaining = next((length / fps - (at - first / fps) for _, first, length in _shots(plan)
+                      if first / fps <= at < (first + length) / fps), 0)
+    duration = min(end - at, remaining)
+    if duration < .04:
+        raise ValueError('Choose at least one frame inside a source shot')
+    sample = root / 'assets' / 'clay' / 'simon'
+    record = json.loads((sample / 'story-simon-v1.json').read_text())
+    factor = duration / float(record['duration'])
+    record.update(id='simon-sample-' + uuid.uuid4().hex, source=Path(plan['source']).name, source_start=source,
+                  source_end=source + duration, duration=duration, quote='Reusable sample placed on selected words',
+                  evidence='User chose the bundled countryside sample; motion cues scaled, not new semantic alignment')
+    for shot in record['shots']:
+        shot['start'] *= factor
+        shot['end'] *= factor
+        for key in shot.get('poseKeys', []):
+            key['time'] *= factor
+    store = ClayStore(project.folder)
+    with tempfile.TemporaryDirectory(prefix='zucker-clay-') as temporary:
+        temp = Path(temporary)
+        for name in {shot['sheet'] for shot in record['shots']}:
+            shutil.copyfile(sample / name, temp / name)
+        (temp / 'story.json').write_text(json.dumps(record))
+        data = store.import_story(temp / 'story.json', placements=False)
+    placement = check_placement(dict(id=record['id'], story=record['id'], mode=mode, start=0, end=duration,
+                                     enabled=True, fade=min(.2, duration / 4), **DEFAULTS[mode]), record)
+    store.save({**data, 'placements': [*data['placements'], placement]}, revision=data['revision'])
+    return store.load()

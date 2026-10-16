@@ -2163,6 +2163,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         caption_layout = show_caption_layout.load(project)
         caption_cues = show_caption_layout.apply(edited_captions(plan, plan.get("style") or "choe"), caption_layout) if plan.get("words") else []
         from core.show import scene_preview_notes, scene_preview_ready
+        reference_path = project.artifacts_dir / "show_references.json"
+        references = json.loads(reference_path.read_text()) if reference_path.is_file() else []
         with scene_lock:
             for scene in document["scenes"]:
                 made = scene_preview_ready(project, scene["id"])
@@ -2178,6 +2180,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 scene["segments"] = scene_segments(plan, float(scene["start"]), float(scene["end"])) if plan.get("shots") else []
                 scene["words"] = [[text, a, b] for text, a, b in timed if scene["start"] <= a < scene["end"]]
                 scene["captions"] = [cue for cue in caption_cues if cue['start'] < scene['end'] and cue['end'] > scene['start']]
+                scene["references"] = [ref for ref in references if ref.get("scene_id") == scene["id"]]
         wizard = project.data.get("settings", {}).get("wizard", {})
         logo = Path(str(wizard.get("reel_logo_path") or ""))
         return jsonify({**document, "proposals": stored["proposals"], "resources": stored.get("resources") or [], "source": stored.get("source"),
@@ -2257,6 +2260,95 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         edited moments each placement reaches)."""
         return jsonify(_clay_state(_require_project(state)))
 
+    @app.post("/api/v1/show/references/open")
+    def api_show_reference_open() -> Response:
+        import webbrowser
+        from urllib.parse import urlencode, urlsplit
+        body = request.get_json(silent=True) or {}
+        if body.get("kind") == "search":
+            query = str(body.get("query") or "").strip()[:160]
+            url = "https://www.google.com/search?" + urlencode({"q": query, "tbm": "vid"})
+        else:
+            url = str(body.get("url") or "")
+            parts = urlsplit(url)
+            if parts.scheme != "https" or parts.hostname not in {"youtube.com", "www.youtube.com", "youtu.be", "vimeo.com", "www.vimeo.com"} or parts.username or parts.password or parts.netloc not in {"youtube.com", "www.youtube.com", "youtu.be", "vimeo.com", "www.vimeo.com"}:
+                return error_response("invalid_reference", "Choose an HTTPS YouTube or Vimeo link", 400)
+        if not webbrowser.open(url):
+            return error_response("browser_unavailable", "Could not open your default browser", 502)
+        return jsonify(opened=True)
+
+    @app.post("/api/v1/show/references/head-box")
+    def api_show_reference_head_box() -> Response:
+        from core import show_references
+        project = _require_project(state)
+        photo = _allowed_photo(project, str((request.get_json(silent=True) or {}).get("photo") or ""))
+        if photo is None:
+            return error_response("invalid_reference", "Choose a photo in this project", 400)
+        return jsonify(box=show_references.head_box(photo))
+
+    @app.get("/api/v1/show/references/images")
+    def api_show_reference_images() -> Response:
+        from core import show_references
+        _require_project(state)
+        try:
+            return jsonify(items=show_references.search(request.args.get("q", "")))
+        except ValueError as exc:
+            return error_response("invalid_reference", str(exc), 400)
+        except (OSError, RuntimeError) as exc:
+            return error_response("reference_search_failed", f"Reference search unavailable: {exc}", 502)
+
+    @app.post("/api/v1/show/references/images")
+    @_proposals_locked
+    def api_show_reference_import() -> Response:
+        from core import show_references
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        if body.get("project_id") != str(project.folder):
+            return error_response("stale_project", "Reopen the current project", 409)
+        try:
+            return jsonify(show_references.import_photo(project, body.get("title"))), 201
+        except (ValueError, TypeError) as exc:
+            return error_response("invalid_reference", str(exc), 400)
+        except OSError as exc:
+            return error_response("reference_import_failed", f"Could not import this reference: {exc}", 502)
+
+    @app.post("/api/v1/show/references/video")
+    @_proposals_locked
+    def api_show_reference_video() -> Response:
+        from core import show_references
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        if body.get("project_id") != str(project.folder):
+            return error_response("stale_project", "Reopen the current project", 409)
+        try:
+            return jsonify(show_references.video_reference(project, body)), 201
+        except (ValueError, TypeError) as exc:
+            return error_response("invalid_reference", str(exc), 400)
+
+    @app.post("/api/v1/show/clay/sample")
+    @_proposals_locked
+    def api_show_clay_sample() -> Response:
+        from core.show_clay import place_bundled_sample
+        import sys
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        if body.get("project_id") != str(project.folder):
+            return error_response("stale_project", "Reopen the current project before placing clay", 409)
+        from core import show_scenes
+        scene = next((s for s in show_scenes.load(_scene_files(project))["scenes"] if s["id"] == body.get("scene_id")), None)
+        try:
+            at, end = float(body["at"]), float(body["end"])
+            if not scene or not scene["start"] <= at < end <= scene["end"]:
+                raise ValueError("Choose words inside this scene")
+            _, plan_path = _show_review_files(project)
+            plan = json.loads(plan_path.read_text())
+            root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+            place_bundled_sample(project, plan, at, end, str(body.get("mode") or "bubble"), root)
+            _invalidate_scene(project, scene["id"])
+        except (ValueError, TypeError, KeyError) as exc:
+            return error_response("invalid_clay", str(exc), 400)
+        return jsonify(_clay_state(project))
+
     @app.put("/api/v1/show/clay/placements")
     def api_show_clay_placements() -> Response:
         from core import show_clay
@@ -2303,7 +2395,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             # Drawings with no picture yet are drawn as drafts, shown in the preview, then approved.
             from core import show_drafts
             waiting = [item["id"] for item in stored["proposals"] if item["id"] in scene["effects"] and show_drafts.needs_drawing(item)]
-            started = show_drafts.request(project, waiting, done=_draft_done(project))
+            # What the library already has is offered as the draft instead of being drawn again.
+            started = show_drafts.request(project, waiting, done=_draft_done(project), library=_library_draft(project))
             scene = {**scene, "drafts": len(waiting), "drawing": started}
             from core.show import scene_preview_ready
             if not scene_preview_ready(project, scene_id):
@@ -2339,6 +2432,45 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return jsonify({"status": "ready", "picture": item["params"]["picture"]})
         started = show_drafts.request(project, [proposal_id], again=again, done=_draft_done(project))
         return jsonify({"status": "drawing", "started": bool(started)}), 202
+
+    @app.post("/api/v1/show/review/<proposal_id>/picture")
+    @_proposals_locked
+    def api_show_review_picture(proposal_id: str) -> Response:
+        """Use a picture you already have for this drawing instead of drawing it again (one
+        from a recurring shelf or another project is copied into this project first)."""
+        from core import show_drafts, show_proposals
+        project = _require_project(state)
+        raw = str((request.get_json(silent=True) or {}).get("path") or "")
+        proposals_path, _ = _show_review_files(project)
+        stored = show_proposals.load(proposals_path)
+        item = next((entry for entry in stored["proposals"] if entry["id"] == proposal_id), None)
+        if item is None or item["kind"] != "drawing":
+            return error_response("not_found", "No drawing here", 404)
+        try:
+            chosen = _bring_into_project(project, raw)
+        except KeyError:
+            return error_response("not_found", "That picture is not in your library", 404)
+        except OSError as exc:
+            return error_response("library_error", f"Could not copy it into this project: {exc}", 500)
+        item["params"].update(picture=chosen["path"], picture_sha256=chosen["sha256"], draft=False,
+                              image_engine=f"Your library · {chosen.get('name') or Path(chosen['path']).stem}")
+        item["needs"] = show_proposals.check(item)
+        show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
+        show_drafts.forget(project, proposal_id)
+        _effect_changed(project, proposal_id)
+        return jsonify(item)
+
+    def _library_draft(project: Project) -> Callable[[str], dict[str, Any] | None]:
+        """For a drawing about to be drawn: a picture you already have with that name, if any."""
+        def find(subject: str) -> dict[str, Any] | None:
+            from core import show_library
+            items = [item for item in _show_library_items(project) if item["section"] in ("project", "recurring")]
+            found = show_library.best(items + _other_library_items(project), subject)
+            if found is None:
+                return None
+            chosen = _bring_into_project(project, found["path"])
+            return {"path": chosen["path"], "sha256": chosen["sha256"], "engine": f"Your library · {found['name']}"}
+        return find
 
     @app.post("/api/v1/show/scenes/<scene_id>/preview")
     def api_show_scene_preview(scene_id: str) -> Response:
@@ -2428,28 +2560,29 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         return jsonify(scene)
 
     def _show_library_items(project: Project) -> list[dict[str, Any]]:
-        """Pictures to place: the flyer library and the drawings painted for gags."""
-        from core.gag_library import library_dir
+        """Pictures to place: this project's library (with every drawing you approved), the
+        app's recurring shelves, the flyer library and Einstein's images. The painters' own
+        caches are listed hidden; other projects' libraries are listed apart."""
+        from core import show_library
         items = []
-        roots = [app_home() / "ReelOverlays", project.folder / "assets" / "show-library"]
         try:
-            roots.append(library_dir())
+            recurring = show_library.recurring_root()
         except OSError:
-            pass
-        for root in roots:
-            if not root.is_dir():
-                continue
-            for path in sorted(root.rglob("*")):
-                if path.name == "mask.png" and (path.parent / "character.json").is_file():
-                    continue
-                if path.is_file() and path.suffix.lower() in {".png", ".webp", ".jpg", ".jpeg"}:
-                    name = path.stem
-                    if path.name == "cutout.png" and (path.parent / "character.json").is_file():
-                        try:
-                            name = str(json.loads((path.parent / "character.json").read_text()).get("name") or name) + " · photo character"
-                        except (OSError, ValueError):
-                            pass
-                    items.append({"name": name, "path": str(path.resolve()), "folder": path.parent.name})
+            recurring = None
+        roots = [(app_home() / "ReelOverlays", "recurring"), (project.folder / "assets" / "show-library", "project")]
+        if recurring is not None:
+            roots.append((recurring, "recurring"))
+        for root, section in roots:
+            for path in show_library.pictures(root):
+                character = show_library.is_character(path)
+                name = show_library.character_name(path) + " · photo character" if character else path.stem
+                shelf = "Overlays" if section == "recurring" and root != recurring else None
+                where = section
+                if root == recurring:
+                    shelf = show_library.shelf_of(path, recurring)
+                    where = "recurring" if shelf else "cache"
+                items.append({"name": name, "path": str(path.resolve()), "folder": path.parent.name, "section": where,
+                              "shelf": shelf, "character": character})
         ai_root = project.folder / "assets" / "show-ai"
         if ai_root.is_dir():
             for picture in ai_root.glob("*/image.png"):
@@ -2458,32 +2591,85 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                     if meta.get("status") == "ready":
                         claude = meta.get("provider") == "claude"
                         items.append({"name": meta.get("direction", "Einstein image")[:80], "path": str(picture.resolve()),
-                                      "folder": "Claude drawings" if claude else "ChatGPT images", "engine": meta.get("engine")})
+                                      "folder": "Claude drawings" if claude else "ChatGPT images", "engine": meta.get("engine"),
+                                      "section": "project", "shelf": None, "character": False})
                 except (OSError, ValueError):
                     continue
-        catalog_path = project.folder / "assets" / "show-library" / "catalog.json"
-        try:
-            catalog = json.loads(catalog_path.read_text())
-        except (OSError, ValueError):
-            catalog = {}
+        catalog = show_library.read_catalog(project.folder)
+        approved = show_library.approved_pictures(project.folder)
         # The catalog names its pictures by full path; a project that was moved or copied
         # still finds its own library pictures by their place inside assets/show-library.
         library_root = (project.folder / "assets" / "show-library").resolve()
         by_name = {Path(key).name: meta for key, meta in catalog.items() if Path(key).parent.name == "show-library"}
         for item in items:
             meta = catalog.get(item["path"]) or (by_name.get(Path(item["path"]).name, {}) if Path(item["path"]).parent == library_root else {})
-            local = "Painted" in Path(item["path"]).parts
+            cache = item["section"] == "cache"
             if meta.get("origin"):
                 origin = meta["origin"]
-            elif local:
-                origin = "Local painter"
+            elif cache:
+                origin = "Local painter" if "Painted" in Path(item["path"]).parts else "Claude · not chosen"
             elif item["folder"] in ("ChatGPT images", "Claude drawings"):
                 origin = item.get("engine") or ("ChatGPT" if item["folder"] == "ChatGPT images" else "Claude")
+            elif item["section"] == "recurring":
+                origin = f"Recurring · {item['shelf']}"
             else:
                 origin = "Your library"
-            item.update(origin=origin, retired=bool(meta.get("retired", local)))
+            # A draft stays hidden until approved; what you approved stays; what you hid stays hidden.
+            item.update(origin=origin, retired=not show_library.visible(meta, item["path"], approved, default_hidden=cache),
+                        approved=item["path"] in approved)
             item["name"] = meta.get("name") or item["name"]
+        listed_paths.update((str(project.folder), item["path"]) for item in items)
         return items
+
+    # (project, path) already listed to the page: a thumbnail is served without listing everything again.
+    listed_paths: set[tuple[str, str]] = set()
+
+    def _other_library_items(project: Project) -> list[dict[str, Any]]:
+        """The libraries of the other projects on your shelf, to bring a picture over."""
+        from core import show_library
+        try:
+            shelf = show_library.shelf_projects()
+        except OSError:
+            return []
+        items = show_library.other_projects(shelf, project.folder)
+        listed_paths.update((str(project.folder), item["path"]) for item in items)
+        return items
+
+    def _with_recurring(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Each picture says whether a copy is on a recurring shelf already, and where."""
+        from core import show_library
+        try:
+            shelves = show_library.recurring_hashes(show_library.recurring_root())
+        except OSError:
+            shelves = {}
+        for item in items:
+            if item.get("section") == "recurring":
+                item["recurring"] = item.get("shelf")
+                continue
+            try:
+                item["recurring"] = shelves.get(show_library.sha256(Path(item["path"])))
+            except OSError:
+                item["recurring"] = None
+        return items
+
+    def _library_url(item: dict[str, Any]) -> dict[str, Any]:
+        return {**item, "url": f"/api/v1/show/library/file?path={quote(item['path'])}"}
+
+    def _bring_into_project(project: Project, raw: str) -> dict[str, Any]:
+        """A library picture as one of this project's own: recurring and other projects'
+        pictures are copied in once; this project's are used as they are."""
+        from core import show_library
+        found = next((item for item in _show_library_items(project) if item["path"] == raw), None)
+        if found is None:
+            found = next((item for item in _other_library_items(project) if item["path"] == raw), None)
+        if found is None:
+            raise KeyError(raw)
+        if found["section"] != "project":
+            where = f"from {found['project']}" if found["section"] == "other" else f"Recurring · {found.get('shelf') or 'library'}"
+            kept = show_library.bring_into(project.folder, Path(raw), found["name"], f"{found.get('origin') or 'Your library'} · {where}")
+            found = {**found, "path": str(kept), "section": "project", "retired": False}
+            listed_paths.add((str(project.folder), str(kept)))
+        return {**found, "sha256": show_library.sha256(Path(found["path"]))}
 
     ai_jobs_lock = threading.Lock()
     ai_jobs = set()
@@ -2777,12 +2963,16 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         mask = show_characters.apply_strokes(mask, body.get("strokes") or [])
         if body.get("background"):
             mask = 1.0 - mask
-        key = hashlib.sha1(json.dumps([base_key, body.get("strokes") or [], bool(body.get("background"))]).encode()).hexdigest()[:16]
+        key = hashlib.sha1(json.dumps([base_key, body.get("strokes") or [], bool(body.get("background")), bool(body.get("silhouette"))]).encode()).hexdigest()[:16]
         np.save(folder / f"{key}.npy", mask)
         try:
             picture, crop = show_characters.cutout(photo, mask)
         except ValueError as exc:
             return error_response("bad_request", str(exc), 400)
+        if body.get("silhouette"):
+            original_alpha = picture.getchannel("A")
+            picture.paste((0, 0, 0, 0), (0, 0, picture.width, picture.height))
+            picture.putalpha(original_alpha)
         preview = folder / f"{key}.png"
         picture.save(preview)
         return jsonify({"mask": key, "method": method, "crop": list(crop), "size": list(picture.size),
@@ -2817,6 +3007,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             folder.mkdir(parents=True, exist_ok=True)
             target = folder / f"cutout-{uuid.uuid4().hex}.png"
             picture, crop = show_characters.cutout(photo, mask)
+            if body.get("silhouette"):
+                original_alpha = picture.getchannel("A")
+                picture.paste((0, 0, 0, 0), (0, 0, picture.width, picture.height))
+                picture.putalpha(original_alpha)
             picture.save(target)
             catalog_path = folder / "catalog.json"
             try:
@@ -2824,7 +3018,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             except (OSError, ValueError):
                 catalog = {}
             catalog[str(target)] = {"name": str(body.get("name") or source.get("name") or "Photo cutout"),
-                                    "origin": "Your photo · original pixels", "retired": False,
+                                    "origin": "Your photo · black silhouette" if body.get("silhouette") else "Your photo · original pixels", "retired": False,
                                     "source_photo": str(photo), "crop": list(crop)}
             atomic_write_json(catalog_path, catalog)
             return jsonify({"cutout": str(target), "name": catalog[str(target)]["name"]}), 201
@@ -2842,6 +3036,51 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                                                 root=project.folder / "assets" / "show-library" / "Characters",
                                                 provenance={"video": source.get("video"), "second": source.get("second")})
         return jsonify(next(item for item in _show_characters(project) if item["folder"] == str(folder))), 201
+
+    @app.post("/api/v1/show/characters/prepare-layer")
+    @_proposals_locked
+    def api_show_prepare_pixel_layer() -> Response:
+        """Preserve a chosen picture as a pixel layer; no segmentation or image generation."""
+        import numpy as np
+        from PIL import Image as PILImage
+        from core.project import atomic_write_json
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        if body.get("project_id") != str(project.folder):
+            return error_response("stale_project", "Reopen this project's scene", 409)
+        raw = str(body.get("asset") or body.get("photo") or "")
+        photo = _allowed_photo(project, raw)
+        if photo is None:
+            if raw not in {item["path"] for item in _show_library_items(project)}:
+                return error_response("invalid_layer", "Choose a photo or picture in this project", 400)
+            source = Path(raw)
+            photo_folder = project.folder / "photos"
+            photo_folder.mkdir(parents=True, exist_ok=True)
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            photo = photo_folder / f"layer-{digest}.png"
+            with PILImage.open(source) as picture:
+                picture.convert("RGBA").save(photo)
+            listing = photo_folder / "photos.json"
+            photos = _show_photos(project)
+            if not any(item["photo"] == str(photo) for item in photos):
+                atomic_write_json(listing, photos + [{"name": source.stem, "photo": str(photo), "chosen": "original pixel layer"}])
+        with PILImage.open(photo) as picture:
+            rgba = picture.convert("RGBA")
+        folder = project.cache_dir / "show_cutouts"
+        folder.mkdir(parents=True, exist_ok=True)
+        key = hashlib.sha256(rgba.tobytes() + str(rgba.size).encode()).hexdigest()[:24]
+        mask = np.asarray(rgba.getchannel("A"), dtype=np.float32) / 255
+        np.save(folder / f"{key}.npy", mask)
+        from core import show_characters
+        try:
+            cut, crop = show_characters.cutout(photo, mask)
+        except ValueError as exc:
+            return error_response("invalid_layer", str(exc), 400)
+        preview = folder / f"{key}.png"
+        cut.save(preview)
+        return jsonify(photo={"photo": str(photo), "name": photo.stem, "url": f"/api/v1/show/photo?path={quote(str(photo))}"},
+                       cut={"mask": key, "method": "original-alpha", "crop": list(crop), "size": list(cut.size),
+                            "url": f"/api/v1/show/media?path={quote(str(preview))}"})
 
     @app.post("/api/v1/show/characters/eyes-preview")
     def api_show_character_eyes_preview() -> Response:
@@ -2937,21 +3176,69 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.get("/api/v1/show/library")
     def api_show_library() -> Response:
+        """The library: this project's pictures and the recurring shelves; ``others=1`` adds
+        the other projects' libraries, ``retired=1`` the hidden pictures too."""
+        from core import show_library
         project = _require_project(state)
         items = _show_library_items(project)
-        return jsonify({"items": [{**item, "url": f"/api/v1/show/library/file?path={quote(item['path'])}"} for item in items if request.args.get("retired") == "1" or not item["retired"]],
-                        "retired_count": sum(item["retired"] for item in items)})
+        others = _other_library_items(project) if request.args.get("others") == "1" else []
+        shown = [item for item in items if request.args.get("retired") == "1" or not item["retired"]]
+        return jsonify({"items": [_library_url(item) for item in _with_recurring(shown + others)],
+                        "retired_count": sum(item["retired"] for item in items),
+                        "shelves": list(show_library.SHELVES)})
+
+    @app.get("/api/v1/show/library/suggest")
+    def api_show_library_suggest() -> Response:
+        """Pictures you already have whose names match what a drawing shows (best first)."""
+        from core import show_library
+        project = _require_project(state)
+        subject = str(request.args.get("subject") or "")[:200]
+        items = [item for item in _show_library_items(project) if item["section"] in ("project", "recurring")]
+        found = show_library.suggest(items + _other_library_items(project), subject)
+        return jsonify({"subject": subject, "items": [_library_url(item) for item in found]})
+
+    @app.post("/api/v1/show/library/use")
+    def api_show_library_use() -> Response:
+        """A library picture ready to place in this project (copied in once when it comes
+        from a recurring shelf or another project)."""
+        project = _require_project(state)
+        raw = str((request.get_json(silent=True) or {}).get("path") or "")
+        try:
+            item = _bring_into_project(project, raw)
+        except KeyError:
+            return error_response("not_found", "That picture is not in your library", 404)
+        except OSError as exc:
+            return error_response("library_error", f"Could not copy it into this project: {exc}", 500)
+        return jsonify(_library_url(item))
+
+    @app.post("/api/v1/show/library/recurring")
+    def api_show_library_recurring() -> Response:
+        """Mark a picture as recurring (a copy on one of the app's shelves, there in every
+        project) or take it off its shelf (to the Trash; projects keep their own copies)."""
+        from core import show_library
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        raw = str(body.get("path") or "")
+        known = {item["path"]: item for item in _show_library_items(project) + _other_library_items(project)}
+        if raw not in known:
+            return error_response("not_found", "That picture is not in your library", 404)
+        try:
+            if body.get("recurring", True):
+                kept = show_library.make_recurring(Path(raw), str(body.get("shelf") or ""), str(body.get("name") or known[raw]["name"])[:70])
+                listed_paths.add((str(project.folder), str(kept.resolve())))
+                return jsonify({"path": str(kept.resolve()), "shelf": body.get("shelf"), "recurring": True})
+            if known[raw]["section"] != "recurring" or not known[raw].get("shelf") or known[raw]["shelf"] == "Overlays":
+                return error_response("bad_request", "Only pictures on a recurring shelf can be taken off it", 400)
+            show_library.forget_recurring(Path(raw))
+            return jsonify({"path": raw, "recurring": False})
+        except ValueError as exc:
+            return error_response("bad_request", str(exc), 400)
+        except OSError as exc:
+            return error_response("library_error", str(exc), 500)
 
     def _catalog_picture(project: Project, path: Path, **entry: Any) -> None:
-        catalog_path = project.folder / "assets" / "show-library" / "catalog.json"
-        try:
-            catalog = json.loads(catalog_path.read_text())
-        except (OSError, ValueError):
-            catalog = {}
-        catalog[str(path.resolve())] = {**catalog.get(str(path.resolve()), {}), **entry}
-        temp = catalog_path.with_suffix(".tmp")
-        temp.write_text(json.dumps(catalog, ensure_ascii=False, indent=2))
-        temp.replace(catalog_path)
+        from core import show_library
+        show_library.catalog_set(project.folder, path, **entry)
 
     def _keep_picture(project: Project, payload: bytes, filename: str, *, origin: str, cut_out: bool = False) -> dict[str, Any]:
         """A picture of the person's own, kept in the project's library (an identical one is
@@ -3028,29 +3315,26 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.post("/api/v1/show/library/visibility")
     def api_show_library_visibility() -> Response:
+        """Hide a picture from this project's library, or show it again."""
         project = _require_project(state)
         body = request.get_json(silent=True) or {}
         raw = str(body.get("path") or "")
         if raw not in {item["path"] for item in _show_library_items(project)}:
             return error_response("not_found", "Not in this library", 404)
-        path = project.folder / "assets" / "show-library" / "catalog.json"
-        try:
-            catalog = json.loads(path.read_text())
-        except (OSError, ValueError):
-            catalog = {}
-        catalog.setdefault(raw, {})["retired"] = bool(body.get("retired", True))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temp = path.with_suffix(".tmp")
-        temp.write_text(json.dumps(catalog, ensure_ascii=False, indent=2))
-        temp.replace(path)
-        return jsonify({"path": raw, "retired": catalog[raw]["retired"]})
+        hidden = bool(body.get("retired", True))
+        _catalog_picture(project, Path(raw), retired=hidden, removed=hidden)
+        return jsonify({"path": raw, "retired": hidden})
 
     @app.get("/api/v1/show/library/file")
     def api_show_library_file() -> Response:
         project = _require_project(state)
         raw = str(request.args.get("path") or "")
-        if raw not in {item["path"] for item in _show_library_items(project)}:
-            return error_response("not_found", "Not in the library", 404)
+        if (str(project.folder), raw) not in listed_paths:
+            known = {item["path"] for item in _show_library_items(project)}
+            if raw not in known and raw not in {item["path"] for item in _other_library_items(project)}:
+                return error_response("not_found", "Not in the library", 404)
+        if not Path(raw).is_file():
+            return error_response("not_found", "That picture is no longer there", 404)
         return send_file(raw)
 
     @app.get("/api/v1/show/scenes/decisions")

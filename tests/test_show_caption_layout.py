@@ -84,3 +84,70 @@ assert.equal(clock.unshift(5,[[1,3]]),2);
 assert.equal(clock.unshift(9,[[1,3],[3,2]]),4);
 """
     subprocess.run(['node','-e',program],check=True,capture_output=True,text=True)
+
+
+def test_realistic_edit_uses_identity_without_doodle_instructions(board):
+    p,c,_=board
+    job=show_ai_images.create(p,dict(id='s1',start=0,end=3),dict(direction='Me with long hair',purpose='photo_edit',at=.2,duration=1))
+    assert job['use_face'] and job['purpose']=='photo_edit'
+    prompt=show_ai_images.prompt_for(job)
+    assert 'photorealistically' in prompt and 'long hair' in prompt
+    assert 'five-minute drawing' not in prompt
+    with pytest.raises(ValueError):
+        show_ai_images.create(p,dict(id='s1',start=0,end=3),dict(direction='Long hair',purpose='photo_edit',engine='claude'))
+
+
+def test_clay_sample_is_placed_on_new_words_not_original_recording_clock(board):
+    from core import show_clay, show_bridge
+    p,c,plan=board
+    request=dict(project_id=str(p.folder),scene_id='s1',at=.2,end=1.2,mode='bubble')
+    result=c.post('/api/v1/show/clay/sample',json=request)
+    assert result.status_code==200, result.get_json()
+    placed=result.get_json()['placements'][-1]
+    assert placed['edited'][0][:2]==[.2,1.2]
+    layers,report=show_bridge.studio_layers(p.folder,plan)
+    assert report[-1]['status']=='applied', report
+    import numpy as np
+    frame=np.zeros((180,320,3),dtype=np.uint8)
+    layers.draw(frame,.7)
+    assert frame.max()>0
+    data=show_clay.ClayStore(p.folder).load()
+    assert data['stories'][0]['story']['source_start']==.2
+    assert data['stories'][0]['story']['duration']==pytest.approx(1)
+    assert c.post('/api/v1/show/clay/sample',json={**request,'project_id':'old'}).status_code==409
+    assert c.post('/api/v1/show/clay/sample',json={**request,'end':9}).status_code==400
+
+
+def test_reference_import_keeps_provenance_and_deduplicates_project_images(board,monkeypatch):
+    from core import show_references as refs
+    import io
+    p,c,_=board
+    image=io.BytesIO();Image.new('RGB',(80,100),(80,90,120)).save(image,format='PNG')
+    page={'query':{'pages':{'1':{'title':'File:Portrait.png','imageinfo':[{'url':'https://upload.wikimedia.org/test.png','descriptionurl':'https://commons.wikimedia.org/wiki/File:Portrait.png','mime':'image/png','extmetadata':{'Artist':{'value':'<b>Artist</b>'},'LicenseShortName':{'value':'CC BY 4.0'}}}]}}}}
+    monkeypatch.setattr(refs,'_query',lambda **kw:page)
+    monkeypatch.setattr(refs,'_fetch',lambda *args:image.getvalue())
+    result=c.post('/api/v1/show/references/images',json={'project_id':str(p.folder),'title':'File:Portrait.png'})
+    assert result.status_code==201,result.get_json()
+    data=result.get_json();assert Path(data['path']).is_relative_to(p.folder)
+    assert data['reference']['author']=='Artist' and data['reference']['license']=='CC BY 4.0'
+    assert c.post('/api/v1/show/references/images',json={'project_id':str(p.folder),'title':'File:Portrait.png'}).get_json()['path']==data['path']
+    assert len(json.loads((p.folder/'photos/photos.json').read_text()))==1
+    assert c.post('/api/v1/show/references/images',json={'project_id':'stale','title':'File:Portrait.png'}).status_code==409
+
+
+def test_reference_urls_and_video_intervals_are_validated(board,monkeypatch):
+    from core import show_references as refs
+    p,c,_=board
+    for url in ['http://upload.wikimedia.org/a','https://localhost/a','https://upload.wikimedia.org.evil.test/a','https://u:p@upload.wikimedia.org/a','https://upload.wikimedia.org:8443/a']:
+        with pytest.raises(ValueError):refs._checked(url)
+    body=dict(project_id=str(p.folder),url='https://www.youtube.com/watch?v=example',start=3,end=5,at=.2,scene_id='s1')
+    result=c.post('/api/v1/show/references/video',json=body)
+    assert result.status_code==201 and result.get_json()['status']=='link_only'
+    assert c.post('/api/v1/show/references/video',json={**body,'end':2}).status_code==400
+    assert c.post('/api/v1/show/references/video',json={**body,'url':'https://localhost/video'}).status_code==400
+    assert json.loads((p.artifacts_dir/'show_references.json').read_text())[0]['start']==3
+    import webbrowser
+    opened=[];monkeypatch.setattr(webbrowser,'open',lambda url:opened.append(url) or True)
+    assert c.post('/api/v1/show/references/open',json={'kind':'video','url':body['url']}).status_code==200
+    assert opened==[body['url']]
+    assert c.post('/api/v1/show/references/open',json={'kind':'video','url':'file:///etc/passwd'}).status_code==400

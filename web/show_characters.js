@@ -76,7 +76,7 @@
     const status=$("#showStudioStatus"), preview=$("#showStudioPreview");
     if(status)status.textContent="Cutting out… (the first time can take half a minute)";
     try {
-      const result=await api("/show/characters/cutout",{method:"POST",body:JSON.stringify({photo:owner.photo.photo,box:owner.box,strokes:owner.strokes,background:owner.background})});
+      const result=await api("/show/characters/cutout",{method:"POST",body:JSON.stringify({photo:owner.photo.photo,box:owner.box,strokes:owner.strokes,background:owner.background,silhouette:owner.silhouette})});
       if(state!==owner || owner.cutRequest!==request)return;
       owner.cut=result;
       if(status?.isConnected)status.textContent=`Cut out with ${result.method==='macos-vision'?'macOS subject lifting':'a box (GrabCut)'}. Keep or erase the edge; original pixels stay unchanged.`;
@@ -91,11 +91,12 @@
         <label><input type="radio" name="brush" value="box"> Box (cut inside it)</label>
         <label>Size <input type="range" id="showBrushSize" min="0.005" max="0.08" step="0.005" value="0.02"></label>
         <label><input type="checkbox" id="showKeepBackground" ${state.background ? "checked" : ""}> Keep background instead</label>
-        <button type="button" class="icon-button small" data-studio="undo">Undo</button>
+        <label><input type="checkbox" id="showBlackSilhouette" ${state.silhouette ? "checked" : ""}> Black silhouette (still image)</label><button type="button" class="icon-button small" data-studio="undo">Undo</button>
         <button type="button" class="icon-button small" data-studio="auto">Automatic again</button></div>
       <p id="showStudioStatus" class="show-hint"></p>
       <div class="show-studio-split"><canvas id="showStudioPhoto" class="show-canvas" width="960" height="540"></canvas><div class="show-checker"><img id="showStudioPreview" alt="Cut-out"></div></div>
-      <div class="show-actions"><button type="button" class="icon-button small" data-studio="back1">Another photo</button><button type="button" class="primary icon-button small" data-studio="gallery">Save image to gallery</button><button type="button" class="icon-button small" data-studio="next3">Animate original parts…</button></div>`;
+      <div class="show-actions"><button type="button" class="icon-button small" data-studio="back1">Another photo</button><button type="button" class="primary icon-button small" data-studio="gallery">Save to gallery &amp; place in scene</button><button type="button" class="icon-button small" data-studio="next3">Animate original parts…</button></div>`;
+    $("#showBlackSilhouette").onchange = event => {state.silhouette=event.target.checked;cut();};
     $("#showKeepBackground").onchange = (event) => { state.background = event.target.checked; cut(); };
     state.image = new Image();
     state.image.onload = () => drawPhoto();       // not with the load event as a stroke
@@ -166,6 +167,7 @@
       <div class="show-actions"><button type="button" class="icon-button small" data-studio="back2">Back to the cut-out</button><button type="button" class="primary icon-button small" data-studio="save">Save in the library and place it</button></div>`;
     if(state.editing)$('[data-studio="back2"]').disabled=true;
     state.voices = voices;
+    if(state.initialMode==='eyes')$('[name="rigtool"][value="eyes"]').checked=true;
     if(state.savedVoice)$("#showCharacterVoice").value=String(voices.length-1);
     const canvas = $("#showRigCanvas");
     const image = new Image();
@@ -211,11 +213,35 @@
       eyes: state.eyes || [], mouth: state.mouth || null, pivot: state.pivot || [0.5, 1.0], voice: voice ? [voice.source, voice.start, voice.length] : null }) });
     $("#showCharacterStudio").hidden = true;
     await window.ShowReview.refreshLibrary();
-    if (!state.editing) await window.ShowReview.addToScene(saved.cutout);
+    const tool=document.querySelector('[name=rigtool]:checked')?.value;
+    const placement=state.placement?{...state.placement,action:tool==='mouth'&&state.mouth?'talk':tool==='eyes'&&state.eyes?.length?'look':state.placement.action||'none'}:null;
+    if(placement?.replaceId)await window.ShowReview.rigSaved(saved.cutout,placement);
+    else if (!state.editing) await window.ShowReview.addToScene(saved.cutout,placement);
     showToast(state.editing ? `${saved.name} updated. Render its preview to check the changes.` : `${saved.name} is in the library and in this scene`);
   }
 
-  window.ShowPhotoStudio = {edit: async asset => {
+  window.ShowPhotoStudio = {rigFrame: async(source,second,settings={})=>{
+    const photo=await api('/show/photos',{method:'POST',body:JSON.stringify({source,second,name:'Original parts'})});
+    return ShowPhotoStudio.rigPicture(photo.photo,settings);
+  },rigPicture: async(asset,settings={})=>{
+    if(/[\\/]Characters[\\/][^\\/]+[\\/]cutout\.png$/.test(asset)){await ShowPhotoStudio.edit(asset);state.placement=settings.placement;if(settings.mode==='eyes')document.querySelector('[name=rigtool][value=eyes]').checked=true;return;}
+    const projectId=settings.placement?.projectId||ShowReview.projectId();
+    const result=await api('/show/characters/prepare-layer',{method:'POST',body:JSON.stringify({project_id:projectId,asset})});
+    state={step:3,photo:result.photo,cut:result.cut,eyes:[],mouth:null,pivot:[.5,1],strokes:[],undo:[],initialMode:settings.mode,placement:settings.placement};
+    show(3);
+  },openPhoto: async (photo,settings={})=>{
+    const owner={step:2,strokes:[],undo:[],eyes:[],mouth:null,background:!!settings.background,silhouette:!!settings.silhouette,placement:settings.placement,photo:{...photo,url:'/api/v1/show/photo?path='+encodeURIComponent(photo.photo)}};
+    state=owner;$('#showCharacterStudio').hidden=false;
+    if(settings.head){const result=await api('/show/references/head-box',{method:'POST',body:JSON.stringify({photo:photo.photo})});if(state!==owner)return;owner.box=result.box||[.25,.05,.5,.45];}
+    show(2);
+    if(settings.head)showToast('Check the head outline. Use Box or the keep/erase brushes to correct it before saving.');
+  },openAt: async (source,second,silhouette=false,placement=null) => {
+    const owner={step:1,strokes:[],undo:[],eyes:[],mouth:null,background:false,silhouette,placement};state=owner;
+    $('#showCharacterStudio').hidden=false;$('#showStudioBody').innerHTML='<p role="status">Taking a photo at your selected words…</p>';
+    try {const photo=await api('/show/photos',{method:'POST',body:JSON.stringify({source,second,name:silhouette?'Black silhouette':'Selected words cutout'})});
+      if(state!==owner)return;state.photo={...photo,url:'/api/v1/show/photo?path='+encodeURIComponent(photo.photo)};show(2);
+    } catch(error){if(state===owner)$('#showStudioBody').textContent=error.message;}
+  },edit: async asset => {
     const result=await api('/show/characters/edit?asset='+encodeURIComponent(asset));
     const r=result.record;
     state={step:3,editing:true,folder:r.folder,name:r.name,photo:{...result.photo,url:'/api/v1/show/photo?path='+encodeURIComponent(result.photo.photo)},cut:result.cut,
@@ -241,8 +267,9 @@
       else if (action === "gallery") {
         if (!state.cut || state.cutPending) return;
         target.disabled = true;
-        const saved = await api("/show/characters", {method:"POST",body:JSON.stringify({photo:state.photo.photo,mask:state.cut.mask,gallery_only:true,name:state.photo.name})});
+        const saved = await api("/show/characters", {method:"POST",body:JSON.stringify({photo:state.photo.photo,mask:state.cut.mask,gallery_only:true,silhouette:state.silhouette,name:state.photo.name})});
         await window.ShowReview.refreshLibrary();
+        await window.ShowReview.addToScene(saved.cutout,state.placement);
         $("#showStudioStatus").textContent = `${saved.name} saved in this project’s gallery. You can reuse it in any scene.`;
         target.disabled = false;
       }

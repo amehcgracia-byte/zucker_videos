@@ -88,3 +88,48 @@ def test_saved_eye_regions_reopen_and_reach_the_scene_renderer(tmp_path,monkeypa
     assert client.get('/api/v1/show/characters/edit',query_string={'asset':'/etc/passwd'}).status_code==404
     document={'scenes':[{'decision':'modified','start':0,'end':3,'overlays':[{'asset':saved['cutout'],'action':'look'}]}]}
     assert overlay_items(document)[0]['eyes']==eyes
+
+
+def test_silhouette_gallery_preserves_original_alpha_not_an_opaque_rectangle(tmp_path,monkeypatch):
+    from core.project import create_project
+    from core.show_characters import cutout
+    from server.api import create_app
+    monkeypatch.setenv('ZUCKER_DATA_ROOT',str(tmp_path/'data'))
+    project=create_project('Silhouette',str(tmp_path/'shadow.zuckervid'))
+    photo=project.folder/'photos'/'photo.png';photo.parent.mkdir(exist_ok=True)
+    Image.new('RGB',(40,40),(220,180,70)).save(photo)
+    (photo.parent/'photos.json').write_text(json.dumps([{'photo':str(photo),'name':'Me'}]))
+    mask=np.zeros((40,40),np.float32);mask[8:30,10:28]=1;mask[8,10]=.4
+    cache=project.cache_dir/'show_cutouts';cache.mkdir(parents=True,exist_ok=True);np.save(cache/'abc.npy',mask)
+    expected,_=cutout(photo,mask)
+    client=create_app(str(project.folder)).test_client()
+    response=client.post('/api/v1/show/characters',json={'photo':str(photo),'mask':'abc','gallery_only':True,'silhouette':True})
+    assert response.status_code==201,response.get_json()
+    actual=np.asarray(Image.open(response.get_json()['cutout']).convert('RGBA'))
+    assert actual[:,:,:3].max()==0
+    assert np.array_equal(actual[:,:,3],np.asarray(expected)[:,:,3])
+
+
+def test_any_library_picture_can_be_rigged_without_changing_its_pixels(tmp_path,monkeypatch):
+    from core.project import create_project
+    from server.api import create_app
+    monkeypatch.setenv('ZUCKER_DATA_ROOT',str(tmp_path/'data'))
+    project=create_project('Original parts',str(tmp_path/'parts.zuckervid'))
+    asset=project.folder/'assets/show-library/painting.png';asset.parent.mkdir(parents=True)
+    image=Image.new('RGBA',(80,50),(180,60,90,255));image.save(asset)
+    client=create_app(str(project.folder)).test_client()
+    response=client.post('/api/v1/show/characters/prepare-layer',json={'project_id':str(project.folder),'asset':str(asset)})
+    assert response.status_code==200,response.get_json()
+    result=response.get_json()
+    assert result['cut']['method']=='original-alpha'
+    preview=project.cache_dir/'show_cutouts'/(result['cut']['mask']+'.png')
+    assert Image.open(preview).tobytes()==image.tobytes()
+    eyes=[{'rect':[.2,.2,.2,.3]}]
+    rig=client.post('/api/v1/show/characters',json={'photo':result['photo']['photo'],'mask':result['cut']['mask'],'name':'My painting','eyes':eyes})
+    assert rig.status_code==201,rig.get_json()
+    assert rig.get_json()['eyes']==eyes
+    from core.show_scenes import overlay_items
+    items=overlay_items({'scenes':[{'start':0,'end':2,'decision':'accepted','overlays':[{'asset':rig.get_json()['cutout'],'action':'look','at':0,'duration':2}]}]})
+    assert items[0]['eyes']==eyes
+    assert client.post('/api/v1/show/characters/prepare-layer',json={'project_id':'old','asset':str(asset)}).status_code==409
+    assert client.post('/api/v1/show/characters/prepare-layer',json={'project_id':str(project.folder),'asset':'/etc/passwd'}).status_code==400
