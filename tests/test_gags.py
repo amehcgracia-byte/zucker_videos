@@ -104,17 +104,37 @@ def test_items_with_the_painter_get_painted_characters_with_their_bubble(tmp_pat
     assert Image.open(items[0]["image"]).height > 300   # the bubble sits above the character
 
 
-def test_math_formulas_orbit_the_host_s_face(tmp_path, monkeypatch):
+def test_math_formulas_fill_the_frame_without_rainbow_or_face_orbits(tmp_path, monkeypatch):
+    import numpy as np
+    from core.show_bridge_text import FORMULAS
     monkeypatch.setattr(gag_paint, "can_paint", lambda: False)
-    plan = [{"kind": "math", "at": 10.0, "duration": 4.0}]
-    items, _ = gags.make_items(plan, tmp_path, face_at=lambda t: (0.6, 0.3))
-    assert len(items) == 5 and all(item["path"] for item in items)
+    items, _ = gags.make_items([{"kind": "math", "at": 10.0, "duration": 0.5}], tmp_path,
+                              face_at=lambda t: (0.6, 0.3))
+    assert len(items) == len(FORMULAS) == 16
+    assert all(10 <= item["at"] < item["at"] + item["duration"] <= 10.501 for item in items)
+    assert min(item["path"][0][1] for item in items) < 0.2
+    assert max(item["path"][0][1] for item in items) > 0.8
     for item in items:
-        xs = [x for _, x, _ in item["path"]]
-        ys = [y for _, _, y in item["path"]]
-        assert min(xs) < 0.6 < max(xs) and min(ys) < 0.3 < max(ys)          # around the face
-        assert all(abs(x - 0.6) <= 0.16 and abs(y - 0.3) <= 0.14 for x, y in zip(xs, ys))
-    assert len({item["image"] for item in items}) == 5
+        assert item["effect"] == "none"
+        rgb = np.asarray(Image.open(item["image"]))
+        visible = rgb[rgb[..., 3] > 200, :3].astype(int)
+        assert len(visible) and np.max(np.ptp(visible, axis=1)) == 0
+
+
+def test_reviewed_render_never_generates_a_replacement_for_an_unbound_picture(tmp_path, monkeypatch):
+    monkeypatch.setattr(gag_paint, "can_paint", lambda: True)
+    def forbidden(*a, **kw):
+        raise AssertionError("The render must not start a painter")
+    monkeypatch.setattr(gags, "painted_picture", forbidden)
+    chosen = tmp_path / "approved.png"
+    Image.new("RGBA", (80, 80), (203, 24, 76, 255)).save(chosen)
+    plan = [{"kind": "drawing", "subject": "guitar", "at": 0, "duration": 1, "proposal": "missing"},
+            {"kind": "drawing", "subject": "guitar", "at": 2, "duration": 1, "proposal": "chosen", "picture": str(chosen)}]
+    outcomes = {}
+    items, notes = gags.make_items(plan, tmp_path / "render", allow_generation=False, outcomes=outcomes)
+    assert len(items) == 1 and notes and outcomes["missing"][0] == "failed"
+    assert outcomes["chosen"][0] == "applied"
+    assert Image.open(items[0]["image"]).tobytes() == Image.open(chosen).tobytes()
 
 
 def test_a_drawing_on_a_desk_is_painted_again_one_on_white_is_kept(monkeypatch):

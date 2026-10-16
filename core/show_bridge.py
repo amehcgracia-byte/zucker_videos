@@ -32,7 +32,6 @@ FACE_HEIGHT = 0.38            # the render's default vertical focus (core.show_r
 SECTION_STARTS = {"workshop": 466.0, "opening": 0.0}
 DRAWINGS = ("finger", "spiral", "paint", "math", "coffee")     # what Studio's serious mode hides
 NOT_YET = {
-    "cutout": "Cut-out people and their background are not drawn by the render yet",
     "part": "Moving body parts are not drawn by the render yet",
     "video": "Added videos are not composited by the render yet",
     "audio": "Added music and sounds are not mixed into the render yet",
@@ -373,6 +372,10 @@ def studio_drawers(analysis: Callable[[str], Any], source: Callable[[str], Path 
                         float(masks._or(e.get("opacity"), 1)))
         return picture, f"{path.stem}{', ' + str(len(event['motionKeys'])) + ' keyframes' if event.get('motionKeys') else ''}"
 
+    def cutout(event: dict[str, Any]):
+        from core.show_bridge_cutout import prepare
+        return prepare(event, analysis, source, materials, asset)
+
     def paint(event: dict[str, Any]):
         paths = [path for path in event.get("paths") or [] if path]
         if not paths:
@@ -402,7 +405,7 @@ def studio_drawers(analysis: Callable[[str], Any], source: Callable[[str], Path 
             return letters, f"{what} in {font}"
         return prepare
 
-    return {"finger": finger, "spiral": spiral, "coffee": coffee, "image": image, "paint": paint,
+    return {"cutout": cutout, "finger": finger, "spiral": spiral, "coffee": coffee, "image": image, "paint": paint,
             "math": lettering("math"), "text": lettering("text")}
 
 

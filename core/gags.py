@@ -151,26 +151,38 @@ def _paint_once(target: Path, subject: str, style: str, seed: int, step: Callabl
 
 
 def math_items(gag: dict[str, Any], folder: Path, index: int, centre: tuple[float, float]) -> list[dict[str, Any]]:
-    """Hand-written formulas orbiting the host's head, each on its own phase."""
-    import math
+    """Dense monochrome calculation field, using Studio's actual formula repertoire.
+
+    Keep a clear centre for the host; no rainbow toy glyphs or orbit across the face.
+    Each formula is rasterised once, then moved by the existing compositor.
+    """
+    from PIL import ImageDraw
+    from core.show_bridge_text import FORMULAS, fonts_for, runs
     items = []
-    count = 5
-    for k in range(count):
-        formula = FORMULAS[(index + k) % len(FORMULAS)]
-        # Chalkduster has no "²": those formulas are always in Marker Felt.
-        image = word_sticker(formula, colour=WORD_COLOURS[(index + k) % len(WORD_COLOURS)], font="marker" if "²" in formula else ("chalk", "marker")[k % 2],
-                             font_size=110, tilt=(-8, 6, -4, 9, -6)[k])
+    main, fallback = fonts_for("classic", 76)
+    if main is None:
+        raise RuntimeError("No mathematical lettering font is available")
+    for k, text in enumerate(FORMULAS):
+        pieces = runs(text, main, fallback)
+        widths = [font.getlength(part) for part, font in pieces]
+        ascent, descent = main.getmetrics()
+        image = Image.new("RGBA", (int(sum(widths)) + 16, ascent + descent + 16))
+        draw = ImageDraw.Draw(image)
+        x = 8.0
+        for (part, font), w in zip(pieces, widths):
+            draw.text((x, 8 + ascent), part, font=font, anchor="ls", fill=(255, 255, 255, 235),
+                      stroke_width=1, stroke_fill=(12, 12, 12, 160))
+            x += w
         path = folder / f"gag-{index:03d}-math{k}.png"
         image.save(path)
-        phase = k / count
-        keys = []
-        for step in range(9):
-            share = step / 8
-            angle = 2 * math.pi * (phase + share * 0.75)
-            keys.append([round(share, 3), round(centre[0] + MATH_ORBIT[0] * math.cos(angle), 4),
-                         round(centre[1] + MATH_ORBIT[1] * math.sin(angle), 4)])
-        items.append({"image": str(path), "at": round(gag["at"] + 0.12 * k, 3), "duration": round(gag["duration"] - 0.12 * k, 3),
-                      "width": 0.075 if len(formula) <= 3 else 0.12, "effect": "pop", "path": keys, "kind": "math"})
+        # Top/bottom bands and two outer columns leave the host's centre clear.
+        positions = [(x, y) for y in (0.10, 0.90) for x in (0.14, 0.38, 0.62, 0.86)]
+        positions += [(x, y) for y in (0.27, 0.44, 0.61, 0.76) for x in (0.13, 0.87)]
+        cx, cy = positions[k]
+        delay = min(k * 0.045, float(gag["duration"]) * 0.2)
+        items.append({"image": str(path), "at": round(gag["at"] + delay, 3),
+                      "duration": round(gag["duration"] - delay, 3), "width": min(0.22, image.width / 1280 * 0.5),
+                      "effect": "none", "path": [[0, cx, cy], [1, cx, cy - 0.015]], "kind": "math"})
     return items
 
 
@@ -178,7 +190,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
                progress: Progress | None = None, cancel: Callable[[], None] | None = None,
                frame_size: tuple[int, int] = (1920, 1080),
                face_at: Callable[[float], tuple[float, float] | None] | None = None,
-               outcomes: dict[str, tuple[str, str]] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+               outcomes: dict[str, tuple[str, str]] | None = None, allow_generation: bool = True) -> tuple[list[dict[str, Any]], list[str]]:
     """Render items for core.gag_render, and notes about gags that were skipped.
     ``outcomes`` receives, for each gag from a storyboard proposal, whether it was
     pictured ("applied") or why not ("failed")."""
@@ -223,6 +235,11 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
             if kind == "character" and gag.get("says"):
                 image = character_with_bubble(image, gag["says"], side=side, seed=index)
         elif kind in ("drawing", "character"):
+            if not allow_generation:
+                detail = f'Choose or generate and approve a picture for “{gag["subject"]}” first; no replacement was painted during rendering'
+                result(gag, "failed", detail)
+                notes.append(detail)
+                continue
             if not painter:
                 result(gag, "failed", "The drawing painter is not installed")
                 continue
@@ -245,8 +262,8 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
                 continue
             image = character_with_bubble(picture, gag["says"], side=side, seed=index) if kind == "character" and gag.get("says") else picture
         elif kind == "word":
-            image = word_sticker(gag["text"], colour=WORD_COLOURS[index % len(WORD_COLOURS)], font=WORD_FONTS[index % len(WORD_FONTS)],
-                                 tilt=(-6, 5, -3, 7)[index % 4])
+            image = word_sticker(gag["text"], colour="#fff4d6", font="note", handwritten=True,
+                                 tilt=(-3, 2, -2, 3)[index % 4])
         elif kind == "photo":
             found = search(gag["query"], library or [])
             if found:
@@ -272,7 +289,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
                       "y": round(y if explicit is not None else min(max(y, half_h + 0.01), 1 - half_h - 0.01), 4),
                       "effect": gag.get("effect") or "pop", "kind": kind,
                       **({"strokes": gag["strokes"]} if gag.get("strokes") else {})})
-    if not painter and to_paint:
+    if allow_generation and not painter and to_paint:
         notes.append(f"{to_paint} drawings were skipped: download the drawing painter (2.1 GB, once) to get them.")
     if unusable:
         notes.append(f"Left out, the painter could not draw them on a clean background: {', '.join(unusable)}.")
