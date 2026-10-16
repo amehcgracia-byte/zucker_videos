@@ -99,8 +99,17 @@ def _url(name: str) -> str:
     return f"https://huggingface.co/{MODEL_REPO}/resolve/{MODEL_REVISION}/{name}"
 
 
-def download_model(progress: Callable[[int, int], None] | None = None, cancel: Callable[[], bool] | None = None) -> Path:
-    """Fetch the painter once; every file is checked against its SHA-256."""
+def download_model(progress: Callable[[int, int], None] | None = None, cancel: Callable[[], bool] | None = None,
+                   *, attempts: int = 8, pause: float = 2.0) -> Path:
+    """Fetch the painter once; every file is checked against its SHA-256.
+
+    A dropped connection does not start the 2 GB again: what arrived is kept in a
+    ``.part`` file and the download resumes from there (HTTP range), retrying by
+    itself a few times; pressing Download again later also resumes. Only a file
+    that arrives complete but different is thrown away."""
+    import time
+    import urllib.error
+    from http.client import HTTPException
     folder = model_dir()
     done = 0
     for name, (expected_sha, expected_size) in MODEL_FILES.items():
@@ -110,27 +119,62 @@ def download_model(progress: Callable[[int, int], None] | None = None, cancel: C
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         partial = target.with_name(target.name + ".part")
-        digest = hashlib.sha256()
-        received = 0
-        request = urllib.request.Request(_url(name), headers={"User-Agent": "Zucker-Editor"})
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response, partial.open("wb") as output:
-                while block := response.read(1 << 20):
-                    if cancel and cancel():
-                        raise InterruptedError("Download cancelled")
-                    received += len(block)
-                    if received > expected_size:
-                        raise ValueError(f"{name} is larger than expected")
-                    output.write(block)
-                    digest.update(block)
-                    if progress:
-                        progress(done + received, MODEL_BYTES)
-            if received != expected_size or digest.hexdigest() != expected_sha:
-                raise ValueError(f"{name} failed verification; try the download again")
+        if partial.is_file() and partial.stat().st_size > expected_size:
+            partial.unlink()
+        failures = 0
+        while True:
+            # What already arrived counts: its bytes go into the checksum before the rest.
+            digest = hashlib.sha256()
+            received = 0
+            if partial.is_file():
+                with partial.open("rb") as kept:
+                    for block in iter(lambda: kept.read(1 << 24), b""):
+                        digest.update(block)
+                        received += len(block)
+            if progress:
+                progress(done + received, MODEL_BYTES)
+            if received < expected_size:
+                headers = {"User-Agent": "Zucker-Editor", **({"Range": f"bytes={received}-"} if received else {})}
+                try:
+                    with urllib.request.urlopen(urllib.request.Request(_url(name), headers=headers), timeout=60) as response:
+                        if received and getattr(response, "status", 200) != 206:
+                            # The server sent the whole file again: start this file over.
+                            digest, received = hashlib.sha256(), 0
+                        with partial.open("ab" if received else "wb") as output:
+                            while block := response.read(1 << 20):
+                                if cancel and cancel():
+                                    raise InterruptedError("Download cancelled")
+                                received += len(block)
+                                if received > expected_size:
+                                    raise ValueError(f"{name} is larger than expected")
+                                output.write(block)
+                                digest.update(block)
+                                if progress:
+                                    progress(done + received, MODEL_BYTES)
+                except InterruptedError:
+                    raise
+                except (urllib.error.URLError, HTTPException, TimeoutError, ConnectionError, OSError) as exc:
+                    if isinstance(exc, urllib.error.HTTPError) and exc.code in (403, 404, 410):
+                        raise RuntimeError(f"{name} is not available at {_url(name)} ({exc.code})") from exc
+                    failures += 1
+                    if failures >= attempts:
+                        raise RuntimeError(f"The connection kept dropping ({received / 1e6:.0f} MB of {expected_size / 1e6:.0f} MB of {name} "
+                                           "arrived, and are kept). Press Download again to continue from there.") from exc
+                    time.sleep(pause * min(failures, 5))
+                    continue
+            if received < expected_size:
+                # The connection closed early without an error: carry on from where it stopped.
+                failures += 1
+                if failures >= attempts:
+                    raise RuntimeError(f"The connection kept closing early ({received / 1e6:.0f} MB of {expected_size / 1e6:.0f} MB of {name} "
+                                       "arrived, and are kept). Press Download again to continue from there.")
+                time.sleep(pause * min(failures, 5))
+                continue
+            if digest.hexdigest() != expected_sha:
+                partial.unlink(missing_ok=True)
+                raise ValueError(f"{name} arrived complete but is not the expected file; it was discarded. Try the download again.")
             partial.replace(target)
-        except BaseException:
-            partial.unlink(missing_ok=True)
-            raise
+            break
         done += expected_size
     _verified_marker().write_text(MODEL_REVISION, encoding="utf-8")
     if progress:
