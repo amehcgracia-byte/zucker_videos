@@ -2036,7 +2036,7 @@ pre {
 .show-decide { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .show-decision { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); font-size: 0.85em; }
 .show-library { display: flex; flex-wrap: wrap; gap: 6px; max-height: 220px; overflow: auto; }
-.show-library button { padding: 2px; border: 1px solid var(--line); border-radius: 6px; background: #fff; cursor: pointer; }
+.show-library button { padding: 2px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: #1f2420; cursor: pointer; }
 .show-library img { width: 64px; height: 64px; object-fit: contain; display: block; }
 .show-step-buttons { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin-top: 10px; }
 .show-context-menu { position: fixed; z-index: 50; display: grid; gap: 8px; padding: 10px; width: 300px; background: var(--nav-bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.25); }
@@ -2156,3 +2156,5 @@ pre {
 .show-sticker-picker {margin:8px 0;}
 .show-sticker-picker summary {cursor:pointer;font-weight:600;}
 .show-sticker-picker .show-library {margin-top:8px;}
+.show-sticker-picker .show-library button {font-size:11px;max-width:150px;text-align:center;overflow-wrap:anywhere;}
+.show-sticker-picker .show-library img {margin-inline:auto;}

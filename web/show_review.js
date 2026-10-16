@@ -329,7 +329,10 @@
     selectedEffect=item.id;
     wantEffects.delete(scene.id);wantQuick.add(scene.id);
     $('#showPanel').querySelectorAll('[data-preview-mode]').forEach(button=>button.classList.toggle('active',button.dataset.previewMode==='quick'));
-    playQuick(scene,Math.max(0,Math.min(scene.end-.04,item.at)-scene.start));
+    // A little inside the effect: the source video lands on whole frames, and its first
+    // frame can fall a few milliseconds before the effect begins (it would look absent).
+    const inside=Math.min(.06,Math.max(0,(item.duration||0)/2));
+    playQuick(scene,Math.max(0,Math.min(scene.end-.04,item.at+inside)-scene.start));
     $('#showStageVideo').pause();
     drawOverlays(scene);
     renderTimeline(scene);wordPlacementControls();
