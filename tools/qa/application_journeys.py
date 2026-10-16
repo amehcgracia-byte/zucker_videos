@@ -5,7 +5,7 @@ caption burning and composition use actual UI controls; API reads observe status
 No production stages, scores, synchronization or models are mocked.
 """
 from __future__ import annotations
-import argparse, base64, json, os, platform, shutil, socket, subprocess, sys, time, traceback
+import argparse, json, os, platform, shutil, socket, subprocess, sys, time, traceback
 from pathlib import Path
 from urllib.request import urlopen
 
@@ -85,8 +85,15 @@ def journey(browser, mode, media, output, *, real_media=False):
         if mode in {'youtube','reel'}: files.append(media/'master.wav')
         if mode=='360': files=[media/'sphere-360.mp4',media/'master.wav']
         if mode=='backstage': files=[media/'interview.mp4']
-        payload=[{'name':f.name,'data':base64.b64encode(f.read_bytes()).decode()} for f in files]
-        page.evaluate('''files=>{const d=new DataTransfer();for(const f of files){const bytes=Uint8Array.from(atob(f.data),c=>c.charCodeAt(0));d.items.add(new File([bytes],f.name));}document.querySelector('#dropZone').dispatchEvent(new DragEvent('drop',{bubbles:true,dataTransfer:d}));}''',payload)
+        # Let Chromium hold file-backed Files. Serialising hundreds of MB as
+        # base64 through evaluate/CDP crashes the renderer before the app sees
+        # the drop. Keep the production drop/import handler unchanged.
+        page.evaluate('''() => {const input=document.createElement('input'); input.type='file';
+            input.multiple=true; input.id='qaMediaInput'; input.hidden=true; document.body.append(input);}''')
+        page.locator('#qaMediaInput').set_input_files([str(f) for f in files])
+        page.evaluate('''() => {const input=document.querySelector('#qaMediaInput'); const d=new DataTransfer();
+            for(const file of input.files) d.items.add(file);
+            document.querySelector('#dropZone').dispatchEvent(new DragEvent('drop',{bubbles:true,dataTransfer:d})); input.remove();}''')
         page.wait_for_function('pendingImports === 0 && detected.videos.length > 0')
         capture('01-imported')
         page.locator('#confirmFiles').click()
