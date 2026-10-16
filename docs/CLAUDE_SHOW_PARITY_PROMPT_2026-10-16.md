@@ -1,5 +1,16 @@
 # Prompt de traspaso para Claude
 
+> **Decisión posterior del usuario:** conservar las previsualizaciones automáticas y usar borrador real → revisión → aprobación para dibujos. Esta decisión sustituye las indicaciones anteriores de desactivar todo preview automático. El historial inferior explica el diagnóstico, no debe revertir esta elección.
+
+## Contrato vigente de integración
+
+- Se permiten previews automáticos al abrir escenas y después de editar. Reutilizar cachés y agrupar cambios rápidos; no lanzar jobs duplicados para la misma receta. Las imágenes elegidas siguen respondiendo en vivo mientras se prepara un preview más completo.
+- Generar un borrador es una operación distinta de aprobar o exportar. Mostrar el PNG real antes de aprobar, guardar el resultado en el proyecto y enlazarlo explícitamente. Preview/final usan ese recurso y no generan sustituciones.
+- `allow_generation=False` debe bloquear tanto el pool de tareas como las ramas de generación. Se ha comprobado en los cambios locales en curso de Claude que la creación del pool ya incluye ese guard; aún no se afirma que su flujo completo de borradores esté terminado o validado.
+- Conservar nuestros cambios de fórmulas, palabras manuscritas y exportación de recortes, junto con las mejoras de Claude que superen sus pruebas.
+- Las cifras comunicadas por Claude (20:26 total; 9:18 preparación, 2:42 previews, 8:26 render) corresponden a su recorrido nuevo con 13 dibujos, frente a 48 antes. No son una comparación de rendimiento con la misma receta congelada; no equivalen por sí solas a cinco veces menos tiempo para el mismo montaje. Revisar también el exceso de énfasis: 55 palabras frente a 16 antes.
+
+
 Continúa desde la rama `codex/show-preview-parity`, basada en tu commit `77271072`, no desde una reconstrucción antigua de la maqueta. Lee `docs/SHOW_RENDER_PARITY_2026-10-16.md` y `docs/CLAUDE_HANDOFF_SHOW_CURRENT_2026-10-16.md`. Integra el commit de esta revisión sin sobrescribir las decisiones ni los materiales privados del proyecto.
 
 El usuario pide una sola aplicación coherente. No todo debe parecer un dibujo animado: dibujos torpes y manuales para algunas bromas, fórmulas serias y abundantes para pensar, fotografías originales para personajes recortados. No vuelvas a generar dibujos en Hugging Face/DreamShaper durante el render para suplir imágenes no enlazadas. Adjunta el PNG realmente elegido a `params.picture`, conserva su hash y verifica que preview y export usan el mismo archivo. No proclames canónica una guitarra solo por su nombre ni una imagen solo por estar en una carpeta llamada approved.
