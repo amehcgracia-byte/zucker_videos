@@ -47,3 +47,15 @@ Video references: open a query or selected YouTube/Vimeo link in the OS default 
 External video generation: prepare/copy a shot prompt locally; NO connected video provider and no claims of free quota, automatic face replacement or generated footage. Wan2.2-Animate is a candidate to evaluate on a suitable GPU, not installed here. OpenAI's current deprecation page records Videos API/Sora shutdown on 2026-09-24. Sources: https://github.com/Wan-Video/Wan2.2 and https://developers.openai.com/api/docs/deprecations .
 
 Browser verification in an isolated project: real Bill Gates search produced 12 loaded photo thumbnails and the five import choices; selected a 2023 portrait (CC BY 4.0) and opened its head-mask editor. The actual image and mask stay local; no personal clips were added to Git. Reference import/deduplication/provenance/host validation and video link interval tests pass (19 caption/library/pixel tests, 33.11 s). No real actor face-swap or new video generation was tested.
+
+## Follow-up: library access and original pixel parts
+
+Reviewed and fast-forwarded Claude's `fa63ba9c` (the selected-words Library picker) before changing anything. Preserve that picker, cross-project search and chosen-word placement. The inspected checkout has no newer committed Hugging Face/Wan connector; this does not rule out external tests or work elsewhere.
+
+Selected words and Add now expose Move original eyes, Animate original mouth, and Move original part (sideways). Close-up/character/picture cards have a direct original-parts button. The layer context menu opens the same rig editor for ordinary pictures, not only previously rigged Characters. Its API preserves the exact RGBA pixels and alpha; it never generates replacement eyes. Saving selects Look or Talk from the tool used and replaces an existing layer instead of adding an accidental duplicate. New full-frame layers retain the original frame position; selected-word timing is retained.
+
+This is a still-photo pixel-patch workflow: mark the actual eye(s) or jaw, then move those pixels. Sideways parts use the same patch mechanism. It does not automatically track eyes on moving video, provide arbitrary deformation, or connect Wan. Existing voice recording/import remains available.
+
+Browser evidence (isolated four-second Original Parts Lab): Add → Move original eyes extracted a source frame, opened the Eyes tool, accepted a marked region, saved a character and placed a timeline clip. Right-click clip → Edit this effect showed Edit original eyes / mouth, Talk, and Look left and right. This uncovered an actual ReferenceError on opening Scene Editor (`seekTo` was local to another function); the first-caption seek now uses the existing playback functions directly. Screenshot: local `/tmp/show-original-parts-ui.png` (not committed, contains user footage).
+
+Targeted pixel/library/character suite: 19 passed in 126.95 s. The prior PR35 CI on 926951ee is NOT green: 27 failed / 1001 passed, including 360, app selftest, captions isolation and wizard adoption. These are recorded separately from this new workflow; do not describe the entire application as passing or silently skip them.

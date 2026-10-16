@@ -3037,6 +3037,51 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                                                 provenance={"video": source.get("video"), "second": source.get("second")})
         return jsonify(next(item for item in _show_characters(project) if item["folder"] == str(folder))), 201
 
+    @app.post("/api/v1/show/characters/prepare-layer")
+    @_proposals_locked
+    def api_show_prepare_pixel_layer() -> Response:
+        """Preserve a chosen picture as a pixel layer; no segmentation or image generation."""
+        import numpy as np
+        from PIL import Image as PILImage
+        from core.project import atomic_write_json
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        if body.get("project_id") != str(project.folder):
+            return error_response("stale_project", "Reopen this project's scene", 409)
+        raw = str(body.get("asset") or body.get("photo") or "")
+        photo = _allowed_photo(project, raw)
+        if photo is None:
+            if raw not in {item["path"] for item in _show_library_items(project)}:
+                return error_response("invalid_layer", "Choose a photo or picture in this project", 400)
+            source = Path(raw)
+            photo_folder = project.folder / "photos"
+            photo_folder.mkdir(parents=True, exist_ok=True)
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            photo = photo_folder / f"layer-{digest}.png"
+            with PILImage.open(source) as picture:
+                picture.convert("RGBA").save(photo)
+            listing = photo_folder / "photos.json"
+            photos = _show_photos(project)
+            if not any(item["photo"] == str(photo) for item in photos):
+                atomic_write_json(listing, photos + [{"name": source.stem, "photo": str(photo), "chosen": "original pixel layer"}])
+        with PILImage.open(photo) as picture:
+            rgba = picture.convert("RGBA")
+        folder = project.cache_dir / "show_cutouts"
+        folder.mkdir(parents=True, exist_ok=True)
+        key = hashlib.sha256(rgba.tobytes() + str(rgba.size).encode()).hexdigest()[:24]
+        mask = np.asarray(rgba.getchannel("A"), dtype=np.float32) / 255
+        np.save(folder / f"{key}.npy", mask)
+        from core import show_characters
+        try:
+            cut, crop = show_characters.cutout(photo, mask)
+        except ValueError as exc:
+            return error_response("invalid_layer", str(exc), 400)
+        preview = folder / f"{key}.png"
+        cut.save(preview)
+        return jsonify(photo={"photo": str(photo), "name": photo.stem, "url": f"/api/v1/show/photo?path={quote(str(photo))}"},
+                       cut={"mask": key, "method": "original-alpha", "crop": list(crop), "size": list(cut.size),
+                            "url": f"/api/v1/show/media?path={quote(str(preview))}"})
+
     @app.post("/api/v1/show/characters/eyes-preview")
     def api_show_character_eyes_preview() -> Response:
         import uuid

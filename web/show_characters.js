@@ -167,6 +167,7 @@
       <div class="show-actions"><button type="button" class="icon-button small" data-studio="back2">Back to the cut-out</button><button type="button" class="primary icon-button small" data-studio="save">Save in the library and place it</button></div>`;
     if(state.editing)$('[data-studio="back2"]').disabled=true;
     state.voices = voices;
+    if(state.initialMode==='eyes')$('[name="rigtool"][value="eyes"]').checked=true;
     if(state.savedVoice)$("#showCharacterVoice").value=String(voices.length-1);
     const canvas = $("#showRigCanvas");
     const image = new Image();
@@ -212,11 +213,23 @@
       eyes: state.eyes || [], mouth: state.mouth || null, pivot: state.pivot || [0.5, 1.0], voice: voice ? [voice.source, voice.start, voice.length] : null }) });
     $("#showCharacterStudio").hidden = true;
     await window.ShowReview.refreshLibrary();
-    if (!state.editing) await window.ShowReview.addToScene(saved.cutout,state.placement);
+    const tool=document.querySelector('[name=rigtool]:checked')?.value;
+    const placement=state.placement?{...state.placement,action:tool==='mouth'&&state.mouth?'talk':tool==='eyes'&&state.eyes?.length?'look':state.placement.action||'none'}:null;
+    if(placement?.replaceId)await window.ShowReview.rigSaved(saved.cutout,placement);
+    else if (!state.editing) await window.ShowReview.addToScene(saved.cutout,placement);
     showToast(state.editing ? `${saved.name} updated. Render its preview to check the changes.` : `${saved.name} is in the library and in this scene`);
   }
 
-  window.ShowPhotoStudio = {openPhoto: async (photo,settings={})=>{
+  window.ShowPhotoStudio = {rigFrame: async(source,second,settings={})=>{
+    const photo=await api('/show/photos',{method:'POST',body:JSON.stringify({source,second,name:'Original parts'})});
+    return ShowPhotoStudio.rigPicture(photo.photo,settings);
+  },rigPicture: async(asset,settings={})=>{
+    if(/[\\/]Characters[\\/][^\\/]+[\\/]cutout\.png$/.test(asset)){await ShowPhotoStudio.edit(asset);state.placement=settings.placement;if(settings.mode==='eyes')document.querySelector('[name=rigtool][value=eyes]').checked=true;return;}
+    const projectId=settings.placement?.projectId||ShowReview.projectId();
+    const result=await api('/show/characters/prepare-layer',{method:'POST',body:JSON.stringify({project_id:projectId,asset})});
+    state={step:3,photo:result.photo,cut:result.cut,eyes:[],mouth:null,pivot:[.5,1],strokes:[],undo:[],initialMode:settings.mode,placement:settings.placement};
+    show(3);
+  },openPhoto: async (photo,settings={})=>{
     const owner={step:2,strokes:[],undo:[],eyes:[],mouth:null,background:!!settings.background,silhouette:!!settings.silhouette,placement:settings.placement,photo:{...photo,url:'/api/v1/show/photo?path='+encodeURIComponent(photo.photo)}};
     state=owner;$('#showCharacterStudio').hidden=false;
     if(settings.head){const result=await api('/show/references/head-box',{method:'POST',body:JSON.stringify({photo:photo.photo})});if(state!==owner)return;owner.box=result.box||[.25,.05,.5,.45];}
