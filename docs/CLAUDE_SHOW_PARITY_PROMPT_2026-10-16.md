@@ -1,5 +1,16 @@
 # Prompt de traspaso para Claude
 
+> **Decisión posterior del usuario:** conservar las previsualizaciones automáticas y usar borrador real → revisión → aprobación para dibujos. Esta decisión sustituye las indicaciones anteriores de desactivar todo preview automático. El historial inferior explica el diagnóstico, no debe revertir esta elección.
+
+## Contrato vigente de integración
+
+- Se permiten previews automáticos al abrir escenas y después de editar. Reutilizar cachés y agrupar cambios rápidos; no lanzar jobs duplicados para la misma receta. Las imágenes elegidas siguen respondiendo en vivo mientras se prepara un preview más completo.
+- Generar un borrador es una operación distinta de aprobar o exportar. Mostrar el PNG real antes de aprobar, guardar el resultado en el proyecto y enlazarlo explícitamente. Preview/final usan ese recurso y no generan sustituciones.
+- `allow_generation=False` debe bloquear tanto el pool de tareas como las ramas de generación. Se ha comprobado en los cambios locales en curso de Claude que la creación del pool ya incluye ese guard; aún no se afirma que su flujo completo de borradores esté terminado o validado.
+- Conservar nuestros cambios de fórmulas, palabras manuscritas y exportación de recortes, junto con las mejoras de Claude que superen sus pruebas.
+- Las cifras comunicadas por Claude (20:26 total; 9:18 preparación, 2:42 previews, 8:26 render) corresponden a su recorrido nuevo con 13 dibujos, frente a 48 antes. No son una comparación de rendimiento con la misma receta congelada; no equivalen por sí solas a cinco veces menos tiempo para el mismo montaje. Revisar también el exceso de énfasis: 55 palabras frente a 16 antes.
+
+
 Continúa desde la rama `codex/show-preview-parity`, basada en tu commit `77271072`, no desde una reconstrucción antigua de la maqueta. Lee `docs/SHOW_RENDER_PARITY_2026-10-16.md` y `docs/CLAUDE_HANDOFF_SHOW_CURRENT_2026-10-16.md`. Integra el commit de esta revisión sin sobrescribir las decisiones ni los materiales privados del proyecto.
 
 El usuario pide una sola aplicación coherente. No todo debe parecer un dibujo animado: dibujos torpes y manuales para algunas bromas, fórmulas serias y abundantes para pensar, fotografías originales para personajes recortados. No vuelvas a generar dibujos en Hugging Face/DreamShaper durante el render para suplir imágenes no enlazadas. Adjunta el PNG realmente elegido a `params.picture`, conserva su hash y verifica que preview y export usan el mismo archivo. No proclames canónica una guitarra solo por su nombre ni una imagen solo por estar en una carpeta llamada approved.
@@ -26,3 +37,7 @@ La rama local `claude/show-app-build` avanzó a `dc285d2e` después de nuestra b
 - «Cinco veces más rápido» no está verificado por esta revisión: el commit describe una medición anterior de 1 h 55 min, pero necesitamos el render comparable después, calidad visual y fase por fase para validar esa mejora.
 
 La revisión de dc285d2e ha sido estática, no una ejecución del nuevo motor ni una medición de su rendimiento. No se ha alterado el checkout activo de Claude ni la app instalada.
+
+## Captions: integración posterior sobre 3e943193
+
+Lee `docs/SHOW_LIVE_CAPTIONS_2026-10-16.md`: añade captions visibles/editables, una fila de localización en la línea de tiempo y generación de lettering original por frase. Se conserva la decisión de previews automáticos. No sobrescribas tu biblioteca nueva al integrar los cambios de archivos compartidos. El texto blanco es una vista provisional; solo un PNG generado y revisado es lettering original.

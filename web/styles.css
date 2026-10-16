@@ -2186,3 +2186,20 @@ body:has(#showReviewBox.show-fit) #backdropLogo {max-height:calc(100vh - 130px);
 @media(max-width:760px){.show-submenu>div{position:static;width:auto}}
 
 .show-menu-left .show-submenu>div{left:auto;right:calc(100% - 4px)}
+
+/* Editable text layers stay above scene MP4 previews; never baked on every drag. */
+.show-live-caption {position:absolute;transform:translate(-50%,-50%);pointer-events:auto;cursor:grab;touch-action:none;z-index:7;max-width:96%;text-align:center;outline:1px dashed #ffdc77;}
+.show-live-caption[hidden]{display:none;}
+.show-live-caption [data-caption-text]{color:white;font-family:Arial,sans-serif;line-height:1.1;text-shadow:1px 1px 2px black,-1px -1px 2px black;white-space:pre-wrap;}
+.show-live-caption button {display:none;position:absolute;top:100%;left:50%;transform:translateX(-50%);font-size:12px;white-space:nowrap;}
+.show-live-caption:hover button,.show-live-caption:focus-within button{display:block;}
+.show-live-caption .picture-corner{display:block;}
+.show-word-live-text{display:block;font-family:cursive;font-size:clamp(18px,3vw,64px);line-height:1.1;color:#fff4d6;text-shadow:1px 1px 2px black;overflow-wrap:anywhere;}
+
+.show-picture-placement{container-type:inline-size;}
+.show-word-live-text{font-size:18cqw;}
+
+.show-caption-track{height:24px;position:relative;}
+.show-caption-time{position:absolute;top:1px;height:22px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:2px 5px;font-size:10px;background:#4b4566;color:white;border:1px solid #9388bc;cursor:pointer;}
+
+.show-live-caption{width:max-content;}

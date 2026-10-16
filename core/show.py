@@ -201,7 +201,13 @@ def _publish(project, plan: dict[str, Any], destination: Path, *, style_name: st
     (with the result of every Show Studio effect)."""
     from core.show_inserts import shift
     spans = spans or []
-    cues = edited_captions(plan, style_name)
+    from core import show_caption_layout
+    cues = show_caption_layout.apply(edited_captions(plan, style_name), show_caption_layout.load(project))
+    proposal_path = project.artifacts_dir / 'show_proposals.json'
+    if proposal_path.is_file():
+        from core.show_proposals import load as load_proposals
+        applied_ids = {e['id'] for e in effects or [] if e.get('status') == 'applied'}
+        cues = show_caption_layout.without_artwork(cues, load_proposals(proposal_path)['proposals'], applied_ids)
     if spans:
         for cue in cues:
             cue["start"], cue["end"] = round(shift(cue["start"], spans), 3), round(shift(cue["end"] - 1e-3, spans) + 1e-3, 3)
@@ -586,7 +592,7 @@ def _scene_preview_inputs(project, scene_id: str, width: int, height: int, only_
     from core.gags import drawing_engine
     local_art_recipe = [drawing_engine(), gag_paint.NEGATIVE, {key: vars(style) for key, style in gag_paint.STYLES.items()}] if any(
         item["kind"] == "drawing" and not item["params"].get("picture") for item in live) else None
-    signature = hashlib.sha1(json.dumps(["scene-preview-v4-approved-assets", live, overlays, start, end, width, height, studio_fingerprint(project.folder),
+    signature = hashlib.sha1(json.dumps(["scene-preview-v5-caption-clock", live, overlays, start, end, width, height, studio_fingerprint(project.folder),
                                          local_art_recipe], sort_keys=True, default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     return plan, live, overlays, start, end, folder, left_out, folder / f"{scene_id}-{signature}.mp4"
@@ -672,6 +678,6 @@ def preview_scene(project, scene_id: str, *, width: int | None = None, height: i
     else:
         shutil.copyfile(cut, output)
     _lay_jingles(output, jingles, spans, ffmpeg)
-    completed.with_suffix(".json").write_text(json.dumps({"left_out": left_out}, ensure_ascii=False), encoding="utf-8")
+    completed.with_suffix(".json").write_text(json.dumps({"left_out": left_out, "inserted": spans}, ensure_ascii=False), encoding="utf-8")
     output.replace(completed)
     return completed

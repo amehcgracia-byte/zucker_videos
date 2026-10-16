@@ -114,6 +114,8 @@ def check(item: dict[str, Any]) -> list[str]:
     """What still stops a proposal from being approved."""
     params = item["params"]
     needs = []
+    if item['kind'] == 'word' and params.get('lettering_text') and (not params.get('picture') or params.get('text') != params['lettering_text']):
+        needs.append('regenerate lettering for the changed text')
     if item["kind"] == "character":
         if not params.get("region"):
             needs.append("region")

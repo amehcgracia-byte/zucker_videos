@@ -35,7 +35,7 @@
     const p = item.params;
     if (item.kind === "cutaway") return p.thumb ? media(p.thumb) : still(p.source, p.source_start);
     if (item.kind === "character") return still(p.source, p.still_time);
-    if (item.kind === "drawing" && p.picture) return `/api/v1/show/library/file?path=${encodeURIComponent(p.picture)}`;
+    if (["drawing", "word"].includes(item.kind) && p.picture) return `/api/v1/show/library/file?path=${encodeURIComponent(p.picture)}`;
     return `/api/v1/show/frame?t=${encodeURIComponent(item.at)}`;
   }
 
@@ -390,12 +390,14 @@
     const layer=$('#showStageLayer');
     layer.querySelectorAll('.show-picture-placement').forEach(element=>element.remove());
     if(!quick || quick.saved)return;
-    for(const item of sceneEffects(scene).filter(item=>item.kind==='drawing' && item.params.picture && item.status!=='discarded')) {
+    for(const item of sceneEffects(scene).filter(item=>['drawing','word'].includes(item.kind) && item.status!=='discarded')) {
       const p=item.params,pos=drawingPosition(item);
       const element=document.createElement('div');element.className='show-picture-placement';element.dataset.liveEffect=item.id;
       element.classList.toggle('selected',item.id===selectedEffect);
       element.style.cssText=`left:${pos[0]*100}%;top:${pos[1]*100}%;width:${(p.size||.25)*100}%`;
-      element.innerHTML=`<img src="${picture(item)}" draggable="false" alt="${escape(p.subject||'Drawing')}"><span class="picture-corner" title="Drag to resize"></span>`;
+      element.innerHTML=p.picture?`<img src="${picture(item)}" draggable="false" alt="${escape(p.subject||p.text||'Drawing')}"><span class="picture-corner" title="Drag to resize"></span>`
+        :item.kind==='word'?`<span class="show-word-live-text">${escape(p.text)}</span><span class="picture-corner" title="Drag to resize"></span>`:'';
+      if(!element.innerHTML)continue;
       layer.append(element);
       element.onpointerdown=event=>{
         event.preventDefault();event.stopPropagation();element.setPointerCapture(event.pointerId);
@@ -424,9 +426,11 @@
     const scene=currentScene(),video=$('#showStageVideo');if(!scene)return 0;
     if(quick?.scene.id===scene.id){
       if(quick.pending!=null)return quick.pending;
+      if(quick.effects)return scene.start+ShowCaptionClock.unshift(video.currentTime,scene.preview?.inserted||[]);
       return ShowClock.editedAt(scene,quick.segments,video.currentTime,quick.index,quick.pending);
     }
-    return previewOrigin+video.currentTime;
+    const rendered=scene.preview?.url && video.getAttribute('src')===scene.preview.url;
+    return previewOrigin+(rendered?ShowCaptionClock.unshift(video.currentTime,scene.preview.inserted||[]):video.currentTime);
   }
   function syncPlayback() {
     const scene=currentScene();if(!scene)return;
@@ -443,6 +447,9 @@
       const start=item?.at??scene.start,end=start+(item?.duration??scene.end-scene.start);
       element.hidden=!quick || quick.saved || at<start || at>=end;
     });
+    window.ShowLiveCaptions?.sync({scene,at,video:$('#showStageVideo'),projectId:review.project_id,revision:review.caption_revision,
+      saved:!!quick?.saved&&!quick?.effects,
+      replaced:sceneEffects(scene).filter(item=>item.kind==='word'&&item.status!=='discarded'&&item.params.picture&&ShowClock.visible(item,at)).map(item=>item.params.replaces_caption)});
     const input=box?.querySelector('[data-timeline-seek]');
     if(input){input.value=at;box.querySelector('[data-playhead-label]').textContent=clock(at);box.style.setProperty('--playhead',`${Math.max(0,Math.min(100,100*(at-scene.start)/(scene.end-scene.start)))}%`);}
   }
@@ -461,6 +468,7 @@
       ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
       <div class="show-time-row"><span>Video</span><div class="show-time-source" data-scene-seek>Original video · your cut</div></div>
       <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
+      <div class="show-time-row"><span>Speech captions</span><div class="show-time-track show-caption-track">${(scene.captions||[]).map(cue=>`<button type="button" class="show-caption-time" data-caption-at="${Math.max(scene.start,cue.start)}" style="left:${pct(Math.max(scene.start,cue.start))}%;width:${Math.max(.2,pct(Math.min(scene.end,cue.end))-pct(Math.max(scene.start,cue.start)))}%" title="${escape(cue.lines.join(' '))} · click to edit on the video">${escape(cue.lines.join(' '))}</button>`).join('')}</div></div>
       ${rows.map(item=>{
         const a=Math.max(scene.start,item.at),b=Math.min(scene.end,item.at+item.duration),outside=b<=a;
         const name=item.params.subject||item.params.text||KIND_LABELS[item.kind]||item.kind;
@@ -472,6 +480,11 @@
       playQuick(scene,Math.max(0,Math.min(duration-.04,time-scene.start)));
       syncPlayback();
     };
+    box.querySelectorAll('[data-caption-at]').forEach(button=>button.onclick=()=>{
+      wantEffects.delete(scene.id);wantQuick.add(scene.id);
+      playQuick(scene,Math.max(0,Number(button.dataset.captionAt)-scene.start+.02));$('#showStageVideo').pause();
+      syncPlayback();
+    });
     box.querySelector('[data-timeline-seek]').oninput=event=>seekTo(Number(event.target.value));
     box.onpointerdown=event=>{
       const clip=event.target.closest('[data-time-clip]');if(!clip)return;
@@ -631,7 +644,7 @@
     // In the saved render the scene sits later by what was inserted before it (title card, intro, characters).
     const later = (t) => (review.saved_render?.inserted || []).reduce((sum, [at, length]) => sum + (at <= t ? length : 0), 0);
     const segments = saved ? [[scene.start + later(scene.start), scene.end + later(scene.start)]]
-      : effects ? [[0, scene.end - scene.start]] : (scene.segments || []);
+      : effects ? [[0, scene.end - scene.start+(scene.preview.inserted||[]).reduce((n,[a,d])=>n+d,0)]] : (scene.segments || []);
     const source = saved ? review.saved_render.url : effects ? scene.preview.url : review.source_url;
     if (!source || !segments.length) return false;
     const video = $("#showStageVideo");
@@ -646,8 +659,8 @@
     if(!transport){transport=document.createElement('div');transport.id='showSceneTransport';transport.className='show-scene-transport';transport.innerHTML='<button type="button" data-scene-play>Play scene</button><output data-scene-clock></output>';$('#showStageStatus').after(transport);transport.querySelector('button').onclick=()=>playScene();}
     transport.hidden=false;
     editorEffectsLabel();
-    const seek = (index, offset = 0) => { if(quick!==session)return;quick.index = index;quick.pending=scene.start+segments.slice(0,index).reduce((sum,[a,b])=>sum+b-a,0)+offset;video.currentTime = segments[index][0] + offset;syncPlayback(); };
-    const start = () => { if (quick===session) { const [index, offset] = sourceAt(segments, from); seek(index, offset); } };
+    const seek = (index, offset = 0) => { if(quick!==session)return;quick.index = index;quick.pending=scene.start+(effects?ShowCaptionClock.unshift(offset,scene.preview.inserted||[]):segments.slice(0,index).reduce((sum,[a,b])=>sum+b-a,0)+offset);video.currentTime = segments[index][0] + offset;syncPlayback(); };
+    const start = () => { if (quick===session) { const [index, offset] = sourceAt(segments, effects?ShowCaptionClock.shift(from,scene.preview.inserted||[]):from); seek(index, offset); } };
     if (video.readyState >= 1) start(); else video.addEventListener("loadedmetadata", start, { once: true });
     const tick = () => {
       if (!quick) return;
@@ -1298,7 +1311,7 @@
           <p class="show-reason">${escape(item.reason)}</p>${item.kind === "drawing" ? `<p class="show-hint">Image source: ${escape(item.params.picture ? (item.params.image_engine || "Your library") : "No picture selected")}</p>` : ""}${draft}${needs}${outside?'<p class="show-needs">Outside this scene. Choose words to bring this effect back.</p>':''}
           <div class="show-actions">
             ${drawable ? `<button type="button" class="icon-button small" data-draw-it="${item.id}" ${drawing ? "disabled" : ""} ${item.params.picture ? 'data-again="1"' : ""}>${drawing ? "Drawing…" : item.params.picture ? "Draw another" : "Draw it"}</button>` : ""}
-            ${item.kind === "drawing" ? `<button type="button" class="icon-button small" data-ai-edit="${item.id}">AI · change image…</button>` : ""}
+            ${["drawing","word"].includes(item.kind) ? `<button type="button" class="icon-button small" data-ai-edit="${item.id}">${item.kind==='word'?'Draw lettering…':'AI · change image…'}</button>` : ""}
             <button type="button" class="icon-button small" data-place-words="${item.id}">Choose words</button>
             <button type="button" class="icon-button small" data-locate-effect="${item.id}">Show on video & timeline</button>
             <button type="button" class="icon-button small" data-show-preview="${item.id}">Preview in scene</button>
@@ -1706,7 +1719,8 @@
     const button=event.target.closest?.('[data-ai-edit]');if(!button)return;
     const item=review.proposals.find(item=>item.id===button.dataset.aiEdit);
     const scene=currentScene();if(!item||!scene)return;
-    ShowEinstein.open(scene,{text:item.params.selected_text||scene.text,start:item.at,end:Math.min(scene.end,item.at+item.duration)},item.params.ai_direction || item.params.subject,item.id,{style:item.params.style,position:item.params.position});
+    ShowEinstein.open(scene,{text:item.params.selected_text||scene.text,start:item.at,end:Math.min(scene.end,item.at+item.duration)},item.kind==='word'?'Hand-painted lettering, like a spontaneous protest placard.':item.params.ai_direction || item.params.subject,item.id,
+      {style:item.params.style,position:item.params.position,...(item.kind==='word'?{purpose:'lettering',letteringText:item.params.text}: {})});
   });
 
   document.addEventListener('click',async event=>{
@@ -1931,6 +1945,10 @@
 
   window.ShowReview = {
     open: openReview, openWorkspace, hull, refreshLibrary, addToScene,
+    captionSaved(result){
+      review.caption_revision=result.revision;
+      for(const scene of scenes())scene.captions=(scene.captions||[]).map(c=>c.id===result.cue.id?result.cue:c);
+    },
     async imageApplied(item,sceneId) {
       const scene=scenes().find(s=>s.id===sceneId); if(!scene)throw Error("Open the image's scene before applying it");
       const index=review.proposals.findIndex(p=>p.id===item.id);
@@ -1938,6 +1956,7 @@
       if(!scene.effects.includes(item.id))scene.effects.push(item.id);
       scene.decision="modified"; invalidateLocal(scene);
       step=scenes().indexOf(scene)+2; open.add(scene.id); open.add(item.id); render();
+      if(item.kind==='word'&&item.params.lettering_text){selectedEffect=item.id;locateEffect(timelineItem(item.id),true);return;}
       selectedEffect=item.id; placingWords=true; firstWord=null; pickedWords=null;
       wordPlacementControls();
       $("#showSaid").scrollIntoView({block:"nearest"});

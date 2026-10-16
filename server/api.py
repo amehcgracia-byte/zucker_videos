@@ -2158,6 +2158,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         from core.show import edited_words, scene_segments
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
         timed = edited_words(plan) if plan.get("words") else []
+        from core import show_caption_layout
+        from core.show import edited_captions
+        caption_layout = show_caption_layout.load(project)
+        caption_cues = show_caption_layout.apply(edited_captions(plan, plan.get("style") or "choe"), caption_layout) if plan.get("words") else []
         from core.show import scene_preview_notes, scene_preview_ready
         with scene_lock:
             for scene in document["scenes"]:
@@ -2166,15 +2170,42 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 # A preview made for what the scene shows now; an older one does not count.
                 scene["preview"] = ({"status": "ready", "url": f"/api/v1/show/media?path={quote(str(made))}", "left_out": scene_preview_notes(made)} if made
                                     else known if known.get("status") in ("queued", "rendering", "failed") else {"status": "none"})
+                if made:
+                    try:
+                        scene['preview']['inserted'] = json.loads(made.with_suffix('.json').read_text()).get('inserted') or []
+                    except (OSError, ValueError):
+                        scene['preview']['inserted'] = []
                 scene["segments"] = scene_segments(plan, float(scene["start"]), float(scene["end"])) if plan.get("shots") else []
                 scene["words"] = [[text, a, b] for text, a, b in timed if scene["start"] <= a < scene["end"]]
+                scene["captions"] = [cue for cue in caption_cues if cue['start'] < scene['end'] and cue['end'] > scene['start']]
         wizard = project.data.get("settings", {}).get("wizard", {})
         logo = Path(str(wizard.get("reel_logo_path") or ""))
         return jsonify({**document, "proposals": stored["proposals"], "resources": stored.get("resources") or [], "source": stored.get("source"),
                         "project_logo": str(logo) if logo.is_file() else None,
+                        "caption_revision": caption_layout["revision"], "project_id": str(project.folder),
                         "plan": {"edited_duration": plan["edited_duration"]},
                         "source_url": f"/api/v1/show/source?path={quote(str(plan.get('source') or ''))}",
                         "saved_render": ({k: v for k, v in saved.items() if k != "path"} if (saved := _saved_show_render(project)) else None)})
+
+    @app.patch("/api/v1/show/captions/<cue_id>")
+    @_proposals_locked
+    def api_show_caption_layout(cue_id):
+        from core import show_caption_layout
+        from core.show import edited_captions
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        if body.get('project_id') != str(project.folder):
+            return error_response('stale_project', 'Reopen this project before editing its captions', 409)
+        _, plan_path = _show_review_files(project)
+        if not plan_path.is_file():
+            return error_response('not_ready', 'Prepare a Show first', 409)
+        plan = json.loads(plan_path.read_text())
+        try:
+            cues = show_caption_layout.apply(edited_captions(plan, plan.get('style') or 'choe'), show_caption_layout.load(project))
+            data = show_caption_layout.save(project, cue_id, body.get('changes') or {}, body.get('revision', -1), cues)
+        except (ValueError, TypeError) as exc:
+            return error_response('invalid_caption', str(exc), 409 if 'another window' in str(exc) else 400)
+        return jsonify({'revision': data['revision'], 'cue': next(c for c in show_caption_layout.apply(edited_captions(plan, plan.get('style') or 'choe'), data) if c['id'] == cue_id)})
 
     @app.get("/api/v1/show/studio-effects")
     def api_show_studio_effects() -> Response:
@@ -2560,16 +2591,24 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                       style=job["style"], position=job["position"], size=.25, kind="drawing",
                       # Claude's drawings draw themselves on the video, line by line.
                       effect="draw" if strokes.is_file() else "pop", **({"strokes": str(strokes)} if strokes.is_file() else {}))
+        if job.get('purpose') == 'lettering':
+            params.update(kind='word', text=job['lettering_text'], lettering_text=job['lettering_text'],
+                          replaces_caption=job.get('replaces_caption'), subject=job['lettering_text'], size=job.get('size', .55),
+                          image_center=job.get('image_center', [.5, .74]), effect='none')
         prior = job.get("applied_id") or job.get("replace_id")
         item = next((p for p in stored["proposals"] if p["id"] == prior and p["id"] in scene["effects"]), None)
         if item:
             # Changing the artwork must not reset the user's animation or sizing.
             params.pop("size", None)
             params.pop("effect", None)
+            if job.get('purpose') == 'lettering':
+                params.pop('image_center', None)
             item["params"].update(params)
+            if job.get('purpose') == 'lettering':
+                item['kind'] = 'word'
             item.update(status="proposed", needs=[])
         else:
-            item = show_proposals.proposal("drawing", job["at"], job["duration"], reason="Your idea · ChatGPT image", **params)
+            item = show_proposals.proposal("word" if job.get("purpose") == "lettering" else "drawing", job["at"], job["duration"], reason="Your idea · ChatGPT image", **params)
             stored["proposals"].append(item)
             show_scenes.attach(document, item)
             show_scenes.save(_scene_files(project), document)

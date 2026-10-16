@@ -316,8 +316,18 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
         position = gag.get("position") or ("left" if face == "right" else "right")
         side = "left" if centre(position, face)[0] < 0.5 else "right"
         image: Image.Image | None = None
-        if kind in ("drawing", "character") and gag.get("picture"):
-            # The person chose one of their own approved pictures instead of a new painting.
+        if kind == 'word' and gag.get('lettering_text') and not gag.get('picture'):
+            detail = 'This caption needs its saved lettering image; no font was substituted'
+            result(gag, 'failed', detail)
+            notes.append(detail)
+            continue
+        if kind in ("drawing", "character", "word") and gag.get("picture"):
+            if kind == 'word' and gag.get('lettering_text') and gag.get('text') != gag['lettering_text']:
+                detail = 'Caption text changed: create and approve new lettering first'
+                result(gag, 'failed', detail)
+                notes.append(detail)
+                continue
+            # The person chose exact artwork instead of a new painting or font.
             try:
                 with Image.open(gag["picture"]) as chosen:
                     image = chosen.convert("RGBA")
@@ -377,7 +387,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
         if image is None:
             result(gag, "failed", f"No picture in your library matches “{gag.get('query', '')}”" if kind == "photo" else "Nothing to show")
             continue
-        result(gag, "applied", f"your picture {Path(str(gag['picture'])).name}" if kind in ("drawing", "character") and gag.get("picture")
+        result(gag, "applied", f"your picture {Path(str(gag['picture'])).name}" if kind in ("drawing", "character", "word") and gag.get("picture")
                else f"{kind}: {gag.get('subject') or gag.get('text') or gag.get('query') or ''}".rstrip(": "))
         path = folder / f"gag-{index:03d}.png"
         image.save(path)
