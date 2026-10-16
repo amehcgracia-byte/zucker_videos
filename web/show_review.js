@@ -929,7 +929,7 @@
 
   async function extraTool(kind,scene,picked) {
     if(kind==='photo_edit') {ShowEinstein.open(scene,picked,'A realistic photo of me with long hair',null,{purpose:'photo_edit'});return true;}
-    if(kind==='cutout'||kind==='silhouette') {const [index,offset]=sourceAt(scene.segments,picked.start-scene.start);await ShowPhotoStudio.openAt(review.source,scene.segments[index][0]+offset,kind==='silhouette');return true;}
+    if(kind==='cutout'||kind==='silhouette') {const [index,offset]=sourceAt(scene.segments,picked.start-scene.start);await ShowPhotoStudio.openAt(review.source,scene.segments[index][0]+offset,kind==='silhouette',{sceneId:scene.id,at:picked.start,duration:picked.end-picked.start});return true;}
     if(kind==='captions') {enterLiveTiming(scene,picked.start);playQuick(scene,Math.max(0,picked.start-scene.start));openTimeline();showToast('Speech captions follow the words. Drag the caption on the video or resize its corner.');return true;}
     if(kind==='clay') {
       let dialog=document.getElementById('showClayPicker');if(dialog)dialog.remove();
@@ -1890,10 +1890,12 @@
     if (currentScene()) renderScene();
   }
 
-  async function addToScene(asset) {
+  async function addToScene(asset, placement=null) {
     const scene = currentScene();
     if (!scene) { showToast("Open a scene to place it", true); return; }
-    const placed={ id:crypto.randomUUID(),asset, x: 62, y: 35, width: 12, at: scene.start, duration: Math.min(4, scene.end - scene.start), action: "none", intensity: 1 };
+    if(placement?.sceneId && placement.sceneId!==scene.id)throw Error('The photo is saved. Reopen its original scene before placing it.');
+    const timing=fitTiming(scene,placement?.at??scene.start,placement?.duration??Math.min(4,scene.end-scene.start));
+    const placed={ id:crypto.randomUUID(),asset, x: 62, y: 35, width: 12, ...timing, action: "none", intensity: 1 };
     scene.overlays.push(placed);
     if (!await saveOverlays(scene)) {
       scene.overlays=scene.overlays.filter(item=>item.id!==placed.id);

@@ -212,12 +212,12 @@
       eyes: state.eyes || [], mouth: state.mouth || null, pivot: state.pivot || [0.5, 1.0], voice: voice ? [voice.source, voice.start, voice.length] : null }) });
     $("#showCharacterStudio").hidden = true;
     await window.ShowReview.refreshLibrary();
-    if (!state.editing) await window.ShowReview.addToScene(saved.cutout);
+    if (!state.editing) await window.ShowReview.addToScene(saved.cutout,state.placement);
     showToast(state.editing ? `${saved.name} updated. Render its preview to check the changes.` : `${saved.name} is in the library and in this scene`);
   }
 
-  window.ShowPhotoStudio = {openAt: async (source,second,silhouette=false) => {
-    const owner={step:1,strokes:[],undo:[],eyes:[],mouth:null,background:false,silhouette};state=owner;
+  window.ShowPhotoStudio = {openAt: async (source,second,silhouette=false,placement=null) => {
+    const owner={step:1,strokes:[],undo:[],eyes:[],mouth:null,background:false,silhouette,placement};state=owner;
     $('#showCharacterStudio').hidden=false;$('#showStudioBody').innerHTML='<p role="status">Taking a photo at your selected words…</p>';
     try {const photo=await api('/show/photos',{method:'POST',body:JSON.stringify({source,second,name:silhouette?'Black silhouette':'Selected words cutout'})});
       if(state!==owner)return;state.photo={...photo,url:'/api/v1/show/photo?path='+encodeURIComponent(photo.photo)};show(2);
@@ -250,7 +250,7 @@
         target.disabled = true;
         const saved = await api("/show/characters", {method:"POST",body:JSON.stringify({photo:state.photo.photo,mask:state.cut.mask,gallery_only:true,silhouette:state.silhouette,name:state.photo.name})});
         await window.ShowReview.refreshLibrary();
-        await window.ShowReview.addToScene(saved.cutout);
+        await window.ShowReview.addToScene(saved.cutout,state.placement);
         $("#showStudioStatus").textContent = `${saved.name} saved in this project’s gallery. You can reuse it in any scene.`;
         target.disabled = false;
       }
