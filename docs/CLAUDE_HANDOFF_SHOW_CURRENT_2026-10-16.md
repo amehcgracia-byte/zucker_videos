@@ -2,6 +2,17 @@
 
 Este documento actualiza los traspasos anteriores. **Código mínimo: `33326721`**, rama `codex/crossplatform-ui-audit`, PR https://github.com/amehcgracia-byte/zucker_videos/pull/30. Su padre `8173ae51` contiene colocación por palabras y previsualización individual; los commits `2a710b40` y `f8ab0c2f` conectaron y aislaron la generación real de imágenes con Einstein/ChatGPT. No reconstruyas desde un commit anterior ni desde una copia antigua de la maqueta.
 
+
+## Cambio de identidad confirmado: el personaje de Simón
+
+El usuario ha confirmado expresamente **el muñeco de la planta con gorro verde y abrigo amarillo**, creado por su sobrino Simón. Es su personaje recurrente a partir de ahora. No es el monigote de alambre rojo/azul ni el antiguo presentador de plastilina con barba y gafas.
+
+En el proyecto privado, `assets/show-library/plant-character.png` conserva la ruta estable pero ahora contiene el recorte del primer plano de C0272 a los 72 s (321 × 548), con RGB originales y máscara alfa. La versión diminuta anterior queda archivada en `assets/character-references/plant-character-early-wide-crop.png`. El catálogo y el inventario privado registran su procedencia y hash. No sustituirlo por una recreación generada.
+
+`assets/character-references/simon-character.json` fija identidad, procedencia y reglas. `simon-clay-proposal-v1.png` es una **propuesta generada para revisión**, no una foto ni un diseño ya aprobado. Mantiene gorro verde irregular, cara redonda, ojos de punto, mejillas rosadas, abrigo amarillo, cremallera oscura y bolsillos marrones. Usar siempre el original como referencia visual; cambiar vestuario no debe cambiar identidad. Los futuros personajes compartirán el acabado infantil de plastilina imperfecta, con referencias propias.
+
+La maqueta `pilot/clay-memory/character.json` apunta a la nueva identidad; el antiguo descriptor queda en `character-presenter-v2-archived.json`. **Los vídeos y poses de la historia anterior todavía no se han regenerado**: no presentarlos como si ya mostrasen al personaje de Simón. La página lo señala. Animar por acciones ligadas a la narración y pausas, no con un ciclo mecánico continuo. Las imágenes y vídeos privados permanecen fuera de GitHub.
+
 ## Actualización: pegatinas y biblioteca limpia
 
 Lee también `docs/SHOW_STICKERS_LIBRARY_REVIEW_2026-10-16.md`. Las pegatinas de `scene.overlays` tienen IDs persistentes y pistas, edición por palabras/bordes, menú de botón derecho dentro del popup y render individual sin exigir completar otros efectos. El selector ofrece **Add sticker** dentro del editor.
