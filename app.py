@@ -515,10 +515,17 @@ def _configure_logging() -> None:
     from logging.handlers import RotatingFileHandler
     log_dir = data_root() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    handlers = [RotatingFileHandler(log_dir / "app.log", maxBytes=5*1024*1024, backupCount=2, encoding="utf-8")]
+    # PyInstaller's Windows GUI executable has no stderr. A StreamHandler(None)
+    # captures that None permanently, even if the selftest redirects it later.
+    # Keep all diagnostics in the rotating file, and mirror to a console only
+    # when a real stream exists.
+    if sys.stderr is not None:
+        handlers.insert(0, logging.StreamHandler(sys.stderr))
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        handlers=[logging.StreamHandler(sys.stderr), RotatingFileHandler(log_dir / "app.log", maxBytes=5*1024*1024, backupCount=2, encoding="utf-8")],
+        handlers=handlers,
         force=True,
     )
 

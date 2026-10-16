@@ -5,7 +5,7 @@ caption burning and composition use actual UI controls; API reads observe status
 No production stages, scores, synchronization or models are mocked.
 """
 from __future__ import annotations
-import argparse, base64, json, os, platform, shutil, socket, subprocess, sys, time, traceback
+import argparse, json, os, platform, shutil, socket, subprocess, sys, time, traceback
 from pathlib import Path
 from urllib.request import urlopen
 
@@ -44,7 +44,7 @@ def free_port():
         s.bind(('127.0.0.1',0)); return s.getsockname()[1]
 
 
-def journey(browser, mode, media, output):
+def journey(browser, mode, media, output, *, real_media=False):
     folder=output/mode; folder.mkdir(parents=True,exist_ok=True)
     port=free_port(); url=f'http://127.0.0.1:{port}'
     env={**os.environ,'ZUCKER_DATA_ROOT':str(folder/'data'),'PYTHONUNBUFFERED':'1'}
@@ -54,7 +54,8 @@ def journey(browser, mode, media, output):
     context=browser.new_context(viewport={'width':1440,'height':1000},record_video_dir=str(folder/'browser-video'))
     context.tracing.start(screenshots=True,snapshots=True,sources=True)
     page=context.new_page(); page.set_default_timeout(45000)
-    errors=[]; failures=[]; report={'mode':mode,'os':platform.platform(),'passed':False}
+    errors=[]; failures=[]; report={'mode':mode,'os':platform.platform(),'passed':False,
+                                  'media_kind': 'real' if real_media else 'synthetic'}
     page.on('pageerror',lambda error:errors.append(str(error)))
     page.on('response',lambda response:failures.append({'url':response.url,'status':response.status}) if response.status>=400 and '/api/' in response.url else None)
     def capture(name): page.screenshot(path=str(folder/f'{name}.png'),full_page=True)
@@ -77,11 +78,22 @@ def journey(browser, mode, media, output):
         page.locator('#editTypeDialog').wait_for(state='hidden')
         page.locator('#videoName').fill('QA '+mode)
         files=[media/'camera-a.mp4',media/'camera-b.mp4']
+        if real_media and mode in {'youtube', 'reel'}:
+            # The private fixture has one talking camera and an unsynchronised
+            # detail shot. Do not pretend these are two synced concert cameras.
+            files=[media/'camera-a.mp4']
         if mode in {'youtube','reel'}: files.append(media/'master.wav')
         if mode=='360': files=[media/'sphere-360.mp4',media/'master.wav']
         if mode=='backstage': files=[media/'interview.mp4']
-        payload=[{'name':f.name,'data':base64.b64encode(f.read_bytes()).decode()} for f in files]
-        page.evaluate('''files=>{const d=new DataTransfer();for(const f of files){const bytes=Uint8Array.from(atob(f.data),c=>c.charCodeAt(0));d.items.add(new File([bytes],f.name));}document.querySelector('#dropZone').dispatchEvent(new DragEvent('drop',{bubbles:true,dataTransfer:d}));}''',payload)
+        # Let Chromium hold file-backed Files. Serialising hundreds of MB as
+        # base64 through evaluate/CDP crashes the renderer before the app sees
+        # the drop. Keep the production drop/import handler unchanged.
+        page.evaluate('''() => {const input=document.createElement('input'); input.type='file';
+            input.multiple=true; input.id='qaMediaInput'; input.hidden=true; document.body.append(input);}''')
+        page.locator('#qaMediaInput').set_input_files([str(f) for f in files])
+        page.evaluate('''() => {const input=document.querySelector('#qaMediaInput'); const d=new DataTransfer();
+            for(const file of input.files) d.items.add(file);
+            document.querySelector('#dropZone').dispatchEvent(new DragEvent('drop',{bubbles:true,dataTransfer:d})); input.remove();}''')
         page.wait_for_function('pendingImports === 0 && detected.videos.length > 0')
         capture('01-imported')
         page.locator('#confirmFiles').click()
@@ -127,8 +139,25 @@ def journey(browser, mode, media, output):
         # Decode the complete output, not only its first thumbnail.
         run(['ffmpeg','-v','error','-i',str(path),'-f','null','-'],timeout=180)
         shutil.copy2(path,folder/'render.mp4')
+        # preload=metadata does not promise a decoded frame, especially for
+        # HEVC. Exercise Play rather than mistaking a paused metadata-only
+        # element for a decoder failure.
+        if page.locator('#composePlayPause').is_visible():
+            page.locator('#composePlayPause').click()
+        elif page.locator('#result360Play').is_visible():
+            page.locator('#result360Play').click()
+        else:
+            page.locator('#resultVideo').press('Space')
         page.wait_for_function("""() => [...document.querySelectorAll('#composeVideo, #resultVideo, #result360Video')].some(v => v.getClientRects().length && v.readyState >= 2 && v.videoWidth > 0 && !v.error)""", timeout=60000)
         report['browser_player_loaded'] = True
+        # Show content away from the first frame's intentional fade to black.
+        sample = page.evaluate("""() => {
+            const v=[...document.querySelectorAll('#composeVideo, #resultVideo, #result360Video')].find(v=>v.getClientRects().length && v.videoWidth>0);
+            v.pause(); const t=v.duration*.4; v.currentTime=t; return {id:v.id,time:t};
+        }""")
+        page.wait_for_function("sample=>{const v=document.getElementById(sample.id);return !v.seeking && v.readyState>=2 && Math.abs(v.currentTime-sample.time)<.1;}",arg=sample,timeout=15000)
+        page.wait_for_timeout(100)
+        report['browser_sample'] = sample
         capture('04-rendered')
         if mode=='reel':
             if not page.locator('#captionText').is_visible(): page.locator('[data-step-nav="5"]').click()
@@ -164,7 +193,12 @@ def journey(browser, mode, media, output):
         assert not errors,errors
         report.update(passed=True,duration=probe['format']['duration'],result=result,review_actions=sorted(actions))
     except Exception:
-        report['error']=traceback.format_exc(); capture('failure')
+        report['error']=traceback.format_exc()
+        try:
+            report['players']=page.evaluate("""() => [...document.querySelectorAll('video')].map(v=>({id:v.id,src:v.currentSrc,readyState:v.readyState,networkState:v.networkState,width:v.videoWidth,height:v.videoHeight,error:v.error?{code:v.error.code,message:v.error.message}:null,hevc:v.canPlayType('video/mp4; codecs="hvc1.1.6.L120.B0"')}))""")
+        except Exception:
+            report['players_unavailable']=True
+        capture('failure')
     finally:
         report.update(page_errors=errors,http_failures=failures)
         (folder/'report.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
@@ -181,17 +215,27 @@ def journey(browser, mode, media, output):
 
 
 def main():
-    parser=argparse.ArgumentParser(); parser.add_argument('--output',type=Path,required=True); parser.add_argument('--mode',choices=['youtube','reel','medley','360','backstage']); args=parser.parse_args()
+    parser=argparse.ArgumentParser(); parser.add_argument('--output',type=Path,required=True); parser.add_argument('--mode',choices=['youtube','reel','medley','360','backstage'])
+    parser.add_argument('--media', type=Path, help='Existing private fixture directory; never uploaded by this script')
+    args=parser.parse_args()
     output=args.output.resolve(); output.mkdir(parents=True,exist_ok=True)
-    media=output/'fixtures'
-    if not (media/'ready').exists():
+    media=args.media.resolve() if args.media else output/'fixtures'
+    if args.media:
+        required = {'youtube': ['camera-a.mp4', 'master.wav'], 'reel': ['camera-a.mp4', 'master.wav'],
+                    'medley': ['camera-a.mp4', 'camera-b.mp4'], '360': ['sphere-360.mp4', 'master.wav'],
+                    'backstage': ['interview.mp4']}
+        names = {name for mode in ([args.mode] if args.mode else required) for name in required[mode]}
+        missing = sorted(name for name in names if not (media/name).is_file())
+        if missing:
+            parser.error(f'Private fixtures missing: {missing}; no synthetic replacement is made')
+    elif not (media/'ready').exists():
         fixtures(media)
         (media/'ready').write_text('ready', encoding='utf-8')
     from playwright.sync_api import sync_playwright
     with sync_playwright() as pw:
         browser=pw.chromium.launch(); reports=[]
         for mode in ([args.mode] if args.mode else ['youtube','reel','medley','360','backstage']):
-            reports.append(journey(browser,mode,media,output))
+            reports.append(journey(browser,mode,media,output,real_media=bool(args.media)))
         browser.close()
     (output/(f'{args.mode}-summary.json' if args.mode else 'summary.json')).write_text(json.dumps(reports,indent=2),encoding='utf-8')
     print(json.dumps(reports,indent=2),flush=True)

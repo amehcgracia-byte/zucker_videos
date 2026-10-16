@@ -170,3 +170,21 @@ def test_a_small_window_or_bubble_moves_off_the_host_s_face():
     assert show_clay.clear_of_face({**spot, "avoidFace": False}, (0.55, 0.4), 1.0, 1280, 720, 384, 216, 7)["x"] == 0.5
     close = show_clay.clear_of_face(spot, (0.5, 0.45), 1.65, 1280, 720, 384, 216, 7)
     assert close["x"] != 0.5 or close["y"] < 0.4                                # a closer framing needs a bigger berth
+
+
+def test_square_pose_cells_keep_puppet_proportions_when_contained():
+    record = _story()
+    record['shots'][0]['fit'] = 'contain'
+    # Six square cells; a central square must stay square on a wide screen.
+    sheet = np.zeros((240, 360, 3), dtype=np.uint8)
+    sheet[30:90, 30:90] = (240, 180, 20)
+    story = show_clay.ClayStory(record, {'a.png': sheet, 'b.png': sheet})
+    frame = story.picture(0.2, 320, 180)
+    ys, xs = np.where(frame[:, :, 0] > 200)
+    assert abs((xs.max() - xs.min()) - (ys.max() - ys.min())) <= 1
+    assert tuple(frame[90, 0]) == (23, 32, 25)
+    # Changing the fit mode cannot reuse a differently shaped cached picture.
+    record['shots'][0].pop('fit')
+    stretched = story.picture(0.2, 320, 180)
+    ys, xs = np.where(stretched[:, :, 0] > 200)
+    assert xs.max() - xs.min() > (ys.max() - ys.min()) * 1.5

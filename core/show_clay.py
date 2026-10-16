@@ -130,11 +130,22 @@ class ClayStory:
     def picture(self, t: float, width: int, height: int) -> np.ndarray:
         shot = shot_at(self.record, t)
         sheet = self.sheets[shot["sheet"]]
-        key = (shot["sheet"], pose_at(shot, t), bool(shot.get("close")), width, height)
+        key = (shot["sheet"], pose_at(shot, t), bool(shot.get("close")), width, height, shot.get("fit"))
         if key not in self._cache:
             if len(self._cache) > 48:
                 self._cache.clear()
-            self._cache[key] = crop_to(sheet, tile(sheet.shape[1], sheet.shape[0], key[1], key[2]), width, height)
+            rect = tile(sheet.shape[1], sheet.shape[0], key[1], key[2])
+            if shot.get("fit") == "contain":
+                # Generated sheets need not have 16:9 cells. Preserve the puppet's
+                # proportions instead of stretching its head across the frame.
+                scale = min(width / rect[2], height / rect[3])
+                w, h = max(1, round(rect[2] * scale)), max(1, round(rect[3] * scale))
+                picture = np.full((height, width, 3), (23, 32, 25), dtype=np.uint8)
+                x, y = (width - w) // 2, (height - h) // 2
+                picture[y:y+h, x:x+w] = crop_to(sheet, rect, w, h)
+                self._cache[key] = picture
+            else:
+                self._cache[key] = crop_to(sheet, rect, width, height)
         return self._cache[key]
 
 

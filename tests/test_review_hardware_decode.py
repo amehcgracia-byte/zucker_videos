@@ -76,6 +76,20 @@ def test_review_uses_two_workers_and_preserves_card_order(tmp_path, monkeypatch)
     assert progress == sorted(progress) and progress[-1] == 100
 
 
+def test_distinct_review_assets_do_not_share_locks_and_idle_locks_are_released(tmp_path, monkeypatch):
+    import gc
+    import weakref
+    locks = weakref.WeakValueDictionary()
+    monkeypatch.setattr(shot_review, '_THUMBNAIL_LOCKS', locks)
+    active = [shot_review._thumbnail_lock(tmp_path / f'frame-{i}.jpg') for i in range(128)]
+    assert len({id(lock) for lock in active}) == 128
+    assert shot_review._thumbnail_lock(tmp_path / 'frame-0.jpg') is active[0]
+    assert shot_review._thumbnail_lock(tmp_path / 'sub/../frame-0.jpg') is active[0]
+    del active
+    gc.collect()
+    assert not locks
+
+
 def test_simultaneous_preview_requests_render_same_asset_only_once(tmp_path, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     import threading
