@@ -22,13 +22,23 @@ if sys.platform == "win32":
     _FONTS = Path("C:/Windows/Fonts")
     FAMILIES = {"serif": [_FONTS / "georgia.ttf"], "serif-italic": [_FONTS / "georgiai.ttf"], "cursive": [_FONTS / "comic.ttf"],
                 "fallback": [_FONTS / "seguisym.ttf", _FONTS / "cambria.ttc", _FONTS / "arial.ttf"]}
-else:
+elif sys.platform == "darwin":
     _SUPPLEMENTAL = Path("/System/Library/Fonts/Supplemental")
     FAMILIES = {"serif": [_SUPPLEMENTAL / "Georgia.ttf"], "serif-italic": [_SUPPLEMENTAL / "Georgia Italic.ttf"],
                 "cursive": [_SUPPLEMENTAL / "Apple Chancery.ttf"],
                 "fallback": [_SUPPLEMENTAL / "Arial Unicode.ttf", Path("/Library/Fonts/Arial Unicode.ttf"),
                              Path("/System/Library/Fonts/Apple Symbols.ttf"), _SUPPLEMENTAL / "STIXTwoMath-Regular.otf",
                              Path("/System/Library/Fonts/Supplemental/Arial.ttf")]}
+else:
+    # Linux render workers do not have Apple's system fonts. Preserve the serif
+    # treatment and Unicode fallback using the standard Debian/Ubuntu fonts.
+    _TRUETYPE = Path("/usr/share/fonts/truetype")
+    FAMILIES = {
+        "serif": [_TRUETYPE / "dejavu/DejaVuSerif.ttf", _TRUETYPE / "liberation2/LiberationSerif-Regular.ttf"],
+        "serif-italic": [_TRUETYPE / "dejavu/DejaVuSerif-Italic.ttf", _TRUETYPE / "liberation2/LiberationSerif-Italic.ttf"],
+        "cursive": [_TRUETYPE / "dejavu/DejaVuSans-Oblique.ttf"],
+        "fallback": [_TRUETYPE / "dejavu/DejaVuSans.ttf", _TRUETYPE / "liberation2/LiberationSans-Regular.ttf"],
+    }
 
 
 @lru_cache(maxsize=32)
