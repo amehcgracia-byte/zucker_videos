@@ -92,7 +92,7 @@
     dialog.querySelector('[data-ai-local]').hidden=lettering||photo;
     dialog.querySelector('[data-ai-face]').closest('label').hidden=lettering||photo;
     if(lettering)dialog.querySelector('[data-ai-face]').checked=false;
-    if(photo){dialog.querySelector('[data-ai-face]').checked=true;dialog.querySelector('.show-hint').textContent='Edit a photo of you from these words. Describe the change (for example, long hair). Review the still image before placing it; this does not animate your face in the source video.';}
+    if(photo){dialog.querySelector('[data-ai-face]').checked=true;dialog.querySelector('.show-hint').textContent='One frame from this moment is sent to ChatGPT as a photo reference. Describe the change (for example, long hair). Review the still image before placing it; this does not animate your face in the source video.';}
     dialog.querySelector('[data-ai-style]').closest('label').hidden=photo;
 
     dialog.querySelector('[data-ai-result]').hidden=true;
