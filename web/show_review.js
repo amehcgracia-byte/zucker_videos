@@ -1735,6 +1735,7 @@
         await saveOverlays(scene);
       } else if (target.dataset.menu) {
         menu.hidden = true;
+        const scene = currentScene();
         const overlay = scene?.overlays[selectedOverlay];
         if (overlay && (target.dataset.menu === "flip" || target.dataset.menu === "reset")) {
           if (target.dataset.menu === "flip") overlay.flip = !overlay.flip;
