@@ -32,3 +32,5 @@ Private previews already rendered locally:
 The active clay preview and editing page use the new assets; previous presenter studies were moved outside that preview to `work/show-motion-sample/retired-clay-presenter-20261016/`.
 
 Validation: eight clay compositor tests, the JS word-cue test, complete FFmpeg decode of both previews; contextual output 1280×720, 25 fps, 732 video frames with audio. This is not a complete rerender or audit of every Show feature.
+
+User clarification after reviewing this pack: the green headwear is a slightly tilted flat cap with a small projecting front brim, standing off the head, not a helmet or tight skullcap. Current animations are accepted as-is; `character.json` records this override for future generations. The PNGs have not been redrawn.

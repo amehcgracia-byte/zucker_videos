@@ -80,3 +80,7 @@ No basta copiar una carpeta. `core.gags.make_items` usa el PNG exacto cuando un 
 5. Si el usuario solicita instalación, verifica respaldo y paquete terminado antes de sustituir la app; confirma que el build contiene el commit y los JS nuevos. Conserva proyectos, raíces de almacenamiento, recursos elegidos y hashes. No reemplaces el proyecto real por la copia de prueba.
 
 Entrega: commit/build exacto, qué recursos seleccionados has enlazado, hashes antes/después, recorridos probados y limitaciones. El objetivo es conservar la misma aplicación y sus materiales aprobados, no reconstruir una variante parecida con recursos antiguos o genéricos.
+
+## Aclaración posterior: la gorra
+
+El usuario confirma que lleva una **gorra verde ladeada con una pequeña visera delantera que sobresale**, parecida a la que lleva él en el vídeo. Debe separarse visualmente de la cabeza, con volumen y sombra bajo la visera; no es un casco, gorro ceñido ni pelo. La interpretación frontal de los PNG actuales es incompleta: esta corrección explícita tiene prioridad en futuras generaciones. El usuario acepta las animaciones actuales, que se conservan. No afirmar que ya se ha redibujado la visera.

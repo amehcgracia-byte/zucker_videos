@@ -12,5 +12,14 @@
     "meadow": "Same puppet and meadow. Neutral; head tilt; lift hand; point at cottage; lower hand; quiet hold.",
     "neighbours": "Same puppet with two anonymous neighbours in rust/blue coats. City: approach, gather, ask question. Village: arrive, welcome, quiet hold."
   },
-  "private_media": "Original photo, source video, voice and contextual MP4 are project-local only; not included in this public asset pack."
+  "private_media": "Original photo, source video, voice and contextual MP4 are project-local only; not included in this public asset pack.",
+  "future_generation_overrides": {
+    "cap": {
+      "confirmed_by_user": "2026-10-16",
+      "shape": "A green flat cap, similar to the real cap worn by the host, slightly tilted with a small projecting front brim. It sits above and away from the head, with visible overhang and shadow beneath the brim.",
+      "avoid": "No helmet, skullcap, beanie or clay hair stuck to the scalp.",
+      "reference_override": "The frontal generated v1 image obscures the cap shape. This explicit user clarification takes precedence over that interpretation.",
+      "existing_animation": "User accepts the current animations; keep them. Apply the corrected cap geometry to future generations."
+    }
+  }
 }

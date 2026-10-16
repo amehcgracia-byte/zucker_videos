@@ -10,5 +10,12 @@
     "Other cast members use the same handmade material but their own identity references.",
     "Gestures occur once on spoken cues with held pauses; no automatic looping."
   ],
-  "generation": "Built-in image generation, derived from user-confirmed figurine; new generated art, not original camera footage."
+  "generation": "Built-in image generation, derived from user-confirmed figurine; new generated art, not original camera footage.",
+  "cap_clarification": {
+    "confirmed_by_user": "2026-10-16",
+    "shape": "A green flat cap, similar to the real cap worn by the host, slightly tilted with a small projecting front brim. It sits above and away from the head, with visible overhang and shadow beneath the brim.",
+    "avoid": "No helmet, skullcap, beanie or clay hair stuck to the scalp.",
+    "reference_override": "The frontal generated v1 image obscures the cap shape. This explicit user clarification takes precedence over that interpretation.",
+    "existing_animation": "User accepts the current animations; keep them. Apply the corrected cap geometry to future generations."
+  }
 }
