@@ -354,6 +354,8 @@
       $('#showTimeline').hidden=false;$('#showTimelineLauncher').hidden=true;
       timelineDialog.showModal();
     }
+    const scene=currentScene(),at=editedPlayhead(),cue=scene.captions?.find(c=>c.start<scene.end&&c.end>scene.start);
+    if(!selectedEffect && cue && !scene.captions.some(c=>c.start<=at&&at<c.end))seekTo(Math.max(scene.start,cue.start)+.02);
     editorAsked=null;watchEditorEffects(currentScene());
   }
   function restoreStage() {
@@ -1050,7 +1052,7 @@
   });
   document.addEventListener("click", (event) => {
     const menu = $("#showSayMenu");
-    if (menu && !menu.hidden && !(event.target instanceof Element && event.target.closest("#showSayMenu"))) menu.hidden = true;
+    if (menu && !menu.hidden && !(event.target instanceof Element && event.target.closest("#showSayMenu, #showSayTools"))) menu.hidden = true;
     const word = event.target instanceof Element ? event.target.closest("#showSaid [data-word]") : null;
     const scene = currentScene();
     if (!word || !scene || !window.getSelection()?.isCollapsed) return;
