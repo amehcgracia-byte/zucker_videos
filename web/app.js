@@ -2151,6 +2151,7 @@ async function resumeInputsFromProject() {
   sphericalProjectSettings = project;
   currentVariationSeed = String(project.settings?.wizard?.variation_seed || currentVariationSeed);
   const savedPlatform = project.settings?.wizard?.platform;
+  if(document.querySelector("#backstageWhisperModel"))document.querySelector("#backstageWhisperModel").value=project.settings?.wizard?.backstage_whisper_model||"medium";
   if (savedPlatform) choosePlatformInUi(savedPlatform);
   const inputs = project.inputs || {};
   for (const warning of inputs.warnings || []) {
@@ -3974,6 +3975,7 @@ async function startWizard(options = {}) {
       sweep_speed_deg_per_sec: appConfig?.sweep_speed_deg_per_sec || 5,
       spherical_source_path: selectedSphericalSourcePath(),
       reel_duration_sec: reelOptionsFromForm().duration,
+      backstage_whisper_model: document.querySelector("#backstageWhisperModel")?.value || "medium",
       backstage_duration_sec: Number(document.querySelector("#backstageDuration")?.value || 180),
       reel_aspect: reelOptionsFromForm().aspect,
       reel_mix_vertical_ratio: reelOptionsFromForm().mixVerticalRatio,

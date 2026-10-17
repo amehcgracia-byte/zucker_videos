@@ -5013,6 +5013,11 @@ def _require_project(state: AppState) -> Project:
 
 def _apply_run_options(project: Project, body: dict[str, Any]) -> None:
     """Store per-run choices on the project that will actually render."""
+    if body.get("platform") == "backstage":
+        model = body.get("backstage_whisper_model") or "medium"
+        if model not in {"small", "medium", "large-v3"}:
+            raise ValueError("Choose small, medium or large-v3 for Backstage Whisper")
+        project.data.setdefault("settings", {}).setdefault("wizard", {})["backstage_whisper_model"] = model
     settings = project.data.setdefault("settings", {})
     settings.setdefault("wizard", {})["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
     settings.setdefault("export", {})["draft"] = bool(body.get("draft_export"))

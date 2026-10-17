@@ -42,3 +42,20 @@ def test_spanish_is_not_mistaken_for_an_english_translation(text):
 @pytest.mark.parametrize('text',['Let us go','We play guitar','We remember her'])
 def test_common_english_phrases_remain_usable(text):
     assert b._looks_english(text)
+
+
+def test_selected_whisper_model_is_stored_in_the_project(tmp_path):
+    from server.api import _apply_run_options
+    from core.project import create_project
+    p=create_project('Model',str(tmp_path/'Model.zuckervid'))
+    _apply_run_options(p,dict(platform='backstage',backstage_whisper_model='small'))
+    assert p.data['settings']['wizard']['backstage_whisper_model']=='small'
+    with pytest.raises(ValueError):_apply_run_options(p,dict(platform='backstage',backstage_whisper_model='unknown'))
+
+
+def test_model_change_invalidates_analysis_without_deleting_cached_transcripts(tmp_path):
+    from core.project import create_project
+    p=create_project('Fingerprint',str(tmp_path/'Fingerprint.zuckervid'))
+    first=b.BackstageAnalysisStage().inputs_fingerprint(p)
+    p.data['settings']['wizard']={'backstage_whisper_model':'small'}
+    assert b.BackstageAnalysisStage().inputs_fingerprint(p)!=first

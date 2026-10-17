@@ -194,7 +194,9 @@ class BackstageAnalysisStage(Stage):
     dependencies = ["ingest"]
 
     def inputs_fingerprint(self, project: Project) -> str:
-        return stable_fingerprint({"videos": project.data.get("inputs", {}).get("videos", []), "version": BACKSTAGE_ANALYSIS_VERSION, "mode": "backstage"})
+        wizard = project.data.get("settings", {}).get("wizard") or {}
+        options = {key: value for key, value in wizard.items() if key.startswith("backstage_whisper_") or key == "backstage_glossary"}
+        return stable_fingerprint({"videos": project.data.get("inputs", {}).get("videos", []), "version": BACKSTAGE_ANALYSIS_VERSION, "mode": "backstage", "transcription": options})
 
     def outputs(self, project: Project) -> dict[str, str]:
         return {"backstage_analysis": str(artifact_path(project, "backstage_analysis.json"))}
@@ -203,7 +205,7 @@ class BackstageAnalysisStage(Stage):
         records = _video_records(project)
         sources = []
         for index, record in enumerate(records):
-            progress_callback(int(index / max(1, len(records)) * 90), f"Listening for Backstage moments: {Path(record['_path']).name}")
+            progress_callback(int(index / max(1, len(records)) * 25), f"Listening for Backstage moments: {Path(record['_path']).name}")
             moments = _candidate_windows(record)
             sources.append({
                 "path": record["_path"],
@@ -217,13 +219,14 @@ class BackstageAnalysisStage(Stage):
         transcription = transcribe_sources(
             sources,
             artifact_path(project, "backstage_transcription.json"),
-            lambda percent, detail: progress_callback(90 + int(percent * 0.1), detail),
-            model_name=str((project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_model") or "large-v3"),
+            lambda percent, detail: progress_callback(25 + int(percent * 0.65), detail),
+            model_name=str((project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_model") or "medium"),
             task=str((project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_task") or "transcribe"),
             language_overrides=(project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_language_overrides") or {},
             model_by_language=(project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_model_by_language") or {},
             initial_prompt=str((project.data.get("settings", {}).get("wizard") or {}).get("backstage_glossary") or (project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_initial_prompt") or os.environ.get("BACKSTAGE_GLOSSARY", "")),
         )
+        progress_callback(90, "Preparing narrative scoring and storyboard")
         story_bites = transcription.get("story_bites") or []
         sequences = group_story_bites(story_bites)
         scoring = score_story_sequences(sequences)
@@ -1525,7 +1528,7 @@ class BackstageExportStage(Stage):
                 [{"path": str(output_path), "filename": output_path.name}],
                 artifact_path(project, "backstage_final_transcription.json"),
                 progress_callback=lambda value, message: progress_callback(92 + int(value * .06), f"Final transcription: {message}"),
-                model_name=str(wizard.get("backstage_whisper_model") or "large-v3"),
+                model_name=str(wizard.get("backstage_whisper_model") or "medium"),
                 task="transcribe",
                 initial_prompt=str(wizard.get("backstage_glossary") or wizard.get("backstage_whisper_initial_prompt") or os.environ.get("BACKSTAGE_GLOSSARY", "")),
             )
@@ -1653,7 +1656,7 @@ class BackstageExportStage(Stage):
                 [{"path": str(output_path), "filename": output_path.name}],
                 artifact_path(project, "backstage_final_transcription.json"),
                 progress_callback=lambda value, message: progress_callback(97, f"Final subtitle audio: {message}"),
-                model_name=str((project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_model") or "small"),
+                model_name=str((project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_model") or "medium"),
                 task="translate",
             )
             if final_transcription.get("status") not in {"ready", "ready_cached"}:
