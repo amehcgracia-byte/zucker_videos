@@ -2374,6 +2374,97 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         atomic_write_json(reference_path, references)
         return jsonify({"reference": reference, "proposal": item}), 201
 
+    # Put my face on a clip: local face swap jobs, one per clip (core.show_faceswap).
+    faceswap_jobs: dict[str, dict[str, Any]] = {}
+    faceswap_lock = threading.Lock()
+
+    @app.get("/api/v1/show/faceswap/models")
+    def api_show_faceswap_models() -> Response:
+        from core import show_faceswap
+        return jsonify({"missing": bool(show_faceswap.missing()), "size_mb": show_faceswap.SIZE_MB})
+
+    @app.post("/api/v1/show/faceswap")
+    def api_show_faceswap() -> Response:
+        """Put the person's face (a photo from the library) on a clip, on this Mac, in the
+        background. The models are downloaded only when ``download_models`` says the person agreed."""
+        from core import show_faceswap, show_proposals
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        proposal_id = str(body.get("proposal_id") or "")
+        proposals_path, _ = _show_review_files(project)
+        item = next((entry for entry in show_proposals.load(proposals_path)["proposals"] if entry["id"] == proposal_id and entry["kind"] == "clip"), None)
+        if item is None:
+            return error_response("not_found", "Choose a video clip of this project", 404)
+        try:
+            photo = _bring_into_project(project, str(body.get("photo") or ""))
+        except KeyError:
+            return error_response("not_found", "Choose a photo of you from the library", 404)
+        missing = show_faceswap.missing()
+        if missing and not body.get("download_models"):
+            return error_response("models_needed", f"The face swap needs its models first ({show_faceswap.SIZE_MB} MB, downloaded once)", 409)
+        key = f"{project.folder}|{proposal_id}"
+        with faceswap_lock:
+            if (faceswap_jobs.get(key) or {}).get("status") in ("downloading", "working"):
+                return error_response("busy", "Your face is already being put on this clip", 409)
+            job = faceswap_jobs[key] = {"status": "downloading" if missing else "working", "progress": 0.0}
+        ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
+
+        def update(**changes: Any) -> None:
+            with faceswap_lock:
+                job.update(changes)
+
+        def run() -> None:
+            try:
+                if missing:
+                    show_faceswap.download(lambda share: update(progress=round(share, 3)))
+                update(status="working", progress=0.0)
+                source = Path(item["params"].get("clip_original") or item["params"]["clip"])
+                out = source.with_name(f"{source.stem}-face-{photo['sha256'][:8]}.mp4")
+                changed, total = show_faceswap.swap_clip(Path(photo["path"]), source, out, ffmpeg, lambda share: update(progress=round(share, 3)))
+                updated = None
+                with show_proposals.LOCK:
+                    stored = show_proposals.load(proposals_path)
+                    for entry in stored["proposals"]:
+                        if entry["id"] == proposal_id:
+                            entry["params"].update(clip=str(out), clip_original=str(source), face_photo=photo["path"], face_frames=[changed, total])
+                            updated = entry
+                    resources = stored.setdefault("resources", [])
+                    if not any(resource.get("path") == str(out) for resource in resources):
+                        resources.append({"path": str(out), "kind": "video", "duration": item["params"]["clip_length"], "speech": [], "version": 1,
+                                          "intervals": [], "origin": "Clip with your face"})
+                    show_proposals.save(proposals_path, stored["proposals"], **{k: v for k, v in stored.items() if k not in ("proposals", "version")})
+                _effect_changed(project, proposal_id)
+                update(status="done", progress=1.0, changed=changed, total=total, proposal=updated)
+            except Exception as exc:  # shown on the clip: no face found, a failed download…
+                update(status="failed", error=str(exc)[:300])
+
+        threading.Thread(target=run, daemon=True, name="zucker-faceswap").start()
+        return jsonify(job), 202
+
+    @app.get("/api/v1/show/faceswap/<proposal_id>")
+    def api_show_faceswap_status(proposal_id: str) -> Response:
+        project = _require_project(state)
+        with faceswap_lock:
+            return jsonify(dict(faceswap_jobs.get(f"{project.folder}|{proposal_id}") or {"status": "none"}))
+
+    @app.post("/api/v1/show/faceswap/<proposal_id>/original")
+    @_proposals_locked
+    def api_show_faceswap_original(proposal_id: str) -> Response:
+        """Back to the clip as it was downloaded (the version with the face is kept on disk)."""
+        from core import show_proposals
+        project = _require_project(state)
+        proposals_path, _ = _show_review_files(project)
+        stored = show_proposals.load(proposals_path)
+        item = next((entry for entry in stored["proposals"] if entry["id"] == proposal_id and entry["kind"] == "clip"), None)
+        if item is None or not item["params"].get("clip_original"):
+            return error_response("not_found", "This clip has no other version", 404)
+        item["params"]["clip"] = item["params"].pop("clip_original")
+        item["params"].pop("face_photo", None)
+        item["params"].pop("face_frames", None)
+        show_proposals.save(proposals_path, stored["proposals"], **{k: v for k, v in stored.items() if k not in ("proposals", "version")})
+        _effect_changed(project, proposal_id)
+        return jsonify(item)
+
     @app.post("/api/v1/show/clay/sample")
     @_proposals_locked
     def api_show_clay_sample() -> Response:
