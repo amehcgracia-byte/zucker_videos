@@ -1122,13 +1122,7 @@ def _render_parchment_cards(directory: Path, messages: list[str], width: int, he
     parchment_path = bundle_root / "assets" / "parchment_full.png"
     if not parchment_path.is_file():
         raise FileNotFoundError(f"Clean parchment asset is missing: {parchment_path}")
-    try:
-        font_path = str(bundle_root / "assets" / "fonts" / "BigCaslon.ttf")
-        if not Path(font_path).exists():
-            font_path = "/Library/Fonts/ACaslonPro-Regular.otf"
-        font = ImageFont.truetype(font_path, 46)
-    except OSError:
-        font = ImageFont.load_default()
+    font = _subtitle_font(46)
     parchment = Image.open(parchment_path).convert("RGBA")
     parchment_height = int(height * 0.88)
     parchment = parchment.resize((int(parchment.width * parchment_height / parchment.height), parchment_height), Image.Resampling.LANCZOS)
@@ -1144,7 +1138,7 @@ def _render_parchment_cards(directory: Path, messages: list[str], width: int, he
         draw = ImageDraw.Draw(image)
         size = 46
         while size > 22:
-            font = ImageFont.truetype(font_path, size) if Path(font_path).exists() else ImageFont.load_default()
+            font = _subtitle_font(size)
             lines = textwrap.wrap(message, width=max(18, int(box_width / max(1, size * 0.52)))) or [message]
             line_height = int(size * 1.35)
             if len(lines) * line_height <= box_height:
@@ -1155,7 +1149,7 @@ def _render_parchment_cards(directory: Path, messages: list[str], width: int, he
             bbox = draw.textbbox((0, 0), line, font=font)
             x = (width - (bbox[2] - bbox[0])) / 2
             draw.text((x, top + line_index * line_height), line, font=font, fill=(55, 35, 18, 255))
-        seal_font = ImageFont.truetype(font_path, max(24, int(parchment.width * 0.12))) if Path(font_path).exists() else font
+        seal_font = _subtitle_font(max(24, int(parchment.width * 0.12)))
         seal = "Z"
         seal_box = draw.textbbox((0, 0), seal, font=seal_font)
         draw.text((box_left + box_width - (seal_box[2] - seal_box[0]) - 18, box_top + box_height - (seal_box[3] - seal_box[1]) - 12), seal, font=seal_font, fill=(58, 42, 24, 217))
@@ -1219,15 +1213,38 @@ def _write_backstage_srt(path: Path, segments: list[dict[str, Any]], offsets: li
     path.write_text("\n".join(rows), encoding="utf-8")
 
 
+def _subtitle_font_path() -> Path | None:
+    """Prefer the redistributable bundled font on every supported platform."""
+    roots = [Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)), Path(__file__).resolve().parents[2]]
+    candidates = [root / "assets" / "fonts" / name for root in roots for name in ("DejaVuSans.ttf", "Arial.ttf")]
+    if sys.platform == "win32":
+        candidates.append(Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "arial.ttf")
+    elif sys.platform == "darwin":
+        candidates.append(Path("/System/Library/Fonts/Supplemental/Arial.ttf"))
+    else:
+        candidates.extend([Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"), Path("/usr/share/fonts/dejavu/DejaVuSans.ttf")])
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def _subtitle_font(size: int):
+    from PIL import ImageFont
+    path = _subtitle_font_path()
+    try:
+        return ImageFont.truetype(str(path) if path else "DejaVuSans.ttf", size)
+    except OSError:
+        return ImageFont.load_default()
+
+
 def _drawtext_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace(":", "\\:").replace(",", "\\,").replace("'", "\\'").replace("%", "\\%")
 
 
 def _backstage_drawtext_filter(segments: list[dict[str, Any]], offsets: list[float]) -> str:
-    font = "/System/Library/Fonts/Supplemental/Arial.ttf"
+    font_path = _subtitle_font_path()
+    font = "fontfile='" + _drawtext_escape(str(font_path).replace("\\", "/")) + "'" if font_path else "font='DejaVu Sans'"
     filters = []
     for start, end, text in _backstage_subtitle_entries(segments, offsets):
-        filters.append(f"drawtext=fontfile='{font}':text='{_drawtext_escape(text)}':fontcolor=white:fontsize=42:borderw=3:bordercolor=black:shadowx=2:shadowy=2:box=1:boxcolor=black@0.45:boxborderw=18:x=(w-text_w)/2:y=h-text_h-72:enable='between(t,{start:.3f},{end:.3f})'")
+        filters.append(f"drawtext={font}:text='{_drawtext_escape(text)}':fontcolor=white:fontsize=42:borderw=3:bordercolor=black:shadowx=2:shadowy=2:box=1:boxcolor=black@0.45:boxborderw=18:x=(w-text_w)/2:y=h-text_h-72:enable='between(t,{start:.3f},{end:.3f})'")
     return ",".join(filters)
 
 
@@ -1235,10 +1252,7 @@ def _render_subtitle_cards(directory: Path, entries: list[tuple[float, float, st
     """Create transparent PNG cards when this FFmpeg lacks libass/drawtext."""
     from PIL import Image, ImageDraw, ImageFont
     directory.mkdir(parents=True, exist_ok=True)
-    try:
-        font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 42)
-    except OSError:
-        font = ImageFont.load_default()
+    font = _subtitle_font(42)
     cards = []
     for index, (start, end, text) in enumerate(entries):
         image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
@@ -1272,10 +1286,7 @@ def _render_subtitle_track(directory: Path, entries: list[tuple[float, float, st
     """Render one transparent 1-fps subtitle track for FFmpeg's single overlay."""
     from PIL import Image, ImageDraw, ImageFont
     directory.mkdir(parents=True, exist_ok=True)
-    try:
-        font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 42)
-    except OSError:
-        font = ImageFont.load_default()
+    font = _subtitle_font(42)
     by_second = {second: text for start, end, text in entries for second in range(max(0, int(start)), min(int(duration) + 1, int(end) + 1))}
     for second in range(max(1, int(duration) + 1)):
         image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
