@@ -45,7 +45,7 @@ from core.backstage_feedback import content_fingerprint, load_feedback
 BACKSTAGE_ANALYSIS_VERSION = 7
 BACKSTAGE_EDIT_VERSION = 6
 BACKSTAGE_EXPORT_VERSION = 6
-BACKSTAGE_LOGO_DURATION = 10.0
+BACKSTAGE_LOGO_DURATION = 3.0
 BACKSTAGE_DEFAULT_TARGET_DURATION = 180.0
 BACKSTAGE_NORMAL_CUT = 6.0
 BACKSTAGE_REACTION_CUT = 3.5
@@ -1452,7 +1452,7 @@ def _backstage_single_pass_filtergraph(
         logo_a = len(segments) + (1 if music_path else 0)
         logo_b = logo_a + 1
         outro_start = max(0.0, content_duration - BACKSTAGE_LOGO_DURATION)
-        filters.append(f"[{logo_a}:v]format=rgba,scale=-1:{int(height * .72)},fade=t=in:st=0:d=1:alpha=1,fade=t=out:st=7:d=3:alpha=1[li]")
+        filters.append(f"[{logo_a}:v]format=rgba,scale=-1:{int(height * .72)},fade=t=in:st=0:d=1:alpha=1,fade=t=out:st={max(0.0, BACKSTAGE_LOGO_DURATION - 1):.3f}:d=1:alpha=1[li]")
         filters.append(f"[{logo_b}:v]format=rgba,scale=-1:{int(height * .72)},fade=t=in:st={outro_start:.3f}:d=1:alpha=1[lo]")
         filters.append(f"[vcat][li]overlay=(W-w)/2:(H-h)/2:enable='between(t,0,{BACKSTAGE_LOGO_DURATION:.3f})'[vlogo]")
         filters.append(f"[vlogo][lo]overlay=(W-w)/2:(H-h)/2:enable='between(t,{outro_start:.3f},{content_duration:.3f})'[vlogged]")
@@ -1677,7 +1677,7 @@ class BackstageExportStage(Stage):
             picture_fade_start = max(outro_start, current_duration - 2.0)
             audio_fade_start = max(0.0, current_duration - 2.0)
             if logo:
-                logo_cmd += ["-loop", "1", "-i", str(logo), "-loop", "1", "-i", str(logo), "-f", "lavfi", "-i", f"color=c=black:s={int(_target_size('youtube')[0])}x{int(_target_size('youtube')[1])}:r=30", "-filter_complex", (f"[0:v]setpts=PTS-STARTPTS[base];[1:v]format=rgba,scale=-1:{int(_target_size('youtube')[1] * 0.72)},fade=t=in:st=0:d=1:alpha=1,fade=t=out:st=7:d=3:alpha=1[li];[2:v]format=rgba,scale=-1:{int(_target_size('youtube')[1] * 0.72)},fade=t=in:st={outro_start:.3f}:d=1:alpha=1[lo];[3:v]format=rgba,fade=t=in:st={picture_fade_start:.3f}:d=2:alpha=1[black];[base][li]overlay=(W-w)/2:(H-h)/2:enable='between(t,0,{BACKSTAGE_LOGO_DURATION:.3f})'[v1];[v1][black]overlay=0:0:enable='between(t,{picture_fade_start:.3f},{current_duration:.3f})'[v2];[v2][lo]overlay=(W-w)/2:(H-h)/2:enable='between(t,{outro_start:.3f},{current_duration:.3f})'[v];[0:a]asetpts=PTS-STARTPTS,afade=t=out:st={audio_fade_start:.3f}:d=2[aout]"), "-map", "[v]", "-map", "[aout]"]
+                logo_cmd += ["-loop", "1", "-i", str(logo), "-loop", "1", "-i", str(logo), "-f", "lavfi", "-i", f"color=c=black:s={int(_target_size('youtube')[0])}x{int(_target_size('youtube')[1])}:r=30", "-filter_complex", (f"[0:v]setpts=PTS-STARTPTS[base];[1:v]format=rgba,scale=-1:{int(_target_size('youtube')[1] * 0.72)},fade=t=in:st=0:d=1:alpha=1,fade=t=out:st={max(0.0, BACKSTAGE_LOGO_DURATION - 1):.3f}:d=1:alpha=1[li];[2:v]format=rgba,scale=-1:{int(_target_size('youtube')[1] * 0.72)},fade=t=in:st={outro_start:.3f}:d=1:alpha=1[lo];[3:v]format=rgba,fade=t=in:st={picture_fade_start:.3f}:d=2:alpha=1[black];[base][li]overlay=(W-w)/2:(H-h)/2:enable='between(t,0,{BACKSTAGE_LOGO_DURATION:.3f})'[v1];[v1][black]overlay=0:0:enable='between(t,{picture_fade_start:.3f},{current_duration:.3f})'[v2];[v2][lo]overlay=(W-w)/2:(H-h)/2:enable='between(t,{outro_start:.3f},{current_duration:.3f})'[v];[0:a]asetpts=PTS-STARTPTS,afade=t=out:st={audio_fade_start:.3f}:d=2[aout]"), "-map", "[v]", "-map", "[aout]"]
             else:
                 logo_cmd += ["-filter_complex", f"[0:v]setpts=PTS-STARTPTS,fade=t=out:st={picture_fade_start:.3f}:d=2[v];[0:a]asetpts=PTS-STARTPTS,afade=t=out:st={audio_fade_start:.3f}:d=2[a]", "-map", "[v]", "-map", "[a]"]
             logo_cmd += ["-t", f"{current_duration:.3f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-threads", "2", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(with_logo)]

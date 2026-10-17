@@ -81,3 +81,9 @@ def test_window_analysis_reuses_one_decode_and_falls_back_on_failure(monkeypatch
     monkeypatch.setattr(b,'_volume_samples',lambda p:None)
     monkeypatch.setattr(b,'_mean_volume',lambda *a:-25)
     assert b._candidate_windows(dict(_path='video',_duration=40))
+
+
+def test_logo_is_three_seconds_with_fade_inside_its_interval():
+    import inspect
+    assert b.BACKSTAGE_LOGO_DURATION==3
+    assert 'fade=t=out:st=7:d=3' not in inspect.getsource(b)
