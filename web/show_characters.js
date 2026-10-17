@@ -214,10 +214,12 @@
     $("#showCharacterStudio").hidden = true;
     await window.ShowReview.refreshLibrary();
     const tool=document.querySelector('[name=rigtool]:checked')?.value;
-    const placement=state.placement?{...state.placement,action:tool==='mouth'&&state.mouth?'talk':tool==='eyes'&&state.eyes?.length?'look':state.placement.action||'none'}:null;
+    // A recorded or chosen voice is heard: the character talks (its jaw moves too when a mouth was marked).
+    const placement=state.placement?{...state.placement,action:voice||(tool==='mouth'&&state.mouth)?'talk':tool==='eyes'&&state.eyes?.length?'look':state.placement.action||'none'}:null;
     if(placement?.replaceId)await window.ShowReview.rigSaved(saved.cutout,placement);
     else if (!state.editing) await window.ShowReview.addToScene(saved.cutout,placement);
     showToast(state.editing ? `${saved.name} updated. Render its preview to check the changes.` : `${saved.name} is in the library and in this scene`);
+    if(placement?.fromProposal)await window.ShowReview.characterTakesPlace(placement.fromProposal,saved.name);
   }
 
   window.ShowPhotoStudio = {rigFrame: async(source,second,settings={})=>{

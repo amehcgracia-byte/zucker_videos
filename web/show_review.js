@@ -964,7 +964,8 @@
     if(kind.startsWith('original_')){
       const mode=kind==='original_mouth'?'mouth':'eyes';
       const selected=timelineItem(selectedEffect),p=selected?.params||{};
-      const placement={sceneId:scene.id,at:picked.start,duration:picked.end-picked.start,action:mode==='eyes'?'look':'talk',x:0,y:0,width:100};
+      const placement={sceneId:scene.id,at:picked.start,duration:picked.end-picked.start,action:mode==='eyes'?'look':'talk',x:0,y:0,width:100,
+        fromProposal:selected&&!selected.overlay&&selected.kind==='character'?selected.id:null};
       if(selected?.overlay){await ShowPhotoStudio.rigPicture(selected.overlay.asset,{mode,placement:{...placement,replaceId:selected.overlay.id}});return true;}
       if(p.picture){await ShowPhotoStudio.rigPicture(p.picture,{mode,placement:{...placement,width:30}});return true;}
       const [index,offset]=sourceAt(scene.segments,picked.start-scene.start);
@@ -1094,7 +1095,9 @@
     };
   }
 
-  document.addEventListener('click',event=>{const button=event.target.closest?.('[data-original-parts]');if(!button)return;selectedEffect=button.dataset.originalParts;const item=timelineItem(selectedEffect),scene=currentScene();extraTool('original_eyes',scene,{text:scene.text,start:item.at,end:Math.min(scene.end,item.at+item.duration)}).catch(error=>showToast(error.message,true));});
+  document.addEventListener('click',event=>{const button=event.target.closest?.('[data-original-parts]');if(!button)return;selectedEffect=button.dataset.originalParts;const item=timelineItem(selectedEffect),scene=currentScene();
+    // A "character speaks" opens on its mouth (record its voice there); every effect gets a visible duration, not its zero-length mark.
+    extraTool(item.kind==='character'?'original_mouth':'original_eyes',scene,{text:scene.text,start:item.at,end:Math.min(scene.end,item.at+Math.max(3,item.duration||0))}).catch(error=>showToast(error.message,true));});
   document.addEventListener('pointerdown',event=>{if(event.target.closest?.('#showSayTools'))event.preventDefault();});
   document.addEventListener('click',event=>{
     const button=event.target.closest?.('#showSayTools');if(!button)return;
@@ -2377,6 +2380,15 @@
 
   window.ShowReview = {
     open: openReview, openWorkspace, hull, refreshLibrary, addToScene, openLibrary,
+    // A character made in the studio from a "character speaks" card takes that effect's place: it is
+    // what speaks there now (with the voice recorded in the studio), so the effect stops asking for one.
+    async characterTakesPlace(id,name){
+      const item=review?.proposals.find(entry=>entry.id===id);
+      if(!item||item.kind!=='character'||item.status==='discarded')return;
+      await patch(id,{status:'discarded'});
+      renderScene();
+      showToast(`${name} takes the place of the proposed character: it speaks there with the voice you recorded.`);
+    },
     async rigSaved(asset,placement){
       const scene=currentScene();if(!scene||scene.id!==placement.sceneId)throw Error('Reopen the original scene to place this saved character.');
       const overlay=scene.overlays.find(o=>o.id===placement.replaceId);
