@@ -3378,16 +3378,16 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             picture.save(picture_path)
             lead = 0.3
             # A plain backdrop carrying the voice (it starts after a short lead), at the preview size.
-            subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i", f"color=c=0x2a302c:s=640x360:r=25:d={length + lead + 0.3:.3f}",
+            subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i", f"color=c=0x2a302c:s=960x540:r=25:d={length + lead + 0.3:.3f}",
                             "-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", source, "-filter_complex", f"[1:a]adelay={int(lead * 1000)}:all=1,apad[a]",
                             "-map", "0:v", "-map", "[a]", "-shortest", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", str(backdrop)],
                            check=True, capture_output=True, timeout=120)
-            sticker = {"image": str(picture_path), "at": lead, "duration": length, "x": 0.5, "y": 0.52, "width": 0.42, "effect": "none",
+            sticker = {"image": str(picture_path), "at": lead, "duration": length, "x": 0.5, "y": 0.5, "width": 0.62, "effect": "none",
                        "voice": [source, start, length]}
             if body.get("mouth"):
                 sticker.update(mouth=body["mouth"], mouth_open=0.08)
             if body.get("eyes"):
-                sticker.update(eyes=body["eyes"], eye_movement=0.05)
+                sticker.update(eyes=body["eyes"], eye_movement=0.22)
             render_gags(backdrop, [sticker], target, ffmpeg=ffmpeg)
         except (ValueError, TypeError, KeyError) as exc:
             return error_response("bad_request", str(exc), 400)

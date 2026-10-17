@@ -145,14 +145,22 @@ def load_sticker(raw: dict[str, Any], width: int, height: int) -> Sticker:
         sticker.mouth_drop = float(raw.get("mouth_open") or 0.08) * prepared_h
     if raw.get("eyes"):
         from core.show_pixel_layers import LookingPixels
-        sticker.eyes = LookingPixels(pixels, raw["eyes"], float(raw.get("eye_movement", 0.05)))
+        from core.show_pixel_layers import EYE_GLANCE
+        sticker.eyes = LookingPixels(pixels, raw["eyes"], float(raw.get("eye_movement", EYE_GLANCE)))
     return sticker
 
 
 def talking_pixels(sticker: Sticker, t: float) -> np.ndarray:
     """The sprite with its eyes glancing and its mouth's own pixels dropped by the voice's
     loudness, black showing behind (only inside the cut-out). Eyes and mouth move together."""
-    base = sticker.eyes.frame((t - sticker.at) / sticker.duration) if sticker.eyes is not None else sticker.pixels
+    if sticker.eyes is not None:
+        from core.show_pixel_layers import EYE_CYCLE_SEC
+        local = t - sticker.at
+        # A short picture glances once; a long one (a character talking) every few seconds.
+        share = local / sticker.duration if sticker.duration < EYE_CYCLE_SEC * 1.5 else (local % EYE_CYCLE_SEC) / EYE_CYCLE_SEC
+        base = sticker.eyes.frame(share)
+    else:
+        base = sticker.pixels
     if sticker.mouth is None or sticker.envelope is None or not len(sticker.envelope):
         return base
     index = min(len(sticker.envelope) - 1, max(0, int((t - sticker.at) * sticker.fps)))

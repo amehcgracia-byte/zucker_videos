@@ -187,7 +187,7 @@ def overlay_items(document: dict[str, Any], frame_aspect: float = 16 / 9) -> lis
                 item["pivot"] = rig["pivot"]
             if action in ("look", "talk") and rig.get("eyes"):        # a talking character glances too
                 item["eyes"] = rig["eyes"]
-                item["eye_movement"] = min(0.5, max(0.0, 0.05 * amount))
+                item["eye_movement"] = min(0.5, max(0.0, 0.22 * amount))   # "Movement strength" scales the glance
             if action == "talk" and (rig.get("mouth") or overlay.get("voice") or rig.get("voice")):
                 # Its jaw moves when a mouth was marked; its voice is heard either way. With
                 # "mine" it mouths the host's own words instead (no pause, the video's sound).

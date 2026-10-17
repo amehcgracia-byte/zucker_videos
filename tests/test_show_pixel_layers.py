@@ -12,17 +12,25 @@ from core.show_pixel_layers import LookingPixels
 
 def test_original_eyes_move_without_redrawing_and_return_without_looping():
     pixels=np.ones((80,120,4),np.float32)
-    pixels[30:45,35:45,:3]=[.2,.3,.6]
-    layer=LookingPixels(pixels,[{'rect':[35/119,30/79,9/119,14/79]}],amount=.5)
+    pixels[...,:3]=[.9,.7,.6]                     # skin
+    pixels[30:46,30:70,:3]=1.0                    # the white of the eye
+    iris=np.array([.2,.3,.6],np.float32)
+    pixels[34:42,46:54,:3]=iris                   # the iris, in the middle
+    layer=LookingPixels(pixels,[{'rect':[30/119,30/79,39/119,15/79]}],amount=.3)
     assert np.array_equal(layer.frame(0),pixels)
     assert np.array_equal(layer.frame(1),pixels)
     assert np.array_equal(layer.frame(10),pixels)
     left=layer.frame(.3)
-    # An exact original RGB value is translated, not generated or recoloured.
-    assert np.array_equal(left[35,31],pixels[35,35])
-    assert np.array_equal(left[:20],pixels[:20])
-    assert not np.array_equal(left,pixels)
+    # The iris slides clearly left inside the eye; the eye's corners and the skin stay put.
+    assert np.array_equal(left[38,40,:3],iris) and np.array_equal(left[38,52,:3],[1,1,1])
+    assert np.array_equal(left[38,30],pixels[38,30]) and np.array_equal(left[38,69],pixels[38,69])
+    outside=np.ones((80,120),bool);outside[30:46,30:70]=False
+    assert np.array_equal(left[outside],pixels[outside])
+    # Original pixels moved, not generated or recoloured.
+    assert {tuple(v) for v in left.reshape(-1,4)}<= {tuple(v) for v in pixels.reshape(-1,4)}
     assert np.array_equal(layer.frame(.3),layer.frame(.35))  # quiet held gaze
+    right=layer.frame(.6)
+    assert np.array_equal(right[38,58,:3],iris)
 
 
 def test_eye_regions_must_be_inside_the_cutout():
