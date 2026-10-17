@@ -87,3 +87,24 @@ def test_logo_is_three_seconds_with_fade_inside_its_interval():
     import inspect
     assert b.BACKSTAGE_LOGO_DURATION==3
     assert 'fade=t=out:st=7:d=3' not in inspect.getsource(b)
+
+
+def test_whisper_choice_and_glossary_reach_the_actual_pipeline_stage(tmp_path,monkeypatch):
+    import inspect
+    import server.wizard as w
+    from core.project import create_project
+    monkeypatch.setenv('ZUCKER_DATA_ROOT',str(tmp_path/'data'))
+    monkeypatch.setattr(w,'load_global_config',lambda:{})
+    for name in dir(w):
+        if name.startswith('_store_'):monkeypatch.setattr(w,name,lambda *a,**k:None)
+    monkeypatch.setattr(w,'_predicted_total_seconds',lambda *a:0)
+    p=create_project('Actual model',str(tmp_path/'Actual model.zuckervid'))
+    p.data['settings']['wizard']={'backstage_glossary':'Band names','backstage_whisper_language_overrides':{'one':'es'}}
+    runner=w.WizardRunner();seen=[]
+    monkeypatch.setattr(runner,'_run_stage',lambda job,project,stage,*a:seen.append(dict(project.data['settings']['wizard'])))
+    args={name:None for name in inspect.signature(runner._finish).parameters}
+    args.update(job=w.WizardJob(id='test'),project=p,name='Test',platform='backstage',master_path='',songs_path=None,video_paths=[],backstage_whisper_model='small')
+    runner._finish(**args)
+    assert seen and seen[0]['backstage_whisper_model']=='small'
+    assert seen[0]['backstage_glossary']=='Band names'
+    assert seen[0]['backstage_whisper_language_overrides']=={'one':'es'}

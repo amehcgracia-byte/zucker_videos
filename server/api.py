@@ -1688,6 +1688,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if state.project is not None:
                 state.project.data.setdefault("settings", {}).setdefault("wizard", {})["instrument_highlights"] = bool(body.get("instrument_highlights"))
                 state.project.save()
+            backstage_whisper_model = str(body.get("backstage_whisper_model") or "medium")
+            if platform == "backstage" and backstage_whisper_model not in {"small", "medium", "large-v3"}:
+                return error_response("bad_request", "Choose small, medium or large-v3 for Backstage Whisper", 400)
             options = {
                 "name": name or "New Jam",
                 "platform": platform,
@@ -1704,6 +1707,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 "sweep_speed_deg_per_sec": sweep_speed_deg_per_sec,
                 "reel_duration_sec": reel_duration_sec,
                 "backstage_target_duration_sec": reel_duration_sec if platform == "backstage" else None,
+                "backstage_whisper_model": backstage_whisper_model,
                 "reel_aspect": reel_aspect,
                 "reel_mix_vertical_ratio": reel_mix_vertical_ratio,
                 "reel_cuts_per_source": reel_cuts_per_source,
