@@ -1688,6 +1688,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if state.project is not None:
                 state.project.data.setdefault("settings", {}).setdefault("wizard", {})["instrument_highlights"] = bool(body.get("instrument_highlights"))
                 state.project.save()
+            backstage_whisper_model = str(body.get("backstage_whisper_model") or "medium")
+            if platform == "backstage" and backstage_whisper_model not in {"small", "medium", "large-v3"}:
+                return error_response("bad_request", "Choose small, medium or large-v3 for Backstage Whisper", 400)
             options = {
                 "name": name or "New Jam",
                 "platform": platform,
@@ -1704,6 +1707,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 "sweep_speed_deg_per_sec": sweep_speed_deg_per_sec,
                 "reel_duration_sec": reel_duration_sec,
                 "backstage_target_duration_sec": reel_duration_sec if platform == "backstage" else None,
+                "backstage_whisper_model": backstage_whisper_model,
                 "reel_aspect": reel_aspect,
                 "reel_mix_vertical_ratio": reel_mix_vertical_ratio,
                 "reel_cuts_per_source": reel_cuts_per_source,
@@ -1889,11 +1893,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             cut["mark"] = mark
             cut["status"] = "dropped" if mark == "drop" else "pending"
             segments = list(edit.get("segments") or [])
-            if index < len(segments):
-                segments[index]["paper_mark"] = mark
+            from core.stages.backstage import selection_summary
+            segment = next((item for i, item in enumerate(segments) if str(item.get("id") or f"backstage-{i:04d}") == cut_id), None)
+            if segment is None:
+                return error_response("not_found", "paper-edit segment not found", 404)
+            segment["paper_mark"] = mark
             edit["segments"] = segments
-            edit["cut_count"] = max(0, len(segments) - 1)
-            edit["selected_duration_sec"] = round(sum(float(item.get("duration_sec") or 0) for item in segments), 3)
+            edit.update(selection_summary(segments))
+            paper.update(selection_summary(segments))
             for order, row in enumerate(paper.get("cuts") or [], 1):
                 row["order"] = order
             write = lambda path, payload: path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -4764,6 +4771,25 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             "spherical_landmarks_by_source": project_settings.get("spherical_landmarks_by_source") or {},
         })
 
+    @app.get("/api/v1/settings/narrative")
+    def api_narrative_status() -> Response:
+        from core.narrative_credentials import status
+        return jsonify(status())
+
+    @app.put("/api/v1/settings/narrative")
+    def api_narrative_key() -> Response:
+        from core.narrative_credentials import save_key, status
+        try:
+            body = _json_body()
+            if not isinstance(body.get("key"), str):
+                return error_response("invalid_key", "Enter a Narrative API key", 400)
+            save_key(body["key"])
+            return jsonify(status())
+        except ValueError as exc:
+            return error_response("invalid_key", str(exc), 400)
+        except RuntimeError as exc:
+            return error_response("secure_storage_unavailable", str(exc), 503)
+
     @app.get("/api/v1/app/config")
     def api_app_config() -> Response:
         config = load_global_config()
@@ -4991,6 +5017,11 @@ def _require_project(state: AppState) -> Project:
 
 def _apply_run_options(project: Project, body: dict[str, Any]) -> None:
     """Store per-run choices on the project that will actually render."""
+    if body.get("platform") == "backstage":
+        model = body.get("backstage_whisper_model") or "medium"
+        if model not in {"small", "medium", "large-v3"}:
+            raise ValueError("Choose small, medium or large-v3 for Backstage Whisper")
+        project.data.setdefault("settings", {}).setdefault("wizard", {})["backstage_whisper_model"] = model
     settings = project.data.setdefault("settings", {})
     settings.setdefault("wizard", {})["variation_seed"] = str(body.get("variation_seed") or time.time_ns())
     settings.setdefault("export", {})["draft"] = bool(body.get("draft_export"))

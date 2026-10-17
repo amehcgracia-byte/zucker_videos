@@ -2308,3 +2308,8 @@ body:has(#showReviewBox.show-fit) #backdropLogo {max-height:calc(100vh - 130px);
 .show-background-live { left: 2% !important; top: 2% !important; transform: none; width: 22%; outline: 2px dashed #8fd3ff; background: rgba(0,0,0,.55); border-radius: 6px; cursor: pointer; }
 .show-background-live img { opacity: .9; border-radius: 4px 4px 0 0; }
 .show-background-live span { display: block; padding: 3px 6px; font-size: 11px; color: #fff; }
+
+.paper-mark-buttons { display: flex; flex-wrap: wrap; gap: .3rem; }
+.paper-mark-buttons button { padding: .4rem .65rem; }
+.paper-mark-buttons button.active { background: var(--accent, #b3d7a3); color: #142011; outline: 2px solid currentColor; }
+.paper-edit-dropped .paper-edit-main { opacity: .55; }

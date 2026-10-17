@@ -1429,7 +1429,7 @@ const EDIT_MODES = {
   reel: { title: "Reel", files: "Videos, optional master audio and your logo", audio: "Reel needs master audio, or one video with its own audio." },
   "360": { title: "360", files: "A 360 video, optional master audio and your logo", audio: "360 needs master audio, or one video with its own audio." },
   medley: { title: "Medley Populi", files: "Edited videos from different songs; separate audio files are optional", audio: "No external audio: Medley uses each video's audio. Videos without audio remain silent." },
-  backstage: { title: "Backstage", files: "Videos with original camera audio and optional images", audio: "Backstage uses the original camera audio; no master is required." },
+  backstage: { title: "Backstage", files: "Videos with original camera audio", audio: "Backstage uses the original camera audio; no master is required." },
   show: { title: "Show", files: "The video where you talk to camera, and your logo", audio: "Show uses the sound of your video; no master is required." },
 };
 function showEditTypeChooser() {
@@ -2151,6 +2151,7 @@ async function resumeInputsFromProject() {
   sphericalProjectSettings = project;
   currentVariationSeed = String(project.settings?.wizard?.variation_seed || currentVariationSeed);
   const savedPlatform = project.settings?.wizard?.platform;
+  if(document.querySelector("#backstageWhisperModel"))document.querySelector("#backstageWhisperModel").value=project.settings?.wizard?.backstage_whisper_model||"medium";
   if (savedPlatform) choosePlatformInUi(savedPlatform);
   const inputs = project.inputs || {};
   for (const warning of inputs.warnings || []) {
@@ -3396,18 +3397,46 @@ async function openShotReview() {
   return result;
 }
 
+async function refreshNarrativeStatus() {
+  const box=document.querySelector('#narrativeAiStatus');
+  if(!box)return;
+  try {box.textContent=(await api('/settings/narrative')).detail;}
+  catch(error){box.textContent=`Narrative AI: limited — ${error.message}`;}
+}
+document.addEventListener('click',async event=>{
+  const button=event.target.closest?.('#narrativeKeySave,#narrativeKeyRemove');if(!button)return;
+  const input=document.querySelector('#narrativeApiKey');button.disabled=true;
+  try {const result=await api('/settings/narrative',{method:'PUT',body:JSON.stringify({key:button.id==='narrativeKeyRemove'?'':input.value})});input.value='';document.querySelector('#narrativeAiStatus').textContent=result.detail;}
+  catch(error){showToast(error.message,true);}finally{button.disabled=false;}
+});
+
+function updatePaperEdit(paper) {
+  paperEditCuts = paper.cuts || [];
+  const kept=paperEditCuts.filter(cut=>cut.mark!=='drop');
+  const summary=document.querySelector('#paperEditSummary');
+  if(summary)summary.textContent=`${kept.length} kept clips · ${Math.max(0,kept.length-1)} cuts · ${Number(paper.selected_duration_sec??kept.reduce((sum,cut)=>sum+Number(cut.duration_sec||0),0)).toFixed(1)} s · text and marks are editable.`;
+  const list=document.querySelector('#paperEditList');
+  if(!list)return;
+  for(const row of list.querySelectorAll('[data-paper-id]')){
+    const cut=paperEditCuts.find(item=>item.id===row.dataset.paperId);if(!cut)continue;
+    row.classList.toggle('paper-edit-dropped',cut.mark==='drop');
+    const select=row.querySelector('select[data-paper-mark]');if(select)select.value=cut.mark||'keep';
+    for(const button of row.querySelectorAll('button[data-paper-mark]')){const active=button.value===(cut.mark||'keep');button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));}
+  }
+}
+
 function renderPaperEdit(paper) {
   renderStoryboard(paper.storyboard);
   paperEditCuts = paper.cuts || [];
   const list = document.querySelector("#paperEditList");
   const summary = document.querySelector("#paperEditSummary");
-  if (summary) summary.textContent = `${paperEditCuts.length} cuts · editable text and keep/drop/closing choice per cut.`;
+  updatePaperEdit(paper);
   if (!list) return;
   list.innerHTML = paperEditCuts.map((cut) => `
-    <div class="paper-edit-row">
+    <div class="paper-edit-row" data-paper-id="${escapeHtml(cut.id)}">
       ${cut.thumbnail ? `<img class="paper-edit-thumb" src="${escapeHtml(cut.thumbnail)}" alt="Thumbnail of ${escapeHtml(cut.source)}" />` : `<span class="paper-edit-thumb review-thumb-placeholder">—</span>`}
       <span class="paper-edit-order">${cut.order}</span>
-      <span class="paper-edit-main"><strong>${escapeHtml(cut.source)} · ${escapeHtml(cut.section)}</strong><span>${Number(cut.in_sec).toFixed(1)}–${Number(cut.out_sec).toFixed(1)} s · ${Number(cut.duration_sec).toFixed(1)} s · ${escapeHtml(cut.language || "—")}</span><span class="paper-edit-original">${cut.text_original ? escapeHtml(cut.text_original) : "no dialogue"}</span>${cut.english_text ? `<span class="paper-edit-english">${escapeHtml(cut.english_text)}</span>` : ""}<em>score ${Number(cut.narrative_score ?? cut.interest_score ?? 0).toFixed(2)} · ${escapeHtml(cut.selection_reason || "")}</em>${cut.narrative_scores && Object.keys(cut.narrative_scores).length ? `<small>LLM: ${escapeHtml(JSON.stringify(cut.narrative_scores))}</small>` : ""}<input class="paper-edit-subtitle" data-paper-subtitle="${escapeHtml(cut.id)}" value="${escapeHtml(cut.subtitle_text || cut.english_text || "")}" aria-label="English subtitle for ${escapeHtml(cut.source)}" /></span><select data-paper-mark="${escapeHtml(cut.id)}" aria-label="Mark ${escapeHtml(cut.source)}"><option value="keep" ${cut.mark === "keep" ? "selected" : ""}>keep</option><option value="drop" ${cut.mark === "drop" ? "selected" : ""}>drop</option><option value="closing" ${cut.mark === "closing" ? "selected" : ""}>closing</option></select>
+      <span class="paper-edit-main"><strong>${escapeHtml(cut.source)} · ${escapeHtml(cut.section)}</strong><span>${Number(cut.in_sec).toFixed(1)}–${Number(cut.out_sec).toFixed(1)} s · ${Number(cut.duration_sec).toFixed(1)} s · ${escapeHtml(cut.language || "—")}</span><span class="paper-edit-original">${cut.text_original ? escapeHtml(cut.text_original) : "no dialogue"}</span>${cut.english_text ? `<span class="paper-edit-english">${escapeHtml(cut.english_text)}</span>` : ""}<em>score ${Number(cut.narrative_score ?? cut.interest_score ?? 0).toFixed(2)} · ${escapeHtml(cut.selection_reason || "")}</em><input class="paper-edit-subtitle" data-paper-subtitle="${escapeHtml(cut.id)}" value="${escapeHtml(cut.subtitle_text || cut.english_text || "")}" aria-label="English subtitle for ${escapeHtml(cut.source)}" /></span><span class="paper-mark-buttons" role="group" aria-label="Mark ${escapeHtml(cut.source)}">${[['keep','✓ Keep'],['drop','✕ Drop'],['closing','▶ Closing']].map(([mark,label])=>`<button type="button" data-paper-mark="${escapeHtml(cut.id)}" value="${mark}" aria-pressed="${(cut.mark||'keep')===mark}" class="${(cut.mark||'keep')===mark?'active':''}">${label}</button>`).join('')}</span>
     </div>`).join("");
 }
 
@@ -3418,7 +3447,8 @@ function renderStoryboard(payload) {
   if (!box || !plan || !music) return;
   const storyboard = payload?.storyboard || {};
   if (!payload || !["ready", "ready_cached"].includes(payload.status) || !storyboard.title) {
-    box.hidden = true;
+    box.hidden = !payload || payload.status !== 'unavailable';
+    if(!box.hidden){const title=document.querySelector('#storyboardTitle');if(title)title.textContent='Storyboard unavailable';const reason=document.querySelector('#storyboardLogline');if(reason)reason.textContent=payload.reason||'Narrative AI is unavailable. Add a key in Backstage options.';plan.textContent='';music.textContent='';}
     return;
   }
   box.hidden = false;
@@ -3426,9 +3456,9 @@ function renderStoryboard(payload) {
   const logline = document.querySelector("#storyboardLogline");
   if (title) title.textContent = storyboard.title;
   if (logline) logline.textContent = storyboard.logline || "";
-  const labels = { opening: "Apertura", development: "Desarrollo", closing: "Cierre" };
+  const labels = { opening: "Opening", development: "Development", closing: "Closing" };
   plan.innerHTML = ["opening", "development", "closing"].map((phase) => {
-    const rows = (storyboard[phase] || []).map((scene) => `<div class="storyboard-scene"><strong>${escapeHtml(scene.sequence_id || "")} · ${escapeHtml(scene.role || "")}</strong><span>${escapeHtml(scene.reason || "")}</span><em>${Number(scene.suggested_duration_sec || 0).toFixed(1)} s sugeridos</em></div>`).join("");
+    const rows = (storyboard[phase] || []).map((scene) => `<div class="storyboard-scene"><strong>${escapeHtml(scene.sequence_id || "")} · ${escapeHtml(scene.role || "")}</strong><span>${escapeHtml(scene.reason || "")}</span><em>${Number(scene.suggested_duration_sec || 0).toFixed(1)} s suggested</em></div>`).join("");
     return rows ? `<section class="storyboard-phase"><h4>${labels[phase]}</h4>${rows}</section>` : "";
   }).join("");
   music.innerHTML = (storyboard.music_plan || []).map((item) => `<p><strong>${escapeHtml(item.phase || "")}</strong>: ${escapeHtml(item.policy || "")} <em>${escapeHtml(item.transition || "")}</em></p>`).join("");
@@ -3447,6 +3477,7 @@ window.addEventListener("pywebviewready", syncDesktopEditMode);
 
 function applyEditTypeMode() {
   syncDesktopEditMode();
+  if(selectedPlatform==='backstage')refreshNarrativeStatus();
   const highlightOption = document.querySelector("#instrumentHighlightsOption");
   if (highlightOption) highlightOption.hidden = selectedPlatform !== "youtube";
   // 360 mode exports the whole sphere; there are no reprojected camera moves to lighten.
@@ -3959,6 +3990,7 @@ async function startWizard(options = {}) {
       sweep_speed_deg_per_sec: appConfig?.sweep_speed_deg_per_sec || 5,
       spherical_source_path: selectedSphericalSourcePath(),
       reel_duration_sec: reelOptionsFromForm().duration,
+      backstage_whisper_model: document.querySelector("#backstageWhisperModel")?.value || "medium",
       backstage_duration_sec: Number(document.querySelector("#backstageDuration")?.value || 180),
       reel_aspect: reelOptionsFromForm().aspect,
       reel_mix_vertical_ratio: reelOptionsFromForm().mixVerticalRatio,
@@ -5138,6 +5170,14 @@ document.addEventListener("click", (event) => {
   }
 });
 
+let paperMarkSave=Promise.resolve();
+document.addEventListener('click',event=>{
+  const button=event.target.closest?.('button[data-paper-mark]');if(!button)return;
+  button.disabled=true;
+  paperMarkSave=paperMarkSave.catch(()=>{}).then(()=>api('/wizard/paper-edit/mark',{method:'POST',body:JSON.stringify({id:button.dataset.paperMark,mark:button.value})}))
+    .then(paper=>updatePaperEdit(paper)).catch(error=>showToast(error.message,true)).finally(()=>{button.disabled=false;});
+});
+
 document.addEventListener("change", (event) => {
   const target = event.target;
   if (target instanceof HTMLInputElement && target.id === "personalLogoInput") {
@@ -5145,7 +5185,7 @@ document.addEventListener("change", (event) => {
   }
   if (target instanceof HTMLInputElement && target.dataset.paperSubtitle) {
     api("/wizard/paper-edit/text", { method: "POST", body: JSON.stringify({ id: target.dataset.paperSubtitle, text: target.value }) })
-      .then((paper) => { renderPaperEdit(paper); })
+      .then((paper) => { updatePaperEdit(paper); })
       .catch((error) => showToast(error.message, true));
   }
   if (target instanceof HTMLSelectElement && target.dataset.reviewTransition != null) {
@@ -5155,7 +5195,7 @@ document.addEventListener("change", (event) => {
   }
   if (target instanceof HTMLSelectElement && target.dataset.paperMark) {
     api("/wizard/paper-edit/mark", { method: "POST", body: JSON.stringify({ id: target.dataset.paperMark, mark: target.value }) })
-      .then((paper) => { renderPaperEdit(paper); })
+      .then((paper) => { updatePaperEdit(paper); })
       .catch((error) => showToast(error.message, true));
   }
 });

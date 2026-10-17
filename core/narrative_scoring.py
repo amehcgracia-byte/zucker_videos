@@ -22,10 +22,12 @@ SCORE_SCHEMA = {
 
 
 def _provider_config(provider: str | None = None, model: str | None = None) -> dict[str, str]:
+    from core.narrative_credentials import saved_key
     selected = (provider or os.environ.get("NARRATIVE_LLM_PROVIDER") or "deepseek").strip().lower()
+    key = (os.environ.get("NARRATIVE_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY" if selected == "openai" else "DEEPSEEK_API_KEY") or saved_key()).strip()
     if selected == "openai":
-        return {"provider": "openai", "base_url": os.environ.get("NARRATIVE_LLM_BASE_URL", "https://api.openai.com/v1"), "model": model or os.environ.get("NARRATIVE_LLM_MODEL", "gpt-5-mini"), "key": os.environ.get("NARRATIVE_LLM_API_KEY", os.environ.get("OPENAI_API_KEY", "")).strip()}
-    return {"provider": "deepseek", "base_url": os.environ.get("NARRATIVE_LLM_BASE_URL", "https://api.deepseek.com"), "model": model or os.environ.get("NARRATIVE_LLM_MODEL", "deepseek-v4-pro"), "key": os.environ.get("NARRATIVE_LLM_API_KEY", os.environ.get("DEEPSEEK_API_KEY", "")).strip()}
+        return {"provider": "openai", "base_url": os.environ.get("NARRATIVE_LLM_BASE_URL", "https://api.openai.com/v1"), "model": model or os.environ.get("NARRATIVE_LLM_MODEL", "gpt-5-mini"), "key": key}
+    return {"provider": "deepseek", "base_url": os.environ.get("NARRATIVE_LLM_BASE_URL", "https://api.deepseek.com"), "model": model or os.environ.get("NARRATIVE_LLM_MODEL", "deepseek-v4-pro"), "key": key}
 
 
 def _validate_scores(data: Any, expected_ids: set[str]) -> list[dict[str, Any]]:

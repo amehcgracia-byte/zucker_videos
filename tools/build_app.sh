@@ -78,6 +78,7 @@ PY
   --specpath "$BUILD" \
   --add-data "$ROOT/web:web" \
   --add-data "$ROOT/assets/clay:assets/clay" \
+  --add-data "$ROOT/assets/fonts:assets/fonts" \
   --add-data "$ROOT/assets/intro_card_watermark.png:assets" \
   --add-data "$ROOT/assets/models:assets/models" \
   --add-data "$ROOT/captions/presets.json:captions" \
@@ -114,6 +115,7 @@ PY
   --hidden-import faster_whisper \
   --collect-submodules faster_whisper \
   --hidden-import onnxruntime \
+  --hidden-import keyring.backends.macOS \
   --hidden-import tokenizers \
   --hidden-import ctranslate2 \
   --collect-submodules server \

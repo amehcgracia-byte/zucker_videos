@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Zucker Editor</title>
     <link rel="icon" href="/logo_editor_green.png?v=editor-ui-4" />
-    <link rel="stylesheet" href="/styles.css?v=editor-ui-28" />
+    <link rel="stylesheet" href="/styles.css?v=editor-ui-29" />
     <script src="/theme.js?v=editor-ui-4"></script>
   </head>
   <body>
@@ -229,16 +229,22 @@
         </details>
         <details id="backstageOptions" class="reel-options" hidden>
           <summary>Backstage options</summary>
+          <p id="narrativeAiStatus" role="status">Checking Narrative AI…</p>
+          <label>Narrative API key <input id="narrativeApiKey" type="password" autocomplete="off" placeholder="Enter your provider key" /></label>
+          <button type="button" id="narrativeKeySave">Save key securely</button>
+          <button type="button" id="narrativeKeyRemove">Remove saved key</button>
+          <small>Stored in your system credential vault, never in the project. Your configured narrative provider may charge for requests.</small>
           <div class="reel-option-grid">
+            <label>Whisper model <select id="backstageWhisperModel"><option value="small">Small</option><option value="medium" selected>Medium</option><option value="large-v3">Large v3</option></select></label>
             <label>Montage duration <output id="backstageDurationValue">180s</output><input id="backstageDuration" type="range" min="30" max="240" step="5" value="180" /></label>
           </div>
           <p class="field-help">Choose the target length, up to 4 minutes. The story-bite selection adapts to it.</p>
           <label class="field-label">Parchment messages (one per field; spread across the edit)</label>
           <div class="backstage-messages">
-            <input id="backstageMessage1" type="text" maxlength="180" placeholder="Mensaje 1" />
-            <input id="backstageMessage2" type="text" maxlength="180" placeholder="Mensaje 2" />
-            <input id="backstageMessage3" type="text" maxlength="180" placeholder="Mensaje 3" />
-            <input id="backstageMessage4" type="text" maxlength="180" placeholder="Mensaje 4" />
+            <input id="backstageMessage1" type="text" maxlength="180" placeholder="Message 1" />
+            <input id="backstageMessage2" type="text" maxlength="180" placeholder="Message 2" />
+            <input id="backstageMessage3" type="text" maxlength="180" placeholder="Message 3" />
+            <input id="backstageMessage4" type="text" maxlength="180" placeholder="Message 4" />
           </div>
         </details>
         <details id="sphericalSetup" class="spherical-setup" hidden>
@@ -510,7 +516,7 @@
     <script src="/native_bridge.js?v=editor-ui-4"></script>
     <link rel="stylesheet" href="/tutorial.css" />
     <script src="/tutorial.js"></script>
-    <script src="/app.js?v=editor-ui-12"></script>
+    <script src="/app.js?v=editor-ui-13"></script>
     <script src="/show_edit_queue.js?v=1"></script>
     <script src="/show_clock.js?v=1"></script>
     <script src="/show_live_captions.js?v=2"></script>

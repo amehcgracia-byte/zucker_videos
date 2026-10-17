@@ -42,10 +42,10 @@ from core.narrative_sequences import group_story_bites
 from core.backstage_feedback import content_fingerprint, load_feedback
 
 
-BACKSTAGE_ANALYSIS_VERSION = 7
+BACKSTAGE_ANALYSIS_VERSION = 8
 BACKSTAGE_EDIT_VERSION = 6
-BACKSTAGE_EXPORT_VERSION = 6
-BACKSTAGE_LOGO_DURATION = 10.0
+BACKSTAGE_EXPORT_VERSION = 7
+BACKSTAGE_LOGO_DURATION = 3.0
 BACKSTAGE_DEFAULT_TARGET_DURATION = 180.0
 BACKSTAGE_NORMAL_CUT = 6.0
 BACKSTAGE_REACTION_CUT = 3.5
@@ -61,7 +61,6 @@ BACKSTAGE_MUSIC_MIN_DURATION = 18.0
 BACKSTAGE_MUSIC_FADE_IN = 1.0
 BACKSTAGE_MUSIC_FADE_OUT = 1.0
 BACKSTAGE_MUSIC_TARGET_LUFS = -16.0
-BACKSTAGE_AUDIO_STATES = ("music_only", "music_plus_clip_audio", "clip_audio_only")
 BACKSTAGE_MUSIC_EDGE_GUARD = 4.0
 BACKSTAGE_DEFAULT_BURN_SUBTITLES = True
 
@@ -127,6 +126,38 @@ def _mean_volume(path: str, start: float, duration: float) -> float:
     return float(match.group(1)) if match else -60.0
 
 
+def _volume_samples(path: str):
+    """Decode a source once; PCM is temporary and never alters media/caches."""
+    import wave
+    import numpy as np
+    ffmpeg = tool_status().get("ffmpeg_path")
+    if not ffmpeg:
+        return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="zucker-volume-") as folder:
+            wav = Path(folder) / "mono.wav"
+            subprocess.run([str(ffmpeg), "-v", "error", "-nostdin", "-y", "-i", path,
+                            "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav)],
+                           capture_output=True, check=True, timeout=300)
+            with wave.open(str(wav), "rb") as source:
+                rate = source.getframerate()
+                samples = np.frombuffer(source.readframes(source.getnframes()), dtype="<i2")
+            return samples, rate
+    except (OSError, ValueError, EOFError, wave.Error, subprocess.SubprocessError):
+        return None
+
+
+def _sample_volume(audio, start: float, duration: float) -> float:
+    import numpy as np
+    samples, rate = audio
+    window = samples[max(0, int(round(start * rate))):max(0, int(round((start + duration) * rate)))]
+    if not len(window):
+        return -91.0
+    window = window.astype(np.float64)
+    rms = float(np.sqrt(np.mean(window * window))) / 32768.0
+    return 20 * math.log10(max(rms, 1 / 32768.0))
+
+
 def _has_audio(path: str) -> bool:
     try:
         return any(stream.get("codec_type") == "audio" for stream in ffprobe(path).get("streams") or [])
@@ -139,6 +170,7 @@ def _candidate_windows(record: dict[str, Any]) -> list[dict[str, Any]]:
     total = float(record["_duration"])
     if not _has_audio(path):
         return []
+    audio = _volume_samples(path)
     windows: list[dict[str, Any]] = []
     cursor = 0.0
     while cursor < total - 2.5:
@@ -146,7 +178,7 @@ def _candidate_windows(record: dict[str, Any]) -> list[dict[str, Any]]:
         duration = min(BACKSTAGE_NORMAL_CUT, remaining)
         if duration < 2.5:
             break
-        volume = _mean_volume(path, cursor, duration)
+        volume = _sample_volume(audio, cursor, duration) if audio is not None else _mean_volume(path, cursor, duration)
         # Keep non-silent moments. Loud/reactive windows are shorter so a
         # laugh or exclamation lands as a punchy cut; quieter but active
         # dialogue receives a longer scene window.
@@ -177,6 +209,17 @@ def _candidate_windows(record: dict[str, Any]) -> list[dict[str, Any]]:
     return windows
 
 
+def selected_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    kept = [item for item in segments if item.get("paper_mark") != "drop"]
+    return [item for item in kept if item.get("paper_mark") != "closing"] + [item for item in kept if item.get("paper_mark") == "closing"]
+
+
+def selection_summary(segments: list[dict[str, Any]]) -> dict[str, Any]:
+    kept = selected_segments(segments)
+    return {"selected_duration_sec": round(sum(float(item.get("duration_sec") or 0) for item in kept), 3),
+            "cut_count": max(0, len(kept) - 1)}
+
+
 class BackstageAnalysisStage(Stage):
     """Find non-dead documentary moments from each video's own audio."""
 
@@ -184,7 +227,9 @@ class BackstageAnalysisStage(Stage):
     dependencies = ["ingest"]
 
     def inputs_fingerprint(self, project: Project) -> str:
-        return stable_fingerprint({"videos": project.data.get("inputs", {}).get("videos", []), "version": BACKSTAGE_ANALYSIS_VERSION, "mode": "backstage"})
+        wizard = project.data.get("settings", {}).get("wizard") or {}
+        options = {key: value for key, value in wizard.items() if key.startswith("backstage_whisper_") or key == "backstage_glossary"}
+        return stable_fingerprint({"videos": project.data.get("inputs", {}).get("videos", []), "version": BACKSTAGE_ANALYSIS_VERSION, "mode": "backstage", "transcription": options})
 
     def outputs(self, project: Project) -> dict[str, str]:
         return {"backstage_analysis": str(artifact_path(project, "backstage_analysis.json"))}
@@ -193,7 +238,7 @@ class BackstageAnalysisStage(Stage):
         records = _video_records(project)
         sources = []
         for index, record in enumerate(records):
-            progress_callback(int(index / max(1, len(records)) * 90), f"Listening for Backstage moments: {Path(record['_path']).name}")
+            progress_callback(int(index / max(1, len(records)) * 25), f"Listening for Backstage moments: {Path(record['_path']).name}")
             moments = _candidate_windows(record)
             sources.append({
                 "path": record["_path"],
@@ -207,13 +252,14 @@ class BackstageAnalysisStage(Stage):
         transcription = transcribe_sources(
             sources,
             artifact_path(project, "backstage_transcription.json"),
-            lambda percent, detail: progress_callback(90 + int(percent * 0.1), detail),
-            model_name=str((project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_model") or "large-v3"),
+            lambda percent, detail: progress_callback(25 + int(percent * 0.65), detail),
+            model_name=str((project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_model") or "medium"),
             task=str((project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_task") or "transcribe"),
             language_overrides=(project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_language_overrides") or {},
             model_by_language=(project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_model_by_language") or {},
             initial_prompt=str((project.data.get("settings", {}).get("wizard") or {}).get("backstage_glossary") or (project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_initial_prompt") or os.environ.get("BACKSTAGE_GLOSSARY", "")),
         )
+        progress_callback(90, "Preparing narrative scoring and storyboard")
         story_bites = transcription.get("story_bites") or []
         sequences = group_story_bites(story_bites)
         scoring = score_story_sequences(sequences)
@@ -1122,13 +1168,7 @@ def _render_parchment_cards(directory: Path, messages: list[str], width: int, he
     parchment_path = bundle_root / "assets" / "parchment_full.png"
     if not parchment_path.is_file():
         raise FileNotFoundError(f"Clean parchment asset is missing: {parchment_path}")
-    try:
-        font_path = str(bundle_root / "assets" / "fonts" / "BigCaslon.ttf")
-        if not Path(font_path).exists():
-            font_path = "/Library/Fonts/ACaslonPro-Regular.otf"
-        font = ImageFont.truetype(font_path, 46)
-    except OSError:
-        font = ImageFont.load_default()
+    font = _subtitle_font(46)
     parchment = Image.open(parchment_path).convert("RGBA")
     parchment_height = int(height * 0.88)
     parchment = parchment.resize((int(parchment.width * parchment_height / parchment.height), parchment_height), Image.Resampling.LANCZOS)
@@ -1144,7 +1184,7 @@ def _render_parchment_cards(directory: Path, messages: list[str], width: int, he
         draw = ImageDraw.Draw(image)
         size = 46
         while size > 22:
-            font = ImageFont.truetype(font_path, size) if Path(font_path).exists() else ImageFont.load_default()
+            font = _subtitle_font(size)
             lines = textwrap.wrap(message, width=max(18, int(box_width / max(1, size * 0.52)))) or [message]
             line_height = int(size * 1.35)
             if len(lines) * line_height <= box_height:
@@ -1155,7 +1195,7 @@ def _render_parchment_cards(directory: Path, messages: list[str], width: int, he
             bbox = draw.textbbox((0, 0), line, font=font)
             x = (width - (bbox[2] - bbox[0])) / 2
             draw.text((x, top + line_index * line_height), line, font=font, fill=(55, 35, 18, 255))
-        seal_font = ImageFont.truetype(font_path, max(24, int(parchment.width * 0.12))) if Path(font_path).exists() else font
+        seal_font = _subtitle_font(max(24, int(parchment.width * 0.12)))
         seal = "Z"
         seal_box = draw.textbbox((0, 0), seal, font=seal_font)
         draw.text((box_left + box_width - (seal_box[2] - seal_box[0]) - 18, box_top + box_height - (seal_box[3] - seal_box[1]) - 12), seal, font=seal_font, fill=(58, 42, 24, 217))
@@ -1167,7 +1207,16 @@ def _render_parchment_cards(directory: Path, messages: list[str], width: int, he
 
 def _looks_english(text: str) -> bool:
     """Conservative fallback for already-English source speech."""
-    return not any(marker in text.lower() for marker in ("¿", "¡", " que ", " el ", " la ", " de ", " una ", " esto "))
+    words = re.findall(r"[a-záéíóúüñ]+", text.lower())
+    if len(words) < 2 or re.search(r"[áéíóúü¿¡]", text.lower()):
+        return False
+    if set(words) & {"que", "el", "la", "de", "una", "esto", "vamos", "pero", "para"}:
+        return False
+    # Avoid obvious Spanish verb/nominal endings; these common English nouns,
+    # pronouns and adverbs happen to share an infinitive suffix.
+    english = {"guitar", "car", "bar", "star", "far", "her", "never", "ever", "other", "another", "over", "under", "after", "water", "together", "remember", "better", "later"}
+    return not any(word not in english and re.search(r"(?:ar|er|ir|ando|iendo|ción)$", word) for word in words)
+
 
 
 def _split_translated_sequence(start: Any, end: Any, text: str) -> list[dict[str, Any]]:
@@ -1219,15 +1268,38 @@ def _write_backstage_srt(path: Path, segments: list[dict[str, Any]], offsets: li
     path.write_text("\n".join(rows), encoding="utf-8")
 
 
+def _subtitle_font_path() -> Path | None:
+    """Prefer the redistributable bundled font on every supported platform."""
+    roots = [Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)), Path(__file__).resolve().parents[2]]
+    candidates = [root / "assets" / "fonts" / name for root in roots for name in ("DejaVuSans.ttf", "Arial.ttf")]
+    if sys.platform == "win32":
+        candidates.append(Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "arial.ttf")
+    elif sys.platform == "darwin":
+        candidates.append(Path("/System/Library/Fonts/Supplemental/Arial.ttf"))
+    else:
+        candidates.extend([Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"), Path("/usr/share/fonts/dejavu/DejaVuSans.ttf")])
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def _subtitle_font(size: int):
+    from PIL import ImageFont
+    path = _subtitle_font_path()
+    try:
+        return ImageFont.truetype(str(path) if path else "DejaVuSans.ttf", size)
+    except OSError:
+        return ImageFont.load_default()
+
+
 def _drawtext_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace(":", "\\:").replace(",", "\\,").replace("'", "\\'").replace("%", "\\%")
 
 
 def _backstage_drawtext_filter(segments: list[dict[str, Any]], offsets: list[float]) -> str:
-    font = "/System/Library/Fonts/Supplemental/Arial.ttf"
+    font_path = _subtitle_font_path()
+    font = "fontfile='" + _drawtext_escape(str(font_path).replace("\\", "/")) + "'" if font_path else "font='DejaVu Sans'"
     filters = []
     for start, end, text in _backstage_subtitle_entries(segments, offsets):
-        filters.append(f"drawtext=fontfile='{font}':text='{_drawtext_escape(text)}':fontcolor=white:fontsize=42:borderw=3:bordercolor=black:shadowx=2:shadowy=2:box=1:boxcolor=black@0.45:boxborderw=18:x=(w-text_w)/2:y=h-text_h-72:enable='between(t,{start:.3f},{end:.3f})'")
+        filters.append(f"drawtext={font}:text='{_drawtext_escape(text)}':fontcolor=white:fontsize=42:borderw=3:bordercolor=black:shadowx=2:shadowy=2:box=1:boxcolor=black@0.45:boxborderw=18:x=(w-text_w)/2:y=h-text_h-72:enable='between(t,{start:.3f},{end:.3f})'")
     return ",".join(filters)
 
 
@@ -1235,10 +1307,7 @@ def _render_subtitle_cards(directory: Path, entries: list[tuple[float, float, st
     """Create transparent PNG cards when this FFmpeg lacks libass/drawtext."""
     from PIL import Image, ImageDraw, ImageFont
     directory.mkdir(parents=True, exist_ok=True)
-    try:
-        font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 42)
-    except OSError:
-        font = ImageFont.load_default()
+    font = _subtitle_font(42)
     cards = []
     for index, (start, end, text) in enumerate(entries):
         image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
@@ -1272,10 +1341,7 @@ def _render_subtitle_track(directory: Path, entries: list[tuple[float, float, st
     """Render one transparent 1-fps subtitle track for FFmpeg's single overlay."""
     from PIL import Image, ImageDraw, ImageFont
     directory.mkdir(parents=True, exist_ok=True)
-    try:
-        font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 42)
-    except OSError:
-        font = ImageFont.load_default()
+    font = _subtitle_font(42)
     by_second = {second: text for start, end, text in entries for second in range(max(0, int(start)), min(int(duration) + 1, int(end) + 1))}
     for second in range(max(1, int(duration) + 1)):
         image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
@@ -1386,7 +1452,7 @@ def _backstage_single_pass_filtergraph(
         logo_a = len(segments) + (1 if music_path else 0)
         logo_b = logo_a + 1
         outro_start = max(0.0, content_duration - BACKSTAGE_LOGO_DURATION)
-        filters.append(f"[{logo_a}:v]format=rgba,scale=-1:{int(height * .72)},fade=t=in:st=0:d=1:alpha=1,fade=t=out:st=7:d=3:alpha=1[li]")
+        filters.append(f"[{logo_a}:v]format=rgba,scale=-1:{int(height * .72)},fade=t=in:st=0:d=1:alpha=1,fade=t=out:st={max(0.0, BACKSTAGE_LOGO_DURATION - 1):.3f}:d=1:alpha=1[li]")
         filters.append(f"[{logo_b}:v]format=rgba,scale=-1:{int(height * .72)},fade=t=in:st={outro_start:.3f}:d=1:alpha=1[lo]")
         filters.append(f"[vcat][li]overlay=(W-w)/2:(H-h)/2:enable='between(t,0,{BACKSTAGE_LOGO_DURATION:.3f})'[vlogo]")
         filters.append(f"[vlogo][lo]overlay=(W-w)/2:(H-h)/2:enable='between(t,{outro_start:.3f},{content_duration:.3f})'[vlogged]")
@@ -1428,9 +1494,8 @@ class BackstageExportStage(Stage):
 
     def run(self, project: Project, progress_callback: ProgressCallback) -> dict[str, str]:
         plan = json.loads(artifact_path(project, "backstage_edit.json").read_text(encoding="utf-8"))
-        segments = [segment for segment in (plan.get("segments") or []) if segment.get("paper_mark") != "drop"]
-        closings = [segment for segment in segments if segment.get("paper_mark") == "closing"]
-        segments = [segment for segment in segments if segment.get("paper_mark") != "closing"] + closings
+        segments = selected_segments(plan.get("segments") or [])
+        plan.update(selection_summary(segments))
         if not segments:
             raise ValueError("Backstage found no moments with usable original audio")
         ffmpeg = tool_status().get("ffmpeg_path")
@@ -1496,7 +1561,7 @@ class BackstageExportStage(Stage):
                 [{"path": str(output_path), "filename": output_path.name}],
                 artifact_path(project, "backstage_final_transcription.json"),
                 progress_callback=lambda value, message: progress_callback(92 + int(value * .06), f"Final transcription: {message}"),
-                model_name=str(wizard.get("backstage_whisper_model") or "large-v3"),
+                model_name=str(wizard.get("backstage_whisper_model") or "medium"),
                 task="transcribe",
                 initial_prompt=str(wizard.get("backstage_glossary") or wizard.get("backstage_whisper_initial_prompt") or os.environ.get("BACKSTAGE_GLOSSARY", "")),
             )
@@ -1612,7 +1677,7 @@ class BackstageExportStage(Stage):
             picture_fade_start = max(outro_start, current_duration - 2.0)
             audio_fade_start = max(0.0, current_duration - 2.0)
             if logo:
-                logo_cmd += ["-loop", "1", "-i", str(logo), "-loop", "1", "-i", str(logo), "-f", "lavfi", "-i", f"color=c=black:s={int(_target_size('youtube')[0])}x{int(_target_size('youtube')[1])}:r=30", "-filter_complex", (f"[0:v]setpts=PTS-STARTPTS[base];[1:v]format=rgba,scale=-1:{int(_target_size('youtube')[1] * 0.72)},fade=t=in:st=0:d=1:alpha=1,fade=t=out:st=7:d=3:alpha=1[li];[2:v]format=rgba,scale=-1:{int(_target_size('youtube')[1] * 0.72)},fade=t=in:st={outro_start:.3f}:d=1:alpha=1[lo];[3:v]format=rgba,fade=t=in:st={picture_fade_start:.3f}:d=2:alpha=1[black];[base][li]overlay=(W-w)/2:(H-h)/2:enable='between(t,0,{BACKSTAGE_LOGO_DURATION:.3f})'[v1];[v1][black]overlay=0:0:enable='between(t,{picture_fade_start:.3f},{current_duration:.3f})'[v2];[v2][lo]overlay=(W-w)/2:(H-h)/2:enable='between(t,{outro_start:.3f},{current_duration:.3f})'[v];[0:a]asetpts=PTS-STARTPTS,afade=t=out:st={audio_fade_start:.3f}:d=2[aout]"), "-map", "[v]", "-map", "[aout]"]
+                logo_cmd += ["-loop", "1", "-i", str(logo), "-loop", "1", "-i", str(logo), "-f", "lavfi", "-i", f"color=c=black:s={int(_target_size('youtube')[0])}x{int(_target_size('youtube')[1])}:r=30", "-filter_complex", (f"[0:v]setpts=PTS-STARTPTS[base];[1:v]format=rgba,scale=-1:{int(_target_size('youtube')[1] * 0.72)},fade=t=in:st=0:d=1:alpha=1,fade=t=out:st={max(0.0, BACKSTAGE_LOGO_DURATION - 1):.3f}:d=1:alpha=1[li];[2:v]format=rgba,scale=-1:{int(_target_size('youtube')[1] * 0.72)},fade=t=in:st={outro_start:.3f}:d=1:alpha=1[lo];[3:v]format=rgba,fade=t=in:st={picture_fade_start:.3f}:d=2:alpha=1[black];[base][li]overlay=(W-w)/2:(H-h)/2:enable='between(t,0,{BACKSTAGE_LOGO_DURATION:.3f})'[v1];[v1][black]overlay=0:0:enable='between(t,{picture_fade_start:.3f},{current_duration:.3f})'[v2];[v2][lo]overlay=(W-w)/2:(H-h)/2:enable='between(t,{outro_start:.3f},{current_duration:.3f})'[v];[0:a]asetpts=PTS-STARTPTS,afade=t=out:st={audio_fade_start:.3f}:d=2[aout]"), "-map", "[v]", "-map", "[aout]"]
             else:
                 logo_cmd += ["-filter_complex", f"[0:v]setpts=PTS-STARTPTS,fade=t=out:st={picture_fade_start:.3f}:d=2[v];[0:a]asetpts=PTS-STARTPTS,afade=t=out:st={audio_fade_start:.3f}:d=2[a]", "-map", "[v]", "-map", "[a]"]
             logo_cmd += ["-t", f"{current_duration:.3f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-threads", "2", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(with_logo)]
@@ -1624,7 +1689,7 @@ class BackstageExportStage(Stage):
                 [{"path": str(output_path), "filename": output_path.name}],
                 artifact_path(project, "backstage_final_transcription.json"),
                 progress_callback=lambda value, message: progress_callback(97, f"Final subtitle audio: {message}"),
-                model_name=str((project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_model") or "small"),
+                model_name=str((project.data.get("settings", {}).get("wizard") or {}).get("backstage_whisper_model") or "medium"),
                 task="translate",
             )
             if final_transcription.get("status") not in {"ready", "ready_cached"}:

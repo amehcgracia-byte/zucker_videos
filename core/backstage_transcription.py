@@ -267,7 +267,18 @@ def transcribe_sources(
             write_artifact_json(artifact, payload)
             return payload
     for index, (source, path, fingerprint, cache, forced_language, source_model) in enumerate(missing):
-        progress_callback(int(index / max(1, len(sources)) * 90), f"Transcribing {Path(path).name}")
+        completed = len(sources) - len(missing) + index
+        def report_segment(end: float) -> None:
+            duration = max(.001, float(source.get("duration_sec") or 1))
+            percent = int((completed + min(1., max(0., end / duration))) / max(1, len(sources)) * 95)
+            progress_callback(percent, f"Transcribing {Path(path).name} ({completed + 1}/{len(sources)})")
+        report_segment(0)
+        def collect(segments):
+            result = []
+            for segment in segments:
+                result.append(segment)
+                report_segment(float(getattr(segment, "end", 0)))
+            return result
         model = models[source_model]
         if backend == "faster-whisper":
             kwargs = {
@@ -284,7 +295,7 @@ def transcribe_sources(
             # a sentence; callers may still force a source language.
             try:
                 segments_iter, info = model.transcribe(path, **kwargs)
-                transcription_segments = list(segments_iter)
+                transcription_segments = collect(segments_iter)
             except (IndexError, ValueError) as exc:
                 # Some short AAC/MP4 montages make faster-whisper's word
                 # alignment index empty even though segment transcription is
@@ -295,7 +306,7 @@ def transcribe_sources(
                 LOGGER.warning("Whisper word alignment failed for %s; retrying without word timestamps: %s", path, exc)
                 fallback_kwargs = {**kwargs, "word_timestamps": False}
                 segments_iter, info = model.transcribe(path, **fallback_kwargs)
-                transcription_segments = list(segments_iter)
+                transcription_segments = collect(segments_iter)
             detected_language = getattr(info, "language", None)
             language_probability = getattr(info, "language_probability", None)
         elif backend == "mlx-whisper":
@@ -343,6 +354,7 @@ def transcribe_sources(
         )
         cache.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
         output_sources.append(result)
+        progress_callback(int((completed + 1) / max(1, len(sources)) * 95), f"Transcribed {Path(path).name}")
     bites = extract_story_bites(output_sources)
     payload = {
         "stage": "backstage_transcription", "version": WHISPER_TRANSCRIPTION_VERSION,

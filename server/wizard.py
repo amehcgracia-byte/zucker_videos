@@ -275,6 +275,7 @@ class WizardRunner:
         sweep_speed_deg_per_sec: float | None,
         reel_duration_sec: float | None,
         backstage_target_duration_sec: float | None,
+        backstage_whisper_model: str = "medium",
         reel_aspect: str | None,
         reel_mix_vertical_ratio: str | float | None,
         reel_cuts_per_source: float | None,
@@ -318,6 +319,7 @@ class WizardRunner:
                         "sweep_speed_deg_per_sec": sweep_speed_deg_per_sec,
                         "reel_duration_sec": reel_duration_sec,
                         "backstage_target_duration_sec": backstage_target_duration_sec,
+                        "backstage_whisper_model": backstage_whisper_model,
                         "reel_aspect": reel_aspect,
                         "reel_mix_vertical_ratio": reel_mix_vertical_ratio,
                         "reel_cuts_per_source": reel_cuts_per_source,
@@ -359,6 +361,7 @@ class WizardRunner:
                 "sweep_speed_deg_per_sec": sweep_speed_deg_per_sec,
                 "reel_duration_sec": reel_duration_sec,
                 "backstage_target_duration_sec": backstage_target_duration_sec if platform == "backstage" else 180.0,
+                "backstage_whisper_model": backstage_whisper_model,
                 "reel_aspect": reel_aspect,
                 "reel_mix_vertical_ratio": reel_mix_vertical_ratio,
                 "reel_cuts_per_source": reel_cuts_per_source,
@@ -696,19 +699,19 @@ class WizardRunner:
             plan_path = artifact_path(project, "backstage_edit.json")
             plan = json.loads(plan_path.read_text(encoding="utf-8"))
             keep_ids = {str(cut.get("id")) for cut in allowed}
-            segments = [segment for index, segment in enumerate(plan.get("segments") or []) if f"backstage-{index:04d}" in keep_ids and segment.get("paper_mark") != "drop"]
-            closing_segments = [segment for segment in segments if segment.get("paper_mark") == "closing"]
-            segments = [segment for segment in segments if segment.get("paper_mark") != "closing"] + closing_segments
+            segments = [segment for index, segment in enumerate(plan.get("segments") or []) if str(segment.get("id") or f"backstage-{index:04d}") in keep_ids and segment.get("paper_mark") != "drop"]
+            from core.stages.backstage import selected_segments, selection_summary
+            segments = selected_segments(segments)
             plan["segments"] = segments
-            plan["cut_count"] = max(0, len(segments) - 1)
-            plan["selected_duration_sec"] = round(sum(float(item.get("duration_sec") or 0.0) for item in segments), 3)
+            plan.update(selection_summary(segments))
             plan["paper_edit_approved"] = True
             plan["paper_edit_rejected"] = sorted(rejected_set)
             write_artifact_json(plan_path, plan)
             for cut in paper.get("cuts") or []:
                 cut["status"] = "rejected" if str(cut.get("id")) in rejected_set else "approved"
             paper["approved"] = True
-            paper["cuts"] = [cut for cut in paper.get("cuts") or [] if cut["status"] == "approved"]
+            paper["cuts"] = allowed
+            paper.update(selection_summary(segments))
             write_artifact_json(paper_path, paper)
             job.status = "running"
             job.stage = "export"
@@ -859,6 +862,7 @@ class WizardRunner:
         sweep_speed_deg_per_sec: float | None,
         reel_duration_sec: float | None,
         backstage_target_duration_sec: float | None,
+        backstage_whisper_model: str = "medium",
         reel_aspect: str | None,
         reel_mix_vertical_ratio: str | float | None,
         reel_cuts_per_source: float | None,
@@ -880,12 +884,14 @@ class WizardRunner:
             job.input_warnings = list(project.data.get("inputs", {}).get("warnings") or [])
             _write_stage_log(project, "wizard", f"Master audio selected: {Path(master_path).name}" if master_path else "Backstage: no master audio")
             project.data["settings"]["wizard"] = {
+                **{key: value for key, value in (project.data["settings"].get("wizard") or {}).items() if key.startswith("backstage_whisper_") or key == "backstage_glossary"},
                 "platform": platform,
                 "song_choice": song_choice,
                 "audio_trim": audio_trim or {},
                 "placeholder_logic": platform in {"instagram", "tiktok"},
                 "reel_duration_sec": reel_duration_sec,
                 "backstage_target_duration_sec": backstage_target_duration_sec if platform == "backstage" else 180.0,
+                "backstage_whisper_model": backstage_whisper_model,
                 "reel_aspect": reel_aspect,
                 "reel_mix_vertical_ratio": reel_mix_vertical_ratio,
                 "reel_cuts_per_source": reel_cuts_per_source,
@@ -931,6 +937,7 @@ class WizardRunner:
                 sweep_speed_deg_per_sec=sweep_speed_deg_per_sec,
                 reel_duration_sec=reel_duration_sec,
                 backstage_target_duration_sec=backstage_target_duration_sec,
+            backstage_whisper_model=backstage_whisper_model,
                 reel_aspect=reel_aspect,
                 reel_mix_vertical_ratio=reel_mix_vertical_ratio,
                 reel_cuts_per_source=reel_cuts_per_source,
@@ -1049,6 +1056,7 @@ class WizardRunner:
         sweep_speed_deg_per_sec: float | None,
         reel_duration_sec: float | None,
         backstage_target_duration_sec: float | None,
+        backstage_whisper_model: str = "medium",
         reel_aspect: str | None,
         reel_mix_vertical_ratio: str | float | None,
         reel_cuts_per_source: float | None,
@@ -1068,12 +1076,14 @@ class WizardRunner:
             previous_wizard = project.data["settings"].get("wizard") or {}
             variation_seed = str(previous_wizard.get("variation_seed") or time.time_ns())
             project.data["settings"]["wizard"] = {
+                **{key: value for key, value in (project.data["settings"].get("wizard") or {}).items() if key.startswith("backstage_whisper_") or key == "backstage_glossary"},
                 "platform": platform,
                 "song_choice": song_choice,
                 "audio_trim": audio_trim or {},
                 "placeholder_logic": platform in {"instagram", "tiktok"},
                 "reel_duration_sec": reel_duration_sec,
                 "backstage_target_duration_sec": backstage_target_duration_sec if platform == "backstage" else None,
+                "backstage_whisper_model": backstage_whisper_model,
                 "variation_seed": variation_seed,
                 "instrument_highlights": bool(previous_wizard.get("instrument_highlights")),
                 "reel_aspect": reel_aspect,
@@ -1244,6 +1254,7 @@ class WizardRunner:
         sweep_speed_deg_per_sec: float | None,
         reel_duration_sec: float | None,
         backstage_target_duration_sec: float | None,
+        backstage_whisper_model: str = "medium",
         reel_aspect: str | None,
         reel_mix_vertical_ratio: str | float | None,
         reel_cuts_per_source: float | None,
@@ -1287,6 +1298,7 @@ class WizardRunner:
             sweep_speed_deg_per_sec=sweep_speed_deg_per_sec,
             reel_duration_sec=reel_duration_sec,
             backstage_target_duration_sec=backstage_target_duration_sec,
+            backstage_whisper_model=backstage_whisper_model,
             reel_aspect=reel_aspect,
             reel_mix_vertical_ratio=reel_mix_vertical_ratio,
             reel_cuts_per_source=reel_cuts_per_source,
