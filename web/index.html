@@ -229,6 +229,11 @@
         </details>
         <details id="backstageOptions" class="reel-options" hidden>
           <summary>Backstage options</summary>
+          <p id="narrativeAiStatus" role="status">Checking Narrative AI…</p>
+          <label>Narrative API key <input id="narrativeApiKey" type="password" autocomplete="off" placeholder="Enter your provider key" /></label>
+          <button type="button" id="narrativeKeySave">Save key securely</button>
+          <button type="button" id="narrativeKeyRemove">Remove saved key</button>
+          <small>Stored in your system credential vault, never in the project. Your configured narrative provider may charge for requests.</small>
           <div class="reel-option-grid">
             <label>Montage duration <output id="backstageDurationValue">180s</output><input id="backstageDuration" type="range" min="30" max="240" step="5" value="180" /></label>
           </div>

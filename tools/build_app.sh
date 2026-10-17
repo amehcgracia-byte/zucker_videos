@@ -115,6 +115,7 @@ PY
   --hidden-import faster_whisper \
   --collect-submodules faster_whisper \
   --hidden-import onnxruntime \
+  --hidden-import keyring.backends.macOS \
   --hidden-import tokenizers \
   --hidden-import ctranslate2 \
   --collect-submodules server \

@@ -21,3 +21,6 @@ huggingface_hub<1.0
 # Show: the chosen seconds of a linked YouTube/Vimeo clip are downloaded into the project.
 yt-dlp>=2026.8.19
 certifi
+
+# Narrative keys in the native secure credential vault.
+keyring>=25,<26

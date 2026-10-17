@@ -4767,6 +4767,25 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             "spherical_landmarks_by_source": project_settings.get("spherical_landmarks_by_source") or {},
         })
 
+    @app.get("/api/v1/settings/narrative")
+    def api_narrative_status() -> Response:
+        from core.narrative_credentials import status
+        return jsonify(status())
+
+    @app.put("/api/v1/settings/narrative")
+    def api_narrative_key() -> Response:
+        from core.narrative_credentials import save_key, status
+        try:
+            body = _json_body()
+            if not isinstance(body.get("key"), str):
+                return error_response("invalid_key", "Enter a Narrative API key", 400)
+            save_key(body["key"])
+            return jsonify(status())
+        except ValueError as exc:
+            return error_response("invalid_key", str(exc), 400)
+        except RuntimeError as exc:
+            return error_response("secure_storage_unavailable", str(exc), 503)
+
     @app.get("/api/v1/app/config")
     def api_app_config() -> Response:
         config = load_global_config()

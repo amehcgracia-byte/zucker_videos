@@ -3396,6 +3396,19 @@ async function openShotReview() {
   return result;
 }
 
+async function refreshNarrativeStatus() {
+  const box=document.querySelector('#narrativeAiStatus');
+  if(!box)return;
+  try {box.textContent=(await api('/settings/narrative')).detail;}
+  catch(error){box.textContent=`Narrative AI: limited — ${error.message}`;}
+}
+document.addEventListener('click',async event=>{
+  const button=event.target.closest?.('#narrativeKeySave,#narrativeKeyRemove');if(!button)return;
+  const input=document.querySelector('#narrativeApiKey');button.disabled=true;
+  try {const result=await api('/settings/narrative',{method:'PUT',body:JSON.stringify({key:button.id==='narrativeKeyRemove'?'':input.value})});input.value='';document.querySelector('#narrativeAiStatus').textContent=result.detail;}
+  catch(error){showToast(error.message,true);}finally{button.disabled=false;}
+});
+
 function renderPaperEdit(paper) {
   renderStoryboard(paper.storyboard);
   paperEditCuts = paper.cuts || [];
@@ -3418,7 +3431,8 @@ function renderStoryboard(payload) {
   if (!box || !plan || !music) return;
   const storyboard = payload?.storyboard || {};
   if (!payload || !["ready", "ready_cached"].includes(payload.status) || !storyboard.title) {
-    box.hidden = true;
+    box.hidden = !payload || payload.status !== 'unavailable';
+    if(!box.hidden){const title=document.querySelector('#storyboardTitle');if(title)title.textContent='Storyboard unavailable';const reason=document.querySelector('#storyboardLogline');if(reason)reason.textContent=payload.reason||'Narrative AI is unavailable. Add a key in Backstage options.';plan.textContent='';music.textContent='';}
     return;
   }
   box.hidden = false;
@@ -3447,6 +3461,7 @@ window.addEventListener("pywebviewready", syncDesktopEditMode);
 
 function applyEditTypeMode() {
   syncDesktopEditMode();
+  if(selectedPlatform==='backstage')refreshNarrativeStatus();
   const highlightOption = document.querySelector("#instrumentHighlightsOption");
   if (highlightOption) highlightOption.hidden = selectedPlatform !== "youtube";
   // 360 mode exports the whole sphere; there are no reprojected camera moves to lighten.
