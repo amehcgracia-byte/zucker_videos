@@ -53,6 +53,7 @@ def describe(effects: list[dict[str, Any]]) -> str:
     for item in live[:3]:
         reason = re.sub(r'^You say ', "when you say ", item["reason"])
         reason = re.sub(r'^Director: ', "of ", reason)          # "a drawing of a guitar"
+        reason = re.sub(r'^Your idea: (.*)$', r"of \1 (your idea)", reason)
         reason = re.sub(r'^Added by you$', "added by you", reason)
         parts.append(f"{KIND_WORDS.get(item['kind'], item['kind'])} {reason[0].lower() + reason[1:] if reason else ''}".strip())
     more = f" (and {len(live) - 3} more)" if len(live) > 3 else ""

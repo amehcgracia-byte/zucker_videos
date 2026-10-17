@@ -2291,3 +2291,10 @@ body:has(#showReviewBox.show-fit) #backdropLogo {max-height:calc(100vh - 130px);
 .connector-actions {display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
 .connector-hf {display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
 .connector-hf input {min-width:220px;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:var(--bg,#111);color:var(--text);}
+
+/* "Your idea for this video": asked before the Show is planned. */
+.show-idea {margin:0 0 14px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:color-mix(in srgb, var(--panel) 92%, #2f7d4f);}
+.show-idea h3 {margin:0 0 4px;font-size:16px;}
+.show-idea-modes {display:flex;flex-wrap:wrap;gap:14px;margin:8px 0;}
+.show-idea textarea {width:100%;box-sizing:border-box;min-height:110px;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg,#111);color:var(--text);font:inherit;}
+.show-idea-asking {outline:3px solid #f59e0b;outline-offset:2px;}

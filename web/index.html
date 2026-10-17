@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Zucker Editor</title>
     <link rel="icon" href="/logo_editor_green.png?v=editor-ui-4" />
-    <link rel="stylesheet" href="/styles.css?v=editor-ui-25" />
+    <link rel="stylesheet" href="/styles.css?v=editor-ui-26" />
     <script src="/theme.js?v=editor-ui-4"></script>
   </head>
   <body>
@@ -162,6 +162,16 @@
         <div id="showOptions" class="song-picker" hidden>
           <h2>Show</h2>
           <p>Your talking video is cleaned and cut automatically: long pauses, "eh"/"um" and phrases you said twice are removed (the last take stays), then it is cut into short shots with punch-in zooms. Captions from what you say are ready in Overlay &amp; Captions.</p>
+          <section id="showIdea" class="show-idea">
+            <h3>Your idea for this video</h3>
+            <p class="show-hint">Before anything is planned, tell us what you have in mind: the story, the jokes, which pictures or characters should appear and when, the tone. Your idea goes first; the program adds its own around it.</p>
+            <div class="show-idea-modes"><label><input type="radio" name="showIdeaMode" value="together" checked> With my idea (recommended)</label><label><input type="radio" name="showIdeaMode" value="automatic"> Fully automatic</label></div>
+            <div id="showIdeaBody">
+              <textarea id="showIdeaText" rows="6" maxlength="8000" aria-label="Your idea for this video" placeholder="For example: when I say I was lazy, the guy on the sofa appears; the plant answers me back; formulas around my head when I talk about time; keep it absurd but not mean…"></textarea>
+              <div class="show-actions"><button type="button" id="showIdeaDictate" class="icon-button small">🎙 Dictate</button><label class="icon-button small">Import a document…<input type="file" id="showIdeaFile" accept=".txt,.md,.docx,.rtf,.srt" hidden></label></div>
+            </div>
+            <p id="showIdeaStatus" class="show-hint" role="status"></p>
+          </section>
           <ol class="show-assistant">
             <li><strong>Your talking video.</strong> <select id="showMain"></select> <span class="show-hint">The one where you talk to the camera (up to ten minutes works well).</span></li>
             <li><strong>Close-ups of what you mention</strong> (optional): every other video or photo of the project. <span id="showResourceList" class="show-hint"></span> Film the things you talk about, close and steady, a few seconds each.</li>
@@ -500,13 +510,14 @@
     <script src="/native_bridge.js?v=editor-ui-4"></script>
     <link rel="stylesheet" href="/tutorial.css" />
     <script src="/tutorial.js"></script>
-    <script src="/app.js?v=editor-ui-11"></script>
+    <script src="/app.js?v=editor-ui-12"></script>
     <script src="/show_edit_queue.js?v=1"></script>
     <script src="/show_clock.js?v=1"></script>
     <script src="/show_live_captions.js?v=2"></script>
     <script src="/show_references.js?v=3"></script>
     <script src="/show_menu.js?v=2"></script>
     <script src="/connectors.js?v=1"></script>
+    <script src="/show_idea.js?v=1"></script>
     <script src="/show_review.js?v=56"></script>
     <script src="/show_einstein.js?v=9"></script>
     <script src="/show_characters.js?v=11"></script>

@@ -1608,6 +1608,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             style = str(body.get("show_style") or "choe")
             language = str(body.get("show_language") or "").strip().lower() or None
             gags = str(body.get("show_gags") or "claude")
+            # The person's own idea, asked before anything is planned (core.show_brief).
+            from core import show_brief
+            try:
+                show_brief.save(state.project, str(body.get("show_idea_mode") or "automatic"), str(body.get("show_idea") or ""),
+                                str(body.get("show_idea_source") or "typed"))
+            except ValueError as exc:
+                return error_response("idea_needed", str(exc), 400)
             # The other videos and photos of the project are its close-ups.
             resources = [path for path in registered if path != source] + [str(path) for path in body.get("show_photos") or [] if isinstance(path, str)]
             try:
@@ -3231,6 +3238,54 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         return jsonify(photo={"photo": str(photo), "name": photo.stem, "url": f"/api/v1/show/photo?path={quote(str(photo))}"},
                        cut={"mask": key, "method": "original-alpha", "crop": list(crop), "size": list(cut.size),
                             "url": f"/api/v1/show/media?path={quote(str(preview))}"})
+
+    @app.get("/api/v1/show/idea")
+    def api_show_idea() -> Response:
+        """The person's idea for this show, as they last gave it."""
+        from core import show_brief
+        return jsonify(show_brief.load(_require_project(state)))
+
+    @app.post("/api/v1/show/idea/document")
+    def api_show_idea_document() -> Response:
+        """The text of a script the person already wrote (txt, md, docx, rtf, srt)."""
+        from core import show_brief
+        _require_project(state)
+        upload = request.files.get("file")
+        if not upload or not upload.filename:
+            return error_response("bad_request", "Choose a document", 400)
+        payload = upload.read(5 * 1024 * 1024 + 1)
+        if len(payload) > 5 * 1024 * 1024:
+            return error_response("bad_request", "Use a document smaller than 5 MB", 400)
+        try:
+            return jsonify({"text": show_brief.document_text(upload.filename, payload)})
+        except ValueError as exc:
+            return error_response("bad_request", str(exc), 400)
+
+    @app.post("/api/v1/show/idea/dictate")
+    def api_show_idea_dictate() -> Response:
+        """What the person said into the microphone about their idea, as text (local Whisper)."""
+        import uuid
+        from core import show_brief
+        project = _require_project(state)
+        upload = request.files.get("audio")
+        if not upload:
+            return error_response("bad_request", "Record your idea first", 400)
+        payload = upload.read(40 * 1024 * 1024 + 1)
+        if not payload or len(payload) > 40 * 1024 * 1024:
+            return error_response("bad_request", "Record at most ten minutes", 400)
+        folder = project.cache_dir / "show_idea"
+        folder.mkdir(parents=True, exist_ok=True)
+        audio = folder / f"{uuid.uuid4().hex}{Path(upload.filename or 'idea.webm').suffix.lower() or '.webm'}"
+        audio.write_bytes(payload)
+        try:
+            text = show_brief.dictate(audio, str(tool_status().get("ffmpeg_path") or "ffmpeg"))
+        except (OSError, subprocess.SubprocessError) as exc:
+            return error_response("dictation_failed", f"Could not understand the recording: {exc}", 400)
+        finally:
+            audio.unlink(missing_ok=True)
+        if not text:
+            return error_response("dictation_failed", "Nothing was heard in the recording; try again closer to the microphone", 400)
+        return jsonify({"text": text})
 
     @app.get("/api/v1/connectors")
     def api_connectors() -> Response:

@@ -322,8 +322,12 @@ def prepare_show(project, source: str, resources: list[str], *, style_name: str 
             library = index_library()
         except Exception:  # an unreadable library never stops the show
             library = []
+        from core import show_brief
+        idea = show_brief.idea_for_director(project)        # asked before planning (empty: fully automatic)
+        if idea:
+            progress(88, "Asking your Claude for gags, following your idea" if gags == "claude" else "Choosing gags from the words")
         planned, used, note = gag_module.plan_gags(words, float(plan["edited_duration"]), director=gags,
-                                                   language=str(plan.get("language") or language or ""), face=face, library=library)
+                                                   language=str(plan.get("language") or language or ""), face=face, library=library, idea=idea)
         director_items = show_proposals.from_gags(planned)
     proposals = sorted(cutaways + reactions + characters + director_items, key=lambda item: item["at"])
     show_proposals.save(project.artifacts_dir / "show_proposals.json", proposals, source=str(path),

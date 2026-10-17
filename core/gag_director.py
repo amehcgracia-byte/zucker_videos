@@ -59,6 +59,7 @@ GAG_SCHEMA: dict[str, Any] = {
                     "position": {"type": "string", "enum": list(POSITIONS)},
                     "size": {"type": "number", "description": "share of the frame width, 0.15 to 0.4"},
                     "effect": {"type": "string", "enum": list(EFFECTS)},
+                    "from_idea": {"type": "boolean", "description": "true when this gag is one the host asked for in their idea"},
                 },
                 "required": ["at", "duration", "kind"],
             },
@@ -75,7 +76,7 @@ SYSTEM = (
 )
 
 BRIEF = """Plan the visual gags for this edited talk.
-
+{idea_block}
 Rules:
 - About one gag every 6 to 9 seconds; more around jokes, punchlines, exclamations and things the host names; none in the first 1.5 s.
 - Never two pictures on screen at once: each starts after the previous one ends (a warp may run under a picture).
@@ -116,12 +117,24 @@ def _timed_lines(words: list[dict[str, Any]], max_gap: float = 0.6) -> list[tupl
     return lines
 
 
-def build_prompt(words: list[dict[str, Any]], library: list[dict[str, Any]], *, face_side: str = "right") -> str:
+# The person's own idea (core.show_brief), asked before planning: it comes first.
+IDEA_BLOCK = """
+The host told you their idea for this video BEFORE you plan. Follow it first:
+\"\"\"
+{idea}
+\"\"\"
+- Wherever the talk matches something in their idea (a picture, a character and what it says, a joke, a shouted word, a warp), put exactly that there, the way they describe it, even if it breaks the spacing rules below.
+- Mark every gag that comes from their idea with "from_idea": true.
+- Keep their tone and their story. Then add your own gags around theirs, following the rules below; never contradict their idea.
+"""
+
+
+def build_prompt(words: list[dict[str, Any]], library: list[dict[str, Any]], *, face_side: str = "right", idea: str = "") -> str:
     transcript = "\n".join(f"[{a:6.2f}-{b:6.2f}] {text}" for a, b, text in _timed_lines(words))
     names = [f"- {Path(entry['path']).stem}" for entry in library[:200]]
     free_side = "left" if face_side == "right" else "right"
     return BRIEF.format(drawing_gap=int(DRAWING_GAP), styles=", ".join(STYLE_NAMES), library="\n".join(names) or "- (empty)", transcript=transcript,
-                        face_side=face_side, free_side=free_side)
+                        face_side=face_side, free_side=free_side, idea_block=IDEA_BLOCK.format(idea=idea.strip()) if idea.strip() else "")
 
 
 def claude_cli() -> str | None:
@@ -342,13 +355,14 @@ def clean_gags(raw: list[Any], duration: float, *, face_side: str = "right") -> 
         if at >= duration - 0.6:
             continue
         kind = item["kind"]
+        idea = item.get("from_idea") is True                      # asked for by the host: placed first, kept
         if kind == "warp":
             if item.get("warp") in WARPS:
-                warps.append({"kind": "warp", "warp": item["warp"], "at": round(at, 2), "duration": round(min(length, duration - at), 2)})
+                warps.append({"kind": "warp", "warp": item["warp"], "at": round(at, 2), "duration": round(min(length, duration - at), 2), "from_idea": idea})
             continue
         if kind == "math":
             # Around the host's head: it overlays the person, not the free side.
-            warps.append({"kind": "math", "at": round(at, 2), "duration": round(min(max(length, 3.0), 5.0, duration - at), 2)})
+            warps.append({"kind": "math", "at": round(at, 2), "duration": round(min(max(length, 3.0), 5.0, duration - at), 2), "from_idea": idea})
             continue
         subject = str(item.get("subject") or "").strip()[:120]
         text = str(item.get("text") or "").strip()[:40]
@@ -365,18 +379,19 @@ def clean_gags(raw: list[Any], duration: float, *, face_side: str = "right") -> 
             "style": item.get("style") if item.get("style") in STYLES else "",
             "position": position,
             "effect": item.get("effect") if item.get("effect") in EFFECTS else "pop",
+            "from_idea": idea,
         })
-    pictures.sort(key=lambda gag: gag["at"])
+    # The host's own ideas are placed first; the director's fit around them.
+    pictures.sort(key=lambda gag: (not gag["from_idea"], gag["at"]))
     kept: list[dict[str, Any]] = []
-    drawn_at = -DRAWING_GAP
     for gag in pictures:
-        if kept and gag["at"] < kept[-1]["at"] + kept[-1]["duration"] + 0.2:
-            continue
-        if gag["kind"] in ("drawing", "character"):
-            if gag["at"] < drawn_at + DRAWING_GAP:          # each one is drawn: few, on the best moments
-                continue
-            drawn_at = gag["at"]
+        if any(gag["at"] < other["at"] + other["duration"] + 0.2 and other["at"] < gag["at"] + gag["duration"] + 0.2 for other in kept):
+            continue                                        # never two pictures on screen at once
+        if gag["kind"] in ("drawing", "character") and not gag["from_idea"] and any(
+                other["kind"] in ("drawing", "character") and abs(other["at"] - gag["at"]) < DRAWING_GAP for other in kept):
+            continue                                        # each one is drawn: few, on the best moments
         kept.append(gag)
+    kept.sort(key=lambda gag: gag["at"])
     rotation = list(STYLE_NAMES)
     random.Random(len(kept)).shuffle(rotation)
     previous = ""
@@ -388,6 +403,6 @@ def clean_gags(raw: list[Any], duration: float, *, face_side: str = "right") -> 
     spaced: list[dict[str, Any]] = []
     for warp in warps:
         same = [kept for kept in spaced if kept["kind"] == warp["kind"]]
-        if not same or warp["at"] >= same[-1]["at"] + (45.0 if warp["kind"] == "math" else 30.0):
+        if not same or warp["from_idea"] or warp["at"] >= same[-1]["at"] + (45.0 if warp["kind"] == "math" else 30.0):
             spaced.append(warp)
     return sorted(kept + spaced, key=lambda gag: gag["at"])

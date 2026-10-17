@@ -3887,6 +3887,8 @@ async function waitForPreparedProject() {
 }
 
 async function startWizard(options = {}) {
+  // Show asks for the person's idea before anything is planned.
+  if (selectedPlatform === "show" && window.ShowIdea && !window.ShowIdea.ready()) { window.ShowIdea.ask(); return; }
   const requestedProjectId = activeProjectId;
   if (backgroundPreparation) await backgroundPreparation;
   if (!sameProjectId(activeProjectId, requestedProjectId)) return;
@@ -3943,6 +3945,7 @@ async function startWizard(options = {}) {
       show_gags: document.querySelector("#showGags")?.value || "claude",
       show_main: document.querySelector("#showMain")?.value || "",
       show_review: document.querySelector("#showReview")?.checked ?? true,
+      ...(selectedPlatform === "show" && window.ShowIdea ? window.ShowIdea.payload() : {}),
       song_index: selectedSong,
       trim_start_sec: timeToSeconds(document.querySelector("#trimStart").value),
       trim_end_sec: timeToSeconds(document.querySelector("#trimEnd").value),

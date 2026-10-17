@@ -104,9 +104,9 @@ def from_gags(gags: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for gag in gags:
         kind = {"photo": "drawing", "character": "drawing"}.get(gag["kind"], gag["kind"])
-        params = {key: value for key, value in gag.items() if key not in ("at", "duration")}
+        params = {key: value for key, value in gag.items() if key not in ("at", "duration", "from_idea")}
         what = gag.get("subject") or gag.get("text") or gag.get("warp") or gag.get("query") or ("formulas around you" if gag["kind"] == "math" else "")
-        out.append(proposal(kind, gag["at"], gag["duration"], reason=f"Director: {what}", **params))
+        out.append(proposal(kind, gag["at"], gag["duration"], reason=f"{'Your idea' if gag.get('from_idea') else 'Director'}: {what}", **params))
     return out
 
 

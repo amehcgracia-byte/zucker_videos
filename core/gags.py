@@ -76,17 +76,17 @@ def centre(position: str, face: str) -> tuple[float, float]:
 
 
 def plan_gags(words: list[tuple[str, float, float]], duration: float, *, director: str = "claude", language: str = "",
-              face: str = "right", library: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], str, str]:
+              face: str = "right", library: list[dict[str, Any]] | None = None, idea: str = "") -> tuple[list[dict[str, Any]], str, str]:
     """(gags, director used, note for the user)."""
     timed = [{"text": text, "start": start, "end": end} for text, start, end in words]
     library = library or []
     note = ""
     if director == "claude":
         try:
-            raw = gag_director.ask_claude(gag_director.build_prompt(timed, library, face_side=face))
+            raw = gag_director.ask_claude(gag_director.build_prompt(timed, library, face_side=face, idea=idea))
             return gag_director.clean_gags(raw, duration, face_side=face), "claude", ""
         except gag_director.DirectorError as exc:
-            note = f"{exc} Used the offline keyword director instead."
+            note = f"{exc} Used the offline keyword director instead" + (" (it cannot read your idea)." if idea else ".")
     raw = gag_director.keyword_gags(timed, library, language=language or "es", face_side=face)
     return gag_director.clean_gags(raw, duration, face_side=face), "keywords", note
 
