@@ -74,3 +74,22 @@ def test_sticker_reaches_real_preview_only_inside_its_interval(studio, tmp_path)
     assert frames[12,40,55,0]<180
     assert frames[30,40,55,0]>200 and frames[30,40,55,1]<80
     assert frames[50,40,55,0]<180
+
+
+def test_redrawn_picture_invalidates_preview_even_with_identical_path_size_and_timestamp(studio):
+    import os
+    from core.show import scene_preview_path
+    project,image,client=studio
+    client.post('/api/v1/show/scenes/scene-1/overlays',json={'overlays':[dict(id='sun',asset=str(image),at=1,duration=.5,x=10,y=10,width=20,action='none')]})
+    before=scene_preview_path(project,'scene-1')
+    stat=image.stat()
+    # BMP keeps the exact same byte count, avoiding compression-size as a proxy for identity.
+    Image.new('RGBA',(40,40),(255,0,0,255)).save(image,format='BMP')
+    before=scene_preview_path(project,'scene-1');stat=image.stat()
+    Image.new('RGBA',(40,40),(0,0,255,255)).save(image,format='BMP')
+    os.utime(image,ns=(stat.st_atime_ns,stat.st_mtime_ns))
+    assert image.stat().st_size==stat.st_size
+    assert scene_preview_path(project,'scene-1')!=before
+    before=scene_preview_path(project,'scene-1')
+    path=project.artifacts_dir/'show_plan.json';plan=json.loads(path.read_text());plan['shots'][0]['zoom']=1.5;path.write_text(json.dumps(plan))
+    assert scene_preview_path(project,'scene-1')!=before

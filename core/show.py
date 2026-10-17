@@ -522,7 +522,7 @@ def preview_proposal(project, proposal_id: str, *, width: int | None = None, hei
     plan["cutaways"] = cutaways
     part = window_plan(plan, start, end)
     from core.show_bridge import studio_fingerprint
-    signature = hashlib.sha1(json.dumps(["placement-preview-v4-approved-assets", trial, start, end, width, height, studio_fingerprint(project.folder)], sort_keys=True,
+    signature = hashlib.sha1(json.dumps(["placement-preview-v5-artwork", plan, trial, _picture_recipe_hashes(trial), start, end, width, height, studio_fingerprint(project.folder)], sort_keys=True,
                                         default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     folder.mkdir(parents=True, exist_ok=True)
@@ -555,6 +555,43 @@ def preview_proposal(project, proposal_id: str, *, width: int | None = None, hei
     _lay_jingles(output, jingles, spans, ffmpeg)
     output.replace(completed)
     return completed
+
+
+_PICTURE_HASHES: dict[str, tuple[tuple[int, int, int, int], str]] = {}
+
+
+def _picture_hash(path: Path) -> str:
+    """SHA-256 of a picture, read again only when the file changed: any rewrite moves its
+    ctime, which (unlike the modification time) cannot be set back."""
+    import hashlib
+    try:
+        stat = path.stat()
+    except OSError:
+        return "missing"
+    key = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
+    known = _PICTURE_HASHES.get(str(path))
+    if known and known[0] == key:
+        return known[1]
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    _PICTURE_HASHES[str(path)] = (key, digest)
+    return digest
+
+
+def _picture_recipe_hashes(value: Any) -> dict[str, str]:
+    """Artwork may be redrawn in place. Paths and timestamps cannot identify it."""
+    result: dict[str, str] = {}
+    def visit(entry):
+        if isinstance(entry, dict):
+            for key, item in entry.items():
+                if key in ("picture", "image", "strokes") and isinstance(item, str):
+                    result[item] = _picture_hash(Path(item))
+                else:
+                    visit(item)
+        elif isinstance(entry, (list, tuple)):
+            for item in entry:
+                visit(item)
+    visit(value)
+    return result
 
 
 def _scene_preview_inputs(project, scene_id: str, width: int, height: int, only_sticker_id: str | None = None):
@@ -592,7 +629,7 @@ def _scene_preview_inputs(project, scene_id: str, width: int, height: int, only_
     from core.gags import drawing_engine
     local_art_recipe = [drawing_engine(), gag_paint.NEGATIVE, {key: vars(style) for key, style in gag_paint.STYLES.items()}] if any(
         item["kind"] == "drawing" and not item["params"].get("picture") for item in live) else None
-    signature = hashlib.sha1(json.dumps(["scene-preview-v5-caption-clock", live, overlays, start, end, width, height, studio_fingerprint(project.folder),
+    signature = hashlib.sha1(json.dumps(["scene-preview-v6-artwork", plan, live, overlays, _picture_recipe_hashes([live, overlays]), start, end, width, height, studio_fingerprint(project.folder),
                                          local_art_recipe], sort_keys=True, default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     return plan, live, overlays, start, end, folder, left_out, folder / f"{scene_id}-{signature}.mp4"
