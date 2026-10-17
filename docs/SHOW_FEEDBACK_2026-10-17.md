@@ -26,6 +26,14 @@ Status: ✅ done and verified · 🔜 next · ⏳ later.
 13. ✅ **"Your script" first** (`core/show_brief.py`, `web/show_idea.js`; the director follows it first, `from_idea` gags placed before its own; "write it together" as a back-and-forth is not built yet): after adding the videos, paste a document, write it, or dictate it (microphone); choose "write it together" or "automatic". The director follows the script and adds its own ideas.
 14. ⏳ **"Next, next… lottery" mode:** a half-made edit from the start, with pictures, voices and movements already generated, for the person to correct rather than generate scene by scene.
 
+## Block 4 · second round (17 Oct, afternoon)
+
+15. ✅ **Change the video's background** (`core/show_backgrounds.py`): a "New background" effect keeps the person talking in front of a picture of the place (kitchen, outside, atelier…). macOS Vision cuts the person out of every frame on this Mac (nothing uploaded); masks are made once per span from the edited cut and cached, so previews and the final render share them. Add ▸ "Change the background behind me…" picks the place from the library; the director proposes one for every place named (its picture is chosen by the person, never invented).
+16. ✅ **Two overlapping effects, one missing from the video.** The preview showed every effect not discarded, the render only those approved one by one, so a changed scene lost the rest; and a library picture the director named was never found outside the old pipeline. The video now keeps what a kept scene's preview shows (`show_scenes.as_seen`), and named library pictures are found exactly (`gag_library.named_picture`).
+17. ✅ **Timeline editing:** split at the playhead (⌘B), cut/copy/paste at the playhead on the same row (⌘X/⌘C/⌘V), duplicate (⌘D), delete (⌫), undo/redo (⌘Z/⇧⌘Z), from the keyboard, a toolbar or the bar's right-click menu. Pieces are effects with the same settings sharing a row (`params.group`/`overlay.group`); a split close-up or jingle carries on in its source.
+18. ✅ **Voices as small files:** recordings are kept as AAC .m4a (~1 MB a minute instead of ~6 MB as WAV). Voices already recorded stay as they are.
+19. ✅ **Eyes and mouth together:** the glance moved eyes 5 % of their width (1–2 px). The iris now slides 22 % inside each marked eye (outline fixed, original pixels only) and a talking character glances every three seconds, in "▶ Preview with voice" and the render.
+
 ## Installed
 
 17 Oct: `fe4803f7` (2.6.5 label) with items 1–4, 6–10 and 12; backup of the previous install in `build/installed-before-fe4803f7.app`.
