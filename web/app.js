@@ -1429,7 +1429,7 @@ const EDIT_MODES = {
   reel: { title: "Reel", files: "Videos, optional master audio and your logo", audio: "Reel needs master audio, or one video with its own audio." },
   "360": { title: "360", files: "A 360 video, optional master audio and your logo", audio: "360 needs master audio, or one video with its own audio." },
   medley: { title: "Medley Populi", files: "Edited videos from different songs; separate audio files are optional", audio: "No external audio: Medley uses each video's audio. Videos without audio remain silent." },
-  backstage: { title: "Backstage", files: "Videos with original camera audio and optional images", audio: "Backstage uses the original camera audio; no master is required." },
+  backstage: { title: "Backstage", files: "Videos with original camera audio", audio: "Backstage uses the original camera audio; no master is required." },
   show: { title: "Show", files: "The video where you talk to camera, and your logo", audio: "Show uses the sound of your video; no master is required." },
 };
 function showEditTypeChooser() {
