@@ -380,6 +380,10 @@ class Steam:
     rect: list[float] | None = None   # the mug (x, y, w, h px) when anchored
     template: np.ndarray | None = None
     lost: bool = False
+    puffs: int = 35                    # density: how many puffs rise at once
+    strength: float = STEAM_OPACITY    # how thick each puff is at its densest
+    rise: float = 1.0                  # how high it goes
+    colour: str = "rainbow"            # "rainbow", "white" or "#rrggbb"
 
     def active(self, t: float) -> bool:
         return self.at <= t < self.at + self.duration
@@ -389,8 +393,13 @@ def load_steam(raw: dict[str, Any], width: int, height: int) -> Steam:
     x, y = (float(v) for v in raw["steam"])
     anchor = raw.get("anchor")
     rect = [anchor[0] * width, anchor[1] * height, anchor[2] * width, anchor[3] * height] if anchor else None
+    colour = str(raw.get("colour") or "rainbow")
+    if colour not in ("rainbow", "white") and not (len(colour) == 7 and colour.startswith("#")):
+        colour = "rainbow"
     return Steam(at=float(raw["at"]), duration=max(0.2, float(raw["duration"])), x=x * width, y=y * height,
-                 scale=float(raw.get("scale") or 1.0), rect=rect)
+                 scale=float(raw.get("scale") or 1.0), rect=rect, puffs=int(min(120, max(5, float(raw.get("density") or 35)))),
+                 strength=min(0.9, max(0.05, float(raw.get("strength") or STEAM_OPACITY))), rise=min(3.0, max(0.3, float(raw.get("rise") or 1.0))),
+                 colour=colour)
 
 
 def draw_steam(frame: np.ndarray, steam: Steam, t: float) -> None:
@@ -411,17 +420,23 @@ def draw_steam(frame: np.ndarray, steam: Steam, t: float) -> None:
     if fade <= 0:
         return
     s = width / 960 * steam.scale
-    for i in range(35):
-        age = (t * 0.28 + i / 35) % 1
+    count = steam.puffs
+    for i in range(count):
+        age = (t * 0.28 + i / count) % 1
         cx = steam.x + math.sin(age * 8 + i * 0.4) * age * 28 * s
-        cy = steam.y - age * 145 * s
+        cy = steam.y - age * 145 * s * steam.rise
         size = (9 + age * 20) * s
-        peak = STEAM_OPACITY * (1 - age) * fade
+        peak = steam.strength * (1 - age) * fade
         x0, x1 = max(0, int(cx - size)), min(width, int(cx + size) + 1)
         y0, y1 = max(0, int(cy - size)), min(height, int(cy + size) + 1)
         if x1 <= x0 or y1 <= y0 or peak <= 0:
             continue
-        r, g, b = colorsys.hls_to_rgb(i / 35, 0.55, 0.95)
+        if steam.colour == "rainbow":
+            r, g, b = colorsys.hls_to_rgb(i / count, 0.55, 0.95)
+        elif steam.colour == "white":
+            r, g, b = 0.96, 0.96, 0.96
+        else:
+            r, g, b = (int(steam.colour[k:k + 2], 16) / 255 for k in (1, 3, 5))
         yy, xx = np.mgrid[y0:y1, x0:x1]
         alpha = np.clip(1 - np.hypot(xx - cx, yy - cy) / size, 0, 1)[..., None] * peak
         region = frame[y0:y1, x0:x1].astype(np.float32)

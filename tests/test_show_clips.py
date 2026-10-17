@@ -97,3 +97,17 @@ def test_a_clip_can_play_its_picture_over_the_hosts_voice():
     cutaways, items, _ = show_proposals.render_inputs([clip])
     assert items == [] and cutaways == [{"proposal": clip["id"], "at": 4.0, "duration": 1.2, "source": "/x/clip.mp4", "source_start": 0.0,
                                          "zoom": 1.0, "focus": [0.5, 0.5]}]
+
+
+def test_steam_has_its_look_and_ends_with_its_shot_unless_it_follows_a_mug():
+    from core.show import steam_within_its_shot
+    from core.show_inserts import load_steam
+    steam = show_proposals.proposal("steam", 1.0, 5.0, reason="x", point=[0.4, 0.6], anchor=None, scale=1.0, density=80, strength=0.5, rise=1.5, colour="white")
+    steam["status"] = "approved"
+    _, items, _ = show_proposals.render_inputs([steam])
+    loaded = load_steam(items[0], 640, 360)
+    assert (loaded.puffs, loaded.strength, loaded.rise, loaded.colour) == (80, 0.5, 1.5, "white")
+    plan = {"fps": 25, "shots": [{"start_frame": 0, "end_frame": 75}, {"start_frame": 0, "end_frame": 100}]}   # a cut at 3 s
+    assert steam_within_its_shot(plan, items)[0]["duration"] == 2.0
+    followed = dict(items[0], anchor=[0.3, 0.5, 0.2, 0.2])
+    assert steam_within_its_shot(plan, [followed])[0]["duration"] == 5.0                # a tracked mug decides when it stops

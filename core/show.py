@@ -86,6 +86,25 @@ def between_words(plan: dict[str, Any], entries: list[dict[str, Any]], reach: fl
     return out
 
 
+def steam_within_its_shot(plan: dict[str, Any], entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Steam that follows no mug stays in the shot where it was placed: a cut to another
+    framing (a close shot without the mug) ends it."""
+    fps = float(plan.get("fps") or 30)
+    ends, offset = [], 0.0
+    for shot in plan.get("shots") or []:
+        offset += (shot["end_frame"] - shot["start_frame"]) / fps
+        ends.append(offset)
+    out = []
+    for entry in entries:
+        if entry.get("steam") is not None and not entry.get("anchor") and ends:
+            at = float(entry["at"])
+            end = next((edge for edge in ends if edge > at + 1e-3), None)
+            if end is not None and at + float(entry["duration"]) > end:
+                entry = {**entry, "duration": round(max(0.2, end - at), 3)}
+        out.append(entry)
+    return out
+
+
 def edited_captions(plan: dict[str, Any], style: str) -> list[dict[str, Any]]:
     """Short caption cues from the kept words, on the edited timeline."""
     timed = edited_words(plan)
@@ -354,7 +373,7 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
     document = show_scenes.load(scenes_path) if scenes_path.is_file() else None
     if document:
         layer += show_scenes.overlay_items(document)
-    layer = between_words(plan, layer)
+    layer = steam_within_its_shot(plan, between_words(plan, layer))
     jingles = [entry for entry in layer if entry.get("jingle")]
     layer = [entry for entry in layer if not entry.get("jingle")]
     path = Path(plan["source"])
@@ -695,7 +714,7 @@ def preview_scene(project, scene_id: str, *, width: int | None = None, height: i
     cut = _cached_cut(Path(plan["source"]), part, folder, scene_id if only_sticker_id is None else f"{scene_id}-{only_sticker_id[:8]}",
                       ffmpeg=ffmpeg, width=width, height=height, cancel=cancel_cut if cancel_cut is not None else cancel,
                       progress=(lambda fraction: progress(fraction, f"Rendering the scene cut — {fraction:.0%}")) if progress else None)
-    shifted = [{**entry, "at": round(entry["at"] - start, 3)} for entry in between_words(plan, framed_layer(plan, layer) + overlays)]
+    shifted = [{**entry, "at": round(entry["at"] - start, 3)} for entry in steam_within_its_shot(plan, between_words(plan, framed_layer(plan, layer) + overlays))]
     jingles = [entry for entry in shifted if entry.get("jingle")]
     shifted = [entry for entry in shifted if not entry.get("jingle")]
     pictures: list[dict[str, Any]] = []

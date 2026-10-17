@@ -66,6 +66,8 @@ def test_only_reviewed_effects_are_rendered_and_captions_follow_the_interruption
     show_proposals.update(items, character["id"], region={"rect": [0.4, 0.5, 0.2, 0.15]}, zoom_sec=0.4,
                           voice=character["params"]["voices"][0], status="approved")
     show_proposals.save(project.artifacts_dir / "show_proposals.json", items)
+    from core import show_caption_layout
+    show_caption_layout.set_enabled(project, True)              # speech captions are the person's choice (off by default)
 
     destination, manifest = show.render_reviewed_show(project, progress=lambda *a: None, cancel=lambda: None)
     plan = json.loads((project.artifacts_dir / "show_plan.json").read_text())

@@ -2246,3 +2246,12 @@ body:has(#showReviewBox.show-fit) #backdropLogo {max-height:calc(100vh - 130px);
 #showReferenceDialog input,#showReferenceDialog textarea{width:100%;} .show-ref-results{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin:12px 0;}
 .show-ref-results button{display:grid;gap:5px;overflow:hidden;} .show-ref-results img{width:100%;height:130px;object-fit:contain;}
 .show-ref-results span{font-size:12px;overflow-wrap:anywhere;} [data-ref-chosen]{max-width:160px;max-height:160px;object-fit:contain;}
+
+/* Steam on the stage: where it rises (+) and the mug it follows (box). */
+.show-steam-cross {position:absolute;transform:translate(-50%,-50%);width:34px;height:34px;display:grid;place-items:center;font:700 26px/1 system-ui;color:#fff;
+  background:#e11d8fcc;border:2px solid #fff;border-radius:50%;cursor:grab;touch-action:none;z-index:6;box-shadow:0 2px 8px #0008;}
+.show-steam-cross:active {cursor:grabbing;}
+.show-steam-box {position:absolute;border:2px dashed #7dd3fc;background:#7dd3fc22;pointer-events:none;z-index:5;}
+.show-steam-tools {display:grid;gap:6px;margin-top:6px;padding:8px;border:1px solid var(--line);border-radius:8px;}
+.show-steam-tools small {color:var(--muted);}
+.show-caption-switch {margin-left:6px;padding:2px 8px;font-size:11px;border-radius:999px;border:1px solid var(--line);background:var(--panel);color:var(--text);cursor:pointer;}

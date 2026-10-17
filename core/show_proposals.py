@@ -195,7 +195,7 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
                               "clip_start": params.get("clip_start", 0.0), "clip_length": params["clip_length"]})
         elif item["kind"] == "steam":
             items_out.append({"proposal": item["id"], "steam": params["point"], "anchor": params.get("anchor"), "at": item["at"], "duration": item["duration"],
-                              "scale": params.get("scale", 1.0)})
+                              "scale": params.get("scale", 1.0), **{key: params[key] for key in ("density", "strength", "rise", "colour") if key in params}})
         elif item["kind"] == "jingle":
             items_out.append({"proposal": item["id"], "jingle": params["path"], "at": item["at"], "duration": item["duration"], "start": params.get("start", 0.0),
                               "volume": params.get("volume", 0.8), "fade": params.get("fade", 0.05), "duck": params.get("duck", 0.5)})

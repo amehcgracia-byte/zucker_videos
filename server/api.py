@@ -3523,6 +3523,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         stored = show_proposals.load(proposals_path)
         allowed = {"status", "at", "duration", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action", "clip_audio",
                    "amount", "offset", "voice", "hold", "subject", "text", "style", "position", "size", "effect", "warp", "point", "anchor", "scale",
+                   "density", "strength", "rise", "colour",
                    "entrance", "prompt", "picture", "selected_text", "image_center"}
         changes = {key: value for key, value in body.items() if key in allowed}
         # All storyboard tools share the edited clock. Reject impossible placements
@@ -3544,6 +3545,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 point = changes["image_center"]
                 if not isinstance(point, list) or len(point) != 2 or not all(isinstance(n, (int, float)) and math.isfinite(n) and -1 <= n <= 2 for n in point):
                     raise ValueError("Choose a valid picture position")
+            for key, (lo, hi) in {"density": (5, 120), "strength": (0.05, 0.9), "rise": (0.3, 3.0)}.items():
+                if key in changes and not (isinstance(changes[key], (int, float)) and not isinstance(changes[key], bool) and lo <= changes[key] <= hi):
+                    raise ValueError(f"Choose a steam {key} between {lo} and {hi}")
+            if "colour" in changes and not (changes["colour"] in ("rainbow", "white") or (isinstance(changes["colour"], str) and re.fullmatch(r"#[0-9a-fA-F]{6}", changes["colour"]))):
+                raise ValueError("Choose rainbow, white or one colour for the steam")
             if "clip_audio" in changes and not isinstance(changes["clip_audio"], bool):
                 raise ValueError("Choose whether the clip plays its own sound")
             if "selected_text" in changes and (not isinstance(changes["selected_text"], str) or len(changes["selected_text"]) > 400):

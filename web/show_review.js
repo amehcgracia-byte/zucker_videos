@@ -476,7 +476,7 @@
       <button type="button" class="icon-button small primary" data-editor-add>Add ▸</button> <button type="button" class="icon-button small" data-open-library>Library</button>
       <details class="show-sticker-picker"><summary>Add sticker</summary><div class="show-library">${library.map((asset,index)=>asset.retired?'':`<button type="button" data-library="${index}" aria-label="Add ${escape(asset.name)}"><img src="${asset.url}" alt="" loading="lazy">${escape(asset.name)}</button>`).join('')}</div></details>
       <p>Play or scrub to check when a picture appears and disappears. Drag a bar to move it; drag either edge to trim.</p>
-      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${selected.kind==='drawing'?`<button type="button" data-open-library="${selected.id}">Choose from library</button>`:''}${selected.kind==='clip'?`<button type="button" data-face-clip="${selected.id}">Put my face on it</button>${selected.params.clip_original?`<button type="button" data-face-original="${selected.id}">Use the original clip</button>`:''}`:''}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
+      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${selected.kind==='steam'?steamTools(selected):''}${selected.kind==='drawing'?`<button type="button" data-open-library="${selected.id}">Choose from library</button>`:''}${selected.kind==='clip'?`<button type="button" data-face-clip="${selected.id}">Put my face on it</button>${selected.params.clip_original?`<button type="button" data-face-original="${selected.id}">Use the original clip</button>`:''}`:''}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
       <div class="show-time-row"><span>Video</span><div class="show-time-source" data-scene-seek>Original video · your cut</div></div>
       <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
       ${(clay?.placements||[]).filter(p=>p.enabled!==false).flatMap(p=>(p.edited||[]).filter(([a,b])=>a<scene.end&&b>scene.start).map(([a,b])=>`<div class="show-time-row"><span>Clay memory</span><div class="show-time-track"><button type="button" class="show-caption-time" data-clay-at="${a}" style="left:${pct(Math.max(a,scene.start))}%;width:${Math.max(.2,pct(Math.min(b,scene.end))-pct(Math.max(a,scene.start)))}%">Simón · ${escape(CLAY_MODES[p.mode]||p.mode)}</button></div></div>`)).join('')}
@@ -1179,13 +1179,91 @@
     return `transform:rotate(${turn}deg) scale(${overlay.flip ? -1 : 1}, ${stretch});opacity:${Number(overlay.opacity ?? 1)};transform-origin:center`;
   }
 
+  // ---- Steam on the stage: a cross where it rises, and the mug's box it follows ------------------
+  let steamBoxFor = null, steamDrag = null;
+  function steamTools(item) {
+    const p = item.params;
+    return `<div class="show-steam-tools" data-steam-tools="${item.id}"><small>${p.anchor ? "Follows the mug in its box; it stops when the mug is lost." : "Drag the + on the video to the top of the mug. Without a box around the mug it ends with its shot."}</small>
+      <button type="button" data-steam-box="${item.id}">${steamBoxFor === item.id ? "Drag a box around the mug on the video…" : p.anchor ? "Mark the mug again" : "Follow a mug: mark it"}</button>${p.anchor ? `<button type="button" data-steam-unbox="${item.id}">Stop following</button>` : ""}
+      ${`<div class="show-fields">${field("Density", range("density", p.density ?? 35, 5, 120, 1))}${field("Thickness", range("strength", p.strength ?? 0.3, 0.05, 0.9, 0.05))}${field("Height", range("rise", p.rise ?? 1, 0.3, 3, 0.05))}${field("Size", range("scale", p.scale ?? 1, 0.4, 2, 0.05))}${field("Colours", `<select data-field="colour"><option value="rainbow" ${(p.colour || "rainbow") === "rainbow" ? "selected" : ""}>Rainbow</option><option value="white" ${p.colour === "white" ? "selected" : ""}>White steam</option><option value="${/^#/.test(p.colour || "") ? p.colour : "#ff66cc"}" ${/^#/.test(p.colour || "") ? "selected" : ""}>One colour</option></select>`)}</div>`}</div>`;
+  }
+  function steamHandles(scene) {
+    const item = review.proposals.find((entry) => entry.id === selectedEffect && entry.kind === "steam" && scene.effects.includes(entry.id));
+    if (!item || !timelineDialog?.open) return "";
+    const [x, y] = item.params.point || [0.5, 0.5], a = item.params.anchor;
+    return `${a ? `<div class="show-steam-box" style="left:${a[0] * 100}%;top:${a[1] * 100}%;width:${a[2] * 100}%;height:${a[3] * 100}%"></div>` : ""}
+      <div class="show-steam-cross" data-steam-cross="${item.id}" style="left:${x * 100}%;top:${y * 100}%" title="Where the steam rises: drag it">+</div>`;
+  }
+  function steamSave(item, changes) {
+    Object.assign(item.params, changes);
+    saveSoon(item.id, changes);
+    drawOverlays(currentScene());
+    renderTimeline(currentScene());
+  }
+  document.addEventListener("pointerdown", (event) => {
+    if (!review || !(event.target instanceof Element)) return;
+    const layer = $("#showStageLayer"), box = layer?.getBoundingClientRect();
+    const cross = event.target.closest("[data-steam-cross]");
+    const inside = box && event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom;
+    if (!cross && !(steamBoxFor && inside)) return;
+    event.preventDefault(); event.stopPropagation();
+    const item = review.proposals.find((entry) => entry.id === (cross ? cross.dataset.steamCross : steamBoxFor));
+    const at = { x: (event.clientX - box.left) / box.width, y: (event.clientY - box.top) / box.height };
+    steamDrag = { item, box, cross: !!cross, start: at, now: at };
+  }, true);
+  document.addEventListener("pointermove", (event) => {
+    if (!steamDrag) return;
+    const { box } = steamDrag;
+    steamDrag.now = { x: Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)), y: Math.max(0, Math.min(1, (event.clientY - box.top) / box.height)) };
+    const el = steamDrag.cross ? $(`[data-steam-cross="${CSS.escape(steamDrag.item.id)}"]`) : null;
+    if (el) { el.style.left = `${steamDrag.now.x * 100}%`; el.style.top = `${steamDrag.now.y * 100}%`; }
+    else {
+      let rect = $("#showSteamDrawing");
+      if (!rect) { rect = document.createElement("div"); rect.id = "showSteamDrawing"; rect.className = "show-steam-box"; $("#showStageLayer").append(rect); }
+      const a = steamDrag.start, b = steamDrag.now;
+      Object.assign(rect.style, { left: `${Math.min(a.x, b.x) * 100}%`, top: `${Math.min(a.y, b.y) * 100}%`, width: `${Math.abs(b.x - a.x) * 100}%`, height: `${Math.abs(b.y - a.y) * 100}%` });
+    }
+  });
+  document.addEventListener("pointerup", () => {
+    if (!steamDrag) return;
+    const { item, cross, start: a, now: b } = steamDrag;
+    steamDrag = null;
+    if (cross) { steamSave(item, { point: [Number(b.x.toFixed(4)), Number(b.y.toFixed(4))] }); return; }
+    steamBoxFor = null;
+    const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(b.y - a.y);
+    if (w < 0.02 || h < 0.02) { drawOverlays(currentScene()); renderTimeline(currentScene()); return; }
+    // The steam rises from the top middle of the mug and follows it.
+    steamSave(item, { anchor: [x, y, w, h].map((v) => Number(v.toFixed(4))), point: [Number((x + w / 2).toFixed(4)), Number(y.toFixed(4))] });
+    showToast("The steam follows this mug and stops when the mug leaves the picture.");
+  });
+  document.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("[data-steam-box],[data-steam-unbox]") : null;
+    if (!target || !review) return;
+    const item = review.proposals.find((entry) => entry.id === (target.dataset.steamBox || target.dataset.steamUnbox));
+    if (!item) return;
+    if (target.dataset.steamUnbox) { steamSave(item, { anchor: null }); return; }
+    steamBoxFor = steamBoxFor === item.id ? null : item.id;
+    renderTimeline(currentScene());
+    if (steamBoxFor) showToast("Drag a box around the mug on the video.");
+  });
+  document.addEventListener("input", (event) => {
+    const host = event.target instanceof Element ? event.target.closest("[data-steam-tools]") : null;
+    const name = event.target.dataset?.field;
+    if (!host || !name) return;
+    const item = review.proposals.find((entry) => entry.id === host.dataset.steamTools);
+    if (!item) return;
+    const value = name === "colour" ? event.target.value : Number(event.target.value);
+    item.params[name] = value;
+    saveSoon(item.id, { [name]: value });
+  });
+
   function drawOverlays(scene) {
     const layer = $("#showStageLayer");
     layer.innerHTML = scene.overlays.map((overlay, index) => {
       const item = library.find((entry) => entry.path === overlay.asset);
       return `<div class="show-overlay ${selectedOverlay === index || selectedEffect==='sticker:'+overlay.id ? "selected" : ""}" data-overlay="${index}" style="left:${overlay.x}%;top:${overlay.y}%;width:${overlay.width}%">
         <img src="${item ? item.url : `/api/v1/show/library/file?path=${encodeURIComponent(overlay.asset)}`}" alt="" draggable="false" style="${shapeStyle(overlay)}"><span class="show-resize" data-resize="${index}"></span></div>`;
-    }).join("");
+    }).join("") + steamHandles(scene);
     liveDrawings(scene);
   }
 
@@ -1570,8 +1648,8 @@
     } else if (item.kind === "warp") {
       html += field("Warp", `<select data-field="warp">${["stretch", "swirl", "wave"].map((name) => `<option ${p.warp === name ? "selected" : ""}>${name}</option>`).join("")}</select>`);
     } else if (item.kind === "steam") {
-      html += `<p class="show-hint">Click where the steam rises (the top of the mug); drag a box around the mug so the steam follows it.</p><canvas class="show-canvas" data-canvas="steam"></canvas>
-        ${field("Size", range("scale", p.scale ?? 1, 0.4, 2, 0.05))}`;
+      html += `<p class="show-hint">Click where the steam rises (the top of the mug); drag a box around the mug so the steam follows it. Without a box it ends with its shot.</p><canvas class="show-canvas" data-canvas="steam"></canvas>
+        ${`<div class="show-fields">${field("Density", range("density", p.density ?? 35, 5, 120, 1))}${field("Thickness", range("strength", p.strength ?? 0.3, 0.05, 0.9, 0.05))}${field("Height", range("rise", p.rise ?? 1, 0.3, 3, 0.05))}${field("Size", range("scale", p.scale ?? 1, 0.4, 2, 0.05))}${field("Colours", `<select data-field="colour"><option value="rainbow" ${(p.colour || "rainbow") === "rainbow" ? "selected" : ""}>Rainbow</option><option value="white" ${p.colour === "white" ? "selected" : ""}>White steam</option><option value="${/^#/.test(p.colour || "") ? p.colour : "#ff66cc"}" ${/^#/.test(p.colour || "") ? "selected" : ""}>One colour</option></select>`)}</div>`}`;
     }
     host.innerHTML = html;
     fillPrompt(item, host);
