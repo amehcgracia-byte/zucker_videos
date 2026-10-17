@@ -35,6 +35,7 @@ let state = {voices: [{source: '/v.wav', start: 0, length: 2}], photo: {photo: '
              placement: {sceneId: 's', at: 4, duration: 3, action: 'look', fromProposal: 'character-1'}};
 const api = async () => ({cutout: '/c/cutout.png', name: 'Me'});
 const showToast = () => {};
+const chosenVoice = () => state.voices[0];          // the chosen voice, trimmed (here untouched)
 const window = {ShowReview: {refreshLibrary: async () => {}, addToScene: async (asset, placement) => calls.push(['add', placement.action]),
                 rigSaved: async () => calls.push(['rig']), characterTakesPlace: async (id) => calls.push(['replace', id])}};
 ''' + save + '''

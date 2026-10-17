@@ -184,7 +184,7 @@ def overlay_items(document: dict[str, Any], frame_aspect: float = 16 / 9) -> lis
             rig = _character_rig(overlay["asset"])
             if rig.get("pivot"):
                 item["pivot"] = rig["pivot"]
-            if action == "look" and rig.get("eyes"):
+            if action in ("look", "talk") and rig.get("eyes"):        # a talking character glances too
                 item["eyes"] = rig["eyes"]
                 item["eye_movement"] = min(0.5, max(0.0, 0.05 * amount))
             if action == "talk" and (rig.get("mouth") or overlay.get("voice") or rig.get("voice")):

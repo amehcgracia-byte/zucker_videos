@@ -150,18 +150,17 @@ def load_sticker(raw: dict[str, Any], width: int, height: int) -> Sticker:
 
 
 def talking_pixels(sticker: Sticker, t: float) -> np.ndarray:
-    """The sprite with its mouth's own pixels dropped by the voice's loudness,
-    black showing behind (only inside the cut-out)."""
-    if sticker.eyes is not None:
-        return sticker.eyes.frame((t - sticker.at) / sticker.duration)
+    """The sprite with its eyes glancing and its mouth's own pixels dropped by the voice's
+    loudness, black showing behind (only inside the cut-out). Eyes and mouth move together."""
+    base = sticker.eyes.frame((t - sticker.at) / sticker.duration) if sticker.eyes is not None else sticker.pixels
     if sticker.mouth is None or sticker.envelope is None or not len(sticker.envelope):
-        return sticker.pixels
+        return base
     index = min(len(sticker.envelope) - 1, max(0, int((t - sticker.at) * sticker.fps)))
     drop = int(round(float(sticker.envelope[index]) * sticker.mouth_drop))
     if drop <= 0:
-        return sticker.pixels
-    pixels = sticker.pixels.copy()
-    patch = np.where(sticker.mouth[..., None], sticker.pixels, 0.0)
+        return base
+    pixels = base.copy()
+    patch = np.where(sticker.mouth[..., None], base, 0.0)
     pixels[sticker.mouth, :3] = 0.0                    # the open mouth: black, the sprite's own alpha kept
     moved = np.zeros_like(patch)
     moved[drop:] = patch[:-drop]
@@ -477,7 +476,8 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
     warps = [Warp(str(raw["warp"]), float(raw["at"]), max(0.2, float(raw["duration"])), float(raw.get("strength") or 0.6),
                   tuple(float(v) for v in raw["box"]) if raw.get("box") else None) for raw in gags if raw.get("warp")]
     warper = Warper(width, height) if warps else None
-    mouths = [load_mouth(raw, video, fps, width, height, ffmpeg) for raw in gags if raw.get("mouth")]
+    # A filmed mouth (the video's own pixels); a picture with a mouth is a sticker that talks, drawn above.
+    mouths = [load_mouth(raw, video, fps, width, height, ffmpeg) for raw in gags if raw.get("mouth") and not raw.get("image")]
     from core.show_inserts import AUDIO_RATE, draw_steam, fit, insert_frame, load_insert, load_steam, splice_audio
     inserts = sorted((load_insert(raw, width, height, fps, ffmpeg, video) for raw in gags if raw.get("insert")), key=lambda item: item.at)
     steams = [load_steam(raw, width, height) for raw in gags if raw.get("steam")]

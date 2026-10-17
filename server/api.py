@@ -3232,6 +3232,82 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                        cut={"mask": key, "method": "original-alpha", "crop": list(crop), "size": list(cut.size),
                             "url": f"/api/v1/show/media?path={quote(str(preview))}"})
 
+    @app.post("/api/v1/show/voices/trim")
+    def api_show_voice_trim() -> Response:
+        """Where the speech in a voice really starts and ends: the silence at both ends (a late
+        press of Record, a pause before stopping) left out, a little breath kept."""
+        import numpy as np
+        from core.show_inserts import AUDIO_RATE, decode_voice
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        source = _show_allowed_source(project, str(body.get("source") or ""))
+        try:
+            start, length = max(0.0, float(body.get("start") or 0)), float(body.get("length") or 0)
+        except (TypeError, ValueError):
+            return error_response("bad_request", "Choose a voice", 400)
+        if source is None or not 0 < length <= 180:
+            return error_response("bad_request", "Choose one of this Show's voices", 400)
+        samples = decode_voice(source, start, length, str(tool_status().get("ffmpeg_path") or "ffmpeg")).mean(axis=1)
+        window = AUDIO_RATE // 50                                          # 20 ms
+        frames = len(samples) // window
+        if frames < 2:
+            return jsonify({"start": start, "length": length})
+        rms = np.sqrt((samples[:frames * window].reshape(frames, window) ** 2).mean(axis=1))
+        loud = np.nonzero(rms >= max(0.004, rms.max() * 0.08))[0]
+        if not len(loud):
+            return error_response("bad_request", "This recording is silent", 400)
+        first = max(0.0, loud[0] * window / AUDIO_RATE - 0.12)
+        last = min(length, (loud[-1] + 1) * window / AUDIO_RATE + 0.15)
+        return jsonify({"start": round(start + first, 3), "length": round(last - first, 3)})
+
+    @app.post("/api/v1/show/characters/talk-preview")
+    def api_show_character_talk_preview() -> Response:
+        """The character as the render will show it: its eyes glancing and its mouth moving
+        with its voice, which is heard (the same drawing code as the final render)."""
+        import uuid
+        import numpy as np
+        from core import show_characters
+        from core.gag_render import render_gags
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        photo = _allowed_photo(project, str(body.get("photo") or ""))
+        key = re.sub(r"[^0-9a-f]", "", str(body.get("mask") or ""))
+        folder = project.cache_dir / "show_cutouts"
+        mask_path = folder / f"{key}.npy"
+        voice = body.get("voice")
+        if photo is None or not key or not mask_path.is_file():
+            return error_response("bad_request", "Cut out a photo of this Show first", 400)
+        if not (isinstance(voice, list) and len(voice) == 3 and _show_allowed_source(project, str(voice[0]))):
+            return error_response("bad_request", "Choose or record its voice first", 400)
+        source, start, length = str(voice[0]), max(0.0, float(voice[1])), max(0.2, min(60.0, float(voice[2])))
+        ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
+        token = uuid.uuid4().hex
+        picture_path, backdrop, target = folder / f"talk-{token}.png", folder / f"talk-{token}-back.mp4", folder / f"talk-{token}.mp4"
+        try:
+            picture, _ = show_characters.cutout(photo, np.load(mask_path))
+            picture.save(picture_path)
+            lead = 0.3
+            # A plain backdrop carrying the voice (it starts after a short lead), at the preview size.
+            subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i", f"color=c=0x2a302c:s=640x360:r=25:d={length + lead + 0.3:.3f}",
+                            "-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", source, "-filter_complex", f"[1:a]adelay={int(lead * 1000)}:all=1,apad[a]",
+                            "-map", "0:v", "-map", "[a]", "-shortest", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", str(backdrop)],
+                           check=True, capture_output=True, timeout=120)
+            sticker = {"image": str(picture_path), "at": lead, "duration": length, "x": 0.5, "y": 0.52, "width": 0.42, "effect": "none",
+                       "voice": [source, start, length]}
+            if body.get("mouth"):
+                sticker.update(mouth=body["mouth"], mouth_open=0.08)
+            if body.get("eyes"):
+                sticker.update(eyes=body["eyes"], eye_movement=0.05)
+            render_gags(backdrop, [sticker], target, ffmpeg=ffmpeg)
+        except (ValueError, TypeError, KeyError) as exc:
+            return error_response("bad_request", str(exc), 400)
+        except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+            return error_response("preview_failed", f"Could not render the preview: {exc}", 500)
+        finally:
+            picture_path.unlink(missing_ok=True)
+            backdrop.unlink(missing_ok=True)
+        return jsonify({"url": f"/api/v1/show/media?path={quote(str(target))}"})
+
     @app.post("/api/v1/show/characters/eyes-preview")
     def api_show_character_eyes_preview() -> Response:
         import uuid

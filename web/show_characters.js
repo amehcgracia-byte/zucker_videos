@@ -163,12 +163,19 @@
       <div class="show-checker show-rig"><canvas id="showRigCanvas" class="show-canvas"></canvas></div>
       <video id="showEyePreview" controls playsinline hidden style="max-width:100%;max-height:240px"></video><p id="showEyeStatus" role="status"></p><div class="show-fields"><label class="show-field"><span>Name</span><input type="text" id="showCharacterName" value="${escape(state.name || state.photo.name)}"></label>
         <label class="show-field"><span>Its voice (from your videos)</span><select id="showCharacterVoice"><option value="">No voice yet</option>${voices.map((voice, index) => `<option value="${index}">${escape(voice.text.slice(0, 60))} (${escape(baseName(voice.source))} ${voice.start.toFixed(1)} s)</option>`).join("")}</select></label></div>
+      <div class="show-fields show-voice-trim"><label class="show-field"><span>Its voice starts at (s)</span><input type="number" step="any" min="0" id="showVoiceFrom" value="0"></label>
+        <label class="show-field"><span>…and ends at (s)</span><input type="number" step="any" min="0" id="showVoiceTo" value=""></label>
+        <button type="button" class="icon-button small" data-studio="trim-voice" title="Leave out the silence before and after the speech">Trim the silence</button>
+        <button type="button" class="icon-button small primary" data-studio="talk-preview" title="Eyes, mouth and voice together, as the video will show them">▶ Preview with voice</button></div>
+      <video id="showTalkPreview" controls playsinline hidden style="max-width:100%;max-height:260px"></video><p id="showTalkStatus" role="status"></p>
       <div data-voice-input data-voice-character></div>
       <div class="show-actions"><button type="button" class="icon-button small" data-studio="back2">Back to the cut-out</button><button type="button" class="primary icon-button small" data-studio="save">Save in the library and place it</button></div>`;
     if(state.editing)$('[data-studio="back2"]').disabled=true;
     state.voices = voices;
     if(state.initialMode==='eyes')$('[name="rigtool"][value="eyes"]').checked=true;
     if(state.savedVoice)$("#showCharacterVoice").value=String(voices.length-1);
+    voiceBounds();
+    $("#showCharacterVoice").addEventListener("change", voiceBounds);
     const canvas = $("#showRigCanvas");
     const image = new Image();
     image.onload = () => {
@@ -205,9 +212,23 @@
     if (state.pivot) { ctx.beginPath(); ctx.arc(state.pivot[0] * canvas.width, state.pivot[1] * canvas.height, 6, 0, Math.PI * 2); ctx.fillStyle = "#f472b6"; ctx.fill(); }
   }
 
-  async function save() {
+  // The chosen voice, trimmed to its "starts at / ends at" (seconds inside that recording).
+  function voiceBounds() {
+    const index = $("#showCharacterVoice")?.value, voice = index === "" || index == null ? null : state.voices[Number(index)];
+    $("#showVoiceFrom").value = "0";
+    $("#showVoiceTo").value = voice ? voice.length.toFixed(2) : "";
+  }
+  function chosenVoice() {
     const index = $("#showCharacterVoice").value;
-    const voice = index === "" ? null : state.voices[Number(index)];
+    if (index === "") return null;
+    const voice = state.voices[Number(index)];
+    const from = Math.max(0, Math.min(voice.length - 0.2, Number($("#showVoiceFrom").value) || 0));
+    const to = Math.max(from + 0.2, Math.min(voice.length, Number($("#showVoiceTo").value) || voice.length));
+    return { ...voice, start: voice.start + from, length: to - from };
+  }
+
+  async function save() {
+    const voice = chosenVoice();
     const saved = await api("/show/characters", { method: state.editing ? "PATCH" : "POST", body: JSON.stringify({ folder:state.folder,
       photo: state.photo.photo, mask: state.cut.mask, method: state.cut.method, name: $("#showCharacterName").value,
       eyes: state.eyes || [], mouth: state.mouth || null, pivot: state.pivot || [0.5, 1.0], voice: voice ? [voice.source, voice.start, voice.length] : null }) });
@@ -257,6 +278,7 @@
     const select = $("#showCharacterVoice"), option = document.createElement('option');
     option.value = state.voices.length - 1; option.textContent = event.detail.text;
     select.append(option); select.value = option.value;
+    voiceBounds();
   });
 
   document.addEventListener("click", async (event) => {
@@ -265,6 +287,26 @@
     try {
       const action = target.dataset.studio;
       if (action === "open") { state = { step: 1, strokes: [], undo: [] }; show(1); }
+      else if (action === "trim-voice") {
+        const index = $("#showCharacterVoice").value;
+        if (index === "") { $("#showTalkStatus").textContent = "Choose or record its voice first."; return; }
+        const voice = state.voices[Number(index)];
+        const trimmed = await api("/show/voices/trim", { method: "POST", body: JSON.stringify({ source: voice.source, start: voice.start, length: voice.length }) });
+        $("#showVoiceFrom").value = (trimmed.start - voice.start).toFixed(2);
+        $("#showVoiceTo").value = (trimmed.start - voice.start + trimmed.length).toFixed(2);
+        $("#showTalkStatus").textContent = `Speech from ${(trimmed.start - voice.start).toFixed(2)} s to ${(trimmed.start - voice.start + trimmed.length).toFixed(2)} s; the silence around it is left out.`;
+      }
+      else if (action === "talk-preview") {
+        const voice = chosenVoice();
+        if (!voice) { $("#showTalkStatus").textContent = "Choose or record its voice first."; return; }
+        target.disabled = true; $("#showTalkStatus").textContent = "Preparing the preview with its voice…";
+        try {
+          const result = await api("/show/characters/talk-preview", { method: "POST", body: JSON.stringify({ photo: state.photo.photo, mask: state.cut.mask,
+            eyes: state.eyes || [], mouth: state.mouth || null, voice: [voice.source, voice.start, voice.length] }) });
+          const video = $("#showTalkPreview"); video.src = result.url; video.hidden = false; video.play().catch(() => {});
+          $("#showTalkStatus").textContent = `${state.mouth ? "Its mouth moves with the voice" : "Mark its mouth to make it move with the voice"}${state.eyes?.length ? "; its eyes glance" : ""}. This is how the video will show it.`;
+        } finally { target.disabled = false; }
+      }
       else if (action === "close") $("#showCharacterStudio").hidden = true;
       else if (action === "gallery") {
         if (!state.cut || state.cutPending) return;
