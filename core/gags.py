@@ -378,8 +378,9 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
                 continue
             image = character_with_bubble(picture, gag["says"], side=side, seed=index) if kind == "character" and gag.get("says") else picture
         elif kind == "word":
-            image = word_sticker(gag["text"], colour="#fff4d6", font="note", handwritten=True,
-                                 tilt=(-3, 2, -2, 3)[index % 4])
+            image = word_sticker(gag["text"], colour=gag.get("colour") if str(gag.get("colour") or "").startswith("#") else "#fff4d6",
+                                 font=gag.get("font") or "note", handwritten=True, tilt=(-3, 2, -2, 3)[index % 4],
+                                 bold=bool(gag.get("bold")), italic=bool(gag.get("italic")))
         elif kind == "photo":
             found = search(gag["query"], library or [])
             if found:

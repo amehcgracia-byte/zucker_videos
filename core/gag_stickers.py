@@ -39,8 +39,35 @@ HAND_FONTS: dict[str, tuple[tuple[str, int], ...]] = {
 }
 
 
+# Typefaces for words: one plain one, the rest wild (macOS first, then Windows; the app's own
+# Verdana when neither is there). Keys are stored on the word; labels are shown in the menus.
+_SUP = "/System/Library/Fonts/Supplemental/"
+WORD_FONTS: dict[str, tuple[str, tuple[tuple[str, int], ...]]] = {
+    "plain": ("Plain (Arial)", ((_SUP + "Arial.ttf", 0), ("C:/Windows/Fonts/arial.ttf", 0))),
+    "marker": ("Marker", HAND_FONTS["marker"]),
+    "chalk": ("Chalk", HAND_FONTS["chalk"]),
+    "note": ("Notebook", HAND_FONTS["note"]),
+    "board": ("Chalkboard", HAND_FONTS["board"]),
+    "bradley": ("Bradley hand", ((_SUP + "Bradley Hand Bold.ttf", 0), ("C:/Windows/Fonts/BRADHITC.TTF", 0))),
+    "signpainter": ("Sign painter", ((_SUP + "SignPainter.ttc", 0),)),
+    "brush": ("Brush script", ((_SUP + "Brush Script.ttf", 0), ("C:/Windows/Fonts/BRUSHSCI.TTF", 0))),
+    "comic": ("Comic", ((_SUP + "Comic Sans MS Bold.ttf", 0), ("C:/Windows/Fonts/comicbd.ttf", 0))),
+    "impact": ("Impact poster", ((_SUP + "Impact.ttf", 0), ("C:/Windows/Fonts/impact.ttf", 0))),
+    "papyrus": ("Papyrus", ((_SUP + "Papyrus.ttc", 0), ("C:/Windows/Fonts/PAPYRUS.TTF", 0))),
+    "phosphate": ("Phosphate", ((_SUP + "Phosphate.ttc", 0),)),
+    "luminari": ("Luminari", ((_SUP + "Luminari.ttf", 0),)),
+    "trattatello": ("Trattatello", ((_SUP + "Trattatello.ttf", 0),)),
+    "herculanum": ("Herculanum", ((_SUP + "Herculanum.ttf", 0),)),
+    "party": ("Party", ((_SUP + "PartyLET-plain.ttf", 0),)),
+    "zapfino": ("Zapfino", ((_SUP + "Zapfino.ttf", 0),)),
+    "typewriter": ("Typewriter", ((_SUP + "AmericanTypewriter.ttc", 0), ("C:/Windows/Fonts/cour.ttf", 0))),
+    "rockwell": ("Rockwell", ((_SUP + "Rockwell.ttc", 0), ("C:/Windows/Fonts/ROCK.TTF", 0))),
+    "chancery": ("Chancery", ((_SUP + "Apple Chancery.ttf", 0),)),
+}
+
+
 def hand_font(size: int, name: str = "marker") -> ImageFont.ImageFont:
-    for path, index in HAND_FONTS.get(name, HAND_FONTS["marker"]):
+    for path, index in (WORD_FONTS[name][1] if name in WORD_FONTS else HAND_FONTS.get(name, HAND_FONTS["marker"])):
         try:
             return ImageFont.truetype(path, size, index=index)
         except OSError:
@@ -167,15 +194,24 @@ def character_with_bubble(character: Path | Image.Image, text: str, *, side: str
     return canvas
 
 
-def word_sticker(text: str, *, colour: str = "#ffffff", font_size: int = 170, tilt: float = -6.0, font: str = "marker", handwritten: bool = False) -> Image.Image:
-    """A big shouted word, hand lettered, thick dark outline, slightly tilted."""
+def word_sticker(text: str, *, colour: str = "#ffffff", font_size: int = 170, tilt: float = -6.0, font: str = "marker", handwritten: bool = False,
+                 bold: bool = False, italic: bool = False) -> Image.Image:
+    """A big shouted word, hand lettered, thick dark outline, slightly tilted. ``bold``
+    thickens the letters; ``italic`` slants them (a typeface rarely ships both)."""
     face = hand_font(font_size, font)
     words = (text.strip() if handwritten else text.strip().upper())[:28] or "!"
     stroke = 1 if handwritten else max(4, font_size // 10)
     probe = ImageDraw.Draw(Image.new("RGBA", (10, 10)))
     left, top, right, bottom = probe.textbbox((0, 0), words, font=face, stroke_width=stroke)
-    image = Image.new("RGBA", (right - left + 40, bottom - top + 40), (0, 0, 0, 0))
+    pad = 40 + (font_size // 3 if italic else 0)
+    image = Image.new("RGBA", (right - left + 2 * pad, bottom - top + 40), (0, 0, 0, 0))
     raw = colour.lstrip("#")
     fill = tuple(int(raw[i:i + 2], 16) for i in (0, 2, 4)) + (255,) if len(raw) == 6 else WHITE
-    ImageDraw.Draw(image).text((20 - left, 20 - top), words, font=face, fill=fill, stroke_width=stroke, stroke_fill=INK)
+    draw = ImageDraw.Draw(image)
+    if bold:   # the letters' own colour around them first: thicker strokes, same outline after
+        draw.text((pad - left, 20 - top), words, font=face, fill=fill, stroke_width=stroke + max(3, font_size // 22), stroke_fill=fill)
+    draw.text((pad - left, 20 - top), words, font=face, fill=fill, stroke_width=stroke, stroke_fill=INK)
+    if italic:
+        shear = 0.22
+        image = image.transform(image.size, Image.AFFINE, (1, shear, -shear * image.height / 2, 0, 1, 0), resample=Image.BICUBIC)
     return _shadowed(image.rotate(tilt, resample=Image.BICUBIC, expand=True))

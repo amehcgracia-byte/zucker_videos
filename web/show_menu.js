@@ -34,6 +34,7 @@
       row.querySelector(".zmenu-label").textContent = item.label;
       row.querySelector(".zmenu-hint").textContent = item.submenu ? "▸" : item.hint || "";
       if (item.title) row.title = item.title;
+      if (item.style) row.querySelector(".zmenu-label").style.cssText = item.style;   // e.g. a typeface shown in itself
       row.addEventListener("pointerenter", () => { row.focus({ preventScroll: true }); openSub(menu, row, item, level); });
       row.addEventListener("click", async (event) => {
         event.stopPropagation();

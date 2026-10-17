@@ -3523,7 +3523,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         stored = show_proposals.load(proposals_path)
         allowed = {"status", "at", "duration", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action", "clip_audio",
                    "amount", "offset", "voice", "hold", "subject", "text", "style", "position", "size", "effect", "warp", "point", "anchor", "scale",
-                   "density", "strength", "rise", "colour",
+                   "density", "strength", "rise", "colour", "font", "bold", "italic",
                    "entrance", "prompt", "picture", "selected_text", "image_center"}
         changes = {key: value for key, value in body.items() if key in allowed}
         # All storyboard tools share the edited clock. Reject impossible placements
@@ -3550,6 +3550,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                     raise ValueError(f"Choose a steam {key} between {lo} and {hi}")
             if "colour" in changes and not (changes["colour"] in ("rainbow", "white") or (isinstance(changes["colour"], str) and re.fullmatch(r"#[0-9a-fA-F]{6}", changes["colour"]))):
                 raise ValueError("Choose rainbow, white or one colour for the steam")
+            from core.gag_stickers import WORD_FONTS
+            if "font" in changes and changes["font"] not in WORD_FONTS:
+                raise ValueError("Choose one of the typefaces")
+            if any(key in changes and not isinstance(changes[key], bool) for key in ("bold", "italic")):
+                raise ValueError("Bold and italic are on or off")
             if "clip_audio" in changes and not isinstance(changes["clip_audio"], bool):
                 raise ValueError("Choose whether the clip plays its own sound")
             if "selected_text" in changes and (not isinstance(changes["selected_text"], str) or len(changes["selected_text"]) > 400):

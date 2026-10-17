@@ -10,6 +10,15 @@
   const DECISION_LABELS = { pending: "To decide", accepted: "Accepted", modified: "Needs review", plain: "Without effect" };
   const ACTIONS = { mouth: "Mouth (with the voice)", nod: "Nod", side: "Sideways", turn: "Turn" };
   const DRAWING_STYLES = { pencil: "Pencil", crayon: "Wax crayons", marker: "Felt-tip marker" };
+  // Typefaces for words (core.gag_stickers.WORD_FONTS): one plain, the rest wild; shown in themselves.
+  const WORD_FONTS = { plain: ["Plain (Arial)", "Arial, Helvetica, sans-serif"], marker: ["Marker", "'Marker Felt', 'Segoe Print', cursive"],
+    chalk: ["Chalk", "Chalkduster, 'Ink Free', cursive"], note: ["Notebook", "Noteworthy, 'Segoe Print', cursive"], board: ["Chalkboard", "'Chalkboard SE', 'Comic Sans MS', cursive"],
+    bradley: ["Bradley hand", "'Bradley Hand', cursive"], signpainter: ["Sign painter", "SignPainter, cursive"], brush: ["Brush script", "'Brush Script MT', cursive"],
+    comic: ["Comic", "'Comic Sans MS', cursive"], impact: ["Impact poster", "Impact, sans-serif"], papyrus: ["Papyrus", "Papyrus, fantasy"], phosphate: ["Phosphate", "Phosphate, fantasy"],
+    luminari: ["Luminari", "Luminari, fantasy"], trattatello: ["Trattatello", "Trattatello, fantasy"], herculanum: ["Herculanum", "Herculanum, fantasy"], party: ["Party", "'Party LET', fantasy"],
+    zapfino: ["Zapfino", "Zapfino, cursive"], typewriter: ["Typewriter", "'American Typewriter', 'Courier New', monospace"], rockwell: ["Rockwell", "Rockwell, serif"], chancery: ["Chancery", "'Apple Chancery', cursive"] };
+  const WORD_COLOURS = [["#fff4d6", "Cream"], ["#ffffff", "White"], ["#ffd400", "Yellow"], ["#ff4fa3", "Pink"], ["#ff3b30", "Red"], ["#7dd3fc", "Sky"], ["#111111", "Black"]];
+  const wordStyle = (p) => `font-family:${(WORD_FONTS[p.font || "note"] || WORD_FONTS.note)[1]};font-weight:${p.bold ? 800 : 400};font-style:${p.italic ? "italic" : "normal"};color:${/^#/.test(p.colour || "") ? p.colour : "#fff4d6"}`;
   const ENTRANCES = { cut: "Straight cut: it talks at once", zoom: "Push in, then it talks", bounce: "The photo bounces in over the frozen host" };
   let review = null;          // the storyboard: identity, intro, scenes, proposals, resources
   let library = [];
@@ -406,7 +415,7 @@
       element.classList.toggle('selected',item.id===selectedEffect);
       element.style.cssText=`left:${pos[0]*100}%;top:${pos[1]*100}%;width:${(p.size||.25)*100}%`;
       element.innerHTML=p.picture?`<img src="${picture(item)}" draggable="false" alt="${escape(p.subject||p.text||'Drawing')}"><span class="picture-corner" title="Drag to resize"></span>`
-        :item.kind==='word'?`<span class="show-word-live-text">${escape(p.text)}</span><span class="picture-corner" title="Drag to resize"></span>`:'';
+        :item.kind==='word'?`<span class="show-word-live-text" style="${wordStyle(p)}">${escape(p.text)}</span><span class="picture-corner" title="Drag to resize"></span>`:'';
       if(!element.innerHTML)continue;
       layer.append(element);
       element.onpointerdown=event=>{
@@ -1171,11 +1180,27 @@
       { label: "Preview it", action: () => clickLike("data-show-preview", id) },
       ...(["cutaway", "character"].includes(item.kind) || item.params.picture ? [{ label: "Animate original eyes / mouth…", action: () => clickLike("data-original-parts", id) }] : []),
       ...(item.kind === "drawing" ? [{ label: "Choose from library…", action: () => openLibrary(id) }] : []),
+      ...(item.kind === "word" && !item.params.picture ? wordItems(item) : []),
       ...(item.kind === "clip" ? [{ label: "Put my face on it…", action: () => openLibrary(null, null, id) }] : []),
       { separator: true },
       { label: item.status === "discarded" ? "Restore effect" : "Remove effect", action: async () => { await patch(id, { status: item.status === "discarded" ? "proposed" : "discarded" }); await markModified(); renderScene(); } },
     ];
   }
+  // A word's text: typeface (each shown in itself), bold, italic, size, colour.
+  function wordItems(item) {
+    const p = item.params;
+    const set = (changes) => () => { Object.assign(p, changes); saveSoon(item.id, changes); liveDrawings(currentScene()); };
+    return [
+      { separator: true },
+      { label: "Typeface", submenu: Object.entries(WORD_FONTS).map(([key, [label, family]]) => ({ label, style: `font-family:${family};font-size:15px`, checked: (p.font || "note") === key, action: set({ font: key }) })) },
+      { label: "Bold", hint: "⌘B", checked: !!p.bold, action: set({ bold: !p.bold }) },
+      { label: "Italic", hint: "⌘I", checked: !!p.italic, action: set({ italic: !p.italic }) },
+      { label: "Size", submenu: [[0.15, "Small"], [0.25, "Medium"], [0.4, "Big"], [0.6, "Huge"], [0.9, "Whole screen"]].map(([size, label]) => ({ label, checked: Math.abs((p.size || 0.25) - size) < 0.01, action: set({ size }) })) },
+      { label: "Colour", submenu: WORD_COLOURS.map(([colour, label]) => ({ label, style: `color:${colour === "#111111" ? "inherit" : colour}`, checked: (p.colour || "#fff4d6") === colour, action: set({ colour }) })) },
+      { label: "Hand-letter it instead (Claude or ChatGPT)…", action: () => ShowEinstein.open(currentScene(), { text: p.text, start: item.at, end: item.at + item.duration }, "", item.id, { purpose: "lettering", letteringText: p.text, style: "marker" }) },
+    ];
+  }
+
   // Reuse a button's existing handler (the same code path as clicking it).
   function clickLike(attribute, value) {
     const button = document.createElement("button");
@@ -1780,6 +1805,12 @@
       html += `<div class="show-fields">${item.kind === "word" ? field("Text", `<input type="text" data-field="text" value="${escape(p.text)}">`) : field("What is drawn", `<input type="text" data-field="subject" value="${escape(p.subject)}">`)}
         ${field("Position", `<select data-field="position">${["left", "top-left", "bottom-left", "right", "top-right", "bottom-right"].map((pos) => `<option ${p.position === pos ? "selected" : ""}>${pos}</option>`).join("")}</select>`)}
         ${field("Size", range("size", p.size ?? 0.25, 0.02, 2, 0.01))}</div>`;
+      if (item.kind === "word" && !p.picture) {
+        html += `<div class="show-fields">${field("Typeface", `<select data-field="font">${Object.entries(WORD_FONTS).map(([key, [label, family]]) => `<option value="${key}" style="font-family:${family}" ${(p.font || "note") === key ? "selected" : ""}>${label}</option>`).join("")}</select>`)}
+          ${field("Bold", `<input type="checkbox" data-field="bold" ${p.bold ? "checked" : ""}>`)}${field("Italic", `<input type="checkbox" data-field="italic" ${p.italic ? "checked" : ""}>`)}
+          ${field("Colour", `<input type="color" data-field="colour" value="${/^#/.test(p.colour || "") ? p.colour : "#fff4d6"}">`)}</div>
+          <p class="show-hint" style="${wordStyle(p)};font-size:28px;background:#0006;padding:6px 10px;border-radius:8px">${escape(p.text)}</p>`;
+      }
       if (item.kind === "drawing") {
         html += field("Appears", `<select data-field="effect">${[["pop", "Pops in"], ["draw", "Draws itself, stroke by stroke"], ["rise", "Rises from below"], ["drop", "Drops from above"], ["none", "Just appears"]]
           .map(([key, label]) => `<option value="${key}" ${(p.effect || "pop") === key ? "selected" : ""}>${label}</option>`).join("")}</select>`);
@@ -1822,7 +1853,7 @@
     if (!target.dataset || !target.dataset.field) return;
     const item = review.proposals.find((entry) => entry.id === id);
     const name = target.dataset.field;
-    let value = target.type === "number" || target.type === "range" ? Number(target.value) : target.value;
+    let value = target.type === "checkbox" ? target.checked : target.type === "number" || target.type === "range" ? Number(target.value) : target.value;
     const changes = {};
     if (name === "offset_x" || name === "offset_y") {
       const offset = [...(item.params.offset || [0, 0])];
