@@ -628,10 +628,30 @@
   let backgroundPreview = null;
   function prepareInBackground(scene) {
     clearTimeout(backgroundPreview);
+    const stamp=editStamp;
     backgroundPreview = setTimeout(async () => {
       await flushEdits().catch(() => {});
-      api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, { method: "POST", body: "{}" }).catch(() => {});
+      if(stamp!==editStamp)return;
+      await api(`/show/scenes/${encodeURIComponent(scene.id)}/preview`, { method: "POST", body: "{}" }).catch(() => {});
+      refreshLivePreview(scene,stamp);
     }, 1000);
+  }
+
+  async function refreshLivePreview(scene,stamp) {
+    if(stamp!==editStamp||currentScene()?.id!==scene.id)return;
+    const fresh=await api(`/show/scenes?current=${encodeURIComponent(scene.id)}`).catch(()=>null);
+    if(stamp!==editStamp||currentScene()?.id!==scene.id)return;
+    const updated=fresh?.scenes?.find(entry=>entry.id===scene.id);
+    if(updated){scene=currentScene();scene.preview=updated.preview;}       // the current object, not a copy from before a board reload
+    editorEffectsLabel();
+    if(scene.preview?.status==='ready'){
+      if(!timelineDialog?.open)$('#showStageStatus').textContent='Effects preview ready. Press Play scene to watch your current edit.'+leftOut(scene.preview);
+      return;
+    }
+    if(['failed','stopped'].includes(scene.preview?.status)){
+      $('#showStageStatus').textContent=`Effects preview failed: ${scene.preview.error||'try Generate scene preview again'}`;return;
+    }
+    backgroundPreview=setTimeout(()=>refreshLivePreview(scene,stamp),1200);
   }
 
   function showScenePicture(scene) {
@@ -709,7 +729,7 @@
   let editorPoll = null, editorAsked = null, editorAskedAt = 0, editStamp = 0;
   // What a ready preview could not show yet (an effect needing settings, a drawing the painter could not make).
   const leftOut = (preview) => preview?.left_out?.length ? ` Not in it yet: ${preview.left_out.join("; ")}.` : "";      // editStamp: an answer asked before an edit is old news
-  const effectsReady = (scene) => !!(timelineDialog?.open && scene && scene.preview?.status === "ready" && scene.preview.url);
+  const effectsReady = (scene) => !!(scene && scene.preview?.status === "ready" && scene.preview.url);
   function editorEffectsLabel() {
     const transport = $("#showSceneTransport"), scene = currentScene();
     if (!transport || !scene) return;
@@ -724,7 +744,12 @@
   function playScene() {
     const scene = currentScene(), video = $("#showStageVideo");
     if (!scene) return;
-    if (!video.paused) { video.pause(); return; }
+    if (!video.paused) {
+      const at=editedPlayhead(),editing=quick?.effects&&timelineDialog?.open;
+      video.pause();
+      if(editing)playQuick(scene,Math.max(0,Math.min(scene.end-scene.start-.04,at-scene.start)));
+      return;
+    }
     let at = editedPlayhead();
     if (at >= scene.end - 0.05) at = scene.start;
     if (effectsReady(scene) && !quick?.effects) playQuick(scene, at - scene.start, null, true);
@@ -733,7 +758,10 @@
   }
   async function watchEditorEffects(scene) {
     clearTimeout(editorPoll);
-    if (!timelineDialog?.open || !scene || currentScene()?.id !== scene.id) return;
+    // The board may have been reloaded meanwhile (refreshBoard): always the current scene object,
+    // or a ready preview would be written on an old copy and Play scene would never see it.
+    scene = scene && currentScene()?.id === scene.id ? currentScene() : null;
+    if (!timelineDialog?.open || !scene) return;
     editorEffectsLabel();
     if (effectsReady(scene)) return;
     // Asked when the editor opened or after an edit (2 s later); asked again if nothing started.
@@ -745,7 +773,7 @@
     const asked = editStamp;
     const fresh = await api(`/show/scenes?current=${encodeURIComponent(scene.id)}`).catch(() => null);
     const updated = fresh?.scenes?.find((entry) => entry.id === scene.id);
-    if (updated && asked === editStamp && currentScene()?.id === scene.id && !editQueue.pending.size) scene.preview = updated.preview;
+    if (updated && asked === editStamp && currentScene()?.id === scene.id && !editQueue.pending.size) { scene = currentScene(); scene.preview = updated.preview; }
     if (effectsReady(scene)) {
       editorAsked = null;
       // Already playing the live view: carry on, now with the effects.
@@ -758,11 +786,9 @@
     editorPoll = setTimeout(() => watchEditorEffects(scene), 1200);
   }
   $("#showStageVideo").addEventListener("pause", () => {
-    // Pausing the effects preview returns to the live view at the same moment, ready to edit.
-    if (!quick?.effects || !timelineDialog?.open) return;
-    const scene = quick.scene, at = editedPlayhead();
-    playQuick(scene, Math.max(0, Math.min(scene.end - scene.start - 0.04, at - scene.start)));
-    $("#showStageVideo").pause();
+    // load() also queues pause. Only an explicit Pause command may switch back
+    // to the editable source; a delayed event from the old source must not do it.
+    syncPlayback();
   });
   // Seconds into the scene's edit → (segment, offset in it).
   const sourceAt=ShowClock.sourceAt;
@@ -785,7 +811,7 @@
 
   $("#showStageVideo").addEventListener("loadeddata", () => {
     const scene = currentScene();
-    if (!scene || !wantEffects.has(scene.id) || scene.preview?.status !== "ready") return;
+    if (!scene || (!wantEffects.has(scene.id)&&!quick?.effects) || scene.preview?.status !== "ready") return;
     if ($("#showStageVideo").getAttribute("src") !== scene.preview.url) return;
     viewedScenes.add(scene.id);
     dirtyScenes.delete(scene.id);
@@ -938,7 +964,8 @@
     if(kind.startsWith('original_')){
       const mode=kind==='original_mouth'?'mouth':'eyes';
       const selected=timelineItem(selectedEffect),p=selected?.params||{};
-      const placement={sceneId:scene.id,at:picked.start,duration:picked.end-picked.start,action:mode==='eyes'?'look':'talk',x:50,y:50,width:100};
+      const placement={sceneId:scene.id,at:picked.start,duration:picked.end-picked.start,action:mode==='eyes'?'look':'talk',x:0,y:0,width:100,
+        fromProposal:selected&&!selected.overlay&&selected.kind==='character'?selected.id:null};
       if(selected?.overlay){await ShowPhotoStudio.rigPicture(selected.overlay.asset,{mode,placement:{...placement,replaceId:selected.overlay.id}});return true;}
       if(p.picture){await ShowPhotoStudio.rigPicture(p.picture,{mode,placement:{...placement,width:30}});return true;}
       const [index,offset]=sourceAt(scene.segments,picked.start-scene.start);
@@ -1068,7 +1095,9 @@
     };
   }
 
-  document.addEventListener('click',event=>{const button=event.target.closest?.('[data-original-parts]');if(!button)return;selectedEffect=button.dataset.originalParts;const item=timelineItem(selectedEffect),scene=currentScene();extraTool('original_eyes',scene,{text:scene.text,start:item.at,end:Math.min(scene.end,item.at+item.duration)}).catch(error=>showToast(error.message,true));});
+  document.addEventListener('click',event=>{const button=event.target.closest?.('[data-original-parts]');if(!button)return;selectedEffect=button.dataset.originalParts;const item=timelineItem(selectedEffect),scene=currentScene();
+    // A "character speaks" opens on its mouth (record its voice there); every effect gets a visible duration, not its zero-length mark.
+    extraTool(item.kind==='character'?'original_mouth':'original_eyes',scene,{text:scene.text,start:item.at,end:Math.min(scene.end,item.at+Math.max(3,item.duration||0))}).catch(error=>showToast(error.message,true));});
   document.addEventListener('pointerdown',event=>{if(event.target.closest?.('#showSayTools'))event.preventDefault();});
   document.addEventListener('click',event=>{
     const button=event.target.closest?.('#showSayTools');if(!button)return;
@@ -2351,6 +2380,15 @@
 
   window.ShowReview = {
     open: openReview, openWorkspace, hull, refreshLibrary, addToScene, openLibrary,
+    // A character made in the studio from a "character speaks" card takes that effect's place: it is
+    // what speaks there now (with the voice recorded in the studio), so the effect stops asking for one.
+    async characterTakesPlace(id,name){
+      const item=review?.proposals.find(entry=>entry.id===id);
+      if(!item||item.kind!=='character'||item.status==='discarded')return;
+      await patch(id,{status:'discarded'});
+      renderScene();
+      showToast(`${name} takes the place of the proposed character: it speaks there with the voice you recorded.`);
+    },
     async rigSaved(asset,placement){
       const scene=currentScene();if(!scene||scene.id!==placement.sceneId)throw Error('Reopen the original scene to place this saved character.');
       const overlay=scene.overlays.find(o=>o.id===placement.replaceId);
