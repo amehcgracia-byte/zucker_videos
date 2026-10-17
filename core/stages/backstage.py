@@ -1171,7 +1171,16 @@ def _render_parchment_cards(directory: Path, messages: list[str], width: int, he
 
 def _looks_english(text: str) -> bool:
     """Conservative fallback for already-English source speech."""
-    return not any(marker in text.lower() for marker in ("¿", "¡", " que ", " el ", " la ", " de ", " una ", " esto "))
+    words = re.findall(r"[a-záéíóúüñ]+", text.lower())
+    if len(words) < 2 or re.search(r"[áéíóúü¿¡]", text.lower()):
+        return False
+    if set(words) & {"que", "el", "la", "de", "una", "esto", "vamos", "pero", "para"}:
+        return False
+    # Avoid obvious Spanish verb/nominal endings; these common English nouns,
+    # pronouns and adverbs happen to share an infinitive suffix.
+    english = {"guitar", "car", "bar", "star", "far", "her", "never", "ever", "other", "another", "over", "under", "after", "water", "together", "remember", "better", "later"}
+    return not any(word not in english and re.search(r"(?:ar|er|ir|ando|iendo|ción)$", word) for word in words)
+
 
 
 def _split_translated_sequence(start: Any, end: Any, text: str) -> list[dict[str, Any]]:

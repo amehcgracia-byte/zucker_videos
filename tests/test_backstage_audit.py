@@ -32,3 +32,13 @@ def test_mark_summary_matches_export_selection_and_preserves_closing_order(tmp_p
     plan=json.loads((p.artifacts_dir/'backstage_edit.json').read_text())
     assert [x['id'] for x in b.selected_segments(plan['segments'])]==['three','one']
     assert b.selection_summary(plan['segments'])==dict(selected_duration_sec=7,cut_count=1)
+
+
+@pytest.mark.parametrize('text',['vamos','vamos a cantar','qué bonito','estamos hablando','seguir haciendo','la canción'])
+def test_spanish_is_not_mistaken_for_an_english_translation(text):
+    assert not b._looks_english(text)
+
+
+@pytest.mark.parametrize('text',['Let us go','We play guitar','We remember her'])
+def test_common_english_phrases_remain_usable(text):
+    assert b._looks_english(text)
