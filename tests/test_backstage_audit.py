@@ -59,3 +59,25 @@ def test_model_change_invalidates_analysis_without_deleting_cached_transcripts(t
     first=b.BackstageAnalysisStage().inputs_fingerprint(p)
     p.data['settings']['wizard']={'backstage_whisper_model':'small'}
     assert b.BackstageAnalysisStage().inputs_fingerprint(p)!=first
+
+
+def test_volume_decodes_once_and_matches_ffmpeg_means(tmp_path):
+    import subprocess
+    source=tmp_path/'tone.wav';ffmpeg=b.tool_status()['ffmpeg_path']
+    subprocess.run([ffmpeg,'-v','error','-y','-f','lavfi','-i','sine=frequency=430:duration=2','-af','volume=0.2',str(source)],check=True)
+    audio=b._volume_samples(str(source));assert audio is not None
+    assert b._sample_volume(audio,.2,1)==pytest.approx(b._mean_volume(str(source),.2,1),abs=.2)
+
+
+def test_window_analysis_reuses_one_decode_and_falls_back_on_failure(monkeypatch):
+    import numpy as np
+    calls=[]
+    monkeypatch.setattr(b,'_has_audio',lambda p:True)
+    monkeypatch.setattr(b,'detect_music_window',lambda *a:{})
+    monkeypatch.setattr(b,'_volume_samples',lambda p:(calls.append(p) or (np.full(40*16000,1800.),16000)))
+    monkeypatch.setattr(b,'_mean_volume',lambda *a:(_ for _ in ()).throw(AssertionError('per-window decode')))
+    assert len(b._candidate_windows(dict(_path='video',_duration=40)))>1
+    assert calls==['video']
+    monkeypatch.setattr(b,'_volume_samples',lambda p:None)
+    monkeypatch.setattr(b,'_mean_volume',lambda *a:-25)
+    assert b._candidate_windows(dict(_path='video',_duration=40))

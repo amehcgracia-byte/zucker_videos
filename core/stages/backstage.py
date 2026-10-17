@@ -126,6 +126,38 @@ def _mean_volume(path: str, start: float, duration: float) -> float:
     return float(match.group(1)) if match else -60.0
 
 
+def _volume_samples(path: str):
+    """Decode a source once; PCM is temporary and never alters media/caches."""
+    import wave
+    import numpy as np
+    ffmpeg = tool_status().get("ffmpeg_path")
+    if not ffmpeg:
+        return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="zucker-volume-") as folder:
+            wav = Path(folder) / "mono.wav"
+            subprocess.run([str(ffmpeg), "-v", "error", "-nostdin", "-y", "-i", path,
+                            "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav)],
+                           capture_output=True, check=True, timeout=300)
+            with wave.open(str(wav), "rb") as source:
+                rate = source.getframerate()
+                samples = np.frombuffer(source.readframes(source.getnframes()), dtype="<i2")
+            return samples, rate
+    except (OSError, ValueError, EOFError, wave.Error, subprocess.SubprocessError):
+        return None
+
+
+def _sample_volume(audio, start: float, duration: float) -> float:
+    import numpy as np
+    samples, rate = audio
+    window = samples[max(0, int(round(start * rate))):max(0, int(round((start + duration) * rate)))]
+    if not len(window):
+        return -91.0
+    window = window.astype(np.float64)
+    rms = float(np.sqrt(np.mean(window * window))) / 32768.0
+    return 20 * math.log10(max(rms, 1 / 32768.0))
+
+
 def _has_audio(path: str) -> bool:
     try:
         return any(stream.get("codec_type") == "audio" for stream in ffprobe(path).get("streams") or [])
@@ -138,6 +170,7 @@ def _candidate_windows(record: dict[str, Any]) -> list[dict[str, Any]]:
     total = float(record["_duration"])
     if not _has_audio(path):
         return []
+    audio = _volume_samples(path)
     windows: list[dict[str, Any]] = []
     cursor = 0.0
     while cursor < total - 2.5:
@@ -145,7 +178,7 @@ def _candidate_windows(record: dict[str, Any]) -> list[dict[str, Any]]:
         duration = min(BACKSTAGE_NORMAL_CUT, remaining)
         if duration < 2.5:
             break
-        volume = _mean_volume(path, cursor, duration)
+        volume = _sample_volume(audio, cursor, duration) if audio is not None else _mean_volume(path, cursor, duration)
         # Keep non-silent moments. Loud/reactive windows are shorter so a
         # laugh or exclamation lands as a punchy cut; quieter but active
         # dialogue receives a longer scene window.
