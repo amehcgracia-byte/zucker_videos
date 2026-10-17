@@ -2993,8 +2993,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.post("/api/v1/show/voices")
     def api_show_voice_upload() -> Response:
+        """A recorded or imported voice, kept small (AAC in .m4a, about 1 MB a minute, not WAV's 6)."""
         import uuid
-        import wave
+        from core import show_clips
         from core.project import atomic_write_json
         project = _require_project(state)
         if not same_project_path(str(request.form.get("project_id") or ""), str(project.folder)):
@@ -3008,22 +3009,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         folder = project.folder / "assets" / "show-voices"
         folder.mkdir(parents=True, exist_ok=True)
         key = uuid.uuid4().hex
-        raw, target = folder / f"{key}.upload", folder / f"{key}.wav"
+        raw, target = folder / f"{key}.upload", folder / f"{key}.m4a"
         raw.write_bytes(payload)
         try:
-            ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
+            tools = tool_status()
+            ffmpeg = str(tools.get("ffmpeg_path") or "ffmpeg")
             subprocess.run([ffmpeg, "-v", "error", "-y", "-i", str(raw), "-map", "0:a:0", "-t", "180", "-vn",
-                            "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", str(target)],
+                            "-ac", "1", "-ar", "48000", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(target)],
                            capture_output=True, check=True, timeout=60)
-            with wave.open(str(target)) as sound:
-                duration = sound.getnframes() / sound.getframerate()
-            if duration <= 0:
+            duration = show_clips.length(target, str(tools.get("ffprobe_path") or "ffprobe"))
+            if not duration or duration <= 0:
                 raise ValueError("The clip has no audio")
             voice = {"source": str(target), "start": 0, "length": duration,
                      "text": Path(upload.filename or "Recorded voice").stem[:120]}
             with show_voices_lock:
                 atomic_write_json(folder / "voices.json", _show_voices(project) + [voice])
-        except (OSError, ValueError, wave.Error, subprocess.SubprocessError):
+        except (OSError, ValueError, subprocess.SubprocessError):
             target.unlink(missing_ok=True)
             return error_response("invalid_audio", "Could not read this audio. Try WAV, MP3, M4A, OGG or WEBM.", 400)
         finally:
