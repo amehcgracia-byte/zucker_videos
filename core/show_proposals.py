@@ -26,7 +26,7 @@ from typing import Any
 
 PROPOSALS_VERSION = 1
 STATUSES = ("proposed", "approved", "discarded")
-KINDS = ("cutaway", "character", "drawing", "word", "warp", "steam", "math", "jingle", "clip")
+KINDS = ("cutaway", "character", "drawing", "word", "warp", "steam", "math", "jingle", "clip", "background")
 # Measured on a real talk: matches above ~0.015 mostly showed what was said;
 # below it they were close to random. Spaced out so not every line is decorated.
 CUTAWAY_MIN_GAP = 12.0
@@ -118,6 +118,8 @@ def check(item: dict[str, Any]) -> list[str]:
         needs.append('regenerate lettering for the changed text')
     if item["kind"] == "clip" and not Path(str(params.get("clip") or "")).is_file():
         needs.append("the clip's video file")
+    if item["kind"] == "background" and not Path(str(params.get("picture") or "")).is_file():
+        needs.append("a picture of the new background")
     if item["kind"] == "character":
         if not params.get("region"):
             needs.append("region")
@@ -223,6 +225,9 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
                               "volume": params.get("volume", 0.8), "fade": params.get("fade", 0.05), "duck": params.get("duck", 0.5)})
         elif item["kind"] == "warp":
             items_out.append({"proposal": item["id"], "warp": params.get("warp", "wave"), "at": item["at"], "duration": item["duration"], "strength": params.get("strength", 0.8)})
+        elif item["kind"] == "background":
+            # The person stays; the picture goes behind them (core.show_backgrounds).
+            items_out.append({"proposal": item["id"], "background": params["picture"], "at": item["at"], "duration": item["duration"]})
         else:
             # The director's own kind (drawing, character, photo, word) travels in params.
             gags.append({**params, "proposal": item["id"], "at": item["at"], "duration": item["duration"]})

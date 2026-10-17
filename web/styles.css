@@ -2303,3 +2303,8 @@ body:has(#showReviewBox.show-fit) #backdropLogo {max-height:calc(100vh - 130px);
 .show-timeline-edit { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 8px; }
 .show-timeline-edit button[disabled] { opacity: .45; }
 .show-time-name small { opacity: .7; font-weight: 400; }
+
+/* A new background in the live view: a labelled thumbnail (the cut-out is in the effects preview). */
+.show-background-live { left: 2% !important; top: 2% !important; transform: none; width: 22%; outline: 2px dashed #8fd3ff; background: rgba(0,0,0,.55); border-radius: 6px; cursor: pointer; }
+.show-background-live img { opacity: .9; border-radius: 4px 4px 0 0; }
+.show-background-live span { display: block; padding: 3px 6px; font-size: 11px; color: #fff; }

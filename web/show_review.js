@@ -5,7 +5,7 @@
 // coordinates of their own picture, outlines exist only in the editor, and the
 // pixels that move are the originals. Nothing is rendered until the last step.
 (() => {
-  const KIND_LABELS = { sticker:"Sticker", cutaway: "Close-up", character: "Character speaks", drawing: "Drawing", word: "Word", warp: "Warp", steam: "Rainbow steam", math: "Formulas around you", clip: "Video clip" };
+  const KIND_LABELS = { sticker:"Sticker", cutaway: "Close-up", character: "Character speaks", drawing: "Drawing", word: "Word", warp: "Warp", steam: "Rainbow steam", math: "Formulas around you", clip: "Video clip", background: "New background" };
   const STATUS_LABELS = { proposed: "Proposed", approved: "Approved", discarded: "Discarded" };
   const DECISION_LABELS = { pending: "To decide", accepted: "Accepted", modified: "Needs review", plain: "Without effect" };
   const ACTIONS = { mouth: "Mouth (with the voice)", nod: "Nod", side: "Sideways", turn: "Turn" };
@@ -45,7 +45,7 @@
     if (item.kind === "cutaway") return p.thumb ? media(p.thumb) : still(p.source, p.source_start);
     if (item.kind === "character") return still(p.source, p.still_time);
     if (item.kind === "clip") return still(p.clip, Math.min(0.3, (p.clip_length || 1) / 2));
-    if (["drawing", "word"].includes(item.kind) && p.picture) return `/api/v1/show/library/file?path=${encodeURIComponent(p.picture)}`;
+    if (["drawing", "word", "background"].includes(item.kind) && p.picture) return `/api/v1/show/library/file?path=${encodeURIComponent(p.picture)}`;
     return `/api/v1/show/frame?t=${encodeURIComponent(item.at)}`;
   }
 
@@ -409,6 +409,12 @@
     const layer=$('#showStageLayer');
     layer.querySelectorAll('.show-picture-placement').forEach(element=>element.remove());
     if(!quick || quick.saved)return;
+    for(const item of sceneEffects(scene).filter(item=>item.kind==='background' && item.status!=='discarded')) {
+      const element=document.createElement('div');element.className='show-picture-placement show-background-live';element.dataset.liveEffect=item.id;
+      element.innerHTML=item.params.picture?`<img src="${picture(item)}" draggable="false" alt=""><span>New background · you appear in front of it in the effects preview</span>`:`<span>New background · choose its picture</span>`;
+      element.onpointerdown=event=>{event.preventDefault();event.stopPropagation();selectedEffect=item.id;wordPlacementControls();renderTimeline(scene);};
+      layer.append(element);
+    }
     for(const item of sceneEffects(scene).filter(item=>['drawing','word'].includes(item.kind) && item.status!=='discarded')) {
       const p=item.params,pos=drawingPosition(item);
       const element=document.createElement('div');element.className='show-picture-placement';element.dataset.liveEffect=item.id;
@@ -486,7 +492,7 @@
       <details class="show-sticker-picker"><summary>Add sticker</summary><div class="show-library">${library.map((asset,index)=>asset.retired?'':`<button type="button" data-library="${index}" aria-label="Add ${escape(asset.name)}"><img src="${asset.url}" alt="" loading="lazy">${escape(asset.name)}</button>`).join('')}</div></details>
       <p>Play or scrub to check when a picture appears and disappears. Drag a bar to move it; drag either edge to trim.</p>
       <div class="show-timeline-edit" role="toolbar" aria-label="Edit the timeline">${[['split','Split at playhead','⌘B'],['cut','Cut','⌘X'],['copy','Copy','⌘C'],['paste','Paste at playhead','⌘V'],['duplicate','Duplicate','⌘D'],['delete','Delete','⌫'],['undo','Undo','⌘Z'],['redo','Redo','⇧⌘Z']].map(([action,label,keys])=>`<button type="button" class="icon-button small" data-timeline-command="${action}" title="${label} (${keys})" ${timelineCommandOff(action,scene)?'disabled':''}>${label}</button>`).join('')}</div>
-      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${selected.kind==='steam'?steamTools(selected):''}${selected.kind==='drawing'?`<button type="button" data-open-library="${selected.id}">Choose from library</button>`:''}${selected.kind==='clip'?`<button type="button" data-face-clip="${selected.id}">Put my face on it</button>${selected.params.clip_original?`<button type="button" data-face-original="${selected.id}">Use the original clip</button>`:''}`:''}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
+      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${selected.kind==='steam'?steamTools(selected):''}${selected.kind==='drawing'?`<button type="button" data-open-library="${selected.id}">Choose from library</button>`:''}${selected.kind==='background'?`<button type="button" data-open-library="${selected.id}">${selected.params.picture?'Change':'Choose'} the background picture</button>`:''}${selected.kind==='clip'?`<button type="button" data-face-clip="${selected.id}">Put my face on it</button>${selected.params.clip_original?`<button type="button" data-face-original="${selected.id}">Use the original clip</button>`:''}`:''}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
       <div class="show-time-row"><span>Video</span><div class="show-time-source" data-scene-seek>Original video · your cut</div></div>
       <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
       ${(clay?.placements||[]).filter(p=>p.enabled!==false).flatMap(p=>(p.edited||[]).filter(([a,b])=>a<scene.end&&b>scene.start).map(([a,b])=>`<div class="show-time-row"><span>Clay memory</span><div class="show-time-track"><button type="button" class="show-caption-time" data-clay-at="${a}" style="left:${pct(Math.max(a,scene.start))}%;width:${Math.max(.2,pct(Math.min(b,scene.end))-pct(Math.max(a,scene.start)))}%">Simón · ${escape(CLAY_MODES[p.mode]||p.mode)}</button></div></div>`)).join('')}
@@ -542,6 +548,19 @@
     syncPlayback();
     box.onkeydown=event=>{const clip=event.target.closest('[data-time-clip]');if(clip && ['Enter',' '].includes(event.key)){event.preventDefault();locateEffect(timelineItem(clip.dataset.timeClip));}};
   }
+  // A new background behind the person on the picked words; its picture is chosen next.
+  async function addBackground(scene,picked){
+    const at=Math.max(scene.start,Math.min(scene.end-.5,picked.start));
+    const duration=Math.round(Math.min(scene.end-at,Math.max(3,picked.end-picked.start))*1000)/1000;
+    const made=await timelineEdit(scene,async()=>{
+      const item=await api('/show/review/add',{method:'POST',body:JSON.stringify({kind:'background',at:Math.round(at*1000)/1000,duration,subject:picked.text||'',selected_text:picked.text||''})});
+      review.proposals.push(item);if(!scene.effects.includes(item.id))scene.effects.push(item.id);
+      await markModified(item.id);return item;
+    });
+    selectedEffect=made.id;renderTimeline(scene);liveDrawings(scene);
+    await openLibrary(made.id);
+  }
+
   // ---- Timeline editing: cut, copy, paste at the playhead, split, delete, undo ----------
   // A pasted or split-off piece is another effect with the same settings that stays on its
   // effect's row (params.group / overlay.group): the render needs nothing new.
@@ -1218,6 +1237,7 @@
       ...(selectedEffect ? [["place", "Place selected effect on these words", null]] : []),
       ["ai", "AI · create with Einstein…", null],
       ["library", "Take from the library…", null],
+      ["background", "Change the background behind me…", null],
       ["original_eyes", "Move original eyes…", null],
       ["original_mouth", "Animate original mouth…", null],
       ["original_part", "Move original part (sideways)…", null],
@@ -1250,6 +1270,7 @@
       if (!button) return;
       menu.hidden = true;
       const key = button.dataset.say;
+      if (key === "background") { await addBackground(scene, picked); return; }
       if(await extraTool(key,scene,picked))return;
       if (key === "place") { await placeOnWords(picked); return; }
       if (key === "ai") { ShowEinstein.open(scene,picked); return; }
@@ -1303,11 +1324,11 @@
   // ---- Right-click menus: like the system's, with submenus beside them (web/show_menu.js) ----------
   // Everything you can add, by kind: pictures, drawings & words, characters, video, effects.
   function addItems(scene, picked, x, y) {
-    const run = (key) => () => (key === "lettering" || key.startsWith("warp_") ? extraTool(key, scene, picked) : chooseAdd(key, picked, x, y));
+    const run = (key) => () => (key === "background" ? addBackground(scene, picked) : key === "lettering" || key.startsWith("warp_") ? extraTool(key, scene, picked) : chooseAdd(key, picked, x, y));
     const entry = ([key, label]) => ({ label, action: run(key) });
     const quoted = picked.text ? `“${picked.text.length > 24 ? `${picked.text.slice(0, 22)}…` : picked.text}”` : "here";
     return [
-      { label: "Pictures", submenu: [["library", "From the library…"], ["references", "Search the internet…"], ["cutout", "Cut out a person / background…"],
+      { label: "Pictures", submenu: [["library", "From the library…"], ["background", "Change the background behind me…"], ["references", "Search the internet…"], ["cutout", "Cut out a person / background…"],
         ["silhouette", "Black silhouette…"], ["photo_edit", "Realistic photo of me…"]].map(entry) },
       { label: "Drawings & words", submenu: [["ai", "Create with Einstein…"], ["drawing", `Draw ${quoted}…`], ["lettering", `Hand-letter ${quoted}…`],
         ["word", `Show ${quoted} big`]].map(entry) },
@@ -1331,6 +1352,7 @@
       { label: "Preview it", action: () => clickLike("data-show-preview", id) },
       ...(["cutaway", "character"].includes(item.kind) || item.params.picture ? [{ label: "Animate original eyes / mouth…", action: () => clickLike("data-original-parts", id) }] : []),
       ...(item.kind === "drawing" ? [{ label: "Choose from library…", action: () => openLibrary(id) }] : []),
+      ...(item.kind === "background" ? [{ label: item.params.picture ? "Change the background picture…" : "Choose the background picture…", action: () => openLibrary(id) }] : []),
       ...(item.kind === "word" && !item.params.picture ? wordItems(item) : []),
       ...(item.kind === "clip" ? [{ label: "Put my face on it…", action: () => openLibrary(null, null, id) }] : []),
       { separator: true },
@@ -2558,7 +2580,7 @@
       <img src="${item.url}" alt="" loading="lazy">
       <figcaption><b title="${escape(item.name)}">${escape(item.name)}</b><small>${escape(where)}${item.approved ? " · approved" : ""}</small></figcaption>
       <div class="show-lib-actions">
-        ${libraryFor ? `<button type="button" class="icon-button small primary" data-lib-use-for="${escape(libraryFor.id)}" data-lib-path="${escape(item.path)}">Use for this drawing</button>` : ""}
+        ${libraryFor ? `<button type="button" class="icon-button small primary" data-lib-use-for="${escape(libraryFor.id)}" data-lib-path="${escape(item.path)}">${libraryFor.kind === "background" ? "Use as the background" : "Use for this drawing"}</button>` : ""}
         ${libraryFace && !item.retired ? `<button type="button" class="icon-button small primary" data-lib-face="${index}">Use this face</button>` : ""}
         ${libraryWords && !item.retired ? `<button type="button" class="icon-button small primary" data-lib-words="${index}">Put on “${escape(libraryWords.text.length > 24 ? `${libraryWords.text.slice(0, 22)}…` : libraryWords.text)}”</button>`
           : scene && !item.retired ? `<button type="button" class="icon-button small" data-lib-place="${index}">Place in scene</button>` : ""}
@@ -2583,7 +2605,8 @@
     const empty = { project: "Nothing here yet. Drop pictures on this window or on the video, or approve a drawing: it stays here.",
       recurring: "No recurring pictures yet. Choose “★ Make recurring…” on any picture to keep it on a shelf for every project.",
       other: "No pictures in your other projects.", hidden: "Nothing hidden." }[libraryTab];
-    const banner = libraryFor ? `<div class="show-lib-for"><p>Choosing the picture for <b>“${escape(libraryFor.params.subject || "this drawing")}”</b>.</p><div class="show-lib-grid" data-lib-matches><p class="show-hint">Looking for matches…</p></div></div>`
+    const banner = libraryFor?.kind === "background" ? `<div class="show-lib-for"><p>Choose the place to put behind you${libraryFor.params.subject ? ` on <b>“${escape(libraryFor.params.subject)}”</b>` : ""}: a photo of your kitchen, outside, your atelier… (drop your own photos on this window). You stay in front, talking; the Mac cuts you out of every frame, nothing is uploaded.</p><div class="show-lib-grid" data-lib-matches><p class="show-hint">Looking for matches…</p></div></div>`
+      : libraryFor ? `<div class="show-lib-for"><p>Choosing the picture for <b>“${escape(libraryFor.params.subject || "this drawing")}”</b>.</p><div class="show-lib-grid" data-lib-matches><p class="show-hint">Looking for matches…</p></div></div>`
       : libraryFace ? `<div class="show-lib-for"><p>Choose a photo of you for the clip on <b>“${escape(libraryFace.params.selected_text || "these words")}”</b>. Your face goes on the person seen most in the clip; a clear photo, facing the camera, works best. It is done on this Mac, nothing is uploaded.</p></div>`
       : libraryWords ? `<div class="show-lib-for"><p>Choose a picture to put on <b>“${escape(libraryWords.text)}”</b> (${clock(libraryWords.start)}–${clock(libraryWords.end)}). Search by name or look through the tabs.</p><div class="show-lib-grid" data-lib-matches></div></div>` : "";
     libraryDialog.querySelector("[data-lib-body]").innerHTML = banner + (shown.length ? heads.map((head) =>
@@ -2621,7 +2644,8 @@
     if (scene) { scene.decision = "modified"; invalidateLocal(scene); }
     libraryDialog?.open && libraryDialog.close();
     await libraryChanged();
-    showToast(`“${updated.params.subject}” now uses ${updated.params.image_engine.replace(/^Your library · /, "")}. It plays in the scene's preview${updated.status === "approved" ? "" : "; approve it when you have seen it"}.`);
+    showToast(updated.kind === "background" ? `New background: ${updated.params.image_engine.replace(/^Your library · /, "")}. You appear in front of it in the scene's effects preview (the first time, the Mac cuts you out of each frame: it takes a little while).`
+      : `“${updated.params.subject}” now uses ${updated.params.image_engine.replace(/^Your library · /, "")}. It plays in the scene's preview${updated.status === "approved" ? "" : "; approve it when you have seen it"}.`);
   }
 
   // A library picture on the selected words: it enters with the first word and stays while

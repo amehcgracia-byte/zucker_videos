@@ -415,6 +415,11 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
     from core.show_bridge import studio_layers, studio_warnings
     studio, studio_report = studio_layers(project.folder, plan, hidden=[(c["at"], c["at"] + c["duration"]) for c in cutaways])
     notes += studio_warnings(studio_report)
+    if any(entry.get("background") for entry in layer):
+        from core import show_backgrounds
+        notes += show_backgrounds.prepare(cut, layer, plan, project.cache_dir / "show_masks", ffmpeg=ffmpeg, cancel=cancel,
+                                          hidden=[(c["at"], c["at"] + c["duration"]) for c in cutaways],
+                                          progress=lambda share, text: progress(80, text))
     spans: list[tuple[float, float]] = []
     body = project.cache_dir / "show-body.mp4"
     if pictures or layer or studio:
@@ -575,6 +580,12 @@ def preview_proposal(project, proposal_id: str, *, width: int | None = None, hei
             raise RuntimeError("The effect preview is incomplete: " + "; ".join(notes))
     from core.show_bridge import studio_layers
     studio, _ = studio_layers(project.folder, part, hidden=[(c["at"], c["at"] + c["duration"]) for c in part["cutaways"]])
+    if any(entry.get("background") for entry in shifted):
+        from core import show_backgrounds
+        missing = show_backgrounds.prepare(cut, shifted, plan, project.cache_dir / "show_masks", offset=start, ffmpeg=ffmpeg,
+                                           hidden=[(c["at"], c["at"] + c["duration"]) for c in part["cutaways"]], progress=progress, cancel=cancel)
+        if missing:
+            raise RuntimeError("; ".join(missing))
     spans: list[tuple[float, float]] = []
     if pictures or shifted or studio:
         render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio, **PREVIEW_ENCODING)
@@ -671,7 +682,7 @@ def _drawn_later(item: dict[str, Any]) -> bool:
 
 
 KIND_NAMES = {"character": "Talking character", "drawing": "Drawing", "word": "Word", "cutaway": "Close-up", "warp": "Warp",
-              "steam": "Steam", "math": "Formulas", "jingle": "Jingle"}
+              "steam": "Steam", "math": "Formulas", "jingle": "Jingle", "background": "New background"}
 
 
 def scene_preview_notes(preview: Path) -> list[str]:
@@ -737,6 +748,11 @@ def preview_scene(project, scene_id: str, *, width: int | None = None, height: i
         progress(0, "Compositing this scene with its effects")
     from core.show_bridge import studio_layers
     studio, _ = studio_layers(project.folder, part, hidden=[(c["at"], c["at"] + c["duration"]) for c in part["cutaways"]])
+    if any(entry.get("background") for entry in shifted):
+        from core import show_backgrounds
+        left_out += show_backgrounds.prepare(cut, shifted, plan, project.cache_dir / "show_masks", offset=start, ffmpeg=ffmpeg,
+                                             hidden=[(c["at"], c["at"] + c["duration"]) for c in part["cutaways"]],
+                                             progress=progress, cancel=cancel_cut if cancel_cut is not None else cancel)
     spans: list[tuple[float, float]] = []
     if pictures or shifted or studio:
         render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio, **PREVIEW_ENCODING)

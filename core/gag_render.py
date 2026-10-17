@@ -489,6 +489,9 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
     from core.show_inserts import AUDIO_RATE, draw_steam, fit, insert_frame, load_insert, load_steam, splice_audio
     inserts = sorted((load_insert(raw, width, height, fps, ffmpeg, video) for raw in gags if raw.get("insert")), key=lambda item: item.at)
     steams = [load_steam(raw, width, height) for raw in gags if raw.get("steam")]
+    from core import show_backgrounds
+    # A new background behind the person (masks made beforehand by show_backgrounds.prepare).
+    backgrounds = [layer for layer in (show_backgrounds.load(raw, width, height, fps) for raw in gags if raw.get("background")) if layer]
     total += sum(insert.frames for insert in inserts)
     if timeline is not None:
         timeline.extend((insert.at, insert.duration) for insert in inserts)
@@ -599,8 +602,11 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
                 live_steams = [steam for steam in steams if steam.active(t)]
                 live = [sticker for sticker in stickers if sticker.active(t)]
                 studio = bool(drawings) and drawings.active(t)
-                if live or live_warps or live_mouths or live_steams or studio:
+                live_backgrounds = [layer for layer in backgrounds if layer.active(t)]
+                if live or live_warps or live_mouths or live_steams or studio or live_backgrounds:
                     frame = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3).copy()
+                    for layer in live_backgrounds:
+                        show_backgrounds.apply(frame, layer, t)
                     for warp in live_warps:
                         frame = warper.apply(frame, warp, t)
                     for mouth in live_mouths:

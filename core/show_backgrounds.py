@@ -1,0 +1,234 @@
+"""A new background behind the person while they keep talking: the kitchen, outside, the
+atelier… The person is cut out of every frame of the edited video (macOS Vision person
+segmentation, on this computer; nothing is uploaded) and the chosen picture goes behind.
+
+Masks are made once per background span from the edited cut, every other frame (blended
+between), and kept in the project's cache keyed by the source frames and their framing,
+so a scene preview and the final render (any size) share them. Each frame's mask is then
+refined against that frame's own edges, so hair and shoulders stay clean at full size.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import subprocess
+import sys
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable
+
+import numpy as np
+
+MASK_SIZE = (384, 216)          # stored masks (width, height): 16:9, shared by every render size
+SEGMENT_SIZE = (640, 360)       # frames given to Vision
+STEP = 2                        # a mask every other frame; the ones between are blended
+FADE_SEC = 0.25                 # the new background fades in and out
+VERSION = "person-v1"
+_vision_lock = threading.Lock()
+
+
+class BackgroundUnavailable(RuntimeError):
+    pass
+
+
+def available() -> bool:
+    return sys.platform == "darwin" and _vision() is not None
+
+
+_bundle: dict[str, Any] | None = None
+
+
+def _vision() -> dict[str, Any] | None:
+    global _bundle
+    if _bundle is None:
+        try:
+            import objc
+            bundle: dict[str, Any] = {}
+            objc.loadBundle("Vision", bundle, bundle_path="/System/Library/Frameworks/Vision.framework")
+            _bundle = bundle if "VNGeneratePersonSegmentationRequest" in bundle else {}
+        except Exception:  # not a Mac, or no Vision
+            _bundle = {}
+    return _bundle or None
+
+
+class Segmenter:
+    """Person masks for consecutive frames (Vision keeps them steady from one frame to the next)."""
+
+    def __init__(self) -> None:
+        bundle = _vision()
+        if bundle is None:
+            raise BackgroundUnavailable("Changing the background needs macOS 12 or later (person cut-out by the Mac)")
+        import Quartz
+        self.quartz = Quartz
+        self.sequence = bundle["VNSequenceRequestHandler"].alloc().init()
+        self.request = bundle["VNGeneratePersonSegmentationRequest"].alloc().init()
+        self.request.setQualityLevel_(1)                 # balanced: clean enough, twice as fast as accurate
+        self.request.setOutputPixelFormat_(1278226488)   # 'L008': one byte per pixel
+        self.space = Quartz.CGColorSpaceCreateDeviceRGB()
+
+    def __call__(self, rgb: np.ndarray) -> np.ndarray:
+        Quartz = self.quartz
+        height, width = rgb.shape[:2]
+        bgra = np.dstack([rgb[..., ::-1], np.full((height, width, 1), 255, np.uint8)]).tobytes()
+        provider = Quartz.CGDataProviderCreateWithData(None, bgra, len(bgra), None)
+        image = Quartz.CGImageCreate(width, height, 8, 32, width * 4, self.space,
+                                     Quartz.kCGBitmapByteOrder32Little | Quartz.kCGImageAlphaPremultipliedFirst,
+                                     provider, None, False, Quartz.kCGRenderingIntentDefault)
+        done = self.sequence.performRequests_onCGImage_error_([self.request], image, None)
+        if not (done[0] if isinstance(done, tuple) else done) or not self.request.results():
+            raise BackgroundUnavailable("The Mac could not find a person in this picture")
+        buffer = self.request.results()[0].pixelBuffer()
+        Quartz.CVPixelBufferLockBaseAddress(buffer, 1)
+        try:
+            w, h = Quartz.CVPixelBufferGetWidth(buffer), Quartz.CVPixelBufferGetHeight(buffer)
+            row = Quartz.CVPixelBufferGetBytesPerRow(buffer)
+            raw = bytes(Quartz.CVPixelBufferGetBaseAddress(buffer).as_buffer(row * h))
+        finally:
+            Quartz.CVPixelBufferUnlockBaseAddress(buffer, 1)
+        import cv2
+        mask = np.frombuffer(raw, np.uint8).reshape(h, row)[:, :w]
+        return cv2.resize(mask, MASK_SIZE, interpolation=cv2.INTER_LINEAR)
+
+
+def _frames_key(plan: dict[str, Any], start: float, count: int) -> str:
+    """What the masks of ``count`` edited frames from ``start`` (edited seconds) depend on:
+    the source frames shown and how each shot is framed (not the render size)."""
+    fps = int(plan.get("fps") or 30)
+    first = int(round(start * fps))
+    frames: list[Any] = []
+    offset = 0
+    for shot in plan["shots"]:
+        length = int(shot["end_frame"]) - int(shot["start_frame"])
+        lo, hi = max(first, offset), min(first + count, offset + length)
+        if hi > lo:
+            frames.append([int(shot["start_frame"]) + lo - offset, hi - lo, shot.get("zoom"), shot.get("focus")])
+        offset += length
+    source = Path(str(plan.get("source") or ""))
+    stamp = source.stat().st_mtime_ns if source.is_file() else 0
+    payload = [VERSION, str(source), stamp, plan.get("framing"), frames, list(MASK_SIZE), STEP]
+    return hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def prepare(cut: Path, entries: list[dict[str, Any]], plan: dict[str, Any], cache: Path, *, offset: float = 0.0,
+            hidden: list[tuple[float, float]] | None = None, ffmpeg: str = "ffmpeg",
+            progress: Callable[[float, str], None] | None = None, cancel: Callable[[], None] | None = None) -> list[str]:
+    """Person masks for each background entry (``at`` on the cut's clock; ``offset`` is where
+    the cut starts in the edit), written to the cache and set as ``entry["masks"]``. Frames
+    during a close-up (``hidden``) keep their own picture. Returns notes for those left out."""
+    import cv2
+    notes: list[str] = []
+    fps = float(plan.get("fps") or 30)
+    wanted = [entry for entry in entries if entry.get("background")]
+    total = sum(max(1, int(round(float(entry["duration"]) * fps))) for entry in wanted)
+    done = 0
+    cache.mkdir(parents=True, exist_ok=True)
+    for entry in wanted:
+        count = max(1, int(round(float(entry["duration"]) * fps)))
+        target = cache / f"{_frames_key(plan, float(entry['at']) + offset, count)}.npy"
+        if not target.is_file():
+            try:
+                segment = Segmenter()
+            except BackgroundUnavailable as exc:
+                notes.append(f"Background at {float(entry['at']) + offset:.1f} s: {exc}")
+                entry["background"] = None
+                continue
+            width, height = SEGMENT_SIZE
+            reader = subprocess.Popen([ffmpeg, "-v", "error", "-nostdin", "-ss", f"{float(entry['at']):.3f}", "-i", str(cut),
+                                       "-frames:v", str(count), "-vf", f"scale={width}:{height}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            masks = np.zeros((count, MASK_SIZE[1], MASK_SIZE[0]), np.uint8)
+            made: list[int] = []
+            try:
+                with _vision_lock:
+                    for index in range(count):
+                        raw = reader.stdout.read(width * height * 3)
+                        if len(raw) < width * height * 3:
+                            masks = masks[:index]
+                            break
+                        if index % STEP == 0 or index == count - 1:
+                            masks[index] = segment(np.frombuffer(raw, np.uint8).reshape(height, width, 3))
+                            made.append(index)
+                        done += 1
+                        if index % 15 == 0:
+                            if cancel:
+                                cancel()
+                            if progress:
+                                progress(done / max(1, total), f"Cutting you out for the new background — {done / max(1, total):.0%}")
+            finally:
+                reader.kill()
+                reader.wait()
+            # The frames between two masks: blended (a person moves little in a 15th of a second).
+            for a, b in zip(made, made[1:]):
+                for index in range(a + 1, b):
+                    share = (index - a) / (b - a)
+                    masks[index] = np.rint(masks[a] * (1 - share) + masks[b] * share).astype(np.uint8)
+            pending = target.with_suffix(".pending.npy")
+            np.save(pending, masks)
+            pending.replace(target)
+        else:
+            done += count
+        entry["masks"] = str(target)
+        entry["hidden"] = [[a - float(entry["at"]), b - float(entry["at"])] for a, b in (hidden or [])
+                           if b > float(entry["at"]) and a < float(entry["at"]) + float(entry["duration"])]
+    return notes
+
+
+@dataclass
+class Background:
+    at: float
+    duration: float
+    picture: np.ndarray            # the new background, at the frame's size (float32 0..255 RGB)
+    masks: np.ndarray              # (frames, h, w) uint8, memory-mapped
+    hidden: list[list[float]]
+    fps: float
+
+    def active(self, t: float) -> bool:
+        local = t - self.at
+        return 0 <= local < self.duration and not any(a <= local < b for a, b in self.hidden)
+
+
+def cover(path: str | Path, width: int, height: int) -> np.ndarray:
+    """The picture filling the frame (cropped to its shape, never stretched)."""
+    from PIL import Image, ImageOps
+    with Image.open(path) as source:
+        image = ImageOps.exif_transpose(source).convert("RGBA")
+    flat = Image.new("RGB", image.size, (24, 24, 24))
+    flat.paste(image, mask=image.getchannel("A"))
+    return np.asarray(ImageOps.fit(flat, (width, height), Image.LANCZOS)).astype(np.float32)
+
+
+def load(raw: dict[str, Any], width: int, height: int, fps: float) -> Background | None:
+    if not raw.get("background") or not raw.get("masks"):
+        return None
+    masks = np.load(raw["masks"], mmap_mode="r")
+    return Background(float(raw["at"]), float(raw["duration"]), cover(raw["background"], width, height), masks,
+                      [list(span) for span in raw.get("hidden") or []], fps)
+
+
+def _guided(guide: np.ndarray, source: np.ndarray, radius: int, eps: float = 1e-3) -> np.ndarray:
+    """He's guided filter: the soft mask follows the frame's own edges (hair, shoulders)."""
+    import cv2
+    size = (2 * radius + 1, 2 * radius + 1)
+    mean = lambda image: cv2.boxFilter(image, cv2.CV_32F, size)  # noqa: E731
+    mean_i, mean_p = mean(guide), mean(source)
+    cov = mean(guide * source) - mean_i * mean_p
+    var = mean(guide * guide) - mean_i * mean_i
+    a = cov / (var + eps)
+    b = mean_p - a * mean_i
+    return mean(a) * guide + mean(b)
+
+
+def apply(frame: np.ndarray, background: Background, t: float) -> None:
+    """Put the new background behind the person in ``frame`` (RGB uint8, changed in place)."""
+    import cv2
+    local = t - background.at
+    index = min(len(background.masks) - 1, max(0, int(round(local * background.fps))))
+    height, width = frame.shape[:2]
+    small = np.asarray(background.masks[index], dtype=np.float32) / 255.0
+    guide = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+    mask = cv2.resize(small, (width, height), interpolation=cv2.INTER_LINEAR)
+    mask = np.clip(_guided(guide, mask, max(2, width // 240)), 0.0, 1.0)[..., None]
+    fade = min(1.0, local / FADE_SEC, (background.duration - local) / FADE_SEC)
+    behind = background.picture if fade >= 1.0 else background.picture * fade + frame.astype(np.float32) * (1.0 - fade)
+    frame[:] = np.clip(frame.astype(np.float32) * mask + behind * (1.0 - mask) + 0.5, 0, 255).astype(np.uint8)

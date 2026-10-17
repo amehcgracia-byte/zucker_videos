@@ -2600,8 +2600,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         proposals_path, _ = _show_review_files(project)
         stored = show_proposals.load(proposals_path)
         item = next((entry for entry in stored["proposals"] if entry["id"] == proposal_id), None)
-        if item is None or item["kind"] != "drawing":
-            return error_response("not_found", "No drawing here", 404)
+        if item is None or item["kind"] not in ("drawing", "background"):
+            return error_response("not_found", "No drawing or background here", 404)
         try:
             chosen = _bring_into_project(project, raw)
         except KeyError:
@@ -3846,6 +3846,18 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         elif kind == "word":
             item = show_proposals.proposal("word", at, float(body.get("duration") or 2.0), reason="Added by you", kind="word",
                                            text=str(body.get("text") or "WOW")[:40], position="left", size=0.3, effect="pop")
+        elif kind == "background":
+            # You stay in front; a picture of the place you name goes behind you. Its picture is
+            # chosen from the library next (or given here).
+            picture = ""
+            if body.get("picture"):
+                try:
+                    picture = _bring_into_project(project, str(body["picture"]))["path"]
+                except (KeyError, OSError):
+                    return error_response("bad_request", "Choose one of the pictures in your library", 400)
+            item = show_proposals.proposal("background", at, float(body.get("duration") or 4.0), reason="Added by you",
+                                           subject=str(body.get("subject") or "")[:120], picture=picture,
+                                           selected_text=str(body.get("selected_text") or "")[:400])
         else:
             return error_response("bad_request", "Unknown effect", 400)
         item["needs"] = show_proposals.check(item)
