@@ -23,7 +23,7 @@ Status: ✅ done and verified · 🔜 next · ⏳ later.
 
 ## Block 3 · the big ones
 
-13. ⏳ **"Your script" first:** after adding the videos, paste a document, write it, or dictate it (microphone); choose "write it together" or "automatic". The director follows the script and adds its own ideas.
+13. ✅ **"Your script" first** (`core/show_brief.py`, `web/show_idea.js`; the director follows it first, `from_idea` gags placed before its own; "write it together" as a back-and-forth is not built yet): after adding the videos, paste a document, write it, or dictate it (microphone); choose "write it together" or "automatic". The director follows the script and adds its own ideas.
 14. ⏳ **"Next, next… lottery" mode:** a half-made edit from the start, with pictures, voices and movements already generated, for the person to correct rather than generate scene by scene.
 
 ## Installed
