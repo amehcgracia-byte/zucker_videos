@@ -88,7 +88,9 @@
     dialog.querySelector('[data-ai-apply]').textContent=lettering?'Use lettering':'Use image & choose words';
     dialog.querySelector('[data-ai-face]').closest('label').nextElementSibling.hidden=lettering||photo;
 
-    dialog.querySelector('[data-ai-claude]').hidden=lettering||photo;
+    // Words can be lettered by ChatGPT or by your Claude (stroke by stroke); a realistic photo edit needs ChatGPT.
+    dialog.querySelector('[data-ai-claude]').hidden=photo;
+    dialog.querySelector('[data-ai-claude]').textContent=lettering?'Letter it with Claude':'Draw with Claude';
     dialog.querySelector('[data-ai-local]').hidden=lettering||photo;
     dialog.querySelector('[data-ai-face]').closest('label').hidden=lettering||photo;
     if(lettering)dialog.querySelector('[data-ai-face]').checked=false;

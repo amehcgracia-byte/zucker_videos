@@ -56,6 +56,15 @@ SYSTEM = ("You draw for a comedy video like an ordinary adult doodling quickly w
           "inside 60..940 so nothing is cut. 12 to 60 strokes in the order a person would draw them. No text, no frame, no "
           "background scenery unless asked, no shading.")
 
+# Words drawn by hand (a comment, a shouted word): the same strokes, but letters only.
+LETTERING_SYSTEM = ("You hand-letter words for a comedy video like an ordinary adult painting a protest placard in a hurry, with a "
+                    "marker or a brush. You answer only with strokes on a 1000x1000 sheet whose background stays empty (transparent). "
+                    "Write EXACTLY the words you are given, in their language, spelling and case, and nothing else: no drawings, no "
+                    "frame, no underline unless asked. Draw each letter as 'line' strokes the way a hand writes it, big and thick "
+                    "(width 14-34), wobbly, with uneven letter sizes, spacing and baselines, clumsy but clearly legible. One dark "
+                    "colour, at most one accent colour as a 'fill' inside closed letters or as a second outline. Use 1 to 3 lines of "
+                    "text, as large as fits inside 60..940 so nothing is cut.")
+
 STYLE_HINTS = {
     "crayon": "Rough wax crayons: thick, broken, patchy lines.",
     "pencil": "A messy pencil doodle: thinner grey lines (width 4-8), little colour.",
@@ -64,6 +73,14 @@ STYLE_HINTS = {
 
 
 def prompt_for(job: dict[str, Any], previous: dict[str, Any] | None, identity: str = "") -> str:
+    if job.get("purpose") == "lettering":
+        parts = [f"Hand-letter exactly these words: {json.dumps(job['lettering_text'], ensure_ascii=False)}",
+                 f"Tool: {STYLE_HINTS.get(job.get('style') or 'marker', STYLE_HINTS['marker'])}"]
+        if job.get("direction"):
+            parts.append(f"Art direction (never change the words): {job['direction']}")
+        if previous:
+            parts.append("This is your earlier lettering; change it as asked, same words:\n" + json.dumps(previous, separators=(",", ":"))[:20000])
+        return "\n".join(parts)
     parts = [f"Draw this for the video: {job['direction']}",
              f"Style: {STYLE_HINTS.get(job.get('style') or 'crayon', STYLE_HINTS['crayon'])}"]
     if job.get("selected_text"):
@@ -76,14 +93,14 @@ def prompt_for(job: dict[str, Any], previous: dict[str, Any] | None, identity: s
     return "\n".join(parts)
 
 
-def ask(prompt: str, *, timeout: float = 300.0) -> dict[str, Any]:
+def ask(prompt: str, *, timeout: float = 300.0, system: str | None = None) -> dict[str, Any]:
     """Claude Code's strokes for ``prompt`` (raises RuntimeError with a plain reason)."""
     from core.gag_director import SIGN_IN_HELP, claude_cli
     cli = claude_cli()
     if not cli:
         raise RuntimeError("Claude Code is not installed on this computer. Install it and sign in once with `claude`.")
     command = [cli, "-p", prompt, "--output-format", "json", "--json-schema", json.dumps(SCHEMA),
-               "--tools", "", "--no-session-persistence", "--system-prompt", SYSTEM]
+               "--tools", "", "--no-session-persistence", "--system-prompt", system or SYSTEM]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, cwd=str(Path.home()), check=False,
                                 stdin=subprocess.DEVNULL)

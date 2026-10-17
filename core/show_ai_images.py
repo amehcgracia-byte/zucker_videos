@@ -75,8 +75,6 @@ def create(project, scene: dict, body: dict) -> dict:
         text = str(body.get('lettering_text') or '').strip()
         if not text or len(text) > 120:
             raise ValueError('Choose a caption of 1–120 characters')
-        if job['provider'] != 'chatgpt':
-            raise ValueError('Use ChatGPT image generation for original hand lettering')
         import math
         centre = body.get('image_center') or [.5, .74]
         size = float(body.get('size') or .55)
@@ -146,7 +144,8 @@ def run_claude(project, job_id: str) -> None:
         previous = None
         if job.get('previous_id') and (folder(project, job['previous_id'])/'strokes.json').is_file():
             previous = json.loads((folder(project, job['previous_id'])/'strokes.json').read_text())
-        drawing = claude.ask(claude.prompt_for(job, previous, claude.identity_hint(project) if job['use_face'] else ''))
+        drawing = claude.ask(claude.prompt_for(job, previous, claude.identity_hint(project) if job['use_face'] else ''),
+                             system=claude.LETTERING_SYSTEM if job.get('purpose') == 'lettering' else None)
         (path/'strokes.json').write_text(json.dumps(drawing))
         Image.fromarray(claude.render(drawing), 'RGBA').save(path/'image.png')
         job.update(status='ready', message='Claude drew it. Review it before using it in the scene; it can draw itself on the video.')
