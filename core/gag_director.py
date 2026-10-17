@@ -32,7 +32,7 @@ from typing import Any
 from captions.effects import FUN_EFFECTS
 from core.gag_paint import STYLES
 
-KINDS = ("drawing", "character", "word", "photo", "warp", "math")
+KINDS = ("drawing", "character", "word", "photo", "warp", "math", "background")
 DRAWING_GAP = 20.0     # seconds between drawings/characters: each one is drawn, which takes a while
 POSITIONS = ("left", "right", "top-left", "top-right", "bottom-left", "bottom-right")
 EFFECTS = tuple(name for name in FUN_EFFECTS if name != "none")
@@ -50,7 +50,7 @@ GAG_SCHEMA: dict[str, Any] = {
                     "at": {"type": "number", "description": "seconds on the edited video when it appears"},
                     "duration": {"type": "number", "description": "seconds on screen, 1.5 to 3.5"},
                     "kind": {"type": "string", "enum": list(KINDS)},
-                    "subject": {"type": "string", "description": "drawing/character: what to paint, in English, concrete and visual, max 12 words"},
+                    "subject": {"type": "string", "description": "drawing/character: what to paint, in English, concrete and visual, max 12 words; background: the place, in a few English words"},
                     "style": {"type": "string", "enum": list(STYLE_NAMES)},
                     "says": {"type": "string", "description": "character: its short reply to the host, in the language of the talk, max 8 words"},
                     "text": {"type": "string", "description": "word: one to three words shouted on screen, in the language of the talk"},
@@ -87,6 +87,7 @@ Rules:
 - "word": one to three words, shouted, in the language of the talk.
 - "photo": only for a picture listed in the library below ("query" = its name).
 - "math": hand-written formulas orbit the host's head for 3-5 s when they think, explain, philosophise or talk about time, numbers or ideas. At most one every 45 s.
+- "background": when the host names a place where they are, were or could be (the kitchen, outside, the beach, their atelier…), that place appears behind them while they keep talking, from the moment they name it, 3-8 s. "subject" = the place in a few English words ("a kitchen", "outside in a garden", "an artist's atelier"). Every place named gets its own background, even several in a row; it runs under the pictures and never covers the host.
 - "warp": the whole picture bends for 2-4 s when the talk invites it ("stretch" for stretching/pulling/long things, "swirl" for spirals/dizzy/crazy/time, "wave" for shaking/moving/drunk/dreams). At most one every 40 s.
 - "style": mix them all, never the same style twice in a row: {styles}.
 - "effect": vary them; entrances (pop, spin, drop, rise, fly_left, fly_right) or loops (pulse, jelly, bounce, wobble, shake, blink).
@@ -360,6 +361,16 @@ def clean_gags(raw: list[Any], duration: float, *, face_side: str = "right") -> 
             if item.get("warp") in WARPS:
                 warps.append({"kind": "warp", "warp": item["warp"], "at": round(at, 2), "duration": round(min(length, duration - at), 2), "from_idea": idea})
             continue
+        if kind == "background":
+            # Behind the host, under the pictures: each place named gets its own.
+            place = str(item.get("subject") or "").strip()[:80]
+            try:
+                seconds = min(8.0, max(3.0, float(item.get("duration", 4))))
+            except (TypeError, ValueError):
+                seconds = 4.0
+            if place:
+                warps.append({"kind": "background", "subject": place, "at": round(at, 2), "duration": round(min(seconds, duration - at), 2), "from_idea": idea})
+            continue
         if kind == "math":
             # Around the host's head: it overlays the person, not the free side.
             warps.append({"kind": "math", "at": round(at, 2), "duration": round(min(max(length, 3.0), 5.0, duration - at), 2), "from_idea": idea})
@@ -403,6 +414,11 @@ def clean_gags(raw: list[Any], duration: float, *, face_side: str = "right") -> 
     spaced: list[dict[str, Any]] = []
     for warp in warps:
         same = [kept for kept in spaced if kept["kind"] == warp["kind"]]
+        if warp["kind"] == "background":                    # one place after another, never two at once
+            if same and warp["at"] < same[-1]["at"] + same[-1]["duration"]:
+                same[-1]["duration"] = round(max(0.5, warp["at"] - same[-1]["at"]), 2)
+            spaced.append(warp)
+            continue
         if not same or warp["from_idea"] or warp["at"] >= same[-1]["at"] + (45.0 if warp["kind"] == "math" else 30.0):
             spaced.append(warp)
     return sorted(kept + spaced, key=lambda gag: gag["at"])

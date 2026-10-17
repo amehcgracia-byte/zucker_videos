@@ -105,6 +105,8 @@ def from_gags(gags: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for gag in gags:
         kind = {"photo": "drawing", "character": "drawing"}.get(gag["kind"], gag["kind"])
         params = {key: value for key, value in gag.items() if key not in ("at", "duration", "from_idea")}
+        if kind == "background":
+            params.setdefault("picture", "")              # chosen from the library: a photo of that place
         what = gag.get("subject") or gag.get("text") or gag.get("warp") or gag.get("query") or ("formulas around you" if gag["kind"] == "math" else "")
         out.append(proposal(kind, gag["at"], gag["duration"], reason=f"{'Your idea' if gag.get('from_idea') else 'Director'}: {what}", **params))
     return out
@@ -227,7 +229,7 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
             items_out.append({"proposal": item["id"], "warp": params.get("warp", "wave"), "at": item["at"], "duration": item["duration"], "strength": params.get("strength", 0.8)})
         elif item["kind"] == "background":
             # The person stays; the picture goes behind them (core.show_backgrounds).
-            items_out.append({"proposal": item["id"], "background": params["picture"], "at": item["at"], "duration": item["duration"]})
+            items_out.append({"proposal": item["id"], "background": params.get("picture"), "at": item["at"], "duration": item["duration"]})
         else:
             # The director's own kind (drawing, character, photo, word) travels in params.
             gags.append({**params, "proposal": item["id"], "at": item["at"], "duration": item["duration"]})

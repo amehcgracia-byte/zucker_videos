@@ -304,6 +304,8 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
         if cancel:
             cancel()
         kind = gag["kind"]
+        if kind == "background":
+            continue                                    # drawn by core.show_backgrounds, behind the person
         if kind == "warp":
             items.append({"warp": gag["warp"], "at": gag["at"], "duration": gag["duration"], "strength": 0.8})
             result(gag, "applied", f"{gag['warp']} warp of the whole picture")

@@ -414,3 +414,18 @@ def test_only_a_hardware_encoder_failure_renders_again_in_software():
         raise RuntimeError("A sticker picture is missing")
     with pytest.raises(RuntimeError, match="sticker picture"):
         _encoded(drawing_breaks)                                   # not repeated under a hardware excuse
+
+
+def test_each_place_named_gets_its_own_background_under_the_pictures():
+    from core import show_proposals
+    raw = [{"kind": "background", "at": 10.0, "duration": 6, "subject": "a kitchen"},
+           {"kind": "background", "at": 13.0, "duration": 5, "subject": "outside in a garden"},
+           {"kind": "background", "at": 20.0, "duration": 4, "subject": ""},                      # no place: dropped
+           {"kind": "word", "at": 11.0, "duration": 2, "text": "COOK!"}]
+    gags_kept = clean_gags(raw, 60.0)
+    places = [gag for gag in gags_kept if gag["kind"] == "background"]
+    assert [(gag["subject"], gag["at"], gag["duration"]) for gag in places] == [("a kitchen", 10.0, 3.0), ("outside in a garden", 13.0, 5.0)]
+    assert any(gag["kind"] == "word" for gag in gags_kept)                                         # pictures still go on top
+    proposals = show_proposals.from_gags(places)
+    assert proposals[0]["kind"] == "background" and proposals[0]["params"]["subject"] == "a kitchen"
+    assert show_proposals.check(proposals[0]) == ["a picture of the new background"]              # chosen by you, never invented
