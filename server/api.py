@@ -3631,6 +3631,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                                            prompt=(gag_paint.prompt_for(subject, style) + "\nAdditional direction: " + str(body["direction"]).strip()[:2000]) if str(body.get("direction") or "").strip() else "",
                                            selected_text=str(body.get("selected_text") or "")[:400], says="", text="", query="",
                                            position="left", size=0.25, effect="pop")
+        elif kind == "warp":
+            warp = str(body.get("warp") or "wave")
+            if warp not in ("stretch", "swirl", "wave"):
+                return error_response("bad_request", "Choose stretch, swirl or wave", 400)
+            item = show_proposals.proposal("warp", at, float(body.get("duration") or 2.0), reason="Added by you", warp=warp, strength=0.8)
         elif kind == "word":
             item = show_proposals.proposal("word", at, float(body.get("duration") or 2.0), reason="Added by you", kind="word",
                                            text=str(body.get("text") or "WOW")[:40], position="left", size=0.3, effect="pop")

@@ -2255,3 +2255,22 @@ body:has(#showReviewBox.show-fit) #backdropLogo {max-height:calc(100vh - 130px);
 .show-steam-tools {display:grid;gap:6px;margin-top:6px;padding:8px;border:1px solid var(--line);border-radius:8px;}
 .show-steam-tools small {color:var(--muted);}
 .show-caption-switch {margin-left:6px;padding:2px 8px;font-size:11px;border-radius:999px;border:1px solid var(--line);background:var(--panel);color:var(--text);cursor:pointer;}
+
+/* Right-click menus like the system's (web/show_menu.js): submenus open beside their item. */
+.zmenu {position:fixed;z-index:2147483000;min-width:230px;max-width:340px;max-height:calc(100vh - 8px);overflow:auto;display:grid;padding:5px;
+  background:color-mix(in srgb, var(--panel) 96%, #000);color:var(--text);border:1px solid var(--line);border-radius:9px;box-shadow:0 10px 28px #000a;
+  font:13px/1.25 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;}
+.zmenu-item {display:grid;grid-template-columns:16px 1fr auto;gap:6px;align-items:center;padding:5px 10px 5px 6px;border:0;border-radius:5px;background:none;
+  color:inherit;font:inherit;text-align:left;cursor:default;white-space:nowrap;}
+.zmenu-item:hover, .zmenu-item:focus, .zmenu-item.open {background:#2f6fd6;color:#fff;outline:none;}
+.zmenu-item:disabled {opacity:.4;background:none;color:inherit;}
+.zmenu-label {overflow:hidden;text-overflow:ellipsis;}
+.zmenu-check {font-size:12px;text-align:center;}
+.zmenu-hint {opacity:.6;font-size:12px;}
+.zmenu-separator {height:1px;margin:4px 6px;background:var(--line);}
+.zmenu-heading {padding:4px 10px 2px;font-size:11px;font-weight:600;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+#showEffectSettings {width:min(760px,94vw);max-height:90vh;padding:0;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:auto;}
+#showEffectSettings::backdrop {background:#0008;}
+#showEffectSettings > header {position:sticky;top:0;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--line);}
+#showEffectSettings > header button {font-size:22px;line-height:1;padding:4px 10px;}
+#showEffectSettings [data-settings-host] {padding:12px 14px;}
