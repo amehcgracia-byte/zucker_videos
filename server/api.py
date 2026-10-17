@@ -1889,11 +1889,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             cut["mark"] = mark
             cut["status"] = "dropped" if mark == "drop" else "pending"
             segments = list(edit.get("segments") or [])
-            if index < len(segments):
-                segments[index]["paper_mark"] = mark
+            from core.stages.backstage import selection_summary
+            segment = next((item for i, item in enumerate(segments) if str(item.get("id") or f"backstage-{i:04d}") == cut_id), None)
+            if segment is None:
+                return error_response("not_found", "paper-edit segment not found", 404)
+            segment["paper_mark"] = mark
             edit["segments"] = segments
-            edit["cut_count"] = max(0, len(segments) - 1)
-            edit["selected_duration_sec"] = round(sum(float(item.get("duration_sec") or 0) for item in segments), 3)
+            edit.update(selection_summary(segments))
+            paper.update(selection_summary(segments))
             for order, row in enumerate(paper.get("cuts") or [], 1):
                 row["order"] = order
             write = lambda path, payload: path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

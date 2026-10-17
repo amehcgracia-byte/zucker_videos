@@ -696,19 +696,19 @@ class WizardRunner:
             plan_path = artifact_path(project, "backstage_edit.json")
             plan = json.loads(plan_path.read_text(encoding="utf-8"))
             keep_ids = {str(cut.get("id")) for cut in allowed}
-            segments = [segment for index, segment in enumerate(plan.get("segments") or []) if f"backstage-{index:04d}" in keep_ids and segment.get("paper_mark") != "drop"]
-            closing_segments = [segment for segment in segments if segment.get("paper_mark") == "closing"]
-            segments = [segment for segment in segments if segment.get("paper_mark") != "closing"] + closing_segments
+            segments = [segment for index, segment in enumerate(plan.get("segments") or []) if str(segment.get("id") or f"backstage-{index:04d}") in keep_ids and segment.get("paper_mark") != "drop"]
+            from core.stages.backstage import selected_segments, selection_summary
+            segments = selected_segments(segments)
             plan["segments"] = segments
-            plan["cut_count"] = max(0, len(segments) - 1)
-            plan["selected_duration_sec"] = round(sum(float(item.get("duration_sec") or 0.0) for item in segments), 3)
+            plan.update(selection_summary(segments))
             plan["paper_edit_approved"] = True
             plan["paper_edit_rejected"] = sorted(rejected_set)
             write_artifact_json(plan_path, plan)
             for cut in paper.get("cuts") or []:
                 cut["status"] = "rejected" if str(cut.get("id")) in rejected_set else "approved"
             paper["approved"] = True
-            paper["cuts"] = [cut for cut in paper.get("cuts") or [] if cut["status"] == "approved"]
+            paper["cuts"] = allowed
+            paper.update(selection_summary(segments))
             write_artifact_json(paper_path, paper)
             job.status = "running"
             job.stage = "export"

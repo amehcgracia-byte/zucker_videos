@@ -177,6 +177,17 @@ def _candidate_windows(record: dict[str, Any]) -> list[dict[str, Any]]:
     return windows
 
 
+def selected_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    kept = [item for item in segments if item.get("paper_mark") != "drop"]
+    return [item for item in kept if item.get("paper_mark") != "closing"] + [item for item in kept if item.get("paper_mark") == "closing"]
+
+
+def selection_summary(segments: list[dict[str, Any]]) -> dict[str, Any]:
+    kept = selected_segments(segments)
+    return {"selected_duration_sec": round(sum(float(item.get("duration_sec") or 0) for item in kept), 3),
+            "cut_count": max(0, len(kept) - 1)}
+
+
 class BackstageAnalysisStage(Stage):
     """Find non-dead documentary moments from each video's own audio."""
 
@@ -1439,9 +1450,8 @@ class BackstageExportStage(Stage):
 
     def run(self, project: Project, progress_callback: ProgressCallback) -> dict[str, str]:
         plan = json.loads(artifact_path(project, "backstage_edit.json").read_text(encoding="utf-8"))
-        segments = [segment for segment in (plan.get("segments") or []) if segment.get("paper_mark") != "drop"]
-        closings = [segment for segment in segments if segment.get("paper_mark") == "closing"]
-        segments = [segment for segment in segments if segment.get("paper_mark") != "closing"] + closings
+        segments = selected_segments(plan.get("segments") or [])
+        plan.update(selection_summary(segments))
         if not segments:
             raise ValueError("Backstage found no moments with usable original audio")
         ffmpeg = tool_status().get("ffmpeg_path")
