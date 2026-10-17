@@ -2705,6 +2705,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                              "flip": bool(raw.get("flip", False)), "opacity": max(0.05, min(1.0, float(raw.get("opacity", 1.0)))),
                              **({"entrance": raw["entrance"]} if raw.get("entrance") in show_scenes.ENTRANCES else {}),
                              **({"voice_mode": "mine"} if raw.get("voice_mode") == "mine" else {}),
+                             # Pieces of one picture (split or pasted in the timeline) share its row.
+                             **({"group": str(raw["group"])[:80]} if isinstance(raw.get("group"), str) and raw["group"] else {}),
                              **({"path": [[max(0.0, min(1.0, float(a))), float(x), float(y)] for a, x, y in raw["path"][:40]],
                                  "hops": max(0, min(20, int(raw.get("hops", 4))))} if isinstance(raw.get("path"), list) and raw["path"] else {}),
                              **({"voice": [str(_show_allowed_source(project, str(raw["voice"][0]))), max(0.0, float(raw["voice"][1])),
@@ -3746,6 +3748,39 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
         _effect_changed(project, proposal_id)
         return jsonify(item)
+
+    @app.post("/api/v1/show/review/<proposal_id>/piece")
+    @_proposals_locked
+    def api_show_review_piece(proposal_id: str) -> Response:
+        """Another piece of an effect on the same timeline row: pasted at the playhead, or the
+        second part of a split (the first part is shortened by the editor)."""
+        from core import show_proposals, show_scenes
+        project = _require_project(state)
+        proposals_path, _ = _show_review_files(project)
+        body = request.get_json(silent=True) or {}
+        stored = show_proposals.load(proposals_path)
+        source = next((item for item in stored["proposals"] if item["id"] == proposal_id), None)
+        if source is None:
+            return error_response("not_found", "That effect is not in this review", 404)
+        try:
+            at, duration = float(body.get("at")), float(body.get("duration"))
+            offset = None if body.get("offset") is None else float(body["offset"])
+            if not math.isfinite(at + duration + (offset or 0)) or at < 0 or duration < 0 or (duration == 0 and source["kind"] != "character"):
+                raise ValueError("Choose a positive duration and a finite start time")
+            document = show_scenes.load(_scene_files(project)) if _scene_files(project).is_file() else None
+            owner = next((scene for scene in (document or {}).get("scenes") or [] if scene["start"] <= at < scene["end"]), None)
+            if document and (owner is None or at + duration > owner["end"] + .001):
+                raise ValueError("The piece must fit in the scene at the playhead: shorten it or move the playhead")
+            made = show_proposals.piece(source, at, duration, offset=offset)
+        except (TypeError, ValueError) as exc:
+            return error_response("bad_request", str(exc), 400)
+        show_proposals.save(proposals_path, sorted([*stored["proposals"], made], key=lambda entry: entry["at"]),
+                            **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
+        if document:
+            show_scenes.attach(document, made)
+            show_scenes.save(_scene_files(project), document)
+            _effect_changed(project, made["id"])
+        return jsonify(made), 201
 
     @app.get("/api/v1/show/drawing-prompt")
     def api_show_drawing_prompt() -> Response:

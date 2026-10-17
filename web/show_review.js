@@ -485,16 +485,20 @@
       <button type="button" class="icon-button small primary" data-editor-add>Add ▸</button> <button type="button" class="icon-button small" data-open-library>Library</button>
       <details class="show-sticker-picker"><summary>Add sticker</summary><div class="show-library">${library.map((asset,index)=>asset.retired?'':`<button type="button" data-library="${index}" aria-label="Add ${escape(asset.name)}"><img src="${asset.url}" alt="" loading="lazy">${escape(asset.name)}</button>`).join('')}</div></details>
       <p>Play or scrub to check when a picture appears and disappears. Drag a bar to move it; drag either edge to trim.</p>
+      <div class="show-timeline-edit" role="toolbar" aria-label="Edit the timeline">${[['split','Split at playhead','⌘B'],['cut','Cut','⌘X'],['copy','Copy','⌘C'],['paste','Paste at playhead','⌘V'],['duplicate','Duplicate','⌘D'],['delete','Delete','⌫'],['undo','Undo','⌘Z'],['redo','Redo','⇧⌘Z']].map(([action,label,keys])=>`<button type="button" class="icon-button small" data-timeline-command="${action}" title="${label} (${keys})" ${timelineCommandOff(action,scene)?'disabled':''}>${label}</button>`).join('')}</div>
       ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${selected.kind==='steam'?steamTools(selected):''}${selected.kind==='drawing'?`<button type="button" data-open-library="${selected.id}">Choose from library</button>`:''}${selected.kind==='clip'?`<button type="button" data-face-clip="${selected.id}">Put my face on it</button>${selected.params.clip_original?`<button type="button" data-face-original="${selected.id}">Use the original clip</button>`:''}`:''}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
       <div class="show-time-row"><span>Video</span><div class="show-time-source" data-scene-seek>Original video · your cut</div></div>
       <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
       ${(clay?.placements||[]).filter(p=>p.enabled!==false).flatMap(p=>(p.edited||[]).filter(([a,b])=>a<scene.end&&b>scene.start).map(([a,b])=>`<div class="show-time-row"><span>Clay memory</span><div class="show-time-track"><button type="button" class="show-caption-time" data-clay-at="${a}" style="left:${pct(Math.max(a,scene.start))}%;width:${Math.max(.2,pct(Math.min(b,scene.end))-pct(Math.max(a,scene.start)))}%">Simón · ${escape(CLAY_MODES[p.mode]||p.mode)}</button></div></div>`)).join('')}
       <div class="show-time-row"><span>Speech captions <button type="button" class="show-caption-switch" data-captions-on="${review.captions_enabled?'0':'1'}" title="Subtitles of everything you say, at the bottom. Off unless you want them.">${review.captions_enabled?'On · turn off':'Off · turn on'}</button></span><div class="show-time-track show-caption-track">${(review.captions_enabled?scene.captions||[]:[]).map(cue=>`<button type="button" class="show-caption-time" data-caption-at="${Math.max(scene.start,cue.start)}" style="left:${pct(Math.max(scene.start,cue.start))}%;width:${Math.max(.2,pct(Math.min(scene.end,cue.end))-pct(Math.max(scene.start,cue.start)))}%" title="${escape(cue.lines.join(' '))} · click to edit on the video">${escape(cue.lines.join(' '))}</button>`).join('')}</div></div>
-      ${rows.map(item=>{
-        const a=Math.max(scene.start,item.at),b=Math.min(scene.end,item.at+item.duration),outside=b<=a;
-        const name=item.params.subject||item.params.text||KIND_LABELS[item.kind]||item.kind;
-        return `<div class="show-time-row"><button type="button" class="show-time-name" data-locate-effect="${item.id}" title="${escape(name)}">${escape(KIND_LABELS[item.kind]||item.kind)}</button><div class="show-time-track" data-track="${item.id}">
-        ${outside?item.kind==='character'&&item.duration<=0?`<button type="button" data-show-adjust="${item.id}" class="show-time-outside">Voice &amp; hold timing · Adjust</button>`:`<button type="button" data-place-words="${item.id}" class="show-time-outside">Outside this scene · choose words</button>`:`<div tabindex="0" role="button" aria-label="${escape(name)} timeline clip" class="show-time-clip ${selectedEffect===item.id?'selected':''}" data-time-clip="${item.id}" style="left:${pct(a)}%;width:${100*(b-a)/duration}%" title="${escape(name)} · ${clock(item.at)}–${clock(item.at+item.duration)}"><span data-trim="start" aria-label="Trim start"></span><b>${escape(name)}</b><span data-trim="end" aria-label="Trim end"></span></div>`}</div></div>`;
+      ${timelineRows(rows).map(group=>{
+        // One row per effect: its pieces (split, pasted) sit side by side on it.
+        const first=group[0],label=KIND_LABELS[first.kind]||first.kind,name=first.params.subject||first.params.text||label;
+        const inside=group.filter(item=>Math.min(scene.end,item.at+item.duration)>Math.max(scene.start,item.at));
+        return `<div class="show-time-row"><button type="button" class="show-time-name" data-locate-effect="${first.id}" title="${escape(name)}${group.length>1?` · ${group.length} pieces`:''}">${escape(label)}${group.length>1?` <small>×${group.length}</small>`:''}</button><div class="show-time-track" data-track="${first.id}">
+        ${!inside.length?first.kind==='character'&&first.duration<=0?`<button type="button" data-show-adjust="${first.id}" class="show-time-outside">Voice &amp; hold timing · Adjust</button>`:`<button type="button" data-place-words="${first.id}" class="show-time-outside">Outside this scene · choose words</button>`:inside.map(item=>{
+          const a=Math.max(scene.start,item.at),b=Math.min(scene.end,item.at+item.duration);
+          return `<div tabindex="0" role="button" aria-label="${escape(name)} timeline clip" class="show-time-clip ${selectedEffect===item.id?'selected':''}" data-time-clip="${item.id}" style="left:${pct(a)}%;width:${100*(b-a)/duration}%" title="${escape(name)} · ${clock(item.at)}–${clock(item.at+item.duration)} · right-click to cut, copy, paste or split"><span data-trim="start" aria-label="Trim start"></span><b>${escape(name)}</b><span data-trim="end" aria-label="Trim end"></span></div>`;}).join('')}</div></div>`;
       }).join('')}`;
     const seekTo=time=>{
       wantEffects.delete(scene.id);wantQuick.add(scene.id);
@@ -524,7 +528,7 @@
       };
       clip.onpointerup=async()=>{
         clip.onpointermove=null;clip.onpointerup=null;
-        try {if(moved){await savePlacement(item,{...fitTiming(scene,timing.at,timing.duration),selected_text:''});liveDrawings(scene);}
+        try {if(moved){await timelineEdit(scene,()=>savePlacement(item,{...fitTiming(scene,timing.at,timing.duration),selected_text:''}));liveDrawings(scene);}
           else locateEffect(item,false);}
         catch(error){showToast(error.message,true);renderTimeline(scene);}
       };
@@ -538,6 +542,153 @@
     syncPlayback();
     box.onkeydown=event=>{const clip=event.target.closest('[data-time-clip]');if(clip && ['Enter',' '].includes(event.key)){event.preventDefault();locateEffect(timelineItem(clip.dataset.timeClip));}};
   }
+  // ---- Timeline editing: cut, copy, paste at the playhead, split, delete, undo ----------
+  // A pasted or split-off piece is another effect with the same settings that stays on its
+  // effect's row (params.group / overlay.group): the render needs nothing new.
+  let timelineClipboard=null;
+  const timelineUndo=[],timelineRedo=[];
+  const rowKey=item=>item.overlay?(item.overlay.group||item.overlay.id):(item.params.group||item.id);
+  function timelineRows(items){
+    const rows=new Map();
+    for(const item of items){const key=rowKey(item);if(!rows.has(key))rows.set(key,[]);rows.get(key).push(item);}
+    return [...rows.values()].map(group=>group.sort((a,b)=>a.at-b.at));
+  }
+  function timelineSnapshot(scene){
+    return {scene:scene.id,effects:sceneEffects(scene).map(item=>({id:item.id,at:item.at,duration:item.duration,status:item.status})),overlays:structuredClone(scene.overlays)};
+  }
+  async function timelineEdit(scene,change){
+    // Kept for ⌘Z only once the change is saved.
+    const before=timelineSnapshot(scene);
+    const result=await change();
+    timelineUndo.push(before);if(timelineUndo.length>60)timelineUndo.shift();
+    timelineRedo.length=0;
+    return result;
+  }
+  async function restoreTimeline(snapshot){
+    const scene=scenes().find(entry=>entry.id===snapshot.scene);if(!scene)return;
+    await flushEdits();
+    const failed=[];
+    for(const item of sceneEffects(scene)){
+      const was=snapshot.effects.find(entry=>entry.id===item.id);
+      const changes=!was?(item.status!=='discarded'?{status:'discarded'}:{}):{
+        ...(Math.abs(was.at-item.at)>1e-4||Math.abs(was.duration-item.duration)>1e-4?{at:was.at,duration:was.duration}:{}),
+        ...(was.status!==item.status?{status:was.status}:{})};
+      if(Object.keys(changes).length)await patch(item.id,changes).catch(error=>failed.push(error.message));
+    }
+    if(JSON.stringify(scene.overlays)!==JSON.stringify(snapshot.overlays)){scene.overlays=structuredClone(snapshot.overlays);selectedOverlay=null;drawOverlays(scene);await saveOverlays(scene);}
+    await markModified();
+    if(failed.length)showToast('Some changes could not be undone: '+failed[0],true);
+  }
+  function selectedTimelineItem(scene){
+    const overlay=selectedOverlay!=null?scene.overlays[selectedOverlay]:null;
+    return timelineItem(selectedEffect)||(overlay?timelineItem('sticker:'+overlay.id):null);
+  }
+  function timelineCommandOff(action,scene){
+    if(action==='undo')return !timelineUndo.some(entry=>entry.scene===scene.id);
+    if(action==='redo')return !timelineRedo.some(entry=>entry.scene===scene.id);
+    if(action==='paste')return !timelineClipboard;
+    return !selectedTimelineItem(scene);
+  }
+  async function pastePiece(scene,clip,at){
+    const start=Math.max(scene.start,Math.min(scene.end-.1,at));
+    const length=clip.duration>0?Math.min(clip.duration,scene.end-start):0;
+    if(clip.overlay){
+      const overlay={...structuredClone(clip.overlay),id:crypto.randomUUID(),group:clip.overlay.group||clip.overlay.id,at:Math.round(start*1000)/1000,duration:Math.round(Math.max(.04,length)*1000)/1000,selected_text:''};
+      scene.overlays.push(overlay);selectedOverlay=scene.overlays.length-1;selectedEffect='sticker:'+overlay.id;
+      drawOverlays(scene);if(!await saveOverlays(scene))throw Error('The pasted picture was not saved');
+      return;
+    }
+    const made=await api(`/show/review/${encodeURIComponent(clip.id)}/piece`,{method:'POST',body:JSON.stringify({at:Math.round(start*1000)/1000,duration:Math.round(length*1000)/1000})});
+    review.proposals.push(made);
+    const owner=scenes().find(entry=>entry.start<=made.at&&made.at<entry.end)||scene;
+    if(!owner.effects.includes(made.id))owner.effects.push(made.id);
+    selectedEffect=made.id;
+    await markModified(made.id);
+  }
+  async function splitPiece(scene,item,at){
+    const start=item.at,end=item.at+item.duration;
+    if(!(at>start+.05&&at<end-.05))throw Error('Put the playhead inside the selected piece, where it should be cut');
+    const at3=Math.round(at*1000)/1000;
+    if(item.overlay){
+      const overlay=item.overlay;overlay.group ||= overlay.id;
+      const after={...structuredClone(overlay),id:crypto.randomUUID(),at:at3,duration:Math.round((end-at3)*1000)/1000,selected_text:''};
+      overlay.duration=Math.round((at3-start)*1000)/1000;
+      scene.overlays.push(after);drawOverlays(scene);
+      if(!await saveOverlays(scene))throw Error('The split was not saved');
+      return;
+    }
+    const made=await api(`/show/review/${encodeURIComponent(item.id)}/piece`,{method:'POST',body:JSON.stringify({at:at3,duration:Math.round((end-at3)*1000)/1000,offset:Math.round((at3-start)*1000)/1000})});
+    review.proposals.push(made);if(!scene.effects.includes(made.id))scene.effects.push(made.id);
+    await patch(item.id,{duration:Math.round((at3-start)*1000)/1000});
+    await markModified(item.id);
+  }
+  async function removePiece(scene,item){
+    if(item.overlay){
+      scene.overlays=scene.overlays.filter(overlay=>overlay!==item.overlay);selectedOverlay=null;
+      drawOverlays(scene);if(!await saveOverlays(scene))throw Error('The picture was not removed');
+    } else {await patch(item.id,{status:'discarded'});await markModified(item.id);refreshCard(item.id);}
+    selectedEffect=null;
+  }
+  async function timelineCommand(action,scene=currentScene()){
+    if(!scene||!review)return;
+    const item=selectedTimelineItem(scene),at=editedPlayhead();
+    const clipOf=entry=>entry.overlay?{overlay:structuredClone(entry.overlay),duration:entry.duration}:{id:entry.id,duration:entry.duration};
+    if(action==='undo'||action==='redo'){
+      const from=action==='undo'?timelineUndo:timelineRedo,to=action==='undo'?timelineRedo:timelineUndo;
+      const index=from.findLastIndex(entry=>entry.scene===scene.id);if(index<0)return;
+      const snapshot=from.splice(index,1)[0];to.push(timelineSnapshot(scene));
+      await restoreTimeline(snapshot);
+    } else if(action==='paste'){
+      if(!timelineClipboard)return;
+      await timelineEdit(scene,()=>pastePiece(scene,timelineClipboard,at));
+    } else {
+      if(!item){if(action!=='delete')showToast('Select a piece in the timeline first.');return;}
+      if(action==='copy'){timelineClipboard=clipOf(item);showToast('Copied. Move the playhead and paste (⌘V): it goes on the same row.');renderTimeline(scene);return;}
+      if(action==='cut'){timelineClipboard=clipOf(item);await timelineEdit(scene,()=>removePiece(scene,item));}
+      else if(action==='delete')await timelineEdit(scene,()=>removePiece(scene,item));
+      else if(action==='duplicate')await timelineEdit(scene,()=>pastePiece(scene,clipOf(item),item.at+item.duration));
+      else if(action==='split')await timelineEdit(scene,()=>splitPiece(scene,item,at));
+    }
+    renderTimeline(currentScene());liveDrawings(currentScene());refreshSceneDrawings();wordPlacementControls();
+  }
+  function timelineMenu(x,y,id){
+    const scene=currentScene(),item=timelineItem(id);if(!scene||!item)return;
+    selectedEffect=item.id;selectedOverlay=item.overlay?scene.overlays.indexOf(item.overlay):null;renderTimeline(scene);
+    const run=action=>()=>timelineCommand(action,scene);
+    const name=item.params.subject||item.params.text||KIND_LABELS[item.kind]||item.kind;
+    ShowMenu.open(x,y,[
+      {heading:`${KIND_LABELS[item.kind]||item.kind} · ${name} · ${clock(item.at)}–${clock(item.at+item.duration)}`},
+      {label:'Cut',hint:'⌘X',action:run('cut')},{label:'Copy',hint:'⌘C',action:run('copy')},
+      {label:`Paste at playhead (${clock(editedPlayhead())})`,hint:'⌘V',disabled:!timelineClipboard,action:run('paste')},
+      {label:'Duplicate after it',hint:'⌘D',action:run('duplicate')},
+      {label:`Split at playhead (${clock(editedPlayhead())})`,hint:'⌘B',disabled:!item.overlay&&['character','clip'].includes(item.kind),action:run('split')},
+      {label:'Delete',hint:'⌫',action:run('delete')},
+      {separator:true},
+      {label:'Undo',hint:'⌘Z',disabled:timelineCommandOff('undo',scene),action:run('undo')},
+      {label:'Redo',hint:'⇧⌘Z',disabled:timelineCommandOff('redo',scene),action:run('redo')},
+      {separator:true},
+      item.overlay?{label:'Picture settings…',action:()=>overlayMenu(scene.overlays.indexOf(item.overlay),x,y)}
+        :{label:'Effect',submenu:()=>effectItems(scene,item)},
+    ],{host:menuHost()});
+  }
+  document.addEventListener('click',event=>{
+    const button=event.target instanceof Element?event.target.closest('[data-timeline-command]'):null;
+    if(button)timelineCommand(button.dataset.timelineCommand).catch(error=>showToast(error.message,true));
+  });
+  document.addEventListener('keydown',event=>{
+    // In the scene editor; typing in a field, or copying selected transcript text, stays native.
+    if(!timelineDialog?.open||!review||event.target.closest?.('input,textarea,select,[contenteditable="true"],.zmenu'))return;
+    const mod=event.metaKey||event.ctrlKey,key=event.key.toLowerCase();
+    let action=null;
+    if(mod&&key==='z')action=event.shiftKey?'redo':'undo';
+    else if(mod&&key==='y')action='redo';
+    else if(mod)action={c:'copy',x:'cut',v:'paste',d:'duplicate',b:'split',k:'split'}[key]||null;
+    else if(['Delete','Backspace'].includes(event.key))action='delete';
+    if(!action)return;
+    if(['copy','cut'].includes(action)&&String(window.getSelection?.()||'').trim())return;
+    event.preventDefault();event.stopImmediatePropagation();
+    timelineCommand(action).catch(error=>showToast(error.message,true));
+  },true);
   for(const name of ['timeupdate','loadeddata','play','pause'])$('#showStageVideo').addEventListener(name,syncPlayback);
   $('#showStageVideo').addEventListener('seeked',()=>{if(quick)quick.pending=null;syncPlayback();});
   document.addEventListener('selectionchange',()=>{
@@ -1217,8 +1368,14 @@
     const name = (item) => item.params.subject || item.params.text || KIND_LABELS[item.kind] || item.kind;
     ShowMenu.open(x, y, [
       ...(own ? [{ heading: `${KIND_LABELS[own.kind] || own.kind} · ${name(own)}` }, ...effectItems(scene, own), { separator: true }] : []),
+      ...(timelineDialog?.open ? [
+        { label: `Paste at playhead (${clock(editedPlayhead())})`, hint: "⌘V", disabled: !timelineClipboard, action: () => timelineCommand("paste", scene) },
+        { label: "Undo", hint: "⌘Z", disabled: timelineCommandOff("undo", scene), action: () => timelineCommand("undo", scene) },
+        { label: "Redo", hint: "⇧⌘Z", disabled: timelineCommandOff("redo", scene), action: () => timelineCommand("redo", scene) },
+      ] : [
       { label: "Paste image layer", hint: "⌘V", disabled: !layerClipboard, action: () => layerCommand("paste", scene) },
       { label: "Undo layer edit", hint: "⌘Z", disabled: !layerUndo.some((entry) => entry.scene === scene.id), action: () => layerCommand("undo", scene) },
+      ]),
       { separator: true },
       { label: `Add at ${clock(picked.start)}`, submenu: () => addItems(scene, picked, x, y) },
       { label: "Effects in this scene", disabled: !effects.length, submenu: () => effects.map((item) => ({ label: `${KIND_LABELS[item.kind] || item.kind} · ${name(item)}${item.status === "discarded" ? " (removed)" : ""}`, submenu: () => effectItems(scene, item) })) },
@@ -1239,12 +1396,22 @@
     const set = (changes) => async () => { Object.assign(overlay, changes); await save(); };
     const timing = (at, duration) => async () => { Object.assign(overlay, fitTiming(scene, at, duration)); await save(); renderTimeline(scene); };
     ShowMenu.open(x, y, [
+      ...(timelineDialog?.open ? [
+        { label: "Cut", hint: "⌘X", action: () => timelineCommand("cut", scene) },
+        { label: "Copy", hint: "⌘C", action: () => timelineCommand("copy", scene) },
+        { label: "Paste at playhead", hint: "⌘V", disabled: !timelineClipboard, action: () => timelineCommand("paste", scene) },
+        { label: "Duplicate", hint: "⌘D", action: () => timelineCommand("duplicate", scene) },
+        { label: "Split at playhead", hint: "⌘B", action: () => timelineCommand("split", scene) },
+        { label: "Delete", hint: "⌫", action: () => timelineCommand("delete", scene) },
+        { label: "Undo", hint: "⌘Z", disabled: timelineCommandOff("undo", scene), action: () => timelineCommand("undo", scene) },
+      ] : [
       { label: "Cut", hint: "⌘X", action: () => layerCommand("cut") },
       { label: "Copy", hint: "⌘C", action: () => layerCommand("copy") },
       { label: "Paste", hint: "⌘V", disabled: !layerClipboard, action: () => layerCommand("paste") },
       { label: "Duplicate", hint: "⌘D", action: () => layerCommand("duplicate") },
       { label: "Delete", hint: "⌫", action: () => layerCommand("remove") },
       { label: "Undo", hint: "⌘Z", disabled: !layerUndo.some((entry) => entry.scene === scene.id), action: () => layerCommand("undo") },
+      ]),
       { separator: true },
       { label: "Animate", submenu: () => Object.entries(ANIMATIONS).filter(([key]) => !["talk", "look"].includes(key) || talkable)
           .map(([key, label]) => ({ label, checked: (overlay.action || "none") === key, action: () => animateOverlay(scene, index, key) })) },
@@ -2041,7 +2208,9 @@
     const scene = currentScene();
     if (!scene || !event.target.closest("#showStage, [data-show-id], [data-time-clip], [data-track], [data-scene-seek]")) return;
     event.preventDefault();
-    const ownId=event.target.closest("[data-time-clip]")?.dataset.timeClip || event.target.closest("[data-show-id]")?.dataset.showId || event.target.closest("[data-live-effect]")?.dataset.liveEffect;
+    const barId=event.target.closest("[data-time-clip]")?.dataset.timeClip;
+    if(barId){timelineMenu(event.clientX,event.clientY,barId);return;}
+    const ownId=event.target.closest("[data-show-id]")?.dataset.showId || event.target.closest("[data-live-effect]")?.dataset.liveEffect;
     if(ownId?.startsWith('sticker:')){overlayMenu(currentScene().overlays.findIndex(overlay=>'sticker:'+overlay.id===ownId),event.clientX,event.clientY);return;}
     sceneMenu(event.clientX,event.clientY,ownId);return;
   });
@@ -2178,7 +2347,9 @@
         renderScene();
       } else if (target.dataset.showStatus) {
         await flushEdits();
-        await patch(target.dataset.id, { status: target.dataset.showStatus });
+        const owner = scenes().find((entry) => entry.effects.includes(target.dataset.id));
+        if (timelineDialog?.open && owner) await timelineEdit(owner, () => patch(target.dataset.id, { status: target.dataset.showStatus }));
+        else await patch(target.dataset.id, { status: target.dataset.showStatus });
         refreshCard(target.dataset.id);
         refreshSceneDrawings();
         if (target.dataset.showStatus === "approved") suggestions.clear();

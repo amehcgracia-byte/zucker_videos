@@ -191,3 +191,23 @@ def test_the_person_can_add_steam_and_a_character_from_this_show_only(tmp_path, 
     assert character["needs"] and "region" in character["needs"]
     kinds = [item["kind"] for item in client.get("/api/v1/show/review").get_json()["proposals"]]
     assert kinds.count("steam") == 1 and kinds.count("character") == 2
+
+
+def test_timeline_pieces_stay_on_their_effect_row_and_a_split_carries_on(tmp_path, monkeypatch):
+    project, client, word, character = _review_project(tmp_path, monkeypatch)
+    client.patch(f"/api/v1/show/review/{word['id']}", json={"status": "approved"})
+    pasted = client.post(f"/api/v1/show/review/{word['id']}/piece", json={"at": 6.0, "duration": 2.0})
+    assert pasted.status_code == 201, pasted.get_json()
+    pasted = pasted.get_json()
+    assert pasted["id"] != word["id"] and pasted["params"]["group"] == word["id"]          # same row as the original
+    assert pasted["status"] == "approved" and pasted["params"]["text"] == "WOW" and pasted["at"] == 6.0
+    # A close-up split in two: the second part carries on in its source, not from the start again.
+    cut = show_proposals.proposal("cutaway", 1.0, 4.0, reason="test", source=str(tmp_path / "talk.mp4"), source_start=10.0)
+    stored = show_proposals.load(project.artifacts_dir / "show_proposals.json")
+    show_proposals.save(project.artifacts_dir / "show_proposals.json", stored["proposals"] + [cut], source=stored["source"], resources=[])
+    second = client.post(f"/api/v1/show/review/{cut['id']}/piece", json={"at": 2.5, "duration": 2.5, "offset": 1.5}).get_json()
+    assert second["params"]["source_start"] == 11.5 and second["params"]["group"] == cut["id"]
+    # A talking character plays whole; pieces must fit the scene and start somewhere real.
+    assert client.post(f"/api/v1/show/review/{character['id']}/piece", json={"at": 5.0, "duration": 0.0, "offset": 1.0}).status_code == 400
+    assert client.post(f"/api/v1/show/review/{word['id']}/piece", json={"at": "soon", "duration": 1}).status_code == 400
+    assert client.post("/api/v1/show/review/nope/piece", json={"at": 1, "duration": 1}).status_code == 404

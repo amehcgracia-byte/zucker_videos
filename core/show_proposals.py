@@ -157,6 +157,28 @@ def update(items: list[dict[str, Any]], proposal_id: str, *, status: str | None 
     return item
 
 
+WHOLE = ("character", "clip")      # inserts that stop the host and play whole: copied, never split
+
+
+def piece(item: dict[str, Any], at: float, duration: float, *, offset: float | None = None) -> dict[str, Any]:
+    """Another piece of an effect on its own timeline row (``params.group``): pasted at the
+    playhead, or the part after a split (``offset``: how far into the effect it starts, so
+    a close-up or a jingle carries on where the first part stops instead of starting over)."""
+    import copy
+    if offset is not None and item["kind"] in WHOLE:
+        raise ValueError("A talking character or a clip plays whole: copy it instead of splitting it")
+    params = copy.deepcopy(item["params"])
+    params["group"] = params.get("group") or item["id"]
+    if offset:
+        for key in {"cutaway": ("source_start",), "jingle": ("start",)}.get(item["kind"], ()):
+            params[key] = round(float(params.get(key) or 0.0) + float(offset), 3)
+    made = proposal(item["kind"], at, duration, reason=item.get("reason") or "Added by you", confidence=item.get("confidence") or 0.0, **params)
+    made["needs"] = check(made)
+    wanted = item["status"] if item["status"] != "discarded" else "approved"   # a cut piece pasted back is kept
+    made["status"] = "proposed" if wanted == "approved" and made["needs"] else wanted
+    return made
+
+
 def save(path: Path, items: list[dict[str, Any]], **meta: Any) -> None:
     path.write_text(json.dumps({"version": PROPOSALS_VERSION, **meta, "proposals": items}, ensure_ascii=False, indent=1), encoding="utf-8")
 

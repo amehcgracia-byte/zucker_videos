@@ -2298,3 +2298,8 @@ body:has(#showReviewBox.show-fit) #backdropLogo {max-height:calc(100vh - 130px);
 .show-idea-modes {display:flex;flex-wrap:wrap;gap:14px;margin:8px 0;}
 .show-idea textarea {width:100%;box-sizing:border-box;min-height:110px;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg,#111);color:var(--text);font:inherit;}
 .show-idea-asking {outline:3px solid #f59e0b;outline-offset:2px;}
+
+/* Scene editor: timeline editing toolbar (split, cut, copy, paste at the playhead, undo). */
+.show-timeline-edit { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 8px; }
+.show-timeline-edit button[disabled] { opacity: .45; }
+.show-time-name small { opacity: .7; font-weight: 400; }
