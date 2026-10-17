@@ -42,9 +42,9 @@ from core.narrative_sequences import group_story_bites
 from core.backstage_feedback import content_fingerprint, load_feedback
 
 
-BACKSTAGE_ANALYSIS_VERSION = 7
+BACKSTAGE_ANALYSIS_VERSION = 8
 BACKSTAGE_EDIT_VERSION = 6
-BACKSTAGE_EXPORT_VERSION = 6
+BACKSTAGE_EXPORT_VERSION = 7
 BACKSTAGE_LOGO_DURATION = 3.0
 BACKSTAGE_DEFAULT_TARGET_DURATION = 180.0
 BACKSTAGE_NORMAL_CUT = 6.0
