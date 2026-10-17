@@ -58,6 +58,22 @@ def test_accepting_a_scene_approves_what_is_ready_and_plain_leaves_it_untouched(
         show_scenes.decide(document, [], first["id"], "maybe")
 
 
+def test_a_changed_scene_keeps_in_the_video_what_its_preview_shows():
+    word = proposal("word", 5.0, 2.0, reason="Director: WOW", kind="word", text="WOW")
+    steam = proposal("steam", 6.0, 2.0, reason="Steam", point=[0.5, 0.5])
+    unpainted = proposal("drawing", 6.5, 2.0, reason="Director: a cat", kind="drawing", subject="a cat")
+    gone = proposal("word", 7.0, 1.0, reason="Director: NO", kind="word", text="NO")
+    gone["status"] = "discarded"
+    pending = proposal("word", 40.0, 2.0, reason="Director: LATER", kind="word", text="LATER")
+    document = show_scenes.build({"edited_duration": 60.0}, _talk(60.0), [30.0], [word, steam, unpainted, gone, pending], title="")
+    document["scenes"][0]["decision"] = "modified"           # the person moved one effect by hand
+    seen = {item["id"]: item["status"] for item in show_scenes.as_seen(document, [word, steam, unpainted, gone, pending])}
+    assert seen[word["id"]] == seen[steam["id"]] == "approved"          # both overlapping effects are in the video
+    assert seen[unpainted["id"]] == "proposed"                            # a card in the preview, never drawn blind
+    assert seen[gone["id"]] == "discarded" and seen[pending["id"]] == "proposed"
+    assert word["status"] == "proposed"                                   # copies: nothing saved
+
+
 def test_placed_pictures_keep_the_storyboard_position_and_size(tmp_path):
     Image.new("RGBA", (200, 100), (255, 0, 0, 255)).save(tmp_path / "sun.png")
     document = {"scenes": [{"start": 10.0, "end": 30.0, "decision": "accepted",

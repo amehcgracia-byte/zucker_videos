@@ -277,7 +277,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
     def result(gag: dict[str, Any], status: str, detail: str) -> None:
         if gag.get("proposal"):
             outcomes[gag["proposal"]] = (status, detail)
-    from core.gag_library import search
+    from core.gag_library import named_picture, search
     folder.mkdir(parents=True, exist_ok=True)
     engine = drawing_engine()
     painter = engine == "claude" or gag_paint.can_paint()
@@ -382,11 +382,17 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
                                  font=gag.get("font") or "note", handwritten=True, tilt=(-3, 2, -2, 3)[index % 4],
                                  bold=bool(gag.get("bold")), italic=bool(gag.get("italic")))
         elif kind == "photo":
-            found = search(gag["query"], library or [])
-            if found:
-                image = photo_sticker(Path(found["path"]))
+            # The picture the director named in your library; previews and the reviewed render
+            # pass no index, so the name is looked up exactly (never a look-alike).
+            found = search(gag["query"], library) if library else None
+            named = Path(found["path"]) if found else named_picture(gag["query"])
+            if named:
+                image = photo_sticker(named)
         if image is None:
-            result(gag, "failed", f"No picture in your library matches “{gag.get('query', '')}”" if kind == "photo" else "Nothing to show")
+            detail = f"No picture in your library is called “{gag.get('query', '')}”" if kind == "photo" else "Nothing to show"
+            result(gag, "failed", detail)
+            if kind == "photo":
+                notes.append(detail)
             continue
         result(gag, "applied", f"your picture {Path(str(gag['picture'])).name}" if kind in ("drawing", "character", "word") and gag.get("picture")
                else f"{kind}: {gag.get('subject') or gag.get('text') or gag.get('query') or ''}".rstrip(": "))

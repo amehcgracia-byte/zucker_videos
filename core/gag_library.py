@@ -163,6 +163,25 @@ def search(query: str, entries: list[dict[str, Any]], *, prefer_characters: bool
     return {**best, "score": round(best_score, 4)}
 
 
+def named_picture(name: str, root: Path | None = None) -> Path | None:
+    """The library picture the director named, exactly: its file name, the name without the
+    code at its end, or that code alone. None when no picture is called that (no look-alike)."""
+    wanted = " ".join(str(name or "").lower().split())
+    if not wanted:
+        return None
+    root = root or library_dir()
+    if not root.is_dir():
+        return None
+    for path in sorted(root.rglob("*")):
+        if path.suffix.lower() not in IMAGE_SUFFIXES or not path.is_file():
+            continue
+        stem = " ".join(path.stem.lower().split())
+        head, _, code = stem.rpartition(" ")
+        if wanted in (stem, code) or (wanted == head and re.fullmatch(r"[0-9a-f]{6}", code)):
+            return path
+    return None
+
+
 def reveal() -> Path:
     """Open the gag library folder in Finder / Explorer."""
     import os

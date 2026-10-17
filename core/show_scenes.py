@@ -99,6 +99,23 @@ def decide(document: dict[str, Any], proposals: list[dict[str, Any]], scene_id: 
     return scene
 
 
+def as_seen(document: dict[str, Any], proposals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The effects as the scene previews show them: in a scene the person kept (accepted, or
+    changed by hand), every effect not discarded and ready is in the video, also the ones
+    left as proposed; before, a changed scene lost those that were not approved one by one
+    (both showed in the preview, one in the video). A drawing with no picture yet stays out,
+    as the preview's card says. Copies; nothing is saved."""
+    from core.show_drafts import needs_drawing
+    kept = {effect for scene in document.get("scenes") or [] if scene.get("decision") in ("accepted", "modified")
+            for effect in scene.get("effects") or []}
+    out = []
+    for item in proposals:
+        if item["id"] in kept and item["status"] == "proposed" and not item.get("needs") and not needs_drawing(item):
+            item = {**item, "status": "approved"}
+        out.append(item)
+    return out
+
+
 def attach(document: dict[str, Any], proposal: dict[str, Any]) -> None:
     """A new effect joins the scene it falls in."""
     for scene in document["scenes"]:

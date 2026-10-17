@@ -138,6 +138,24 @@ def test_reviewed_render_never_generates_a_replacement_for_an_unbound_picture(tm
     assert Image.open(items[0]["image"]).tobytes() == Image.open(chosen).tobytes()
 
 
+def test_a_library_photo_the_director_named_is_shown_in_previews_and_the_render(tmp_path, monkeypatch):
+    from core import gag_library
+    library = tmp_path / "Gag library"
+    (library / "Painted").mkdir(parents=True)
+    Image.new("RGBA", (60, 40), (20, 140, 200, 255)).save(library / "Painted" / "a lazy man on a sofa 6cb396.png")
+    Image.new("RGBA", (60, 40), (200, 140, 20, 255)).save(library / "Painted" / "a lazy cat on a sofa.png")
+    monkeypatch.setattr(gag_library, "library_dir", lambda: library)
+    assert gag_library.named_picture("6cb396").name == "a lazy man on a sofa 6cb396.png"
+    assert gag_library.named_picture("A lazy man on a sofa").name == "a lazy man on a sofa 6cb396.png"
+    assert gag_library.named_picture("a lazy dog on a sofa") is None          # no look-alike
+    outcomes = {}
+    items, notes = gags.make_items([{"kind": "photo", "query": "6cb396", "at": 1, "duration": 2, "proposal": "p1"},
+                                    {"kind": "photo", "query": "missing one", "at": 4, "duration": 2, "proposal": "p2"}],
+                                   tmp_path / "render", allow_generation=False, outcomes=outcomes)
+    assert len(items) == 1 and outcomes["p1"][0] == "applied" and outcomes["p2"][0] == "failed"
+    assert any("missing one" in note for note in notes)                        # said, not silently dropped
+
+
 def test_a_drawing_on_a_desk_is_painted_again_one_on_white_is_kept(monkeypatch):
     import numpy as np
     from core.gag_paint import clean_background, paint_clean

@@ -370,11 +370,15 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
     started = time.monotonic()
     plan = json.loads((project.artifacts_dir / "show_plan.json").read_text(encoding="utf-8"))
     items = show_proposals.load(project.artifacts_dir / "show_proposals.json")["proposals"]
+    scenes_path = project.artifacts_dir / "show_scenes.json"
+    document = show_scenes.load(scenes_path) if scenes_path.is_file() else None
+    if document:
+        for item in items:
+            item["needs"] = show_proposals.check(item)
+        items = show_scenes.as_seen(document, items)       # the video shows what the scene previews showed
     cutaways, layer, director = show_proposals.render_inputs(items)
     plan["cutaways"] = cutaways
     layer = framed_layer(plan, layer)
-    scenes_path = project.artifacts_dir / "show_scenes.json"
-    document = show_scenes.load(scenes_path) if scenes_path.is_file() else None
     if document:
         layer += show_scenes.overlay_items(document)
     layer = steam_within_its_shot(plan, between_words(plan, layer))
