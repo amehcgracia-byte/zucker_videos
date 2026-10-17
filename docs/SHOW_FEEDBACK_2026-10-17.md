@@ -15,13 +15,17 @@ Status: ✅ done and verified · 🔜 next · ⏳ later.
 
 ## Block 2 · tools to rebuild properly
 
-8. ⏳ **Right-click menu like macOS/Windows:** cascading submenus that open beside, native items (cut/copy/paste…), effects grouped by category, each with generic + specific tools.
-9. ⏳ **Drawn comments** must actually appear when placed; a text menu (typeface, size, bold, italic); one plain typeface and many wild ones; "Draw this" offers every engine.
-10. ⏳ **Character with eyes, mouth and voice:** one preview with all of it (today: the preview moves eyes/mouth without sound, the render has sound and mouth but no eyes); trim the recording (silence at start/end, or auto-trim) in the same window.
+8. ✅ **Right-click menu like macOS/Windows** (`web/show_menu.js`; Add ▸ by kind, Effects in this scene ▸, picture tools ▸, Settings… over the editor): cascading submenus that open beside, native items (cut/copy/paste…), effects grouped by category, each with generic + specific tools.
+9. ✅ **Words' text menu:** one plain + 19 wild typefaces, bold, italic, size, colour (settings and right-click, shown in themselves); "Hand-letter it instead" with Claude or ChatGPT. 🔜 Check a placed drawn comment shows in the live view and the effects preview.
+10. ✅ **Character with eyes, mouth and voice** (eyes and mouth now move together in the render; "▶ Preview with voice" uses the render's own code; "Trim the silence" and start/end in the studio): one preview with all of it (today: the preview moves eyes/mouth without sound, the render has sound and mouth but no eyes); trim the recording (silence at start/end, or auto-trim) in the same window.
 11. ⏳ **Physical effects** (smoke, rain, water…) in their own category with settings.
-12. ⏳ **"Connectors" in the top bar:** see and switch the accounts used (Claude, ChatGPT/Codex, GitHub, Hugging Face) when one runs out of allowance.
+12. ✅ **"Connectors" in the top bar** (`core/connectors.py`): see and switch the accounts used (Claude, ChatGPT/Codex, GitHub, Hugging Face) when one runs out of allowance.
 
 ## Block 3 · the big ones
 
 13. ⏳ **"Your script" first:** after adding the videos, paste a document, write it, or dictate it (microphone); choose "write it together" or "automatic". The director follows the script and adds its own ideas.
 14. ⏳ **"Next, next… lottery" mode:** a half-made edit from the start, with pictures, voices and movements already generated, for the person to correct rather than generate scene by scene.
+
+## Installed
+
+17 Oct: `fe4803f7` (2.6.5 label) with items 1–4, 6–10 and 12; backup of the previous install in `build/installed-before-fe4803f7.app`.
