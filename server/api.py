@@ -2697,6 +2697,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                              "stretch": max(0.25, min(4.0, float(raw.get("stretch", 1.0)))), "rotate": max(-180.0, min(180.0, float(raw.get("rotate", 0.0)))),
                              "flip": bool(raw.get("flip", False)), "opacity": max(0.05, min(1.0, float(raw.get("opacity", 1.0)))),
                              **({"entrance": raw["entrance"]} if raw.get("entrance") in show_scenes.ENTRANCES else {}),
+                             **({"voice_mode": "mine"} if raw.get("voice_mode") == "mine" else {}),
                              **({"path": [[max(0.0, min(1.0, float(a))), float(x), float(y)] for a, x, y in raw["path"][:40]],
                                  "hops": max(0, min(20, int(raw.get("hops", 4))))} if isinstance(raw.get("path"), list) and raw["path"] else {}),
                              **({"voice": [str(_show_allowed_source(project, str(raw["voice"][0]))), max(0.0, float(raw["voice"][1])),
@@ -3520,7 +3521,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         proposals_path, _ = _show_review_files(project)
         body = request.get_json(silent=True) or {}
         stored = show_proposals.load(proposals_path)
-        allowed = {"status", "at", "duration", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action",
+        allowed = {"status", "at", "duration", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action", "clip_audio",
                    "amount", "offset", "voice", "hold", "subject", "text", "style", "position", "size", "effect", "warp", "point", "anchor", "scale",
                    "entrance", "prompt", "picture", "selected_text", "image_center"}
         changes = {key: value for key, value in body.items() if key in allowed}
@@ -3543,6 +3544,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 point = changes["image_center"]
                 if not isinstance(point, list) or len(point) != 2 or not all(isinstance(n, (int, float)) and math.isfinite(n) and -1 <= n <= 2 for n in point):
                     raise ValueError("Choose a valid picture position")
+            if "clip_audio" in changes and not isinstance(changes["clip_audio"], bool):
+                raise ValueError("Choose whether the clip plays its own sound")
             if "selected_text" in changes and (not isinstance(changes["selected_text"], str) or len(changes["selected_text"]) > 400):
                 raise ValueError("Select up to 400 characters of the transcript")
         except StopIteration:

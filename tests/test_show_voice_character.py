@@ -43,3 +43,15 @@ save().then(() => {
 }).catch((e) => { console.error(e); process.exitCode = 1; });
 '''
     subprocess.run(["node", "-e", program], check=True, capture_output=True, text=True)
+
+
+def test_a_character_can_mouth_the_hosts_own_words_instead_of_its_voice(tmp_path):
+    folder = tmp_path / "Characters" / "Me"
+    folder.mkdir(parents=True)
+    Image.new("RGBA", (40, 60), (200, 100, 50, 255)).save(folder / "cutout.png")
+    (folder / "character.json").write_text(json.dumps({"name": "Me", "mouth": [0.4, 0.6, 0.2, 0.1], "eyes": [], "pivot": [0.5, 1],
+                                                       "voice": [str(tmp_path / "voice.wav"), 0, 2.5]}))
+    overlay = {"id": "a", "asset": str(folder / "cutout.png"), "x": 0, "y": 0, "width": 30, "at": 4, "duration": 3, "action": "talk", "voice_mode": "mine"}
+    items = show_scenes.overlay_items({"scenes": [{"id": "s", "start": 0, "end": 10, "decision": "accepted", "overlays": [overlay]}]})
+    assert len(items) == 1 and "insert" not in items[0]                  # no pause: the host goes on talking
+    assert items[0]["mouth"] == [0.4, 0.6, 0.2, 0.1] and "voice" not in items[0]   # its jaw follows the video's sound

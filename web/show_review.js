@@ -1275,7 +1275,10 @@
 
   // A talking character interrupts the host: how it comes in.
   function showEntrance(overlay, talkable) {
-    $("#showEntranceField").hidden = !(talkable && overlay.action === "talk");
+    // A talking character either speaks with its own recorded voice (you pause), or mouths yours.
+    $("#showVoiceModeField").hidden = !(talkable && overlay.action === "talk");
+    $("#showVoiceMode").value = overlay.voice_mode === "mine" ? "mine" : "own";
+    $("#showEntranceField").hidden = !(talkable && overlay.action === "talk" && overlay.voice_mode !== "mine");
     $("#showEntrance").value = overlay.entrance || "cut";
   }
 
@@ -1331,6 +1334,7 @@
     if (!overlay) return;
     if (event.target.id === "showIntensity") overlay.intensity = Number(event.target.value);
     if (event.target.id === "showEntrance") overlay.entrance = event.target.value;
+    if (event.target.id === "showVoiceMode") { overlay.voice_mode = event.target.value; showEntrance(overlay, isCharacter(overlay.asset)); }
     if (event.target.id === "showOverlayAt") Object.assign(overlay,fitTiming(scene,Number(event.target.value),overlay.duration));
     if (event.target.id === "showOverlayDuration") Object.assign(overlay,fitTiming(scene,overlay.at,Number(event.target.value)));
     // One save after the person stops adjusting (saves sent one after another overwrote each other).
@@ -1449,6 +1453,7 @@
             ${drawable ? `<button type="button" class="icon-button small" data-draw-it="${item.id}" ${drawing ? "disabled" : ""} ${item.params.picture ? 'data-again="1"' : ""}>${drawing ? "Drawing…" : item.params.picture ? "Draw another" : "Draw it"}</button>` : ""}
             ${["drawing","word"].includes(item.kind) ? `<button type="button" class="icon-button small" data-ai-edit="${item.id}">${item.kind==='word'?'Draw lettering…':'AI · change image…'}</button>` : ""}
             ${item.kind === "drawing" ? `<button type="button" class="icon-button small" data-open-library="${item.id}">Choose from library</button>` : ""}
+            ${item.kind === "clip" ? `<select data-clip-sound="${item.id}" aria-label="Clip sound"><option value="own" ${item.params.clip_audio === false ? "" : "selected"}>Its own sound (you pause)</option><option value="mine" ${item.params.clip_audio === false ? "selected" : ""}>Your voice goes on (picture only)</option></select>` : ""}
             ${item.kind === "clip" ? `<button type="button" class="icon-button small" data-face-clip="${item.id}">Put my face on it</button>${item.params.clip_original ? `<button type="button" class="icon-button small" data-face-original="${item.id}">Use the original clip</button>` : ""}` : ""}
             ${["cutaway","character"].includes(item.kind)||item.params.picture ? `<button type="button" class="icon-button small" data-original-parts="${item.id}">Animate original eyes / mouth…</button>` : ""}
             <button type="button" class="icon-button small" data-place-words="${item.id}">Choose words</button>
@@ -2343,6 +2348,16 @@
         ${done ? "" : `<div class="show-lib-suggest" data-suggest-for="${escape(item.id)}"></div>`}</div></div>`;
     }).join("")}</div>`;
   }
+
+  document.addEventListener("change", (event) => {
+    const select = event.target instanceof Element ? event.target.closest("[data-clip-sound]") : null;
+    if (!select || !review) return;
+    const id = select.dataset.clipSound, item = review.proposals.find((entry) => entry.id === id);
+    if (!item) return;
+    item.params.clip_audio = select.value !== "mine";
+    saveSoon(id, { clip_audio: item.params.clip_audio });
+    showToast(item.params.clip_audio ? "The clip plays with its own sound; you pause meanwhile." : "The clip's picture plays over your voice, which goes on.");
+  });
 
   // Put my face on a clip: done on this Mac in the background (the models are downloaded once,
   // after asking); the clip then plays with the face of the chosen photo.

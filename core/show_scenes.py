@@ -188,11 +188,12 @@ def overlay_items(document: dict[str, Any], frame_aspect: float = 16 / 9) -> lis
                 item["eyes"] = rig["eyes"]
                 item["eye_movement"] = min(0.5, max(0.0, 0.05 * amount))
             if action == "talk" and (rig.get("mouth") or overlay.get("voice") or rig.get("voice")):
-                # Its jaw moves when a mouth was marked; its voice is heard either way.
+                # Its jaw moves when a mouth was marked; its voice is heard either way. With
+                # "mine" it mouths the host's own words instead (no pause, the video's sound).
                 if rig.get("mouth"):
                     item["mouth"] = rig["mouth"]
                     item["mouth_open"] = 0.08 * amount
-                voice = overlay.get("voice") or rig.get("voice")
+                voice = None if overlay.get("voice_mode") == "mine" else overlay.get("voice") or rig.get("voice")
                 if voice:
                     # It enters at once, rising from below, or the camera pushes in on it.
                     entrance = overlay.get("entrance") if overlay.get("entrance") in ENTRANCES else "cut"

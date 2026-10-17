@@ -185,6 +185,10 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
                               "hold": params.get("hold", 2.0), "region": params.get("region"), "action": params.get("action", "mouth"),
                               "amount": params.get("amount", 0.02), "offset": params.get("offset", [0.0, 0.0]),
                               "entrance": params.get("entrance", "zoom")})
+        elif item["kind"] == "clip" and params.get("clip_audio") is False:
+            # Picture only: the clip replaces the image while the host's voice goes on, like a close-up.
+            cutaways.append({"proposal": item["id"], "at": item["at"], "duration": item["duration"], "source": params["clip"],
+                             "source_start": params.get("clip_start", 0.0), "zoom": 1.0, "focus": [0.5, 0.5]})
         elif item["kind"] == "clip":
             # A video clip played whole with its own sound while the host pauses (core.show_inserts.load_clip).
             items_out.append({"proposal": item["id"], "insert": "clip", "at": item["at"], "source": params["clip"],

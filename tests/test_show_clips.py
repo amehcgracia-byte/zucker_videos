@@ -89,3 +89,11 @@ def test_downloading_a_reference_puts_the_clip_on_its_words(tmp_path, monkeypatc
     again = client.post(f"/api/v1/show/references/video/{ref['id']}/download", json={}).get_json()
     assert again["proposal"]["id"] == result["proposal"]["id"] and len(asked) == 1  # not downloaded or placed twice
     assert client.post("/api/v1/show/references/video/nope/download", json={}).status_code == 404
+
+
+def test_a_clip_can_play_its_picture_over_the_hosts_voice():
+    clip = show_proposals.proposal("clip", 4.0, 1.2, reason="Clip", clip="/x/clip.mp4", clip_start=0.0, clip_length=1.2, clip_audio=False)
+    clip["status"] = "approved"
+    cutaways, items, _ = show_proposals.render_inputs([clip])
+    assert items == [] and cutaways == [{"proposal": clip["id"], "at": 4.0, "duration": 1.2, "source": "/x/clip.mp4", "source_start": 0.0,
+                                         "zoom": 1.0, "focus": [0.5, 0.5]}]
