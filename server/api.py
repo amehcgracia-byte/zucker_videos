@@ -2161,7 +2161,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         from core import show_caption_layout
         from core.show import edited_captions
         caption_layout = show_caption_layout.load(project)
-        caption_cues = show_caption_layout.apply(edited_captions(plan, plan.get("style") or "choe"), caption_layout) if plan.get("words") else []
+        captions_on = bool(caption_layout.get("enabled", False))
+        caption_cues = show_caption_layout.apply(edited_captions(plan, plan.get("style") or "choe"), caption_layout) if plan.get("words") and captions_on else []
         from core.show import scene_preview_notes, scene_preview_ready
         reference_path = project.artifacts_dir / "show_references.json"
         references = json.loads(reference_path.read_text()) if reference_path.is_file() else []
@@ -2185,10 +2186,18 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         logo = Path(str(wizard.get("reel_logo_path") or ""))
         return jsonify({**document, "proposals": stored["proposals"], "resources": stored.get("resources") or [], "source": stored.get("source"),
                         "project_logo": str(logo) if logo.is_file() else None,
-                        "caption_revision": caption_layout["revision"], "project_id": str(project.folder),
+                        "caption_revision": caption_layout["revision"], "captions_enabled": captions_on, "project_id": str(project.folder),
                         "plan": {"edited_duration": plan["edited_duration"]},
                         "source_url": f"/api/v1/show/source?path={quote(str(plan.get('source') or ''))}",
                         "saved_render": ({k: v for k, v in saved.items() if k != "path"} if (saved := _saved_show_render(project)) else None)})
+
+    @app.post("/api/v1/show/captions/enabled")
+    def api_show_captions_enabled() -> Response:
+        """Turn the speech captions on or off for this Show (off unless the person asks)."""
+        from core import show_caption_layout
+        project = _require_project(state)
+        data = show_caption_layout.set_enabled(project, (request.get_json(silent=True) or {}).get("enabled"))
+        return jsonify({"enabled": data["enabled"], "revision": data["revision"]})
 
     @app.patch("/api/v1/show/captions/<cue_id>")
     @_proposals_locked

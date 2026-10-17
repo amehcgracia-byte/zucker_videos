@@ -14,7 +14,7 @@
       <section data-ref-section="video" hidden><p>Open a search in your default browser, paste the video link here and choose its seconds. Save the link as a reference, or download those seconds to put the clip in the edit.</p>
       <form data-ref-video-search><input aria-label="Search reference videos" maxlength="160" placeholder="Movie, scene, person…"><button>Search videos in browser</button></form>
       <label>YouTube / Vimeo link<input data-ref-url type="url" placeholder="https://www.youtube.com/watch?v=…"></label>
-      <div class="show-fields"><label>From (seconds)<input data-ref-start type="number" min="0" step=".1" value="0"></label><label>To (seconds)<input data-ref-end type="number" min="0" step=".1" value="5"></label></div>
+      <div class="show-fields"><label>From (seconds)<input data-ref-start type="number" min="0" step="any" value="0"></label><label>To (seconds)<input data-ref-end type="number" min="0" step="any" value="5"></label></div>
       <div class="show-actions"><button data-ref-watch>Open video in browser</button><button data-ref-save>Save link &amp; interval</button><button data-ref-download class="primary">Download these seconds &amp; put them in</button></div><div data-ref-saved></div>
       <p>Only the chosen seconds are downloaded (at most 30), into this project. The clip plays on the selected words with its own sound while you pause. Use clips you are allowed to publish.</p></section>
       <section data-ref-section="generate" hidden><h3>Create a video outside the editor</h3><p>No video generator is connected. Describe the shot, copy the prompt to your chosen video generator, then bring back the result. Do not expect ChatGPT image generation to return a video.</p>

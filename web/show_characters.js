@@ -35,7 +35,7 @@
       ${groups || "<p>No photos yet.</p>"}
       <form id="showTakePhoto" class="show-review-add"><strong>Take a photo</strong>
         <select name="source">${sources.map((path) => `<option value="${escape(path)}">${escape(baseName(path))}</option>`).join("")}</select>
-        <label>at <input name="second" type="number" min="0" step="0.1" value="0"> s</label>
+        <label>at <input name="second" type="number" min="0" step="any" value="0"> s</label>
         <label>name <input name="name" type="text" value="thing"></label><button class="icon-button small" type="submit">Take it</button></form>`;
     $("#showStudioBody").querySelectorAll("[data-photo]").forEach((button) => button.onclick = () => {
       state.photo = photos[Number(button.dataset.photo)];

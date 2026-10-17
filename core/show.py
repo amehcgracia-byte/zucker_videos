@@ -202,7 +202,8 @@ def _publish(project, plan: dict[str, Any], destination: Path, *, style_name: st
     from core.show_inserts import shift
     spans = spans or []
     from core import show_caption_layout
-    cues = show_caption_layout.apply(edited_captions(plan, style_name), show_caption_layout.load(project))
+    # Speech captions only when the person turned them on (the show's own comments are effects).
+    cues = show_caption_layout.apply(edited_captions(plan, style_name), show_caption_layout.load(project)) if show_caption_layout.enabled(project) else []
     proposal_path = project.artifacts_dir / 'show_proposals.json'
     if proposal_path.is_file():
         from core.show_proposals import load as load_proposals

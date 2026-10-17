@@ -272,11 +272,11 @@
       <div id="showSceneEffects" class="show-review-list">${effects.map(card).join("") || "<p class=\"show-hint\">No effect in this scene.</p>"}
         <form id="showSceneAdd" class="show-review-add"><strong>Add</strong>
           <select name="kind"><option value="drawing">A drawing</option><option value="steam">Rainbow steam over a mug</option><option value="character">A character that speaks</option><option value="cutaway">A close-up</option><option value="math">Formulas around you</option><option value="word">A shouted word</option><option value="library">Take from the library</option><option value="original_eyes">Move original eyes</option><option value="original_mouth">Animate original mouth</option><option value="original_part">Move original part (sideways)</option><option value="references">Search internet references</option><option value="video_reference">Video clip from a link (YouTube / Vimeo)</option><option value="face_clip">Put my face on a clip</option><option value="generate_video">Create video · external prompt</option><option value="photo_edit">Realistic photo of me</option><option value="cutout">Cut out a person / background (photo)</option><option value="silhouette">Black silhouette (photo)</option><option value="clay">Clay memory · Simón</option><option value="captions">Normal speech captions</option></select>
-          <label>at <input name="at" type="number" step="0.1" min="${scene.start}" max="${scene.end}" value="${scene.start.toFixed(1)}"> s</label>
+          <label>at <input name="at" type="number" step="any" min="${scene.start}" max="${scene.end}" value="${scene.start.toFixed(1)}"> s</label>
           <label>of <input name="subject" type="text" maxlength="80" placeholder="a guitar"></label>
           <select name="style">${Object.entries(DRAWING_STYLES).map(([key, label]) => `<option value="${key}" ${key === "crayon" ? "selected" : ""}>${label}</option>`).join("")}</select>
           <select name="source">${[review.source, ...(review.resources || []).map((item) => item.path)].map((path) => `<option value="${escape(path)}">${escape(baseName(path))}</option>`).join("")}</select>
-          <label>from <input name="source_time" type="number" min="0" step="0.1" value="0"> s of it</label>
+          <label>from <input name="source_time" type="number" min="0" step="any" value="0"> s of it</label>
           <button class="icon-button small" type="submit">Add &amp; preview</button></form>
         <h4>Your drawings &amp; stickers</h4><p class="show-hint">Choose a picture to add it as an editable timeline clip. Right-click a picture to remove it.</p><button type="button" class="icon-button small" data-open-library>Open the whole library…</button> <button type="button" data-toggle-retired>${showRetired?"Hide retired images":`Retired images (${retiredCount})`}</button>
         <div class="show-library">${library.slice(0, 80).map((item, index) => `<div class="show-library-entry"><button type="button" data-library="${index}" aria-label="Add ${escape(item.name)}" title="${escape(item.name)}" ${item.retired?"disabled":""}><img src="${item.url}" alt="" loading="lazy">${escape(item.name)}</button><small>${escape(item.origin||"Your library")}</small><button type="button" data-library-retire="${index}">${item.retired?"Restore":"Remove from library"}</button></div>`).join("") || "<p class=\"show-hint\">The library is empty: add images in Overlay &amp; Captions, or keep painted drawings.</p>"}</div>
@@ -473,14 +473,14 @@
     const selected=timelineItems(scene).find(item=>item.id===selectedEffect);
     const rows=timelineItems(scene).filter(item=>item.status!=='discarded');
     box.innerHTML=`<header><strong>Scene timeline</strong><small>${clock(scene.start)}–${clock(scene.end)}</small></header>
-      <button type="button" class="icon-button small" data-open-library>Library</button>
+      <button type="button" class="icon-button small primary" data-editor-add>Add ▸</button> <button type="button" class="icon-button small" data-open-library>Library</button>
       <details class="show-sticker-picker"><summary>Add sticker</summary><div class="show-library">${library.map((asset,index)=>asset.retired?'':`<button type="button" data-library="${index}" aria-label="Add ${escape(asset.name)}"><img src="${asset.url}" alt="" loading="lazy">${escape(asset.name)}</button>`).join('')}</div></details>
       <p>Play or scrub to check when a picture appears and disappears. Drag a bar to move it; drag either edge to trim.</p>
       ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${selected.kind==='drawing'?`<button type="button" data-open-library="${selected.id}">Choose from library</button>`:''}${selected.kind==='clip'?`<button type="button" data-face-clip="${selected.id}">Put my face on it</button>${selected.params.clip_original?`<button type="button" data-face-original="${selected.id}">Use the original clip</button>`:''}`:''}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
       <div class="show-time-row"><span>Video</span><div class="show-time-source" data-scene-seek>Original video · your cut</div></div>
       <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
       ${(clay?.placements||[]).filter(p=>p.enabled!==false).flatMap(p=>(p.edited||[]).filter(([a,b])=>a<scene.end&&b>scene.start).map(([a,b])=>`<div class="show-time-row"><span>Clay memory</span><div class="show-time-track"><button type="button" class="show-caption-time" data-clay-at="${a}" style="left:${pct(Math.max(a,scene.start))}%;width:${Math.max(.2,pct(Math.min(b,scene.end))-pct(Math.max(a,scene.start)))}%">Simón · ${escape(CLAY_MODES[p.mode]||p.mode)}</button></div></div>`)).join('')}
-      <div class="show-time-row"><span>Speech captions</span><div class="show-time-track show-caption-track">${(scene.captions||[]).map(cue=>`<button type="button" class="show-caption-time" data-caption-at="${Math.max(scene.start,cue.start)}" style="left:${pct(Math.max(scene.start,cue.start))}%;width:${Math.max(.2,pct(Math.min(scene.end,cue.end))-pct(Math.max(scene.start,cue.start)))}%" title="${escape(cue.lines.join(' '))} · click to edit on the video">${escape(cue.lines.join(' '))}</button>`).join('')}</div></div>
+      <div class="show-time-row"><span>Speech captions <button type="button" class="show-caption-switch" data-captions-on="${review.captions_enabled?'0':'1'}" title="Subtitles of everything you say, at the bottom. Off unless you want them.">${review.captions_enabled?'On · turn off':'Off · turn on'}</button></span><div class="show-time-track show-caption-track">${(review.captions_enabled?scene.captions||[]:[]).map(cue=>`<button type="button" class="show-caption-time" data-caption-at="${Math.max(scene.start,cue.start)}" style="left:${pct(Math.max(scene.start,cue.start))}%;width:${Math.max(.2,pct(Math.min(scene.end,cue.end))-pct(Math.max(scene.start,cue.start)))}%" title="${escape(cue.lines.join(' '))} · click to edit on the video">${escape(cue.lines.join(' '))}</button>`).join('')}</div></div>
       ${rows.map(item=>{
         const a=Math.max(scene.start,item.at),b=Math.min(scene.end,item.at+item.duration),outside=b<=a;
         const name=item.params.subject||item.params.text||KIND_LABELS[item.kind]||item.kind;
@@ -571,9 +571,9 @@
         <legend><label><input type="checkbox" data-clay-field="enabled" ${item.enabled !== false ? "checked" : ""}> ${escape(CLAY_MODES[item.mode] || item.mode)}</label> <small>${span(item)}</small></legend>
         ${field("Mode", `<select data-clay-field="mode">${clay.modes.map((mode) => `<option value="${mode}" ${mode === item.mode ? "selected" : ""}>${CLAY_MODES[mode] || mode}</option>`).join("")}</select>`)}
         <div class="show-fields">
-          ${field("From (s)", `<input type="number" data-clay-field="start" value="${item.start}" step="0.05" min="0" max="${clay.stories.find(s=>s.id===item.story)?.duration ?? 60}">`)}
-          ${field("To (s)", `<input type="number" data-clay-field="end" value="${item.end}" step="0.05" min="0" max="${clay.stories.find(s=>s.id===item.story)?.duration ?? 60}">`)}
-          ${field("Fade (s)", `<input type="number" data-clay-field="fade" value="${item.fade ?? 0.3}" step="0.05" min="0" max="2">`)}
+          ${field("From (s)", `<input type="number" data-clay-field="start" value="${item.start}" step="any" min="0" max="${clay.stories.find(s=>s.id===item.story)?.duration ?? 60}">`)}
+          ${field("To (s)", `<input type="number" data-clay-field="end" value="${item.end}" step="any" min="0" max="${clay.stories.find(s=>s.id===item.story)?.duration ?? 60}">`)}
+          ${field("Fade (s)", `<input type="number" data-clay-field="fade" value="${item.fade ?? 0.3}" step="any" min="0" max="2">`)}
         </div>
         <div class="show-fields">
           ${field("Across", `<input type="range" data-clay-field="x" value="${item.x}" min="0" max="1" step="0.01">`)}
@@ -960,6 +960,22 @@
     };
   }
 
+  // Speech captions (subtitles of everything said) are off unless the person turns them on.
+  async function setCaptions(on) {
+    const result = await api("/show/captions/enabled", { method: "POST", body: JSON.stringify({ enabled: on }) });
+    const fresh = await api(`/show/scenes?current=${encodeURIComponent(currentScene()?.id || "")}`);
+    review.captions_enabled = result.enabled; review.caption_revision = fresh.caption_revision;
+    for (const scene of scenes()) scene.captions = fresh.scenes.find((entry) => entry.id === scene.id)?.captions || [];
+    renderTimeline(currentScene()); syncPlayback();
+    showToast(on ? "Speech captions on: they follow what you say. Drag one on the video to move it; turn them off in the scene editor." : "Speech captions off. Your drawn words and comments stay.");
+  }
+  document.addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("[data-captions-on]") : null;
+    if (!button || !review) return;
+    button.disabled = true;
+    setCaptions(button.dataset.captionsOn === "1").catch((error) => { button.disabled = false; showToast(error.message, true); });
+  });
+
   async function extraTool(kind,scene,picked) {
     if(kind.startsWith('original_')){
       const mode=kind==='original_mouth'?'mouth':'eyes';
@@ -983,7 +999,7 @@
     if(["references","video_reference","generate_video"].includes(kind)){ShowReferences.open(scene,picked,review.project_id,kind==='references'?'photos':kind==='video_reference'?'video':'generate');return true;}
     if(kind==='photo_edit') {ShowEinstein.open(scene,picked,'A realistic photo of me with long hair',null,{purpose:'photo_edit'});return true;}
     if(kind==='cutout'||kind==='silhouette') {const [index,offset]=sourceAt(scene.segments,picked.start-scene.start);await ShowPhotoStudio.openAt(review.source,scene.segments[index][0]+offset,kind==='silhouette',{sceneId:scene.id,at:picked.start,duration:picked.end-picked.start});return true;}
-    if(kind==='captions') {enterLiveTiming(scene,picked.start);playQuick(scene,Math.max(0,picked.start-scene.start));openTimeline();showToast('Speech captions follow the words. Drag the caption on the video or resize its corner.');return true;}
+    if(kind==='captions') {if(!review.captions_enabled)await setCaptions(true);enterLiveTiming(scene,picked.start);playQuick(scene,Math.max(0,picked.start-scene.start));openTimeline();showToast('Speech captions follow the words. Drag the caption on the video or resize its corner.');return true;}
     if(kind==='clay') {
       let dialog=document.getElementById('showClayPicker');if(dialog)dialog.remove();
       dialog=document.createElement('dialog');dialog.id='showClayPicker';
@@ -1030,8 +1046,10 @@
       menu.id = "showSayMenu";
       menu.className = "show-context-menu";
       menu.setAttribute("role", "menu");
-      document.body.append(menu);
     }
+    // Inside the scene editor while it is open: an element on the page body sits under the modal.
+    const home = timelineDialog?.open ? timelineDialog : document.body;
+    if (menu.parentElement !== home) home.append(menu);
     const span = Math.max(0.5, picked.end - picked.start);
     const quoted = escape(picked.text.length > 34 ? `${picked.text.slice(0, 32)}…` : picked.text);
     const choices = [
@@ -1049,7 +1067,7 @@
       ["cutout", "Cut out a person / background (photo)…", null],
       ["silhouette", "Black silhouette (photo)…", null],
       ["clay", "Clay memory · Simón…", null],
-      ["captions", "Normal speech captions · edit on video", null],
+      ["captions", "Speech captions (subtitles) · turn on & edit", null],
       ["drawing", `Draw “${quoted}”`, { kind: "drawing", subject: picked.text, style: "crayon", duration: Math.max(2, span) }],
       ["word", `Show “${quoted}” big`, { kind: "word", text: picked.text.toUpperCase().slice(0, 40), duration: Math.max(1.5, span) }],
       ["math", "Formulas around me here", { kind: "math", duration: Math.max(2, span) }],
@@ -1083,21 +1101,42 @@
       if (key === "copy") { await navigator.clipboard?.writeText(picked.text).catch(() => {}); return; }
       const choice = choices.find(([name]) => name === key);
       if (choice[2]) { await addEffect(scene, { ...choice[2], at: picked.start }); return; }
-      // A close-up or a character needs its video: the Add form opens at this moment.
-      open.add(scene.id);
-      renderScene();
-      const form = $("#showSceneAdd");
-      form.elements.kind.value = key;
-      form.elements.at.value = picked.start.toFixed(1);
-      form.elements.kind.dispatchEvent(new Event("change"));
-      form.scrollIntoView({ block: "center" });
-      form.elements.source.focus();
+      // A close-up or a character needs its video: chosen right here, without leaving the editor.
+      const sources = [review.source, ...(review.resources || []).map((item) => item.path)].filter(Boolean);
+      menu.innerHTML = `<strong>${key === "cutaway" ? "A close-up" : "A character that speaks"} at ${clock(picked.start)}</strong>
+        <label>From video <select data-say-source>${sources.map((path) => `<option value="${escape(path)}">${escape(baseName(path))}</option>`).join("")}</select></label>
+        <label>at second <input type="number" step="any" min="0" value="0" data-say-second></label>
+        <div class="show-actions"><button type="button" class="primary" data-say-add>Add</button><button type="button" data-say-cancel>Cancel</button></div>`;
+      menu.hidden = false;
+      menu.querySelector("[data-say-cancel]").onclick = () => { menu.hidden = true; };
+      menu.querySelector("[data-say-add]").onclick = async () => {
+        const source = menu.querySelector("[data-say-source]").value, second = Number(menu.querySelector("[data-say-second]").value) || 0;
+        menu.hidden = true;
+        await addEffect(scene, key === "cutaway" ? { kind: "cutaway", at: picked.start, source, source_start: second } : { kind: "character", at: picked.start, source, still_time: second });
+      };
     };
   }
 
   document.addEventListener('click',event=>{const button=event.target.closest?.('[data-original-parts]');if(!button)return;selectedEffect=button.dataset.originalParts;const item=timelineItem(selectedEffect),scene=currentScene();
     // A "character speaks" opens on its mouth (record its voice there); every effect gets a visible duration, not its zero-length mark.
     extraTool(item.kind==='character'?'original_mouth':'original_eyes',scene,{text:scene.text,start:item.at,end:Math.min(scene.end,item.at+Math.max(3,item.duration||0))}).catch(error=>showToast(error.message,true));});
+  // Add, at the playhead (the words being said there, else the next 3 seconds).
+  function addHere(x, y, direct = null) {
+    const scene = currentScene();
+    if (!scene) return;
+    const at = Math.max(scene.start, Math.min(scene.end - 0.1, editedPlayhead()));
+    const word = (scene.words || []).find(([, a, b]) => a <= at + 0.05 && at < b);
+    const picked = { text: word ? word[0] : "", start: at, end: Math.min(scene.end, word ? Math.max(word[2], at + 1.5) : at + 3) };
+    sayMenu(x, y, picked);
+    if (direct) $("#showSayMenu").querySelector(`[data-say="${direct}"]`)?.click();
+  }
+  document.addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("[data-editor-add]") : null;
+    if (!button || !review) return;
+    const box = button.getBoundingClientRect();
+    addHere(box.left, box.bottom);
+  });
+
   document.addEventListener('pointerdown',event=>{if(event.target.closest?.('#showSayTools'))event.preventDefault();});
   document.addEventListener('click',event=>{
     const button=event.target.closest?.('#showSayTools');if(!button)return;
@@ -1114,7 +1153,7 @@
   });
   document.addEventListener("click", (event) => {
     const menu = $("#showSayMenu");
-    if (menu && !menu.hidden && !(event.target instanceof Element && event.target.closest("#showSayMenu, #showSayTools"))) menu.hidden = true;
+    if (menu && !menu.hidden && !(event.target instanceof Element && event.target.closest("#showSayMenu, #showSayTools, [data-editor-add], [data-effect-action]"))) menu.hidden = true;
     const word = event.target instanceof Element ? event.target.closest("#showSaid [data-word]") : null;
     const scene = currentScene();
     if (!word || !scene || !window.getSelection()?.isCollapsed) return;
@@ -1474,7 +1513,7 @@
   // ---- Editors -----------------------------------------------------------
 
   function field(label, html) { return `<label class="show-field"><span>${label}</span>${html}</label>`; }
-  function number(name, value, step = 0.1, min = 0) { return `<input type="number" data-field="${name}" value="${Number(value ?? 0)}" step="${step}" min="${min}">`; }
+  function number(name, value, step = "any", min = 0) { return `<input type="number" data-field="${name}" value="${Math.round(Number(value ?? 0) * 1000) / 1000}" step="${step}" min="${min}">`; }
   function range(name, value, min, max, step) { return `<input type="range" data-field="${name}" value="${Number(value ?? 0)}" min="${min}" max="${max}" step="${step}">`; }
 
   function mountEditor(id) {
@@ -1768,10 +1807,9 @@
         if(action==='cutout'){document.querySelector('[data-studio="open"]')?.click();return;}
         if(action==='cutting-desk'){window.location.href='/show-studio/';return;}
         if(action==='add'||action==='closeup'){
-          closeTimeline();open.add(scene.id);renderScene();
-          const form=$('#showSceneAdd');
-          if(action==='closeup'){form.elements.kind.value='cutaway';form.elements.kind.dispatchEvent(new Event('change'));}
-          form.scrollIntoView({block:'nearest'});return;
+          // The choices open where you clicked, inside the scene editor: you never leave it to add something.
+          const box=button.getBoundingClientRect();menu.hidden=true;
+          addHere(box.left,box.top,action==='closeup'?'cutaway':null);return;
         }
         if(action==="preview") { await requestScenePreview(scene); return; }
         if(button.dataset.effectAction==="remove") {

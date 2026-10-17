@@ -20,7 +20,31 @@ def board(tmp_path,monkeypatch):
     (p.artifacts_dir/'show_plan.json').write_text(json.dumps(plan))
     show_proposals.save(p.artifacts_dir/'show_proposals.json',[],source=str(video),resources=[])
     show_scenes.save(p.artifacts_dir/'show_scenes.json',dict(identity={},scenes=[dict(id='s1',name='One',text='This guy.',start=0,end=3,effects=[],overlays=[],decision='pending',proposal='')]))
-    return p,create_app(str(p.folder),dev=True).test_client(),plan
+    client=create_app(str(p.folder),dev=True).test_client()
+    assert client.post('/api/v1/show/captions/enabled',json={'enabled':True}).get_json()['enabled'] is True
+    return p,client,plan
+
+
+def test_speech_captions_are_off_until_the_person_turns_them_on(tmp_path,monkeypatch):
+    import time
+    monkeypatch.setenv('ZUCKER_DATA_ROOT',str(tmp_path/'data'))
+    p=create_project('Quiet',str(tmp_path/'Quiet.zuckervid'))
+    words=[dict(text='This',start=.2,end=.6),dict(text='guy.',start=.6,end=1.2)]
+    plan=dict(source='v.mp4',source_duration=3,edited_duration=3,cuts=1,fps=25,style='choe',removed_words={},words=words,
+              shots=[dict(start_frame=0,end_frame=75,words=[0,1],zoom=1,focus=[.5,.5])])
+    (p.artifacts_dir/'show_plan.json').write_text(json.dumps(plan))
+    show_proposals.save(p.artifacts_dir/'show_proposals.json',[],source='v.mp4',resources=[])
+    show_scenes.save(p.artifacts_dir/'show_scenes.json',dict(identity={},scenes=[dict(id='s1',name='One',text='This guy.',start=0,end=3,effects=[],overlays=[],decision='pending',proposal='')]))
+    c=create_app(str(p.folder),dev=True).test_client()
+    data=c.get('/api/v1/show/scenes').get_json()
+    assert data['captions_enabled'] is False and data['scenes'][0]['captions']==[]
+    _publish(p,plan,p.exports_dir/'done.mp4',style_name='choe',language='en',started=time.monotonic())
+    assert json.loads((p.folder/'cue_track.json').read_text())['cues']==[]          # no subtitles in the export either
+    assert c.post('/api/v1/show/captions/enabled',json={'enabled':True}).status_code==200
+    data=c.get('/api/v1/show/scenes').get_json()
+    assert data['captions_enabled'] is True and data['scenes'][0]['captions'][0]['lines']==['This guy.']
+    c.post('/api/v1/show/captions/enabled',json={'enabled':False})
+    assert c.get('/api/v1/show/scenes').get_json()['scenes'][0]['captions']==[]
 
 
 def test_live_positions_survive_reopen_and_reach_final_cue_track(board):
@@ -43,7 +67,7 @@ def test_stale_project_and_invalid_values_are_rejected(board):
     p,c,_=board;data=c.get('/api/v1/show/scenes').get_json();key=data['scenes'][0]['captions'][0]['id']
     assert c.patch('/api/v1/show/captions/'+key,json=dict(project_id='other',revision=0,changes={})).status_code==409
     for changes in [dict(size=9999),dict(text='unsafe contract'),dict(horizontal=True)]:
-        assert c.patch('/api/v1/show/captions/'+key,json=dict(project_id=str(p.folder),revision=0,changes=changes)).status_code==400
+        assert c.patch('/api/v1/show/captions/'+key,json=dict(project_id=str(p.folder),revision=data['caption_revision'],changes=changes)).status_code==400
 
 
 def test_lettering_is_exact_artwork_after_explicit_apply_and_stale_text_requires_a_new_draft(board,tmp_path,monkeypatch):

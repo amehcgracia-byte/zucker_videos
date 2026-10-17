@@ -13,6 +13,19 @@ def load(project):
     return json.loads(path(project).read_text()) if path(project).is_file() else {'revision': 0, 'cues': {}}
 
 
+def enabled(project):
+    """Speech captions are the person's choice: off until they turn them on."""
+    return bool(load(project).get('enabled', False))
+
+
+def set_enabled(project, on):
+    data = load(project)
+    data['enabled'] = bool(on)
+    data['revision'] += 1
+    atomic_write_json(path(project), data)
+    return data
+
+
 def apply(cues, layout):
     result = []
     for cue in cues:
