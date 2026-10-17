@@ -3410,15 +3410,29 @@ document.addEventListener('click',async event=>{
   catch(error){showToast(error.message,true);}finally{button.disabled=false;}
 });
 
+function updatePaperEdit(paper) {
+  paperEditCuts = paper.cuts || [];
+  const kept=paperEditCuts.filter(cut=>cut.mark!=='drop');
+  const summary=document.querySelector('#paperEditSummary');
+  if(summary)summary.textContent=`${kept.length} kept clips · ${Math.max(0,kept.length-1)} cuts · ${Number(paper.selected_duration_sec??kept.reduce((sum,cut)=>sum+Number(cut.duration_sec||0),0)).toFixed(1)} s · text and marks are editable.`;
+  const list=document.querySelector('#paperEditList');
+  if(!list)return;
+  for(const row of list.querySelectorAll('[data-paper-id]')){
+    const cut=paperEditCuts.find(item=>item.id===row.dataset.paperId);if(!cut)continue;
+    row.classList.toggle('paper-edit-dropped',cut.mark==='drop');
+    const select=row.querySelector('select[data-paper-mark]');if(select)select.value=cut.mark||'keep';
+  }
+}
+
 function renderPaperEdit(paper) {
   renderStoryboard(paper.storyboard);
   paperEditCuts = paper.cuts || [];
   const list = document.querySelector("#paperEditList");
   const summary = document.querySelector("#paperEditSummary");
-  if (summary) summary.textContent = `${paperEditCuts.length} cuts · editable text and keep/drop/closing choice per cut.`;
+  updatePaperEdit(paper);
   if (!list) return;
   list.innerHTML = paperEditCuts.map((cut) => `
-    <div class="paper-edit-row">
+    <div class="paper-edit-row" data-paper-id="${escapeHtml(cut.id)}">
       ${cut.thumbnail ? `<img class="paper-edit-thumb" src="${escapeHtml(cut.thumbnail)}" alt="Thumbnail of ${escapeHtml(cut.source)}" />` : `<span class="paper-edit-thumb review-thumb-placeholder">—</span>`}
       <span class="paper-edit-order">${cut.order}</span>
       <span class="paper-edit-main"><strong>${escapeHtml(cut.source)} · ${escapeHtml(cut.section)}</strong><span>${Number(cut.in_sec).toFixed(1)}–${Number(cut.out_sec).toFixed(1)} s · ${Number(cut.duration_sec).toFixed(1)} s · ${escapeHtml(cut.language || "—")}</span><span class="paper-edit-original">${cut.text_original ? escapeHtml(cut.text_original) : "no dialogue"}</span>${cut.english_text ? `<span class="paper-edit-english">${escapeHtml(cut.english_text)}</span>` : ""}<em>score ${Number(cut.narrative_score ?? cut.interest_score ?? 0).toFixed(2)} · ${escapeHtml(cut.selection_reason || "")}</em>${cut.narrative_scores && Object.keys(cut.narrative_scores).length ? `<small>LLM: ${escapeHtml(JSON.stringify(cut.narrative_scores))}</small>` : ""}<input class="paper-edit-subtitle" data-paper-subtitle="${escapeHtml(cut.id)}" value="${escapeHtml(cut.subtitle_text || cut.english_text || "")}" aria-label="English subtitle for ${escapeHtml(cut.source)}" /></span><select data-paper-mark="${escapeHtml(cut.id)}" aria-label="Mark ${escapeHtml(cut.source)}"><option value="keep" ${cut.mark === "keep" ? "selected" : ""}>keep</option><option value="drop" ${cut.mark === "drop" ? "selected" : ""}>drop</option><option value="closing" ${cut.mark === "closing" ? "selected" : ""}>closing</option></select>
@@ -5162,7 +5176,7 @@ document.addEventListener("change", (event) => {
   }
   if (target instanceof HTMLInputElement && target.dataset.paperSubtitle) {
     api("/wizard/paper-edit/text", { method: "POST", body: JSON.stringify({ id: target.dataset.paperSubtitle, text: target.value }) })
-      .then((paper) => { renderPaperEdit(paper); })
+      .then((paper) => { updatePaperEdit(paper); })
       .catch((error) => showToast(error.message, true));
   }
   if (target instanceof HTMLSelectElement && target.dataset.reviewTransition != null) {
@@ -5172,7 +5186,7 @@ document.addEventListener("change", (event) => {
   }
   if (target instanceof HTMLSelectElement && target.dataset.paperMark) {
     api("/wizard/paper-edit/mark", { method: "POST", body: JSON.stringify({ id: target.dataset.paperMark, mark: target.value }) })
-      .then((paper) => { renderPaperEdit(paper); })
+      .then((paper) => { updatePaperEdit(paper); })
       .catch((error) => showToast(error.message, true));
   }
 });
