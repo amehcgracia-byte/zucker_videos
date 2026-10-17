@@ -3421,6 +3421,7 @@ function updatePaperEdit(paper) {
     const cut=paperEditCuts.find(item=>item.id===row.dataset.paperId);if(!cut)continue;
     row.classList.toggle('paper-edit-dropped',cut.mark==='drop');
     const select=row.querySelector('select[data-paper-mark]');if(select)select.value=cut.mark||'keep';
+    for(const button of row.querySelectorAll('button[data-paper-mark]')){const active=button.value===(cut.mark||'keep');button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));}
   }
 }
 
@@ -3435,7 +3436,7 @@ function renderPaperEdit(paper) {
     <div class="paper-edit-row" data-paper-id="${escapeHtml(cut.id)}">
       ${cut.thumbnail ? `<img class="paper-edit-thumb" src="${escapeHtml(cut.thumbnail)}" alt="Thumbnail of ${escapeHtml(cut.source)}" />` : `<span class="paper-edit-thumb review-thumb-placeholder">—</span>`}
       <span class="paper-edit-order">${cut.order}</span>
-      <span class="paper-edit-main"><strong>${escapeHtml(cut.source)} · ${escapeHtml(cut.section)}</strong><span>${Number(cut.in_sec).toFixed(1)}–${Number(cut.out_sec).toFixed(1)} s · ${Number(cut.duration_sec).toFixed(1)} s · ${escapeHtml(cut.language || "—")}</span><span class="paper-edit-original">${cut.text_original ? escapeHtml(cut.text_original) : "no dialogue"}</span>${cut.english_text ? `<span class="paper-edit-english">${escapeHtml(cut.english_text)}</span>` : ""}<em>score ${Number(cut.narrative_score ?? cut.interest_score ?? 0).toFixed(2)} · ${escapeHtml(cut.selection_reason || "")}</em>${cut.narrative_scores && Object.keys(cut.narrative_scores).length ? `<small>LLM: ${escapeHtml(JSON.stringify(cut.narrative_scores))}</small>` : ""}<input class="paper-edit-subtitle" data-paper-subtitle="${escapeHtml(cut.id)}" value="${escapeHtml(cut.subtitle_text || cut.english_text || "")}" aria-label="English subtitle for ${escapeHtml(cut.source)}" /></span><select data-paper-mark="${escapeHtml(cut.id)}" aria-label="Mark ${escapeHtml(cut.source)}"><option value="keep" ${cut.mark === "keep" ? "selected" : ""}>keep</option><option value="drop" ${cut.mark === "drop" ? "selected" : ""}>drop</option><option value="closing" ${cut.mark === "closing" ? "selected" : ""}>closing</option></select>
+      <span class="paper-edit-main"><strong>${escapeHtml(cut.source)} · ${escapeHtml(cut.section)}</strong><span>${Number(cut.in_sec).toFixed(1)}–${Number(cut.out_sec).toFixed(1)} s · ${Number(cut.duration_sec).toFixed(1)} s · ${escapeHtml(cut.language || "—")}</span><span class="paper-edit-original">${cut.text_original ? escapeHtml(cut.text_original) : "no dialogue"}</span>${cut.english_text ? `<span class="paper-edit-english">${escapeHtml(cut.english_text)}</span>` : ""}<em>score ${Number(cut.narrative_score ?? cut.interest_score ?? 0).toFixed(2)} · ${escapeHtml(cut.selection_reason || "")}</em><input class="paper-edit-subtitle" data-paper-subtitle="${escapeHtml(cut.id)}" value="${escapeHtml(cut.subtitle_text || cut.english_text || "")}" aria-label="English subtitle for ${escapeHtml(cut.source)}" /></span><span class="paper-mark-buttons" role="group" aria-label="Mark ${escapeHtml(cut.source)}">${[['keep','✓ Keep'],['drop','✕ Drop'],['closing','▶ Closing']].map(([mark,label])=>`<button type="button" data-paper-mark="${escapeHtml(cut.id)}" value="${mark}" aria-pressed="${(cut.mark||'keep')===mark}" class="${(cut.mark||'keep')===mark?'active':''}">${label}</button>`).join('')}</span>
     </div>`).join("");
 }
 
@@ -3455,9 +3456,9 @@ function renderStoryboard(payload) {
   const logline = document.querySelector("#storyboardLogline");
   if (title) title.textContent = storyboard.title;
   if (logline) logline.textContent = storyboard.logline || "";
-  const labels = { opening: "Apertura", development: "Desarrollo", closing: "Cierre" };
+  const labels = { opening: "Opening", development: "Development", closing: "Closing" };
   plan.innerHTML = ["opening", "development", "closing"].map((phase) => {
-    const rows = (storyboard[phase] || []).map((scene) => `<div class="storyboard-scene"><strong>${escapeHtml(scene.sequence_id || "")} · ${escapeHtml(scene.role || "")}</strong><span>${escapeHtml(scene.reason || "")}</span><em>${Number(scene.suggested_duration_sec || 0).toFixed(1)} s sugeridos</em></div>`).join("");
+    const rows = (storyboard[phase] || []).map((scene) => `<div class="storyboard-scene"><strong>${escapeHtml(scene.sequence_id || "")} · ${escapeHtml(scene.role || "")}</strong><span>${escapeHtml(scene.reason || "")}</span><em>${Number(scene.suggested_duration_sec || 0).toFixed(1)} s suggested</em></div>`).join("");
     return rows ? `<section class="storyboard-phase"><h4>${labels[phase]}</h4>${rows}</section>` : "";
   }).join("");
   music.innerHTML = (storyboard.music_plan || []).map((item) => `<p><strong>${escapeHtml(item.phase || "")}</strong>: ${escapeHtml(item.policy || "")} <em>${escapeHtml(item.transition || "")}</em></p>`).join("");
@@ -5167,6 +5168,14 @@ document.addEventListener("click", (event) => {
   if (target.closest?.("#confirmRescue")) {
     confirmRescue().catch((error) => showToast(error.message, true));
   }
+});
+
+let paperMarkSave=Promise.resolve();
+document.addEventListener('click',event=>{
+  const button=event.target.closest?.('button[data-paper-mark]');if(!button)return;
+  button.disabled=true;
+  paperMarkSave=paperMarkSave.catch(()=>{}).then(()=>api('/wizard/paper-edit/mark',{method:'POST',body:JSON.stringify({id:button.dataset.paperMark,mark:button.value})}))
+    .then(paper=>updatePaperEdit(paper)).catch(error=>showToast(error.message,true)).finally(()=>{button.disabled=false;});
 });
 
 document.addEventListener("change", (event) => {

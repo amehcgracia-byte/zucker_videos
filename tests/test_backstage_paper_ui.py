@@ -8,7 +8,7 @@ def test_saving_paper_text_preserves_the_existing_rows_and_focus():
     program='''
 const assert=require('node:assert/strict');let paperEditCuts=[];
 const input={value:'still typing'},select={value:'keep'};
-const row={dataset:{paperId:'a'},classList:{toggle(){}},querySelector(){return select;}};
+const row={dataset:{paperId:'a'},classList:{toggle(){}},querySelector(){return select;},querySelectorAll(){return [];}};
 const list={querySelectorAll(){return [row];},set innerHTML(value){throw Error('Rows rebuilt');}};
 const summary={textContent:''};const document={activeElement:input,querySelector(id){return id==='#paperEditList'?list:summary;}};
 '''+function+'''
