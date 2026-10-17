@@ -3232,6 +3232,41 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                        cut={"mask": key, "method": "original-alpha", "crop": list(crop), "size": list(cut.size),
                             "url": f"/api/v1/show/media?path={quote(str(preview))}"})
 
+    @app.get("/api/v1/connectors")
+    def api_connectors() -> Response:
+        """The accounts the app works with and whether each is signed in (and as whom)."""
+        from core import connectors
+        return jsonify({"connectors": connectors.all_status()})
+
+    @app.post("/api/v1/connectors/<connector>/sign-in")
+    def api_connector_sign_in(connector: str) -> Response:
+        """Opens the account's own sign-in in Terminal (switch: sign out first, then in)."""
+        from core import connectors
+        try:
+            command = connectors.open_sign_in(connector, bool((request.get_json(silent=True) or {}).get("switch")))
+        except KeyError:
+            return error_response("not_found", "Unknown connector", 404)
+        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            return error_response("sign_in_failed", str(exc), 400)
+        return jsonify({"opened": True, "command": command})
+
+    @app.post("/api/v1/connectors/huggingface/token")
+    def api_connector_hugging_face_token() -> Response:
+        """The Hugging Face token the person pasted, checked with Hugging Face and kept."""
+        from core import connectors
+        try:
+            return jsonify(connectors.hugging_face_sign_in((request.get_json(silent=True) or {}).get("token")))
+        except ValueError as exc:
+            return error_response("bad_request", str(exc), 400)
+        except Exception as exc:  # refused by Hugging Face, offline
+            return error_response("sign_in_failed", f"Hugging Face did not accept it: {str(exc)[:200]}", 400)
+
+    @app.post("/api/v1/connectors/huggingface/sign-out")
+    def api_connector_hugging_face_sign_out() -> Response:
+        from core import connectors
+        connectors.hugging_face_sign_out()
+        return jsonify({"signed_in": False})
+
     @app.post("/api/v1/show/voices/trim")
     def api_show_voice_trim() -> Response:
         """Where the speech in a voice really starts and ends: the silence at both ends (a late
