@@ -110,7 +110,8 @@ def draw_nature(frame: np.ndarray, texture: Any, t: float) -> None:
     import cv2
     height, width = frame.shape[:2]
     s = width / 960 * texture.scale
-    fade = max(0., min(1., (t-texture.at)/.3, (texture.at+texture.duration-t)/.3))
+    fade = max(0., min(1., (t-texture.at)/.3 if texture.fade_in else 1.,
+                       (texture.at+texture.duration-t)/.3 if texture.fade_out else 1.))
     if not fade:
         return
     overlay = frame.copy()

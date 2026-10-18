@@ -32,7 +32,7 @@ The previous tracker latched `lost=True` permanently and relearned from each sho
 position. It could also inspect frames already changed by background/mouth effects.
 The replacement tracks a clean frame, retains its initial object appearance across shot
 pieces, searches globally at several scales after loss, hides until confirmed recovery,
-and does not relearn a wall as a cup. Whole-frame searches are bounded in resolution and
+and does not relearn a wall as a cup. Shot pieces no longer restart fade-in/out; only the full effect endpoints fade. Whole-frame searches are bounded in resolution and
 frequency. Two confirmations prevent isolated false-match flashes; one poor local frame
 does not switch the effect off. An attached texture follows foreground-layer transforms.
 
@@ -61,7 +61,16 @@ Automatic person segmentation remains macOS-only; Windows has not been visually 
   still required standalone steam. Its expectation was updated to the user-requested
   Textures subgroup. No skip or xfail was added.
 
-Final suite, package and installation evidence will be recorded after the frozen build.
+Full fast-suite run: **1088 passed / 26 failed**, with the same 25 failure IDs as
+`/tmp/backstage-266-final-suite.log` plus one obsolete steam-duration assertion.
+That assertion required truncation at a cut; it now checks the requested full bar
+(and legacy steam settings), with no skip/xfail. The preceding focused run passed
+52 tests. Final focused results, package and installation evidence follow below.
+
+The first 2.6.7 frozen package (4a9e0f8a) passed its real executable selftest,
+including bundled video-layer assets, all ten textures and macOS Vision loading.
+It was **not installed**: a subsequent check found the per-shot fade restart and
+required a new frozen build before installation.
 
 ## Claude handoff
 

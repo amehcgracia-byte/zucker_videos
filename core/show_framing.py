@@ -194,6 +194,10 @@ def steam_on_screen(plan: dict[str, Any], item: dict[str, Any]) -> list[dict[str
             continue                                  # only its rim at the edge: steam over nothing
         piece = {**item, "at": a, "duration": round(b - a, 3), "steam": [round(sx, 4), round(sy, 4)],
                  "scale": round(float(item.get("scale") or 1.0) / window, 3)}
+        if item.get('texture'):
+            # A shot boundary is not the beginning/end of the chosen effect.
+            piece['fade_in'] = a <= float(item['at']) + .001
+            piece['fade_out'] = b >= float(item['at']) + float(item['duration']) - .001
         if item.get("anchor"):
             ax, ay, aw, ah = item["anchor"]
             piece["anchor"] = [round((ax - x0) / window, 4), round((ay - y0) / window, 4), round(aw / window, 4), round(ah / window, 4)]

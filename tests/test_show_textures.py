@@ -120,3 +120,16 @@ def test_an_attached_texture_moves_with_the_foreground_video_layer():
     changed = np.argwhere(output.sum(axis=2)>0)
     assert len(changed) > 0 and changed[:,1].mean() < 100
     assert texture.x == pytest.approx(160)  # tracker remains on source coordinates; no accumulated transform
+
+
+def test_texture_does_not_restart_its_fade_at_every_edited_cut():
+    from core.show_framing import steam_on_screen
+    plan = {'fps':25,'shots':[{'start_frame':0,'end_frame':50,'zoom':1,'focus':[.5,.5]},
+                             {'start_frame':60,'end_frame':110,'zoom':1,'focus':[.5,.5]}]}
+    pieces = steam_on_screen(plan, {'at':0,'duration':4,'steam':[.5,.7],'texture':'rainbow','anchor':[.45,.7,.1,.1]})
+    assert [(p['fade_in'],p['fade_out']) for p in pieces] == [(True,False),(False,True)]
+    # Exactly at the internal cut the texture is visible, without a second fade-in.
+    effect = load_steam({**pieces[1],'anchor':None},320,180)
+    frame = np.full((180,320,3),40,np.uint8)
+    draw_steam(frame,effect,2.)
+    assert np.any(frame != 40)

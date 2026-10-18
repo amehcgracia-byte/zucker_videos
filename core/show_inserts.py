@@ -389,6 +389,8 @@ class Steam:
     reference: Any = None              # shared by the same effect across shot framings
     point_in_box: Any = None
     original_size: Any = None
+    fade_in: bool = True
+    fade_out: bool = True
 
     def active(self, t: float) -> bool:
         return self.at <= t < self.at + self.duration
@@ -404,7 +406,8 @@ def load_steam(raw: dict[str, Any], width: int, height: int) -> Steam:
     return Steam(at=float(raw["at"]), duration=max(0.2, float(raw["duration"])), x=x * width, y=y * height,
                  scale=float(raw.get("scale") or 1.0), rect=rect, puffs=int(min(120, max(5, float(raw.get("density") or 35)))),
                  strength=min(0.9, max(0.05, float(raw.get("strength") or STEAM_OPACITY))), rise=min(3.0, max(0.3, float(raw.get("rise") or 1.0))),
-                 colour=colour, texture=str(raw.get("texture") or "rainbow"))
+                 colour=colour, texture=str(raw.get("texture") or "rainbow"),
+                 fade_in=bool(raw.get('fade_in', True)), fade_out=bool(raw.get('fade_out', True)))
 
 
 def draw_steam(frame: np.ndarray, steam: Steam, t: float, *, tracking_frame: np.ndarray | None = None, person_layer: Any = None) -> None:
@@ -437,7 +440,7 @@ def draw_steam(frame: np.ndarray, steam: Steam, t: float, *, tracking_frame: np.
         draw_nature(frame, steam, t)
         return
     local = t - steam.at
-    fade = min(1.0, local / 0.5, (steam.duration - local) / 0.5)
+    fade = min(1.0, local / 0.5 if steam.fade_in else 1.0, (steam.duration - local) / 0.5 if steam.fade_out else 1.0)
     if fade <= 0:
         return
     s = width / 960 * steam.scale
