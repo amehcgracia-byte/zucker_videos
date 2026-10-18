@@ -89,7 +89,8 @@
 
   function open(x, y, items, options = {}) {
     close();
-    host = options.host || document.body;
+    host = document.elementFromPoint(x, y)?.closest("dialog[open]")
+      || document.activeElement?.closest?.("dialog[open]") || options.host || document.body;
     const menu = build(items, 0);
     place(menu, x, y);
     menu.querySelector(".zmenu-item:not(:disabled)")?.focus({ preventScroll: true });

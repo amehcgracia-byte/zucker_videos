@@ -98,3 +98,26 @@ copies. Preview preparation must not happen independently in each media GET.
 Windows person segmentation and native-dialog behavior have not been certified
 by these macOS WebKit checks. The library stores compositing recipes; it does not
 export alpha-channel video files.
+
+## Follow-up: nested tools and large photo libraries
+
+The original-pixel studio was a normal DIV underneath the native scene-editor
+modal. It is now a native modal too: opening eyes/mouth joins the top layer,
+without closing the timeline. Close/Escape returns to the timeline; contextual
+menus mount in the modal under the pointer instead of behind it. Opening an
+existing character rig also refreshes the same-close-up Apply action.
+
+Photo sources and library folders/types now have collapsible groups with counts,
+Expand all / Collapse all, and remembered expansion during the session. Search
+opens matching groups. The library header, navigation and close button remain
+outside the independently scrolling image list. The studio header stays outside
+its scrolling tool/photo body. A board-resize callback now tolerates the player
+being temporarily owned by the scene editor rather than dereferencing a missing
+pane.
+
+Browser evidence: WebKit and Chromium on macOS, 90 synthetic photos across three
+sources and 90 library pictures across three folders. Checked nested timeline →
+eyes studio, topmost context menu, Escape back to still-open timeline, group
+expansion, searching, independent body scrolling and close-button hit testing at
+1280×800 and 600×550. No JavaScript errors after the missing-pane fix. This is
+browser verification, not a claim of testing every native Windows dialog.

@@ -6,9 +6,25 @@
   const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const baseName = (path) => String(path || "").split(/[\\/]/).pop();
   let state = null;
+  const photoGroups = new Map();
+  function openStudio() {
+    const dialog = $("#showCharacterStudio");
+    dialog.hidden = false;
+    if (!dialog.open) dialog.showModal();
+  }
+  function closeStudio() {
+    const dialog = $("#showCharacterStudio");
+    dialog.close();
+    dialog.hidden = true;
+  }
+  document.addEventListener("DOMContentLoaded", () => {
+    $("#showCharacterStudio").addEventListener("cancel", (event) => {
+      event.preventDefault(); closeStudio();
+    });
+  });
 
   function show(step) {
-    $("#showCharacterStudio").hidden = false;
+    openStudio();
     document.querySelectorAll("[data-studio-step]").forEach((item) => item.classList.toggle("active", Number(item.dataset.studioStep) === step));
     state.step = step;
     if (step === 1) renderPhotos();
@@ -22,21 +38,28 @@
     const videos = [...new Set(photos.map((item) => item.video || ""))];
     const only = state.photoFilter && videos.includes(state.photoFilter) ? state.photoFilter : "";
     // One group per video, in the order of its moments.
-    const groups = videos.filter((video) => !only || video === only).map((video) => {
+    const groups = videos.filter((video) => !only || video === only).map((video, groupIndex) => {
       const items = photos.map((item, index) => ({ item, index })).filter(({ item }) => (item.video || "") === video)
         .sort((a, b) => (a.item.second ?? 0) - (b.item.second ?? 0));
-      return `<h4 class="show-photo-group">${escape(video ? baseName(video) : "Added photos")} · ${items.length}</h4>
-        <div class="show-photo-grid">${items.map(({ item, index }) => `<button type="button" data-photo="${index}" title="${escape(item.name)}"><img src="${item.url}" alt="" loading="lazy"><span>${escape(item.name)}</span></button>`).join("")}</div>`;
+      return `<details class="show-library-group" data-photo-group="${escape(video)}" ${(only || (photoGroups.get(video) ?? groupIndex === 0)) ? "open" : ""}><summary>${escape(video ? baseName(video) : "Added photos")} · ${items.length}</summary>
+        <div class="show-photo-grid">${items.map(({ item, index }) => `<button type="button" data-photo="${index}" title="${escape(item.name)}"><img src="${item.url}" alt="" loading="lazy"><span>${escape(item.name)}</span></button>`).join("")}</div></details>`;
     }).join("");
     $("#showStudioBody").innerHTML = `<p class="show-hint">Choose a clear, focused photo of the whole thing. Take photos of every steady moment of your videos, or one at an exact second.</p>
       <div class="show-actions"><button type="button" class="primary icon-button small" id="showPhotoLibrary">Photos of every steady moment</button>
         ${videos.length > 1 ? `<select id="showPhotoFilter"><option value="">All videos</option>${videos.map((video) => `<option value="${escape(video)}" ${video === only ? "selected" : ""}>${escape(video ? baseName(video) : "Added photos")}</option>`).join("")}</select>` : ""}</div>
       <p id="showStudioStatus" class="show-hint" role="status" aria-live="polite"></p>
+      ${groups ? '<div class="show-actions"><button type="button" data-photo-toggle="open">Expand all</button><button type="button" data-photo-toggle="close">Collapse all</button></div>' : ""}
       ${groups || "<p>No photos yet.</p>"}
       <form id="showTakePhoto" class="show-review-add"><strong>Take a photo</strong>
         <select name="source">${sources.map((path) => `<option value="${escape(path)}">${escape(baseName(path))}</option>`).join("")}</select>
         <label>at <input name="second" type="number" min="0" step="any" value="0"> s</label>
         <label>name <input name="name" type="text" value="thing"></label><button class="icon-button small" type="submit">Take it</button></form>`;
+    $("#showStudioBody").querySelectorAll("[data-photo-group]").forEach((group) => {
+      group.addEventListener("toggle", () => photoGroups.set(group.dataset.photoGroup, group.open));
+    });
+    $("#showStudioBody").querySelectorAll("[data-photo-toggle]").forEach((button) => button.onclick = () => {
+      $("#showStudioBody").querySelectorAll("[data-photo-group]").forEach((group) => { group.open = button.dataset.photoToggle === "open"; });
+    });
     $("#showStudioBody").querySelectorAll("[data-photo]").forEach((button) => button.onclick = () => {
       state.photo = photos[Number(button.dataset.photo)];
       state.strokes = []; state.undo = []; state.box = null; state.cut = null; state.eyes = []; state.mouth = null; state.background = false;
@@ -232,7 +255,7 @@
     const saved = await api("/show/characters", { method: state.editing ? "PATCH" : "POST", body: JSON.stringify({ folder:state.folder,
       photo: state.photo.photo, mask: state.cut.mask, method: state.cut.method, name: $("#showCharacterName").value,
       eyes: state.eyes || [], mouth: state.mouth || null, pivot: state.pivot || [0.5, 1.0], voice: voice ? [voice.source, voice.start, voice.length] : null }) });
-    $("#showCharacterStudio").hidden = true;
+    closeStudio();
     await window.ShowReview.refreshLibrary();
     const tool=document.querySelector('[name=rigtool]:checked')?.value;
     // A recorded or chosen voice is heard: the character talks (its jaw moves too when a mouth was marked).
@@ -248,20 +271,20 @@
     const photo=await api('/show/photos',{method:'POST',body:JSON.stringify({source,second,name:'Original parts'})});
     return ShowPhotoStudio.rigPicture(photo.photo,settings);
   },rigPicture: async(asset,settings={})=>{
-    if(/[\\/]Characters[\\/][^\\/]+[\\/]cutout\.png$/.test(asset)){await ShowPhotoStudio.edit(asset);state.placement=settings.placement;if(settings.mode==='eyes')document.querySelector('[name=rigtool][value=eyes]').checked=true;return;}
+    if(/[\\/]Characters[\\/][^\\/]+[\\/]cutout\.png$/.test(asset)){await ShowPhotoStudio.edit(asset);state.placement=settings.placement;state.initialMode=settings.mode;renderRig();return;}
     const projectId=settings.placement?.projectId||ShowReview.projectId();
     const result=await api('/show/characters/prepare-layer',{method:'POST',body:JSON.stringify({project_id:projectId,asset})});
     state={step:3,photo:result.photo,cut:result.cut,eyes:[],mouth:null,pivot:[.5,1],strokes:[],undo:[],initialMode:settings.mode,placement:settings.placement};
     show(3);
   },openPhoto: async (photo,settings={})=>{
     const owner={step:2,strokes:[],undo:[],eyes:[],mouth:null,background:!!settings.background,silhouette:!!settings.silhouette,placement:settings.placement,photo:{...photo,url:'/api/v1/show/photo?path='+encodeURIComponent(photo.photo)}};
-    state=owner;$('#showCharacterStudio').hidden=false;
+    state=owner;openStudio();
     if(settings.head){const result=await api('/show/references/head-box',{method:'POST',body:JSON.stringify({photo:photo.photo})});if(state!==owner)return;owner.box=result.box||[.25,.05,.5,.45];}
     show(2);
     if(settings.head)showToast('Check the head outline. Use Box or the keep/erase brushes to correct it before saving.');
   },openAt: async (source,second,silhouette=false,placement=null) => {
     const owner={step:1,strokes:[],undo:[],eyes:[],mouth:null,background:false,silhouette,placement};state=owner;
-    $('#showCharacterStudio').hidden=false;$('#showStudioBody').innerHTML='<p role="status">Taking a photo at your selected words…</p>';
+    openStudio();$('#showStudioBody').innerHTML='<p role="status">Taking a photo at your selected words…</p>';
     try {const photo=await api('/show/photos',{method:'POST',body:JSON.stringify({source,second,name:silhouette?'Black silhouette':'Selected words cutout'})});
       if(state!==owner)return;state.photo={...photo,url:'/api/v1/show/photo?path='+encodeURIComponent(photo.photo)};show(2);
     } catch(error){if(state===owner)$('#showStudioBody').textContent=error.message;}
@@ -308,7 +331,7 @@
           $("#showTalkStatus").textContent = `${state.mouth ? "Its mouth moves with the voice" : "Mark its mouth to make it move with the voice"}${state.eyes?.length ? "; its eyes glance" : ""}. This is how the video will show it.`;
         } finally { target.disabled = false; }
       }
-      else if (action === "close") $("#showCharacterStudio").hidden = true;
+      else if (action === "close") closeStudio();
       else if (action === "gallery") {
         if (!state.cut || state.cutPending) return;
         target.disabled = true;

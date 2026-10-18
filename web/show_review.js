@@ -117,6 +117,8 @@
     box.style.setProperty("--show-fit-h", `${height}px`);
     // The picture as large as the video side allows, with the lines under it still in view.
     const wrap = box.querySelector(".show-stage-wrap"), stage = $("#showStage");
+    // The scene editor temporarily owns the player; there is no board pane to size.
+    if (!wrap) return;
     const others = [...wrap.children].filter((child) => child !== stage && child.offsetParent)
       .reduce((sum, child) => sum + child.offsetHeight + (parseFloat(getComputedStyle(child).marginTop) || 0) + (parseFloat(getComputedStyle(child).marginBottom) || 0), 0);
     box.style.setProperty("--show-stage-h", `${Math.max(160, wrap.clientHeight - others - 4)}px`);
@@ -2544,6 +2546,7 @@
   // in every project) and the other projects' libraries. A picture from a shelf or another
   // project is copied into this project when you use it. Matching is by name: offered, never
   // approved for you.
+  const libraryOpenGroups = new Map();
   const LIBRARY_TABS = { project: "This project", recurring: "Recurring", other: "Other projects", hidden: "Hidden" };
   let libraryDialog = null, libraryAll = [], libraryShelves = [], libraryTab = "project", libraryFor = null, libraryQuery = "";
   let libraryWords = null;             // selected words a chosen picture goes on: {text, start, end}
@@ -2589,6 +2592,9 @@
         <nav class="show-lib-tabs" data-lib-tabs></nav><div class="show-lib-body" data-lib-body></div>`;
       document.body.append(libraryDialog);
       libraryDialog.addEventListener("click", (event) => onLibraryClick(event).catch((error) => showToast(error.message, true)));
+      libraryDialog.addEventListener("toggle", (event) => {
+        if (event.target.matches?.("[data-lib-group]")) libraryOpenGroups.set(event.target.dataset.libGroup, event.target.open);
+      }, true);
       libraryDialog.addEventListener("change", (event) => onLibraryChange(event).catch((error) => showToast(error.message, true)));
       libraryDialog.querySelector("[data-lib-search]").addEventListener("input", (event) => { libraryQuery = event.target.value; drawLibrary(); });
       libraryDialog.addEventListener("dragover", (event) => { if (fileDrag(event)) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } });
@@ -2633,8 +2639,8 @@
     const pool = query && libraryTab !== "hidden" ? [...groups.project, ...groups.recurring, ...groups.other] : groups[libraryTab];
     const shown = pool.filter((item) => !query || libraryKey(`${item.name} ${item.origin} ${item.project || ""} ${item.shelf || ""}`).includes(query));
     const place = (item) => item.section === "other" ? `From ${item.project}` : item.section === "recurring" ? `Recurring · ${item.shelf}` : "This project";
-    const by = query && libraryTab !== "hidden" ? "place" : libraryTab === "recurring" ? "shelf" : libraryTab === "other" ? "project" : null;
-    shown.forEach((item) => { item.place = place(item); });
+    const by = query && libraryTab !== "hidden" ? "place" : libraryTab === "recurring" ? "shelf" : libraryTab === "other" ? "project" : "category";
+    shown.forEach((item) => { item.place = place(item); item.category = item.folder || (item.character ? "Characters" : item.origin || "Pictures"); });
     const heads = by ? [...new Set(shown.map((item) => item[by]))] : [null];
     const empty = { project: "Nothing here yet. Drop pictures on this window or on the video, or approve a drawing: it stays here.",
       recurring: "No recurring pictures yet. Choose “★ Make recurring…” on any picture to keep it on a shelf for every project.",
@@ -2643,8 +2649,11 @@
       : libraryFor ? `<div class="show-lib-for"><p>Choosing the picture for <b>“${escape(libraryFor.params.subject || "this drawing")}”</b>.</p><div class="show-lib-grid" data-lib-matches><p class="show-hint">Looking for matches…</p></div></div>`
       : libraryFace ? `<div class="show-lib-for"><p>Choose a photo of you for the clip on <b>“${escape(libraryFace.params.selected_text || "these words")}”</b>. Your face goes on the person seen most in the clip; a clear photo, facing the camera, works best. It is done on this Mac, nothing is uploaded.</p></div>`
       : libraryWords ? `<div class="show-lib-for"><p>Choose a picture to put on <b>“${escape(libraryWords.text)}”</b> (${clock(libraryWords.start)}–${clock(libraryWords.end)}). Search by name or look through the tabs.</p><div class="show-lib-grid" data-lib-matches></div></div>` : "";
-    libraryDialog.querySelector("[data-lib-body]").innerHTML = banner + (shown.length ? heads.map((head) =>
-      `${head ? `<h4>${escape(head)}</h4>` : ""}<div class="show-lib-grid">${shown.filter((item) => !by || item[by] === head).map(libraryCard).join("")}</div>`).join("")
+    libraryDialog.querySelector("[data-lib-body]").innerHTML = banner + (shown.length ? '<div class="show-actions"><button type="button" data-lib-toggle="open">Expand all</button><button type="button" data-lib-toggle="close">Collapse all</button></div>' + heads.map((head, index) => {
+      const key = `${libraryTab}:${head}`;
+      const items = shown.filter((item) => !by || item[by] === head);
+      return `<details class="show-library-group" data-lib-group="${escape(key)}" ${(query || (libraryOpenGroups.get(key) ?? index === 0)) ? "open" : ""}><summary>${escape(head || "Pictures")} · ${items.length}</summary><div class="show-lib-grid">${items.map(libraryCard).join("")}</div></details>`;
+    }).join("")
       : `<p class="show-hint">${query ? "Nothing with that name in your library." : empty}</p>`);
     if (libraryFor || (libraryWords && !query)) {
       matchesFor(libraryFor ? libraryFor.params.subject : libraryWords.text).then((found) => {
@@ -2714,8 +2723,12 @@
   }
 
   async function onLibraryClick(event) {
-    const target = event.target instanceof Element ? event.target.closest("[data-lib-close],[data-lib-tab],[data-lib-use-for],[data-lib-face],[data-lib-words],[data-lib-place],[data-lib-unrecur],[data-lib-hide]") : null;
+    const target = event.target instanceof Element ? event.target.closest("[data-lib-toggle],[data-lib-close],[data-lib-tab],[data-lib-use-for],[data-lib-face],[data-lib-words],[data-lib-place],[data-lib-unrecur],[data-lib-hide]") : null;
     if (!target) return;
+    if (target.dataset.libToggle) {
+      libraryDialog.querySelectorAll("[data-lib-group]").forEach((group) => { group.open = target.dataset.libToggle === "open"; });
+      return;
+    }
     if (target.hasAttribute("data-lib-close")) { libraryDialog.close(); return; }
     if (target.dataset.libTab) { libraryTab = target.dataset.libTab; drawLibrary(); return; }
     if (target.dataset.libUseFor) { target.disabled = true; await useForDrawing(target.dataset.libUseFor, target.dataset.libPath); return; }
