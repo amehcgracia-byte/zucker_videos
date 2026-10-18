@@ -195,6 +195,7 @@ def load_clip(raw: dict[str, Any], width: int, height: int, fps: float, ffmpeg: 
         voice = None                       # a clip without sound plays silent
     insert = Insert(at=float(raw["at"]), still=np.asarray(clip[0]), width=width, height=height, fps=fps, zoom=1.0,
                     zoom_frames=0, hold_frames=frames, voice=voice, entrance="cut")
+    if insert.voice is not None:insert.voice*=float(raw.get('audio_volume',1.))
     insert.clip = clip
     insert.envelope = np.zeros(frames, dtype=np.float32)
     return insert
@@ -244,6 +245,7 @@ def load_insert(raw: dict[str, Any], width: int, height: int, fps: float, ffmpeg
             if sticker.mouth is not None:
                 sticker.envelope = speaking
             insert.overlays.append(sticker)
+    if insert.voice is not None:insert.voice*=float(raw.get('volume',1.))
     return insert
 
 

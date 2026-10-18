@@ -113,7 +113,7 @@ def _frames_key(plan: dict[str, Any], start: float, count: int) -> str:
             frames.append([int(shot["start_frame"]) + lo - offset, hi - lo, shot.get("zoom"), shot.get("focus")])
         offset += length
     source = Path(str(plan.get("source") or ""))
-    stamp = source.stat().st_mtime_ns if source.is_file() else 0
+    stamp = plan.get("_mask_source_hash") or (file_digest(source) if source.is_file() else '')
     payload = [VERSION, str(source), stamp, plan.get("framing"), frames, list(MASK_SIZE), STEP, plan.get("cover")]
     return hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
@@ -129,15 +129,12 @@ def prepare(cut: Path, entries: list[dict[str, Any]], plan: dict[str, Any], cach
     fps = float(plan.get("fps") or 30)
     for entry in entries:
         if entry.get('video_layer') and entry.get('matte')=='person':
-            source=Path(entry['video_layer'])
-            begin=float(entry.get('clip_start') or 0)
-            n=int(round((begin+entry['duration'])*fps))
-            clip_plan={'source':str(source),'fps':fps,'cover':True,'shots':[{'start_frame':0,'end_frame':n}]}
-            cut=[{'background':'clip-person','at':begin,'duration':entry['duration']}]
-            warnings=prepare(source,cut,clip_plan,cache,ffmpeg=ffmpeg,progress=progress,cancel=cancel)
-            if warnings:raise BackgroundUnavailable('; '.join(warnings))
-            entry['masks']=cut[0]['masks']
+            entry['masks']=str(source_masks(Path(entry['video_layer']),float(entry.get('clip_start') or 0),
+                float(entry['duration']),fps,cache,ffmpeg=ffmpeg,progress=progress,cancel=cancel))
     wanted = [entry for entry in entries if entry.get("background")]
+    if wanted:
+        source=Path(str(plan.get("source") or ""))
+        plan={**plan,"_mask_source_hash":file_digest(source) if source.is_file() else ""}
     total = sum(max(1, int(round(float(entry["duration"]) * fps))) for entry in wanted)
     done = 0
     cache.mkdir(parents=True, exist_ok=True)
@@ -328,7 +325,7 @@ def editor_sample(project, item, *, ffmpeg='ffmpeg', progress=None):
             source=Path(item['params']['clip']);begin=float(item['params'].get('clip_start') or 0)
             duration=min(2.,float(item['duration']),float(item['params']['clip_length'])-begin)
             fps=30
-            plan={'source':str(source),'fps':fps,'edited_duration':begin+duration,'shots':[{'start_frame':0,'end_frame':round((begin+duration)*fps)}]}
+            plan={'source':str(source),'fps':fps,'cover':True,'edited_duration':begin+duration,'shots':[{'start_frame':0,'end_frame':round((begin+duration)*fps)}]}
             start=begin
         else:start=float(item['at'])
         end = min(float(plan['edited_duration']), start+float(item['duration']), start+2)
@@ -338,8 +335,7 @@ def editor_sample(project, item, *, ffmpeg='ffmpeg', progress=None):
         folder.mkdir(parents=True, exist_ok=True)
         part = window_plan(plan, start, end)
         if is_clip:
-            stat=Path(plan['source']).stat()
-            key=hashlib.sha256(json.dumps([str(plan['source']),stat.st_size,stat.st_mtime_ns,start,end]).encode()).hexdigest()[:20]
+            key=hashlib.sha256(json.dumps([file_digest(Path(plan['source'])),start,end]).encode()).hexdigest()[:20]
             host=folder/f'clip-{key}.mp4'
             if not host.is_file():
                 pending=host.with_suffix('.pending.mp4')
@@ -355,6 +351,8 @@ def editor_sample(project, item, *, ffmpeg='ffmpeg', progress=None):
                                progress=(lambda value:progress(.05+value*.002,'Preparing the source video…')) if progress else None)
         if progress:progress(.3,'Finding the moving person…')
         entries = [{'background':'live-editor', 'at':0., 'duration':end-start}]
+        if is_clip:
+            entries=[{'video_layer':str(source),'matte':'person','clip_start':start,'duration':end-start}]
         notes = prepare(host, entries, plan, project.cache_dir/'show_masks', offset=start, ffmpeg=ffmpeg, progress=(lambda value,detail:progress(.3+value*.65,detail)) if progress else None)
         if notes:
             raise BackgroundUnavailable('; '.join(notes))
@@ -370,3 +368,79 @@ def editor_sample(project, item, *, ffmpeg='ffmpeg', progress=None):
             Image.fromarray(pixels).save(pending)
             pending.replace(atlas)
         return {'host':host, 'alpha':atlas, 'fps':float(plan.get('fps') or 30), 'frames':len(masks), 'duration':end-start}
+
+
+_source_mask_lock=threading.Lock()
+
+def file_digest(source: Path) -> str:
+    """Content identity, never timestamp identity."""
+    digest=hashlib.sha256()
+    with source.open('rb') as stream:
+        for block in iter(lambda:stream.read(8*1024*1024),b''):digest.update(block)
+    return digest.hexdigest()
+
+
+def source_masks(source: Path, begin: float, duration: float, fps: float, cache: Path, *, ffmpeg: str,
+                 progress=None, cancel=None) -> Path:
+    """Persistent two-second source chunks survive re-timing and changing the background.
+
+    Only an uncovered source chunk is segmented. Render-size-independent masks use
+    the same fps/cover geometry in the editor, scene preview and final render.
+    """
+    import uuid
+    import cv2
+    fps=round(float(fps),6);out_count=max(1,int(round(duration*fps)))
+    capture=cv2.VideoCapture(str(source));native_fps=float(capture.get(cv2.CAP_PROP_FPS));capture.release()
+    native_fps=round(native_fps,6) if np.isfinite(native_fps) and native_fps>0 else fps
+    indices=np.rint((begin+np.arange(out_count)/fps)*native_fps).astype(np.int64)
+    first=int(indices[0]);count=int(indices[-1])-first+1
+    if cancel:cancel()
+    recipe=[VERSION,'source-chunks-v2',file_digest(source),native_fps,SEGMENT_SIZE,MASK_SIZE,STEP,'cover']
+    token=hashlib.sha256(json.dumps(recipe,sort_keys=True).encode()).hexdigest()[:24]
+    root=(cache.parent.parent/'assets/video-cutouts' if cache.parent.name=='cache' else cache/'source-cutouts')/token
+    root.mkdir(parents=True,exist_ok=True);cache.mkdir(parents=True,exist_ok=True)
+    view=hashlib.sha256(indices.tobytes()).hexdigest()[:16]
+    output=cache/f'source-{token}-{view}.npy'
+    if output.is_file():return output
+    chunk_size=max(1,int(round(native_fps*2)))
+    pieces=[]
+    with _source_mask_lock:
+        if output.is_file():return output
+        for number in range(first//chunk_size,(first+count-1)//chunk_size+1):
+            if cancel:cancel()
+            target=root/f'{number:06d}.npz';base=number*chunk_size
+            if not target.is_file():
+                segment=Segmenter();w,h=SEGMENT_SIZE
+                reader=subprocess.Popen([ffmpeg,'-v','error','-nostdin','-ss',f'{base/native_fps:.6f}','-i',str(source),
+                    '-frames:v',str(chunk_size),'-vf',f'fps={native_fps},scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}',
+                    '-f','rawvideo','-pix_fmt','rgb24','-'],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+                timer=threading.Timer(90,reader.kill);timer.daemon=True;timer.start();frames=[];made=[]
+                try:
+                    with _vision_lock:
+                        for index in range(chunk_size):
+                            raw=reader.stdout.read(w*h*3)
+                            if len(raw)!=w*h*3:break
+                            last_rgb=np.frombuffer(raw,np.uint8).reshape(h,w,3)
+                            frames.append(segment(last_rgb) if index%STEP==0 else None)
+                            if index%STEP==0:made.append(index)
+                            if cancel:cancel()
+                        if frames and frames[-1] is None:frames[-1]=segment(last_rgb);made.append(len(frames)-1)
+                finally:
+                    timer.cancel();reader.kill();reader.wait();reader.stdout.close()
+                if not frames:raise BackgroundUnavailable('No frames remain in this cutout source.')
+                for a,b in zip(made,made[1:]):
+                    for i in range(a+1,b):frames[i]=np.rint(frames[a]*(1-(i-a)/(b-a))+frames[b]*((i-a)/(b-a))).astype(np.uint8)
+                pending=target.with_name(target.stem+'.'+uuid.uuid4().hex+'.npz')
+                try:np.savez_compressed(pending,masks=np.asarray(frames,dtype=np.uint8));pending.replace(target)
+                finally:pending.unlink(missing_ok=True)
+            with np.load(target) as stored:masks=stored['masks']
+            lo=max(first,base)-base;hi=min(first+count,base+len(masks))-base
+            if hi>lo:pieces.append(masks[lo:hi])
+            if progress:progress(min(1.,sum(len(piece) for piece in pieces)/count),'Reusing the saved video cutout…')
+        result=np.concatenate(pieces) if pieces else np.empty((0,*MASK_SIZE[::-1]),np.uint8)
+        if len(result)!=count:raise BackgroundUnavailable('The cutout ends before this timeline interval. Shorten the clip.')
+        result=result[indices-first]
+        pending=output.with_name(output.stem+'.'+uuid.uuid4().hex+'.npy')
+        try:np.save(pending,result);pending.replace(output)
+        finally:pending.unlink(missing_ok=True)
+    return output

@@ -163,7 +163,11 @@ def render_show(source: str | Path, plan: dict[str, Any], output: str | Path, *,
     import threading
     source, output = Path(source), Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    audio = edit_audio(_decode_audio(ffmpeg, source), plan)
+    from core.show_audio import process as process_audio
+    noise=plan.get('noise_report') or {}
+    clean=Path(noise['path']) if noise.get('path') else None
+    audio_source=clean if (plan.get('audio_settings') or {}).get('denoise',True) and clean and clean.is_file() else source
+    audio = process_audio(edit_audio(_decode_audio(ffmpeg, audio_source), plan),plan)
     if cancel:
         cancel()
     pending = output.with_name(f".{output.stem}.part{output.suffix}")

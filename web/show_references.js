@@ -20,7 +20,7 @@
       <div data-clip-settings hidden><h3>Edit this clip</h3><video data-clip-preview controls playsinline preload="metadata" style="width:100%;max-height:260px"></video>
       <p>The playhead chooses the source picture. The effect's timeline edges choose its duration.</p><button data-clip-use-playhead>Start at this picture</button>
       <label>Background<select data-clip-matte><option value="auto">Detect green screen automatically</option><option value="none">Keep the complete video</option><option value="green">Remove green screen</option><option value="person">Cut out the moving person (macOS)</option></select></label>
-      <label><input type="checkbox" data-clip-audio> Use the clip's audio</label><p>With a cutout, your original video and voice continue underneath. With a full-frame clip and its audio, your narration pauses.</p>
+      <label><input type="checkbox" data-clip-audio> Use the clip's audio</label><label>Sound mode<select data-clip-mode><option value="own">Clip sound · pause narration</option><option value="mix">Mix with narration</option><option value="mute">Mute clip · keep narration</option></select></label><button type="button" data-clip-mixer>Sound mixer…</button><p>Mix with narration keeps both sources playing. Clip sound pauses narration for a full-frame insert; mute keeps only your narration. Use Sound mixer to balance the levels.</p>
       <button data-clip-save class="primary">Apply clip settings</button><button data-clip-layers>Edit moving person &amp; background…</button></div></section>
       <section data-ref-section="library" hidden><h3>Video library</h3><label><input data-ref-transparent type="checkbox"> Cutouts / transparent backgrounds only</label><div data-ref-video-library></div><p>Original files stay in this project. A cutout is a reusable recipe; it does not duplicate the video.</p></section>
       <section data-ref-section="generate" hidden><h3>Create a video outside the editor</h3><p>No video generator is connected. Describe the shot, copy the prompt to your chosen video generator, then bring back the result. Do not expect ChatGPT image generation to return a video.</p>
@@ -62,10 +62,13 @@
     };
     dialog.querySelector('[data-clip-save]').onclick=async event=>{
       if(!context.clip)return;event.target.disabled=true;
-      try{const item=await api('/show/clips/'+encodeURIComponent(context.clip.id)+'/settings',{method:'POST',body:JSON.stringify({clip_start:context.clipStart??context.clip.params.clip_start??0,matte:dialog.querySelector('[data-clip-matte]').value,clip_audio:dialog.querySelector('[data-clip-audio]').checked})});
+      try{const item=await api('/show/clips/'+encodeURIComponent(context.clip.id)+'/settings',{method:'POST',body:JSON.stringify({clip_start:context.clipStart??context.clip.params.clip_start??0,matte:dialog.querySelector('[data-clip-matte]').value,clip_audio:dialog.querySelector('[data-clip-audio]').checked,audio_mode:dialog.querySelector('[data-clip-mode]').value})});
         await ShowReview.clipUpdated(item);context.clip=item;message('Clip settings saved. Its timeline bar controls the duration.');
       }catch(error){message(error.message);}finally{event.target.disabled=false;}
     };
+    dialog.querySelector('[data-clip-mixer]').onclick=()=>ShowAudio.open();
+    dialog.querySelector('[data-clip-mode]').onchange=e=>{dialog.querySelector('[data-clip-audio]').checked=e.target.value!=='mute';};
+    dialog.querySelector('[data-clip-audio]').onchange=e=>{if(!e.target.checked)dialog.querySelector('[data-clip-mode]').value='mute';else if(dialog.querySelector('[data-clip-mode]').value==='mute')dialog.querySelector('[data-clip-mode]').value='own';};
     dialog.querySelector('[data-clip-layers]').onclick=()=>{const item=context.clip;if(!item)return;dialog.close();ShowReview.openVideoLayers(item.id,item.params.person_style||'person');};
     dialog.querySelector('[data-ref-transparent]').onchange=()=>loadVideoLibrary();
     dialog.querySelector('[data-ref-save]').onclick=async()=>{try{const ref=await api('/show/references/video',{method:'POST',body:JSON.stringify({project_id:context.projectId,scene_id:context.scene.id,selected_text:context.picked.text,at:context.picked.start,url:dialog.querySelector('[data-ref-url]').value,start:Number(dialog.querySelector('[data-ref-start]').value),end:Number(dialog.querySelector('[data-ref-start]').value)+30})});ShowReview.referenceSaved(ref);dialog.querySelector('[data-ref-saved]').textContent=`Saved reference · ${ref.start}–${ref.end} s · ${ref.url}`;message('Link and interval saved in this project. No video has been downloaded or placed.');}catch(error){message(error.message);}};
@@ -96,7 +99,7 @@
     dialog.querySelector('[data-ref-url]').value=item.params.url||'';dialog.querySelector('[data-ref-start]').value=item.params.source_start||0;
     dialog.querySelector('[data-clip-settings]').hidden=false;
     const video=dialog.querySelector('[data-clip-preview]');video.src='/api/v1/show/clips/'+encodeURIComponent(item.id)+'/media';video.onloadedmetadata=()=>video.currentTime=context.clipStart;
-    dialog.querySelector('[data-clip-matte]').value=item.params.matte||'none';dialog.querySelector('[data-clip-audio]').checked=item.params.clip_audio!==false;
+    dialog.querySelector('[data-clip-matte]').value=item.params.matte||'none';dialog.querySelector('[data-clip-audio]').checked=item.params.clip_audio!==false;dialog.querySelector('[data-clip-mode]').value=item.params.clip_audio===false?'mute':item.params.audio_mode||'own';
     dialog.querySelector('h2').textContent='Video clip settings';
   }
   window.ShowReferences={open,openClip};

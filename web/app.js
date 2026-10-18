@@ -6038,6 +6038,7 @@ window.EditorMenu = {
       button.click();
     };
     try {
+      if (action === 'soundMixer') return window.ShowAudio.open();
       if (action === 'showShortcuts') return window.ShowReview.shortcuts();
       if (action === 'connectors') return click('connectorsOpen');
       if (['play','previousFrame','nextFrame'].includes(action) && window.ShowReview?.active()) return window.ShowReview.transport(action);

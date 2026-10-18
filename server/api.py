@@ -2444,6 +2444,106 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         _effect_changed(project,proposal_id)
         return jsonify(item)
 
+    def _audio_changed(project):
+        from core import show_scenes
+        path=_scene_files(project)
+        if path.is_file():
+            for scene in show_scenes.load(path)['scenes']:_invalidate_scene(project,scene['id'])
+
+    @app.get('/api/v1/show/audio')
+    def api_show_audio():
+        from core import show_audio,show_proposals
+        project=_require_project(state);path=project.artifacts_dir/'show_plan.json'
+        plan=json.loads(path.read_text()) if path.is_file() else {'shots':[],'words':[]}
+        plan=show_audio.attach(project,plan)
+        stored=show_proposals.load(project.artifacts_dir/'show_proposals.json')
+        tracks=[]
+        for item in stored['proposals']:
+            if item['kind'] not in ('clip','jingle','character') or item['status']=='discarded':continue
+            p=item['params'];raw=p.get('clip') or p.get('path') or (p.get('voice') or {}).get('source')
+            if not raw:continue
+            tracks.append({'id':item['id'],'kind':item['kind'],'name':p.get('name') or p.get('title') or Path(raw).stem,
+                'volume':p.get('audio_volume',1.) if item['kind']=='clip' else p.get('volume',.8 if item['kind']=='jingle' else 1.),
+                'mode':('mute' if p.get('clip_audio') is False else p.get('audio_mode','mix' if p.get('matte','none')!='none' else 'own')) if item['kind']=='clip' else 'mix',
+                'under_voice':p.get('under_voice',False),'at':item['at'],'duration':item['duration']})
+        return jsonify(settings=plan['audio_settings'],words=plan['audio_censor_spans'],noise=plan.get('noise_report') or {'status':'not_analyzed'},tracks=tracks)
+
+    @app.patch('/api/v1/show/audio')
+    def api_show_audio_settings():
+        from core import show_audio
+        project=_require_project(state)
+        body=request.get_json(silent=True) or {}
+        if body.get('project_id') and body['project_id']!=str(project.folder):return error_response('stale_project','Reopen the mixer in the current project',409)
+        try:settings=show_audio.save(project,body)
+        except (ValueError,TypeError) as exc:return error_response('invalid_audio',str(exc),400)
+        _audio_changed(project)
+        return jsonify(settings=settings)
+
+    @app.get('/api/v1/show/audio/censor-sound')
+    def api_show_censor_sound():
+        from core.show_audio import audition
+        return Response(audition(),mimetype='audio/wav')
+
+    @app.patch('/api/v1/show/audio/tracks/<proposal_id>')
+    @_proposals_locked
+    def api_show_audio_track(proposal_id):
+        from core import show_proposals
+        project=_require_project(state);path=project.artifacts_dir/'show_proposals.json';stored=show_proposals.load(path)
+        item=next((p for p in stored['proposals'] if p['id']==proposal_id and p['kind'] in ('clip','jingle','character')),None)
+        if item is None:return error_response('not_found','This audio track was removed',404)
+        body=request.get_json(silent=True) or {}
+        if body.get('project_id') and body['project_id']!=str(project.folder):return error_response('stale_project','Reopen the mixer in the current project',409)
+        try:
+            volume=float(body.get('volume',1))
+            if not math.isfinite(volume) or not 0<=volume<=2:raise ValueError('Volume must be between 0 and 200%')
+            mode=body.get('mode','mix')
+            if mode not in ('own','mix','mute'):raise ValueError('Choose mixed, own sound or mute')
+            if 'under_voice' in body and not isinstance(body['under_voice'],bool):raise ValueError('Choose whether narration stays in front')
+            params=item['params'];params['audio_volume' if item['kind']=='clip' else 'volume']=volume
+            if item['kind']=='clip':params.update(audio_mode=mode,clip_audio=mode!='mute')
+            params['under_voice']=body.get('under_voice',True)
+            if item['kind']=='jingle':params['duck']=1.
+            show_proposals.save(path,stored['proposals'],**{k:v for k,v in stored.items() if k not in ('proposals','version')})
+            if item['kind']=='clip':
+                from core.show_video_assets import remember
+                remember(project,item)
+            _effect_changed(project,proposal_id)
+            return jsonify(item)
+        except (ValueError,TypeError) as exc:return error_response('invalid_audio',str(exc),400)
+
+    audio_jobs={};audio_jobs_lock=threading.Lock()
+    @app.route('/api/v1/show/audio/job',methods=['GET','POST'])
+    def api_show_audio_job():
+        from core import show_audio
+        from core.ffmpeg import tool_status
+        project=_require_project(state);key=str(project.folder)
+        body=request.get_json(silent=True) or {}
+        if body.get('project_id') and body['project_id']!=key:return error_response('stale_project','Reopen the mixer in the current project',409)
+        with audio_jobs_lock:
+            job=audio_jobs.get(key,{'status':'none'})
+            if request.method=='GET':return jsonify(job)
+            if job.get('status')=='working':return jsonify(job),202
+            mode=body.get('mode','balance')
+            if mode not in ('balance','denoise'):return error_response('invalid_audio','Choose balance or noise analysis',400)
+            job={'status':'working','mode':mode,'progress':0};audio_jobs[key]=job
+        def run():
+            try:
+                ffmpeg=str(tool_status().get('ffmpeg_path') or 'ffmpeg')
+                if mode=='balance':result=show_audio.balance(project,ffmpeg,progress=lambda value:job.update(progress=value))
+                else:
+                    path=project.artifacts_dir/'show_plan.json';plan=json.loads(path.read_text())
+                    source=plan['source'];result=show_audio.prepare_noise(project,Path(source),ffmpeg=ffmpeg)
+                    from core import show_proposals
+                    from core.project import atomic_write_json
+                    with show_proposals.LOCK:
+                        plan=json.loads(path.read_text())
+                        if plan.get('source')!=source:raise ValueError('The source changed during noise analysis. Analyze the new video again.')
+                        plan['noise_report']=result;atomic_write_json(path,plan)
+                _audio_changed(project);job.update(status='done',progress=1,result=result)
+            except Exception as exc:job.update(status='failed',error=str(exc)[-240:])
+        threading.Thread(target=run,daemon=True,name='show-audio-'+mode).start()
+        return jsonify(job),202
+
     @app.post('/api/v1/show/library/media')
     def api_show_import_media():
         from core import show_video_assets,show_proposals
@@ -2552,7 +2652,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             duration=min(duration,scene['end']-at,float(record['duration'])-float(params.get('clip_start') or 0))
             if duration<=0:raise ValueError('This media has no remaining frames')
             if record.get('media_kind')=='audio':
-                item=show_proposals.proposal('jingle',at,duration,reason='From your audio library',path=record['path'],volume=.5,duck=.5,fade=.08,start=0)
+                item=show_proposals.proposal('jingle',at,duration,reason='From your audio library',path=record['path'],volume=.5,duck=1.,under_voice=True,fade=.08,start=0)
             else:item=show_proposals.proposal('clip',at,duration,reason='From your video library',**params)
             item['status']='approved';stored['proposals'].append(item)
             show_proposals.save(path,stored['proposals'],**{k:v for k,v in stored.items() if k not in ('proposals','version')})
@@ -2592,7 +2692,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 from core.show_backgrounds import available
                 if not available():raise ValueError('Moving person cutouts need macOS 12 or later')
             if 'clip_audio' in body and not isinstance(body['clip_audio'],bool):raise ValueError('Choose whether to use clip audio')
-            item['params'].update(clip_start=start,matte=matte,clip_audio=body.get('clip_audio',item['params'].get('clip_audio',True)))
+            audio_mode=body.get('audio_mode',item['params'].get('audio_mode','own'))
+            if audio_mode not in ('own','mix','mute'):raise ValueError('Choose mixed, own sound or mute')
+            item['params'].update(clip_start=start,matte=matte,audio_mode=audio_mode,clip_audio=body.get('clip_audio',item['params'].get('clip_audio',True)))
             item['duration']=min(item['duration'],float(item['params']['clip_length'])-start)
             show_proposals.save(path,stored['proposals'],**{k:v for k,v in stored.items() if k not in ('proposals','version')})
             remember(project,item);_effect_changed(project,proposal_id)
@@ -4089,7 +4191,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         proposals_path, _ = _show_review_files(project)
         body = request.get_json(silent=True) or {}
         stored = show_proposals.load(proposals_path)
-        allowed = {"status", "at", "duration", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action", "clip_audio",
+        allowed = {"status", "at", "duration", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action", "clip_audio", "audio_mode",
                    "amount", "offset", "voice", "hold", "subject", "text", "style", "position", "size", "effect", "warp", "point", "anchor", "scale",
                    "density", "strength", "rise", "colour", "texture", "font", "bold", "italic",
                    "entrance", "prompt", "picture", "selected_text", "image_center", "intensity"}
@@ -4131,6 +4233,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 raise ValueError("Choose one of the typefaces")
             if any(key in changes and not isinstance(changes[key], bool) for key in ("bold", "italic")):
                 raise ValueError("Bold and italic are on or off")
+            if "audio_mode" in changes and changes["audio_mode"] not in ("own","mix","mute"):
+                raise ValueError("Choose mixed, own sound or mute")
             if "clip_audio" in changes and not isinstance(changes["clip_audio"], bool):
                 raise ValueError("Choose whether the clip plays its own sound")
             if "selected_text" in changes and (not isinstance(changes["selected_text"], str) or len(changes["selected_text"]) > 400):

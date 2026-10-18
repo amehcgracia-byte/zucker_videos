@@ -135,15 +135,19 @@ def mix(video: Path, jingles: list[dict[str, Any]], output: Path, *, ffmpeg: str
         inputs += ["-i", str(item["jingle"])]
         chains.append(f"[{index}:a]atrim=start={start:.3f}:duration={length:.3f},asetpts=PTS-STARTPTS,"
                       f"aformat=sample_rates=48000:channel_layouts=stereo,afade=t=in:d={fade:.3f},"
-                      f"afade=t=out:st={max(0.0, length - fade):.3f}:d={fade:.3f},volume={float(item.get('volume') or 0.8):.3f},"
+                      f"afade=t=out:st={max(0.0, length - fade):.3f}:d={fade:.3f},volume={float(item.get('volume') if item.get('volume') is not None else 0.8):.3f},"
                       f"adelay={delay}|{delay}[j{index}]")
         ducks.append((at, at + length, float(item.get("duck") if item.get("duck") is not None else 0.5)))
     host = "[0:a]aformat=sample_rates=48000:channel_layouts=stereo"
     for level in sorted({duck for _, _, duck in ducks}):
         windows = [(a, b) for a, b, duck in ducks if duck == level]
         host += f",volume=volume={level:.3f}:enable='{_between(windows)}'"
-    labels = "".join(f"[j{index}]" for index in range(1, len(jingles) + 1))
-    graph = ";".join([host + "[host]", *chains, f"[host]{labels}amix=inputs={len(jingles) + 1}:normalize=0:duration=first[mixed]"])
+    under=[index for index,item in enumerate(jingles,start=1) if item.get('under_voice')]
+    split=host+(f",asplit={len(under)+1}[host]"+''.join(f'[sc{i}]' for i in under) if under else '[host]')
+    side=[f'[j{i}][sc{i}]sidechaincompress=threshold=0.025:ratio=6:attack=20:release=250[d{i}]' for i in under]
+    labels=''.join(f'[d{i}]' if i in under else f'[j{i}]' for i in range(1,len(jingles)+1))
+    safe=',alimiter=limit=0.95:level=0:latency=1' if under else ''
+    graph=';'.join([split,*chains,*side,f'[host]{labels}amix=inputs={len(jingles)+1}:normalize=0:duration=first{safe}[mixed]'])
     output.parent.mkdir(parents=True, exist_ok=True)
     result = subprocess.run([ffmpeg, "-y", "-v", "error", "-nostdin", *inputs, "-filter_complex", graph, "-map", "0:v", "-map", "[mixed]",
                              "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(output)],

@@ -73,6 +73,9 @@ class VideoLayer:
         self.raw=raw;self.at=float(raw['at']);self.duration=float(raw['duration']);self.fps=fps
         self.video=VideoBackground(raw['video_layer'],width,height)
         self.masks=np.load(raw['masks'],mmap_mode='r') if raw.get('masks') else None
+        if raw.get('matte')=='person' and self.masks is None:
+            self.video.capture.release()
+            raise ValueError('Prepare this moving person cutout before rendering it.')
         self.background=None
         if raw.get('picture'):
             from core.show_backgrounds import VIDEO_SUFFIXES, cover

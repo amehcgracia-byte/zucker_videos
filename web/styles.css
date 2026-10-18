@@ -2357,3 +2357,16 @@ dialog.show-studio::backdrop {background:#0009;}
 .show-lib-body { overscroll-behavior:contain; }
 [data-ref-video-library] button { display:inline-flex; flex-direction:column; max-width:200px; margin:5px; }
 [data-ref-video-library] img { object-fit:cover; }
+
+#showAudioDialog{width:min(820px,94vw);max-height:90vh;overflow:auto;overscroll-behavior:contain;}
+#showAudioDialog header{display:flex;justify-content:space-between;align-items:center;}
+#showAudioDialog [data-audio-controls]{display:grid;gap:12px;}
+#showAudioDialog [data-audio-row]{display:grid;grid-template-columns:1fr auto;gap:8px;padding:12px;border:1px solid var(--line);border-radius:8px;}
+#showAudioDialog .show-audio-track strong,#showAudioDialog .show-audio-track small{grid-column:1/-1;}
+#showAudioDialog input[type=range]{width:min(350px,50vw);}
+#showAudioDialog audio{height:36px;max-width:100%;}
+
+#showAudioDialog>header{position:sticky;top:0;background:var(--panel);z-index:2;}
+#showAudioDialog>.show-actions{position:sticky;bottom:0;background:var(--panel);padding:10px 0;z-index:2;}
+
+#showAudioDialog{border:1px solid var(--line);border-radius:16px;padding:18px;background:var(--panel);color:var(--text);box-shadow:0 20px 70px #0004;}

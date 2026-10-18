@@ -1476,6 +1476,7 @@
       ...(item.kind === "drawing" ? [{ label: "Choose from library…", action: () => openLibrary(id) }] : []),
       ...(item.kind === "background" ? [{ label: "Edit moving video layers…", action: () => openVideoLayers(id,item.params.person_style||"person") }, {label:"Background from library…", action:()=>openLibrary(id)}] : []),
       ...(item.kind === "word" && !item.params.picture ? wordItems(item) : []),
+      ...(["clip","jingle","character"].includes(item.kind)?[{label:"Sound mixer…",action:()=>ShowAudio.open()}]:[]),
       ...(item.kind === "clip" ? [{label:"Clip settings…",action:()=>ShowReferences.openClip(currentScene(),item,review.project_id)}, { label: "Put my face on it…", action: () => openLibrary(null, null, id) }] : []),
       { separator: true },
       { label: item.status === "discarded" ? "Restore effect" : "Remove effect", action: async () => { await patch(id, { status: item.status === "discarded" ? "proposed" : "discarded" }); await markModified(); renderScene(); } },
@@ -1548,7 +1549,7 @@
       { label: `Add at ${clock(picked.start)}`, submenu: () => addItems(scene, picked, x, y) },
       { label: "Effects in this scene", disabled: !effects.length, submenu: () => effects.map((item) => ({ label: `${KIND_LABELS[item.kind] || item.kind} · ${name(item)}${item.status === "discarded" ? " (removed)" : ""}`, submenu: () => effectItems(scene, item) })) },
       { label: "Speech captions", submenu: [{ label: "On", checked: !!review.captions_enabled, action: () => setCaptions(true) }, { label: "Off", checked: !review.captions_enabled, action: () => setCaptions(false) }] },
-      { label: "Cuts and audio", submenu: [{ label: "Add a close-up…", action: () => addHere(x, y, "cutaway") }, { label: "Open the video / audio cutting desk…", action: () => { window.location.href = "/show-studio/"; } }] },
+      { label: "Cuts and audio", submenu: [{label:"Sound mixer…",action:()=>ShowAudio.open()}, { label: "Add a close-up…", action: () => addHere(x, y, "cutaway") }, { label: "Open the video / audio cutting desk…", action: () => { window.location.href = "/show-studio/"; } }] },
       { separator: true },
       { label: "Generate scene preview", action: () => requestScenePreview(scene) },
     ], { host: menuHost() });
@@ -2040,13 +2041,13 @@
       <div class="show-card-body">
         <img src="${picture(item)}" alt="" loading="lazy">
         <div>
-          <p class="show-reason">${escape(item.reason)}</p>${item.kind === "clip" ? `<p class="show-hint" data-face-status="${item.id}">${item.params.face_frames ? `Your face is on it (${item.params.face_frames[0]} of ${item.params.face_frames[1]} frames).` : "Plays with its own sound while you pause."}</p>` : ""}${item.kind === "drawing" ? `<p class="show-hint">Image source: ${escape(item.params.picture ? (item.params.image_engine || "Your library") : "No picture selected")}</p>` : ""}${draft}${needs}${outside?'<p class="show-needs">Outside this scene. Choose words to bring this effect back.</p>':''}
+          <p class="show-reason">${escape(item.reason)}</p>${item.kind === "clip" ? `<p class="show-hint" data-face-status="${item.id}">${item.params.face_frames ? `Your face is on it (${item.params.face_frames[0]} of ${item.params.face_frames[1]} frames).` : item.params.clip_audio===false?"Picture only; your narration continues.":item.params.audio_mode==='mix'||item.params.matte&&item.params.matte!=='none'?"Clip sound mixed with your narration. Open Sound mixer to balance levels.":"Plays with its own sound while you pause."}</p>` : ""}${item.kind === "drawing" ? `<p class="show-hint">Image source: ${escape(item.params.picture ? (item.params.image_engine || "Your library") : "No picture selected")}</p>` : ""}${draft}${needs}${outside?'<p class="show-needs">Outside this scene. Choose words to bring this effect back.</p>':''}
           <div class="show-actions">
             ${drawable ? `<button type="button" class="icon-button small" data-draw-it="${item.id}" ${drawing ? "disabled" : ""} ${item.params.picture ? 'data-again="1"' : ""}>${drawing ? "Drawing…" : item.params.picture ? "Draw another" : "Draw it"}</button>` : ""}
             ${["drawing","word"].includes(item.kind) ? `<button type="button" class="icon-button small" data-ai-edit="${item.id}">${item.kind==='word'?'Draw lettering…':'AI · change image…'}</button>` : ""}
             ${item.kind === "drawing" ? `<button type="button" class="icon-button small" data-open-library="${item.id}">Choose from library</button>` : ""}
             ${item.kind === "background" ? `<button type="button" class="icon-button small" data-video-layers="${item.id}">Edit moving video layers</button><button type="button" class="icon-button small" data-open-library="${item.id}">Background from library</button>` : ""}
-            ${item.kind === "clip" ? `<select data-clip-sound="${item.id}" aria-label="Clip sound"><option value="own" ${item.params.clip_audio === false ? "" : "selected"}>Its own sound (you pause)</option><option value="mine" ${item.params.clip_audio === false ? "selected" : ""}>Your voice goes on (picture only)</option></select>` : ""}
+            ${item.kind === "clip" ? `<select data-clip-sound="${item.id}" aria-label="Clip sound"><option value="own" ${item.params.clip_audio === false || item.params.audio_mode === "mix" ? "" : "selected"}>Its own sound (you pause)</option><option value="mine" ${item.params.clip_audio === false ? "selected" : ""}>Your voice goes on (picture only)</option><option value="mix" ${item.params.audio_mode === "mix" && item.params.clip_audio!==false ? "selected" : ""}>Mix with narration</option></select>` : ""}
             ${item.kind === "clip" ? `<button type="button" data-clip-settings="${item.id}">Clip settings…</button><button type="button" class="icon-button small" data-face-clip="${item.id}">Put my face on it</button>${item.params.clip_original ? `<button type="button" class="icon-button small" data-face-original="${item.id}">Use the original clip</button>` : ""}` : ""}
             ${["cutaway","character"].includes(item.kind)||item.params.picture ? `<button type="button" class="icon-button small" data-original-parts="${item.id}">Animate original eyes / mouth…</button>` : ""}
             <button type="button" class="icon-button small" data-place-words="${item.id}">Choose words</button>
@@ -2581,6 +2582,7 @@
     const modal=target.closest?.('dialog');
     if(modal && modal!==timelineDialog)return;
     if(event.metaKey || event.ctrlKey || event.altKey)return;
+    if(event.key===' ' && target.closest?.('button') && !target.closest('[data-scene-play]'))return;
     if(event.key===' ' && !event.repeat) { event.preventDefault(); playScene(); }
     else if(['ArrowLeft','ArrowRight'].includes(event.key) && (timelineDialog?.open || target.closest?.('#showStage'))) {
       event.preventDefault();stepVideo(event.key==='ArrowLeft'?-1:1,event.shiftKey?10:1);
@@ -3025,8 +3027,9 @@
     const id = select.dataset.clipSound, item = review.proposals.find((entry) => entry.id === id);
     if (!item) return;
     item.params.clip_audio = select.value !== "mine";
-    saveSoon(id, { clip_audio: item.params.clip_audio });
-    showToast(item.params.clip_audio ? "The clip plays with its own sound; you pause meanwhile." : "The clip's picture plays over your voice, which goes on.");
+    item.params.audio_mode=select.value==='mix'?'mix':select.value==='mine'?'mute':'own';
+    saveSoon(id, { clip_audio: item.params.clip_audio, audio_mode:item.params.audio_mode });
+    showToast(item.params.audio_mode==='mix'?"Clip sound is mixed with your narration. Open Sound mixer to balance the levels.":item.params.clip_audio ? "The clip plays with its own sound; you pause meanwhile." : "The clip's picture plays over your voice, which goes on.");
   });
 
   // Put my face on a clip: done on this Mac in the background (the models are downloaded once,
@@ -3110,6 +3113,14 @@
         document.body.append(dialog);
       }
       if(!dialog.open)dialog.showModal();
+    },
+    playbackState:()=>({original:!!quick&&!quick.saved,at:editedPlayhead()}),
+    async audioChanged(preview=false,item=null){
+      if(item){const index=review.proposals.findIndex(p=>p.id===item.id);if(index>=0)review.proposals[index]=item;}
+      for(const scene of scenes()){scene.preview={status:'none'};dirtyScenes.add(scene.id);}
+      const scene=currentScene();if(!scene)return;
+      invalidateLocal(scene);renderScene();
+      if(preview)await requestScenePreview(scene);
     },
     active:()=>!!review && !$('#showReviewBox')?.hidden,
     transport:action=>action==='play'?playScene():stepVideo(action==='previousFrame'?-1:1),

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -175,9 +176,15 @@ def _transcribe_and_plan(project, path: Path, *, style_name: str, language: str 
     style = STYLES.get(style_name, STYLES["choe"])
     ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
     first, last = span
+    from core.show_audio import prepare_noise, load as audio_settings
+    noise_report={'status':'off'}
+    if audio_settings(project)['denoise']:
+        progress(first,'Checking background noise and preparing clean audio…')
+        try:noise_report=prepare_noise(project,path,ffmpeg=ffmpeg,cancel=cancel)
+        except (OSError,ValueError,subprocess.SubprocessError) as exc:noise_report={'status':'unavailable','error':str(exc)[-200:]}
     progress(first, "Listening to every word (local Whisper)")
     transcript = transcribe_sources(
-        [{"path": str(path), "filename": path.name, **({"language_hint": language} if language else {})}],
+        [{"path": str(noise_report.get("path") or path), "filename": path.name, **({"language_hint": language} if language else {})}],
         project.artifacts_dir / "show_transcript.json",
         progress_callback=lambda value, detail: progress(first + int(value * (last - first) * 0.6 / 100), detail or "Transcribing"),
         model_name=model_name,
@@ -194,7 +201,7 @@ def _transcribe_and_plan(project, path: Path, *, style_name: str, language: str 
     cancel()
     progress(first + int((last - first) * 0.62), "Cutting pauses, hesitations and repeated takes")
     plan = plan_show(sources[0], _duration(path), style)
-    plan.update(source=str(path), style=style_name, language=sources[0].get("language"))
+    plan.update(source=str(path), style=style_name, language=sources[0].get("language"), noise_report=noise_report)
     if not plan["shots"]:
         raise RuntimeError("Nothing was left after removing pauses: is there speech in this video?")
     progress(first + int((last - first) * 0.65), "Finding your face to frame close shots")
@@ -369,6 +376,8 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
     from core.gag_render import render_gags
     started = time.monotonic()
     plan = json.loads((project.artifacts_dir / "show_plan.json").read_text(encoding="utf-8"))
+    from core.show_audio import attach
+    plan = attach(project, plan)
     items = show_proposals.load(project.artifacts_dir / "show_proposals.json")["proposals"]
     scenes_path = project.artifacts_dir / "show_scenes.json"
     document = show_scenes.load(scenes_path) if scenes_path.is_file() else None
@@ -415,7 +424,7 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
     from core.show_bridge import studio_layers, studio_warnings
     studio, studio_report = studio_layers(project.folder, plan, hidden=[(c["at"], c["at"] + c["duration"]) for c in cutaways])
     notes += studio_warnings(studio_report)
-    if any(entry.get("background") for entry in layer):
+    if any(entry.get("background") or (entry.get("video_layer") and entry.get("matte")=="person") for entry in layer):
         from core import show_backgrounds
         notes += show_backgrounds.prepare(cut, layer, plan, project.cache_dir / "show_masks", ffmpeg=ffmpeg, cancel=cancel,
                                           hidden=[(c["at"], c["at"] + c["duration"]) for c in cutaways],
@@ -544,6 +553,8 @@ def preview_proposal(project, proposal_id: str, *, width: int | None = None, hei
     from core import show_proposals
     from core.gag_render import render_gags
     plan = json.loads((project.artifacts_dir / "show_plan.json").read_text(encoding="utf-8"))
+    from core.show_audio import attach
+    plan = attach(project, plan)
     items = show_proposals.load(project.artifacts_dir / "show_proposals.json")["proposals"]
     item = next(entry for entry in items if entry["id"] == proposal_id)
     if missing := show_proposals.check(item):
@@ -580,7 +591,7 @@ def preview_proposal(project, proposal_id: str, *, width: int | None = None, hei
             raise RuntimeError("The effect preview is incomplete: " + "; ".join(notes))
     from core.show_bridge import studio_layers
     studio, _ = studio_layers(project.folder, part, hidden=[(c["at"], c["at"] + c["duration"]) for c in part["cutaways"]])
-    if any(entry.get("background") for entry in shifted):
+    if any(entry.get("background") or (entry.get("video_layer") and entry.get("matte")=="person") for entry in shifted):
         from core import show_backgrounds
         missing = show_backgrounds.prepare(cut, shifted, plan, project.cache_dir / "show_masks", offset=start, ffmpeg=ffmpeg,
                                            hidden=[(c["at"], c["at"] + c["duration"]) for c in part["cutaways"]], progress=progress, cancel=cancel)
@@ -642,6 +653,8 @@ def _scene_preview_inputs(project, scene_id: str, width: int, height: int, only_
     from core import gag_paint, show_proposals, show_scenes
     from core.show_bridge import studio_fingerprint
     plan = json.loads((project.artifacts_dir / "show_plan.json").read_text(encoding="utf-8"))
+    from core.show_audio import attach
+    plan = attach(project, plan)
     items = show_proposals.load(project.artifacts_dir / "show_proposals.json")["proposals"]
     document = show_scenes.load(project.artifacts_dir / "show_scenes.json")
     scene = next(entry for entry in document["scenes"] if entry["id"] == scene_id)
@@ -748,7 +761,7 @@ def preview_scene(project, scene_id: str, *, width: int | None = None, height: i
         progress(0, "Compositing this scene with its effects")
     from core.show_bridge import studio_layers
     studio, _ = studio_layers(project.folder, part, hidden=[(c["at"], c["at"] + c["duration"]) for c in part["cutaways"]])
-    if any(entry.get("background") for entry in shifted):
+    if any(entry.get("background") or (entry.get("video_layer") and entry.get("matte")=="person") for entry in shifted):
         from core import show_backgrounds
         left_out += show_backgrounds.prepare(cut, shifted, plan, project.cache_dir / "show_masks", offset=start, ffmpeg=ffmpeg,
                                              hidden=[(c["at"], c["at"] + c["duration"]) for c in part["cutaways"]],
