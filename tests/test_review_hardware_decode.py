@@ -94,20 +94,32 @@ def test_simultaneous_preview_requests_render_same_asset_only_once(tmp_path, mon
     from concurrent.futures import ThreadPoolExecutor
     import threading
     project = review_project(tmp_path)
-    barrier = threading.Barrier(2)
-    actual = shot_review._render_thumbnail_to_path
+    # Coordinate contention at the actual asset lock, not with a three-second
+    # barrier around all review setup (which includes OS executable discovery).
+    actual_lock = shot_review._thumbnail_lock
+    both_attempting = threading.Event()
+    count_lock = threading.Lock()
+    attempts = 0
     calls = []
-    def enter(*args):
-        barrier.wait(timeout=3)
-        return actual(*args)
+    def entering_lock(output):
+        nonlocal attempts
+        lock = actual_lock(output)
+        with count_lock:
+            attempts += 1
+            if attempts == 2:
+                both_attempting.set()
+        return lock
     def render(command):
         calls.append(command)
+        assert both_attempting.wait(10), 'The second request never attempted the same asset lock'
         Path(command[-1]).write_bytes(b'complete JPEG')
-    monkeypatch.setattr(shot_review,'_render_thumbnail_to_path',enter)
+    monkeypatch.setattr(shot_review, '_thumbnail_lock', entering_lock)
+    monkeypatch.setattr(shot_review, 'locate_executable', lambda name: name)
     monkeypatch.setattr(shot_review,'_run_thumbnail_command',render)
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(shot_review.review_items,project,render_indices={0}) for _ in range(2)]
-        results = [future.result(timeout=5) for future in futures]
+        results = [future.result(timeout=15) for future in futures]
+    assert attempts == 2
     assert len(calls) == 1
     assert results[0][0]['thumbnail'] == results[1][0]['thumbnail']
 

@@ -54,6 +54,10 @@ def journey(browser, mode, media, output, *, real_media=False):
     context=browser.new_context(viewport={'width':1440,'height':1000},record_video_dir=str(folder/'browser-video'))
     context.tracing.start(screenshots=True,snapshots=True,sources=True)
     page=context.new_page(); page.set_default_timeout(45000)
+    process_samples = []
+    last_process_sample = 0.0
+    if os.environ.get('ZUCKER_AUDIT_PROCESS_METRICS') == '1':
+        import psutil  # Opt-in runner diagnostic dependency, never a product dependency.
     errors=[]; failures=[]; report={'mode':mode,'os':platform.platform(),'passed':False,
                                   'media_kind': 'real' if real_media else 'synthetic'}
     page.on('pageerror',lambda error:errors.append(str(error)))
@@ -118,6 +122,22 @@ def journey(browser, mode, media, output, *, real_media=False):
         while time.monotonic()<deadline:
             status=json_get(url+'/api/v1/wizard/status')
             current=status.get('status')
+            if os.environ.get('ZUCKER_AUDIT_PROCESS_METRICS') == '1' and time.monotonic() - last_process_sample >= 5:
+                last_process_sample = time.monotonic()
+                rows = []
+                try:
+                    children = psutil.Process(process.pid).children(recursive=True)
+                except psutil.Error:
+                    children = []
+                for child in children:
+                    try:
+                        cpu = child.cpu_times()
+                        rows.append(dict(pid=child.pid, name=child.name(), cpu=cpu.user+cpu.system,
+                                         threads=child.num_threads(), rss=child.memory_info().rss))
+                    except psutil.Error:
+                        pass
+                process_samples.append(dict(time=last_process_sample, stage=status.get('stage'),
+                                            status=current, processes=rows))
             assert not failures, f'API requests failed: {failures}'
             if current!=last:
                 print(mode,current,status.get('message'),flush=True); last=current
@@ -200,6 +220,8 @@ def journey(browser, mode, media, output, *, real_media=False):
             report['players_unavailable']=True
         capture('failure')
     finally:
+        if process_samples:
+            (folder/'process-metrics.json').write_text(json.dumps(process_samples,indent=2),encoding='utf-8')
         report.update(page_errors=errors,http_failures=failures)
         (folder/'report.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
         context.tracing.stop(path=str(folder/'trace.zip')); context.close()

@@ -242,3 +242,26 @@ los cinco modos Windows que no llegaron a ejecutarse.
 La auditoría permanece abierta. Siguen pendientes el diagnóstico y nueva
 validación de Windows real, la reproducción nativa 360, la revisión completa de
 vídeos/trazas y los diálogos nativos. No se publica material privado en este PR.
+
+### Diagnóstico aislado completado; no justifica un arreglo especulativo
+
+`39112425954` pasa en ambos sistemas, con 16 verificaciones por sistema y hashes
+idénticos en ambas rutas. No reproduce el timeout. Con cuatro trabajos, medianas
+por proceso: macOS 0,7705 s actual / 0,8715 s acotado; Windows 2,688 s actual /
+2,672 s acotado. Pico de hilos observado: 21/6 en macOS y 17/8 en Windows. **Se
+mantiene la ruta actual**: no hay evidencia de que limitar hilos repare el fallo
+original ni una mejora global de render demostrada. La siguiente ronda real
+recoge cada cinco segundos CPU acumulada, hilos y memoria de los procesos hijos
+con `ZUCKER_AUDIT_PROCESS_METRICS=1`, solo en el harness y los runners privados;
+no añade dependencias a la app ni cambia sus límites de exportación.
+
+La prueba de peticiones simultáneas ahora coordina la contención en el lock real
+del recurso: la primera escritura no puede terminar hasta que la segunda petición
+intente ese mismo lock. Conserva la exigencia de una sola renderización y dos
+URLs iguales; evita que la búsqueda del ejecutable en el SO consuma la barrera
+artificial de 3 s. No se ha eliminado ninguna aserción ni cambiado el lock de
+producción. Los siete tests de `test_review_hardware_decode.py` pasan localmente.
+
+Se verificó además el log empaquetado de `38866751152`, revisión `760b5b07`:
+selftest `ok: true`, `windows_ui: true`, y **cero `Logging error`**. Confirma la
+corrección del handler sin stderr; no valida versiones posteriores del paquete.
