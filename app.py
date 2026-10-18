@@ -350,6 +350,9 @@ def _run_selftest() -> int:
         # broken package.
         import numpy as np
         from core import scene_tags
+        from core.show_video_assets import green_alpha
+        if not np.allclose(green_alpha(np.full((2,2,3),[0,255,0],np.uint8)),0):
+            raise RuntimeError('Packaged green-screen compositor is unavailable')
         scene_tagging = False
         if scene_tags.available():
             dark, bright = scene_tags.analyze_frames([np.zeros((256, 256, 3), np.uint8),

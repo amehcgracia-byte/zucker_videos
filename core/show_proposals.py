@@ -203,6 +203,9 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
         if item["kind"] == "cutaway":
             cutaways.append({"proposal": item["id"], "at": item["at"], "duration": item["duration"], "source": params["source"],
                              "source_start": params["source_start"], "zoom": params.get("zoom", 1.0), "focus": params.get("focus", [0.5, 0.5])})
+            if params.get('pixel_parts'):
+                items_out.append({'proposal':item['id'],'pixel_parts':True,'at':item['at'],'duration':item['duration'],
+                                  **params['pixel_parts'],'zoom':params.get('zoom',1),'focus':params.get('focus',[.5,.5])})
         elif item["kind"] == "character":
             voice = params.get("voice")
             items_out.append({"proposal": item["id"], "insert": "character", "at": item["at"], "source": params["source"], "still_time": params.get("still_time"),
@@ -211,6 +214,12 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
                               "hold": params.get("hold", 2.0), "region": params.get("region"), "action": params.get("action", "mouth"),
                               "amount": params.get("amount", 0.02), "offset": params.get("offset", [0.0, 0.0]),
                               "entrance": params.get("entrance", "zoom")})
+        elif item["kind"] == "clip" and params.get("matte", "none") != "none":
+            items_out.append({"proposal": item["id"], "video_layer": params["clip"], "at": item["at"], "duration": item["duration"],
+                              **{k:params[k] for k in ("matte","clip_start","picture","person_style","person_scale","person_offset") if k in params}})
+            if params.get('clip_audio',True):
+                items_out.append({'proposal':item['id'],'jingle':params['clip'],'at':item['at'],'duration':item['duration'],
+                                  'start':params.get('clip_start',0),'volume':1.,'duck':1.,'fade':0.})
         elif item["kind"] == "clip" and params.get("clip_audio") is False:
             # Picture only: the clip replaces the image while the host's voice goes on, like a close-up.
             cutaways.append({"proposal": item["id"], "at": item["at"], "duration": item["duration"], "source": params["clip"],
@@ -218,7 +227,7 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
         elif item["kind"] == "clip":
             # A video clip played whole with its own sound while the host pauses (core.show_inserts.load_clip).
             items_out.append({"proposal": item["id"], "insert": "clip", "at": item["at"], "source": params["clip"],
-                              "clip_start": params.get("clip_start", 0.0), "clip_length": params["clip_length"]})
+                              "clip_start": params.get("clip_start", 0.0), "clip_length": min(float(item["duration"]), max(0.,float(params["clip_length"])-float(params.get("clip_start") or 0)))})
         elif item["kind"] in ("steam", "texture"):
             items_out.append({"proposal": item["id"], "steam": params["point"], "anchor": params.get("anchor"), "at": item["at"], "duration": item["duration"],
                               "scale": params.get("scale", 1.0), "texture": params.get("texture", "rainbow"), **{key: params[key] for key in ("density", "strength", "rise", "colour") if key in params}})

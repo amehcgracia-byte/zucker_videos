@@ -2313,3 +2313,9 @@ body:has(#showReviewBox.show-fit) #backdropLogo {max-height:calc(100vh - 130px);
 .paper-mark-buttons button { padding: .4rem .65rem; }
 .paper-mark-buttons button.active { background: var(--accent, #b3d7a3); color: #142011; outline: 2px solid currentColor; }
 .paper-edit-dropped .paper-edit-main { opacity: .55; }
+/* Reference/clip settings remain usable while the source and cutout tools scroll. */
+#showReferenceDialog header{position:sticky;top:0;z-index:3;background:var(--panel);align-items:center;padding:8px 0;border-bottom:1px solid var(--line);}
+#showReferenceDialog header h2{margin:0;}
+#showReferenceDialog input[type=checkbox]{width:auto;}
+#showReferenceDialog [data-clip-settings] label{display:flex;align-items:center;gap:10px;margin:12px 0;}
+#showReferenceDialog [data-ref-video-library]{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;}

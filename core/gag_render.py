@@ -485,7 +485,7 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
                   tuple(float(v) for v in raw["box"]) if raw.get("box") else None) for raw in gags if raw.get("warp")]
     warper = Warper(width, height) if warps else None
     # A filmed mouth (the video's own pixels); a picture with a mouth is a sticker that talks, drawn above.
-    mouths = [load_mouth(raw, video, fps, width, height, ffmpeg) for raw in gags if raw.get("mouth") and not raw.get("image")]
+    mouths = [load_mouth(raw, video, fps, width, height, ffmpeg) for raw in gags if raw.get("mouth") and not raw.get("image") and not raw.get("pixel_parts")]
     from core.show_inserts import AUDIO_RATE, draw_steam, fit, insert_frame, load_insert, load_steam, splice_audio
     inserts = sorted((load_insert(raw, width, height, fps, ffmpeg, video) for raw in gags if raw.get("insert")), key=lambda item: item.at)
     steams = [load_steam(raw, width, height) for raw in gags if raw.get("steam")]
@@ -495,6 +495,15 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
         # shot's wall as a new "cup" just because it occupies the old coordinates.
         texture.reference = texture_references.setdefault(raw.get("proposal") or id(texture), {})
     from core import show_backgrounds
+    pixel_parts=[raw for raw in gags if raw.get("pixel_parts")]
+    from core.show_pixel_layers import framed_regions
+    for raw in pixel_parts:
+        regions=framed_regions(raw,width,height,[raw['mouth']]) if raw.get('mouth') else []
+        if regions:
+            points=np.asarray(regions[0]['polygon']);lo=points.min(axis=0);hi=points.max(axis=0)
+            mouths.append(load_mouth({**raw,'mouth':[*lo,*(hi-lo)]},video,fps,width,height,ffmpeg))
+    from core.show_video_assets import VideoLayer
+    video_layers = [VideoLayer(raw,width,height,fps) for raw in gags if raw.get('video_layer')]
     # A new background behind the person (masks made beforehand by show_backgrounds.prepare).
     backgrounds = [layer for layer in (show_backgrounds.load(raw, width, height, fps) for raw in gags if raw.get("background")) if layer]
     total += sum(insert.frames for insert in inserts)
@@ -610,11 +619,18 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
                 live = [sticker for sticker in stickers if sticker.active(t)]
                 studio = bool(drawings) and drawings.active(t)
                 live_backgrounds = [layer for layer in backgrounds if layer.active(t)]
-                if live or live_warps or live_mouths or live_steams or studio or live_backgrounds:
+                live_parts=[raw for raw in pixel_parts if raw["at"]<=t<raw["at"]+raw["duration"]]
+                live_videos=[layer for layer in video_layers if layer.active(t)]
+                if live or live_warps or live_mouths or live_steams or studio or live_backgrounds or live_videos or live_parts:
                     frame = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3).copy()
                     texture_source = frame.copy() if any(steam.rect is not None for steam in live_steams) else None
                     for layer in live_backgrounds:
                         show_backgrounds.apply(frame, layer, t)
+                    for raw_part in live_parts:
+                        from core.show_pixel_layers import apply_video_eyes
+                        apply_video_eyes(frame,raw_part,t)
+                    for layer in live_videos:
+                        layer.apply(frame,t)
                     for warp in live_warps:
                         frame = warper.apply(frame, warp, t)
                     for mouth in live_mouths:
@@ -648,6 +664,8 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
             pending.replace(output)
         finally:
             halt.set()
+            for layer in video_layers:
+                layer.close()
             for layer in backgrounds:
                 layer.close()
             for process in (decoder, encoder):

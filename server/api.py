@@ -2362,6 +2362,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         reference = next((item for item in references if item.get("id") == reference_id), None)
         if reference is None:
             return error_response("not_found", "That video reference is not in this project", 404)
+        body=request.get_json(silent=True) or {}
+        if 'duration' in body:
+            try:
+                if not math.isfinite(float(body['duration'])) or float(body['duration'])<=0:raise ValueError()
+            except (ValueError,TypeError):return error_response('invalid_duration','Choose a positive timeline duration',400)
         tools = tool_status()
         try:
             clip = show_clips.download(project, reference, str(tools.get("ffmpeg_path") or "ffmpeg"))
@@ -2372,7 +2377,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("clip_download_failed", str(exc)[:400], 502)
         proposals_path, _ = _show_review_files(project)
         stored = show_proposals.load(proposals_path)
-        item = next((entry for entry in stored["proposals"] if entry["kind"] == "clip" and entry["params"].get("reference") == reference_id
+        replace_id=body.get('replace_id')
+        if replace_id and not any(p['id']==replace_id and p['kind']=='clip' for p in stored['proposals']):
+            return error_response('not_found','That clip is no longer in this scene',404)
+        replacing=next((p for p in stored['proposals'] if p['id']==replace_id),None)
+        if replacing:
+            replacing['params'].update(clip=str(clip),clip_start=0.,clip_length=length,reference=reference_id,url=reference['url'],source_start=reference['start'])
+        item = replacing or next((entry for entry in stored["proposals"] if entry["kind"] == "clip" and entry["params"].get("reference") == reference_id
                      and entry["status"] != "discarded"), None)
         if item is None:
             item = show_proposals.proposal("clip", float(reference.get("at") or 0.0), length, reason=f"Clip from {reference['url']}",
@@ -2394,9 +2405,110 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 for scene in document["scenes"]:
                     if item["id"] in scene["effects"]:
                         _invalidate_scene(project, scene["id"])
+        from core.show_video_assets import detect_green, remember
+        item['params']['matte']='green' if detect_green(clip) else 'none'
+        item['duration']=min(float(body.get('duration') or item['duration']),length)
+        scene_path=_scene_files(project)
+        if scene_path.is_file():
+            owner=next((scene for scene in show_scenes.load(scene_path)['scenes'] if item['id'] in scene['effects']),None)
+            if owner:item['duration']=min(item['duration'],max(.001,owner['end']-item['at']))
+        resources=stored.setdefault('resources',[])
+        if not any(r.get('path')==str(clip) for r in resources):
+            resources.append(dict(path=str(clip),kind='video',duration=length,speech=[],intervals=[],version=1))
+        show_proposals.save(proposals_path,stored['proposals'],**{k:v for k,v in stored.items() if k not in ('proposals','version')})
+        remember(project,item)
+        _effect_changed(project,item['id'])
         reference.update(status="downloaded", clip=str(clip))
         atomic_write_json(reference_path, references)
         return jsonify({"reference": reference, "proposal": item}), 201
+
+    @app.post('/api/v1/show/review/<proposal_id>/parts')
+    @_proposals_locked
+    def api_show_existing_parts(proposal_id):
+        from core import show_proposals
+        from core.show_pixel_layers import rig_regions
+        project=_require_project(state);body=request.get_json(silent=True) or {}
+        asset=body.get('asset')
+        record=next((r for r in _show_characters(project) if r['cutout']==asset),None)
+        if record is None:return error_response('not_found','Choose a character saved in this project',404)
+        path=project.artifacts_dir/'show_proposals.json';stored=show_proposals.load(path)
+        item=next((p for p in stored['proposals'] if p['id']==proposal_id and p['kind']=='cutaway'),None)
+        if item is None:return error_response('not_found','The original close-up is no longer available',404)
+        try:regions=rig_regions(record)
+        except (ValueError,KeyError,TypeError,OSError) as exc:return error_response('invalid_regions',str(exc),400)
+        item['params']['pixel_parts']={**regions,'asset':asset}
+        show_proposals.save(path,stored['proposals'],**{k:v for k,v in stored.items() if k not in ('proposals','version')})
+        _effect_changed(project,proposal_id)
+        return jsonify(item)
+
+    @app.get('/api/v1/show/video-library')
+    def api_show_video_library():
+        project=_require_project(state)
+        path=project.folder/'assets/video-library/catalog.json'
+        from core import show_proposals
+        from core.show_video_assets import remember
+        stored=show_proposals.load(project.artifacts_dir/'show_proposals.json')
+        for item in stored['proposals']:
+            if item['kind']=='clip':remember(project,item)
+        return jsonify(items=list(json.loads(path.read_text()).values()) if path.is_file() else [])
+
+    @app.post('/api/v1/show/video-library/<asset_id>/place')
+    @_proposals_locked
+    def api_show_video_library_place(asset_id):
+        from core import show_proposals,show_scenes
+        from core.show_video_assets import remember
+        project=_require_project(state);body=request.get_json(silent=True) or {}
+        path=project.artifacts_dir/'show_proposals.json';stored=show_proposals.load(path)
+        source=next((p for p in stored['proposals'] if p['id']==asset_id and p['kind']=='clip'),None)
+        doc=show_scenes.load(_scene_files(project));scene=next((s for s in doc['scenes'] if s['id']==body.get('scene_id')),None)
+        if source is None or scene is None:return error_response('not_found','Choose a project clip and a scene',404)
+        try:
+            at=float(body.get('at',scene['start']));duration=float(body.get('duration',3))
+            if not math.isfinite(at+duration) or duration<=0 or not scene['start']<=at<scene['end']:raise ValueError('Choose words inside this scene')
+            duration=min(duration,scene['end']-at,float(source['params']['clip_length'])-float(source['params'].get('clip_start') or 0))
+            item=show_proposals.proposal('clip',at,duration,reason='From your video library',**source['params'])
+            item['status']='approved';stored['proposals'].append(item)
+            show_proposals.save(path,stored['proposals'],**{k:v for k,v in stored.items() if k not in ('proposals','version')})
+            scene['effects'].append(item['id']);show_scenes.save(_scene_files(project),doc);remember(project,item);_effect_changed(project,item['id'])
+            return jsonify(proposal=item,reference={'scene_id':scene['id'],'selected_text':'these words','id':source['params'].get('reference')}),201
+        except (ValueError,TypeError) as exc:return error_response('invalid_placement',str(exc),400)
+
+    @app.get('/api/v1/show/clips/<proposal_id>/media')
+    def api_show_clip_media(proposal_id):
+        from core import show_proposals
+        project=_require_project(state)
+        item=next((p for p in show_proposals.load(project.artifacts_dir/'show_proposals.json')['proposals'] if p['id']==proposal_id and p['kind']=='clip'),None)
+        if item is None:abort(404)
+        path=Path(item['params']['clip']).resolve()
+        if not path.is_file() or not path.is_relative_to(project.folder.resolve()):abort(404)
+        return send_file_with_range(str(path))
+
+    @app.post('/api/v1/show/clips/<proposal_id>/settings')
+    @_proposals_locked
+    def api_show_clip_settings(proposal_id):
+        from core import show_proposals
+        from core.show_video_assets import remember, detect_green
+        project=_require_project(state)
+        path=project.artifacts_dir/'show_proposals.json';stored=show_proposals.load(path)
+        item=next((p for p in stored['proposals'] if p['id']==proposal_id and p['kind']=='clip'),None)
+        if item is None:return error_response('not_found','That clip is not in this project',404)
+        body=request.get_json(silent=True) or {}
+        try:
+            start=float(body.get('clip_start',item['params'].get('clip_start') or 0))
+            if not math.isfinite(start) or not 0<=start<float(item['params']['clip_length']):raise ValueError('Choose a position inside the downloaded clip')
+            matte=body.get('matte',item['params'].get('matte','none'))
+            if matte not in ('auto','none','green','person'):raise ValueError('Choose a background removal mode')
+            if matte=='auto':matte='green' if detect_green(item['params']['clip']) else 'none'
+            if matte=='person':
+                from core.show_backgrounds import available
+                if not available():raise ValueError('Moving person cutouts need macOS 12 or later')
+            if 'clip_audio' in body and not isinstance(body['clip_audio'],bool):raise ValueError('Choose whether to use clip audio')
+            item['params'].update(clip_start=start,matte=matte,clip_audio=body.get('clip_audio',item['params'].get('clip_audio',True)))
+            item['duration']=min(item['duration'],float(item['params']['clip_length'])-start)
+            show_proposals.save(path,stored['proposals'],**{k:v for k,v in stored.items() if k not in ('proposals','version')})
+            remember(project,item);_effect_changed(project,proposal_id)
+            return jsonify(item)
+        except (ValueError,TypeError) as exc:return error_response('invalid_clip_settings',str(exc),400)
 
     # Put my face on a clip: local face swap jobs, one per clip (core.show_faceswap).
     faceswap_jobs: dict[str, dict[str, Any]] = {}
@@ -3598,7 +3710,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def _video_layer_item(project, proposal_id):
         from core import show_proposals
         stored = show_proposals.load(project.artifacts_dir/'show_proposals.json')
-        item = next((p for p in stored['proposals'] if p['id'] == proposal_id and p['kind'] == 'background'), None)
+        item = next((p for p in stored['proposals'] if p['id'] == proposal_id and p['kind'] in ('background','clip')), None)
         if item is None:
             abort(404)
         return stored, item
@@ -3610,27 +3722,57 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         html = (root/'tools/qa/video-layers/index.html').read_text()
         prefix = '/api/v1/show/video-layers/'+proposal_id
         html = html.replace('/sample.json', prefix+'/sample').replace('/media/', prefix+'/media/')
-        html = html.replace('INTERACTIVE SAMPLE', 'PROJECT VIDEO LAYERS')
+        html = html.replace('INTERACTIVE SAMPLE', 'PROJECT VIDEO LAYERS').replace('Eight-second local sample', 'Two-second interactive preview')
         html = html.replace('Files stay in this browser; nothing is uploaded.', 'Use in scene copies new files into this project. Nothing leaves your computer.')
         html = html.replace('This separate sample does not save project edits or export an MP4.', 'Use in scene saves these layers for the scene preview and final export.')
-        html = html.replace('The installed app is unchanged.', 'The first eight seconds are shown here; the timeline controls the full effect duration.')
+        html = html.replace('The installed app is unchanged.', 'The first two seconds are shown here; the timeline controls the full effect duration.')
         html = html.replace('<span class="badge">', '<button id="saveLayers" type="button">Use in scene</button><span class="badge">')
+        html = html.replace('src="'+prefix+'/media/host.mp4"', 'data-host-src="'+prefix+'/media/host.mp4"')
         html = html.replace('</script>', '</script><script src="/show_video_layers.js" data-prefix="'+prefix+'"></script>')
         return Response(html, mimetype='text/html')
+
+    layer_jobs={}
+    layer_jobs_lock=threading.Lock()
+    layer_pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='video-layer-editor')
+
+    def _layer_job(project,item,*,retry=False):
+        import hashlib
+        plan=project.artifacts_dir/'show_plan.json'
+        source=Path(item['params'].get('clip') or json.loads(plan.read_text()).get('source') or '')
+        stamp=[source.stat().st_size,source.stat().st_mtime_ns] if source.is_file() else None
+        identity=json.dumps([stamp,str(project.folder),item['id'],item['at'],item['duration'],item['params'].get('clip'),item['params'].get('clip_start'),
+                             plan.stat().st_mtime_ns],sort_keys=True)
+        key=hashlib.sha256(identity.encode()).hexdigest()
+        with layer_jobs_lock:
+            if retry and layer_jobs.get(key,{}).get('status')=='failed':layer_jobs.pop(key)
+            if key not in layer_jobs:
+                job={'status':'preparing','progress':0.,'detail':'Queued for person cutout…'}
+                layer_jobs[key]=job
+                def progress(value,detail):
+                    with layer_jobs_lock:job.update(progress=round(value*100),detail=detail)
+                def prepare():
+                    from core import show_backgrounds
+                    try:
+                        result=show_backgrounds.editor_sample(project,item,ffmpeg=str(tool_status().get('ffmpeg_path') or 'ffmpeg'),progress=progress)
+                        with layer_jobs_lock:job.update(status='ready',result=result,progress=100)
+                    except Exception as exc:
+                        app.logger.exception('Video layer editor preparation failed')
+                        with layer_jobs_lock:job.update(status='failed',detail=str(exc))
+                layer_pool.submit(prepare)
+            return layer_jobs[key]
 
     @app.get('/api/v1/show/video-layers/<proposal_id>/sample')
     def api_video_layer_sample(proposal_id):
         from core import show_backgrounds
-        project = _require_project(state)
-        _, item = _video_layer_item(project, proposal_id)
-        try:
-            sample = show_backgrounds.editor_sample(project, item, ffmpeg=str(tool_status().get('ffmpeg_path') or 'ffmpeg'))
-            return jsonify({**{key: value for key, value in sample.items() if key not in ('host', 'alpha')},
-                            'maskWidth':384, 'maskHeight':216, 'columns':10,
-                            'backgrounds':json.loads((root/'tools/qa/show-backgrounds/manifest.json').read_text()),
-                            'placement':item['params'], 'current_video':Path(item['params'].get('picture') or '').suffix.lower() in show_backgrounds.VIDEO_SUFFIXES})
-        except (OSError, RuntimeError, ValueError) as exc:
-            return error_response('layer_preview_failed', str(exc), 400)
+        project=_require_project(state);_,item=_video_layer_item(project,proposal_id)
+        job=_layer_job(project,item,retry=request.args.get('retry')=='1')
+        if job['status']=='failed':return error_response('layer_preview_failed',job['detail'],400)
+        if job['status']!='ready':return jsonify({k:v for k,v in job.items() if k!='result'}),202
+        sample=job['result']
+        return jsonify({**{k:v for k,v in sample.items() if k not in ('host','alpha')},
+                        'maskWidth':384,'maskHeight':216,'columns':10,'status':'ready',
+                        'backgrounds':json.loads((root/'tools/qa/show-backgrounds/manifest.json').read_text()),
+                        'placement':item['params'],'current_video':Path(item['params'].get('picture') or '').suffix.lower() in show_backgrounds.VIDEO_SUFFIXES})
 
     @app.get('/api/v1/show/video-layers/<proposal_id>/media/<name>')
     def api_video_layer_media(proposal_id, name):
@@ -3638,8 +3780,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         project = _require_project(state)
         _, item = _video_layer_item(project, proposal_id)
         if name in ('host.mp4', 'alpha.png'):
-            sample = show_backgrounds.editor_sample(project, item, ffmpeg=str(tool_status().get('ffmpeg_path') or 'ffmpeg'))
-            path = sample['host' if name == 'host.mp4' else 'alpha']
+            job=_layer_job(project,item)
+            if job['status']!='ready':return error_response('preparing','The video cutout is still preparing',409)
+            path=job['result']['host' if name=='host.mp4' else 'alpha']
         elif name in ('background.mp4', 'current'):
             path = Path(item['params'].get('picture') or '')
             if not path.is_file() or not path.resolve().is_relative_to(project.folder.resolve()):
@@ -3702,7 +3845,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if target:
                 item['params']['picture'] = str(target)
             item['params'].update(person_style='person' if style == 'original' else style, person_scale=scale, person_offset=offset)
-            item['status'] = 'discarded' if style == 'original' else 'proposed'
+            if item['kind']=='clip':
+                item['params']['matte']='none' if style=='original' else 'person'
+                from core.show_video_assets import remember
+                remember(project,item)
+            item['status'] = 'discarded' if style == 'original' and item['kind']=='background' else 'proposed'
             item['needs'] = show_proposals.check(item)
             show_proposals.save(project.artifacts_dir/'show_proposals.json', stored['proposals'], **{k:v for k,v in stored.items() if k not in ('proposals','version')})
             _effect_changed(project, proposal_id)
@@ -3867,6 +4014,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if "entrance" in changes and changes["entrance"] not in ENTRANCES:
             return error_response("bad_request", "A character enters with a cut, a push-in or a bounce", 400)
         try:
+            if current['kind']=='clip' and ('duration' in changes or 'at' in changes):
+                maximum=float(current['params']['clip_length'])-float(current['params'].get('clip_start') or 0)
+                if float(changes.get('duration',current['duration']))>maximum+.001:raise ValueError('This extends past the downloaded clip; reopen Clip settings to choose more source footage')
             item = show_proposals.update(stored["proposals"], proposal_id, **changes)
         except KeyError:
             return error_response("not_found", "That effect is not in this review", 404)

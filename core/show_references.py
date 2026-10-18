@@ -102,9 +102,8 @@ def import_photo(project, title):
 
 def video_reference(project, body):
     url=str(body.get('url') or '').strip()
-    p=urllib.parse.urlsplit(url)
-    if p.scheme!='https' or p.username or p.password or p.hostname not in {'youtube.com','www.youtube.com','youtu.be','vimeo.com','www.vimeo.com'} or p.port not in (None,443):
-        raise ValueError('Use an HTTPS YouTube or Vimeo reference link')
+    from core.show_clips import check_link
+    url=check_link(url)
     start,end=float(body.get('start',0)),float(body.get('end',0))
     if not all(map(math.isfinite,(start,end))) or start<0 or end<=start:
         raise ValueError('Choose an end after the start (seconds)')

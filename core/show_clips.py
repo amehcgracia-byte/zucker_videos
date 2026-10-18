@@ -14,14 +14,14 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
-HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "vimeo.com", "www.vimeo.com"}
+HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "vimeo.com", "www.vimeo.com", "dailymotion.com", "www.dailymotion.com", "twitch.tv", "www.twitch.tv", "clips.twitch.tv", "www.tiktok.com", "www.instagram.com", "www.reddit.com", "archive.org", "www.pexels.com", "pixabay.com"}
 MAX_SECONDS = 30.0
 
 
 def check_link(url: str) -> str:
     parts = urllib.parse.urlsplit(str(url or "").strip())
     if parts.scheme != "https" or parts.hostname not in HOSTS or parts.username or parts.password or parts.port not in (None, 443):
-        raise ValueError("Use an HTTPS YouTube or Vimeo link")
+        raise ValueError("Use an HTTPS link from YouTube, Vimeo, Dailymotion, Twitch, TikTok, Instagram, Reddit, Archive.org, Pexels or Pixabay")
     return parts.geturl()
 
 
@@ -47,7 +47,7 @@ def download(project, reference: dict[str, Any], ffmpeg: str) -> Path:
     try:
         from yt_dlp import YoutubeDL
         from yt_dlp.utils import DownloadError, download_range_func
-        options = {"quiet": True, "no_warnings": True, "noplaylist": True, "noprogress": True,
+        options = {"quiet": True, "no_warnings": True, "socket_timeout":20, "retries":2, "fragment_retries":2, "noplaylist": True, "noprogress": True,
                    "format": "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/bv*[height<=1080]+ba/b",
                    "merge_output_format": "mp4", "download_ranges": download_range_func(None, [(start, end)]),
                    "force_keyframes_at_cuts": True, "ffmpeg_location": ffmpeg, "max_filesize": 400 * 1024 * 1024,
@@ -64,7 +64,7 @@ def download(project, reference: dict[str, Any], ffmpeg: str) -> Path:
         subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-y", "-i", str(fetched), "-map", "0:v:0", "-map", "0:a:0?",
                         "-vf", "fps=30,format=yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
                         "-c:a", "aac", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", str(evened)],
-                       check=True, capture_output=True)
+                       check=True, capture_output=True, timeout=180)
         evened.replace(target)
     finally:
         shutil.rmtree(work, ignore_errors=True)

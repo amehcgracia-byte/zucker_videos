@@ -169,7 +169,7 @@
         <button type="button" class="icon-button small primary" data-studio="talk-preview" title="Eyes, mouth and voice together, as the video will show them">▶ Preview with voice</button></div>
       <video id="showTalkPreview" controls playsinline hidden style="max-width:100%;max-height:260px"></video><p id="showTalkStatus" role="status"></p>
       <div data-voice-input data-voice-character></div>
-      <div class="show-actions"><button type="button" class="icon-button small" data-studio="back2">Back to the cut-out</button><button type="button" class="primary icon-button small" data-studio="save">Save in the library and place it</button></div>`;
+      <div class="show-actions"><button type="button" class="icon-button small" data-studio="back2">Back to the cut-out</button><button type="button" class="primary icon-button small" data-studio="save">${state.placement?.proposalId?"Apply to this close-up":"Save in the library and place it"}</button></div>`;
     if(state.editing)$('[data-studio="back2"]').disabled=true;
     state.voices = voices;
     if(state.initialMode==='eyes')$('[name="rigtool"][value="eyes"]').checked=true;
@@ -237,9 +237,10 @@
     const tool=document.querySelector('[name=rigtool]:checked')?.value;
     // A recorded or chosen voice is heard: the character talks (its jaw moves too when a mouth was marked).
     const placement=state.placement?{...state.placement,action:voice||(tool==='mouth'&&state.mouth)?'talk':tool==='eyes'&&state.eyes?.length?'look':state.placement.action||'none'}:null;
-    if(placement?.replaceId)await window.ShowReview.rigSaved(saved.cutout,placement);
+    if(placement?.proposalId)await window.ShowReview.partsSaved(saved.cutout,placement);
+    else if(placement?.replaceId)await window.ShowReview.rigSaved(saved.cutout,placement);
     else if (!state.editing) await window.ShowReview.addToScene(saved.cutout,placement);
-    showToast(state.editing ? `${saved.name} updated. Render its preview to check the changes.` : `${saved.name} is in the library and in this scene`);
+    showToast(placement?.proposalId ? "Original parts updated in the same close-up." : state.editing ? `${saved.name} updated. Render its preview to check the changes.` : `${saved.name} is in the library and in this scene`);
     if(placement?.fromProposal)await window.ShowReview.characterTakesPlace(placement.fromProposal,saved.name);
   }
 

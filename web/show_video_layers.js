@@ -22,7 +22,7 @@
       if (config.current_video) await selectVideo(prefix+'/media/background.mp4', 'Your background video');
       else await selectPhoto(prefix+'/media/current', 'Your background picture');
     }
-    $('footer').textContent = 'Live preview of up to eight seconds · placement applies to the full timeline effect · your voice stays linked · backgrounds are muted and loop to fit';
+    $('footer').textContent = `Live preview · ${config.duration.toFixed(1)} seconds · placement applies to the full timeline effect · your voice stays linked · backgrounds are muted and loop to fit`;
     $('#status').textContent = 'Drag yourself to place your moving video. Choose a background, then Use in scene to save.';
     $('#saveLayers').disabled = false;
     draw();

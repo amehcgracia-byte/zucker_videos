@@ -69,6 +69,13 @@ class Segmenter:
         self.space = Quartz.CGColorSpaceCreateDeviceRGB()
 
     def __call__(self, rgb: np.ndarray) -> np.ndarray:
+        # Flask/editor workers do not own Cocoa's main-thread autorelease pool.
+        # Drain Vision's temporary Objective-C objects after each copied mask.
+        import objc
+        with objc.autorelease_pool():
+            return self._segment(rgb)
+
+    def _segment(self, rgb: np.ndarray) -> np.ndarray:
         Quartz = self.quartz
         height, width = rgb.shape[:2]
         bgra = np.dstack([rgb[..., ::-1], np.full((height, width, 1), 255, np.uint8)]).tobytes()
@@ -107,7 +114,7 @@ def _frames_key(plan: dict[str, Any], start: float, count: int) -> str:
         offset += length
     source = Path(str(plan.get("source") or ""))
     stamp = source.stat().st_mtime_ns if source.is_file() else 0
-    payload = [VERSION, str(source), stamp, plan.get("framing"), frames, list(MASK_SIZE), STEP]
+    payload = [VERSION, str(source), stamp, plan.get("framing"), frames, list(MASK_SIZE), STEP, plan.get("cover")]
     return hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
@@ -120,6 +127,16 @@ def prepare(cut: Path, entries: list[dict[str, Any]], plan: dict[str, Any], cach
     import cv2
     notes: list[str] = []
     fps = float(plan.get("fps") or 30)
+    for entry in entries:
+        if entry.get('video_layer') and entry.get('matte')=='person':
+            source=Path(entry['video_layer'])
+            begin=float(entry.get('clip_start') or 0)
+            n=int(round((begin+entry['duration'])*fps))
+            clip_plan={'source':str(source),'fps':fps,'cover':True,'shots':[{'start_frame':0,'end_frame':n}]}
+            cut=[{'background':'clip-person','at':begin,'duration':entry['duration']}]
+            warnings=prepare(source,cut,clip_plan,cache,ffmpeg=ffmpeg,progress=progress,cancel=cancel)
+            if warnings:raise BackgroundUnavailable('; '.join(warnings))
+            entry['masks']=cut[0]['masks']
     wanted = [entry for entry in entries if entry.get("background")]
     total = sum(max(1, int(round(float(entry["duration"]) * fps))) for entry in wanted)
     done = 0
@@ -136,10 +153,12 @@ def prepare(cut: Path, entries: list[dict[str, Any]], plan: dict[str, Any], cach
                 continue
             width, height = SEGMENT_SIZE
             reader = subprocess.Popen([ffmpeg, "-v", "error", "-nostdin", "-ss", f"{float(entry['at']):.3f}", "-i", str(cut),
-                                       "-frames:v", str(count), "-vf", f"scale={width}:{height}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                                       "-frames:v", str(count), "-vf", (f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}" if plan.get("cover") else f"scale={width}:{height}"), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
                                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             masks = np.zeros((count, MASK_SIZE[1], MASK_SIZE[0]), np.uint8)
             made: list[int] = []
+            # A decoder stuck in read() must not block every editor queued behind it.
+            deadline=threading.Timer(90,reader.kill);deadline.daemon=True;deadline.start()
             try:
                 with _vision_lock:
                     for index in range(count):
@@ -157,8 +176,11 @@ def prepare(cut: Path, entries: list[dict[str, Any]], plan: dict[str, Any], cach
                             if progress:
                                 progress(done / max(1, total), f"Cutting you out for the new background — {done / max(1, total):.0%}")
             finally:
+                deadline.cancel()
                 reader.kill()
                 reader.wait()
+            if not made or len(masks)!=count:
+                raise BackgroundUnavailable('The cutout source stopped decoding. Try a shorter span or another source video.')
             # The frames between two masks: blended (a person moves little in a 15th of a second).
             for a, b in zip(made, made[1:]):
                 for index in range(a + 1, b):
@@ -290,7 +312,7 @@ def apply(frame: np.ndarray, background: Background, t: float) -> None:
     frame[:] = np.clip(composite*fade+frame.astype(np.float32)*(1-fade)+.5, 0, 255).astype(np.uint8)
 
 
-def editor_sample(project, item, *, ffmpeg='ffmpeg'):
+def editor_sample(project, item, *, ffmpeg='ffmpeg', progress=None):
     """Prepare a bounded live preview. Saved placement applies to the full effect span.
 
     The actual cut and production person masks are reused; no new image is generated.
@@ -300,16 +322,40 @@ def editor_sample(project, item, *, ffmpeg='ffmpeg'):
     from core.show import window_plan, _cached_cut
     with _editor_lock:
         plan = json.loads((project.artifacts_dir/'show_plan.json').read_text())
-        start = float(item['at'])
-        end = min(float(plan['edited_duration']), start+float(item['duration']), start+8)
+        if progress:progress(.02,'Preparing the source video…')
+        is_clip=item['kind']=='clip'
+        if is_clip:
+            source=Path(item['params']['clip']);begin=float(item['params'].get('clip_start') or 0)
+            duration=min(2.,float(item['duration']),float(item['params']['clip_length'])-begin)
+            fps=30
+            plan={'source':str(source),'fps':fps,'edited_duration':begin+duration,'shots':[{'start_frame':0,'end_frame':round((begin+duration)*fps)}]}
+            start=begin
+        else:start=float(item['at'])
+        end = min(float(plan['edited_duration']), start+float(item['duration']), start+2)
         if end <= start:
             raise ValueError('Choose words for the moving video layer first')
         folder = project.cache_dir/'show-layer-editor'
         folder.mkdir(parents=True, exist_ok=True)
         part = window_plan(plan, start, end)
-        host = _cached_cut(Path(plan['source']), part, folder, 'person', ffmpeg=ffmpeg, width=960, height=540, cancel=None, progress=None)
+        if is_clip:
+            stat=Path(plan['source']).stat()
+            key=hashlib.sha256(json.dumps([str(plan['source']),stat.st_size,stat.st_mtime_ns,start,end]).encode()).hexdigest()[:20]
+            host=folder/f'clip-{key}.mp4'
+            if not host.is_file():
+                pending=host.with_suffix('.pending.mp4')
+                try:
+                    subprocess.run([ffmpeg,'-v','error','-y','-nostdin','-ss',str(start),'-i',plan['source'],'-t',str(end-start),
+                                    '-map','0:v:0','-map','0:a:0?','-vf','scale=960:540:force_original_aspect_ratio=increase,crop=960:540,fps=30',
+                                    '-c:v','libx264','-preset','veryfast','-crf','20','-c:a','aac','-movflags','+faststart',str(pending)],
+                                   check=True,capture_output=True,timeout=90)
+                    pending.replace(host)
+                finally:pending.unlink(missing_ok=True)
+        else:
+            host = _cached_cut(Path(plan['source']), part, folder, 'person', ffmpeg=ffmpeg, width=960, height=540, cancel=None,
+                               progress=(lambda value:progress(.05+value*.002,'Preparing the source video…')) if progress else None)
+        if progress:progress(.3,'Finding the moving person…')
         entries = [{'background':'live-editor', 'at':0., 'duration':end-start}]
-        notes = prepare(host, entries, plan, project.cache_dir/'show_masks', offset=start, ffmpeg=ffmpeg)
+        notes = prepare(host, entries, plan, project.cache_dir/'show_masks', offset=start, ffmpeg=ffmpeg, progress=(lambda value,detail:progress(.3+value*.65,detail)) if progress else None)
         if notes:
             raise BackgroundUnavailable('; '.join(notes))
         masks = np.load(entries[0]['masks'], mmap_mode='r')
