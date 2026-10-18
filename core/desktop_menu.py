@@ -19,8 +19,8 @@ MENU_ITEMS = [
     ('Playback', [('Play / Pause in Editor', 'play'), ('Previous Frame', 'previousFrame'),
                   ('Next Frame', 'nextFrame'), ('Enlarge Preview', 'expand')]),
     ('Result', [('View Result', 'result'), ('Show Video in Finder', 'finder')]),
-    ('Help', [('Tutorial with Einstein…', 'tutorial')]),
-    ('Tools', [('Check for Updates…', 'updates'), ('Toggle Light / Dark Theme', 'theme'),
+    ('Help', [('Show Studio Keyboard Shortcuts…', 'showShortcuts'), ('Tutorial with Einstein…', 'tutorial')]),
+    ('Tools', [('Accounts & Connectors…', 'connectors'), ('Check for Updates…', 'updates'), ('Toggle Light / Dark Theme', 'theme'),
                ('Process Details', 'details'), ('Copy Report', 'report'), ('Open Logs', 'logs')]),
 ]
 

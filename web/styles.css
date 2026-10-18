@@ -2348,3 +2348,12 @@ dialog.show-studio::backdrop {background:#0009;}
 .show-clay-editor-body label{display:grid;gap:6px;}
 .show-clay-editor-body textarea {width:100%;box-sizing:border-box;}
 .show-clay-editor-body details>summary {cursor:pointer;font-weight:600;margin-bottom:10px;}
+
+/* Each menu and media shelf owns its scroll; never chain into the scene behind it. */
+.zmenu { overscroll-behavior: contain; touch-action: pan-y; }
+.zmenu-item { flex-shrink: 0; }
+.show-lib-card video { width:100%; aspect-ratio:16/9; object-fit:contain; background:#17201b; }
+.show-lib-card audio { width:100%; min-width:0; }
+.show-lib-body { overscroll-behavior:contain; }
+[data-ref-video-library] button { display:inline-flex; flex-direction:column; max-width:200px; margin:5px; }
+[data-ref-video-library] img { object-fit:cover; }

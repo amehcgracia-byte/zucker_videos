@@ -2202,7 +2202,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         return jsonify({**document, "proposals": stored["proposals"], "resources": stored.get("resources") or [], "source": stored.get("source"),
                         "project_logo": str(logo) if logo.is_file() else None,
                         "caption_revision": caption_layout["revision"], "captions_enabled": captions_on, "project_id": str(project.folder),
-                        "plan": {"edited_duration": plan["edited_duration"]},
+                        "plan": {"edited_duration": plan["edited_duration"], "fps": plan.get("fps") or 30},
                         "source_url": f"/api/v1/show/source?path={quote(str(plan.get('source') or ''))}",
                         "saved_render": ({k: v for k, v in saved.items() if k != "path"} if (saved := _saved_show_render(project)) else None)})
 
@@ -2444,16 +2444,94 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         _effect_changed(project,proposal_id)
         return jsonify(item)
 
-    @app.get('/api/v1/show/video-library')
-    def api_show_video_library():
-        project=_require_project(state)
-        path=project.folder/'assets/video-library/catalog.json'
-        from core import show_proposals
-        from core.show_video_assets import remember
+    @app.post('/api/v1/show/library/media')
+    def api_show_import_media():
+        from core import show_video_assets,show_proposals
+        from core.ffmpeg import tool_status
+        project=_require_project(state);tools=tool_status();upload=request.files.get('file')
+        owner=request.form.get('project_id') or (request.get_json(silent=True) or {}).get('project_id')
+        if owner and owner!=str(project.folder):return error_response('stale_project','Reopen the original project before importing this file',409)
+        try:
+            if upload and upload.filename:
+                record=show_video_assets.import_media(project,upload.stream,upload.filename,str(tools.get('ffprobe_path') or 'ffprobe'),str(tools.get('ffmpeg_path') or 'ffmpeg'))
+            else:
+                raw=str((request.get_json(silent=True) or {}).get('path') or '')
+                if not raw or not Path(raw).is_file():raise ValueError('Choose a local video or audio file')
+                with Path(raw).open('rb') as stream:
+                    record=show_video_assets.import_media(project,stream,Path(raw).name,str(tools.get('ffprobe_path') or 'ffprobe'),str(tools.get('ffmpeg_path') or 'ffmpeg'))
+            with show_proposals.LOCK:
+                path=project.artifacts_dir/'show_proposals.json';stored=show_proposals.load(path)
+                if not any(r.get('path')==record['path'] for r in stored.setdefault('resources',[])):
+                    stored['resources'].append({'path':record['path'],'kind':record['media_kind'],'duration':record['duration'],'speech':[],'intervals':[],'origin':'Local import'})
+                show_proposals.save(path,stored['proposals'],**{k:v for k,v in stored.items() if k not in ('proposals','version')})
+            return jsonify(asset=record),201
+        except (ValueError,TypeError,OSError,KeyError,subprocess.SubprocessError) as exc:return error_response('import_failed','Could not import this media: '+str(exc)[:240],400)
+
+    def _show_media_catalog(project):
+        from core import show_proposals,show_video_assets
+        import hashlib
         stored=show_proposals.load(project.artifacts_dir/'show_proposals.json')
         for item in stored['proposals']:
-            if item['kind']=='clip':remember(project,item)
-        return jsonify(items=list(json.loads(path.read_text()).values()) if path.is_file() else [])
+            if item['kind']=='clip':
+                params=item['params']
+                if params.get('clip_original'):
+                    original={k:v for k,v in params.items() if k not in {'clip_original','face_photo','face_frames','preview'}}
+                    original['clip']=params['clip_original']
+                    show_video_assets.remember(project,{**item,'id':item['id']+'-original','params':original})
+                show_video_assets.remember(project,item)
+        known={r['path'] for r in show_video_assets.catalog(project).values()}
+        # Older versions already kept reusable clips/voices as project resources.
+        # Index those bytes in place; do not copy or scan unrelated folders.
+        for resource in stored.get('resources') or []:
+            raw=str(resource.get('path') or '')
+            path=Path(raw)
+            if raw in known or resource.get('kind') not in {'video','audio'} or not resource.get('duration'):continue
+            if not path.is_file() or not path.resolve().is_relative_to(project.folder.resolve()):continue
+            params=dict(clip=raw,clip_start=0,clip_length=resource['duration'],media_kind=resource['kind'],matte='none',
+                        face_swapped=resource.get('origin')=='Clip with your face')
+            show_video_assets.remember(project,dict(id='resource-'+hashlib.sha256(raw.encode()).hexdigest()[:24],params=params,duration=resource['duration']))
+            known.add(raw)
+        return show_video_assets.catalog(project)
+
+    @app.get('/api/v1/show/video-library')
+    @_proposals_locked
+    def api_show_video_library():
+        records=_show_media_catalog(_require_project(state))
+        unique={}
+        for record in records.values():
+            if record.get('media_kind','video')!='video':continue
+            params=record.get('params') or {}
+            key=json.dumps([record['path'],record.get('matte','none'),*[params.get(k) for k in ('clip_start','person_style','picture','person_scale','person_offset')]],sort_keys=True)
+            unique.setdefault(key,record)
+        return jsonify(items=list(unique.values()))
+
+    @app.get('/api/v1/show/audio-library')
+    @_proposals_locked
+    def api_show_audio_library():
+        records=_show_media_catalog(_require_project(state))
+        return jsonify(items=[r for r in records.values() if r.get('media_kind')=='audio'])
+
+    media_thumbnail_slots=threading.Semaphore(2)
+    @app.get('/api/v1/show/video-library/<asset_id>/thumbnail')
+    def api_show_video_thumb(asset_id):
+        from core.show_video_assets import catalog,thumbnail
+        from core.ffmpeg import tool_status
+        project=_require_project(state);record=catalog(project).get(asset_id)
+        if not record:return error_response('not_found','Unknown project video',404)
+        try:
+            with media_thumbnail_slots:path=thumbnail(project,record,str(tool_status().get('ffmpeg_path') or 'ffmpeg'))
+            return send_file(path,conditional=True)
+        except (ValueError,OSError,subprocess.SubprocessError):
+            return Response('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="#26332c"/><text x="160" y="90" fill="white" text-anchor="middle">Video · thumbnail unavailable</text></svg>',mimetype='image/svg+xml')
+
+    @app.get('/api/v1/show/video-library/<asset_id>/media')
+    def api_show_library_media(asset_id):
+        from core.show_video_assets import catalog
+        project=_require_project(state);record=catalog(project).get(asset_id)
+        if not record:return error_response('not_found','Unknown project media',404)
+        path=Path((record.get('params') or {}).get('preview') or record['path'])
+        if not path.is_file() or not path.resolve().is_relative_to(project.folder.resolve()):return error_response('not_found','This media is missing from the project',404)
+        return send_file_with_range(str(path))
 
     @app.post('/api/v1/show/video-library/<asset_id>/place')
     @_proposals_locked
@@ -2461,19 +2539,27 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         from core import show_proposals,show_scenes
         from core.show_video_assets import remember
         project=_require_project(state);body=request.get_json(silent=True) or {}
+        if body.get('project_id') and body['project_id']!=str(project.folder):return error_response('stale_project','Reopen the original project before placing this media',409)
         path=project.artifacts_dir/'show_proposals.json';stored=show_proposals.load(path)
+        record=_show_media_catalog(project).get(asset_id)
         source=next((p for p in stored['proposals'] if p['id']==asset_id and p['kind']=='clip'),None)
         doc=show_scenes.load(_scene_files(project));scene=next((s for s in doc['scenes'] if s['id']==body.get('scene_id')),None)
-        if source is None or scene is None:return error_response('not_found','Choose a project clip and a scene',404)
+        if record is None or scene is None:return error_response('not_found','Choose project media and a scene',404)
         try:
             at=float(body.get('at',scene['start']));duration=float(body.get('duration',3))
             if not math.isfinite(at+duration) or duration<=0 or not scene['start']<=at<scene['end']:raise ValueError('Choose words inside this scene')
-            duration=min(duration,scene['end']-at,float(source['params']['clip_length'])-float(source['params'].get('clip_start') or 0))
-            item=show_proposals.proposal('clip',at,duration,reason='From your video library',**source['params'])
+            params=dict(record.get('params') or (source or {}).get('params') or {'clip':record['path'],'clip_length':record['duration'],'clip_start':0,'matte':record.get('matte','none')})
+            duration=min(duration,scene['end']-at,float(record['duration'])-float(params.get('clip_start') or 0))
+            if duration<=0:raise ValueError('This media has no remaining frames')
+            if record.get('media_kind')=='audio':
+                item=show_proposals.proposal('jingle',at,duration,reason='From your audio library',path=record['path'],volume=.5,duck=.5,fade=.08,start=0)
+            else:item=show_proposals.proposal('clip',at,duration,reason='From your video library',**params)
             item['status']='approved';stored['proposals'].append(item)
             show_proposals.save(path,stored['proposals'],**{k:v for k,v in stored.items() if k not in ('proposals','version')})
-            scene['effects'].append(item['id']);show_scenes.save(_scene_files(project),doc);remember(project,item);_effect_changed(project,item['id'])
-            return jsonify(proposal=item,reference={'scene_id':scene['id'],'selected_text':'these words','id':source['params'].get('reference')}),201
+            scene['effects'].append(item['id']);show_scenes.save(_scene_files(project),doc)
+            if item['kind']=='clip':remember(project,item)
+            _effect_changed(project,item['id'])
+            return jsonify(proposal=item,reference={'scene_id':scene['id'],'selected_text':'these words','id':params.get('reference')}),201
         except (ValueError,TypeError) as exc:return error_response('invalid_placement',str(exc),400)
 
     @app.get('/api/v1/show/clips/<proposal_id>/media')
@@ -2482,7 +2568,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         project=_require_project(state)
         item=next((p for p in show_proposals.load(project.artifacts_dir/'show_proposals.json')['proposals'] if p['id']==proposal_id and p['kind']=='clip'),None)
         if item is None:abort(404)
-        path=Path(item['params']['clip']).resolve()
+        path=Path(item['params'].get('preview') or item['params']['clip']).resolve()
         if not path.is_file() or not path.is_relative_to(project.folder.resolve()):abort(404)
         return send_file_with_range(str(path))
 
@@ -2557,6 +2643,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 if missing:
                     show_faceswap.download(lambda share: update(progress=round(share, 3)))
                 update(status="working", progress=0.0)
+                from core.show_video_assets import remember
+                remember(project,item)
                 source = Path(item["params"].get("clip_original") or item["params"]["clip"])
                 out = source.with_name(f"{source.stem}-face-{photo['sha256'][:8]}.mp4")
                 changed, total = show_faceswap.swap_clip(Path(photo["path"]), source, out, ffmpeg, lambda share: update(progress=round(share, 3)))
@@ -2565,7 +2653,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                     stored = show_proposals.load(proposals_path)
                     for entry in stored["proposals"]:
                         if entry["id"] == proposal_id:
-                            entry["params"].update(clip=str(out), clip_original=str(source), face_photo=photo["path"], face_frames=[changed, total])
+                            entry["params"].update(clip=str(out), preview=str(out), clip_original=str(source), face_photo=photo["path"], face_frames=[changed, total])
+                            remember(project,entry)
                             updated = entry
                     resources = stored.setdefault("resources", [])
                     if not any(resource.get("path") == str(out) for resource in resources):
@@ -2597,9 +2686,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         item = next((entry for entry in stored["proposals"] if entry["id"] == proposal_id and entry["kind"] == "clip"), None)
         if item is None or not item["params"].get("clip_original"):
             return error_response("not_found", "This clip has no other version", 404)
+        from core.show_video_assets import remember
+        remember(project, item)
         item["params"]["clip"] = item["params"].pop("clip_original")
+        item["params"]["preview"] = item["params"]["clip"]
         item["params"].pop("face_photo", None)
         item["params"].pop("face_frames", None)
+        remember(project, item)
         show_proposals.save(proposals_path, stored["proposals"], **{k: v for k, v in stored.items() if k not in ("proposals", "version")})
         _effect_changed(project, proposal_id)
         return jsonify(item)
@@ -3125,7 +3218,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         project = _require_project(state)
         raw = str(request.args.get("path") or "")
         registered = {str(record.get("path")) for record in project.data.get("inputs", {}).get("videos", [])}
-        if raw not in registered or not Path(raw).is_file():
+        if (raw not in registered and _show_allowed_source(project, raw) is None) or not Path(raw).is_file():
             return error_response("not_found", "Not a video of this project", 404)
         return send_file_with_range(raw)
 

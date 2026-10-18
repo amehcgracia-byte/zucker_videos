@@ -2912,13 +2912,17 @@ async function browserDropFiles(dataTransfer) {
 }
 
 const nativeDropWaiters = [];
+let recentNativeDrop = null;
 window.receiveNativeDrop = (files) => {
   const signature = files.map((file) => file.name).sort().join("\n");
   const index = nativeDropWaiters.findIndex((waiter) => waiter.signature === signature);
   if (index >= 0) nativeDropWaiters.splice(index, 1)[0].finish(files);
+  else recentNativeDrop = {signature, files, at:Date.now()};
 };
 function waitForNativeDrop(files) {
   if (!window.nativeDropReady) return Promise.resolve(null);
+  const signature = files.map(file => file.name).sort().join("\n");
+  if (recentNativeDrop?.signature === signature && Date.now()-recentNativeDrop.at < 2000) { const cached=recentNativeDrop.files; recentNativeDrop=null; return Promise.resolve(cached); }
   return new Promise((resolve) => {
     const waiter = { signature: files.map((file) => file.name).sort().join("\n") };
     const timer = setTimeout(() => { const index = nativeDropWaiters.indexOf(waiter); if (index >= 0) nativeDropWaiters.splice(index, 1); resolve(null); }, 1500);
@@ -5201,6 +5205,7 @@ document.addEventListener("change", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (window.ShowReview?.active()) return;
   if (event.key === "Escape" && document.querySelector("#composeContextMenu")) {
     closeComposeContextMenu();
     event.preventDefault();
@@ -6033,6 +6038,9 @@ window.EditorMenu = {
       button.click();
     };
     try {
+      if (action === 'showShortcuts') return window.ShowReview.shortcuts();
+      if (action === 'connectors') return click('connectorsOpen');
+      if (['play','previousFrame','nextFrame'].includes(action) && window.ShowReview?.active()) return window.ShowReview.transport(action);
       if (action === 'tutorial') return window.EditorTutorial.start();
       if (action === 'updates') return await checkForUpdates(true);
       if (action === 'theme') return click('themeToggle');

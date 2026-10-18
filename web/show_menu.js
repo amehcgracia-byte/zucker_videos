@@ -19,6 +19,15 @@
     menu.className = "zmenu";
     menu.setAttribute("role", "menu");
     menu.dataset.level = level;
+    menu.addEventListener("wheel", event => {
+      event.preventDefault(); event.stopPropagation();
+      const delta = event.deltaY * (event.deltaMode === 1 ? 24 : event.deltaMode === 2 ? menu.clientHeight : 1);
+      menu.scrollTop += delta;
+    }, {passive:false});
+    menu.addEventListener("scroll", () => {
+      menus().filter(other => Number(other.dataset.level) > level).forEach(other => other.remove());
+      menu.querySelectorAll(".open").forEach(row => row.classList.remove("open"));
+    });
     for (const item of items) {
       if (!item) continue;
       if (item.separator) { const line = document.createElement("div"); line.className = "zmenu-separator"; menu.append(line); continue; }

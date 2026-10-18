@@ -1,6 +1,19 @@
 """Non-destructive video cutouts. Originals stay intact; recipes live with project assets."""
 from __future__ import annotations
 import json
+import threading
+import functools
+
+_catalog_lock = threading.RLock()
+_thumbnail_lock = threading.Lock()
+
+def _catalog_locked(fn):
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        with _catalog_lock:
+            return fn(*args, **kwargs)
+    return wrapped
+
 from pathlib import Path
 import cv2
 import numpy as np
@@ -33,6 +46,7 @@ def detect_green(path):
     return len(votes) >= 2 and sum(votes) >= 2
 
 
+@_catalog_locked
 def remember(project, item):
     """Recipes reference an existing project-owned clip; never duplicate its bytes."""
     from core.project import atomic_write_json
@@ -40,10 +54,17 @@ def remember(project, item):
     path.parent.mkdir(parents=True,exist_ok=True)
     records = json.loads(path.read_text()) if path.is_file() else {}
     p = item['params']
-    records[item['id']] = dict(id=item['id'],path=p['clip'],name=Path(p['clip']).stem,
-                              matte=p.get('matte','none'),transparent=p.get('matte','none')!='none',
+    old=records.get(item['id'])
+    if old and old['path']!=p['clip']:
+        import hashlib
+        old_id=item['id']+'-'+hashlib.sha256(old['path'].encode()).hexdigest()[:12]
+        records[old_id]={**old,'id':old_id}
+    records[item['id']] = dict(id=item['id'],path=p['clip'],name=p.get('name') or Path(p['clip']).stem,
+                              matte=p.get('matte','none'),transparent=p.get('matte','none')!='none',params=dict(p),
+                              media_kind=p.get('media_kind','video'),face_swapped=bool(p.get('clip_original') or p.get('face_swapped')),
                               url=p.get('url',''),duration=p.get('clip_length',item['duration']))
-    atomic_write_json(path,records)
+    if not path.is_file() or json.loads(path.read_text()) != records:
+        atomic_write_json(path,records)
 
 
 class VideoLayer:
@@ -80,3 +101,80 @@ class VideoLayer:
             foreground=cv2.warpAffine(foreground,matrix,(w,h))
             mask=cv2.warpAffine(mask,matrix,(w,h))[...,None]
         frame[:]=np.clip(foreground+behind*(1-mask)+.5,0,255).astype(np.uint8)
+
+
+@_catalog_locked
+def catalog(project):
+    path=project.folder/'assets/video-library/catalog.json'
+    return json.loads(path.read_text()) if path.is_file() else {}
+
+
+def import_media(project, stream, filename, ffprobe, ffmpeg):
+    """Copy a selected local file once, by content, and keep original bytes intact."""
+    import hashlib,uuid,subprocess,math
+    ext=Path(filename).suffix.lower()
+    video_exts={'.mp4','.mov','.m4v','.mkv','.webm','.avi'}
+    audio_exts={'.mp3','.wav','.m4a','.aac','.flac','.ogg','.opus'}
+    if ext not in video_exts|audio_exts:raise ValueError('Choose a video or audio file')
+    folder=project.folder/'assets/clips';folder.mkdir(parents=True,exist_ok=True)
+    pending=folder/('import-'+uuid.uuid4().hex+ext)
+    try:
+        digest=hashlib.sha256()
+        with pending.open('wb') as output:
+            for chunk in iter(lambda:stream.read(8*1024*1024),b''):
+                digest.update(chunk);output.write(chunk)
+        meta=json.loads(subprocess.check_output([ffprobe,'-v','error','-show_streams','-show_format','-of','json',str(pending)],timeout=25))
+        duration=float(meta['format']['duration'])
+        if not math.isfinite(duration) or duration<=0:raise ValueError('This file has no playable duration')
+        video=next((s for s in meta['streams'] if s['codec_type']=='video' and not s.get('disposition',{}).get('attached_pic')),None)
+        audio=next((s for s in meta['streams'] if s['codec_type']=='audio'),None)
+        if video is None and audio is None:raise ValueError('No video or audio stream was found')
+        kind='video' if video else 'audio';sha=digest.hexdigest();target=folder/('local-'+sha+ext)
+        if target.exists():pending.unlink()
+        else:pending.replace(target)
+        preview=target
+        if video and (video['codec_name']!='h264' or ext not in {'.mp4','.m4v','.mov'} or (audio and audio['codec_name'] not in {'aac','mp3','alac'})):
+            preview=folder/('preview-'+sha+'.mp4')
+            if not preview.exists():
+                temp=preview.with_name(preview.stem+'.'+uuid.uuid4().hex+'.pending.mp4')
+                try:
+                    command=[ffmpeg,'-v','error','-y','-nostdin','-i',str(target),'-map','0:v:0','-map','0:a:0?']
+                    command+=['-c:v','copy'] if video['codec_name']=='h264' else ['-c:v','libx264','-crf','18','-preset','fast','-threads','2','-pix_fmt','yuv420p']
+                    subprocess.run(command+['-c:a','aac','-movflags','+faststart',str(temp)],check=True,capture_output=True,timeout=180)
+                    temp.replace(preview)
+                finally:temp.unlink(missing_ok=True)
+        if not video and ext not in {'.mp3','.m4a','.wav'}:
+            preview=folder/('preview-'+sha+'.m4a')
+            if not preview.exists():
+                temp=preview.with_name(preview.stem+'.'+uuid.uuid4().hex+'.pending.m4a')
+                try:
+                    subprocess.run([ffmpeg,'-v','error','-y','-nostdin','-i',str(target),'-vn','-c:a','aac','-threads','2',str(temp)],check=True,capture_output=True,timeout=180)
+                    temp.replace(preview)
+                finally:temp.unlink(missing_ok=True)
+        item={'id':'local-'+sha[:24],'kind':'clip' if video else 'jingle','duration':duration,'params':{
+            'clip':str(target),'preview':str(preview),'clip_start':0,'clip_length':duration,'clip_audio':bool(audio),
+            'name':Path(filename).stem,'media_kind':kind,'sha256':sha,'matte':'none'}}
+        remember(project,item)
+        return catalog(project)[item['id']]
+    finally:pending.unlink(missing_ok=True)
+
+
+def thumbnail(project, record, ffmpeg):
+    with _thumbnail_lock:
+        return _thumbnail(project, record, ffmpeg)
+
+def _thumbnail(project, record, ffmpeg):
+    """Lazy project-local thumbnail; immutable source IDs avoid rereading big videos."""
+    import hashlib,subprocess
+    path=Path(record['path']).resolve()
+    if not path.is_relative_to(project.folder.resolve()) or not path.is_file():raise ValueError('This video is missing from the project')
+    token=hashlib.sha256((str(path)+record.get('thumbnail_revision','')).encode()).hexdigest()[:24]
+    out=project.cache_dir/'video-thumbnails'/(token+'.jpg');out.parent.mkdir(parents=True,exist_ok=True)
+    if not out.exists():
+        pending=out.with_suffix('.pending.jpg')
+        try:
+            subprocess.run([ffmpeg,'-v','error','-y','-nostdin','-ss',str(min(.3,record.get('duration',1)/4)),'-i',str(path),
+                '-frames:v','1','-vf','scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2','-threads','1',str(pending)],check=True,capture_output=True,timeout=20)
+            pending.replace(out)
+        finally:pending.unlink(missing_ok=True)
+    return out

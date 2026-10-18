@@ -22,12 +22,18 @@
       <label>Background<select data-clip-matte><option value="auto">Detect green screen automatically</option><option value="none">Keep the complete video</option><option value="green">Remove green screen</option><option value="person">Cut out the moving person (macOS)</option></select></label>
       <label><input type="checkbox" data-clip-audio> Use the clip's audio</label><p>With a cutout, your original video and voice continue underneath. With a full-frame clip and its audio, your narration pauses.</p>
       <button data-clip-save class="primary">Apply clip settings</button><button data-clip-layers>Edit moving person &amp; background…</button></div></section>
-      <section data-ref-section="library" hidden><h3>Video library</h3><label><input data-ref-transparent type="checkbox" checked> Cutouts / transparent backgrounds only</label><div data-ref-video-library></div><p>Original files stay in this project. A cutout is a reusable recipe; it does not duplicate the video.</p></section>
+      <section data-ref-section="library" hidden><h3>Video library</h3><label><input data-ref-transparent type="checkbox"> Cutouts / transparent backgrounds only</label><div data-ref-video-library></div><p>Original files stay in this project. A cutout is a reusable recipe; it does not duplicate the video.</p></section>
       <section data-ref-section="generate" hidden><h3>Create a video outside the editor</h3><p>No video generator is connected. Describe the shot, copy the prompt to your chosen video generator, then bring back the result. Do not expect ChatGPT image generation to return a video.</p>
       <label>What should happen?<textarea data-ref-idea rows="3" placeholder="A handmade clay version of me remembering a tiny village…"></textarea></label>
       <button data-ref-prompt>Prepare video prompt</button><textarea data-ref-prompt-text aria-label="External video prompt" rows="10" readonly></textarea><button data-ref-copy>Copy prompt</button></section>
       <p data-ref-status role="status"></p>`;
     document.body.append(dialog);
+    dialog.addEventListener('keydown', event => {
+      if(event.key !== 'Enter' || event.isComposing || !event.target.matches('[data-ref-url],[data-ref-start]'))return;
+      event.preventDefault();
+      const button=dialog.querySelector(context?.clip?'[data-clip-save]':'[data-ref-download]');
+      if(!button.disabled)button.click();
+    });
     dialog.querySelector('[data-ref-close]').onclick=()=>dialog.close();
     dialog.querySelectorAll('[data-ref-tab]').forEach(button=>button.onclick=()=>tab(button.dataset.refTab));
     dialog.querySelector('[data-ref-search]').onsubmit=async event=>{
@@ -80,7 +86,7 @@
   async function loadVideoLibrary(){
     const list=dialog.querySelector('[data-ref-video-library]');list.textContent='Loading project videos…';
     try{const records=(await api('/show/video-library')).items;const only=dialog.querySelector('[data-ref-transparent]').checked;
-      list.replaceChildren();for(const item of records.filter(v=>!only||v.transparent)){const button=document.createElement('button');button.textContent=item.name+' · '+(item.transparent?'cutout':'complete video');button.onclick=async()=>{try{const result=await api('/show/video-library/'+encodeURIComponent(item.id)+'/place',{method:'POST',body:JSON.stringify({scene_id:context.scene.id,at:context.picked.start,duration:context.picked.end-context.picked.start})});dialog.close();ShowReview.clipAdded(result);}catch(error){message(error.message);}};list.append(button);}
+      list.replaceChildren();for(const item of records.filter(v=>!only||v.transparent)){const button=document.createElement('button');button.innerHTML=`<img loading="lazy" width="160" height="90" src="/api/v1/show/video-library/${encodeURIComponent(item.id)}/thumbnail" alt=""><span>${esc(item.name)} · ${item.face_swapped?'face-swapped · ':''}${item.transparent?'cutout':'complete video'}</span>`;button.onclick=async()=>{try{const result=await api('/show/video-library/'+encodeURIComponent(item.id)+'/place',{method:'POST',body:JSON.stringify({scene_id:context.scene.id,at:context.picked.start,duration:context.picked.end-context.picked.start})});dialog.close();ShowReview.clipAdded(result);}catch(error){message(error.message);}};list.append(button);}
       if(!list.childElementCount)list.textContent='No matching videos yet. Download a clip and choose its background removal.';
     }catch(error){list.textContent=error.message;}
   }

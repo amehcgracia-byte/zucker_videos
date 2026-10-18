@@ -113,7 +113,7 @@ def parse_args() -> argparse.Namespace:
 def _enable_native_drop(window) -> None:
     """Use pywebview's native paths so desktop drops never copy source media."""
     try:
-        zone = window.dom.get_element("#dropZone")
+        zone = window.dom.get_element("body")
         if zone is None:
             return
         def dropped(event):
