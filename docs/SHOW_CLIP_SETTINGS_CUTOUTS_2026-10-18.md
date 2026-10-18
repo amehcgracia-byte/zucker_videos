@@ -121,3 +121,7 @@ eyes studio, topmost context menu, Escape back to still-open timeline, group
 expansion, searching, independent body scrolling and close-button hit testing at
 1280×800 and 600×550. No JavaScript errors after the missing-pane fix. This is
 browser verification, not a claim of testing every native Windows dialog.
+
+The focused menu/library/character regression run after this follow-up passed
+**16 tests**. The menu behavior test also checks that a supplied body host cannot
+put a context menu underneath the modal at the pointer. No skip/xfail was added.
