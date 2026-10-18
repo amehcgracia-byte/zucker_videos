@@ -79,3 +79,17 @@ real video draft before approval, and never claim an attached video-model API.
 Do not compress stored stories to the selected word length or put Clay back on
 its old read-only timeline row. Window previews must preserve `_edited_offset`
 so their timing agrees with the full master. Preserve older source-clock stories.
+
+Final Show-wide regression run: **265 passed**, one existing Pillow deprecation
+warning, 148.67 seconds. The previous isolated voice-studio test now includes the
+real `closeStudio()` helper and a native-dialog close mock, checking both closure
+and the existing voice/replacement behavior; its extracted-save-function harness
+had missed that helper after the earlier DIV-to-dialog change. No product voice
+behavior was weakened to satisfy the test.
+
+The 2.6.9 frozen bundle at code commit `833bbe2b` passed strict signature checking
+and its packaged self-test (render, real frozen Whisper/VAD dependency path,
+scene tagging, instrument model, Metal reprojection equality and green-key
+compositor availability). A four-second scene preview containing the newly
+ChatGPT-generated story also fully decoded: 120 H.264 frames at 30 fps and four
+seconds of original audio. Its composed frame was visually checked.

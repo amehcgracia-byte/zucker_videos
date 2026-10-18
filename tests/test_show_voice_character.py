@@ -25,10 +25,11 @@ def test_a_character_with_a_voice_talks_even_without_a_marked_mouth(tmp_path):
 def test_saving_in_the_studio_with_a_voice_talks_and_takes_the_proposed_characters_place():
     script = Path("web/show_characters.js").read_text()
     save = script[script.index("  async function save() {"):script.index("  window.ShowPhotoStudio = {")]
+    close = script[script.index("  function closeStudio() {"):script.index('  document.addEventListener("DOMContentLoaded"')]
     program = '''
 const assert = require('node:assert/strict');
 const calls = [];
-const fields = {'#showCharacterVoice': {value: '0'}, '#showCharacterName': {value: 'Me'}, '#showCharacterStudio': {hidden: false}};
+const fields = {'#showCharacterVoice': {value: '0'}, '#showCharacterName': {value: 'Me'}, '#showCharacterStudio': {hidden: false, open: true, close() {this.open=false;}}};
 const $ = (s) => fields[s];
 const document = {querySelector: () => ({value: 'eyes'})};
 let state = {voices: [{source: '/v.wav', start: 0, length: 2}], photo: {photo: '/p.png'}, cut: {mask: 'm', method: 'x'}, eyes: [], mouth: null,
@@ -38,9 +39,11 @@ const showToast = () => {};
 const chosenVoice = () => state.voices[0];          // the chosen voice, trimmed (here untouched)
 const window = {ShowReview: {refreshLibrary: async () => {}, addToScene: async (asset, placement) => calls.push(['add', placement.action]),
                 rigSaved: async () => calls.push(['rig']), characterTakesPlace: async (id) => calls.push(['replace', id])}};
-''' + save + '''
+''' + close + save + '''
 save().then(() => {
   assert.deepEqual(calls, [['add', 'talk'], ['replace', 'character-1']]);
+  assert.equal(fields['#showCharacterStudio'].open, false);
+  assert.equal(fields['#showCharacterStudio'].hidden, true);
 }).catch((e) => { console.error(e); process.exitCode = 1; });
 '''
     subprocess.run(["node", "-e", program], check=True, capture_output=True, text=True)
