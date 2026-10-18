@@ -939,6 +939,9 @@
     if (video.readyState >= 1) start(); else video.addEventListener("loadedmetadata", start, { once: true });
     const tick = () => {
       if (quick !== session) return;
+      // duration is zero before metadata arrives. It is not the end of the scene:
+      // treating it as an end cancels a cold Play request before the file can load.
+      if(video.readyState < 1){quick.frame=requestAnimationFrame(tick);return;}
       if(!video.seeking){
         const actual=segments.findIndex(([a,b])=>a<=video.currentTime && video.currentTime<b);
         if(actual>=0)quick.index=actual;

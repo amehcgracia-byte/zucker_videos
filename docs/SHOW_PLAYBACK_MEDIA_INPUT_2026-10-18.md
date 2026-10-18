@@ -2,7 +2,7 @@
 
 ## User-visible behavior
 
-- Play initializes the source video when no effects preview exists. A broken effects video falls back to the source instead of repeatedly attempting the same broken URL. Missing/unsupported files and buffering have explicit messages. Scene animation ticks cannot outlive their own playback session.
+- Play initializes the source video when no effects preview exists. A broken effects video falls back to the source instead of repeatedly attempting the same broken URL. Missing/unsupported files and buffering have explicit messages. Before metadata arrives, duration zero is treated as loading, not scene completion; a cold Play request is no longer cancelled by the animation tick. Scene animation ticks cannot outlive their own playback session.
 - A failed effects-preview request no longer presents a successfully saved edit as a failed save. Original-video playback remains available.
 - Space plays/pauses the current scene or intro; arrows step frames when the preview/timeline has focus; Shift steps ten. Text editing, nested dialogs and menu navigation keep their own keyboard behavior. Enter confirms a link download or applies clip settings from its link/source-position fields. Existing timeline clipboard/split/undo commands remain scoped to the timeline.
 - Help → Show Studio Keyboard Shortcuts… explains these bindings. Tools → Accounts & Connectors… opens the existing ChatGPT/Codex, Claude, Hugging Face and GitHub account panel. It does not create or change accounts.
@@ -22,9 +22,10 @@ No style-learning memory or preference training is introduced. Existing project 
 
 ## Validation
 
-- Full Show and desktop-menu suite: **272 passed**, one existing Pillow deprecation warning (`/tmp/show-2610-suite-final.log`).
+- Final full Show and desktop-menu suite: **273 passed**, one existing Pillow deprecation warning (`/tmp/show-2610-release-suite.log`).
 - After the additional preview-request failure regression: **20 focused tests passed** (`/tmp/show-2610-regressions.log`), including import, real JPEG thumbnail, range playback, audio placement, wrong-project rejection, retained original/face versions, parallel catalog writes and preview fallback. Counts overlap; do not add them together.
 - Chromium and WebKit UI checks on an isolated synthetic project: effects deliberately unavailable, source playback/Space, local file import, thumbnail, editable timeline, small alternating trackpad deltas, nested menu scrolling without page movement, Enter confirmation in clip settings, ordinary text Space, and drop-navigation prevention. Both pass (`/tmp/show-2610-ui-final.log`).
+- The additional cold-metadata regression passes with the four other transport tests (`/tmp/show-2610-cold-play.log`); the full-suite count above precedes this extra test.
 - JavaScript syntax and Python compilation pass. The user's running app/project was not changed by these checks.
 
 ## Practical limits

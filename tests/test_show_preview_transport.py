@@ -92,3 +92,28 @@ assert.match(label.textContent,/edits are saved/);assert.match(label.textContent
 }).catch(error=>{console.error(error);process.exitCode=1;});
 """
     subprocess.run(['node','-e',program],check=True,capture_output=True,text=True)
+
+
+def test_cold_source_does_not_pause_before_metadata_has_arrived():
+    script=Path('web/show_review.js').read_text()
+    play=script[script.index('  function playQuick('):script.index('  // ---- The scene editor plays')]
+    program="""
+const assert=require('node:assert/strict');
+let quick=null,frame,metadata,pauses=0;
+const review={source_url:'/original.mp4'}, scene={id:'s1',start:5,end:6,segments:[[5,6]]};
+const video={readyState:0,duration:0,currentTime:0,seeking:false,ended:false,
+getAttribute(){return '/original.mp4'},pause(){pauses++},addEventListener(name,fn){metadata=fn}};
+const element={hidden:false,textContent:''},transport={hidden:false};
+const $=id=>id==='#showStageVideo'?video:id==='#showSceneTransport'?transport:element;
+const stopQuick=()=>{quick=null},useSaved=()=>false,effectsReady=()=>false;
+const liveDrawings=()=>{},editorEffectsLabel=()=>{},syncPlayback=()=>{},leftOut=()=>'',showToast=()=>{};
+const sourceAt=(segments,from)=>[0,from],timelineDialog={open:false};
+const requestAnimationFrame=fn=>{frame=fn;return 1};
+"""+play+"""
+assert.equal(playQuick(scene),true);
+frame();assert.equal(pauses,0,'metadata is not a zero-length scene');
+video.readyState=1;video.duration=10;metadata();
+assert.equal(video.currentTime,5);frame();assert.equal(pauses,0);
+video.currentTime=6;frame();assert.equal(pauses,1,'real end still pauses');
+"""
+    subprocess.run(['node','-e',program],check=True,capture_output=True,text=True)
