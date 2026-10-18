@@ -80,3 +80,35 @@ moving-video path. Keep `web/show_video_layers.js`, its HTML resource and all fo
 backgrounds in both package recipes. Do not reconnect a generation provider to previews
 or final render. Keep legacy steam IDs, preview recipe bumps and clean-frame tracking.
 The menu test changed because steam is now inside Textures; it was not skipped.
+
+
+## Final verification and installation
+
+- Final focused suite (including legacy clip duration, fade continuity, background video,
+  audio preservation, transforms, common texture controls and preview transport):
+  **63 passed in 93.96 seconds** (`/tmp/show-267-final-validated.log`).
+- A fresh full dependency analysis proved unnecessarily expensive and was stopped.
+  The final bundle reuses the validated 4a9e0f8a dependency closure and unchanged
+  bytecode. Only `show_framing`, `show_inserts` and `show_textures` changed afterwards;
+  their imports were compared with AST and are identical. They were recompiled from
+  the current source. The rebuilt PYZ was inspected to confirm all three contain the
+  new fade flags, rather than their previous bytecode. Python version and source
+  dependency paths were checked. Standard package cleanup, signing and the actual
+  executable selftest then ran again.
+- Final frozen executable: **2.6.7 / 7ef3f995f4a9f9a169cf8ff15923763be25c082e**.
+  Its selftest returned `ok: true`, status 200, instruments loaded, intro rendered,
+  Metal exactness, scene tagging and transcription all true. The added selftest
+  assertions verify the video-layer resources, ten presets and macOS Vision loading.
+  `windows_ui` and `backstage_export` are null; those are not new validation claims.
+- Installed directly into `/Applications/Zucker Editor.app` after strict signature
+  verification. The staged web scripts, HTML, SVG, four original background PNGs,
+  fonts and Simón assets were compared byte-for-byte with source before replacement.
+- Previous **2.6.6 / 9c989ad8** preserved and its executable hash verified in
+  `~/Applications Backups/Zucker Editor before 2.6.7 20261018-102800.app`.
+- The new app was launched with the existing project. Installation record:
+  `/tmp/zucker-267-install-report.json`. This delivery installs the verified app;
+  the earlier 4a9e0f8a DMG is an archived intermediate build, not this final delivery.
+
+Do not describe the whole application suite as green: the full run above includes
+25 inherited failure IDs plus the subsequently corrected obsolete duration test.
+No test was skipped or xfailed to achieve the 63 passing focused checks.
