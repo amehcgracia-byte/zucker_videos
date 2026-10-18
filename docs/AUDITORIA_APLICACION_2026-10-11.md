@@ -165,8 +165,80 @@ La ruta de textos/fórmulas de Show (`core/show_bridge_text.py`) trataba todos l
 
 Se han extraído localmente, por copia de streams, solo 24 s de C0271 y 12 s de C0274, más su audio. No se renderiza localmente. Los fragmentos no están en Git ni en artefactos del repositorio público: se transportan como un asset de release de un repositorio **privado**, con verificación previa de visibilidad. El repositorio privado contiene únicamente el workflow; los medios no se añaden a su historial Git. Los resultados de los runners se retienen allí durante tres días para la revisión. No se publicarán capturas ni trazas privadas en PR #30.
 
-Ejecución privada **`38865498621`**, código congelado `883ab5cbebcb904cd1b8bc84a6c7c0fdf8cdb3b4`: cuatro recorridos por sistema (YouTube, Reel, Medley, Backstage), **en curso, sin resultado aún**. El SHA-256 del asset privado coincide con el archivo local (`b8161addcabca0c97305e71cbe0b76050c9c289d11f1fda9aa825882e29542fb`); tras comprobarlo se eliminaron las copias temporales locales. Debe recogerse la evidencia antes de eliminar el asset remoto temporal. Un test adicional comprueba que una fuente privada ausente aborta antes de abrir el navegador o generar fixtures; ese test y los 13 del bridge pasan localmente (14 en total). La fuente 360 real está pendiente: RAWVideos no está conectado y no se utiliza una grabación plana como sustituto. El recorrido 360 sintético no demuestra la calidad de una cámara 360 real.
+Ejecución privada **`38865498621`**, código congelado `883ab5cbebcb904cd1b8bc84a6c7c0fdf8cdb3b4`: cuatro recorridos por sistema (YouTube, Reel, Medley, Backstage). **Intento invalidado por un fallo del harness**, descrito abajo; no se cuenta como validación del producto. El SHA-256 del asset privado coincide con el archivo local (`b8161addcabca0c97305e71cbe0b76050c9c289d11f1fda9aa825882e29542fb`); tras comprobarlo se eliminaron las copias temporales locales. Debe recogerse la evidencia antes de eliminar el asset remoto temporal. Un test adicional comprueba que una fuente privada ausente aborta antes de abrir el navegador o generar fixtures; ese test y los 13 del bridge pasan localmente (14 en total). La fuente 360 real está pendiente: RAWVideos no está conectado y no se utiliza una grabación plana como sustituto. El recorrido 360 sintético no demuestra la calidad de una cámara 360 real.
 
-Se ha solicitado también un nuevo paquete Windows y su selftest de arranque en **`38865306308`**, con esa misma revisión. El anterior paquete aprobado en `38533337837` no certifica el código nuevo. Los diálogos nativos de archivos, permisos de micrófono, sustitución/actualización del ejecutable y comportamiento de menús nativos requieren validación del paquete; Chromium headless no los certifica. No se instala este paquete sobre la aplicación del usuario.
+El paquete Windows y su selftest de arranque en **`38865306308`** han terminado correctamente, con esa misma revisión. Se extrajo solo el log de su artefacto, sin descargar el ZIP de 618 MB: el JSON final declara `ok`, `windows_ui`, `transcription`, `scene_tagging`, `instrument_model_loaded` e `intro_rendered` verdaderos. El test abre el backend real Edge/WebView y ejecuta JavaScript; no prueba los diálogos ni permisos nativos. El anterior paquete aprobado en `38533337837` no certifica el código nuevo. Los diálogos nativos de archivos, permisos de micrófono, sustitución/actualización del ejecutable y comportamiento de menús nativos requieren validación del paquete; Chromium headless no los certifica. No se instala este paquete sobre la aplicación del usuario.
 
 La repetición sintética tras el cambio de harness está en **`38865264815`**. La auditoría permanece **abierta** hasta recoger y revisar esas ejecuciones; este seguimiento no se pausa todavía.
+
+## Primera ronda real: fallo del harness, no del editor
+
+Los cuatro informes macOS de `38865498621` fallan en `page.evaluate` al construir el drop, antes de que el editor reciba los vídeos, con `TargetClosedError`. El harness convertía toda la grabación en base64 y la duplicaba entre Python, CDP y JavaScript. Con cientos de MB, Chromium se cierra. No hay errores HTTP de la aplicación en esos informes. Se canceló el trabajo Windows restante para no repetir la misma entrega defectuosa; no se han convertido esos fallos en aprobados.
+
+**`20799323`** usa archivos respaldados por disco mediante `set_input_files` en un input temporal y entrega esos mismos `File` al handler de drop de producción. No modifica la importación del producto ni sustituye los medios reales. El test de fixtures ausentes sigue pasando. La repetición privada es **`38866605144`**, con SHA completo `20799323ed35913046ac9a2082f79da3f58d32a4`; sus resultados siguen pendientes. Los informes/capturas/logs privados se recogen selectivamente mediante HTTP Range, sin bajar gigabytes de trazas ni publicar imágenes del usuario. Helper local: `/tmp/zucker-private-qa-runner/read_evidence.py`; destino privado local `/tmp/zucker-private-evidence/<run>`.
+
+## Diagnósticos del paquete Windows
+
+Aunque `38865306308` acaba con `ok: true`, su log contiene múltiples `Logging error: AttributeError: 'NoneType' object has no attribute 'write'`. `_configure_logging` creaba un `StreamHandler(sys.stderr)` cuando PyInstaller GUI deja `sys.stderr=None`; el handler no recupera el stream al redirigir después el selftest. Los mensajes sí podían llegar al archivo, pero la consola de diagnósticos se llenaba de errores del propio logging.
+
+**`760b5b07`** mantiene siempre el archivo rotatorio y añade consola solo si existe stderr. No descarta errores del render ni cambia los niveles de logging. Dos regresiones verifican que los errores quedan escritos tanto con consola como sin ella, sin modificar los handlers globales de pytest. Junto con bridge y fixtures: **16 tests aprobados localmente**. Reconstrucción/selftest remoto solicitado en **`38866751152`** para comprobar que desaparecen esos errores; resultado pendiente.
+
+Los runs sintéticos adicionales de los commits que solo cambiaban documentación se cancelaron por duplicados. Se conservan la validación sintética de `883ab5cb`, los tests de la revisión con código nuevo y las ejecuciones privadas; no se ocultan sus fallos.
+
+## Seguimiento del 18 de octubre — evidencia recogida y diagnósticos pendientes
+
+PR #30 sigue sin comentarios ni reviews nuevos. Se revisaron las novedades de
+los PR #37–#41: descargas, cambio de cara, previsualización de Show, Backstage y
+capas/texturas. Son ramas de trabajo posteriores y separadas: los resultados de
+este documento **no certifican automáticamente esos PR ni la app 2.6.7**.
+El checkout principal y la aplicación del usuario no se han modificado ni cerrado
+durante este seguimiento remoto.
+
+### Resultados reales, separados de la ronda sintética
+
+Se recogieron privadamente los ocho informes y sus logs de `38866605144`, código
+`20799323`. En macOS pasan YouTube (44,2 s de salida), Reel (20 s), Medley
+(10,054687 s) y Backstage (9 s). En Windows pasa Medley (10,054687 s); YouTube y
+Reel fallan en `_frame_md5_pair`, cuyo proceso FFmpeg alcanza el timeout de 20 s.
+Backstage no termina dentro del límite de 15 minutos del harness. **Cinco de ocho
+recorridos aprobados; la ronda real no está verde.** Las duraciones anteriores
+son del vídeo producido, no tiempos de render. Los pasos del workflow usan
+`continue-on-error` para recoger evidencia, pero la aserción final falla
+correctamente cuando falta un informe aprobado.
+
+El timeout de Windows aparece después del render del segmento, en la lectura
+conjunta de las dos muestras para verificar movimiento. No demuestra por sí solo
+si el problema es bloqueo de FFmpeg o lentitud de decodificación; falta medir CPU,
+hilos y pared. Se ha lanzado una comparación aislada en el repositorio privado,
+ejecución **`39112425954`**, con las mismas grabaciones autorizadas: cuatro
+verificaciones simultáneas, ruta actual frente a hilos acotados, orden invertido,
+hashes de ambas muestras y límite de 30 s. **No se ha cambiado todavía el código
+de exportación ni ampliado su timeout para ocultar el fallo.** Los únicos
+artefactos nuevos de ese diagnóstico son métricas JSON, retenidas tres días en
+privado; los renders se ejecutan en los runners, no en el Mac.
+
+RAWVideos ya aparece conectado. También se encontraron ejecuciones privadas
+360 posteriores a lo documentado: `38868862415` y `38869815619`. En esta última,
+macOS completa el export en 32,128 s según `export.log`, y el harness decodifica
+el MP4 completo antes de comprobar el reproductor. Falla la reproducción del
+navegador: ambos elementos tienen `readyState=4`, pero `videoWidth=0` y
+`videoHeight=0`; `canPlayType` para HEVC está vacío. No hay errores HTTP de API.
+La captura muestra el reproductor vacío. Esto es compatible con falta de soporte
+HEVC en ese Chromium remoto, pero **no certifica la reproducción nativa ni
+justifica marcar el recorrido aprobado**. El job Windows de esa ejecución fue
+cancelado: no hay resultado Windows 360 real que pueda darse por válido.
+
+### Ronda sintética más reciente
+
+`38865264815` terminó correctamente en `883ab5cb`. En cambio,
+`38912684071`, revisión `4320cdf7`, pasa macOS pero Windows se detiene antes de
+los recorridos: 87 tests pasan, 6 skips existentes y un
+`threading.BrokenBarrierError` en
+`test_simultaneous_preview_requests_render_same_asset_only_once` (barrera de 3 s).
+Se solicitó un reintento del job fallido sin cambiar el test ni el producto para
+distinguir un fallo reproducible de temporización. No se cuentan como aprobados
+los cinco modos Windows que no llegaron a ejecutarse.
+
+La auditoría permanece abierta. Siguen pendientes el diagnóstico y nueva
+validación de Windows real, la reproducción nativa 360, la revisión completa de
+vídeos/trazas y los diálogos nativos. No se publica material privado en este PR.
