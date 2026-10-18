@@ -40,8 +40,20 @@ The library preserves cutout and complete-video recipes separately. It stores or
 - Chromium and WebKit: faders, mix mode, zero mute, asynchronous balance, live source word muting/resume and persistence after reload pass (`/tmp/show-audio-ui-proof.log`). Synthetic footage only; no user material uploaded.
 - The storage first-launch test's minimal `webview` double had no `webview.menu`. Its storage-only fixture now stubs menu construction; separate desktop-menu tests still construct and dispatch the real menu objects. No product error is hidden and no skip/xfail was added.
 
-Package verification and installation are recorded below when complete. The storage/logging/menu regression group also passes: 27 tests (`/tmp/show-2611-native-regressions.log`). Browser checks are not a physical trackpad or Windows native-package certification.
+The storage/logging/menu regression group also passes: 27 tests (`/tmp/show-2611-native-regressions.log`). Browser checks are not a physical trackpad or Windows native-package certification.
 
 ## Sound design reference
 
 [Kenney Interface Sounds](https://kenney.nl/assets/interface-sounds) was considered as a reusable interface-sound source. This implementation uses its own synthesized Soft error; no Kenney audio or additional external sound asset is bundled.
+
+## Packaged 2.6.11 validation
+
+A fresh macOS bundle was built at code commit `e8047487` with its version and microphone description set before signing. `codesign --verify --deep --strict` passes, and the packaged JS/CSS/HTML hashes equal the reviewed source. No post-signing file replacement was used.
+
+The frozen executable's mandatory self-test passes: native person-segmentation availability, texture resources, exact Metal remap, instrument model, intro encode, faster-whisper plus Silero VAD, and CLIP scene tagging. The transcription input is synthetic audio; this proves the frozen dependency path, not recognition accuracy on real speech. Windows native UI is not tested here. Evidence: `/tmp/show-2611-selftest.json`.
+
+Both Chromium and WebKit also pass the mixer/faders/balance/live-censor/persistence flow served by the frozen executable (`/tmp/show-2611-frozen-ui-proof.log`). A real scene effects preview rendered successfully in that executable: four seconds remain four seconds and the imported clip appears in the composed picture (`/tmp/show-2611-frozen-scene.json`). All fixtures are isolated synthetic projects.
+
+## Installation
+
+Installed and opened **2.6.11** (`e8047487`) in `/Applications/Zucker Editor.app`. The previous installed app was copied to `/Users/macbookair/Applications Backups/Zucker Editor before 2.6.11 20261018-204428.app` and every file hash/symlink was compared before replacement. The staged and installed app copies were also compared and signature-verified before launch. User projects and source media were not modified by installation.
