@@ -266,6 +266,17 @@ def _run_selftest() -> int:
         if os.environ.get("ZUCKER_SELFTEST_REQUIRE_METAL") == "1" and not metal_exact:
             raise RuntimeError("Packaged Metal remap is missing or differs from OpenCV")
 
+        from core import show_backgrounds, show_textures
+        resource_root = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
+        for relative in ('tools/qa/video-layers/index.html', 'web/show_video_layers.js',
+                         'tools/qa/show-backgrounds/bullring.png', 'tools/qa/show-backgrounds/space.png',
+                         'tools/qa/show-backgrounds/laboratory.png', 'tools/qa/show-backgrounds/landscape.png'):
+            if not (resource_root / relative).is_file():
+                raise RuntimeError('Missing video-layer editor resource: '+relative)
+        if sys.platform == 'darwin' and not show_backgrounds.available():
+            raise RuntimeError('The packaged app cannot load person segmentation')
+        if len(show_textures.PRESETS) != 10:
+            raise RuntimeError('The texture library is incomplete')
         card = _intro_card_path()
         if card is None:
             raise RuntimeError("intro_card_watermark.png is not present in the packaged assets")

@@ -68,7 +68,7 @@ def test_only_approved_effects_reach_the_render():
     cutaways, layer, director = render_inputs(items)
     assert [c["zoom"] for c in cutaways] == [1.4]
     assert [d["kind"] for d in director] == ["word"]
-    assert layer == [{"proposal": steam["id"], "steam": [0.3, 0.8], "anchor": [0.28, 0.8, 0.05, 0.08], "at": 50.0, "duration": 4.0, "scale": 1.0}]
+    assert layer == [{"proposal": steam["id"], "steam": [0.3, 0.8], "anchor": [0.28, 0.8, 0.05, 0.08], "at": 50.0, "duration": 4.0, "scale": 1.0, "texture": "rainbow"}]
     assert len(approved(items)) == 3
     assert director[0]["proposal"] == gags[0]["id"] and cutaways[0]["proposal"] == cuts[0]["id"]   # each keeps its id
 

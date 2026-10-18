@@ -384,6 +384,11 @@ class Steam:
     strength: float = STEAM_OPACITY    # how thick each puff is at its densest
     rise: float = 1.0                  # how high it goes
     colour: str = "rainbow"            # "rainbow", "white" or "#rrggbb"
+    texture: str = "rainbow"          # legacy steam is the rainbow smoke preset
+    tracker: Any = None
+    reference: Any = None              # shared by the same effect across shot framings
+    point_in_box: Any = None
+    original_size: Any = None
 
     def active(self, t: float) -> bool:
         return self.at <= t < self.at + self.duration
@@ -399,22 +404,38 @@ def load_steam(raw: dict[str, Any], width: int, height: int) -> Steam:
     return Steam(at=float(raw["at"]), duration=max(0.2, float(raw["duration"])), x=x * width, y=y * height,
                  scale=float(raw.get("scale") or 1.0), rect=rect, puffs=int(min(120, max(5, float(raw.get("density") or 35)))),
                  strength=min(0.9, max(0.05, float(raw.get("strength") or STEAM_OPACITY))), rise=min(3.0, max(0.3, float(raw.get("rise") or 1.0))),
-                 colour=colour)
+                 colour=colour, texture=str(raw.get("texture") or "rainbow"))
 
 
-def draw_steam(frame: np.ndarray, steam: Steam, t: float) -> None:
+def draw_steam(frame: np.ndarray, steam: Steam, t: float, *, tracking_frame: np.ndarray | None = None, person_layer: Any = None) -> None:
     """35 translucent rainbow puffs rising and swaying (the prototype's motion, stronger colours)."""
     import cv2
 
-    from core.gag_render import _track
     height, width = frame.shape[:2]
     if steam.rect is not None:
-        start = list(steam.rect)
-        _track(steam, cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY))
+        from core.show_textures import ObjectTracker
+        if steam.tracker is None:
+            x, y, w, h = steam.rect
+            steam.point_in_box = ((steam.x-x)/max(1, w), (steam.y-y)/max(1, h))
+            steam.original_size = (w, steam.scale)
+            steam.tracker = ObjectTracker(list(steam.rect), reference=steam.reference if steam.reference is not None else {}, scale=steam.scale)
+        box = steam.tracker.update(cv2.cvtColor(tracking_frame if tracking_frame is not None else frame, cv2.COLOR_RGB2GRAY))
+        steam.lost = box is None
         if steam.lost:
             return
-        steam.x += steam.rect[0] - start[0]
-        steam.y += steam.rect[1] - start[1]
+        steam.rect = list(box)
+        steam.x = box[0] + steam.point_in_box[0]*box[2]
+        steam.y = box[1] + steam.point_in_box[1]*box[3]
+        steam.scale = steam.original_size[1] * box[2] / max(1, steam.original_size[0])
+    if person_layer is not None and steam.rect is not None:
+        from dataclasses import replace
+        factor = person_layer.scale
+        steam = replace(steam, x=steam.x*factor+width*(1-factor)/2+person_layer.offset[0]*width,
+                        y=steam.y*factor+height*(1-factor)+person_layer.offset[1]*height, scale=steam.scale*factor)
+    if steam.texture not in ('rainbow', 'smoke', 'fog'):
+        from core.show_textures import draw_nature
+        draw_nature(frame, steam, t)
+        return
     local = t - steam.at
     fade = min(1.0, local / 0.5, (steam.duration - local) / 0.5)
     if fade <= 0:
@@ -423,17 +444,17 @@ def draw_steam(frame: np.ndarray, steam: Steam, t: float) -> None:
     count = steam.puffs
     for i in range(count):
         age = (t * 0.28 + i / count) % 1
-        cx = steam.x + math.sin(age * 8 + i * 0.4) * age * 28 * s
-        cy = steam.y - age * 145 * s * steam.rise
+        cx = steam.x + math.sin(age * 8 + i * 0.4) * age * (70 if steam.texture == 'fog' else 28) * s
+        cy = steam.y - age * (65 if steam.texture == 'fog' else 145) * s * steam.rise
         size = (9 + age * 20) * s
         peak = steam.strength * (1 - age) * fade
         x0, x1 = max(0, int(cx - size)), min(width, int(cx + size) + 1)
         y0, y1 = max(0, int(cy - size)), min(height, int(cy + size) + 1)
         if x1 <= x0 or y1 <= y0 or peak <= 0:
             continue
-        if steam.colour == "rainbow":
+        if steam.colour == "rainbow" and steam.texture == "rainbow":
             r, g, b = colorsys.hls_to_rgb(i / count, 0.55, 0.95)
-        elif steam.colour == "white":
+        elif steam.colour == "white" or steam.texture in ("smoke", "fog"):
             r, g, b = 0.96, 0.96, 0.96
         else:
             r, g, b = (int(steam.colour[k:k + 2], 16) / 255 for k in (1, 3, 5))

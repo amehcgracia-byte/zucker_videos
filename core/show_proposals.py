@@ -26,7 +26,7 @@ from typing import Any
 
 PROPOSALS_VERSION = 1
 STATUSES = ("proposed", "approved", "discarded")
-KINDS = ("cutaway", "character", "drawing", "word", "warp", "steam", "math", "jingle", "clip", "background")
+KINDS = ("cutaway", "character", "drawing", "word", "warp", "steam", "texture", "math", "jingle", "clip", "background")
 # Measured on a real talk: matches above ~0.015 mostly showed what was said;
 # below it they were close to random. Spaced out so not every line is decorated.
 CUTAWAY_MIN_GAP = 12.0
@@ -219,9 +219,9 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
             # A video clip played whole with its own sound while the host pauses (core.show_inserts.load_clip).
             items_out.append({"proposal": item["id"], "insert": "clip", "at": item["at"], "source": params["clip"],
                               "clip_start": params.get("clip_start", 0.0), "clip_length": params["clip_length"]})
-        elif item["kind"] == "steam":
+        elif item["kind"] in ("steam", "texture"):
             items_out.append({"proposal": item["id"], "steam": params["point"], "anchor": params.get("anchor"), "at": item["at"], "duration": item["duration"],
-                              "scale": params.get("scale", 1.0), **{key: params[key] for key in ("density", "strength", "rise", "colour") if key in params}})
+                              "scale": params.get("scale", 1.0), "texture": params.get("texture", "rainbow"), **{key: params[key] for key in ("density", "strength", "rise", "colour") if key in params}})
         elif item["kind"] == "jingle":
             items_out.append({"proposal": item["id"], "jingle": params["path"], "at": item["at"], "duration": item["duration"], "start": params.get("start", 0.0),
                               "volume": params.get("volume", 0.8), "fade": params.get("fade", 0.05), "duck": params.get("duck", 0.5)})
@@ -229,7 +229,8 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
             items_out.append({"proposal": item["id"], "warp": params.get("warp", "wave"), "at": item["at"], "duration": item["duration"], "strength": params.get("strength", 0.8)})
         elif item["kind"] == "background":
             # The person stays; the picture goes behind them (core.show_backgrounds).
-            items_out.append({"proposal": item["id"], "background": params.get("picture"), "at": item["at"], "duration": item["duration"]})
+            items_out.append({"proposal": item["id"], "background": params.get("picture"), "at": item["at"], "duration": item["duration"],
+                              **{key: params[key] for key in ('person_style', 'person_scale', 'person_offset') if key in params}})
         else:
             # The director's own kind (drawing, character, photo, word) travels in params.
             gags.append({**params, "proposal": item["id"], "at": item["at"], "duration": item["duration"]})

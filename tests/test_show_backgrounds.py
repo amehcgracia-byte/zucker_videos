@@ -115,3 +115,66 @@ def test_the_person_adds_a_background_and_chooses_its_picture(tmp_path, monkeypa
     assert chosen.status_code == 200, chosen.get_json()
     assert chosen.get_json()["params"]["picture"] and chosen.get_json()["needs"] == []
     assert client.post("/api/v1/show/review/add", json={"kind": "background", "at": 2.0, "picture": "/etc/hosts"}).status_code == 400
+
+
+def test_moving_background_and_moving_black_silhouette_reach_the_compositor(tmp_path):
+    video = tmp_path/'moving.mp4'
+    subprocess.run([FFMPEG,'-v','error','-y','-f','lavfi','-i','testsrc2=size=160x90:rate=10:duration=1',
+                    '-c:v','libx264','-pix_fmt','yuv420p',str(video)], check=True)
+    masks = np.zeros((10, 90, 160), np.uint8)
+    masks[:,:,30:70] = 255
+    path = tmp_path/'mask.npy'
+    np.save(path, masks)
+    layer = show_backgrounds.load({'at':0,'duration':1,'background':str(video),'masks':str(path),
+                                    'person_style':'silhouette'}, 160, 90, 10)
+    try:
+        a = np.full((90,160,3), 180, np.uint8)
+        b = a.copy()
+        show_backgrounds.apply(a,layer,.3)
+        show_backgrounds.apply(b,layer,.6)
+        assert tuple(a[45,50]) == (8,8,8)
+        assert np.any(a[:,100:] != b[:,100:])  # the background is another moving video
+        assert np.array_equal(layer.video.at(.3),layer.video.at(1.3))  # loops, not a frozen last frame
+    finally:
+        layer.close()
+    assert not layer.video.capture.isOpened()
+
+
+def test_project_layer_editor_saves_the_original_preset_and_placement(tmp_path, monkeypatch):
+    import server.api as api_module
+    monkeypatch.setenv('ZUCKER_DATA_ROOT',str(tmp_path/'data'))
+    project = create_project('Layers',str(tmp_path/'Layers.zuckervid'))
+    source = tmp_path/'host.mp4'
+    source.write_bytes(b'x')
+    (project.artifacts_dir/'show_plan.json').write_text(json.dumps(_plan(source,300)))
+    show_proposals.save(project.artifacts_dir/'show_proposals.json',[],source=str(source),resources=[])
+    client = api_module.create_app(project_path=str(project.folder)).test_client()
+    made = client.post('/api/v1/show/review/add',json={'kind':'background','at':1,'duration':4}).get_json()
+    url = '/api/v1/show/video-layers/'+made['id']
+    page = client.get(url+'/editor')
+    assert page.status_code == 200 and b'Use in scene' in page.data and b'show_video_layers.js' in page.data
+    saved = client.post(url+'/save',data={'settings':json.dumps({'preset':'space.png','person_style':'silhouette','person_scale':.7,'person_offset':[-.2,0]})})
+    assert saved.status_code == 200, saved.get_json()
+    item = saved.get_json()
+    assert item['needs'] == [] and item['params']['person_style'] == 'silhouette'
+    bundled = api_module.Path(api_module.__file__).resolve().parents[1]/'tools/qa/show-backgrounds/space.png'
+    assert api_module.Path(item['params']['picture']).read_bytes() == bundled.read_bytes()
+    item['status']='approved'
+    _, layers, _ = show_proposals.render_inputs([item])
+    assert layers[0]['person_offset'] == [-.2,0]
+    assert layers[0]['person_scale'] == .7
+    assert client.post(url+'/save',data={'settings':json.dumps({'preset':'../../etc/hosts'})}).status_code == 400
+    assert client.get(url+'/media/no-such-file.png').status_code == 404
+
+
+def test_compositing_preserves_the_final_original_audio_packets(tmp_path):
+    from core.gag_render import render_gags
+    source, output = tmp_path/'voice.mp4', tmp_path/'composed.mp4'
+    subprocess.run([FFMPEG,'-v','error','-y','-f','lavfi','-i','testsrc2=size=160x90:rate=10:duration=1',
+                    '-f','lavfi','-i','sine=frequency=500:sample_rate=48000:duration=1',
+                    '-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac',str(source)],check=True)
+    render_gags(source,[{'steam':[.5,.7],'texture':'rainbow','at':0,'duration':1}],output,ffmpeg=FFMPEG)
+    def digest(path):
+        return subprocess.check_output([FFMPEG,'-v','error','-i',str(path),'-map','0:a:0','-c','copy',
+                                        '-f','hash','-hash','sha256','-'])
+    assert digest(source) == digest(output)

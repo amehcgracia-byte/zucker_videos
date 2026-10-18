@@ -5,7 +5,10 @@
 // coordinates of their own picture, outlines exist only in the editor, and the
 // pixels that move are the originals. Nothing is rendered until the last step.
 (() => {
-  const KIND_LABELS = { sticker:"Sticker", cutaway: "Close-up", character: "Character speaks", drawing: "Drawing", word: "Word", warp: "Warp", steam: "Rainbow steam", math: "Formulas around you", clip: "Video clip", background: "New background" };
+  const KIND_LABELS = { sticker:"Sticker", cutaway: "Close-up", character: "Character speaks", drawing: "Drawing", word: "Word", warp: "Warp", steam: "Texture · rainbow smoke", texture: "Texture", math: "Formulas around you", clip: "Video clip", background: "Moving video layers" };
+  const TEXTURES = {rainbow:"Rainbow smoke",smoke:"Smoke",fog:"Mist",water:"Water",electricity:"Electricity",fire:"Fire",snow:"Snow",rain:"Rain",sparks:"Sparks",leaves:"Leaves"};
+  const isTexture = item => ["steam","texture"].includes(item.kind);
+  const textureField = p => field("Texture", `<select data-field="texture">${Object.entries(TEXTURES).map(([key,name])=>`<option value="${key}" ${(p.texture||"rainbow")===key?"selected":""}>${name}</option>`).join("")}</select>`);
   const STATUS_LABELS = { proposed: "Proposed", approved: "Approved", discarded: "Discarded" };
   const DECISION_LABELS = { pending: "To decide", accepted: "Accepted", modified: "Needs review", plain: "Without effect" };
   const ACTIONS = { mouth: "Mouth (with the voice)", nod: "Nod", side: "Sideways", turn: "Turn" };
@@ -44,6 +47,7 @@
     const p = item.params;
     if (item.kind === "cutaway") return p.thumb ? media(p.thumb) : still(p.source, p.source_start);
     if (item.kind === "character") return still(p.source, p.still_time);
+    if (item.kind === "background" && p.picture && !isPhoto(p.picture)) return "/video-layer-thumb.svg";
     if (item.kind === "clip") return still(p.clip, Math.min(0.3, (p.clip_length || 1) / 2));
     if (["drawing", "word", "background"].includes(item.kind) && p.picture) return `/api/v1/show/library/file?path=${encodeURIComponent(p.picture)}`;
     return `/api/v1/show/frame?t=${encodeURIComponent(item.at)}`;
@@ -280,7 +284,7 @@
       <div id="showClay" class="show-clay"></div>
       <div id="showSceneEffects" class="show-review-list">${effects.filter((item) => !(item.status === "discarded" && item.params.group)).map(card).join("") || "<p class=\"show-hint\">No effect in this scene.</p>"}
         <form id="showSceneAdd" class="show-review-add"><strong>Add</strong>
-          <select name="kind"><option value="drawing">A drawing</option><option value="steam">Rainbow steam over a mug</option><option value="character">A character that speaks</option><option value="cutaway">A close-up</option><option value="math">Formulas around you</option><option value="word">A shouted word</option><option value="library">Take from the library</option><option value="original_eyes">Move original eyes</option><option value="original_mouth">Animate original mouth</option><option value="original_part">Move original part (sideways)</option><option value="references">Search internet references</option><option value="video_reference">Video clip from a link (YouTube / Vimeo)</option><option value="face_clip">Put my face on a clip</option><option value="generate_video">Create video · external prompt</option><option value="photo_edit">Realistic photo of me</option><option value="cutout">Cut out a person / background (photo)</option><option value="silhouette">Black silhouette (photo)</option><option value="clay">Clay memory · Simón</option><option value="captions">Normal speech captions</option></select>
+          <select name="kind"><option value="drawing">A drawing</option><optgroup label="Textures">${Object.entries(TEXTURES).map(([key,name])=>`<option value="texture_${key}">${name}</option>`).join("")}</optgroup><option value="character">A character that speaks</option><option value="cutaway">A close-up</option><option value="math">Formulas around you</option><option value="word">A shouted word</option><option value="library">Take from the library</option><option value="original_eyes">Move original eyes</option><option value="original_mouth">Animate original mouth</option><option value="original_part">Move original part (sideways)</option><option value="references">Search internet references</option><option value="video_reference">Video clip from a link (YouTube / Vimeo)</option><option value="face_clip">Put my face on a clip</option><option value="generate_video">Create video · external prompt</option><option value="photo_edit">Realistic photo of me</option><option value="cutout">Cut out a person / background (photo)</option><option value="silhouette">Black silhouette (photo)</option><option value="video_cutout">Moving person · change photo / video background</option><option value="video_silhouette">Moving black silhouette · video</option><option value="clay">Clay memory · Simón</option><option value="captions">Normal speech captions</option></select>
           <label>at <input name="at" type="number" step="any" min="${scene.start}" max="${scene.end}" value="${scene.start.toFixed(1)}"> s</label>
           <label>of <input name="subject" type="text" maxlength="80" placeholder="a guitar"></label>
           <select name="style">${Object.entries(DRAWING_STYLES).map(([key, label]) => `<option value="${key}" ${key === "crayon" ? "selected" : ""}>${label}</option>`).join("")}</select>
@@ -492,7 +496,7 @@
       <details class="show-sticker-picker"><summary>Add sticker</summary><div class="show-library">${library.map((asset,index)=>asset.retired?'':`<button type="button" data-library="${index}" aria-label="Add ${escape(asset.name)}"><img src="${asset.url}" alt="" loading="lazy">${escape(asset.name)}</button>`).join('')}</div></details>
       <p>Play or scrub to check when a picture appears and disappears. Drag a bar to move it; drag either edge to trim.</p>
       <div class="show-timeline-edit" role="toolbar" aria-label="Edit the timeline">${[['split','Split at playhead','⌘B'],['cut','Cut','⌘X'],['copy','Copy','⌘C'],['paste','Paste at playhead','⌘V'],['duplicate','Duplicate','⌘D'],['delete','Delete','⌫'],['undo','Undo','⌘Z'],['redo','Redo','⇧⌘Z']].map(([action,label,keys])=>`<button type="button" class="icon-button small" data-timeline-command="${action}" title="${label} (${keys})" ${timelineCommandOff(action,scene)?'disabled':''}>${label}</button>`).join('')}</div>
-      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${selected.kind==='steam'?steamTools(selected):''}${selected.kind==='drawing'?`<button type="button" data-open-library="${selected.id}">Choose from library</button>`:''}${selected.kind==='background'?`<button type="button" data-open-library="${selected.id}">${selected.params.picture?'Change':'Choose'} the background picture</button>`:''}${selected.kind==='clip'?`<button type="button" data-face-clip="${selected.id}">Put my face on it</button>${selected.params.clip_original?`<button type="button" data-face-original="${selected.id}">Use the original clip</button>`:''}`:''}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
+      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${isTexture(selected)?steamTools(selected):''}${selected.kind==='drawing'?`<button type="button" data-open-library="${selected.id}">Choose from library</button>`:''}${selected.kind==='background'?`<button type="button" data-video-layers="${selected.id}">Edit moving video layers</button><button type="button" data-open-library="${selected.id}">Background from library</button>`:''}${selected.kind==='clip'?`<button type="button" data-face-clip="${selected.id}">Put my face on it</button>${selected.params.clip_original?`<button type="button" data-face-original="${selected.id}">Use the original clip</button>`:''}`:''}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
       <div class="show-time-row"><span>Video</span><div class="show-time-source" data-scene-seek>Original video · your cut</div></div>
       <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
       ${(clay?.placements||[]).filter(p=>p.enabled!==false).flatMap(p=>(p.edited||[]).filter(([a,b])=>a<scene.end&&b>scene.start).map(([a,b])=>`<div class="show-time-row"><span>Clay memory</span><div class="show-time-track"><button type="button" class="show-caption-time" data-clay-at="${a}" style="left:${pct(Math.max(a,scene.start))}%;width:${Math.max(.2,pct(Math.min(b,scene.end))-pct(Math.max(a,scene.start)))}%">Simón · ${escape(CLAY_MODES[p.mode]||p.mode)}</button></div></div>`)).join('')}
@@ -549,7 +553,7 @@
     box.onkeydown=event=>{const clip=event.target.closest('[data-time-clip]');if(clip && ['Enter',' '].includes(event.key)){event.preventDefault();locateEffect(timelineItem(clip.dataset.timeClip));}};
   }
   // A new background behind the person on the picked words; its picture is chosen next.
-  async function addBackground(scene,picked){
+  async function addBackground(scene,picked,style="person"){
     const at=Math.max(scene.start,Math.min(scene.end-.5,picked.start));
     const duration=Math.round(Math.min(scene.end-at,Math.max(3,picked.end-picked.start))*1000)/1000;
     const made=await timelineEdit(scene,async()=>{
@@ -558,8 +562,28 @@
       await markModified(item.id);return item;
     });
     selectedEffect=made.id;renderTimeline(scene);liveDrawings(scene);
-    await openLibrary(made.id);
+    await openVideoLayers(made.id,style);
   }
+
+
+  let videoLayerDialog=null;
+  async function openVideoLayers(id,style="person") {
+    if(videoLayerDialog)videoLayerDialog.remove();
+    videoLayerDialog=document.createElement('dialog');
+    videoLayerDialog.style.cssText='width:96vw;max-width:1600px;height:94vh;padding:0;border:1px solid #475044;background:#151916';
+    videoLayerDialog.innerHTML='<button type="button" aria-label="Close video layers" style="position:absolute;right:10px;top:5px;z-index:2">×</button><iframe title="Moving video layers" style="width:100%;height:100%;border:0"></iframe>';
+    videoLayerDialog.querySelector('iframe').src='/api/v1/show/video-layers/'+encodeURIComponent(id)+'/editor?style='+encodeURIComponent(style);
+    videoLayerDialog.querySelector('button').onclick=()=>videoLayerDialog.close();
+    document.body.append(videoLayerDialog);videoLayerDialog.showModal();
+  }
+  document.addEventListener('click',event=>{const target=event.target.closest?.('[data-video-layers]');if(target)openVideoLayers(target.dataset.videoLayers,review.proposals.find(p=>p.id===target.dataset.videoLayers)?.params.person_style||'person');});
+  window.addEventListener('message',async event=>{
+    if(event.origin!==location.origin||event.data?.type!=='show-video-layers-saved'||event.source!==videoLayerDialog?.querySelector('iframe')?.contentWindow)return;
+    const item=review?.proposals.find(p=>p.id===event.data.item?.id);if(!item)return;
+    Object.assign(item,event.data.item);videoLayerDialog.close();const scene=currentScene();
+    await markModified(item.id);invalidateLocal(scene);renderScene();await requestScenePreview(scene);
+    showToast('Moving video layers saved. Their placement is used in the scene preview and final export.');
+  });
 
   // ---- Timeline editing: cut, copy, paste at the playhead, split, delete, undo ----------
   // A pasted or split-off piece is another effect with the same settings that stays on its
@@ -1168,6 +1192,8 @@
       await ShowPhotoStudio.rigFrame(source,second,{mode,placement});return true;
     }
 
+    if(kind==="video_cutout"||kind==="video_silhouette"){await addBackground(scene,picked,kind==="video_silhouette"?"silhouette":"person");return true;}
+    if(kind.startsWith("texture_")){await addEffect(scene,{kind:"texture",texture:kind.slice(8),at:picked.start,duration:Math.max(.2,picked.end-picked.start)});return true;}
     if(kind==='library'){await openLibrary(null,picked);return true;}
     if(kind==='lettering'){ShowEinstein.open(scene,picked,'',null,{purpose:'lettering',letteringText:picked.text,style:'marker'});return true;}
     if(kind.startsWith('warp_')){await addEffect(scene,{kind:'warp',warp:kind.slice(5),at:picked.start,duration:Math.max(1.5,picked.end-picked.start)});return true;}
@@ -1245,6 +1271,8 @@
       ["video_reference", "Video clip from a link (YouTube / Vimeo)…", null],
       ["face_clip", "Put my face on a clip…", null],
       ["generate_video", "Create video · external prompt…", null],
+      ["video_cutout", "Moving person · photo / video background…", null],
+      ["video_silhouette", "Moving black silhouette…", null],
       ["photo_edit", "Realistic photo of me…", null],
       ["cutout", "Cut out a person / background (photo)…", null],
       ["silhouette", "Black silhouette (photo)…", null],
@@ -1253,7 +1281,7 @@
       ["drawing", `Draw “${quoted}”`, { kind: "drawing", subject: picked.text, style: "crayon", duration: Math.max(2, span) }],
       ["word", `Show “${quoted}” big`, { kind: "word", text: picked.text.toUpperCase().slice(0, 40), duration: Math.max(1.5, span) }],
       ["math", "Formulas around me here", { kind: "math", duration: Math.max(2, span) }],
-      ["steam", "Rainbow steam here", { kind: "steam", duration: Math.max(2, span) }],
+      ...Object.entries(TEXTURES).map(([key,name])=>["texture_"+key, "Texture · "+name, null]),
       ["cutaway", "A close-up here…", null],
       ["character", "A character speaks here…", null],
     ];
@@ -1335,8 +1363,8 @@
       { label: "Characters", submenu: [["character", "A character that speaks…"], ["original_eyes", "Move original eyes…"], ["original_mouth", "Animate original mouth…"],
         ["original_part", "Move original part (sideways)…"], ["clay", "Clay memory · Simón…"]].map(entry) },
       { label: "Video", submenu: [["cutaway", "A close-up…"], ["video_reference", "Clip from a link (YouTube / Vimeo)…"], ["face_clip", "Put my face on a clip…"],
-        ["generate_video", "Create video · external prompt…"]].map(entry) },
-      { label: "Effects", submenu: [entry(["math", "Formulas around me"]), entry(["steam", "Rainbow steam"]),
+        ["generate_video", "Create video · external prompt…"], ["video_cutout", "Moving person over a photo or video…"], ["video_silhouette", "Moving black silhouette…"]].map(entry) },
+      { label: "Effects", submenu: [entry(["math", "Formulas around me"]), {label: "Textures",submenu:Object.entries(TEXTURES).map(([key,name])=>({label:name,action:()=>extraTool("texture_"+key,scene,picked)}))},
         { label: "Bend the picture", submenu: [["warp_wave", "Wave"], ["warp_swirl", "Swirl"], ["warp_stretch", "Stretch"]].map(entry) }] },
       { separator: true },
       entry(["captions", "Speech captions (subtitles)…"]),
@@ -1352,7 +1380,7 @@
       { label: "Preview it", action: () => clickLike("data-show-preview", id) },
       ...(["cutaway", "character"].includes(item.kind) || item.params.picture ? [{ label: "Animate original eyes / mouth…", action: () => clickLike("data-original-parts", id) }] : []),
       ...(item.kind === "drawing" ? [{ label: "Choose from library…", action: () => openLibrary(id) }] : []),
-      ...(item.kind === "background" ? [{ label: item.params.picture ? "Change the background picture…" : "Choose the background picture…", action: () => openLibrary(id) }] : []),
+      ...(item.kind === "background" ? [{ label: "Edit moving video layers…", action: () => openVideoLayers(id,item.params.person_style||"person") }, {label:"Background from library…", action:()=>openLibrary(id)}] : []),
       ...(item.kind === "word" && !item.params.picture ? wordItems(item) : []),
       ...(item.kind === "clip" ? [{ label: "Put my face on it…", action: () => openLibrary(null, null, id) }] : []),
       { separator: true },
@@ -1545,16 +1573,16 @@
   let steamBoxFor = null, steamDrag = null;
   function steamTools(item) {
     const p = item.params;
-    return `<div class="show-steam-tools" data-steam-tools="${item.id}"><small>${p.anchor ? "Follows the mug in its box; it stops when the mug is lost." : "Drag the + on the video to the top of the mug. Without a box around the mug it ends with its shot."}</small>
-      <button type="button" data-steam-box="${item.id}">${steamBoxFor === item.id ? "Drag a box around the mug on the video…" : p.anchor ? "Mark the mug again" : "Follow a mug: mark it"}</button>${p.anchor ? `<button type="button" data-steam-unbox="${item.id}">Stop following</button>` : ""}
-      ${`<div class="show-fields">${field("Density", range("density", p.density ?? 35, 5, 120, 1))}${field("Thickness", range("strength", p.strength ?? 0.3, 0.05, 0.9, 0.05))}${field("Height", range("rise", p.rise ?? 1, 0.3, 3, 0.05))}${field("Size", range("scale", p.scale ?? 1, 0.4, 2, 0.05))}${field("Colours", `<select data-field="colour"><option value="rainbow" ${(p.colour || "rainbow") === "rainbow" ? "selected" : ""}>Rainbow</option><option value="white" ${p.colour === "white" ? "selected" : ""}>White steam</option><option value="${/^#/.test(p.colour || "") ? p.colour : "#ff66cc"}" ${/^#/.test(p.colour || "") ? "selected" : ""}>One colour</option></select>`)}</div>`}</div>`;
+    return `<div class="show-steam-tools" data-steam-tools="${item.id}"><small>${p.anchor ? "Follows the marked object. Hides when lost and searches for it again, including after cuts. This is visual matching, not automatic cup recognition." : "Drag + to place the texture. Mark a box to follow an object; without a box the texture stays at its screen position."}</small>
+      <button type="button" data-steam-box="${item.id}">${steamBoxFor === item.id ? "Drag a box around the object on the video…" : p.anchor ? "Mark the object again" : "Follow an object: mark it"}</button>${p.anchor ? `<button type="button" data-steam-unbox="${item.id}">Stop following</button>` : ""}
+      ${`<div class="show-fields">${textureField(p)}${field("Density", range("density", p.density ?? 35, 5, 120, 1))}${field("Thickness", range("strength", p.strength ?? 0.3, 0.05, 0.9, 0.05))}${field("Height", range("rise", p.rise ?? 1, 0.3, 3, 0.05))}${field("Size", range("scale", p.scale ?? 1, 0.4, 2, 0.05))}${field("Colours", `<select data-field="colour"><option value="rainbow" ${(p.colour || "rainbow") === "rainbow" ? "selected" : ""}>Preset / rainbow</option><option value="white" ${p.colour === "white" ? "selected" : ""}>White</option><option value="${/^#/.test(p.colour || "") ? p.colour : "#ff66cc"}" ${/^#/.test(p.colour || "") ? "selected" : ""}>One colour</option></select>`)}</div>`}</div>`;
   }
   function steamHandles(scene) {
-    const item = review.proposals.find((entry) => entry.id === selectedEffect && entry.kind === "steam" && scene.effects.includes(entry.id));
+    const item = review.proposals.find((entry) => entry.id === selectedEffect && isTexture(entry) && scene.effects.includes(entry.id));
     if (!item || !timelineDialog?.open) return "";
     const [x, y] = item.params.point || [0.5, 0.5], a = item.params.anchor;
     return `${a ? `<div class="show-steam-box" style="left:${a[0] * 100}%;top:${a[1] * 100}%;width:${a[2] * 100}%;height:${a[3] * 100}%"></div>` : ""}
-      <div class="show-steam-cross" data-steam-cross="${item.id}" style="left:${x * 100}%;top:${y * 100}%" title="Where the steam rises: drag it">+</div>`;
+      <div class="show-steam-cross" data-steam-cross="${item.id}" style="left:${x * 100}%;top:${y * 100}%" title="Texture origin: drag it">+</div>`;
   }
   function steamSave(item, changes) {
     Object.assign(item.params, changes);
@@ -1596,7 +1624,7 @@
     if (w < 0.02 || h < 0.02) { drawOverlays(currentScene()); renderTimeline(currentScene()); return; }
     // The steam rises from the top middle of the mug and follows it.
     steamSave(item, { anchor: [x, y, w, h].map((v) => Number(v.toFixed(4))), point: [Number((x + w / 2).toFixed(4)), Number(y.toFixed(4))] });
-    showToast("The steam follows this mug and stops when the mug leaves the picture.");
+    showToast("The texture follows this object; it hides on loss and searches for its return.");
   });
   document.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target.closest("[data-steam-box],[data-steam-unbox]") : null;
@@ -1606,7 +1634,7 @@
     if (target.dataset.steamUnbox) { steamSave(item, { anchor: null }); return; }
     steamBoxFor = steamBoxFor === item.id ? null : item.id;
     renderTimeline(currentScene());
-    if (steamBoxFor) showToast("Drag a box around the mug on the video.");
+    if (steamBoxFor) { locateEffect(timelineItem(item.id)); $("#showStage").scrollIntoView({block:"center"}); showToast("At the effect start, drag a tight box around the visible object. Different appearances may need another mark."); }
   });
   document.addEventListener("input", (event) => {
     const host = event.target instanceof Element ? event.target.closest("[data-steam-tools]") : null;
@@ -1614,7 +1642,7 @@
     if (!host || !name) return;
     const item = review.proposals.find((entry) => entry.id === host.dataset.steamTools);
     if (!item) return;
-    const value = name === "colour" ? event.target.value : Number(event.target.value);
+    const value = ["colour","texture"].includes(name) ? event.target.value : Number(event.target.value);
     item.params[name] = value;
     saveSoon(item.id, { [name]: value });
   });
@@ -1893,7 +1921,7 @@
             ${drawable ? `<button type="button" class="icon-button small" data-draw-it="${item.id}" ${drawing ? "disabled" : ""} ${item.params.picture ? 'data-again="1"' : ""}>${drawing ? "Drawing…" : item.params.picture ? "Draw another" : "Draw it"}</button>` : ""}
             ${["drawing","word"].includes(item.kind) ? `<button type="button" class="icon-button small" data-ai-edit="${item.id}">${item.kind==='word'?'Draw lettering…':'AI · change image…'}</button>` : ""}
             ${item.kind === "drawing" ? `<button type="button" class="icon-button small" data-open-library="${item.id}">Choose from library</button>` : ""}
-            ${item.kind === "background" ? `<button type="button" class="icon-button small" data-open-library="${item.id}">${item.params.picture ? "Change" : "Choose"} the background picture</button>` : ""}
+            ${item.kind === "background" ? `<button type="button" class="icon-button small" data-video-layers="${item.id}">Edit moving video layers</button><button type="button" class="icon-button small" data-open-library="${item.id}">Background from library</button>` : ""}
             ${item.kind === "clip" ? `<select data-clip-sound="${item.id}" aria-label="Clip sound"><option value="own" ${item.params.clip_audio === false ? "" : "selected"}>Its own sound (you pause)</option><option value="mine" ${item.params.clip_audio === false ? "selected" : ""}>Your voice goes on (picture only)</option></select>` : ""}
             ${item.kind === "clip" ? `<button type="button" class="icon-button small" data-face-clip="${item.id}">Put my face on it</button>${item.params.clip_original ? `<button type="button" class="icon-button small" data-face-original="${item.id}">Use the original clip</button>` : ""}` : ""}
             ${["cutaway","character"].includes(item.kind)||item.params.picture ? `<button type="button" class="icon-button small" data-original-parts="${item.id}">Animate original eyes / mouth…</button>` : ""}
@@ -2016,9 +2044,9 @@
       }
     } else if (item.kind === "warp") {
       html += field("Warp", `<select data-field="warp">${["stretch", "swirl", "wave"].map((name) => `<option ${p.warp === name ? "selected" : ""}>${name}</option>`).join("")}</select>`);
-    } else if (item.kind === "steam") {
-      html += `<p class="show-hint">Click where the steam rises (the top of the mug); drag a box around the mug so the steam follows it. Without a box it ends with its shot.</p><canvas class="show-canvas" data-canvas="steam"></canvas>
-        ${`<div class="show-fields">${field("Density", range("density", p.density ?? 35, 5, 120, 1))}${field("Thickness", range("strength", p.strength ?? 0.3, 0.05, 0.9, 0.05))}${field("Height", range("rise", p.rise ?? 1, 0.3, 3, 0.05))}${field("Size", range("scale", p.scale ?? 1, 0.4, 2, 0.05))}${field("Colours", `<select data-field="colour"><option value="rainbow" ${(p.colour || "rainbow") === "rainbow" ? "selected" : ""}>Rainbow</option><option value="white" ${p.colour === "white" ? "selected" : ""}>White steam</option><option value="${/^#/.test(p.colour || "") ? p.colour : "#ff66cc"}" ${/^#/.test(p.colour || "") ? "selected" : ""}>One colour</option></select>`)}</div>`}`;
+    } else if (isTexture(item)) {
+      html += `<p class="show-hint">Click the texture origin (for smoke, the mug rim). Mark the object at the start of this effect to follow it. The tracker hides the texture on loss and searches for the same appearance again. Different angles may need a new mark.</p><canvas class="show-canvas" data-canvas="steam"></canvas>
+        ${`<div class="show-fields">${textureField(p)}${field("Density", range("density", p.density ?? 35, 5, 120, 1))}${field("Thickness", range("strength", p.strength ?? 0.3, 0.05, 0.9, 0.05))}${field("Height", range("rise", p.rise ?? 1, 0.3, 3, 0.05))}${field("Size", range("scale", p.scale ?? 1, 0.4, 2, 0.05))}${field("Colours", `<select data-field="colour"><option value="rainbow" ${(p.colour || "rainbow") === "rainbow" ? "selected" : ""}>Preset / rainbow</option><option value="white" ${p.colour === "white" ? "selected" : ""}>White</option><option value="${/^#/.test(p.colour || "") ? p.colour : "#ff66cc"}" ${/^#/.test(p.colour || "") ? "selected" : ""}>One colour</option></select>`)}</div>`}`;
     }
     host.innerHTML = html;
     fillPrompt(item, host);
@@ -2125,7 +2153,7 @@
       const p = this.point(event);
       const kind = this.canvas.dataset.canvas;
       if (kind === "focus" || (kind === "region" && event.shiftKey)) { this.setFocus(p); return; }
-      if (kind === "steam") { this.drag = { start: p, steam: true }; this.canvas.setPointerCapture(event.pointerId); return; }
+      if (kind === "steam" || kind === "texture") { this.drag = { start: p, steam: true }; this.canvas.setPointerCapture(event.pointerId); return; }
       if (this.tool === "rect") { this.remember(); this.drag = { start: p }; this.closed = false; this.points = []; this.canvas.setPointerCapture(event.pointerId); return; }
       if (this.closed) { showToast("Choose New selection to start another", true); return; }
       if (this.points.length >= 3) {
