@@ -501,7 +501,7 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
         regions=framed_regions(raw,width,height,[raw['mouth']]) if raw.get('mouth') else []
         if regions:
             points=np.asarray(regions[0]['polygon']);lo=points.min(axis=0);hi=points.max(axis=0)
-            mouths.append(load_mouth({**raw,'mouth':[*lo,*(hi-lo)]},video,fps,width,height,ffmpeg))
+            mouths.append(load_mouth({**raw,'mouth':[*lo,*(hi-lo)],'amount':float(raw.get('amount',.02))*float(raw.get('intensity',1))},video,fps,width,height,ffmpeg))
     from core.show_video_assets import VideoLayer
     video_layers = [VideoLayer(raw,width,height,fps) for raw in gags if raw.get('video_layer')]
     # A new background behind the person (masks made beforehand by show_backgrounds.prepare).

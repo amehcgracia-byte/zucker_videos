@@ -127,3 +127,49 @@ def test_api_key_auth_is_not_silently_used_for_chatgpt_requests(setup,monkeypatc
     ai.run(p,j['id'],executable='codex')
     failed=ai.load(p,j['id'])
     assert failed['status']=='failed' and 'API-key billing' in failed['error']
+
+
+def test_clay_uses_its_own_material_prompt_and_explicit_reference_not_crayons(setup):
+    p,_=setup
+    job=ai.create(p,{'id':'scene-1','start':0,'end':10},{**request(), 'purpose':'clay'})
+    prompt=ai.prompt_for(job)
+    assert job['purpose']=='clay' and not job['use_face']
+    assert '3 columns and 2 rows' in prompt and 'reference.png' in prompt
+    assert 'GREEN FLAT CAP' in prompt and 'projecting short front brim' in prompt
+    assert 'CHILD-BUILT' in prompt and 'PAUSE' in prompt and 'Simón' in prompt
+    assert 'wax-crayon' not in prompt
+    with pytest.raises(ValueError,match='ChatGPT'):
+        ai.create(p,{'id':'scene-1','start':0,'end':10},{**request(),'purpose':'clay','engine':'claude'})
+
+
+def test_clay_draft_video_and_approval_use_separate_routes_and_one_timeline_placement(setup):
+    from core import show_clay
+    p,c=setup
+    (p.artifacts_dir/'show_plan.json').write_text(json.dumps({'source':'talk.mp4','fps':30,'edited_duration':10,'shots':[{'start_frame':0,'end_frame':300}]}))
+    job=ai.create(p,{'id':'scene-1','start':0,'end':10},{**request(),'purpose':'clay'})
+    path=ai.folder(p,job['id']);Image.new('RGB',(300,200),(140,70,20)).save(path/'image.png')
+    show_clay.prepare_draft(p,job,path,'ffmpeg')
+    assert c.get('/api/v1/show/clay/drafts/'+job['id']+'/preview').status_code==409
+    job['status']='ready';ai.save(path/'request.json',job)
+    response=c.get('/api/v1/show/clay/drafts/'+job['id']+'/preview',headers={'Range':'bytes=0-99'})
+    assert response.status_code==206 and len(response.data)==100
+    assert c.post('/api/v1/show/ai/images/'+job['id']+'/apply').status_code==409
+    assert show_clay.ClayStore(p.folder).load()['placements']==[]
+    applied=c.post('/api/v1/show/clay/drafts/'+job['id']+'/apply',json={'mode':'pip'})
+    assert applied.status_code==200
+    placement=applied.get_json()['placements'][0]
+    assert placement['mode']=='pip' and placement['edited']==[[2.,4.,0.]]
+    assert c.post('/api/v1/show/clay/drafts/'+job['id']+'/apply',json={'mode':'pip'}).get_json()['placements']==applied.get_json()['placements']
+    edited=[{**placement,'timeline_duration':5}]
+    update=c.put('/api/v1/show/clay/placements',json={'revision':applied.get_json()['revision'],'placements':edited})
+    assert update.status_code==200 and update.get_json()['placements'][0]['edited']==[[2.,7.,0.]]
+    invalid=c.put('/api/v1/show/clay/placements',json={'revision':update.get_json()['revision'],'placements':[{**edited[0],'timeline_duration':99}]})
+    assert invalid.status_code==400
+    assert c.get('/api/v1/show/clay').get_json()['placements'][0]['timeline_duration']==5
+    # A new story made from the existing settings replaces its content, not its bar.
+    replacement=ai.create(p,{'id':'scene-1','start':0,'end':10},{**request(),'purpose':'clay','replace_clay_id':placement['id']})
+    other=ai.folder(p,replacement['id']);Image.new('RGB',(300,200),(20,70,140)).save(other/'image.png')
+    show_clay.prepare_draft(p,replacement,other,'ffmpeg');replacement['status']='ready';ai.save(other/'request.json',replacement)
+    changed=c.post('/api/v1/show/clay/drafts/'+replacement['id']+'/apply',json={'mode':'pip'}).get_json()['placements']
+    assert len(changed)==1 and changed[0]['id']==placement['id']
+    assert changed[0]['story']=='clay-'+replacement['id'] and changed[0]['timeline_duration']==5

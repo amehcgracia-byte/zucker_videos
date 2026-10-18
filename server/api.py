@@ -2263,7 +2263,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         for placement in data.get("placements") or []:
             story = stories.get(placement.get("story"))
             edited = []
-            if story and plan.get("shots"):
+            if story and "timeline_at" in placement:
+                a=float(placement["timeline_at"]);b=a+float(placement["timeline_duration"])
+                edited=[[a,b,float(placement["start"])]]
+            elif story and plan.get("shots"):
                 start = float(story["source_start"])
                 edited = [[round(a, 3), round(b, 3), round(sa - start, 3)]
                           for a, b, sa, _ in source_pieces(plan, start + float(placement["start"]), start + float(placement["end"]))
@@ -2636,7 +2639,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         stories = {item["id"]: item["story"] for item in data.get("stories") or []}
         try:
             placements = []
+            _, clay_plan_path = _show_review_files(project)
+            clay_plan=json.loads(clay_plan_path.read_text()) if clay_plan_path.is_file() else {}
+            edit_length=float(clay_plan.get('edited_duration') or sum((s['end_frame']-s['start_frame'])/float(clay_plan.get('fps') or 30) for s in clay_plan.get('shots',[])))
             for raw in body.get("placements") or []:
+                if 'timeline_at' in raw and edit_length and float(raw['timeline_at'])+float(raw.get('timeline_duration',0))>edit_length+.02:
+                    raise ValueError('The clay bar must stay inside the current edit')
                 if raw.get("story") not in stories:
                     raise ValueError("That clay story is not in this project")
                 placements.append(show_clay.check_placement({k: v for k, v in raw.items() if k != "edited"}, stories[raw["story"]]))
@@ -2645,6 +2653,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("stale_revision", str(exc), 409)
         except (ValueError, TypeError) as exc:
             return error_response("invalid_clay", str(exc), 400)
+        from core import show_scenes
+        for scene in (show_scenes.load(_scene_files(project)).get('scenes',[]) if _scene_files(project).is_file() else []):_invalidate_scene(project,scene['id'])
         return jsonify(_clay_state(project))
 
     @app.post("/api/v1/show/scenes/<scene_id>/decision")
@@ -3033,6 +3043,30 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except (ValueError, OSError):
             return error_response("not_found", "This image is not ready", 404)
 
+    @app.get('/api/v1/show/clay/drafts/<job_id>/preview')
+    def api_clay_draft_preview(job_id):
+        from core import show_ai_images
+        project=_require_project(state)
+        try:
+            job=show_ai_images.load(project,job_id)
+            if job.get('purpose')!='clay' or job.get('status')!='ready':raise ValueError('Not ready')
+            return send_file(show_ai_images.folder(project,job_id)/'preview.mp4',conditional=True)
+        except (ValueError,OSError):return error_response('not_ready','This clay preview is not ready',409)
+
+    @app.post('/api/v1/show/clay/drafts/<job_id>/apply')
+    @_proposals_locked
+    def api_clay_draft_apply(job_id):
+        from core import show_ai_images,show_clay,show_scenes
+        project=_require_project(state)
+        try:
+            job=show_ai_images.load(project,job_id)
+            scene=next(s for s in show_scenes.load(_scene_files(project))['scenes'] if s['id']==job['scene_id'])
+            if not scene['start']<=float(job['at'])<float(job['at'])+float(job['duration'])<=scene['end']+.02:raise ValueError('This scene changed. Create a draft on its current words.')
+            show_clay.apply_draft(project,job,show_ai_images.folder(project,job_id),mode=str((request.get_json(silent=True) or {}).get('mode') or 'bubble'))
+            _invalidate_scene(project,scene['id'])
+        except (ValueError,OSError,StopIteration) as exc:return error_response('invalid_clay',str(exc),400)
+        return jsonify(_clay_state(project))
+
     @app.post("/api/v1/show/ai/images/<job_id>/apply")
     @_proposals_locked
     def api_show_ai_apply(job_id):
@@ -3042,6 +3076,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             job = _ai_request(project, job_id)
         except (ValueError, OSError):
             return error_response("not_found", "Unknown image request", 404)
+        if job.get("purpose")=="clay":
+            return error_response("use_clay_approval", "Use the clay preview approval to place this story", 409)
         if job["status"] != "ready":
             return error_response("not_ready", "Review a completed image first", 409)
         document = show_scenes.load(_scene_files(project))
@@ -3963,12 +3999,16 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         allowed = {"status", "at", "duration", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action", "clip_audio",
                    "amount", "offset", "voice", "hold", "subject", "text", "style", "position", "size", "effect", "warp", "point", "anchor", "scale",
                    "density", "strength", "rise", "colour", "texture", "font", "bold", "italic",
-                   "entrance", "prompt", "picture", "selected_text", "image_center"}
+                   "entrance", "prompt", "picture", "selected_text", "image_center", "intensity"}
         changes = {key: value for key, value in body.items() if key in allowed}
         # All storyboard tools share the edited clock. Reject impossible placements
         # instead of silently accepting an image beyond its owning scene.
         try:
             current = next(p for p in stored["proposals"] if p["id"] == proposal_id)
+            if 'intensity' in changes:
+                intensity=float(changes['intensity'])
+                if not math.isfinite(intensity) or not 0 <= intensity <= 3:raise ValueError('Choose a movement strength between zero and three')
+                changes['intensity']=intensity
             if "at" in changes or "duration" in changes:
                 at = float(changes.get("at", current["at"]))
                 duration = float(changes.get("duration", current["duration"]))

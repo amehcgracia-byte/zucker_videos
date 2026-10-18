@@ -2339,3 +2339,12 @@ dialog.show-studio::backdrop {background:#0009;}
 #showLibraryDialog > nav {flex:none;}
 #showLibraryDialog .show-lib-body {min-height:0;flex:1;overflow:auto;overscroll-behavior:contain;}
 @media(max-height:550px) {#showLibraryDialog > header small {display:none;} .show-studio-card {max-height:95dvh;}}
+#showClayEditor {width:min(860px,96vw);max-height:92dvh;padding:0;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--text);overflow:hidden;}
+#showClayEditor[open]{display:flex;flex-direction:column;}
+#showClayEditor::backdrop{background:#0009;}
+#showClayEditor>header {display:flex;justify-content:space-between;gap:12px;padding:14px;flex:none;}
+#showClayEditor>header small{display:block;color:var(--muted);}
+.show-clay-editor-body {min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 16px 16px;display:grid;gap:12px;}
+.show-clay-editor-body label{display:grid;gap:6px;}
+.show-clay-editor-body textarea {width:100%;box-sizing:border-box;}
+.show-clay-editor-body details>summary {cursor:pointer;font-weight:600;margin-bottom:10px;}

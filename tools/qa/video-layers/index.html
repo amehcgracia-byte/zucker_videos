@@ -42,9 +42,11 @@ function draw(){
  if(backKind==='video'&&behind.readyState>=2)cover(ctx,behind);else if(photo)cover(ctx,photo);
  const i=Math.min(config.frames-1,Math.max(0,Math.floor(host.currentTime*config.fps)));
  lc.clearRect(0,0,960,540);lc.globalCompositeOperation='source-over';
- lc.drawImage(atlas,(i%config.columns)*config.maskWidth,Math.floor(i/config.columns)*config.maskHeight,config.maskWidth,config.maskHeight,0,0,960,540);
- lc.globalCompositeOperation='source-in';
  if(mode==='silhouette'){lc.fillStyle='#080909';lc.fillRect(0,0,960,540);}else lc.drawImage(host,0,0,960,540);
+ // Draw video first, then apply the PNG alpha. Person and silhouette now share
+ // exactly the same masking operation, independent of video drawing state.
+ lc.globalCompositeOperation='destination-in';
+ lc.drawImage(atlas,(i%config.columns)*config.maskWidth,Math.floor(i/config.columns)*config.maskHeight,config.maskWidth,config.maskHeight,0,0,960,540);
  lc.globalCompositeOperation='source-over';ctx.drawImage(layer,x+(960-960*scale)/2,y+540-540*scale,960*scale,540*scale);
 }
 function syncBackground(){if(backKind!=='video'||!Number.isFinite(behind.duration)||behind.duration<=0)return;const t=host.currentTime%behind.duration;if(Math.abs(behind.currentTime-t)>.12)behind.currentTime=t;}

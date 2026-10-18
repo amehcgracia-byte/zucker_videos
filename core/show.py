@@ -530,7 +530,7 @@ def window_plan(plan: dict[str, Any], start: float, end: float) -> dict[str, Any
             shots.append({**shot, "start_frame": first, "end_frame": first + max(1, int(round((b - a) * fps)))})
         offset += length
     cutaways = [{**cut, "at": round(cut["at"] - start, 3)} for cut in plan.get("cutaways") or [] if start - cut["duration"] < cut["at"] < end]
-    return {**plan, "shots": shots, "cutaways": cutaways}
+    return {**plan, "shots": shots, "cutaways": cutaways, "_edited_offset":float(plan.get("_edited_offset",0))+start}
 
 
 def preview_proposal(project, proposal_id: str, *, width: int | None = None, height: int | None = None,
@@ -555,7 +555,7 @@ def preview_proposal(project, proposal_id: str, *, width: int | None = None, hei
     plan["cutaways"] = cutaways
     part = window_plan(plan, start, end)
     from core.show_bridge import studio_fingerprint
-    signature = hashlib.sha1(json.dumps(["placement-preview-v7-clip-parts", plan, trial, _picture_recipe_hashes(trial), start, end, width, height, studio_fingerprint(project.folder)], sort_keys=True,
+    signature = hashlib.sha1(json.dumps(["placement-preview-v8-clay-animate", plan, trial, _picture_recipe_hashes(trial), start, end, width, height, studio_fingerprint(project.folder)], sort_keys=True,
                                         default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     folder.mkdir(parents=True, exist_ok=True)
@@ -668,7 +668,7 @@ def _scene_preview_inputs(project, scene_id: str, width: int, height: int, only_
     from core.gags import drawing_engine
     local_art_recipe = [drawing_engine(), gag_paint.NEGATIVE, {key: vars(style) for key, style in gag_paint.STYLES.items()}] if any(
         item["kind"] == "drawing" and not item["params"].get("picture") for item in live) else None
-    signature = hashlib.sha1(json.dumps(["scene-preview-v8-clip-parts", plan, live, overlays, _picture_recipe_hashes([live, overlays]), start, end, width, height, studio_fingerprint(project.folder),
+    signature = hashlib.sha1(json.dumps(["scene-preview-v9-clay-animate", plan, live, overlays, _picture_recipe_hashes([live, overlays]), start, end, width, height, studio_fingerprint(project.folder),
                                          local_art_recipe], sort_keys=True, default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     return plan, live, overlays, start, end, folder, left_out, folder / f"{scene_id}-{signature}.mp4"

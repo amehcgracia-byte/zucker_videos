@@ -5,7 +5,7 @@
 // coordinates of their own picture, outlines exist only in the editor, and the
 // pixels that move are the originals. Nothing is rendered until the last step.
 (() => {
-  const KIND_LABELS = { sticker:"Sticker", cutaway: "Close-up", character: "Character speaks", drawing: "Drawing", word: "Word", warp: "Warp", steam: "Texture · rainbow smoke", texture: "Texture", math: "Formulas around you", clip: "Video clip", background: "Moving video layers" };
+  const KIND_LABELS = { sticker:"Sticker", cutaway: "Close-up", character: "Character speaks", drawing: "Drawing", word: "Word", warp: "Warp", steam: "Texture · rainbow smoke", texture: "Texture", math: "Formulas around you", clip: "Video clip", clay:"Clay story", background: "Moving video layers" };
   const TEXTURES = {rainbow:"Rainbow smoke",smoke:"Smoke",fog:"Mist",water:"Water",electricity:"Electricity",fire:"Fire",snow:"Snow",rain:"Rain",sparks:"Sparks",leaves:"Leaves"};
   const isTexture = item => ["steam","texture"].includes(item.kind);
   const textureField = p => field("Texture", `<select data-field="texture">${Object.entries(TEXTURES).map(([key,name])=>`<option value="${key}" ${(p.texture||"rainbow")===key?"selected":""}>${name}</option>`).join("")}</select>`);
@@ -243,7 +243,10 @@
   async function loadLibrary(){const data=await api('/show/library'+(showRetired?'?retired=1':''));library=data.items||[];retiredCount=data.retired_count||0;}
   function timelineItems(scene){
     if(!scene)return [];
-    return [...sceneEffects(scene),...scene.overlays.map(overlay=>{
+    return [...sceneEffects(scene),...(clay?.placements||[]).filter(p=>p.enabled!==false && p.edited?.some(([a,b])=>a<scene.end&&b>scene.start)).map(p=>{
+      const at=Math.min(...p.edited.map(e=>e[0])),end=Math.max(...p.edited.map(e=>e[1]));
+      return {id:'clay:'+p.id,clay:p,kind:'clay',at,duration:end-at,status:'approved',params:{subject:p.name||'Simón · '+(CLAY_MODES[p.mode]||p.mode),group:p.group||p.id}};
+    }),...scene.overlays.map(overlay=>{
       overlay.id ||= crypto.randomUUID();
       const asset=library.find(item=>item.path===overlay.asset);
       return {id:'sticker:'+overlay.id,overlay,kind:'sticker',at:overlay.at??scene.start,duration:overlay.duration??4,status:'approved',params:{subject:asset?.name||baseName(overlay.asset),selected_text:overlay.selected_text||''}};
@@ -328,6 +331,11 @@
   async function savePlacement(item, changes) {
     const owner=currentScene()?.id;
     await flushEdits();
+    if(item.clay){
+      const placement=clay.placements.find(p=>p.id===item.clay.id);if(!placement)throw Error('This clay placement was removed.');
+      Object.assign(placement,{timeline_at:changes.at??item.at,timeline_duration:changes.duration??item.duration});
+      await saveClay(currentScene());return timelineItem(item.id);
+    }
     if(item.overlay){
       const old={...item.overlay};Object.assign(item.overlay,changes);
       if(!await saveOverlays(currentScene())){Object.assign(item.overlay,old);throw Error('Sticker changes were not saved');}
@@ -498,10 +506,10 @@
       <details class="show-sticker-picker"><summary>Add sticker</summary><div class="show-library">${library.map((asset,index)=>asset.retired?'':`<button type="button" data-library="${index}" aria-label="Add ${escape(asset.name)}"><img src="${asset.url}" alt="" loading="lazy">${escape(asset.name)}</button>`).join('')}</div></details>
       <p>Play or scrub to check when a picture appears and disappears. Drag a bar to move it; drag either edge to trim.</p>
       <div class="show-timeline-edit" role="toolbar" aria-label="Edit the timeline">${[['split','Split at playhead','⌘B'],['cut','Cut','⌘X'],['copy','Copy','⌘C'],['paste','Paste at playhead','⌘V'],['duplicate','Duplicate','⌘D'],['delete','Delete','⌫'],['undo','Undo','⌘Z'],['redo','Redo','⇧⌘Z']].map(([action,label,keys])=>`<button type="button" class="icon-button small" data-timeline-command="${action}" title="${label} (${keys})" ${timelineCommandOff(action,scene)?'disabled':''}>${label}</button>`).join('')}</div>
-      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${isTexture(selected)?steamTools(selected):''}${selected.kind==='drawing'?`<button type="button" data-open-library="${selected.id}">Choose from library</button>`:''}${selected.kind==='background'?`<button type="button" data-video-layers="${selected.id}">Edit moving video layers</button><button type="button" data-open-library="${selected.id}">Background from library</button>`:''}${selected.kind==='clip'?`<button type="button" data-clip-settings="${selected.id}">Clip settings…</button><button type="button" data-face-clip="${selected.id}">Put my face on it</button>${selected.params.clip_original?`<button type="button" data-face-original="${selected.id}">Use the original clip</button>`:''}`:''}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
+      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.clay?`<button type="button" data-clay-remove="${selected.clay.id}">Remove clay</button>`:selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${isTexture(selected)?steamTools(selected):''}${selected.kind==='drawing'?`<button type="button" data-open-library="${selected.id}">Choose from library</button>`:''}${selected.kind==='background'?`<button type="button" data-video-layers="${selected.id}">Edit moving video layers</button><button type="button" data-open-library="${selected.id}">Background from library</button>`:''}${selected.kind==='clay'?`<button type="button" data-clay-settings="${selected.clay.id}">Clay settings…</button>`:''}${selected.kind==='clip'?`<button type="button" data-clip-settings="${selected.id}">Clip settings…</button><button type="button" data-face-clip="${selected.id}">Put my face on it</button>${selected.params.clip_original?`<button type="button" data-face-original="${selected.id}">Use the original clip</button>`:''}`:''}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
       <div class="show-time-row"><span>Video</span><div class="show-time-source" data-scene-seek>Original video · your cut</div></div>
       <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
-      ${(clay?.placements||[]).filter(p=>p.enabled!==false).flatMap(p=>(p.edited||[]).filter(([a,b])=>a<scene.end&&b>scene.start).map(([a,b])=>`<div class="show-time-row"><span>Clay memory</span><div class="show-time-track"><button type="button" class="show-caption-time" data-clay-at="${a}" style="left:${pct(Math.max(a,scene.start))}%;width:${Math.max(.2,pct(Math.min(b,scene.end))-pct(Math.max(a,scene.start)))}%">Simón · ${escape(CLAY_MODES[p.mode]||p.mode)}</button></div></div>`)).join('')}
+
       <div class="show-time-row"><span>Speech captions <button type="button" class="show-caption-switch" data-captions-on="${review.captions_enabled?'0':'1'}" title="Subtitles of everything you say, at the bottom. Off unless you want them.">${review.captions_enabled?'On · turn off':'Off · turn on'}</button></span><div class="show-time-track show-caption-track">${(review.captions_enabled?scene.captions||[]:[]).map(cue=>`<button type="button" class="show-caption-time" data-caption-at="${Math.max(scene.start,cue.start)}" style="left:${pct(Math.max(scene.start,cue.start))}%;width:${Math.max(.2,pct(Math.min(scene.end,cue.end))-pct(Math.max(scene.start,cue.start)))}%" title="${escape(cue.lines.join(' '))} · click to edit on the video">${escape(cue.lines.join(' '))}</button>`).join('')}</div></div>
       ${timelineRows(rows).map(group=>{
         // One row per effect: its pieces (split, pasted) sit side by side on it.
@@ -525,6 +533,7 @@
     box.querySelectorAll('[data-clay-at]').forEach(button=>button.onclick=()=>{seekTo(Number(button.dataset.clayAt));showToast('Clay timing and display controls are in Clay memory below the scene.');});
     box.querySelector('[data-timeline-seek]').oninput=event=>seekTo(Number(event.target.value));
     box.onpointerdown=event=>{
+      if(event.button!==0)return;
       const clip=event.target.closest('[data-time-clip]');if(!clip)return;
       enterLiveTiming(scene);
       event.preventDefault();clip.setPointerCapture(event.pointerId);
@@ -599,7 +608,7 @@
     return [...rows.values()].map(group=>group.sort((a,b)=>a.at-b.at));
   }
   function timelineSnapshot(scene){
-    return {scene:scene.id,effects:sceneEffects(scene).map(item=>({id:item.id,at:item.at,duration:item.duration,status:item.status})),overlays:structuredClone(scene.overlays)};
+    return {scene:scene.id,effects:sceneEffects(scene).map(item=>({id:item.id,at:item.at,duration:item.duration,status:item.status})),overlays:structuredClone(scene.overlays),clay:clay?structuredClone(clay.placements):null};
   }
   async function timelineEdit(scene,change){
     // Kept for ⌘Z only once the change is saved.
@@ -621,6 +630,7 @@
       if(Object.keys(changes).length)await patch(item.id,changes).catch(error=>failed.push(error.message));
     }
     if(JSON.stringify(scene.overlays)!==JSON.stringify(snapshot.overlays)){scene.overlays=structuredClone(snapshot.overlays);selectedOverlay=null;drawOverlays(scene);await saveOverlays(scene);}
+    if(snapshot.clay && clay){clay.placements=structuredClone(snapshot.clay);await saveClay(scene);}
     await markModified();
     if(failed.length)showToast('Some changes could not be undone: '+failed[0],true);
   }
@@ -637,6 +647,10 @@
   async function pastePiece(scene,clip,at){
     const start=Math.max(scene.start,Math.min(scene.end-.1,at));
     const length=clip.duration>0?Math.min(clip.duration,scene.end-start):0;
+    if(clip.clay){
+      const placement={...structuredClone(clip.clay),id:crypto.randomUUID(),group:clip.clay.group||clip.clay.id,timeline_at:start,timeline_duration:Math.max(.04,length)};
+      clay.placements.push(placement);selectedEffect='clay:'+placement.id;await saveClay(scene);return;
+    }
     if(clip.overlay){
       const overlay={...structuredClone(clip.overlay),id:crypto.randomUUID(),group:clip.overlay.group||clip.overlay.id,at:Math.round(start*1000)/1000,duration:Math.round(Math.max(.04,length)*1000)/1000,selected_text:''};
       scene.overlays.push(overlay);selectedOverlay=scene.overlays.length-1;selectedEffect='sticker:'+overlay.id;
@@ -654,6 +668,11 @@
     const start=item.at,end=item.at+item.duration;
     if(!(at>start+.05&&at<end-.05))throw Error('Put the playhead inside the selected piece, where it should be cut');
     const at3=Math.round(at*1000)/1000;
+    if(item.clay){
+      const p=item.clay,mid=p.start+(p.end-p.start)*(at3-start)/(end-start);p.group ||=p.id;
+      clay.placements.push({...structuredClone(p),id:crypto.randomUUID(),start:mid,timeline_at:at3,timeline_duration:end-at3});
+      Object.assign(p,{end:mid,timeline_at:start,timeline_duration:at3-start});await saveClay(scene);return;
+    }
     if(item.overlay){
       const overlay=item.overlay;overlay.group ||= overlay.id;
       const after={...structuredClone(overlay),id:crypto.randomUUID(),at:at3,duration:Math.round((end-at3)*1000)/1000,selected_text:''};
@@ -668,6 +687,7 @@
     await markModified(item.id);
   }
   async function removePiece(scene,item){
+    if(item.clay){item.clay.enabled=false;await saveClay(scene);selectedEffect=null;return;}
     if(item.overlay){
       scene.overlays=scene.overlays.filter(overlay=>overlay!==item.overlay);selectedOverlay=null;
       drawOverlays(scene);if(!await saveOverlays(scene))throw Error('The picture was not removed');
@@ -677,7 +697,7 @@
   async function timelineCommand(action,scene=currentScene()){
     if(!scene||!review)return;
     const item=selectedTimelineItem(scene),at=editedPlayhead();
-    const clipOf=entry=>entry.overlay?{overlay:structuredClone(entry.overlay),duration:entry.duration}:{id:entry.id,duration:entry.duration};
+    const clipOf=entry=>entry.clay?{clay:structuredClone(entry.clay),duration:entry.duration}:entry.overlay?{overlay:structuredClone(entry.overlay),duration:entry.duration}:{id:entry.id,duration:entry.duration};
     if(action==='undo'||action==='redo'){
       const from=action==='undo'?timelineUndo:timelineRedo,to=action==='undo'?timelineRedo:timelineUndo;
       const index=from.findLastIndex(entry=>entry.scene===scene.id);if(index<0)return;
@@ -757,6 +777,17 @@
   let clay = null;
   let claySaving = null;
 
+  async function saveClay(scene) {
+    try {clay=await api('/show/clay/placements',{method:'PUT',body:JSON.stringify({revision:clay.revision,placements:clay.placements})});}
+    catch(error){clay=await api('/show/clay');renderTimeline(scene);throw error;}
+    invalidateLocal(scene);renderTimeline(scene);wordPlacementControls();prepareInBackground(scene);
+  }
+  function openClaySettings(placement){ShowClayEditor.open(currentScene(),null,placement);}
+  document.addEventListener('click',event=>{
+    const button=event.target.closest?.('[data-clay-settings],[data-clay-remove]');if(!button)return;
+    const p=clay?.placements.find(p=>p.id===(button.dataset.claySettings||button.dataset.clayRemove));if(!p)return;
+    if(button.dataset.clayRemove)removePiece(currentScene(),{clay:p}).catch(e=>showToast(e.message,true));else openClaySettings(p);
+  });
   async function clayBlock(scene) {
     const box = $("#showClay");
     if (!box) return;
@@ -771,9 +802,9 @@
     if (!story && !shown.length) { box.innerHTML = ""; return; }
     const span = (item) => item.edited.length ? `${clock(item.edited[0][0])}–${clock(item.edited[item.edited.length - 1][1])} in the show` : "cut from the show";
     box.innerHTML = `<h4>Clay memory <small>${escape(story?.quote || "")}</small></h4>
-      <p class="show-hint">Over your own voice and captions. Times are on the story's clock (seconds of what you say), so a cut in your edit skips that moment of the story too. Gaps between placements go back to you.</p>
+      <p class="show-hint">Over your own voice and captions. Drag the Clay story bar or its edges in the scene editor to move, shorten or lengthen it. It plays once, fitting its held poses to the bar, without looping. Source start/end below selects the part of the story to use.</p>
       ${shown.map(([item, index]) => `<fieldset class="show-clay-row" data-clay="${index}">
-        <legend><label><input type="checkbox" data-clay-field="enabled" ${item.enabled !== false ? "checked" : ""}> ${escape(CLAY_MODES[item.mode] || item.mode)}</label> <small>${span(item)}</small></legend>
+        <legend><button type="button" data-clay-settings="${item.id}">Clay settings…</button> <label><input type="checkbox" data-clay-field="enabled" ${item.enabled !== false ? "checked" : ""}> ${escape(CLAY_MODES[item.mode] || item.mode)}</label> <small>${span(item)}</small></legend>
         ${field("Mode", `<select data-clay-field="mode">${clay.modes.map((mode) => `<option value="${mode}" ${mode === item.mode ? "selected" : ""}>${CLAY_MODES[mode] || mode}</option>`).join("")}</select>`)}
         <div class="show-fields">
           ${field("From (s)", `<input type="number" data-clay-field="start" value="${item.start}" step="any" min="0" max="${clay.stories.find(s=>s.id===item.story)?.duration ?? 60}">`)}
@@ -1212,16 +1243,7 @@
     if(kind==='photo_edit') {ShowEinstein.open(scene,picked,'A realistic photo of me with long hair',null,{purpose:'photo_edit'});return true;}
     if(kind==='cutout'||kind==='silhouette') {const [index,offset]=sourceAt(scene.segments,picked.start-scene.start);await ShowPhotoStudio.openAt(review.source,scene.segments[index][0]+offset,kind==='silhouette',{sceneId:scene.id,at:picked.start,duration:picked.end-picked.start});return true;}
     if(kind==='captions') {if(!review.captions_enabled)await setCaptions(true);enterLiveTiming(scene,picked.start);playQuick(scene,Math.max(0,picked.start-scene.start));openTimeline();showToast('Speech captions follow the words. Drag the caption on the video or resize its corner.');return true;}
-    if(kind==='clay') {
-      let dialog=document.getElementById('showClayPicker');if(dialog)dialog.remove();
-      dialog=document.createElement('dialog');dialog.id='showClayPicker';
-      dialog.innerHTML='<h2>Clay memory · Simón</h2><p>Reuse the existing countryside story with Simón’s green cap and yellow coat over these words. This is a reusable sample, not a newly generated memory. It stops at the next source cut.</p><label>Display <select><option value="bubble">Thought bubble</option><option value="full">Full clay shot</option><option value="pip">Small clay window</option><option value="blend">Blend over me</option></select></label><div class="show-actions"><button data-clay-place>Place sample on these words</button><button data-clay-cancel>Cancel</button></div><p role="status"></p>';
-      document.body.append(dialog);dialog.querySelector('[data-clay-cancel]').onclick=()=>dialog.close();
-      dialog.querySelector('[data-clay-place]').onclick=async event=>{event.target.disabled=true;try{
-        await api('/show/clay/sample',{method:'POST',body:JSON.stringify({project_id:review.project_id,scene_id:scene.id,at:picked.start,end:picked.end,mode:dialog.querySelector('select').value})});
-        invalidateLocal(scene);dialog.close();await clayBlock(scene);await requestScenePreview(scene);showToast('Clay sample added. Its placement controls are below the scene.');
-      }catch(error){dialog.querySelector('[role=status]').textContent=error.message;event.target.disabled=false;}};dialog.showModal();return true;
-    }
+    if(kind==='clay') { ShowClayEditor.open(scene,picked);return true; }
     return false;
   }
 
@@ -1335,9 +1357,9 @@
   }
 
   document.addEventListener('click',event=>{const button=event.target.closest?.('[data-clip-settings]');if(button&&review){const item=timelineItem(button.dataset.clipSettings);if(item)ShowReferences.openClip(currentScene(),item,review.project_id);}});
-  document.addEventListener('click',event=>{const button=event.target.closest?.('[data-original-parts]');if(!button)return;selectedEffect=button.dataset.originalParts;const item=timelineItem(selectedEffect),scene=currentScene();
+  document.addEventListener('click',event=>{const button=event.target.closest?.('[data-original-parts]');if(!button)return;const [partsId,partsMode]=button.dataset.originalParts.split(':');selectedEffect=partsId;const item=timelineItem(selectedEffect),scene=currentScene();
     // A "character speaks" opens on its mouth (record its voice there); every effect gets a visible duration, not its zero-length mark.
-    extraTool(item.kind==='character'?'original_mouth':'original_eyes',scene,{text:scene.text,start:item.at,end:Math.min(scene.end,item.at+Math.max(3,item.duration||0))}).catch(error=>showToast(error.message,true));});
+    extraTool(partsMode==='mouth'?'original_mouth':partsMode==='eyes'?'original_eyes':item.kind==='character'?'original_mouth':'original_eyes',scene,{text:scene.text,start:item.at,end:Math.min(scene.end,item.at+Math.max(3,item.duration||0))}).catch(error=>showToast(error.message,true));});
   // Add, at the playhead (the words being said there, else the next 3 seconds).
   function pickedHere(scene) {
     const at = Math.max(scene.start, Math.min(scene.end - 0.1, editedPlayhead()));
@@ -1379,19 +1401,46 @@
   }
   // An effect's own tools, without leaving the scene editor.
   function effectItems(scene, item) {
+    if(item.clay)return [{label:'Clay settings…',action:()=>openClaySettings(item.clay)},
+      {label:'Create a new clay story…',action:()=>ShowClayEditor.open(currentScene(),{start:item.at,end:item.at+item.duration,text:currentScene().text})},
+      {label:'Remove effect',action:()=>removePiece(scene,item)}];
     const id = item.id;
     return [
       { label: "Settings…", action: () => effectSettings(id) },
       { label: "Show on the video and timeline", action: () => locateEffect(timelineItem(id)) },
       { label: "Choose its words…", action: () => { selectedEffect = id; placingWords = true; firstWord = null; pickedWords = null; closeTimeline(); wordPlacementControls(); $("#showSaid")?.scrollIntoView({ block: "nearest" }); } },
       { label: "Preview it", action: () => clickLike("data-show-preview", id) },
-      ...(["cutaway", "character"].includes(item.kind) || item.params.picture ? [{ label: "Animate original eyes / mouth…", action: () => clickLike("data-original-parts", id) }] : []),
+      ...(["cutaway", "character"].includes(item.kind) || item.params.picture ? [{ label: "Animate", submenu: () => proposalAnimationItems(scene,item) }] : []),
       ...(item.kind === "drawing" ? [{ label: "Choose from library…", action: () => openLibrary(id) }] : []),
       ...(item.kind === "background" ? [{ label: "Edit moving video layers…", action: () => openVideoLayers(id,item.params.person_style||"person") }, {label:"Background from library…", action:()=>openLibrary(id)}] : []),
       ...(item.kind === "word" && !item.params.picture ? wordItems(item) : []),
       ...(item.kind === "clip" ? [{label:"Clip settings…",action:()=>ShowReferences.openClip(currentScene(),item,review.project_id)}, { label: "Put my face on it…", action: () => openLibrary(null, null, id) }] : []),
       { separator: true },
       { label: item.status === "discarded" ? "Restore effect" : "Remove effect", action: async () => { await patch(id, { status: item.status === "discarded" ? "proposed" : "discarded" }); await markModified(); renderScene(); } },
+    ];
+  }
+  const MOVEMENT_STRENGTHS = [[.5,"Gentle"],[1,"Normal"],[1.5,"Strong"],[2,"Very strong"],[3,"Wild"]];
+  async function pictureAsLayer(scene,item,action,intensity=item.params.intensity??1) {
+    // Reuse the selected image, timing and position; retire its previous proposal.
+    // The renderer already supports every native layer animation, including paths.
+    const pos=drawingPosition(item);
+    await addToScene(item.params.picture,{sceneId:scene.id,at:item.at,duration:item.duration,
+      x:pos[0]*100,y:pos[1]*100,width:(item.params.size||.25)*100,action:'none'});
+    const index=scene.overlays.length-1;scene.overlays[index].intensity=intensity;
+    try {await patch(item.id,{status:'discarded'});} catch(error) {
+      scene.overlays.splice(index,1);await saveOverlays(scene);throw error;
+    }
+    await markModified(item.id);
+    selectedOverlay=index;selectedEffect='sticker:'+scene.overlays[index].id;
+    await animateOverlay(scene,index,action);renderScene();
+  }
+  function proposalAnimationItems(scene,item) {
+    const edit=mode=>()=>clickLike('data-original-parts',item.id+':'+mode);
+    return [
+      {label:'Move mouth…',action:edit('mouth')},{label:'Move eyes…',action:edit('eyes')},
+      {label:'Mark another original part…',action:edit('eyes')},
+      ...(item.params.picture?[{label:'Movement',submenu:Object.entries(ANIMATIONS).filter(([key])=>!['talk','look'].includes(key)).map(([key,label])=>({label,action:()=>pictureAsLayer(scene,item,key)}))}]:[]),
+      {label:'Movement strength',submenu:MOVEMENT_STRENGTHS.map(([value,label])=>({label,checked:Number(item.params.intensity??1)===value,action:async()=>{await patch(item.id,{intensity:value});await markModified(item.id);invalidateLocal(scene);prepareInBackground(scene);}}))}
     ];
   }
   // A word's text: typeface (each shown in itself), bold, italic, size, colour.
@@ -1470,15 +1519,20 @@
       { label: "Undo", hint: "⌘Z", disabled: !layerUndo.some((entry) => entry.scene === scene.id), action: () => layerCommand("undo") },
       ]),
       { separator: true },
-      { label: "Animate", submenu: () => Object.entries(ANIMATIONS).filter(([key]) => !["talk", "look"].includes(key) || talkable)
-          .map(([key, label]) => ({ label, checked: (overlay.action || "none") === key, action: () => animateOverlay(scene, index, key) })) },
+      { label: "Animate", submenu: () => [
+        {label:"Move mouth…",action:()=>layerCommand("mouth-regions")},
+        {label:"Move eyes…",action:()=>layerCommand("regions")},
+        {separator:true},
+        ...Object.entries(ANIMATIONS).filter(([key]) => !["talk", "look"].includes(key) || talkable)
+          .map(([key, label]) => ({ label, checked: (overlay.action || "none") === key, action: () => animateOverlay(scene, index, key) })),
+        {separator:true},{label:"Movement strength",submenu:MOVEMENT_STRENGTHS.map(([value,label])=>({label,checked:Number(overlay.intensity??1)===value,action:set({intensity:value})}))}
+      ] },
       ...(talkable && overlay.action === "talk" ? [{ label: "Voice", submenu: [
           { label: "Its own voice (you pause)", checked: overlay.voice_mode !== "mine", action: async () => { delete overlay.voice_mode; await save(); } },
           { label: "Your voice: it mouths what you say", checked: overlay.voice_mode === "mine", action: set({ voice_mode: "mine" }) }] }] : []),
       ...(talkable && overlay.action === "talk" && overlay.voice_mode !== "mine" ? [{ label: "Enters", submenu: [["cut", "Straight cut: talks at once"], ["zoom", "The camera pushes in on it"], ["bounce", "Rises from below with a jump"]]
           .map(([key, label]) => ({ label, checked: (overlay.entrance || "cut") === key, action: set({ entrance: key }) })) }] : []),
-      { label: "Movement strength", submenu: [[0.5, "Gentle"], [1, "Normal"], [1.5, "Strong"], [2, "Very strong"], [3, "Wild"]]
-          .map(([value, label]) => ({ label, checked: Number(overlay.intensity ?? 1) === value, action: set({ intensity: value }) })) },
+
       { label: "Size and shape", submenu: [
           { label: "Bigger", hint: "+", action: () => layerCommand("bigger") }, { label: "Smaller", hint: "−", action: () => layerCommand("smaller") },
           { label: "Fill the frame", action: set({ x: 0, y: 0, width: 100 }) },
@@ -1492,7 +1546,7 @@
           { label: "Ends at the playhead", disabled: editedPlayhead() <= overlay.at + 0.1, action: () => timing(overlay.at, editedPlayhead() - overlay.at)() },
           { label: "Lasts the whole scene", action: timing(scene.start, scene.end - scene.start) },
           { label: "Exact times…", action: () => openTools(index, x, y) }] },
-      { label: "Edit original eyes / mouth…", action: () => layerCommand("regions") },
+
       { separator: true },
       { label: "Preview it", action: () => clickLike("data-show-preview", "sticker:" + overlay.id) },
     ], { host: menuHost() });
@@ -1512,6 +1566,7 @@
   }
   // An effect's settings in a window over the scene editor (the editor stays open behind it).
   function effectSettings(id) {
+    const current=timelineItem(id);if(current?.clay){openClaySettings(current.clay);return;}
     const item = review.proposals.find((entry) => entry.id === id);
     if (!item) return;
     let dialog = $("#showEffectSettings");
@@ -1713,7 +1768,7 @@
   async function layerCommand(action, scene=currentScene()) {
     if(!scene)return;
     const overlay=scene.overlays[selectedOverlay];
-    if(action==='regions'){if(overlay)await window.ShowPhotoStudio.rigPicture(overlay.asset,{placement:{sceneId:scene.id,replaceId:overlay.id},mode:'eyes'});return;}
+    if(action==='regions'||action==='mouth-regions'){if(overlay)await window.ShowPhotoStudio.rigPicture(overlay.asset,{placement:{sceneId:scene.id,replaceId:overlay.id},mode:action==='mouth-regions'?'mouth':'eyes'});return;}
     if(action==='copy'){if(overlay)layerClipboard=structuredClone(overlay);return;}
     if(action==='undo'){
       const index=layerUndo.findLastIndex(entry=>entry.scene===scene.id);
@@ -2902,6 +2957,7 @@
       renderScene();
       showToast(`${name} takes the place of the proposed character: it speaks there with the voice you recorded.`);
     },
+    async clayChanged(data){clay=data;const scene=currentScene();if(!scene)return;invalidateLocal(scene);await clayBlock(scene);renderTimeline(scene);prepareInBackground(scene);},
     async partsSaved(asset,placement){
       const item=await api('/show/review/'+encodeURIComponent(placement.proposalId)+'/parts',{method:'POST',body:JSON.stringify({asset})});
       const index=review.proposals.findIndex(p=>p.id===item.id);if(index>=0)review.proposals[index]=item;

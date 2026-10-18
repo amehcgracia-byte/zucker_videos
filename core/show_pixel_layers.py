@@ -140,5 +140,5 @@ def apply_video_eyes(frame, raw, t):
     if min(ph,pw)<3:return
     local=[{'polygon':[((np.array(p)*[w-1,h-1]-lo)/[pw-1,ph-1]).tolist() for p in r['polygon']]} for r in regions]
     rgba=np.dstack([patch.astype(np.float32)/255,np.ones((ph,pw),np.float32)])
-    moved=LookingPixels(rgba,local,EYE_GLANCE).frame((t-raw['at'])/max(.001,raw['duration']))
+    moved=LookingPixels(rgba,local,min(.5,EYE_GLANCE*float(raw.get("intensity",1)))).frame((t-raw['at'])/max(.001,raw['duration']))
     patch[:]=np.clip(moved[...,:3]*255+.5,0,255).astype(np.uint8)

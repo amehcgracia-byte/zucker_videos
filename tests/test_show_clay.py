@@ -188,3 +188,56 @@ def test_square_pose_cells_keep_puppet_proportions_when_contained():
     stretched = story.picture(0.2, 320, 180)
     ys, xs = np.where(stretched[:, :, 0] > 200)
     assert xs.max() - xs.min() > (ys.max() - ys.min()) * 1.5
+
+
+def test_timeline_clay_can_span_source_cuts_and_matches_window_preview(tmp_path, monkeypatch):
+    from core.show import window_plan
+    project, source = _project(tmp_path, monkeypatch)
+    store=show_clay.ClayStore(project.folder);data=store.import_story(source/'story.json',placements=False)
+    placement=show_clay.check_placement(dict(id='edited-clay',story='memory',mode='full',start=0,end=10,
+        timeline_at=1,timeline_duration=8,fade=0),_story())
+    store.save({**data,'placements':[placement]},revision=data['revision'])
+    full,report=show_clay.clay_layers(project.folder,PLAN)
+    assert report[0]['status']=='applied' and full[0].pieces==[(1.,9.,0.)]
+    part=window_plan(PLAN,3,6)
+    sliced,_=show_clay.clay_layers(project.folder,part)
+    assert sliced[0].pieces==[(0.,3.,2.)]
+    a=np.zeros((90,160,3),np.uint8);b=a.copy()
+    full[0].drawer(a,full[0].section_time(4),[0,0,1],4)
+    sliced[0].drawer(b,sliced[0].section_time(1),[0,0,1],1)
+    assert np.array_equal(a,b) and a.max()>0
+    # Lengthening preserves the story, not a compressed copy bounded by a source shot.
+    placement['timeline_duration']=10
+    store.save({**store.load(),'placements':[placement]},revision=store.load()['revision'])
+    longer,_=show_clay.clay_layers(project.folder,PLAN)
+    assert longer[0].pieces==[(1.,11.,0.)]
+    assert store.load_story('memory').record['duration']==10
+
+
+def test_clay_draft_is_a_real_review_movie_and_only_approval_places_it(tmp_path, monkeypatch):
+    import subprocess
+    project, source = _project(tmp_path, monkeypatch)
+    job={'id':'a'*32,'purpose':'clay','status':'generating','direction':'Simón greets a neighbour, pauses, then sits down',
+         'selected_text':'Everyone comes and says hello','at':1,'duration':1.2}
+    folder=project.folder/'assets/show-ai'/job['id'];folder.mkdir(parents=True)
+    _sheet(folder/'image.png')
+    (project.artifacts_dir/'show_plan.json').write_text(json.dumps(PLAN))
+    output=show_clay.prepare_draft(project,job,folder,'ffmpeg')
+    meta=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_streams','-of','json',str(output)]))['streams'][0]
+    assert int(meta['nb_frames'])==30 and float(meta['duration'])==pytest.approx(1.2)
+    assert show_clay.ClayStore(project.folder).load()['placements']==[]
+    with pytest.raises(ValueError,match='completed'):show_clay.apply_draft(project,job,folder)
+    job['status']='ready'
+    saved=show_clay.apply_draft(project,job,folder,mode='full')
+    assert len(saved['placements'])==1 and saved['placements'][0]['timeline_duration']==1.2
+    assert len(show_clay.apply_draft(project,job,folder)['placements'])==1
+    story=show_clay.ClayStore(project.folder).load_story('clay-'+job['id']).record
+    keys=story['shots'][0]['poseKeys']
+    assert [k['pose'] for k in keys]==list(range(6))
+    assert show_clay.pose_at(story['shots'][0],.5)==2 # hold during narration, no wrapping
+
+
+@pytest.mark.parametrize('changes',[{'timeline_at':float('nan'),'timeline_duration':1},{'timeline_at':0,'timeline_duration':-.1}])
+def test_clay_timeline_rejects_invalid_intervals(changes):
+    with pytest.raises(ValueError,match='timeline'):
+        show_clay.check_placement(dict(mode='full',start=0,end=3,**changes),_story())

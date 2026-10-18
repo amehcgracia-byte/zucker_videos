@@ -205,7 +205,7 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
                              "source_start": params["source_start"], "zoom": params.get("zoom", 1.0), "focus": params.get("focus", [0.5, 0.5])})
             if params.get('pixel_parts'):
                 items_out.append({'proposal':item['id'],'pixel_parts':True,'at':item['at'],'duration':item['duration'],
-                                  **params['pixel_parts'],'zoom':params.get('zoom',1),'focus':params.get('focus',[.5,.5])})
+                                  **params['pixel_parts'],'intensity':params.get('intensity',1),'zoom':params.get('zoom',1),'focus':params.get('focus',[.5,.5])})
         elif item["kind"] == "character":
             voice = params.get("voice")
             items_out.append({"proposal": item["id"], "insert": "character", "at": item["at"], "source": params["source"], "still_time": params.get("still_time"),
