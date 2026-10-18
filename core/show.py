@@ -96,7 +96,7 @@ def steam_within_its_shot(plan: dict[str, Any], entries: list[dict[str, Any]]) -
         ends.append(offset)
     out = []
     for entry in entries:
-        if entry.get("steam") is not None and not entry.get("anchor") and ends:
+        if entry.get("steam") is not None and not entry.get("texture") and not entry.get("anchor") and ends:
             at = float(entry["at"])
             end = next((edge for edge in ends if edge > at + 1e-3), None)
             if end is not None and at + float(entry["duration"]) > end:
@@ -470,7 +470,7 @@ def framed_layer(plan: dict[str, Any], layer: list[dict[str, Any]]) -> list[dict
     from core.show_framing import steam_on_screen
     out: list[dict[str, Any]] = []
     for entry in layer:
-        out.extend(steam_on_screen(plan, entry) if entry.get("steam") else [entry])
+        out.extend(steam_on_screen(plan, entry) if entry.get("steam") and (entry.get("anchor") or not entry.get("texture")) else [entry])
     return out
 
 
@@ -555,7 +555,7 @@ def preview_proposal(project, proposal_id: str, *, width: int | None = None, hei
     plan["cutaways"] = cutaways
     part = window_plan(plan, start, end)
     from core.show_bridge import studio_fingerprint
-    signature = hashlib.sha1(json.dumps(["placement-preview-v5-artwork", plan, trial, _picture_recipe_hashes(trial), start, end, width, height, studio_fingerprint(project.folder)], sort_keys=True,
+    signature = hashlib.sha1(json.dumps(["placement-preview-v6-textures", plan, trial, _picture_recipe_hashes(trial), start, end, width, height, studio_fingerprint(project.folder)], sort_keys=True,
                                         default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     folder.mkdir(parents=True, exist_ok=True)
@@ -668,7 +668,7 @@ def _scene_preview_inputs(project, scene_id: str, width: int, height: int, only_
     from core.gags import drawing_engine
     local_art_recipe = [drawing_engine(), gag_paint.NEGATIVE, {key: vars(style) for key, style in gag_paint.STYLES.items()}] if any(
         item["kind"] == "drawing" and not item["params"].get("picture") for item in live) else None
-    signature = hashlib.sha1(json.dumps(["scene-preview-v6-artwork", plan, live, overlays, _picture_recipe_hashes([live, overlays]), start, end, width, height, studio_fingerprint(project.folder),
+    signature = hashlib.sha1(json.dumps(["scene-preview-v7-textures", plan, live, overlays, _picture_recipe_hashes([live, overlays]), start, end, width, height, studio_fingerprint(project.folder),
                                          local_art_recipe], sort_keys=True, default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     return plan, live, overlays, start, end, folder, left_out, folder / f"{scene_id}-{signature}.mp4"

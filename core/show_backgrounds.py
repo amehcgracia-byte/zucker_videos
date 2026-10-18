@@ -26,6 +26,7 @@ STEP = 2                        # a mask every other frame; the ones between are
 FADE_SEC = 0.25                 # the new background fades in and out
 VERSION = "person-v1"
 _vision_lock = threading.Lock()
+_editor_lock = threading.Lock()
 
 
 class BackgroundUnavailable(RuntimeError):
@@ -182,10 +183,53 @@ class Background:
     masks: np.ndarray              # (frames, h, w) uint8, memory-mapped
     hidden: list[list[float]]
     fps: float
+    video: Any = None
+    style: str = "person"
+    scale: float = 1.0
+    offset: tuple[float, float] = (0., 0.)
 
     def active(self, t: float) -> bool:
         local = t - self.at
         return 0 <= local < self.duration and not any(a <= local < b for a, b in self.hidden)
+
+    def close(self):
+        if self.video is not None:
+            self.video.capture.release()
+
+
+VIDEO_SUFFIXES = {'.mp4', '.mov', '.m4v', '.webm', '.mkv'}
+
+
+class VideoBackground:
+    """Sequential reads; seek only on scrubs, rate changes or loops. Audio stays with the host."""
+    def __init__(self, path, width, height):
+        import cv2
+        self.capture = cv2.VideoCapture(str(path))
+        self.fps = self.capture.get(cv2.CAP_PROP_FPS)
+        self.count = int(self.capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.width, self.height, self.index, self.frame = width, height, -1, None
+        if not self.capture.isOpened() or self.fps <= 0 or self.count <= 0:
+            self.capture.release()
+            raise BackgroundUnavailable('This background video could not be decoded')
+
+    def at(self, seconds):
+        import cv2
+        index = max(0, int(seconds*self.fps)) % self.count
+        if index == self.index:
+            return self.frame
+        if index != self.index+1:
+            self.capture.set(cv2.CAP_PROP_POS_FRAMES, index)
+        ok, frame = self.capture.read()
+        if not ok:
+            raise BackgroundUnavailable('The background video stopped decoding')
+        h, w = frame.shape[:2]
+        factor = max(self.width/w, self.height/h)
+        frame = cv2.resize(frame, (max(self.width, round(w*factor)), max(self.height, round(h*factor))))
+        h, w = frame.shape[:2]
+        self.frame = cv2.cvtColor(frame[(h-self.height)//2:(h-self.height)//2+self.height,
+                                      (w-self.width)//2:(w-self.width)//2+self.width], cv2.COLOR_BGR2RGB).astype(np.float32)
+        self.index = index
+        return self.frame
 
 
 def cover(path: str | Path, width: int, height: int) -> np.ndarray:
@@ -202,8 +246,10 @@ def load(raw: dict[str, Any], width: int, height: int, fps: float) -> Background
     if not raw.get("background") or not raw.get("masks"):
         return None
     masks = np.load(raw["masks"], mmap_mode="r")
-    return Background(float(raw["at"]), float(raw["duration"]), cover(raw["background"], width, height), masks,
-                      [list(span) for span in raw.get("hidden") or []], fps)
+    video = VideoBackground(raw['background'], width, height) if Path(raw['background']).suffix.lower() in VIDEO_SUFFIXES else None
+    return Background(float(raw["at"]), float(raw["duration"]), video.at(0) if video else cover(raw["background"], width, height), masks,
+                      [list(span) for span in raw.get("hidden") or []], fps, video=video, style=raw.get('person_style', 'person'),
+                      scale=float(raw.get('person_scale', 1)), offset=tuple(raw.get('person_offset') or (0., 0.)))
 
 
 def _guided(guide: np.ndarray, source: np.ndarray, radius: int, eps: float = 1e-3) -> np.ndarray:
@@ -230,5 +276,51 @@ def apply(frame: np.ndarray, background: Background, t: float) -> None:
     mask = cv2.resize(small, (width, height), interpolation=cv2.INTER_LINEAR)
     mask = np.clip(_guided(guide, mask, max(2, width // 240)), 0.0, 1.0)[..., None]
     fade = min(1.0, local / FADE_SEC, (background.duration - local) / FADE_SEC)
-    behind = background.picture if fade >= 1.0 else background.picture * fade + frame.astype(np.float32) * (1.0 - fade)
-    frame[:] = np.clip(frame.astype(np.float32) * mask + behind * (1.0 - mask) + 0.5, 0, 255).astype(np.uint8)
+    behind = background.video.at(local) if background.video else background.picture
+    person = np.full_like(frame, 8) if background.style == 'silhouette' else frame
+    if background.scale != 1 or background.offset != (0., 0.):
+        scale = background.scale
+        matrix = np.array([[scale, 0, width*(1-scale)/2+background.offset[0]*width],
+                           [0, scale, height*(1-scale)+background.offset[1]*height]], np.float32)
+        foreground = cv2.warpAffine(person.astype(np.float32)*mask, matrix, (width, height))
+        mask = cv2.warpAffine(mask, matrix, (width, height))[..., None]
+    else:
+        foreground = person.astype(np.float32)*mask
+    composite = foreground+behind*(1-mask)
+    frame[:] = np.clip(composite*fade+frame.astype(np.float32)*(1-fade)+.5, 0, 255).astype(np.uint8)
+
+
+def editor_sample(project, item, *, ffmpeg='ffmpeg'):
+    """Prepare a bounded live preview. Saved placement applies to the full effect span.
+
+    The actual cut and production person masks are reused; no new image is generated.
+    Private media and its alpha atlas stay in this project's cache.
+    """
+    from PIL import Image
+    from core.show import window_plan, _cached_cut
+    with _editor_lock:
+        plan = json.loads((project.artifacts_dir/'show_plan.json').read_text())
+        start = float(item['at'])
+        end = min(float(plan['edited_duration']), start+float(item['duration']), start+8)
+        if end <= start:
+            raise ValueError('Choose words for the moving video layer first')
+        folder = project.cache_dir/'show-layer-editor'
+        folder.mkdir(parents=True, exist_ok=True)
+        part = window_plan(plan, start, end)
+        host = _cached_cut(Path(plan['source']), part, folder, 'person', ffmpeg=ffmpeg, width=960, height=540, cancel=None, progress=None)
+        entries = [{'background':'live-editor', 'at':0., 'duration':end-start}]
+        notes = prepare(host, entries, plan, project.cache_dir/'show_masks', offset=start, ffmpeg=ffmpeg)
+        if notes:
+            raise BackgroundUnavailable('; '.join(notes))
+        masks = np.load(entries[0]['masks'], mmap_mode='r')
+        atlas = folder/(Path(entries[0]['masks']).stem+'.png')
+        if not atlas.is_file():
+            w, h = MASK_SIZE
+            pixels = np.zeros((((len(masks)+9)//10)*h, 10*w, 4), np.uint8)
+            pixels[..., :3] = 255
+            for i, mask in enumerate(masks):
+                pixels[(i//10)*h:(i//10+1)*h,(i%10)*w:(i%10+1)*w,3] = mask
+            pending = atlas.with_suffix('.pending.png')
+            Image.fromarray(pixels).save(pending)
+            pending.replace(atlas)
+        return {'host':host, 'alpha':atlas, 'fps':float(plan.get('fps') or 30), 'frames':len(masks), 'duration':end-start}

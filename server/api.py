@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import time
 import uuid
+from flask import abort
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -3594,6 +3595,121 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     picture_masks: dict[str, Any] = {}
     mask_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="zucker-cutout")
 
+    def _video_layer_item(project, proposal_id):
+        from core import show_proposals
+        stored = show_proposals.load(project.artifacts_dir/'show_proposals.json')
+        item = next((p for p in stored['proposals'] if p['id'] == proposal_id and p['kind'] == 'background'), None)
+        if item is None:
+            abort(404)
+        return stored, item
+
+    @app.get('/api/v1/show/video-layers/<proposal_id>/editor')
+    def api_video_layer_editor(proposal_id):
+        project = _require_project(state)
+        _video_layer_item(project, proposal_id)
+        html = (root/'tools/qa/video-layers/index.html').read_text()
+        prefix = '/api/v1/show/video-layers/'+proposal_id
+        html = html.replace('/sample.json', prefix+'/sample').replace('/media/', prefix+'/media/')
+        html = html.replace('INTERACTIVE SAMPLE', 'PROJECT VIDEO LAYERS')
+        html = html.replace('Files stay in this browser; nothing is uploaded.', 'Use in scene copies new files into this project. Nothing leaves your computer.')
+        html = html.replace('This separate sample does not save project edits or export an MP4.', 'Use in scene saves these layers for the scene preview and final export.')
+        html = html.replace('The installed app is unchanged.', 'The first eight seconds are shown here; the timeline controls the full effect duration.')
+        html = html.replace('<span class="badge">', '<button id="saveLayers" type="button">Use in scene</button><span class="badge">')
+        html = html.replace('</script>', '</script><script src="/show_video_layers.js" data-prefix="'+prefix+'"></script>')
+        return Response(html, mimetype='text/html')
+
+    @app.get('/api/v1/show/video-layers/<proposal_id>/sample')
+    def api_video_layer_sample(proposal_id):
+        from core import show_backgrounds
+        project = _require_project(state)
+        _, item = _video_layer_item(project, proposal_id)
+        try:
+            sample = show_backgrounds.editor_sample(project, item, ffmpeg=str(tool_status().get('ffmpeg_path') or 'ffmpeg'))
+            return jsonify({**{key: value for key, value in sample.items() if key not in ('host', 'alpha')},
+                            'maskWidth':384, 'maskHeight':216, 'columns':10,
+                            'backgrounds':json.loads((root/'tools/qa/show-backgrounds/manifest.json').read_text()),
+                            'placement':item['params'], 'current_video':Path(item['params'].get('picture') or '').suffix.lower() in show_backgrounds.VIDEO_SUFFIXES})
+        except (OSError, RuntimeError, ValueError) as exc:
+            return error_response('layer_preview_failed', str(exc), 400)
+
+    @app.get('/api/v1/show/video-layers/<proposal_id>/media/<name>')
+    def api_video_layer_media(proposal_id, name):
+        from core import show_backgrounds
+        project = _require_project(state)
+        _, item = _video_layer_item(project, proposal_id)
+        if name in ('host.mp4', 'alpha.png'):
+            sample = show_backgrounds.editor_sample(project, item, ffmpeg=str(tool_status().get('ffmpeg_path') or 'ffmpeg'))
+            path = sample['host' if name == 'host.mp4' else 'alpha']
+        elif name in ('background.mp4', 'current'):
+            path = Path(item['params'].get('picture') or '')
+            if not path.is_file() or not path.resolve().is_relative_to(project.folder.resolve()):
+                abort(404)
+        else:
+            choices = {p['file'] for p in json.loads((root/'tools/qa/show-backgrounds/manifest.json').read_text())}
+            if name not in choices:
+                abort(404)
+            path = root/'tools/qa/show-backgrounds'/name
+        return send_file(path, conditional=True)
+
+    @app.post('/api/v1/show/video-layers/<proposal_id>/save')
+    @_proposals_locked
+    def api_video_layer_save(proposal_id):
+        from core import show_backgrounds, show_proposals
+        project = _require_project(state)
+        stored, item = _video_layer_item(project, proposal_id)
+        try:
+            settings = json.loads(request.form.get('settings') or '{}')
+            style = settings.get('person_style', 'person')
+            scale = settings.get('person_scale', 1)
+            offset = settings.get('person_offset', [0, 0])
+            if style not in ('person', 'silhouette', 'original') or not isinstance(scale, (int, float)) or not .2 <= scale <= 1.8:
+                raise ValueError('Choose a valid person style and size')
+            if not isinstance(offset, list) or len(offset) != 2 or not all(isinstance(v,(int,float)) and math.isfinite(v) and -10 <= v <= 10 for v in offset):
+                raise ValueError('Choose a valid person position')
+            target = None
+            upload = request.files.get('file')
+            if upload and upload.filename:
+                suffix = Path(upload.filename).suffix.lower()
+                if suffix not in show_backgrounds.VIDEO_SUFFIXES | {'.png','.jpg','.jpeg','.webp'}:
+                    raise ValueError('Choose an MP4, MOV, WEBM or picture background')
+                folder = project.folder/'assets'/('show-backgrounds' if suffix in show_backgrounds.VIDEO_SUFFIXES else 'show-library/Backgrounds')
+                folder.mkdir(parents=True, exist_ok=True)
+                target = folder/('background-'+uuid.uuid4().hex+suffix)
+                upload.save(target)
+                try:
+                    if suffix in show_backgrounds.VIDEO_SUFFIXES:
+                        probe = show_backgrounds.VideoBackground(target, 160, 90)
+                        try:
+                            probe.at(0)
+                        finally:
+                            probe.capture.release()
+                    else:
+                        show_backgrounds.cover(target, 160, 90)
+                except Exception:
+                    target.unlink(missing_ok=True)
+                    raise ValueError('This background cannot be decoded')
+            elif settings.get('preset'):
+                choices = {p['file'] for p in json.loads((root/'tools/qa/show-backgrounds/manifest.json').read_text())}
+                if settings['preset'] not in choices:
+                    raise ValueError('Choose a supplied background')
+                folder = project.folder/'assets/show-library/Backgrounds'
+                folder.mkdir(parents=True, exist_ok=True)
+                target = folder/settings['preset']
+                if not target.exists():
+                    shutil.copy2(root/'tools/qa/show-backgrounds'/settings['preset'], target)
+            elif not Path(item['params'].get('picture') or '').is_file() and style != 'original':
+                raise ValueError('Choose a background photo or video')
+            if target:
+                item['params']['picture'] = str(target)
+            item['params'].update(person_style='person' if style == 'original' else style, person_scale=scale, person_offset=offset)
+            item['status'] = 'discarded' if style == 'original' else 'proposed'
+            item['needs'] = show_proposals.check(item)
+            show_proposals.save(project.artifacts_dir/'show_proposals.json', stored['proposals'], **{k:v for k,v in stored.items() if k not in ('proposals','version')})
+            _effect_changed(project, proposal_id)
+            return jsonify(item)
+        except (OSError, ValueError, TypeError) as exc:
+            return error_response('bad_request', str(exc), 400)
+
     @app.post("/api/v1/show/library/pictures")
     def api_show_library_add_picture() -> Response:
         """A picture dropped from the computer: kept in this project's library as it is."""
@@ -3699,7 +3815,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         stored = show_proposals.load(proposals_path)
         allowed = {"status", "at", "duration", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action", "clip_audio",
                    "amount", "offset", "voice", "hold", "subject", "text", "style", "position", "size", "effect", "warp", "point", "anchor", "scale",
-                   "density", "strength", "rise", "colour", "font", "bold", "italic",
+                   "density", "strength", "rise", "colour", "texture", "font", "bold", "italic",
                    "entrance", "prompt", "picture", "selected_text", "image_center"}
         changes = {key: value for key, value in body.items() if key in allowed}
         # All storyboard tools share the edited clock. Reject impossible placements
@@ -3724,6 +3840,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             for key, (lo, hi) in {"density": (5, 120), "strength": (0.05, 0.9), "rise": (0.3, 3.0)}.items():
                 if key in changes and not (isinstance(changes[key], (int, float)) and not isinstance(changes[key], bool) and lo <= changes[key] <= hi):
                     raise ValueError(f"Choose a steam {key} between {lo} and {hi}")
+            if "texture" in changes:
+                from core.show_textures import PRESETS
+                if not isinstance(changes["texture"], str) or changes["texture"] not in PRESETS:
+                    raise ValueError("Choose one of the texture presets")
             if "colour" in changes and not (changes["colour"] in ("rainbow", "white") or (isinstance(changes["colour"], str) and re.fullmatch(r"#[0-9a-fA-F]{6}", changes["colour"]))):
                 raise ValueError("Choose rainbow, white or one colour for the steam")
             from core.gag_stickers import WORD_FONTS
@@ -3818,13 +3938,18 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         source = str(body.get("source") or "")
         if kind in {"character", "cutaway"} and _show_allowed_source(project, source) is None:
             return error_response("bad_request", "Choose one of this Show's videos or photos", 400)
-        if kind == "steam":
+        if kind in ("steam", "texture"):
+            from core.show_textures import PRESETS
+            texture = str(body.get("texture") or "rainbow")
+            if texture not in PRESETS:
+                return error_response("bad_request", "Choose one of the texture presets", 400)
             # Over the cup Show Studio marked at this moment, if any; otherwise a starting point to click on the mug.
             from core.show_bridge import studio_cup_at
             cup = studio_cup_at(project.folder, plan, at)
-            item = show_proposals.proposal("steam", at, float(body.get("duration") or 4.0),
+            item = show_proposals.proposal(kind, at, float(body.get("duration") or 4.0),
                                            reason="Added by you" + (" · over the cup marked in Show Studio" if cup else ""),
-                                           point=list(cup) if cup else [0.35, 0.75], anchor=None, scale=1.0)
+                                           point=list(cup) if cup else [0.35, 0.75], anchor=None, scale=1.0,
+                                           **({"texture": texture, "subject": PRESETS[texture]} if kind == "texture" else {}))
         elif kind == "character":
             item = show_proposals.proposal("character", at, 0.0, reason="Added by you", source=source, still_time=float(body.get("still_time") or 0),
                                            zoom=1.25, focus=[0.5, 0.5], zoom_sec=1.2, region=None, action="mouth", amount=0.02,

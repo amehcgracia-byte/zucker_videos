@@ -43,6 +43,7 @@ $common = @(
   "--add-data", "$Root\captions\presets.json;captions",
   "--add-data", "$Root\tools\qa\show_pilot_editor.html;tools\qa",
   "--add-data", "$Root\tools\qa\show_*.js;tools\qa",
+  "--add-data", "$Root\tools\qa\video-layers;tools\qa\video-layers",
   "--add-data", "$Root\tools\qa\show-backgrounds;tools\qa\show-backgrounds",
   "--add-data", "$Root\tools\qa\show-masks;tools\qa\show-masks",
   "--add-data", "$Root\tools\qa\show-elements;tools\qa\show-elements",

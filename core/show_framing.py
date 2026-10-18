@@ -188,12 +188,16 @@ def steam_on_screen(plan: dict[str, Any], item: dict[str, Any]) -> list[dict[str
     for a, b, x0, y0, window in shot_windows(plan, float(item["at"]), float(item["at"]) + float(item["duration"])):
         x, y = item["steam"]
         sx, sy = (x - x0) / window, (y - y0) / window
-        if not (0.0 <= sx <= 1.0 and 0.0 <= sy <= 1.0):
+        if not item.get("anchor") and not (0.0 <= sx <= 1.0 and 0.0 <= sy <= 1.0):
             continue                                  # this shot does not show the mug
-        if item.get("anchor") and _shown(item["anchor"], x0, y0, window) < MUG_SHOWN:
+        if item.get("anchor") and not item.get("texture") and _shown(item["anchor"], x0, y0, window) < MUG_SHOWN:
             continue                                  # only its rim at the edge: steam over nothing
         piece = {**item, "at": a, "duration": round(b - a, 3), "steam": [round(sx, 4), round(sy, 4)],
                  "scale": round(float(item.get("scale") or 1.0) / window, 3)}
+        if item.get('texture'):
+            # A shot boundary is not the beginning/end of the chosen effect.
+            piece['fade_in'] = a <= float(item['at']) + .001
+            piece['fade_out'] = b >= float(item['at']) + float(item['duration']) - .001
         if item.get("anchor"):
             ax, ay, aw, ah = item["anchor"]
             piece["anchor"] = [round((ax - x0) / window, 4), round((ay - y0) / window, 4), round(aw / window, 4), round(ah / window, 4)]

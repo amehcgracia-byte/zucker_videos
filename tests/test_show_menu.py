@@ -52,8 +52,8 @@ assert.equal(menus().length, 0);                   // choosing closes every leve
 def test_the_add_menu_offers_every_kind_of_thing_by_category():
     script = Path("web/show_review.js").read_text()
     block = script[script.index("  function addItems("):script.index("  // An effect's own tools")]
-    for category in ("Pictures", "Drawings & words", "Characters", "Video", "Effects", "Bend the picture"):
+    for category in ("Pictures", "Drawings & words", "Characters", "Video", "Effects", "Textures", "Bend the picture"):
         assert f'label: "{category}"' in block
     for key in ("library", "references", "cutout", "silhouette", "photo_edit", "ai", "drawing", "lettering", "word", "character", "original_eyes",
-                "original_mouth", "original_part", "clay", "cutaway", "video_reference", "face_clip", "generate_video", "math", "steam", "warp_wave", "captions"):
+                "original_mouth", "original_part", "clay", "cutaway", "video_reference", "face_clip", "generate_video", "math", "video_cutout", "video_silhouette", "warp_wave", "captions"):
         assert f'"{key}"' in block, key

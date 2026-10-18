@@ -489,6 +489,11 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
     from core.show_inserts import AUDIO_RATE, draw_steam, fit, insert_frame, load_insert, load_steam, splice_audio
     inserts = sorted((load_insert(raw, width, height, fps, ffmpeg, video) for raw in gags if raw.get("insert")), key=lambda item: item.at)
     steams = [load_steam(raw, width, height) for raw in gags if raw.get("steam")]
+    texture_references = {}
+    for raw, texture in zip((raw for raw in gags if raw.get("steam")), steams):
+        # One marked object, including after an edited cut. Never learn the new
+        # shot's wall as a new "cup" just because it occupies the old coordinates.
+        texture.reference = texture_references.setdefault(raw.get("proposal") or id(texture), {})
     from core import show_backgrounds
     # A new background behind the person (masks made beforehand by show_backgrounds.prepare).
     backgrounds = [layer for layer in (show_backgrounds.load(raw, width, height, fps) for raw in gags if raw.get("background")) if layer]
@@ -516,7 +521,9 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
             ffmpeg, "-y", "-v", "error", "-nostdin", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}",
             "-r", f"{fps:.6f}", "-i", "pipe:0", *audio_args,
             *h264_args(ffmpeg, preset=preset, crf=crf, width=width, height=height, fps=fps, hardware=hardware), "-pix_fmt", "yuv420p",
-            "-shortest", "-movflags", "+faststart", str(pending)], stdin=subprocess.PIPE, stderr=encode_log)
+            # Rawvideo's EOF can make -shortest discard the final buffered AAC
+            # packets. The known frame count bounds both tracks without that race.
+            "-t", f"{total / fps:.9f}", "-movflags", "+faststart", str(pending)], stdin=subprocess.PIPE, stderr=encode_log)
         pending_inserts = list(inserts)
         written = 0
         # Decoding, drawing and encoding overlap: one thread reads frames ahead from the
@@ -605,6 +612,7 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
                 live_backgrounds = [layer for layer in backgrounds if layer.active(t)]
                 if live or live_warps or live_mouths or live_steams or studio or live_backgrounds:
                     frame = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3).copy()
+                    texture_source = frame.copy() if any(steam.rect is not None for steam in live_steams) else None
                     for layer in live_backgrounds:
                         show_backgrounds.apply(frame, layer, t)
                     for warp in live_warps:
@@ -612,7 +620,7 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
                     for mouth in live_mouths:
                         move_mouth(frame, mouth, t, fps)
                     for steam in live_steams:
-                        draw_steam(frame, steam, t)
+                        draw_steam(frame, steam, t, tracking_frame=texture_source, person_layer=live_backgrounds[-1] if live_backgrounds else None)
                     if studio:
                         drawings.draw(frame, t)
                     for sticker in live:
@@ -640,6 +648,8 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
             pending.replace(output)
         finally:
             halt.set()
+            for layer in backgrounds:
+                layer.close()
             for process in (decoder, encoder):
                 if process.poll() is None:
                     process.kill()

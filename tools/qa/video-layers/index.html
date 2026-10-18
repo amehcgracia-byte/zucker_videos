@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Show Studio · Moving video layers</title>
+<style>
+:root{color-scheme:dark;font:15px system-ui,sans-serif;color:#f2f0e9;background:#151916}*{box-sizing:border-box}body{margin:0}button,select,input{font:inherit}button,select,.upload{border:1px solid #475044;border-radius:9px;background:#29312a;color:inherit;padding:10px 14px;cursor:pointer}button:hover,.upload:hover{border-color:#c4e59b}button[aria-pressed=true]{background:#c4e59b;color:#192014}button:disabled{opacity:.45;cursor:wait}header{padding:22px 30px;border-bottom:1px solid #364034;display:flex;align-items:center;justify-content:space-between}header strong{font-size:21px}small,.muted{color:#b5bdb0}.badge{color:#c4e59b;font-size:12px;letter-spacing:.1em}main{max-width:1560px;margin:auto;padding:24px 30px;display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:24px}h1{font-size:30px;margin:0 0 8px}p{line-height:1.5}h2{font-size:16px;margin:0 0 14px}.screen{position:relative;aspect-ratio:16/9;background:#0c100d;border:1px solid #46533e;border-radius:15px;overflow:hidden;margin-top:20px}.screen canvas{display:block;width:100%;height:100%;touch-action:none;cursor:grab}.screen canvas:active{cursor:grabbing}.screen.loading canvas{opacity:0}.screen .message{position:absolute;inset:0;display:grid;place-content:center;pointer-events:none}.screen:not(.loading) .message{display:none}.hint{font-size:12px;color:#b5bdb0;margin:8px 0}.transport{display:flex;align-items:center;gap:12px;padding:12px 0}.transport input{flex:1;min-width:60px;accent-color:#c4e59b}.clock{font-variant-numeric:tabular-nums;font-size:13px}.panel{padding:18px;border:1px solid #394335;background:#1d241e;border-radius:12px;margin-bottom:15px}.modes{display:flex;gap:6px;flex-wrap:wrap}.modes button{font-size:13px;padding:8px 10px}.setting{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:18px}.setting input{width:140px;accent-color:#c4e59b}.backgrounds{display:grid;grid-template-columns:1fr 1fr;gap:8px}.backgrounds button{padding:0;overflow:hidden;text-align:left;font-size:11px}.backgrounds img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover}.backgrounds span{display:block;padding:7px}.wide{width:100%;text-align:left;margin-top:10px;font-size:13px}.upload{display:block;margin-top:10px;font-size:13px;text-align:center}.upload input{display:none}.layer{display:flex;gap:12px;align-items:center;padding:13px;border:1px solid #4b5d3d;border-radius:9px;margin-top:8px;background:#273321}.layer.back{border-color:#40516a;background:#222c37}.layer .icon{font-size:20px}.layer strong,.layer small{display:block}.layer strong{font-size:13px}.layer small{font-size:11px;margin-top:4px}.layer .end{margin-left:auto;color:#c4e59b;font-size:11px;white-space:nowrap}.notes{font-size:12px;color:#b5bdb0;line-height:1.5}.error{color:#ffb7a0}.bottom{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.legend{font-size:12px;color:#b5bdb0}footer{grid-column:1/-1;border-top:1px solid #364034;padding-top:15px;color:#b5bdb0;font-size:12px}video.source{display:none}@media(max-width:1000px){main{grid-template-columns:1fr}aside{display:grid;grid-template-columns:1fr 1fr;gap:16px}.panel{margin:0}}@media(max-width:650px){header,main{padding:16px}aside{display:block}.panel{margin-bottom:12px}h1{font-size:24px}}
+</style>
+<header><strong>Show Studio <span class="muted">/ Video layers</span></strong><span class="badge">INTERACTIVE SAMPLE</span></header>
+<main>
+<section>
+  <h1>You keep moving. The background changes.</h1>
+  <div class="muted">Your video and voice in front. A photo or a second video behind.</div>
+  <div class="bottom" style="margin-top:16px"><div class="modes"><button data-mode="person" aria-pressed="true">Person cutout</button><button data-mode="silhouette" aria-pressed="false">Black silhouette</button><button data-mode="original" aria-pressed="false">Original</button></div><select id="quickBackground" aria-label="Choose background"><option value="bullring.png">Spain · bullring</option><option value="space.png">Space station</option><option value="laboratory.png">Thinking · study</option><option value="landscape.png">Mountain meadow</option><option value="video">Second moving video · kitchen</option></select></div>
+  <div class="screen loading" id="screen"><canvas width="960" height="540" id="output" aria-label="Moving person over the selected background"></canvas><div class="message" id="message">Loading your moving cutout…</div></div>
+  <div class="hint">Drag yourself in the picture to move. Use Size to make yourself bigger or smaller.</div>
+  <div class="transport"><button id="play" disabled>Play sample</button><input id="seek" aria-label="Video position" type="range" min="0" max="8" step="0.04" value="0"><span class="clock" id="clock">0:00 / 0:08</span><button id="mute" aria-pressed="false">Sound on</button></div>
+  <div class="panel"><div class="bottom"><h2>Layers · front to back</h2><span class="legend">Your original voice stays linked to your video</span></div>
+    <div class="layer"><span class="icon">01</span><div><strong id="frontLabel">You · moving person cutout</strong><small>VIDEO + ORIGINAL AUDIO · 0:00–0:08</small></div><span class="end">FRONT</span></div>
+    <div class="layer back"><span class="icon">02</span><div><strong id="backLabel">Spain · bullring</strong><small id="backType">PHOTO · silent background</small></div><span class="end">BACK</span></div>
+  </div>
+  <p id="status" class="notes" role="status">The cutout follows your real movements; this is not an animated photograph.</p>
+</section>
+<aside>
+ <div class="panel"><h2>Placement</h2>
+ <label class="setting">Size <input id="size" aria-label="Person size" type="range" min="20" max="180" value="100"><output id="sizeValue">100%</output></label><button class="wide" id="reset">Reset position & size</button></div>
+ <div class="panel"><h2>2 · Background</h2><div class="backgrounds" id="backgrounds"></div><button class="wide" id="videoBackground">▶ Use second video · kitchen</button><label class="upload">+ Choose your photo or video<input id="upload" type="file" accept="image/*,video/*"></label><p class="notes">The back video is muted and loops if shorter. Your voice continues in front. Files stay in this browser; nothing is uploaded.</p></div>
+ <div class="panel"><h2>What this sample proves</h2><p class="notes">Moving foreground + moving background. Live placement. A moving black silhouette. Four original backgrounds.</p><p class="notes">This separate sample does not save project edits or export an MP4. Hair and hands can have rough edges. The installed app is unchanged.</p></div>
+</aside>
+<footer>Eight-second local sample · actual frame-by-frame person masks from macOS Vision · live browser composition, no render for each change</footer>
+</main>
+<video id="host" class="source" src="/media/host.mp4" playsinline preload="auto"></video><video id="behind" class="source" muted playsinline preload="auto"></video>
+<script>
+const $=s=>document.querySelector(s), host=$('#host'), behind=$('#behind'), canvas=$('#output'), ctx=canvas.getContext('2d');
+const layer=document.createElement('canvas');layer.width=960;layer.height=540;const lc=layer.getContext('2d');
+let config,atlas,photo,mode='person',backKind='photo',ready=false,x=0,y=0,scale=1,objectURL=null,drag=null;
+function loadImage(src){return new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>resolve(image);image.onerror=()=>reject(new Error('The picture could not be loaded.'));image.src=src;});}
+function cover(context,source){const w=source.videoWidth||source.naturalWidth,h=source.videoHeight||source.naturalHeight;if(!w||!h)return;const s=Math.max(960/w,540/h);context.drawImage(source,(960-w*s)/2,(540-h*s)/2,w*s,h*s);}
+function draw(){
+ if(!ready||host.readyState<2)return;
+ ctx.clearRect(0,0,960,540);
+ if(mode==='original'){ctx.drawImage(host,0,0,960,540);return;}
+ ctx.fillStyle='#202820';ctx.fillRect(0,0,960,540);
+ if(backKind==='video'&&behind.readyState>=2)cover(ctx,behind);else if(photo)cover(ctx,photo);
+ const i=Math.min(config.frames-1,Math.max(0,Math.floor(host.currentTime*config.fps)));
+ lc.clearRect(0,0,960,540);lc.globalCompositeOperation='source-over';
+ lc.drawImage(atlas,(i%config.columns)*config.maskWidth,Math.floor(i/config.columns)*config.maskHeight,config.maskWidth,config.maskHeight,0,0,960,540);
+ lc.globalCompositeOperation='source-in';
+ if(mode==='silhouette'){lc.fillStyle='#080909';lc.fillRect(0,0,960,540);}else lc.drawImage(host,0,0,960,540);
+ lc.globalCompositeOperation='source-over';ctx.drawImage(layer,x+(960-960*scale)/2,y+540-540*scale,960*scale,540*scale);
+}
+function syncBackground(){if(backKind!=='video'||!Number.isFinite(behind.duration)||behind.duration<=0)return;const t=host.currentTime%behind.duration;if(Math.abs(behind.currentTime-t)>.12)behind.currentTime=t;}
+function clock(){ $('#seek').value=host.currentTime;$('#clock').textContent=`0:${String(Math.floor(host.currentTime)).padStart(2,'0')} / 0:${String(Math.ceil(config.duration||8)).padStart(2,'0')}`;}
+function tick(){draw();clock();if(backKind==='video'&&!host.paused)syncBackground();requestAnimationFrame(tick);}
+function error(e){$('#status').textContent=e.message||String(e);$('#status').classList.add('error');}
+async function selectPhoto(src,title){try{const img=await loadImage(src);photo=img;backKind='photo';if(src.startsWith('/media/'))$('#quickBackground').value=src.split('/').pop();behind.pause();$('#backLabel').textContent=title;$('#backType').textContent='PHOTO · silent background';$('#videoBackground').setAttribute('aria-pressed','false');draw();}catch(e){error(e);}}
+async function selectVideo(src,title){behind.pause();behind.src=src;behind.load();backKind='video';$('#quickBackground').value='video';$('#backLabel').textContent=title;$('#backType').textContent='VIDEO · muted · loop to fit';$('#videoBackground').setAttribute('aria-pressed','true');}
+behind.addEventListener('loadeddata',()=>{syncBackground();if(!host.paused)behind.play().catch(error);draw();});behind.addEventListener('ended',()=>{if(!host.paused){behind.currentTime=0;behind.play().catch(error);}});behind.addEventListener('error',()=>error(new Error('This background video cannot be played. Try an MP4 with H.264.')));
+$('#quickBackground').onchange=e=>{if(e.target.value==='video')selectVideo('/media/background.mp4','Kitchen · second moving video');else selectPhoto('/media/'+e.target.value,e.target.selectedOptions[0].textContent);};
+$('#videoBackground').onclick=()=>selectVideo('/media/background.mp4','Kitchen · second moving video');
+$('#play').onclick=async()=>{try{if(!host.paused){host.pause();behind.pause();return;}if(host.ended||host.currentTime>=7.99)host.currentTime=0;syncBackground();await host.play();if(backKind==='video'&&behind.readyState>=2)await behind.play();}catch(e){host.pause();behind.pause();error(e);}};
+host.addEventListener('play',()=>$('#play').textContent='Pause');host.addEventListener('pause',()=>{$('#play').textContent=host.ended?'Replay sample':'Play sample';behind.pause();});host.addEventListener('seeked',()=>{syncBackground();draw();});
+$('#seek').oninput=e=>{host.currentTime=Number(e.target.value);};
+$('#mute').onclick=()=>{host.muted=!host.muted;$('#mute').textContent=host.muted?'Sound off':'Sound on';$('#mute').setAttribute('aria-pressed',String(host.muted));};
+document.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{mode=b.dataset.mode;document.querySelectorAll('[data-mode]').forEach(p=>p.setAttribute('aria-pressed',String(p===b)));$('#frontLabel').textContent=mode==='silhouette'?'You · moving black silhouette':mode==='original'?'You · original video':'You · moving person cutout';canvas.style.cursor=mode==='original'?'default':'grab';draw();});
+$('#size').oninput=e=>{scale=Number(e.target.value)/100;$('#sizeValue').textContent=`${e.target.value}%`;draw();};
+$('#reset').onclick=()=>{x=y=0;scale=1;$('#size').value=100;$('#sizeValue').textContent='100%';draw();};
+canvas.onpointerdown=e=>{if(mode==='original')return;drag={px:e.clientX,py:e.clientY,x,y};canvas.setPointerCapture(e.pointerId);};
+canvas.onpointermove=e=>{if(!drag)return;const r=canvas.getBoundingClientRect();x=drag.x+(e.clientX-drag.px)*960/r.width;y=drag.y+(e.clientY-drag.py)*540/r.height;draw();};
+canvas.onpointerup=canvas.onpointercancel=()=>drag=null;
+$('#upload').onchange=e=>{const f=e.target.files[0];if(!f)return;if(objectURL)URL.revokeObjectURL(objectURL);objectURL=URL.createObjectURL(f);if(f.type.startsWith('video/'))selectVideo(objectURL,f.name);else selectPhoto(objectURL,f.name);};
+(async()=>{try{config=await fetch('/sample.json').then(r=>{if(!r.ok)throw Error('The sample configuration could not load.');return r.json();});atlas=await loadImage('/media/alpha.png');for(const b of config.backgrounds){const button=document.createElement('button');button.innerHTML=`<img src="/media/${b.file}" alt=""><span>${b.title}</span>`;button.onclick=()=>selectPhoto('/media/'+b.file,b.title);$('#backgrounds').append(button);}await selectPhoto('/media/bullring.png','Spain · bullring');if(host.readyState<2)await new Promise((resolve,reject)=>{host.addEventListener('loadeddata',resolve,{once:true});host.addEventListener('error',()=>reject(Error('Your source video could not load.')),{once:true});});$('#seek').max=config.duration||8;ready=true;$('#screen').classList.remove('loading');$('#play').disabled=false;window.dispatchEvent(new Event('layers-ready'));tick();}catch(e){$('#message').textContent='The sample could not load.';error(e);}})();
+</script>
+</html>
