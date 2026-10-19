@@ -139,7 +139,8 @@ def decisions(document: dict[str, Any]) -> dict[str, Any]:
 
 
 def save(path: Path, document: dict[str, Any]) -> None:
-    path.write_text(json.dumps(document, ensure_ascii=False, indent=1), encoding="utf-8")
+    from core.project import atomic_write_json
+    atomic_write_json(path,document)
 
 
 def load(path: Path) -> dict[str, Any]:

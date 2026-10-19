@@ -184,7 +184,8 @@ def piece(item: dict[str, Any], at: float, duration: float, *, offset: float | N
 
 
 def save(path: Path, items: list[dict[str, Any]], **meta: Any) -> None:
-    path.write_text(json.dumps({"version": PROPOSALS_VERSION, **meta, "proposals": items}, ensure_ascii=False, indent=1), encoding="utf-8")
+    from core.project import atomic_write_json
+    atomic_write_json(path,{"version":PROPOSALS_VERSION,**meta,"proposals":items})
 
 
 def load(path: Path) -> dict[str, Any]:
