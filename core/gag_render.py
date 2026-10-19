@@ -68,11 +68,15 @@ class Sticker:
     hops: int
     pivot: tuple[float, float] | None = None       # sprite pixels it turns and scales around (default: centre)
     mouth: np.ndarray | None = None                # sprite-size bool mask of the mouth (its own pixels move)
+    mouth_direction: str = "down"
     mouth_drop: float = 0.0                        # largest drop, sprite pixels
     envelope: np.ndarray | None = None             # 0..1 per frame of the sticker: the voice's loudness
     fps: float = 30.0
     painter: Any = None                            # draws itself: Claude's strokes in their order
     draw_sec: float = 0.0                          # how long it takes to draw itself (0: it does not)
+    follow: Any = None
+    tracked_offset: tuple = (0.,0.)
+    tracked_visible: bool = True
     eyes: Any = None                              # original-pixel layers with one-off glances
 
     def active(self, t: float) -> bool:
@@ -143,10 +147,14 @@ def load_sticker(raw: dict[str, Any], width: int, height: int) -> Sticker:
         cv2.fillConvexPoly(mask, polygon, 1)
         sticker.mouth = (mask > 0) & (pixels[..., 3] > 0.05)
         sticker.mouth_drop = float(raw.get("mouth_open") or 0.08) * prepared_h
+        sticker.mouth_direction = raw.get("mouth_direction","down")
     if raw.get("eyes"):
         from core.show_pixel_layers import LookingPixels
         from core.show_pixel_layers import EYE_GLANCE
-        sticker.eyes = LookingPixels(pixels, raw["eyes"], float(raw.get("eye_movement", EYE_GLANCE)))
+        sticker.eyes = LookingPixels(pixels, raw["eyes"], float(raw.get("eye_movement", EYE_GLANCE)),raw.get("eye_direction","horizontal"))
+    if raw.get("follow_anchor"):
+        from core.show_follow import Follow
+        sticker.follow=Follow(raw["follow_anchor"],width,height,raw.get("follow_template"))
     return sticker
 
 
@@ -170,8 +178,9 @@ def talking_pixels(sticker: Sticker, t: float) -> np.ndarray:
     pixels = base.copy()
     patch = np.where(sticker.mouth[..., None], base, 0.0)
     pixels[sticker.mouth, :3] = 0.0                    # the open mouth: black, the sprite's own alpha kept
-    moved = np.zeros_like(patch)
-    moved[drop:] = patch[:-drop]
+    from core.show_pixel_layers import direction_vector
+    dx,dy=direction_vector(sticker.mouth_direction)
+    moved=cv2.warpAffine(patch,np.array([[1,0,round(drop*dx)],[0,1,round(drop*dy)]],np.float32),(patch.shape[1],patch.shape[0]),flags=cv2.INTER_NEAREST)
     inside = moved[..., 3:4] > 0
     pixels = np.where(inside, moved, pixels)
     return pixels
@@ -257,7 +266,9 @@ def drawing_pixels(sticker: Sticker, t: float) -> np.ndarray:
 
 def draw_sticker(frame: np.ndarray, sticker: Sticker, t: float) -> None:
     height, width = frame.shape[:2]
+    if not sticker.tracked_visible:return
     cx, cy, sx, sy, rot = sticker_pose(sticker, t, width, height)
+    cx+=sticker.tracked_offset[0]*width;cy+=sticker.tracked_offset[1]*height
     if sx <= 0.01 or sy <= 0.01:
         return
     scale = 1.0 / PREPARED_SCALE
@@ -349,6 +360,7 @@ class Mouth:
     envelope: np.ndarray            # 0..1 per output frame of the item
     template: np.ndarray | None = None
     lost: bool = False
+    direction: str = "down"
 
     def active(self, t: float) -> bool:
         return self.at <= t < self.at + self.duration
@@ -389,7 +401,7 @@ def load_mouth(raw: dict[str, Any], video: Path, fps: float, width: int, height:
         samples = _decode_mono(ffmpeg, video, at, duration)
     x, y, w, h = (float(v) for v in raw["mouth"])
     return Mouth(at=at, duration=duration, rect=[x * width, y * height, w * width, h * height],
-                 open_px=float(raw.get("open") or 0.03) * height, envelope=loudness_envelope(samples, 16000, fps, frames))
+                 open_px=float(raw.get("open") or 0.03) * height, envelope=loudness_envelope(samples, 16000, fps, frames),direction=raw.get("mouth_direction","down"))
 
 
 def _track(mouth: Mouth, grey: np.ndarray) -> None:
@@ -435,9 +447,11 @@ def move_mouth(frame: np.ndarray, mouth: Mouth, t: float, fps: float) -> None:
         return
     patch = frame[y0:y1, x0:x1].copy()
     frame[y0:y1, x0:x1] = 0                      # the open mouth: black behind the jaw
-    top = y0 + drop
-    rows = max(0, min(y1 - y0, height - top))
-    frame[top:top + rows, x0:x1] = patch[:rows]
+    from core.show_pixel_layers import direction_vector
+    dx,dy=direction_vector(mouth.direction);dx,dy=round(dx*drop),round(dy*drop)
+    left,top=max(0,x0+dx),max(0,y0+dy)
+    right,bottom=min(width,x1+dx),min(height,y1+dy)
+    if right>left and bottom>top:frame[top:bottom,left:right]=patch[top-y0-dy:bottom-y0-dy,left-x0-dx:right-x0-dx]
 
 
 def sticker_voice(raw: dict[str, Any], video: Path, fps: float, ffmpeg: str) -> np.ndarray:
@@ -485,7 +499,7 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
                   tuple(float(v) for v in raw["box"]) if raw.get("box") else None) for raw in gags if raw.get("warp")]
     warper = Warper(width, height) if warps else None
     # A filmed mouth (the video's own pixels); a picture with a mouth is a sticker that talks, drawn above.
-    mouths = [load_mouth(raw, video, fps, width, height, ffmpeg) for raw in gags if raw.get("mouth") and not raw.get("image")]
+    mouths = [load_mouth(raw, video, fps, width, height, ffmpeg) for raw in gags if raw.get("mouth") and not raw.get("image") and not raw.get("pixel_parts")]
     from core.show_inserts import AUDIO_RATE, draw_steam, fit, insert_frame, load_insert, load_steam, splice_audio
     inserts = sorted((load_insert(raw, width, height, fps, ffmpeg, video) for raw in gags if raw.get("insert")), key=lambda item: item.at)
     steams = [load_steam(raw, width, height) for raw in gags if raw.get("steam")]
@@ -495,6 +509,15 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
         # shot's wall as a new "cup" just because it occupies the old coordinates.
         texture.reference = texture_references.setdefault(raw.get("proposal") or id(texture), {})
     from core import show_backgrounds
+    pixel_parts=[raw for raw in gags if raw.get("pixel_parts")]
+    from core.show_pixel_layers import framed_regions
+    for raw in pixel_parts:
+        regions=framed_regions(raw,width,height,[raw['mouth']]) if raw.get('mouth') else []
+        if regions:
+            points=np.asarray(regions[0]['polygon']);lo=points.min(axis=0);hi=points.max(axis=0)
+            mouths.append(load_mouth({**raw,'mouth':[*lo,*(hi-lo)],'amount':float(raw.get('amount',.02))*float(raw.get('intensity',1))},video,fps,width,height,ffmpeg))
+    from core.show_video_assets import VideoLayer
+    video_layers = [VideoLayer(raw,width,height,fps) for raw in gags if raw.get('video_layer')]
     # A new background behind the person (masks made beforehand by show_backgrounds.prepare).
     backgrounds = [layer for layer in (show_backgrounds.load(raw, width, height, fps) for raw in gags if raw.get("background")) if layer]
     total += sum(insert.frames for insert in inserts)
@@ -610,11 +633,23 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
                 live = [sticker for sticker in stickers if sticker.active(t)]
                 studio = bool(drawings) and drawings.active(t)
                 live_backgrounds = [layer for layer in backgrounds if layer.active(t)]
-                if live or live_warps or live_mouths or live_steams or studio or live_backgrounds:
+                live_parts=[raw for raw in pixel_parts if raw["at"]<=t<raw["at"]+raw["duration"]]
+                live_videos=[layer for layer in video_layers if layer.active(t)]
+                if live or live_warps or live_mouths or live_steams or studio or live_backgrounds or live_videos or live_parts:
                     frame = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3).copy()
+                    for tracked in [*live,*live_videos]:
+                        if tracked.follow:
+                            delta=tracked.follow.update(frame)
+                            tracked.tracked_visible=delta is not None
+                            if delta is not None:tracked.tracked_offset=delta
                     texture_source = frame.copy() if any(steam.rect is not None for steam in live_steams) else None
                     for layer in live_backgrounds:
                         show_backgrounds.apply(frame, layer, t)
+                    for raw_part in live_parts:
+                        from core.show_pixel_layers import apply_video_eyes
+                        apply_video_eyes(frame,raw_part,t)
+                    for layer in live_videos:
+                        layer.apply(frame,t)
                     for warp in live_warps:
                         frame = warper.apply(frame, warp, t)
                     for mouth in live_mouths:
@@ -648,6 +683,8 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
             pending.replace(output)
         finally:
             halt.set()
+            for layer in video_layers:
+                layer.close()
             for layer in backgrounds:
                 layer.close()
             for process in (decoder, encoder):

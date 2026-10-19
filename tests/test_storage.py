@@ -120,6 +120,9 @@ def test_first_launch_shows_location_setup_before_creating_media_home(home,monke
     from unittest.mock import MagicMock
     monkeypatch.setattr(app,'parse_args',lambda:SimpleNamespace(dev=False,selftest=False,webgl_probe=False,operator_avoidance_probe=False,project=None))
     monkeypatch.setitem(sys.modules,'webview',SimpleNamespace(create_window=lambda *a,**kw:(shown.append(kw), MagicMock())[1],start=lambda **_:None))
+    # This storage test deliberately has no native webview package. Menu construction
+    # is covered by test_desktop_menu; it is not part of choosing the storage location.
+    monkeypatch.setattr(app,'build_desktop_menu',lambda window:[])
     app.main()
     assert 'choose_storage' in shown[0]['html']
     assert not (home/'ZuckerVideos').exists()

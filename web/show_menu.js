@@ -19,6 +19,16 @@
     menu.className = "zmenu";
     menu.setAttribute("role", "menu");
     menu.dataset.level = level;
+    if(menu.showPopover)menu.setAttribute("popover","manual");
+    menu.addEventListener("wheel", event => {
+      event.preventDefault(); event.stopPropagation();
+      const delta = event.deltaY * (event.deltaMode === 1 ? 24 : event.deltaMode === 2 ? menu.clientHeight : 1);
+      menu.scrollTop += delta;
+    }, {passive:false});
+    menu.addEventListener("scroll", () => {
+      menus().filter(other => Number(other.dataset.level) > level).forEach(other => other.remove());
+      menu.querySelectorAll(".open").forEach(row => row.classList.remove("open"));
+    });
     for (const item of items) {
       if (!item) continue;
       if (item.separator) { const line = document.createElement("div"); line.className = "zmenu-separator"; menu.append(line); continue; }
@@ -47,6 +57,7 @@
       menu.append(row);
     }
     (host || document.body).append(menu);
+    if(menu.showPopover)menu.showPopover();
     return menu;
   }
 
@@ -62,12 +73,16 @@
   }
 
   function place(menu, x, y, leftEdge = null) {
-    menu.style.left = "0px"; menu.style.top = "0px";
-    const width = menu.offsetWidth, height = menu.offsetHeight;
-    let left = x;
-    if (left + width > innerWidth - 4) left = (leftEdge ?? x) - width;      // no room on the right: it opens on the left
-    menu.style.left = `${Math.max(4, Math.min(left, innerWidth - width - 4))}px`;
-    menu.style.top = `${Math.max(4, Math.min(y, innerHeight - height - 4))}px`;
+    const viewport=window.visualViewport;
+    const minX=(viewport?.offsetLeft||0)+4,minY=(viewport?.offsetTop||0)+4;
+    const maxX=minX+(viewport?.width||innerWidth)-8,maxY=minY+(viewport?.height||innerHeight)-8;
+    menu.style.margin='0';menu.style.inset='auto';menu.style.maxHeight=Math.max(60,maxY-minY)+'px';
+    menu.style.minWidth=Math.min(230,maxX-minX)+'px';menu.style.maxWidth=Math.min(340,maxX-minX)+'px';
+    menu.style.left='0px';menu.style.top='0px';
+    const width=menu.offsetWidth,height=menu.offsetHeight;
+    let left=x;if(left+width>maxX)left=(leftEdge??x)-width;
+    menu.style.left=Math.max(minX,Math.min(left,maxX-width))+'px';
+    menu.style.top=Math.max(minY,Math.min(y,maxY-height))+'px';
   }
 
   function keys(event) {
@@ -89,7 +104,8 @@
 
   function open(x, y, items, options = {}) {
     close();
-    host = options.host || document.body;
+    host = document.elementFromPoint(x, y)?.closest("dialog[open]")
+      || document.activeElement?.closest?.("dialog[open]") || document.fullscreenElement || options.host || document.body;
     const menu = build(items, 0);
     place(menu, x, y);
     menu.querySelector(".zmenu-item:not(:disabled)")?.focus({ preventScroll: true });
@@ -100,5 +116,6 @@
     });
   }
 
+  window.addEventListener("resize",close);document.addEventListener("fullscreenchange",close);window.visualViewport?.addEventListener("resize",close);
   window.ShowMenu = { open, close };
 })();

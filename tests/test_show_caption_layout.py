@@ -137,7 +137,9 @@ def test_clay_sample_is_placed_on_new_words_not_original_recording_clock(board):
     assert frame.max()>0
     data=show_clay.ClayStore(p.folder).load()
     assert data['stories'][0]['story']['source_start']==.2
-    assert data['stories'][0]['story']['duration']==pytest.approx(1)
+    # Keep the full story reusable; only its timeline bar fits the selected words.
+    assert data['stories'][0]['story']['duration']==pytest.approx(21.28)
+    assert placed['timeline_at']==.2 and placed['timeline_duration']==pytest.approx(1)
     assert c.post('/api/v1/show/clay/sample',json={**request,'project_id':'old'}).status_code==409
     assert c.post('/api/v1/show/clay/sample',json={**request,'end':9}).status_code==400
 

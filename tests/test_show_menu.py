@@ -23,9 +23,10 @@ class El {
   getBoundingClientRect() { return { left: 100, right: 300, top: 50 * (Number(this.parent?.dataset.level || 0) + 1), bottom: 0 }; }
   get offsetWidth() { return 200; } get offsetHeight() { return 120; }
 }
+let hitDialog = null;
 const all = new Set();
 const body = new El('body');
-global.document = { body, createElement: (t) => new El(t), querySelectorAll: (sel) => [...all].filter((e) => e.className === 'zmenu'),
+global.document = { elementFromPoint: () => hitDialog ? { closest: () => hitDialog } : null, body, createElement: (t) => new El(t), querySelectorAll: (sel) => [...all].filter((e) => e.className === 'zmenu'),
   querySelector: () => null, addEventListener() {}, removeEventListener() {}, activeElement: null };
 global.window = { addEventListener() {}, removeEventListener() {}, showToast() {} };
 global.innerWidth = 1280; global.innerHeight = 800;
@@ -45,6 +46,10 @@ rows(sub)[0].fire('pointerenter');
 rows(menus()[2])[0].fire('click');
 assert.deepEqual(chosen, ['wave']);
 assert.equal(menus().length, 0);                   // choosing closes every level
+hitDialog = new El('dialog');
+window.ShowMenu.open(40, 40, [{label: 'Edit original eyes'}], {host: body});
+assert.equal(menus()[0].parent, hitDialog);        // newest modal, never behind it
+window.ShowMenu.close();
 '''
     subprocess.run(["node", "-e", program], check=True, capture_output=True, text=True)
 

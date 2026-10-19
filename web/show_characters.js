@@ -6,9 +6,25 @@
   const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const baseName = (path) => String(path || "").split(/[\\/]/).pop();
   let state = null;
+  const photoGroups = new Map();
+  function openStudio() {
+    const dialog = $("#showCharacterStudio");
+    dialog.hidden = false;
+    if (!dialog.open) dialog.showModal();
+  }
+  function closeStudio() {
+    const dialog = $("#showCharacterStudio");
+    dialog.close();
+    dialog.hidden = true;
+  }
+  document.addEventListener("DOMContentLoaded", () => {
+    $("#showCharacterStudio").addEventListener("cancel", (event) => {
+      event.preventDefault(); closeStudio();
+    });
+  });
 
   function show(step) {
-    $("#showCharacterStudio").hidden = false;
+    openStudio();
     document.querySelectorAll("[data-studio-step]").forEach((item) => item.classList.toggle("active", Number(item.dataset.studioStep) === step));
     state.step = step;
     if (step === 1) renderPhotos();
@@ -22,21 +38,28 @@
     const videos = [...new Set(photos.map((item) => item.video || ""))];
     const only = state.photoFilter && videos.includes(state.photoFilter) ? state.photoFilter : "";
     // One group per video, in the order of its moments.
-    const groups = videos.filter((video) => !only || video === only).map((video) => {
+    const groups = videos.filter((video) => !only || video === only).map((video, groupIndex) => {
       const items = photos.map((item, index) => ({ item, index })).filter(({ item }) => (item.video || "") === video)
         .sort((a, b) => (a.item.second ?? 0) - (b.item.second ?? 0));
-      return `<h4 class="show-photo-group">${escape(video ? baseName(video) : "Added photos")} · ${items.length}</h4>
-        <div class="show-photo-grid">${items.map(({ item, index }) => `<button type="button" data-photo="${index}" title="${escape(item.name)}"><img src="${item.url}" alt="" loading="lazy"><span>${escape(item.name)}</span></button>`).join("")}</div>`;
+      return `<details class="show-library-group" data-photo-group="${escape(video)}" ${(only || (photoGroups.get(video) ?? groupIndex === 0)) ? "open" : ""}><summary>${escape(video ? baseName(video) : "Added photos")} · ${items.length}</summary>
+        <div class="show-photo-grid">${items.map(({ item, index }) => `<button type="button" data-photo="${index}" title="${escape(item.name)}"><img src="${item.url}" alt="" loading="lazy"><span>${escape(item.name)}</span></button>`).join("")}</div></details>`;
     }).join("");
     $("#showStudioBody").innerHTML = `<p class="show-hint">Choose a clear, focused photo of the whole thing. Take photos of every steady moment of your videos, or one at an exact second.</p>
       <div class="show-actions"><button type="button" class="primary icon-button small" id="showPhotoLibrary">Photos of every steady moment</button>
         ${videos.length > 1 ? `<select id="showPhotoFilter"><option value="">All videos</option>${videos.map((video) => `<option value="${escape(video)}" ${video === only ? "selected" : ""}>${escape(video ? baseName(video) : "Added photos")}</option>`).join("")}</select>` : ""}</div>
       <p id="showStudioStatus" class="show-hint" role="status" aria-live="polite"></p>
+      ${groups ? '<div class="show-actions"><button type="button" data-photo-toggle="open">Expand all</button><button type="button" data-photo-toggle="close">Collapse all</button></div>' : ""}
       ${groups || "<p>No photos yet.</p>"}
       <form id="showTakePhoto" class="show-review-add"><strong>Take a photo</strong>
         <select name="source">${sources.map((path) => `<option value="${escape(path)}">${escape(baseName(path))}</option>`).join("")}</select>
         <label>at <input name="second" type="number" min="0" step="any" value="0"> s</label>
         <label>name <input name="name" type="text" value="thing"></label><button class="icon-button small" type="submit">Take it</button></form>`;
+    $("#showStudioBody").querySelectorAll("[data-photo-group]").forEach((group) => {
+      group.addEventListener("toggle", () => photoGroups.set(group.dataset.photoGroup, group.open));
+    });
+    $("#showStudioBody").querySelectorAll("[data-photo-toggle]").forEach((button) => button.onclick = () => {
+      $("#showStudioBody").querySelectorAll("[data-photo-group]").forEach((group) => { group.open = button.dataset.photoToggle === "open"; });
+    });
     $("#showStudioBody").querySelectorAll("[data-photo]").forEach((button) => button.onclick = () => {
       state.photo = photos[Number(button.dataset.photo)];
       state.strokes = []; state.undo = []; state.box = null; state.cut = null; state.eyes = []; state.mouth = null; state.background = false;
@@ -158,9 +181,9 @@
 
   function renderRig() {
     const voices = [...window.ShowReview.voices(), ...(state.savedVoice ? [state.savedVoice] : [])];
-    $("#showStudioBody").innerHTML = `<p class="show-hint">Mark original parts, without replacing them. Draw a tight rectangle around each eye with Eyes, or mark a mouth/jaw with Mouth. Save, then choose Look left and right or Talk in the element’s animation menu. Pivot sets its turning point.</p>
+    $("#showStudioBody").innerHTML = `<p class="show-hint">Mark original parts, without replacing them. Draw a tight rectangle around each eye with Eyes, or mark a mouth/jaw with Mouth. Save, then choose Look left and right or Talk in the element’s animation menu. Pivot sets the turning point only. Choose eye and mouth movement direction separately below.</p>
       <div class="show-studio-tools"><label><input type="radio" name="rigtool" value="mouth" checked> Mouth</label><label><input type="radio" name="rigtool" value="eyes"> Eyes / original part</label><label><input type="radio" name="rigtool" value="pivot"> Pivot</label><button type="button" class="icon-button small" data-studio="clear-eyes">Clear eye regions</button><button type="button" class="icon-button small" data-studio="test-eyes">Test glance</button></div>
-      <div class="show-checker show-rig"><canvas id="showRigCanvas" class="show-canvas"></canvas></div>
+      <div class="show-fields"><label>Eye direction<select id="showEyeDirection"><option value="horizontal">Left / right</option><option value="vertical">Up / down</option><option value="diagonal">Diagonal down</option><option value="diagonal-up">Diagonal up</option></select></label><label>Mouth direction<select id="showMouthDirection"><option value="down">Down</option><option value="up">Up</option><option value="left">Left</option><option value="right">Right</option><option value="diagonal">Diagonal down</option><option value="diagonal-up">Diagonal up</option></select></label></div><div class="show-checker show-rig"><canvas id="showRigCanvas" class="show-canvas"></canvas></div>
       <video id="showEyePreview" controls playsinline hidden style="max-width:100%;max-height:240px"></video><p id="showEyeStatus" role="status"></p><div class="show-fields"><label class="show-field"><span>Name</span><input type="text" id="showCharacterName" value="${escape(state.name || state.photo.name)}"></label>
         <label class="show-field"><span>Its voice (from your videos)</span><select id="showCharacterVoice"><option value="">No voice yet</option>${voices.map((voice, index) => `<option value="${index}">${escape(voice.text.slice(0, 60))} (${escape(baseName(voice.source))} ${voice.start.toFixed(1)} s)</option>`).join("")}</select></label></div>
       <div class="show-fields show-voice-trim"><label class="show-field"><span>Its voice starts at (s)</span><input type="number" step="any" min="0" id="showVoiceFrom" value="0"></label>
@@ -169,9 +192,10 @@
         <button type="button" class="icon-button small primary" data-studio="talk-preview" title="Eyes, mouth and voice together, as the video will show them">▶ Preview with voice</button></div>
       <video id="showTalkPreview" controls playsinline hidden style="max-width:100%;max-height:260px"></video><p id="showTalkStatus" role="status"></p>
       <div data-voice-input data-voice-character></div>
-      <div class="show-actions"><button type="button" class="icon-button small" data-studio="back2">Back to the cut-out</button><button type="button" class="primary icon-button small" data-studio="save">Save in the library and place it</button></div>`;
+      <div class="show-actions"><button type="button" class="icon-button small" data-studio="back2">Back to the cut-out</button><button type="button" class="primary icon-button small" data-studio="save">${state.placement?.proposalId?"Apply to this close-up":"Save in the library and place it"}</button></div>`;
     if(state.editing)$('[data-studio="back2"]').disabled=true;
     state.voices = voices;
+    $("#showEyeDirection").value=state.eye_direction||"horizontal";$("#showMouthDirection").value=state.mouth_direction||"down";
     if(state.initialMode==='eyes')$('[name="rigtool"][value="eyes"]').checked=true;
     if(state.savedVoice)$("#showCharacterVoice").value=String(voices.length-1);
     voiceBounds();
@@ -231,15 +255,16 @@
     const voice = chosenVoice();
     const saved = await api("/show/characters", { method: state.editing ? "PATCH" : "POST", body: JSON.stringify({ folder:state.folder,
       photo: state.photo.photo, mask: state.cut.mask, method: state.cut.method, name: $("#showCharacterName").value,
-      eyes: state.eyes || [], mouth: state.mouth || null, pivot: state.pivot || [0.5, 1.0], voice: voice ? [voice.source, voice.start, voice.length] : null }) });
-    $("#showCharacterStudio").hidden = true;
+      eye_direction:($("#showEyeDirection")?.value||state.eye_direction||"horizontal"),mouth_direction:($("#showMouthDirection")?.value||state.mouth_direction||"down"),eyes: state.eyes || [], mouth: state.mouth || null, pivot: state.pivot || [0.5, 1.0], voice: voice ? [voice.source, voice.start, voice.length] : null }) });
+    closeStudio();
     await window.ShowReview.refreshLibrary();
     const tool=document.querySelector('[name=rigtool]:checked')?.value;
     // A recorded or chosen voice is heard: the character talks (its jaw moves too when a mouth was marked).
     const placement=state.placement?{...state.placement,action:voice||(tool==='mouth'&&state.mouth)?'talk':tool==='eyes'&&state.eyes?.length?'look':state.placement.action||'none'}:null;
-    if(placement?.replaceId)await window.ShowReview.rigSaved(saved.cutout,placement);
+    if(placement?.proposalId)await window.ShowReview.partsSaved(saved.cutout,placement);
+    else if(placement?.replaceId)await window.ShowReview.rigSaved(saved.cutout,placement);
     else if (!state.editing) await window.ShowReview.addToScene(saved.cutout,placement);
-    showToast(state.editing ? `${saved.name} updated. Render its preview to check the changes.` : `${saved.name} is in the library and in this scene`);
+    showToast(placement?.proposalId ? "Original parts updated in the same close-up." : state.editing ? `${saved.name} updated. Render its preview to check the changes.` : `${saved.name} is in the library and in this scene`);
     if(placement?.fromProposal)await window.ShowReview.characterTakesPlace(placement.fromProposal,saved.name);
   }
 
@@ -247,20 +272,20 @@
     const photo=await api('/show/photos',{method:'POST',body:JSON.stringify({source,second,name:'Original parts'})});
     return ShowPhotoStudio.rigPicture(photo.photo,settings);
   },rigPicture: async(asset,settings={})=>{
-    if(/[\\/]Characters[\\/][^\\/]+[\\/]cutout\.png$/.test(asset)){await ShowPhotoStudio.edit(asset);state.placement=settings.placement;if(settings.mode==='eyes')document.querySelector('[name=rigtool][value=eyes]').checked=true;return;}
+    if(/[\\/]Characters[\\/][^\\/]+[\\/]cutout\.png$/.test(asset)){await ShowPhotoStudio.edit(asset);state.placement=settings.placement;state.initialMode=settings.mode;renderRig();return;}
     const projectId=settings.placement?.projectId||ShowReview.projectId();
     const result=await api('/show/characters/prepare-layer',{method:'POST',body:JSON.stringify({project_id:projectId,asset})});
     state={step:3,photo:result.photo,cut:result.cut,eyes:[],mouth:null,pivot:[.5,1],strokes:[],undo:[],initialMode:settings.mode,placement:settings.placement};
     show(3);
   },openPhoto: async (photo,settings={})=>{
     const owner={step:2,strokes:[],undo:[],eyes:[],mouth:null,background:!!settings.background,silhouette:!!settings.silhouette,placement:settings.placement,photo:{...photo,url:'/api/v1/show/photo?path='+encodeURIComponent(photo.photo)}};
-    state=owner;$('#showCharacterStudio').hidden=false;
+    state=owner;openStudio();
     if(settings.head){const result=await api('/show/references/head-box',{method:'POST',body:JSON.stringify({photo:photo.photo})});if(state!==owner)return;owner.box=result.box||[.25,.05,.5,.45];}
     show(2);
     if(settings.head)showToast('Check the head outline. Use Box or the keep/erase brushes to correct it before saving.');
   },openAt: async (source,second,silhouette=false,placement=null) => {
     const owner={step:1,strokes:[],undo:[],eyes:[],mouth:null,background:false,silhouette,placement};state=owner;
-    $('#showCharacterStudio').hidden=false;$('#showStudioBody').innerHTML='<p role="status">Taking a photo at your selected words…</p>';
+    openStudio();$('#showStudioBody').innerHTML='<p role="status">Taking a photo at your selected words…</p>';
     try {const photo=await api('/show/photos',{method:'POST',body:JSON.stringify({source,second,name:silhouette?'Black silhouette':'Selected words cutout'})});
       if(state!==owner)return;state.photo={...photo,url:'/api/v1/show/photo?path='+encodeURIComponent(photo.photo)};show(2);
     } catch(error){if(state===owner)$('#showStudioBody').textContent=error.message;}
@@ -268,7 +293,7 @@
     const result=await api('/show/characters/edit?asset='+encodeURIComponent(asset));
     const r=result.record;
     state={step:3,editing:true,folder:r.folder,name:r.name,photo:{...result.photo,url:'/api/v1/show/photo?path='+encodeURIComponent(result.photo.photo)},cut:result.cut,
-      mouth:r.mouth,eyes:r.eyes||[],pivot:r.pivot,strokes:[],undo:[],savedVoice:r.voice?{source:r.voice[0],start:r.voice[1],length:r.voice[2],text:'Saved voice'}:null};
+      mouth:r.mouth,eyes:r.eyes||[],eye_direction:r.eye_direction,mouth_direction:r.mouth_direction,pivot:r.pivot,strokes:[],undo:[],savedVoice:r.voice?{source:r.voice[0],start:r.voice[1],length:r.voice[2],text:'Saved voice'}:null};
     show(3);
   }};
 
@@ -302,12 +327,12 @@
         target.disabled = true; $("#showTalkStatus").textContent = "Preparing the preview with its voice…";
         try {
           const result = await api("/show/characters/talk-preview", { method: "POST", body: JSON.stringify({ photo: state.photo.photo, mask: state.cut.mask,
-            eyes: state.eyes || [], mouth: state.mouth || null, voice: [voice.source, voice.start, voice.length] }) });
+            eye_direction:($("#showEyeDirection")?.value||state.eye_direction||"horizontal"),mouth_direction:($("#showMouthDirection")?.value||state.mouth_direction||"down"),eyes: state.eyes || [], mouth: state.mouth || null, voice: [voice.source, voice.start, voice.length] }) });
           const video = $("#showTalkPreview"); video.src = result.url; video.hidden = false; video.play().catch(() => {});
           $("#showTalkStatus").textContent = `${state.mouth ? "Its mouth moves with the voice" : "Mark its mouth to make it move with the voice"}${state.eyes?.length ? "; its eyes glance" : ""}. This is how the video will show it.`;
         } finally { target.disabled = false; }
       }
-      else if (action === "close") $("#showCharacterStudio").hidden = true;
+      else if (action === "close") closeStudio();
       else if (action === "gallery") {
         if (!state.cut || state.cutPending) return;
         target.disabled = true;
@@ -322,7 +347,7 @@
         if (!state.eyes?.length) { $("#showEyeStatus").textContent = "Mark an eye region first."; return; }
         target.disabled = true; $("#showEyeStatus").textContent = "Preparing original-pixel glance…";
         try {
-          const result = await api("/show/characters/eyes-preview",{method:"POST",body:JSON.stringify({photo:state.photo.photo,mask:state.cut.mask,eyes:state.eyes})});
+          const result = await api("/show/characters/eyes-preview",{method:"POST",body:JSON.stringify({photo:state.photo.photo,mask:state.cut.mask,eyes:state.eyes,eye_direction:$("#showEyeDirection").value})});
           const video = $("#showEyePreview"); video.src = result.url; video.hidden = false;
           $("#showEyeStatus").textContent = "Original pixels move; only the small holes behind them are filled from their surroundings.";
         } finally { target.disabled = false; }

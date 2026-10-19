@@ -182,6 +182,11 @@ def check_placement(raw: dict[str, Any], story: dict[str, Any]) -> dict[str, Any
         out[key] = float(out.get(key, 0.3 if key == "fade" else 0))
         if not math.isfinite(out[key]):
             raise ValueError(f"{key} must be a number")
+    if "timeline_at" in raw or "timeline_duration" in raw:
+        out["timeline_at"] = float(raw.get("timeline_at", -1))
+        out["timeline_duration"] = float(raw.get("timeline_duration", 0))
+        if not all(math.isfinite(out[k]) for k in ("timeline_at", "timeline_duration")) or out["timeline_at"] < 0 or out["timeline_duration"] < .04:
+            raise ValueError("Choose a positive clay interval on the timeline")
     out["start"] = max(0.0, out["start"])
     out["end"] = min(float(story["duration"]), out["end"])
     if out["end"] - out["start"] < 0.1:
@@ -436,7 +441,7 @@ def draw_placement(frame: np.ndarray, story: ClayStory, placement: dict[str, Any
 
 def clay_layers(project_folder: str | Path, plan: dict[str, Any], *, hidden: list[tuple[float, float]] | None = None):
     """The project's clay placements as bridge layers, and one result per placement."""
-    from core.show_bridge import Layer, _result, source_pieces
+    from core.show_bridge import Layer, _result, source_pieces, _shots
     from core.show_framing import face_on_screen
     store_path = Path(project_folder) / "show_studio" / STORE
     if not store_path.is_file():
@@ -446,6 +451,7 @@ def clay_layers(project_folder: str | Path, plan: dict[str, Any], *, hidden: lis
     layers, report = [], []
     stories: dict[str, ClayStory | str] = {}
     source_name = Path(str(plan.get("source") or "")).name
+    edit_duration=sum(n for _, _, n in _shots(plan))/float(plan.get('fps') or 30)
     for raw in data.get("placements") or []:
         mode = raw.get("mode", "?")
         event = {"id": raw.get("id", "?"), "type": "clay", "name": f"Clay · {mode} · {raw.get('name') or raw.get('story', '')}",
@@ -472,52 +478,53 @@ def clay_layers(project_folder: str | Path, plan: dict[str, Any], *, hidden: lis
         except (ValueError, TypeError) as exc:
             report.append(_result(event, "clay", "failed", str(exc)))
             continue
-        a, b = story.source_start + placement["start"], story.source_start + placement["end"]
-        pieces = source_pieces(plan, a, b)
+        anchored = "timeline_at" in placement
+        offset = float(plan.get("_edited_offset", 0))
+        if anchored:
+            a = placement["timeline_at"] - offset
+            b = a + placement["timeline_duration"]
+            pieces = [(max(0., a), min(edit_duration, b), max(0., -a), 0.)]
+            pieces = [p for p in pieces if p[1] > p[0]]
+        else:
+            a, b = story.source_start + placement["start"], story.source_start + placement["end"]
+            pieces = source_pieces(plan, a, b)
         if not pieces:
-            report.append(_result(event, "clay", "failed", "Its moment was cut from the automatic edit"))
+            report.append(_result(event, "clay", "failed", "Its moment is outside this edit" if anchored else "Its moment was cut from the automatic edit"))
             continue
 
-        def drawer(frame, at, view, t=None, story=story, placement=placement):
+        def drawer(frame, at, view, t=None, story=story, placement=placement, anchored=anchored):
+            if anchored:
+                # Fit once, with held poses and pauses. Never loop a short movie.
+                at = placement["start"] + at / placement["timeline_duration"] * (placement["end"] - placement["start"])
             head = face_on_screen(plan, t) if placement["mode"] in ("bubble", "pip") and t is not None else None
             draw_placement(frame, story, placement, at, head, view[2] * STUDIO_W / frame.shape[1])
-        layers.append(Layer(placement["id"], "clay", [(x, y, sa - story.source_start) for x, y, sa, _ in pieces], placement,
-                            drawer, list(hidden or []), [], "clay"))
+        spans = [(x, y, sa if anchored else sa-story.source_start) for x, y, sa, _ in pieces]
+        layers.append(Layer(placement["id"], "clay", spans, placement, drawer, list(hidden or []), [], "clay"))
         kept = sum(y - x for x, y, _, _ in pieces)
-        report.append(_result(event, "clay", "applied",
-                              f"{mode}, {len(pieces)} kept part{'s' if len(pieces) != 1 else ''}, {kept:.2f} of {b - a:.2f} s; "
-                              "poses held between word cues; the host's voice and captions stay"))
+        report.append(_result(event, "clay", "applied", f"{mode}, {kept:.2f} s; held poses, no automatic loop; original voice stays"))
     return layers, report
 
 
 def place_bundled_sample(project, plan: dict, at: float, end: float, mode: str, root: Path) -> dict:
-    """Explicit reuse of Simón's sample; align to one kept source shot, never old timestamps."""
+    """Reuse the approved story once over an editable interval on the montage clock."""
     import tempfile
     import shutil
     import uuid
-    from core.show_bridge import edited_to_source, _shots
+    from core.show_bridge import edited_to_source
     if mode not in MODES or not all(map(math.isfinite, (at, end))) or end <= at:
         raise ValueError('Choose a positive word interval and a clay display mode')
     source = edited_to_source(plan, at)
     if source is None:
         raise ValueError('Choose words inside the current edit')
-    fps = float(plan.get('fps') or 30)
-    remaining = next((length / fps - (at - first / fps) for _, first, length in _shots(plan)
-                      if first / fps <= at < (first + length) / fps), 0)
-    duration = min(end - at, remaining)
+    duration = end - at
     if duration < .04:
         raise ValueError('Choose at least one frame inside a source shot')
     sample = root / 'assets' / 'clay' / 'simon'
     record = json.loads((sample / 'story-simon-v1.json').read_text())
-    factor = duration / float(record['duration'])
+    story_duration = float(record['duration'])
     record.update(id='simon-sample-' + uuid.uuid4().hex, source=Path(plan['source']).name, source_start=source,
-                  source_end=source + duration, duration=duration, quote='Reusable sample placed on selected words',
-                  evidence='User chose the bundled countryside sample; motion cues scaled, not new semantic alignment')
-    for shot in record['shots']:
-        shot['start'] *= factor
-        shot['end'] *= factor
-        for key in shot.get('poseKeys', []):
-            key['time'] *= factor
+                  source_end=source + story_duration, duration=story_duration, quote='Reusable sample placed on selected words',
+                  evidence='User chose the bundled countryside sample; poses fit once to the editable bar, not new semantic alignment')
     store = ClayStore(project.folder)
     with tempfile.TemporaryDirectory(prefix='zucker-clay-') as temporary:
         temp = Path(temporary)
@@ -525,7 +532,64 @@ def place_bundled_sample(project, plan: dict, at: float, end: float, mode: str, 
             shutil.copyfile(sample / name, temp / name)
         (temp / 'story.json').write_text(json.dumps(record))
         data = store.import_story(temp / 'story.json', placements=False)
-    placement = check_placement(dict(id=record['id'], story=record['id'], mode=mode, start=0, end=duration,
+    placement = check_placement(dict(id=record['id'], story=record['id'], mode=mode, start=0, end=story_duration, timeline_at=at,timeline_duration=duration,
                                      enabled=True, fade=min(.2, duration / 4), **DEFAULTS[mode]), record)
     store.save({**data, 'placements': [*data['placements'], placement]}, revision=data['revision'])
+    return store.load()
+
+
+def draft_story(project, job: dict, image: Path) -> dict:
+    """Six sequential generated poses with explicit held beats, never an implicit loop."""
+    duration = float(job['duration'])
+    plan = json.loads((project.artifacts_dir/'show_plan.json').read_text())
+    return dict(version=4,id='clay-'+job['id'],character_id='simon-plant-character',character_version=1,
+                source=Path(plan['source']).name,source_start=0.,source_end=duration,duration=duration,
+                quote=job.get('selected_text',''),direction=job['direction'],
+                shots=[dict(title=job['direction'][:80],start=0.,end=duration,sheet=image.name,fit='contain',poses=list(range(6)),
+                  poseKeys=[dict(time=round(duration*share,4),pose=pose,cue=cue) for share,pose,cue in
+                    [(0,0,'Establish / hold'),(.18,1,'Action'),(.30,2,'Reaction / hold'),(.62,3,'Second action'),(.76,4,'Payoff'),(.90,5,'Settle / hold')]])])
+
+
+def prepare_draft(project, job: dict, folder: Path, ffmpeg: str) -> Path:
+    """A silent, bounded review movie made locally from the actual generated sheet."""
+    import subprocess
+    from PIL import Image
+    image=folder/'image.png'
+    record=draft_story(project,job,image)
+    (folder/'story.json').write_text(json.dumps(record,ensure_ascii=False,indent=2))
+    with Image.open(image) as im: sheets={image.name:np.asarray(im.convert('RGB'))}
+    story=ClayStory(record,sheets)
+    output=folder/'preview.mp4';pending=folder/'preview.pending.mp4'
+    fps=25;frames=max(1,round(record['duration']*fps))
+    with __import__('tempfile').TemporaryFile() as log:
+        proc=subprocess.Popen([ffmpeg,'-v','error','-y','-nostdin','-f','rawvideo','-pix_fmt','rgb24','-s','640x360','-r',str(fps),'-i','-',
+          '-an','-c:v','libx264','-threads','2','-preset','veryfast','-crf','18','-pix_fmt','yuv420p','-movflags','+faststart',str(pending)],stdin=subprocess.PIPE,stderr=log)
+        try:
+            for i in range(frames):proc.stdin.write(story.picture(i/fps,640,360).tobytes())
+            proc.stdin.close();proc.wait(timeout=60)
+            if proc.returncode:log.seek(0);raise RuntimeError(log.read().decode(errors='replace')[-1000:])
+            pending.replace(output)
+        finally:
+            if proc.poll() is None:proc.kill();proc.wait()
+            pending.unlink(missing_ok=True)
+    return output
+
+
+def apply_draft(project, job: dict, folder: Path, *, mode: str='bubble') -> dict:
+    """Only approval imports the completed draft into the edit. Repeated approval is idempotent."""
+    if job.get('purpose')!='clay' or job.get('status')!='ready' or not (folder/'preview.mp4').is_file():
+        raise ValueError('Review a completed clay preview first')
+    if mode not in MODES:raise ValueError('Choose a clay display mode')
+    store=ClayStore(project.folder);data=store.load()
+    story_id='clay-'+job['id']
+    target_id=job.get('replace_clay_id') or story_id
+    existing=next((p for p in data['placements'] if p['id']==target_id),None)
+    if job.get('replace_clay_id') and existing is None:raise ValueError('The original clay placement was removed; review a new draft instead')
+    if not any(s['id']==story_id for s in data['stories']):data=store.import_story(folder/'story.json',placements=False)
+    if existing is None or existing['story']!=story_id:
+        record=next(s['story'] for s in data['stories'] if s['id']==story_id)
+        placement=check_placement(dict(**{**DEFAULTS[mode],**(existing or {}),'id':target_id,'story':story_id,'mode':mode,'start':0,'end':record['duration'],
+          'timeline_at':(existing or {}).get('timeline_at',job['at']),'timeline_duration':(existing or {}).get('timeline_duration',job['duration']),
+          'enabled':True,'fade':.15}),record)
+        store.save({**data,'placements':[p for p in data['placements'] if p['id']!=target_id]+[placement]},revision=data['revision'])
     return store.load()

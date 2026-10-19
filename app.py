@@ -76,10 +76,14 @@ class DesktopApi:
         return str(parent)
 
     def reveal_in_finder(self, path: str | None = None) -> bool:
-        """Reveal a path in Finder."""
-        target = Path(path or load_global_config()["inbox_path"]).expanduser()
-        subprocess.run(["open", "-R", str(target)], check=False)
-        return True
+        """Reveal a path using the operating system, and report real launch failures."""
+        target = Path(path or load_global_config()["inbox_path"]).expanduser().resolve()
+        if not target.exists():return False
+        command = (["open", "-R", str(target)] if sys.platform=="darwin" else
+                   ["explorer", "/select,"+str(target)] if sys.platform=="win32" else
+                   ["xdg-open", str(target if target.is_dir() else target.parent)])
+        try:return subprocess.run(command,check=False).returncode==0
+        except OSError:return False
 
 
 def find_free_port() -> int:
@@ -113,7 +117,7 @@ def parse_args() -> argparse.Namespace:
 def _enable_native_drop(window) -> None:
     """Use pywebview's native paths so desktop drops never copy source media."""
     try:
-        zone = window.dom.get_element("#dropZone")
+        zone = window.dom.get_element("body")
         if zone is None:
             return
         def dropped(event):
@@ -350,6 +354,9 @@ def _run_selftest() -> int:
         # broken package.
         import numpy as np
         from core import scene_tags
+        from core.show_video_assets import green_alpha
+        if not np.allclose(green_alpha(np.full((2,2,3),[0,255,0],np.uint8)),0):
+            raise RuntimeError('Packaged green-screen compositor is unavailable')
         scene_tagging = False
         if scene_tags.available():
             dark, bright = scene_tags.analyze_frames([np.zeros((256, 256, 3), np.uint8),

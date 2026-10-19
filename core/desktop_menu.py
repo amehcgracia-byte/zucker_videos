@@ -19,8 +19,8 @@ MENU_ITEMS = [
     ('Playback', [('Play / Pause in Editor', 'play'), ('Previous Frame', 'previousFrame'),
                   ('Next Frame', 'nextFrame'), ('Enlarge Preview', 'expand')]),
     ('Result', [('View Result', 'result'), ('Show Video in Finder', 'finder')]),
-    ('Help', [('Tutorial with Einstein…', 'tutorial')]),
-    ('Tools', [('Check for Updates…', 'updates'), ('Toggle Light / Dark Theme', 'theme'),
+    ('Help', [('Show Studio Keyboard Shortcuts…', 'showShortcuts'), ('Tutorial with Einstein…', 'tutorial')]),
+    ('Tools', [('Sound mixer…', 'soundMixer'), ('Accounts & Connectors…', 'connectors'), ('Check for Updates…', 'updates'), ('Toggle Light / Dark Theme', 'theme'),
                ('Process Details', 'details'), ('Copy Report', 'report'), ('Open Logs', 'logs')]),
 ]
 
@@ -69,6 +69,9 @@ MODE_ACTIONS = {
     'transcribe': {'reel', 'backstage'},
 }
 
+for _action in ('play','previousFrame','nextFrame'):
+    MODE_ACTIONS[_action] = MODE_ACTIONS[_action] | {'show'}
+
 
 def apply_menu_mode(window, mode):
     """Hide inapplicable native actions, preserving the OS Edit menu."""
@@ -88,7 +91,7 @@ def apply_menu_mode(window, mode):
                         if item.submenu():
                             visit(item.submenu())
                             if item.title() in {'Captions and Overlays', 'Playback'}:
-                                item.setHidden_(mode not in {'reel', 'backstage', '360'})
+                                item.setHidden_(mode not in ({'reel','backstage','360','show'} if item.title()=='Playback' else {'reel','backstage','360'}))
                 visit(NSApplication.sharedApplication().mainMenu())
             callAfter(update)
         elif sys.platform == 'win32':
@@ -101,7 +104,7 @@ def apply_menu_mode(window, mode):
                         if hasattr(item, 'DropDownItems'):
                             visit(item.DropDownItems)
                             if str(item.Text) in {'Captions and Overlays', 'Playback'}:
-                                item.Available = mode in {'reel', 'backstage', '360'}
+                                item.Available = mode in ({'reel','backstage','360','show'} if str(item.Text)=='Playback' else {'reel','backstage','360'})
                 if window.native.MainMenuStrip:
                     visit(window.native.MainMenuStrip.Items)
             window.native.Invoke(Action(update))
