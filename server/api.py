@@ -2405,7 +2405,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             except (ValueError,TypeError):return error_response('invalid_duration','Choose a positive timeline duration',400)
         tools = tool_status()
         try:
-            clip = show_clips.download(project, reference, str(tools.get("ffmpeg_path") or "ffmpeg"))
+            download=show_clips.download_audio if body.get("audio_only") else show_clips.download
+            clip = download(project, reference, str(tools.get("ffmpeg_path") or "ffmpeg"))
             length = show_clips.length(clip, str(tools.get("ffprobe_path") or "ffprobe"))
         except ValueError as exc:
             return error_response("invalid_reference", str(exc), 400)
@@ -2413,11 +2414,33 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("clip_download_failed", str(exc)[:700], 502)
         proposals_path, _ = _show_review_files(project)
         stored = show_proposals.load(proposals_path)
-        replace_id=body.get('replace_id')
-        if replace_id and not any(p['id']==replace_id and p['kind']=='clip' for p in stored['proposals']):
+        if body.get('audio_only'):
+            document=show_scenes.load(_scene_files(project))
+            scene=next((s for s in document['scenes'] if s['id']==reference.get('scene_id')),None)
+            if scene is None:return error_response('not_found','Choose a scene for this audio',404)
+            at=max(scene['start'],min(scene['end']-.001,float(reference.get('at',scene['start']))))
+            duration=min(length,float(body.get('duration') or length),scene['end']-at)
+            from core import music_library
+            with clip.open('rb') as audio:
+                library_item=music_library.import_audio(audio,clip.name,{'name':show_clips.media_title(clip,reference.get('title') or reference['url']),'source':'video-link','source_url':reference['url'],'license':'Check source permissions','attribution':reference['url']})
+            item=show_proposals.proposal('jingle',at,duration,reason='Audio from video link',path=str(clip),start=0.,volume=.7,duck=1.,under_voice=True,selected_text=reference.get('selected_text',''),name=library_item['name'])
+            item['status']='approved';stored['proposals'].append(item)
+            stored.setdefault('resources',[]).append({'path':str(clip),'kind':'audio','duration':length,'speech':[],'intervals':[],'origin':'Audio from link'})
+            show_proposals.save(proposals_path,stored['proposals'],**{k:v for k,v in stored.items() if k not in ('proposals','version')})
+            show_scenes.attach(document,item);show_scenes.save(_scene_files(project),document)
+            _effect_changed(project,item['id'])
+            reference.update(audio=str(clip),status='downloaded');atomic_write_json(reference_path,references)
+            return jsonify(reference=reference,proposal=item),201
+        replace_id=body.get('replace_texture') or body.get('replace_id')
+        if body.get('texture'):
+            from core.show_textures import PRESETS
+            if body['texture'] not in PRESETS:return error_response('bad_request','Choose a known texture',400)
+        if replace_id and not any(p['id']==replace_id and p['status']!='discarded' and (p['kind']=='clip' or body.get('replace_texture') and p['kind'] in ('texture','steam')) for p in stored['proposals']):
             return error_response('not_found','That clip is no longer in this scene',404)
         replacing=next((p for p in stored['proposals'] if p['id']==replace_id),None)
         if replacing:
+            replacing['kind']='clip'
+            replacing['status']='approved'
             replacing['params'].update(clip=str(clip),clip_start=0.,clip_length=length,reference=reference_id,url=reference['url'],source_start=reference['start'])
         item = replacing or next((entry for entry in stored["proposals"] if entry["kind"] == "clip" and entry["params"].get("reference") == reference_id
                      and entry["status"] != "discarded"), None)
@@ -2441,20 +2464,19 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 for scene in document["scenes"]:
                     if item["id"] in scene["effects"]:
                         _invalidate_scene(project, scene["id"])
+        item['params']['name']=show_clips.media_title(clip,reference.get('title') or reference['url'])
         from core.show_video_assets import detect_green, remember
         item['params']['matte']='green' if detect_green(clip) else 'none'
         if body.get('texture'):
             from core.show_textures import PRESETS
             texture=str(body['texture'])
             if texture not in PRESETS:return error_response('bad_request','Choose a known texture',400)
-            prior=next((p for p in stored['proposals'] if p['id']==body.get('replace_texture') and p['kind'] in ('texture','steam')),None)
-            point=(prior or {}).get('params',{}).get('point',[.5,.75])
-            item['params'].update(texture_footage=texture,clip_audio=False,audio_mode='mute',person_scale=.4,
+            point=item['params'].get('point',[.5,.75])
+            item['params'].update(texture_footage=texture,texture=texture,clip_audio=False,audio_mode='mute',
+                                  person_scale=item['params'].get('person_scale',.4),
                                   person_offset=[point[0]-.5,point[1]-1],matte='green-light' if item['params']['matte']=='green' else 'black',
                                   name=PRESETS[texture]+' · filmed texture')
-            if prior:
-                if prior['params'].get('anchor'):item['params']['follow_anchor']=prior['params']['anchor']
-                prior['status']='discarded'
+            if item['params'].get('anchor'):item['params']['follow_anchor']=item['params']['anchor']
 
         item['duration']=float(body.get('duration') or item['duration']) if item['params'].get('texture_footage') else min(float(body.get('duration') or item['duration']),length)
         scene_path=_scene_files(project)
@@ -3103,6 +3125,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 return error_response("bad_request", "Choose valid sticker start and duration", 400)
             if not math.isfinite(at + duration) or at < scene["start"] or duration <= 0 or at + duration > scene["end"] + .001:
                 return error_response("bad_request", "Keep each sticker inside its scene with a positive duration", 400)
+            from core.show_geometry import validate_crop
+            try:
+                crop=validate_crop(raw.get("crop",[0,0,0,0]))
+                pan=[float(v) for v in raw.get("pan",[0,0])]
+                if len(pan)!=2 or not all(math.isfinite(v) and -2<=v<=2 for v in pan):raise ValueError()
+            except (ValueError,TypeError):return error_response("bad_request","Choose valid crop and pan margins",400)
             from core.show_follow import validate_anchor
             try:follow_anchor=validate_anchor(raw.get("follow_anchor"))
             except (ValueError,TypeError):return error_response("bad_request","Mark a valid object rectangle",400)
@@ -3121,7 +3149,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                              "audio_mode": raw.get("audio_mode") if raw.get("audio_mode") in ('own','mix','mute','silent') else 'own',
                              "volume": max(0.,min(2.,float(raw.get("volume",1.)))), "under_voice": bool(raw.get("under_voice",False)),
                              "action": str(raw.get("action") or "none"), "intensity": max(0.2, min(3.0, float(raw.get("intensity", 1.0)))),
-                             "stretch": max(0.25, min(4.0, float(raw.get("stretch", 1.0)))), "rotate": max(-180.0, min(180.0, float(raw.get("rotate", 0.0)))),
+                             **({"crop": crop} if "crop" in raw else {}), **({"pan":pan} if "pan" in raw else {}),
+                             "stretch_x": max(.1,min(10.,float(raw.get("stretch_x",1.)))),
+                             "stretch": max(0.1, min(10.0, float(raw.get("stretch", 1.0)))), "rotate": max(-180.0, min(180.0, float(raw.get("rotate", 0.0)))),
                              "flip": bool(raw.get("flip", False)), "opacity": max(0.05, min(1.0, float(raw.get("opacity", 1.0)))),
                              **({"entrance": raw["entrance"]} if raw.get("entrance") in show_scenes.ENTRANCES else {}),
                              **({"voice_mode": "mine"} if raw.get("voice_mode") == "mine" else {}),
@@ -3441,7 +3471,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.post("/api/v1/show/voices")
     def api_show_voice_upload() -> Response:
-        """A recorded or imported voice, kept small (AAC in .m4a, about 1 MB a minute, not WAV's 6)."""
+        """A recorded or imported voice, stored as MP3 without retaining the uploaded container."""
         import uuid
         from core import show_clips
         from core.project import atomic_write_json
@@ -3457,13 +3487,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         folder = project.folder / "assets" / "show-voices"
         folder.mkdir(parents=True, exist_ok=True)
         key = uuid.uuid4().hex
-        raw, target = folder / f"{key}.upload", folder / f"{key}.m4a"
+        raw, target = folder / f"{key}.upload", folder / f"{key}.mp3"
         raw.write_bytes(payload)
         try:
             tools = tool_status()
             ffmpeg = str(tools.get("ffmpeg_path") or "ffmpeg")
             subprocess.run([ffmpeg, "-v", "error", "-y", "-i", str(raw), "-map", "0:a:0", "-t", "180", "-vn",
-                            "-ac", "1", "-ar", "48000", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(target)],
+                            "-ac", "1", "-ar", "48000", "-c:a", "libmp3lame", "-b:a", "128k", str(target)],
                            capture_output=True, check=True, timeout=60)
             duration = show_clips.length(target, str(tools.get("ffprobe_path") or "ffprobe"))
             if not duration or duration <= 0:
@@ -4328,15 +4358,25 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         proposals_path, _ = _show_review_files(project)
         body = request.get_json(silent=True) or {}
         stored = show_proposals.load(proposals_path)
-        allowed = {"status", "at", "duration", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action", "clip_audio", "audio_mode",
+        allowed = {"status", "at", "duration", "start", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action", "clip_audio", "audio_mode",
                    "amount", "offset", "voice", "hold", "subject", "text", "style", "position", "size", "effect", "warp", "point", "anchor", "scale",
                    "density", "strength", "rise", "colour", "texture", "font", "bold", "italic",
-                   "entrance", "prompt", "picture", "selected_text", "image_center", "intensity", "follow_anchor", "follow_template", "follow_seconds", "follow_place", "person_scale", "person_offset", "brightness", "saturation", "hue"}
+                   "entrance", "prompt", "picture", "selected_text", "image_center", "intensity", "follow_anchor", "follow_template", "follow_seconds", "follow_place", "person_scale", "person_offset", "brightness", "saturation", "hue", "crop", "pan", "stretch", "stretch_x", "rotate"}
         changes = {key: value for key, value in body.items() if key in allowed}
         # All storyboard tools share the edited clock. Reject impossible placements
         # instead of silently accepting an image beyond its owning scene.
         try:
             current = next(p for p in stored["proposals"] if p["id"] == proposal_id)
+            if 'start' in changes and (current['kind']!='jingle' or not math.isfinite(float(changes['start'])) or float(changes['start'])<0):raise ValueError('Choose a valid audio source position')
+            if 'crop' in changes:
+                from core.show_geometry import validate_crop
+                changes['crop']=validate_crop(changes['crop'])
+            if 'pan' in changes:
+                v=changes['pan']
+                if not isinstance(v,list) or len(v)!=2 or not all(math.isfinite(float(x)) and -2<=float(x)<=2 for x in v):raise ValueError('Choose a valid image pan')
+            if 'rotate' in changes and (not math.isfinite(float(changes['rotate'])) or not -180<=float(changes['rotate'])<=180):raise ValueError('Choose a valid rotation')
+            for name in ('stretch','stretch_x'):
+                if name in changes and (not math.isfinite(float(changes[name])) or not .1<=float(changes[name])<=10):raise ValueError('Choose a valid image stretch')
             if 'follow_template' in changes:
                 path=Path(str(changes['follow_template']))
                 if not path.is_file() or not path.resolve().is_relative_to((project.folder/'assets/tracking').resolve()):raise ValueError('Choose a saved tracking template from this project')

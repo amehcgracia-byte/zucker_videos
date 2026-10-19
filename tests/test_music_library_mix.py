@@ -98,3 +98,36 @@ def test_project_music_still_appears_in_plan_after_global_cleanup(library,tmp_pa
     assert 'bed' in music_mix_plan.available_tracks(p)
     revised=music_mix_plan.save(p,rows,approve=True,revision=doc['revision'])
     assert Path(revised['tracks']['bed']['path']).is_file()
+
+
+def test_wav_import_is_stored_only_as_mp3_and_keeps_attribution(library,tmp_path):
+    import shutil,subprocess
+    ffmpeg=shutil.which('ffmpeg')
+    assert ffmpeg,'FFmpeg is required for audio import'
+    source=tmp_path/'voice.wav'
+    subprocess.run([ffmpeg,'-v','error','-f','lavfi','-i','sine=frequency=330:duration=0.25','-y',str(source)],check=True)
+    with source.open('rb') as audio:r=music_library.import_audio(audio,'voice.wav',{'attribution':'Me'})
+    assert Path(r['path']).suffix=='.mp3' and Path(r['path']).is_file()
+    assert not list(library.glob('*.wav')) and not list(library.glob('*.normalized.mp3'))
+    assert r['attribution']=='Me'
+
+
+def test_music_library_track_can_be_placed_as_a_show_audio_bar(library,tmp_path):
+    from core import show_scenes,show_proposals
+    from server.api import create_app
+    p,_,_=setup_plan(tmp_path,library)
+    source=p.folder/'source.mp4';source.write_bytes(b'placeholder')
+    (p.artifacts_dir/'show_plan.json').write_text(json.dumps({'source':str(source),'fps':25,'edited_duration':5,'shots':[],'words':[]}))
+    show_proposals.save(p.artifacts_dir/'show_proposals.json',[],source=str(source),resources=[])
+    show_scenes.save(p.artifacts_dir/'show_scenes.json',{'identity':{},'scenes':[{'id':'s','start':0,'end':5,'effects':[],'overlays':[],'decision':'pending','text':'hello'}]})
+    client=create_app(str(p.folder)).test_client()
+    result=client.post('/api/v1/music/place/bed',json={'project_id':str(p.folder),'scene_id':'s','at':1,'duration':2,'text':'Hello'})
+    assert result.status_code==201,result.get_json()
+    item=result.get_json()['proposal'];assert item['kind']=='jingle' and item['duration']==2
+    assert Path(item['params']['path']).is_relative_to(p.folder/'assets/music')
+    assert 'Bed by Artist' in (p.folder/'credits.txt').read_text()
+    assert item['id'] in show_scenes.load(p.artifacts_dir/'show_scenes.json')['scenes'][0]['effects']
+
+    trimmed=client.patch('/api/v1/show/review/'+item['id'],json={'at':1.5,'duration':1.5,'start':.5})
+    assert trimmed.status_code==200,trimmed.get_json()
+    assert trimmed.get_json()['params']['start']==.5

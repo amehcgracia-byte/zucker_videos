@@ -9,6 +9,7 @@ The clip belongs to whoever made it: the person decides whether they may publish
 from __future__ import annotations
 
 import shutil
+import json
 import subprocess
 import urllib.parse
 from pathlib import Path
@@ -53,6 +54,25 @@ def download_error(message):
     return 'Could not download that clip. Check that the link plays in your browser and retry. '+message.replace('ERROR: ','')[:180]
 
 
+def media_title(path: Path, fallback: str = "") -> str:
+    """Read only the small, curated metadata kept beside a downloaded asset."""
+    try:
+        return str(json.loads(path.with_suffix(path.suffix + ".json").read_text()).get("title") or fallback)
+    except (OSError, ValueError, TypeError):
+        return fallback
+
+
+def _save_title(work: Path, target: Path, url: str) -> None:
+    for info in work.glob("*.info.json"):
+        try:
+            title = str(json.loads(info.read_text()).get("title") or "").strip()
+        except (OSError, ValueError, TypeError):
+            continue
+        if title:
+            target.with_suffix(target.suffix + ".json").write_text(json.dumps({"title": title, "source_url": url}, ensure_ascii=False))
+            break
+
+
 def download(project, reference: dict[str, Any], ffmpeg: str) -> Path:
     """The reference's interval as a file in the project (made once; the same one is reused)."""
     ffmpeg=shutil.which(ffmpeg) or ffmpeg
@@ -72,7 +92,7 @@ def download(project, reference: dict[str, Any], ffmpeg: str) -> Path:
     try:
         from yt_dlp import YoutubeDL
         from yt_dlp.utils import DownloadError, download_range_func
-        options = {"quiet": True, "no_warnings": True, "socket_timeout":20, "retries":2, "fragment_retries":2, "noplaylist": True, "noprogress": True,
+        options = {"writeinfojson": True, "quiet": True, "no_warnings": True, "socket_timeout":20, "retries":2, "fragment_retries":2, "noplaylist": True, "noprogress": True,
                    "format": "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/bv*[height<=1080]+ba/b",
                    "merge_output_format": "mp4", "download_ranges": download_range_func(None, [(start, end)]),
                    "force_keyframes_at_cuts": True, "ffmpeg_location": ffmpeg, "max_filesize": 400 * 1024 * 1024,
@@ -93,6 +113,7 @@ def download(project, reference: dict[str, Any], ffmpeg: str) -> Path:
                         "-c:a", "aac", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", str(evened)],
                        check=True, capture_output=True, timeout=180)
         evened.replace(target)
+        _save_title(work, target, url)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     return target
@@ -102,3 +123,32 @@ def length(path: Path, ffprobe: str) -> float:
     out = subprocess.run([ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)],
                          capture_output=True, text=True, check=True).stdout
     return round(float(out.strip()), 3)
+
+
+def download_audio(project,reference,ffmpeg):
+    """Download only the chosen interval's audio; persist MP3, not the source video."""
+    url=check_link(reference.get('url'));start,end=float(reference['start']),float(reference['end'])
+    if not 0<=start<end or end-start>MAX_SECONDS:raise ValueError('Choose up to 30 seconds after the source start')
+    target=folder(project)/f"audio-{reference['id']}.mp3"
+    if target.is_file():return target
+    target.parent.mkdir(parents=True,exist_ok=True)
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix='.audio-download-',dir=target.parent) as temp:
+        work=Path(temp)
+        from yt_dlp import YoutubeDL
+        from yt_dlp.utils import DownloadError,download_range_func
+        options={'writeinfojson':True,'quiet':True,'no_warnings':True,'noplaylist':True,'noprogress':True,'socket_timeout':20,'retries':2,'fragment_retries':2,
+                 'format':'bestaudio/best','download_ranges':download_range_func(None,[(start,end)]),'ffmpeg_location':ffmpeg,
+                 'max_filesize':100*1024*1024,'outtmpl':str(work/'source.%(ext)s')}
+        browser=browser_setting()
+        if browser:options['cookiesfrombrowser']=(browser,)
+        try:
+            with YoutubeDL(options) as downloader:downloader.download([url])
+        except DownloadError as exc:raise RuntimeError(download_error(str(exc))) from exc
+        source=next((p for p in work.iterdir() if p.is_file() and p.suffix.lower() in {'.webm','.m4a','.mp3','.ogg','.opus','.mp4','.mkv'}),None)
+        if source is None:raise ValueError('The download returned no playable audio')
+        from core.audio_import import mp3
+        mp3(source,work/'ready.mp3',ffmpeg)
+        (work/'ready.mp3').replace(target)
+        _save_title(work, target, url)
+    return target

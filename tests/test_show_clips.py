@@ -64,6 +64,7 @@ def test_downloading_a_reference_puts_the_clip_on_its_words(tmp_path, monkeypatc
         def download(self, urls):
             asked.append((urls, self.options["download_ranges"]({"duration": 3.0}, None)))
             target = Path(self.options["outtmpl"].replace("%(ext)s", "mp4"))
+            target.with_suffix(".info.json").write_text(json.dumps({"title": "Arnold — I don’t know"}))
             subprocess.run([FFMPEG, "-v", "error", "-y", "-ss", "0.5", "-t", "1.2", "-i", str(source), "-c", "copy", str(target)], check=True)
 
     import yt_dlp
@@ -74,6 +75,7 @@ def test_downloading_a_reference_puts_the_clip_on_its_words(tmp_path, monkeypatc
     made = client.post(f"/api/v1/show/references/video/{ref['id']}/download", json={})
     assert made.status_code == 201, made.get_json()
     result = made.get_json()
+    assert result["proposal"]["params"]["name"] == "Arnold — I don’t know"
     clip = Path(result["proposal"]["params"]["clip"])
     assert clip.parent == project.folder / "assets" / "clips" and clip.is_file()
     assert list(asked[0][1]) == [{"start_time": 0.0, "end_time": 1.2}]            # only those seconds

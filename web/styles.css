@@ -2381,3 +2381,23 @@ dialog.show-studio::backdrop {background:#0009;}
 .music-library-dialog nav,.music-plan-actions {display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;}
 .music-track {display:flex;flex-wrap:wrap;align-items:center;gap:12px;border:1px solid var(--line);border-radius:10px;padding:14px;margin:10px 0;}
 .music-track strong,.music-track p {flex-basis:100%;}.music-track label{display:flex;flex-direction:column;gap:4px;}.music-track input{width:110px;}.music-library-dialog input[data-folder]{width:min(600px,70vw);}.music-library-dialog audio{width:100%;position:sticky;bottom:0;}
+
+/* Selection tools belong to the paused timeline editor, never to playback. */
+#showStageLayer:not(.show-editing) .show-overlay.selected,
+#showStageLayer:not(.show-editing) .show-picture-placement.selected{outline:0!important;}
+#showStageLayer:not(.show-editing) .show-resize,
+#showStageLayer:not(.show-editing) .picture-corner,
+#showStageLayer:not(.show-editing) .show-cutout-box,
+#showStageLayer:not(.show-editing) .show-steam-box,
+#showStageLayer:not(.show-editing) .show-steam-cross,
+#showStageLayer [hidden]{display:none!important;}
+
+.show-crop-frame{position:absolute;outline:2px dashed #ffdc77;pointer-events:none;display:none;box-sizing:border-box;}
+.show-editing .show-overlay.selected .show-crop-frame,.show-editing .show-picture-placement.selected .show-crop-frame,.show-editing .show-cutout-box .show-crop-frame{display:block;}
+.show-editing .show-overlay.selected,.show-editing .show-picture-placement.selected{outline:0;}
+[data-crop-edge]{position:absolute;pointer-events:auto;touch-action:none;}
+[data-crop-edge=left],[data-crop-edge=right]{width:10px;top:0;bottom:0;cursor:ew-resize;}
+[data-crop-edge=left]{left:-5px;}[data-crop-edge=right]{right:-5px;}
+[data-crop-edge=top],[data-crop-edge=bottom]{height:10px;left:0;right:0;cursor:ns-resize;}
+[data-crop-edge=top]{top:-5px;}[data-crop-edge=bottom]{bottom:-5px;}
+#showStageLayer:not(.show-editing) .show-crop-frame{display:none!important;}

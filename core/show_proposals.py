@@ -240,7 +240,7 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
                                   'start':params.get('clip_start',0),'volume':params.get('audio_volume',.7),'duck':1.,'fade':.02,'under_voice':params.get('under_voice',True)})
         elif item["kind"] == "clip" and params.get("matte", "none") != "none":
             items_out.append({"proposal": item["id"], "video_layer": params["clip"], "at": item["at"], "duration": item["duration"],
-                              **{k:params[k] for k in ("matte","clip_start","picture","person_style","person_scale","person_offset","follow_anchor","follow_template","follow_seconds","follow_place","brightness","saturation","hue") if k in params}})
+                              **{k:params[k] for k in ("crop","pan","rotate","stretch","stretch_x","matte","clip_start","picture","person_style","person_scale","person_offset","follow_anchor","follow_template","follow_seconds","follow_place","brightness","saturation","hue") if k in params}})
             if params.get('clip_audio',True):
                 items_out.append({'proposal':item['id'],'jingle':params['clip'],'at':item['at'],'duration':item['duration'],
                                   'start':params.get('clip_start',0),'volume':params.get('audio_volume',1.),'duck':1.,'fade':0.,**({'under_voice':True} if params.get('under_voice') else {})})

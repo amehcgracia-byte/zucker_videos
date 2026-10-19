@@ -146,6 +146,10 @@ class VideoLayer:
         screen=self.raw.get('matte') in ('black','green-light') and self.raw.get('person_style')!='silhouette'
         if screen:mask=person.astype(np.float32)/255
         foreground=person.astype(np.float32) if screen else person.astype(np.float32)*mask
+        from core.show_geometry import transform_pixels
+        geometry=np.concatenate((foreground,mask),axis=2)
+        geometry=transform_pixels(geometry,self.raw.get('crop'),self.raw.get('pan'))
+        foreground,mask=geometry[...,:3],geometry[...,3:]
         scale=float(self.raw.get('person_scale',1));offset=self.raw.get('person_offset') or (0.,0.)
         if self.follow and self.raw.get('follow_place'):
             alpha=mask if mask.ndim==2 else mask[...,0]
@@ -157,8 +161,13 @@ class VideoLayer:
             offset=(offset[0]+self.follow.start[0]-(cx*scale+(1-scale)/2),
                     offset[1]+self.follow.start[1]-(cy*scale+1-scale))
         offset=(offset[0]+self.tracked_offset[0],offset[1]+self.tracked_offset[1])
-        if scale!=1 or tuple(offset)!=(0.,0.):
-            matrix=np.array([[scale,0,w*(1-scale)/2+offset[0]*w],[0,scale,h*(1-scale)+offset[1]*h]],np.float32)
+        if scale!=1 or tuple(offset)!=(0.,0.) or self.raw.get('stretch_x',1)!=1 or self.raw.get('stretch',1)!=1 or self.raw.get('rotate',0):
+            sx=scale*float(self.raw.get('stretch_x',1.));sy=scale*float(self.raw.get('stretch',1.))
+            matrix=np.array([[sx,0,w*(1-sx)/2+offset[0]*w],[0,sy,h*(1-scale)+h*(scale-sy)/2+offset[1]*h]],np.float32)
+            if self.raw.get('rotate'):
+                center=(w*(.5+offset[0]),h*(1-scale/2+offset[1]))
+                rotate=cv2.getRotationMatrix2D(center,-float(self.raw['rotate']),1.)
+                matrix=(np.vstack([rotate,[0,0,1]])@np.vstack([matrix,[0,0,1]]))[:2].astype(np.float32)
             foreground=cv2.warpAffine(foreground,matrix,(w,h))
             mask=cv2.warpAffine(mask,matrix,(w,h))
             if mask.ndim==2:mask=mask[...,None]
@@ -191,6 +200,14 @@ def import_media(project, stream, filename, ffprobe, ffmpeg):
         video=next((s for s in meta['streams'] if s['codec_type']=='video' and not s.get('disposition',{}).get('attached_pic')),None)
         audio=next((s for s in meta['streams'] if s['codec_type']=='audio'),None)
         if video is None and audio is None:raise ValueError('No video or audio stream was found')
+        if not video and ext!='.mp3':
+            from core.audio_import import mp3
+            converted=pending.with_suffix('.normalized.mp3')
+            try:
+                mp3(pending,converted,ffmpeg)
+                pending.unlink();converted.replace(pending)
+                digest=hashlib.sha256(pending.read_bytes());ext='.mp3'
+            finally:converted.unlink(missing_ok=True)
         kind='video' if video else 'audio';sha=digest.hexdigest();target=folder/('local-'+sha+ext)
         if target.exists():pending.unlink()
         else:pending.replace(target)
@@ -203,14 +220,6 @@ def import_media(project, stream, filename, ffprobe, ffmpeg):
                     command=[ffmpeg,'-v','error','-y','-nostdin','-i',str(target),'-map','0:v:0','-map','0:a:0?']
                     command+=['-c:v','copy'] if video['codec_name']=='h264' else ['-c:v','libx264','-crf','18','-preset','fast','-threads','2','-pix_fmt','yuv420p']
                     subprocess.run(command+['-c:a','aac','-movflags','+faststart',str(temp)],check=True,capture_output=True,timeout=180)
-                    temp.replace(preview)
-                finally:temp.unlink(missing_ok=True)
-        if not video and ext not in {'.mp3','.m4a','.wav'}:
-            preview=folder/('preview-'+sha+'.m4a')
-            if not preview.exists():
-                temp=preview.with_name(preview.stem+'.'+uuid.uuid4().hex+'.pending.m4a')
-                try:
-                    subprocess.run([ffmpeg,'-v','error','-y','-nostdin','-i',str(target),'-vn','-c:a','aac','-threads','2',str(temp)],check=True,capture_output=True,timeout=180)
                     temp.replace(preview)
                 finally:temp.unlink(missing_ok=True)
         item={'id':'local-'+sha[:24],'kind':'clip' if video else 'jingle','duration':duration,'params':{

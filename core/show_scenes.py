@@ -193,7 +193,7 @@ def overlay_items(document: dict[str, Any], frame_aspect: float = 16 / 9) -> lis
             item: dict[str, Any] = {"image": overlay["asset"], "at": float(overlay.get("at", scene["start"])),
                                     "duration": float(overlay.get("duration", min(4.0, scene["end"] - scene["start"]))),
                                     "x": x, "y": y, "width": width, "effect": effect,
-                                    **{key: overlay[key] for key in ("stretch", "rotate", "flip", "opacity", "follow_anchor", "follow_template", "follow_seconds") if key in overlay}}
+                                    **{key: overlay[key] for key in ("crop", "pan", "stretch_x", "stretch", "rotate", "flip", "opacity", "follow_anchor", "follow_template", "follow_seconds") if key in overlay}}
             if preset in ("up", "down"):
                 shift = 0.15 * amount * (-1 if preset == "up" else 1)
                 item["path"] = [[0.0, x, y], [1.0, x, y + shift]]

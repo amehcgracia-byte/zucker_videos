@@ -413,6 +413,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
                       "x": round(x if explicit is not None else min(max(x, half_w + 0.01), 1 - half_w - 0.01), 4),
                       "y": round(y if explicit is not None else min(max(y, half_h + 0.01), 1 - half_h - 0.01), 4),
                       "effect": gag.get("effect") or "pop", "kind": kind,
+                      **{k:gag[k] for k in ("crop","pan","stretch","stretch_x","rotate","flip") if k in gag},
                       **({k:gag[k] for k in ("follow_anchor","follow_template","follow_seconds") if k in gag} if gag.get("follow_anchor") else {}),
                       **({"strokes": gag["strokes"]} if gag.get("strokes") else {})})
     if allow_generation and not painter and to_paint:
