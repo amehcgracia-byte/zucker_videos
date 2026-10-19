@@ -4120,7 +4120,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             style = settings.get('person_style', 'person')
             scale = settings.get('person_scale', 1)
             offset = settings.get('person_offset', [0, 0])
-            if style not in ('person', 'silhouette', 'original') or not isinstance(scale, (int, float)) or not .2 <= scale <= 1.8:
+            if style not in ('person', 'silhouette', 'original') or not isinstance(scale, (int, float)) or not .05 <= scale <= 5.0:
                 raise ValueError('Choose a valid person style and size')
             if not isinstance(offset, list) or len(offset) != 2 or not all(isinstance(v,(int,float)) and math.isfinite(v) and -10 <= v <= 10 for v in offset):
                 raise ValueError('Choose a valid person position')

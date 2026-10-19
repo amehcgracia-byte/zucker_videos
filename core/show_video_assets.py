@@ -143,8 +143,9 @@ class VideoLayer:
         if behind is None:behind=frame
         from core.show_follow import colour
         person=np.full_like(rgb,8) if self.raw.get('person_style')=='silhouette' else colour(rgb,self.raw.get('brightness',1),self.raw.get('saturation',1),self.raw.get('hue',0))
-        if self.raw.get('matte') in ('black','green-light'):mask=person.astype(np.float32)/255
-        foreground=person.astype(np.float32) if self.raw.get("matte") in ("black","green-light") else person.astype(np.float32)*mask
+        screen=self.raw.get('matte') in ('black','green-light') and self.raw.get('person_style')!='silhouette'
+        if screen:mask=person.astype(np.float32)/255
+        foreground=person.astype(np.float32) if screen else person.astype(np.float32)*mask
         scale=float(self.raw.get('person_scale',1));offset=self.raw.get('person_offset') or (0.,0.)
         offset=(offset[0]+self.tracked_offset[0],offset[1]+self.tracked_offset[1])
         if scale!=1 or tuple(offset)!=(0.,0.):
