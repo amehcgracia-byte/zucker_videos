@@ -15,7 +15,7 @@ def validate_anchor(value):
 
 class Follow:
     def __init__(self,anchor,width,height,template=None):
-        self.anchor=validate_anchor(anchor);self.width=width;self.height=height
+        self.anchor=validate_anchor(anchor);self.width=width;self.height=height;self.unmatchable=False
         x,y,w,h=self.anchor
         self.start=(x+w/2,y+h/2)
         self.tracker=ObjectTracker([x*width,y*height,w*width,h*height])
@@ -23,9 +23,11 @@ class Follow:
             image=cv2.imread(str(template),cv2.IMREAD_GRAYSCALE)
             if image is None:raise ValueError('The saved tracking template is missing')
             image=cv2.resize(image,(max(6,round(w*width)),max(6,round(h*height))))
+            self.unmatchable=float(image.std())<4
             self.tracker.reference={'template':image,'scale':1.};self.tracker.visible=False
         self.bootstrap=bool(template)
     def update(self,clean):
+        if self.unmatchable:return None
         if self.bootstrap and not self.tracker.visible:self.tracker.frame=3
         box=self.tracker.update(cv2.cvtColor(clean,cv2.COLOR_RGB2GRAY))
         if box is None:return None
