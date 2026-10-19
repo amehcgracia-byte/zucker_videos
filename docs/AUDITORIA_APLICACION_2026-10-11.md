@@ -265,3 +265,28 @@ producción. Los siete tests de `test_review_hardware_decode.py` pasan localment
 Se verificó además el log empaquetado de `38866751152`, revisión `760b5b07`:
 selftest `ok: true`, `windows_ui: true`, y **cero `Logging error`**. Confirma la
 corrección del handler sin stderr; no valida versiones posteriores del paquete.
+
+
+## Seguimiento del 19 de octubre: carrera real en Windows
+
+La ejecución `39112770306` pasa los cinco recorridos sintéticos en macOS,
+pero Windows vuelve a detenerse antes de los recorridos (87 tests aprobados,
+un fallo). Esta vez el log demuestra una carrera del producto: dos peticiones
+concurrentes crean/leen el mismo `.summary.json` de reserva. Windows devuelve
+`PermissionError` al abrir el resumen durante su publicación. No es una prueba
+de que fallen los cinco modos: ninguno llegó a ejecutarse allí.
+
+Se protege la lectura y creación de pool/resumen mediante un lock reentrante
+por slot, compartido entre ambas rutas. Distintos slots conservan concurrencia;
+los locks inactivos se liberan. No se cambia la selección de planos ni se oculta
+la excepción. Una regresión adicional comprueba ocho peticiones simultáneas,
+una sola construcción y resultados idénticos. Los 23 tests de revisión y decode
+pasan localmente; queda pendiente confirmar el arreglo en Windows remoto.
+
+El paquete Windows `39112848997`, revisión `9a6679c0`, terminó correctamente.
+Esto acredita la construcción y sus checks, no interacción manual de diálogos.
+La suite rápida `39112772653` sigue roja: 28 fallos, 956 aprobados; no se añaden
+skip/xfail ni se declara resuelto ese conjunto. El arranque original
+`38143215161` figura cancelado; se usan sus sucesoras, no se atribuye éxito a él.
+La auditoría continúa abierta, incluidas grabaciones reales y diálogos nativos.
+No se ha cerrado, instalado ni modificado la aplicación del usuario.

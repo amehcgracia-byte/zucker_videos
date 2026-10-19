@@ -642,33 +642,51 @@ def _write_reserve_json(path: Path, payload: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+_CANDIDATE_RESERVE_LOCKS = weakref.WeakValueDictionary()
+_CANDIDATE_RESERVE_LOCKS_GUARD = threading.Lock()
+
+
+def _candidate_reserve_lock(path: Path):
+    # Pool and summary belong to one slot. On Windows, even an atomic replace
+    # can fail while another thread has the destination open for reading.
+    key = str(path.resolve()).replace(".summary.json", ".json")
+    with _CANDIDATE_RESERVE_LOCKS_GUARD:
+        lock = _CANDIDATE_RESERVE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _CANDIDATE_RESERVE_LOCKS[key] = lock
+        return lock
+
+
 def _project_candidate_pool(project: Project, coverage: dict[str, Any], segments: list[dict[str, Any]], segment: dict[str, Any], platform: str, context=None) -> tuple[list[dict[str, Any]], str]:
     """Persist a slot's reserve; clicking/polling never rebuilds the whole plan."""
     path = _candidate_reserve_path(project, coverage, segments, segment, platform, context)
-    try:
-        saved = json.loads(path.read_text(encoding="utf-8"))
-        pool, origin = saved["candidates"], saved["origin"]
-    except (OSError, ValueError, KeyError):
-        pool, origin = _review_candidate_pool(coverage, segments, segment, platform)
-        _write_reserve_json(path, {"candidates": pool, "origin": origin})
-    summary = path.with_suffix(".summary.json")
-    if not summary.exists():
-        eligible = [_candidate_keys(candidate, platform != "reel") for candidate in pool
-                    if _candidate_covers_slot(candidate, segment, platform) and _candidate_has_subject(candidate, segment)]
-        _write_reserve_json(summary, {"keys": [sorted(keys) for keys in eligible], "origin": origin})
-    return pool, origin
+    with _candidate_reserve_lock(path):
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            pool, origin = saved["candidates"], saved["origin"]
+        except (OSError, ValueError, KeyError):
+            pool, origin = _review_candidate_pool(coverage, segments, segment, platform)
+            _write_reserve_json(path, {"candidates": pool, "origin": origin})
+        summary = path.with_suffix(".summary.json")
+        if not summary.exists():
+            eligible = [_candidate_keys(candidate, platform != "reel") for candidate in pool
+                        if _candidate_covers_slot(candidate, segment, platform) and _candidate_has_subject(candidate, segment)]
+            _write_reserve_json(summary, {"keys": [sorted(keys) for keys in eligible], "origin": origin})
+        return pool, origin
 
 
 def _project_candidate_count(project: Project, coverage: dict[str, Any], segments: list[dict[str, Any]], segment: dict[str, Any], platform: str, context=None) -> tuple[int, str]:
     """Status requests read tiny summaries, never the full source records."""
     path = _candidate_reserve_path(project, coverage, segments, segment, platform, context).with_suffix(".summary.json")
-    try:
-        summary = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        _project_candidate_pool(project, coverage, segments, segment, platform, context)
-        summary = json.loads(path.read_text(encoding="utf-8"))
-    current = _candidate_keys(segment, platform != "reel")
-    return sum(not (set(keys) & current) for keys in summary["keys"]), summary["origin"]
+    with _candidate_reserve_lock(path):
+        try:
+            summary = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            _project_candidate_pool(project, coverage, segments, segment, platform, context)
+            summary = json.loads(path.read_text(encoding="utf-8"))
+        current = _candidate_keys(segment, platform != "reel")
+        return sum(not (set(keys) & current) for keys in summary["keys"]), summary["origin"]
 
 
 def _render_status_path(root: Path) -> Path:

@@ -181,3 +181,27 @@ def test_prefetch_closes_workers_after_render_failure(tmp_path, monkeypatch):
         prefetch.close()
     with pytest.raises(RuntimeError):
         prefetch.submit(1, segment)
+
+
+def test_candidate_summary_and_pool_share_slot_lock(tmp_path, monkeypatch):
+    """Concurrent status requests cannot rebuild/replace a summary being read."""
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    project = review_project(tmp_path)
+    segment = {'source_path': 'camera.mp4', 'master_start_sec': 0, 'duration_sec': 1}
+    path = shot_review._candidate_reserve_path(project, {}, [segment], segment, 'youtube')
+    lock = shot_review._candidate_reserve_lock(path)
+    assert lock is shot_review._candidate_reserve_lock(path.with_suffix('.summary.json'))
+    calls = []
+    start = threading.Barrier(8)
+    def build(*args):
+        calls.append(1)
+        return [], 'test reserve'
+    def count():
+        start.wait(timeout=10)
+        return shot_review._project_candidate_count(project, {}, [segment], segment, 'youtube')
+    monkeypatch.setattr(shot_review, '_review_candidate_pool', build)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: count(), range(8)))
+    assert results == [(0, 'test reserve')] * 8
+    assert calls == [1]
