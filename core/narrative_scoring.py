@@ -33,6 +33,9 @@ def _provider_config(provider: str | None = None, model: str | None = None) -> d
 
 
 def _completion(client,config,**kwargs):
+    if config['provider']=='openai' and str(kwargs.get('model','')).startswith(('gpt-5','o1','o3','o4')):
+        kwargs.pop('temperature',None)
+        if 'max_tokens' in kwargs:kwargs['max_completion_tokens']=kwargs.pop('max_tokens')
     if config['provider']=='anthropic':
         kwargs.pop('temperature',None)  # New Claude models reject sampling below 1.
         kwargs.pop('response_format',None)  # JSON is validated by the caller.

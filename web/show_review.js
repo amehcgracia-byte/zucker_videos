@@ -64,7 +64,7 @@
     render();
     // Every scene's preview with effects is prepared in the background, from the first on;
     // the scene being edited always goes first.
-    api("/show/scenes/prefetch", { method: "POST", body: JSON.stringify({ from: review.scenes?.[0]?.id }) }).catch(() => {});
+    api("/show/scenes/prefetch", { method: "POST", body: JSON.stringify({ from: review.resume_scene || review.scenes?.[0]?.id }) }).catch(() => {});
   }
 
   async function openWorkspace({sceneId=null}={}) {

@@ -16,7 +16,7 @@ def validate_anchor(value):
 class Follow:
     def __init__(self,anchor,width,height,template=None,until=None):
         self.anchor=validate_anchor(anchor);self.width=width;self.height=height;self.unmatchable=False
-        self.until=until;self.last=None
+        self.until=until;self.last=(0.,0.) if until==0 else None
         x,y,w,h=self.anchor
         self.start=(x+w/2,y+h/2)
         self.tracker=ObjectTracker([x*width,y*height,w*width,h*height])

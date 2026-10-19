@@ -87,3 +87,10 @@ def test_model_selected_in_ui_overrides_old_environment_provider(vault,monkeypat
     ai_connections.save_key('openai','test-openai-key')
     ai_connections.select('openai','gpt-5-mini')
     assert narrative_scoring._provider_config()['provider']=='openai'
+
+
+def test_openai_reasoning_models_use_their_completion_token_parameter(vault):
+    calls=[];client=SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kw:calls.append(kw))))
+    narrative_scoring._completion(client,{'provider':'openai'},model='gpt-5-mini',temperature=.1,max_tokens=3000,messages=[])
+    assert calls[0]['max_completion_tokens']==3000
+    assert 'max_tokens' not in calls[0] and 'temperature' not in calls[0]

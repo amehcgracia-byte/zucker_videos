@@ -95,3 +95,12 @@ Primary references (checked 19 October 2026):
 https://developer.jamendo.com/v3.0/tracks
 https://freesound.org/docs/api/overview.html
 https://freesound.org/docs/api/authentication.html
+
+Additional source QA: the Music library modal lists a locally imported synthetic
+track; the Backstage plan modal changes the first segment to music-under-voice,
+selects that track and applies it successfully, with the UI confirming the
+project copy and credits. All actions used a disposable project and fake/no
+credential vault; they did not alter the recovered user project. The combined
+focused regression selection passes 118 tests (`/tmp/show-2613-final-checks.log`).
+Source screenshots: `/tmp/show-2613-mix-plan.png` and
+`/tmp/show-2613-voice-mixer.png`. Latest package validation remains pending.
