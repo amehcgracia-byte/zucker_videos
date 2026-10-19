@@ -65,3 +65,15 @@ The public `main` really remains `321fdb45` (9 October); the working fixes are i
 - Source JavaScript and embedded compositor scripts parse successfully. New real-FFmpeg tests verify that an added picture follows the clean moving target; target-template recovery across a camera zoom is covered separately. No real user project was rendered or modified during these tests.
 
 Package verification and installation evidence follows below after completion. Source-level browser checks and native Windows behavior are distinct. No claim of zero remaining application bugs.
+
+## Packaged macOS validation
+
+The 2.6.12 bundle is built from code commit `4333d689`. Strict deep signature verification passes, and the packaged HTML/JS/CSS/compositor hashes equal the reviewed source (`/tmp/show-2612-package-assets.json`). The new follow/research modules are present in the frozen archive; no post-signing source replacement was used.
+
+The mandatory frozen self-test passes: instrument model, intro encoding, faster-whisper/Silero dependency path, person segmentation availability, exact Metal remap and CLIP scene tagging (`/tmp/show-2612-selftest.json`). Its transcription input is synthetic; this is not a speech-recognition accuracy measurement. Windows native UI is not tested here.
+
+The complete browser flow also passes in Chromium and WebKit when served by the frozen executable: delete the speech placeholder, save a marked target/template at the correct resized-screen coordinates, independently scroll a viewport-bounded menu, choose a library background, retain the selected key, and save foreground colour (`/tmp/show-2612-frozen-ui-proof.log`). A real frozen scene effects preview completed with no omitted effects and preserved its four-second duration (`/tmp/show-2612-frozen-scene.json`). These fixtures are isolated; no user project was rendered during package QA.
+
+## Installation
+
+Installed and opened **2.6.12** (`4333d689`) in `/Applications/Zucker Editor.app`. The previous installed version was copied to `/Users/macbookair/Applications Backups/Zucker Editor before 2.6.12 20261019-035425.app`, verified by every file hash and symlink, and retained before replacement. The staged/pending copy and signature were also verified. User projects and source media were not modified by the installer. Evidence: `/tmp/show-2612-install-result.json`.
