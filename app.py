@@ -76,10 +76,14 @@ class DesktopApi:
         return str(parent)
 
     def reveal_in_finder(self, path: str | None = None) -> bool:
-        """Reveal a path in Finder."""
-        target = Path(path or load_global_config()["inbox_path"]).expanduser()
-        subprocess.run(["open", "-R", str(target)], check=False)
-        return True
+        """Reveal a path using the operating system, and report real launch failures."""
+        target = Path(path or load_global_config()["inbox_path"]).expanduser().resolve()
+        if not target.exists():return False
+        command = (["open", "-R", str(target)] if sys.platform=="darwin" else
+                   ["explorer", "/select,"+str(target)] if sys.platform=="win32" else
+                   ["xdg-open", str(target if target.is_dir() else target.parent)])
+        try:return subprocess.run(command,check=False).returncode==0
+        except OSError:return False
 
 
 def find_free_port() -> int:

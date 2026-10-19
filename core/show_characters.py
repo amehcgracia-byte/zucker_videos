@@ -156,6 +156,7 @@ def characters_dir() -> Path:
 
 def save_character(name: str, photo: str | Path, mask: np.ndarray, *, method: str, mouth: dict[str, Any] | None = None,
                    pivot: list[float] | None = None, voice: list[Any] | None = None, provenance: dict[str, Any] | None = None,
+                   eye_direction: str = "horizontal", mouth_direction: str = "down",
                    root: Path | None = None, eyes: list[dict[str, Any]] | None = None) -> Path:
     folder = (root or characters_dir()) / _slug(name)
     folder.mkdir(parents=True, exist_ok=True)
@@ -163,7 +164,7 @@ def save_character(name: str, photo: str | Path, mask: np.ndarray, *, method: st
     picture.save(folder / "cutout.png")
     Image.fromarray((np.clip(mask, 0, 1) * 255).astype(np.uint8)).save(folder / "mask.png")
     record = {"version": CHARACTER_VERSION, "name": name, "photo": str(photo), "method": method, "crop": list(box),
-              "mouth": mouth, "eyes": eyes or [], "pivot": pivot or [0.5, 1.0], "voice": voice, "provenance": provenance or {},
+              "mouth": mouth, "eyes": eyes or [], "eye_direction": eye_direction, "mouth_direction": mouth_direction, "pivot": pivot or [0.5, 1.0], "voice": voice, "provenance": provenance or {},
               "size": list(picture.size), "updated": time.strftime("%Y-%m-%dT%H:%M:%S")}
     (folder / "character.json").write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8")
     return folder
@@ -173,7 +174,7 @@ def rig(folder: Path, **changes: Any) -> dict[str, Any]:
     """Mark the mouth (rect or polygon, shares of the cut-out), pivot or default voice once."""
     path = folder / "character.json"
     record = json.loads(path.read_text(encoding="utf-8"))
-    for key in ("mouth", "eyes", "pivot", "voice", "name"):
+    for key in ("mouth", "eyes", "pivot", "voice", "name", "eye_direction", "mouth_direction"):
         if key in changes:
             record[key] = changes[key]
     record["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")

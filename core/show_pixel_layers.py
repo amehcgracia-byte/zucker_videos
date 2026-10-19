@@ -11,12 +11,20 @@ import cv2
 import numpy as np
 
 
+def direction_vector(name):
+    vectors={'horizontal':(1.,0.),'vertical':(0.,1.),'diagonal':(.70710678,.70710678),
+             'diagonal-up':(.70710678,-.70710678),'down':(0.,1.),'up':(0.,-1.),'left':(-1.,0.),'right':(1.,0.)}
+    if not isinstance(name,str) or name not in vectors:raise ValueError('Choose a valid movement direction')
+    return vectors[name]
+
+
 class LookingPixels:
     """Original eyes that glance: inside each marked eye the middle (the iris) slides sideways
     while the eye's outline stays put, like a liquify push. Pixels are moved, never redrawn
     or blended (nearest sampling), and everything outside the marked eyes stays exact."""
 
-    def __init__(self, pixels: np.ndarray, regions: list[dict], amount: float = 0.05):
+    def __init__(self, pixels: np.ndarray, regions: list[dict], amount: float = 0.05, direction: str = "horizontal"):
+        self.direction = direction_vector(direction)
         from core.show_inserts import region_polygon
         if not 1 <= len(regions) <= 8 or not math.isfinite(amount) or not 0 <= amount <= 0.5:
             raise ValueError('Mark one to eight regions; movement must be between zero and 0.5')
@@ -52,8 +60,9 @@ class LookingPixels:
             result = self.original.copy()
             for (y0, y1, x0, x1), inside, push, _ in self.patches:
                 gx, gy = np.meshgrid(np.arange(x0, x1, dtype=np.float32), np.arange(y0, y1, dtype=np.float32))
-                source = np.clip(np.rint(gx - push * (step / 16)), x0, x1 - 1).astype(np.int32)
-                rows = gy.astype(np.int32)
+                dx,dy = self.direction
+                source = np.clip(np.rint(gx - push * (step / 16)*dx), x0, x1 - 1).astype(np.int32)
+                rows = np.clip(np.rint(gy - push * (step / 16)*dy),y0,y1-1).astype(np.int32)
                 moved = self.original[rows, source]
                 # Only inside the eye, and only from inside it: nothing slides in from the skin around.
                 take = inside & inside[rows - y0, source - x0]
@@ -70,7 +79,7 @@ EYE_GLANCE = 0.22
 EYE_CYCLE_SEC = 3.0      # a talking character glances left and right every three seconds
 
 
-def render_preview(photo, regions, output, ffmpeg='ffmpeg', amount=EYE_GLANCE):
+def render_preview(photo, regions, output, ffmpeg='ffmpeg', amount=EYE_GLANCE, direction='horizontal'):
     """Bounded three-second review clip; exported layers use the same compositor."""
     from pathlib import Path
     import subprocess
@@ -82,7 +91,7 @@ def render_preview(photo, regions, output, ffmpeg='ffmpeg', amount=EYE_GLANCE):
     image = image.crop((0, 0, w-w%2, h-h%2))
     pixels = np.asarray(image).astype(np.float32) / 255
     pixels[..., :3] *= pixels[..., 3:4]
-    layer = LookingPixels(pixels, regions, amount)
+    layer = LookingPixels(pixels, regions, amount, direction)
     frames = []
     for i in range(37):
         frame = layer.frame(i / 36)
@@ -110,7 +119,7 @@ def rig_regions(record):
     def mapped(region):
         return {'polygon':[[(x0+x*(x1-x0))/w,(y0+y*(y1-y0))/h] for x,y in region_polygon(region)]}
     return dict(eyes=[mapped(r) for r in record.get('eyes') or []],mouth=mapped(record['mouth']) if record.get('mouth') else None,
-                source_size=[w,h],voice=record.get("voice"))
+                source_size=[w,h],voice=record.get("voice"),eye_direction=record.get("eye_direction","horizontal"),mouth_direction=record.get("mouth_direction","down"))
 
 
 def framed_regions(raw, width, height, regions):
@@ -140,5 +149,5 @@ def apply_video_eyes(frame, raw, t):
     if min(ph,pw)<3:return
     local=[{'polygon':[((np.array(p)*[w-1,h-1]-lo)/[pw-1,ph-1]).tolist() for p in r['polygon']]} for r in regions]
     rgba=np.dstack([patch.astype(np.float32)/255,np.ones((ph,pw),np.float32)])
-    moved=LookingPixels(rgba,local,min(.5,EYE_GLANCE*float(raw.get("intensity",1)))).frame((t-raw['at'])/max(.001,raw['duration']))
+    moved=LookingPixels(rgba,local,min(.5,EYE_GLANCE*float(raw.get("intensity",1))),raw.get("eye_direction","horizontal")).frame((t-raw['at'])/max(.001,raw['duration']))
     patch[:]=np.clip(moved[...,:3]*255+.5,0,255).astype(np.uint8)

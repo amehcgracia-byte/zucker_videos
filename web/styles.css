@@ -2370,3 +2370,7 @@ dialog.show-studio::backdrop {background:#0009;}
 #showAudioDialog>.show-actions{position:sticky;bottom:0;background:var(--panel);padding:10px 0;z-index:2;}
 
 #showAudioDialog{border:1px solid var(--line);border-radius:16px;padding:18px;background:var(--panel);color:var(--text);box-shadow:0 20px 70px #0004;}
+
+.show-cutout-box{position:absolute;border:2px dashed #ffdc77;pointer-events:auto;cursor:grab;box-sizing:border-box;touch-action:none}.show-cutout-box:active{cursor:grabbing}.show-cutout-box small{position:absolute;top:2px;left:2px;background:#18251dcc;color:#fff;padding:4px;pointer-events:none}.show-layer-colours{max-width:600px;border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--ink)}.show-layer-colours label{display:block;margin:15px 0}.show-layer-colours input{width:100%}
+
+.zmenu {box-sizing:border-box;scrollbar-gutter:stable;overscroll-behavior:contain;margin:0;inset:auto;}

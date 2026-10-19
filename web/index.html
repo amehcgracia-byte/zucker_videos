@@ -181,6 +181,7 @@
           <label>Pace <select id="showStyle"><option value="choe" selected>Fast: a cut every ~1.5 s with zooms (David Choe style)</option><option value="calm">Calm: longer shots, softer zooms</option></select></label>
           <label>Language <select id="showLanguage"><option value="" selected>Detect automatically</option><option value="es">Spanish</option><option value="en">English</option></select></label>
           <label>Gags <select id="showGags"><option value="claude" selected>Drawings, characters and words planned by your Claude</option><option value="keywords">Drawings and words from keywords (offline)</option><option value="off">No gags</option></select></label>
+          <label><input type="checkbox" id="showAutoResearch" checked> Find internet reference drafts automatically (up to 3 per show; text searches only)</label>
           <div id="showGagStatus" class="show-gag-status">
             <p><span id="showClaudeStatus">Checking your Claude…</span> <button id="showClaudeSignIn" class="icon-button small" type="button" hidden>Connect my Claude</button></p>
             <p><span id="showPainterStatus">Checking the drawing painter…</span> <button id="showPainterDownload" class="icon-button small" type="button" hidden>Download the painter (2.1 GB, once)</button></p>
@@ -490,7 +491,7 @@
             <button id="retryWizardSuccess" class="icon-button" data-icon="retry">Retry</button>
             <button id="copyProgressReportResult" class="icon-button" data-icon="clipboard">Copy report</button>
             <button id="openCaptions" class="icon-button" data-icon="doc">Overlay &amp; Captions</button>
-            <button id="showFinder" class="icon-button desktop-only" data-icon="folder">Show in Finder</button>
+            <button id="showFinder" class="icon-button desktop-only" data-icon="folder">Show in folder</button>
             <button id="again" class="icon-button" data-icon="play">Make another</button>
           </div>
         </div>
@@ -520,15 +521,15 @@
     <script src="/show_edit_queue.js?v=1"></script>
     <script src="/show_clock.js?v=1"></script>
     <script src="/show_live_captions.js?v=2"></script>
-    <script src="/show_references.js?v=6"></script>
-    <script src="/show_menu.js?v=5"></script>
+    <script src="/show_references.js?v=7"></script>
+    <script src="/show_menu.js?v=6"></script>
     <script src="/connectors.js?v=1"></script>
     <script src="/show_idea.js?v=1"></script>
     <script src="/show_clay_editor.js?v=1"></script>
-    <script src="/show_review.js?v=67"></script>
+    <script src="/show_review.js?v=68"></script>
     <script src="/show_audio.js?v=1"></script>
     <script src="/show_einstein.js?v=9"></script>
-    <script src="/show_characters.js?v=13"></script>
+    <script src="/show_characters.js?v=14"></script>
     <script src="/show_voice.js?v=1"></script>
     <script src="/project_library.js?v=1"></script>
   </body>

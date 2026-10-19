@@ -206,6 +206,9 @@ class Background:
     style: str = "person"
     scale: float = 1.0
     offset: tuple[float, float] = (0., 0.)
+    brightness: float = 1.
+    saturation: float = 1.
+    hue: float = 0.
 
     def active(self, t: float) -> bool:
         local = t - self.at
@@ -268,7 +271,7 @@ def load(raw: dict[str, Any], width: int, height: int, fps: float) -> Background
     video = VideoBackground(raw['background'], width, height) if Path(raw['background']).suffix.lower() in VIDEO_SUFFIXES else None
     return Background(float(raw["at"]), float(raw["duration"]), video.at(0) if video else cover(raw["background"], width, height), masks,
                       [list(span) for span in raw.get("hidden") or []], fps, video=video, style=raw.get('person_style', 'person'),
-                      scale=float(raw.get('person_scale', 1)), offset=tuple(raw.get('person_offset') or (0., 0.)))
+                      scale=float(raw.get('person_scale', 1)), offset=tuple(raw.get('person_offset') or (0., 0.)),brightness=raw.get('brightness',1),saturation=raw.get('saturation',1),hue=raw.get('hue',0))
 
 
 def _guided(guide: np.ndarray, source: np.ndarray, radius: int, eps: float = 1e-3) -> np.ndarray:
@@ -296,7 +299,8 @@ def apply(frame: np.ndarray, background: Background, t: float) -> None:
     mask = np.clip(_guided(guide, mask, max(2, width // 240)), 0.0, 1.0)[..., None]
     fade = min(1.0, local / FADE_SEC, (background.duration - local) / FADE_SEC)
     behind = background.video.at(local) if background.video else background.picture
-    person = np.full_like(frame, 8) if background.style == 'silhouette' else frame
+    from core.show_follow import colour
+    person = np.full_like(frame, 8) if background.style == 'silhouette' else colour(frame,background.brightness,background.saturation,background.hue)
     if background.scale != 1 or background.offset != (0., 0.):
         scale = background.scale
         matrix = np.array([[scale, 0, width*(1-scale)/2+background.offset[0]*width],
@@ -353,9 +357,32 @@ def editor_sample(project, item, *, ffmpeg='ffmpeg', progress=None):
         entries = [{'background':'live-editor', 'at':0., 'duration':end-start}]
         if is_clip:
             entries=[{'video_layer':str(source),'matte':'person','clip_start':start,'duration':end-start}]
-        notes = prepare(host, entries, plan, project.cache_dir/'show_masks', offset=start, ffmpeg=ffmpeg, progress=(lambda value,detail:progress(.3+value*.65,detail)) if progress else None)
-        if notes:
-            raise BackgroundUnavailable('; '.join(notes))
+        matte=item['params'].get('matte') if is_clip else None
+        if matte=='green-light':
+            from core.show_video_assets import light_sample
+            light_host=host.with_name(host.stem+'-soft-key.mp4')
+            if not light_host.is_file():light_sample(host,light_host,ffmpeg)
+            host=light_host
+        if matte in ('green','black','green-light'):
+            from core.show_video_assets import green_alpha,black_alpha
+            key=hashlib.sha256((file_digest(host)+matte).encode()).hexdigest()[:24]
+            mask_path=folder/('key-'+key+'.npy')
+            if not mask_path.is_file():
+                import cv2
+                capture=cv2.VideoCapture(str(host));made=[]
+                try:
+                    while True:
+                        ok,bgr=capture.read()
+                        if not ok:break
+                        rgb=cv2.cvtColor(cv2.resize(bgr,MASK_SIZE),cv2.COLOR_BGR2RGB)
+                        made.append(np.rint((black_alpha(rgb) if matte in ('black','green-light') else green_alpha(rgb))*255).astype(np.uint8))
+                finally:capture.release()
+                if not made:raise ValueError('The texture has no decodable frames')
+                pending=mask_path.with_suffix('.pending.npy');np.save(pending,np.asarray(made));pending.replace(mask_path)
+            entries[0]['masks']=str(mask_path)
+        else:
+            notes = prepare(host, entries, plan, project.cache_dir/'show_masks', offset=start, ffmpeg=ffmpeg, progress=(lambda value,detail:progress(.3+value*.65,detail)) if progress else None)
+            if notes:raise BackgroundUnavailable('; '.join(notes))
         masks = np.load(entries[0]['masks'], mmap_mode='r')
         atlas = folder/(Path(entries[0]['masks']).stem+'.png')
         if not atlas.is_file():

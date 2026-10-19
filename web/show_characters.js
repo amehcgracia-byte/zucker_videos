@@ -181,9 +181,9 @@
 
   function renderRig() {
     const voices = [...window.ShowReview.voices(), ...(state.savedVoice ? [state.savedVoice] : [])];
-    $("#showStudioBody").innerHTML = `<p class="show-hint">Mark original parts, without replacing them. Draw a tight rectangle around each eye with Eyes, or mark a mouth/jaw with Mouth. Save, then choose Look left and right or Talk in the element’s animation menu. Pivot sets its turning point.</p>
+    $("#showStudioBody").innerHTML = `<p class="show-hint">Mark original parts, without replacing them. Draw a tight rectangle around each eye with Eyes, or mark a mouth/jaw with Mouth. Save, then choose Look left and right or Talk in the element’s animation menu. Pivot sets the turning point only. Choose eye and mouth movement direction separately below.</p>
       <div class="show-studio-tools"><label><input type="radio" name="rigtool" value="mouth" checked> Mouth</label><label><input type="radio" name="rigtool" value="eyes"> Eyes / original part</label><label><input type="radio" name="rigtool" value="pivot"> Pivot</label><button type="button" class="icon-button small" data-studio="clear-eyes">Clear eye regions</button><button type="button" class="icon-button small" data-studio="test-eyes">Test glance</button></div>
-      <div class="show-checker show-rig"><canvas id="showRigCanvas" class="show-canvas"></canvas></div>
+      <div class="show-fields"><label>Eye direction<select id="showEyeDirection"><option value="horizontal">Left / right</option><option value="vertical">Up / down</option><option value="diagonal">Diagonal down</option><option value="diagonal-up">Diagonal up</option></select></label><label>Mouth direction<select id="showMouthDirection"><option value="down">Down</option><option value="up">Up</option><option value="left">Left</option><option value="right">Right</option><option value="diagonal">Diagonal down</option><option value="diagonal-up">Diagonal up</option></select></label></div><div class="show-checker show-rig"><canvas id="showRigCanvas" class="show-canvas"></canvas></div>
       <video id="showEyePreview" controls playsinline hidden style="max-width:100%;max-height:240px"></video><p id="showEyeStatus" role="status"></p><div class="show-fields"><label class="show-field"><span>Name</span><input type="text" id="showCharacterName" value="${escape(state.name || state.photo.name)}"></label>
         <label class="show-field"><span>Its voice (from your videos)</span><select id="showCharacterVoice"><option value="">No voice yet</option>${voices.map((voice, index) => `<option value="${index}">${escape(voice.text.slice(0, 60))} (${escape(baseName(voice.source))} ${voice.start.toFixed(1)} s)</option>`).join("")}</select></label></div>
       <div class="show-fields show-voice-trim"><label class="show-field"><span>Its voice starts at (s)</span><input type="number" step="any" min="0" id="showVoiceFrom" value="0"></label>
@@ -195,6 +195,7 @@
       <div class="show-actions"><button type="button" class="icon-button small" data-studio="back2">Back to the cut-out</button><button type="button" class="primary icon-button small" data-studio="save">${state.placement?.proposalId?"Apply to this close-up":"Save in the library and place it"}</button></div>`;
     if(state.editing)$('[data-studio="back2"]').disabled=true;
     state.voices = voices;
+    $("#showEyeDirection").value=state.eye_direction||"horizontal";$("#showMouthDirection").value=state.mouth_direction||"down";
     if(state.initialMode==='eyes')$('[name="rigtool"][value="eyes"]').checked=true;
     if(state.savedVoice)$("#showCharacterVoice").value=String(voices.length-1);
     voiceBounds();
@@ -254,7 +255,7 @@
     const voice = chosenVoice();
     const saved = await api("/show/characters", { method: state.editing ? "PATCH" : "POST", body: JSON.stringify({ folder:state.folder,
       photo: state.photo.photo, mask: state.cut.mask, method: state.cut.method, name: $("#showCharacterName").value,
-      eyes: state.eyes || [], mouth: state.mouth || null, pivot: state.pivot || [0.5, 1.0], voice: voice ? [voice.source, voice.start, voice.length] : null }) });
+      eye_direction:($("#showEyeDirection")?.value||state.eye_direction||"horizontal"),mouth_direction:($("#showMouthDirection")?.value||state.mouth_direction||"down"),eyes: state.eyes || [], mouth: state.mouth || null, pivot: state.pivot || [0.5, 1.0], voice: voice ? [voice.source, voice.start, voice.length] : null }) });
     closeStudio();
     await window.ShowReview.refreshLibrary();
     const tool=document.querySelector('[name=rigtool]:checked')?.value;
@@ -292,7 +293,7 @@
     const result=await api('/show/characters/edit?asset='+encodeURIComponent(asset));
     const r=result.record;
     state={step:3,editing:true,folder:r.folder,name:r.name,photo:{...result.photo,url:'/api/v1/show/photo?path='+encodeURIComponent(result.photo.photo)},cut:result.cut,
-      mouth:r.mouth,eyes:r.eyes||[],pivot:r.pivot,strokes:[],undo:[],savedVoice:r.voice?{source:r.voice[0],start:r.voice[1],length:r.voice[2],text:'Saved voice'}:null};
+      mouth:r.mouth,eyes:r.eyes||[],eye_direction:r.eye_direction,mouth_direction:r.mouth_direction,pivot:r.pivot,strokes:[],undo:[],savedVoice:r.voice?{source:r.voice[0],start:r.voice[1],length:r.voice[2],text:'Saved voice'}:null};
     show(3);
   }};
 
@@ -326,7 +327,7 @@
         target.disabled = true; $("#showTalkStatus").textContent = "Preparing the preview with its voice…";
         try {
           const result = await api("/show/characters/talk-preview", { method: "POST", body: JSON.stringify({ photo: state.photo.photo, mask: state.cut.mask,
-            eyes: state.eyes || [], mouth: state.mouth || null, voice: [voice.source, voice.start, voice.length] }) });
+            eye_direction:($("#showEyeDirection")?.value||state.eye_direction||"horizontal"),mouth_direction:($("#showMouthDirection")?.value||state.mouth_direction||"down"),eyes: state.eyes || [], mouth: state.mouth || null, voice: [voice.source, voice.start, voice.length] }) });
           const video = $("#showTalkPreview"); video.src = result.url; video.hidden = false; video.play().catch(() => {});
           $("#showTalkStatus").textContent = `${state.mouth ? "Its mouth moves with the voice" : "Mark its mouth to make it move with the voice"}${state.eyes?.length ? "; its eyes glance" : ""}. This is how the video will show it.`;
         } finally { target.disabled = false; }
@@ -346,7 +347,7 @@
         if (!state.eyes?.length) { $("#showEyeStatus").textContent = "Mark an eye region first."; return; }
         target.disabled = true; $("#showEyeStatus").textContent = "Preparing original-pixel glance…";
         try {
-          const result = await api("/show/characters/eyes-preview",{method:"POST",body:JSON.stringify({photo:state.photo.photo,mask:state.cut.mask,eyes:state.eyes})});
+          const result = await api("/show/characters/eyes-preview",{method:"POST",body:JSON.stringify({photo:state.photo.photo,mask:state.cut.mask,eyes:state.eyes,eye_direction:$("#showEyeDirection").value})});
           const video = $("#showEyePreview"); video.src = result.url; video.hidden = false;
           $("#showEyeStatus").textContent = "Original pixels move; only the small holes behind them are filled from their surroundings.";
         } finally { target.disabled = false; }

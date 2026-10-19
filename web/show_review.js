@@ -516,7 +516,7 @@
         const first=group[0],label=KIND_LABELS[first.kind]||first.kind,name=first.params.subject||first.params.text||label;
         const inside=group.filter(item=>Math.min(scene.end,item.at+item.duration)>Math.max(scene.start,item.at));
         return `<div class="show-time-row"><button type="button" class="show-time-name" data-locate-effect="${first.id}" title="${escape(name)}${group.length>1?` · ${group.length} pieces`:''}">${escape(label)}${group.length>1?` <small>×${group.length}</small>`:''}</button><div class="show-time-track" data-track="${first.id}">
-        ${!inside.length?first.kind==='character'&&first.duration<=0?`<button type="button" data-show-adjust="${first.id}" class="show-time-outside">Voice &amp; hold timing · Adjust</button>`:`<button type="button" data-place-words="${first.id}" class="show-time-outside">Outside this scene · choose words</button>`:inside.map(item=>{
+        ${!inside.length?first.kind==='character'&&first.duration<=0?`<button type="button" data-show-adjust="${first.id}" data-time-clip="${first.id}" class="show-time-outside">Voice &amp; hold timing · Adjust</button>`:`<button type="button" data-place-words="${first.id}" class="show-time-outside">Outside this scene · choose words</button>`:inside.map(item=>{
           const a=Math.max(scene.start,item.at),b=Math.min(scene.end,item.at+item.duration);
           return `<div tabindex="0" role="button" aria-label="${escape(name)} timeline clip" class="show-time-clip ${selectedEffect===item.id?'selected':''}" data-time-clip="${item.id}" style="left:${pct(a)}%;width:${100*(b-a)/duration}%" title="${escape(name)} · ${clock(item.at)}–${clock(item.at+item.duration)} · right-click to cut, copy, paste or split"><span data-trim="start" aria-label="Trim start"></span><b>${escape(name)}</b><span data-trim="end" aria-label="Trim end"></span></div>`;}).join('')}</div></div>`;
       }).join('')}`;
@@ -1455,13 +1455,48 @@
         ["original_part", "Move original part (sideways)…"], ["clay", "Clay memory · Simón…"]].map(entry) },
       { label: "Video", submenu: [["local_media", "Video / audio from this computer…"], ["cutaway", "A close-up…"], ["video_reference", "Clip from a link…"], ["video_library", "Video cutouts library…"], ["face_clip", "Put my face on a clip…"],
         ["generate_video", "Create video · external prompt…"], ["video_cutout", "Moving person over a photo or video…"], ["video_silhouette", "Moving black silhouette…"]].map(entry) },
-      { label: "Effects", submenu: [entry(["math", "Formulas around me"]), {label: "Textures",submenu:Object.entries(TEXTURES).map(([key,name])=>({label:name,action:()=>extraTool("texture_"+key,scene,picked)}))},
+      { label: "Effects", submenu: [entry(["math", "Formulas around me"]), {label: "Textures",submenu:[{label:"Filmed texture from a link…",action:()=>ShowReferences.openTexture(scene,picked,review.project_id)},...Object.entries(TEXTURES).map(([key,name])=>({label:name,action:()=>extraTool("texture_"+key,scene,picked)}))]},
         { label: "Bend the picture", submenu: [["warp_wave", "Wave"], ["warp_swirl", "Swirl"], ["warp_stretch", "Stretch"]].map(entry) }] },
       { separator: true },
       entry(["captions", "Speech captions (subtitles)…"]),
     ];
   }
   // An effect's own tools, without leaving the scene editor.
+  function followItems(item) {
+    const anchor=item.overlay?.follow_anchor||item.params.follow_anchor;
+    return [{label:anchor?'Mark following object again…':'Follow an object: mark it…',action:()=>{
+      selectedEffect=item.id;steamBoxFor=item.id;locateEffect(timelineItem(item.id));drawOverlays(currentScene());
+      showToast('At the effect start, draw a tight box around the hand or object. Keep the picture placed where you want it attached. Effects preview shows the tracked movement.');
+    }},...(anchor?[{label:'Stop following',action:()=>steamSave(item,{follow_anchor:null})}]:[])];
+  }
+  function layerColourDialog(item){
+    const dialog=document.createElement('dialog');dialog.className='show-layer-colours';
+    dialog.innerHTML='<h2>Foreground colour & light</h2>'+[['brightness','Brightness',0,3,1],['saturation','Saturation',0,3,1],['hue','Hue',-180,180,0]].map(([name,label,min,max,value])=>`<label>${label}<input data-colour="${name}" type="range" min="${min}" max="${max}" step=".05" value="${item.params[name]??value}"></label>`).join('')+'<p>Applies to this foreground only. Preview the scene to see the result.</p><button data-apply>Apply & preview</button><button data-cancel>Cancel</button>';
+    document.body.append(dialog);dialog.querySelector('[data-cancel]').onclick=()=>dialog.close();dialog.onclose=()=>dialog.remove();dialog.showModal();
+    dialog.querySelector('[data-apply]').onclick=async event=>{event.target.disabled=true;try{await patch(item.id,Object.fromEntries([...dialog.querySelectorAll('[data-colour]')].map(v=>[v.dataset.colour,Number(v.value)])));await markModified(item.id);dialog.close();invalidateLocal(currentScene());await requestScenePreview(currentScene());}catch(error){showToast(error.message,true);event.target.disabled=false;}};
+  }
+  function cutoutHandles(){
+    const item=timelineItem(selectedEffect),p=item?.params;
+    if(!item||!(item.kind==='background'||item.kind==='clip'&&p.matte&&p.matte!=='none'))return '';
+    const scale=p.person_scale??1,[x,y]=p.person_offset||[0,0];
+    return `<div class="show-cutout-box" data-cutout-id="${item.id}" style="left:${((1-scale)/2+x)*100}%;top:${(1-scale+y)*100}%;width:${scale*100}%;height:${scale*100}%"><small>Moving cutout · drag to move</small><span class="show-resize" data-cutout-resize="${item.id}"></span></div>`;
+  }
+  let cutoutDrag=null;
+  document.addEventListener('pointerdown',event=>{
+    const box=event.target.closest?.('[data-cutout-id]');if(!box||steamBoxFor)return;
+    const item=timelineItem(box.dataset.cutoutId);if(!item)return;
+    event.preventDefault();event.stopPropagation();box.setPointerCapture(event.pointerId);
+    cutoutDrag={item,box,bounds:$('#showStageLayer').getBoundingClientRect(),x:event.clientX,y:event.clientY,scale:item.params.person_scale??1,offset:[...(item.params.person_offset||[0,0])],resize:!!event.target.closest('[data-cutout-resize]')};
+  },true);
+  document.addEventListener('pointermove',event=>{
+    if(!cutoutDrag)return;const d=cutoutDrag,dx=(event.clientX-d.x)/d.bounds.width,dy=(event.clientY-d.y)/d.bounds.height;
+    const scale=d.resize?Math.max(.05,Math.min(5,d.scale+dx*2)):d.scale,offset=d.resize?d.offset:[d.offset[0]+dx,d.offset[1]+dy];
+    d.changes={person_scale:scale,person_offset:offset};Object.assign(d.box.style,{left:((1-scale)/2+offset[0])*100+'%',top:(1-scale+offset[1])*100+'%',width:scale*100+'%',height:scale*100+'%'});
+  });
+  document.addEventListener('pointerup',async()=>{
+    if(!cutoutDrag)return;const d=cutoutDrag;cutoutDrag=null;if(!d.changes)return;
+    try{await patch(d.item.id,d.changes);await markModified(d.item.id);invalidateLocal(currentScene());drawOverlays(currentScene());prepareInBackground(currentScene());}catch(error){showToast(error.message,true);}
+  });
   function effectItems(scene, item) {
     if(item.clay)return [{label:'Clay settings…',action:()=>openClaySettings(item.clay)},
       {label:'Create a new clay story…',action:()=>ShowClayEditor.open(currentScene(),{start:item.at,end:item.at+item.duration,text:currentScene().text})},
@@ -1469,6 +1504,8 @@
     const id = item.id;
     return [
       { label: "Settings…", action: () => effectSettings(id) },
+      ...((item.kind==='background'||item.kind==='clip'&&item.params.matte!=='none')?[{label:"Colour & light…",action:()=>layerColourDialog(item)}]:[]),
+      ...((item.params.picture || item.kind==='clip' && item.params.matte!=='none')?followItems(item):[]),
       { label: "Show on the video and timeline", action: () => locateEffect(timelineItem(id)) },
       { label: "Choose its words…", action: () => { selectedEffect = id; placingWords = true; firstWord = null; pickedWords = null; closeTimeline(); wordPlacementControls(); $("#showSaid")?.scrollIntoView({ block: "nearest" }); } },
       { label: "Preview it", action: () => clickLike("data-show-preview", id) },
@@ -1582,6 +1619,7 @@
       { label: "Undo", hint: "⌘Z", disabled: !layerUndo.some((entry) => entry.scene === scene.id), action: () => layerCommand("undo") },
       ]),
       { separator: true },
+      ...followItems(timelineItem("sticker:"+overlay.id)),
       { label: "Animate", submenu: () => [
         {label:"Move mouth…",action:()=>layerCommand("mouth-regions")},
         {label:"Move eyes…",action:()=>layerCommand("regions")},
@@ -1698,20 +1736,25 @@
   let steamBoxFor = null, steamDrag = null;
   function steamTools(item) {
     const p = item.params;
-    return `<div class="show-steam-tools" data-steam-tools="${item.id}"><small>${p.anchor ? "Follows the marked object. Hides when lost and searches for it again, including after cuts. This is visual matching, not automatic cup recognition." : "Drag + to place the texture. Mark a box to follow an object; without a box the texture stays at its screen position."}</small>
+    return `<div class="show-steam-tools" data-steam-tools="${item.id}"><button type="button" data-filmed-texture="${item.id}">Replace with filmed texture…</button><small>${p.anchor ? "Follows the marked object. Hides when lost and searches for it again, including after cuts. This is visual matching, not automatic cup recognition." : "Drag + to place the texture. Mark a box to follow an object; without a box the texture stays at its screen position."}</small>
       <button type="button" data-steam-box="${item.id}">${steamBoxFor === item.id ? "Drag a box around the object on the video…" : p.anchor ? "Mark the object again" : "Follow an object: mark it"}</button>${p.anchor ? `<button type="button" data-steam-unbox="${item.id}">Stop following</button>` : ""}
       ${`<div class="show-fields">${textureField(p)}${field("Density", range("density", p.density ?? 35, 5, 120, 1))}${field("Thickness", range("strength", p.strength ?? 0.3, 0.05, 0.9, 0.05))}${field("Height", range("rise", p.rise ?? 1, 0.3, 3, 0.05))}${field("Size", range("scale", p.scale ?? 1, 0.4, 2, 0.05))}${field("Colours", `<select data-field="colour"><option value="rainbow" ${(p.colour || "rainbow") === "rainbow" ? "selected" : ""}>Preset / rainbow</option><option value="white" ${p.colour === "white" ? "selected" : ""}>White</option><option value="${/^#/.test(p.colour || "") ? p.colour : "#ff66cc"}" ${/^#/.test(p.colour || "") ? "selected" : ""}>One colour</option></select>`)}</div>`}</div>`;
   }
+  document.addEventListener('click',event=>{
+    const button=event.target.closest?.('[data-filmed-texture]');if(!button)return;
+    const item=timelineItem(button.dataset.filmedTexture);if(!item)return;
+    ShowReferences.openTexture(currentScene(),{start:item.at,end:item.at+item.duration,text:currentScene().text},review.project_id,item.params.texture||'smoke',item.id);
+  });
   function steamHandles(scene) {
-    const item = review.proposals.find((entry) => entry.id === selectedEffect && isTexture(entry) && scene.effects.includes(entry.id));
+    const item = timelineItem(selectedEffect);
     if (!item || !timelineDialog?.open) return "";
-    const [x, y] = item.params.point || [0.5, 0.5], a = item.params.anchor;
+    const [x, y] = item.params.point || [0.5, 0.5], a = item.overlay?.follow_anchor || item.params.follow_anchor || item.params.anchor;
     return `${a ? `<div class="show-steam-box" style="left:${a[0] * 100}%;top:${a[1] * 100}%;width:${a[2] * 100}%;height:${a[3] * 100}%"></div>` : ""}
-      <div class="show-steam-cross" data-steam-cross="${item.id}" style="left:${x * 100}%;top:${y * 100}%" title="Texture origin: drag it">+</div>`;
+      ${isTexture(item)?`<div class="show-steam-cross" data-steam-cross="${item.id}" style="left:${x * 100}%;top:${y * 100}%" title="Texture origin: drag it">+</div>`:""}`;
   }
   function steamSave(item, changes) {
-    Object.assign(item.params, changes);
-    saveSoon(item.id, changes);
+    if(item.overlay){Object.assign(item.overlay,changes);saveOverlays(currentScene()).then(()=>prepareInBackground(currentScene()));}
+    else {Object.assign(item.params, changes);saveSoon(item.id, changes);}
     drawOverlays(currentScene());
     renderTimeline(currentScene());
   }
@@ -1722,7 +1765,8 @@
     const inside = box && event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom;
     if (!cross && !(steamBoxFor && inside)) return;
     event.preventDefault(); event.stopPropagation();
-    const item = review.proposals.find((entry) => entry.id === (cross ? cross.dataset.steamCross : steamBoxFor));
+    const item = timelineItem(cross ? cross.dataset.steamCross : steamBoxFor);
+    if(!item)return;
     const at = { x: (event.clientX - box.left) / box.width, y: (event.clientY - box.top) / box.height };
     steamDrag = { item, box, cross: !!cross, start: at, now: at };
   }, true);
@@ -1739,7 +1783,7 @@
       Object.assign(rect.style, { left: `${Math.min(a.x, b.x) * 100}%`, top: `${Math.min(a.y, b.y) * 100}%`, width: `${Math.abs(b.x - a.x) * 100}%`, height: `${Math.abs(b.y - a.y) * 100}%` });
     }
   });
-  document.addEventListener("pointerup", () => {
+  document.addEventListener("pointerup", async () => {
     if (!steamDrag) return;
     const { item, cross, start: a, now: b } = steamDrag;
     steamDrag = null;
@@ -1747,6 +1791,13 @@
     steamBoxFor = null;
     const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(b.y - a.y);
     if (w < 0.02 || h < 0.02) { drawOverlays(currentScene()); renderTimeline(currentScene()); return; }
+    if(!isTexture(item)){
+      const video=$('#showStageVideo');
+      if(video.readyState<2){showToast('Wait for the video picture, then mark the object again.',true);return;}
+      const canvas=document.createElement('canvas'),k=Math.min(1,512/(w*video.videoWidth),512/(h*video.videoHeight));canvas.width=Math.max(6,Math.round(w*video.videoWidth*k));canvas.height=Math.max(6,Math.round(h*video.videoHeight*k));
+      canvas.getContext('2d').drawImage(video,x*video.videoWidth,y*video.videoHeight,w*video.videoWidth,h*video.videoHeight,0,0,canvas.width,canvas.height);
+      try{const template=await api('/show/follow-template',{method:'POST',body:JSON.stringify({image:canvas.toDataURL('image/png')})});
+      steamSave(item,{follow_anchor:[x,y,w,h].map(v=>Number(v.toFixed(4))),follow_template:template.path});}catch(error){showToast(error.message,true);return;}showToast("Object following saved. Preview the effects to see it move.");return;}
     // The steam rises from the top middle of the mug and follows it.
     steamSave(item, { anchor: [x, y, w, h].map((v) => Number(v.toFixed(4))), point: [Number((x + w / 2).toFixed(4)), Number(y.toFixed(4))] });
     showToast("The texture follows this object; it hides on loss and searches for its return.");
@@ -1778,7 +1829,7 @@
       const item = library.find((entry) => entry.path === overlay.asset);
       return `<div class="show-overlay ${selectedOverlay === index || selectedEffect==='sticker:'+overlay.id ? "selected" : ""}" data-overlay="${index}" style="left:${overlay.x}%;top:${overlay.y}%;width:${overlay.width}%">
         <img src="${item ? item.url : `/api/v1/show/library/file?path=${encodeURIComponent(overlay.asset)}`}" alt="" draggable="false" style="${shapeStyle(overlay)}"><span class="show-resize" data-resize="${index}"></span></div>`;
-    }).join("") + steamHandles(scene);
+    }).join("") + cutoutHandles() + steamHandles(scene);
     liveDrawings(scene);
   }
 
@@ -1806,6 +1857,8 @@
     const stage = $("#showStage"); if(stage){stage.tabIndex=0;stage.focus({preventScroll:true});}
     dragging = { index, resize: target.hasAttribute("data-resize"), box, x: event.clientX, y: event.clientY, start: { ...scene.overlays[index] } };
   });
+  const releasePointerTools=()=>{steamDrag=null;steamBoxFor=null;cutoutDrag=null;dragging=null;$('#showSteamDrawing')?.remove();if(review&&currentScene())drawOverlays(currentScene());};
+  document.addEventListener('pointercancel',releasePointerTools);window.addEventListener('blur',releasePointerTools);
   document.addEventListener("pointermove", (event) => {
     if (!dragging) return;
     const scene = currentScene();
@@ -2405,11 +2458,11 @@
     if (!review || $("#showReviewBox")?.hidden || !(event.target instanceof Element)) return;
     if (event.target.closest("#showSaid, [data-overlay], canvas, input, textarea")) return;
     const scene = currentScene();
-    if (!scene || !event.target.closest("#showStage, [data-show-id], [data-time-clip], [data-track], [data-scene-seek]")) return;
+    if (!scene || !event.target.closest("#showStage, [data-show-id], [data-cutout-id], [data-time-clip], [data-track], [data-locate-effect], [data-scene-seek]")) return;
     event.preventDefault();
-    const barId=event.target.closest("[data-time-clip]")?.dataset.timeClip;
+    const barId=event.target.closest("[data-time-clip]")?.dataset.timeClip || event.target.closest("[data-track]")?.dataset.track || event.target.closest("[data-locate-effect]")?.dataset.locateEffect;
     if(barId){timelineMenu(event.clientX,event.clientY,barId);return;}
-    const ownId=event.target.closest("[data-show-id]")?.dataset.showId || event.target.closest("[data-live-effect]")?.dataset.liveEffect;
+    const ownId=event.target.closest("[data-cutout-id]")?.dataset.cutoutId || event.target.closest("[data-show-id]")?.dataset.showId || event.target.closest("[data-live-effect]")?.dataset.liveEffect;
     if(ownId?.startsWith('sticker:')){overlayMenu(currentScene().overlays.findIndex(overlay=>'sticker:'+overlay.id===ownId),event.clientX,event.clientY);return;}
     sceneMenu(event.clientX,event.clientY,ownId);return;
   });

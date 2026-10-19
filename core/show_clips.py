@@ -29,8 +29,33 @@ def folder(project) -> Path:
     return project.folder / "assets" / "clips"
 
 
+def browser_setting():
+    import json
+    from core.storage import data_root
+    path=data_root()/'download_access.json'
+    try:return json.loads(path.read_text()).get('browser') or None
+    except (OSError,ValueError):return None
+
+
+def set_browser(browser):
+    from core.storage import data_root
+    from core.project import atomic_write_json
+    if browser not in (None,'','chrome','safari','firefox','edge','brave'):raise ValueError('Choose a supported browser or no browser session')
+    atomic_write_json(data_root()/'download_access.json',{'browser':browser or None})
+
+
+def download_error(message):
+    lower=message.lower()
+    if any(word in lower for word in ("not a bot","confirm you're",'confirm you’re','sign in','cookies','http error 429')):
+        return ('YouTube needs a browser verification, not more credits. Open this link in your browser, sign in or complete its check, '
+                'then select that browser under Browser session and retry. Its current session is read locally on each download; '
+                'Zucker cannot solve a CAPTCHA or renew a signed-out account automatically.')
+    return 'Could not download that clip. Check that the link plays in your browser and retry. '+message.replace('ERROR: ','')[:180]
+
+
 def download(project, reference: dict[str, Any], ffmpeg: str) -> Path:
     """The reference's interval as a file in the project (made once; the same one is reused)."""
+    ffmpeg=shutil.which(ffmpeg) or ffmpeg
     url = check_link(reference.get("url"))
     start, end = float(reference["start"]), float(reference["end"])
     if not 0 <= start < end:
@@ -52,11 +77,13 @@ def download(project, reference: dict[str, Any], ffmpeg: str) -> Path:
                    "merge_output_format": "mp4", "download_ranges": download_range_func(None, [(start, end)]),
                    "force_keyframes_at_cuts": True, "ffmpeg_location": ffmpeg, "max_filesize": 400 * 1024 * 1024,
                    "outtmpl": str(work / "source.%(ext)s")}
+        browser=browser_setting()
+        if browser:options["cookiesfrombrowser"]=(browser,)
         try:
             with YoutubeDL(options) as ydl:
                 ydl.download([url])
         except DownloadError as exc:
-            raise RuntimeError(f"Could not download that clip: {str(exc).replace('ERROR: ', '')[:300]}") from exc
+            raise RuntimeError(download_error(str(exc))) from exc
         fetched = next((path for path in work.iterdir() if path.is_file() and path.suffix in (".mp4", ".mkv", ".webm", ".mov")), None)
         if fetched is None:
             raise RuntimeError("The download finished without a video file")

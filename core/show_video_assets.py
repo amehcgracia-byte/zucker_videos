@@ -27,6 +27,46 @@ def green_alpha(rgb):
     return 1 - np.clip((dominance - 22) / 45, 0, 1) * np.clip((g - 65) / 50, 0, 1)
 
 
+def light_pixels(rgb):
+    """Recover soft filmed light from a tinted green plate, retaining faint rain/smoke."""
+    x=rgb.astype(np.float32)
+    border=np.concatenate((x[:5].reshape(-1,3),x[-5:].reshape(-1,3),x[:,:5].reshape(-1,3),x[:,-5:].reshape(-1,3)))
+    greens=border[border[:,1]-np.maximum(border[:,0],border[:,2])>30]
+    bg=np.median(greens,axis=0) if len(greens) else np.array([0.,255.,0.])
+    rb=(x[:,:,[0,2]]-bg[[0,2]])/np.maximum(1.,255-bg[[0,2]])
+    alpha=np.clip(rb.max(axis=2),0,1)
+    pixels=np.clip(x-bg[None,None,:]*(1-alpha[...,None]),0,255)
+    pixels=np.minimum(pixels,alpha[...,None]*255)
+    return np.rint(pixels).astype(np.uint8),alpha
+
+
+def light_sample(source,target,ffmpeg):
+    """Bounded two-second editor host; the screen blend then matches the export."""
+    import subprocess,tempfile
+    cap=cv2.VideoCapture(str(source));w=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH));h=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT));fps=cap.get(cv2.CAP_PROP_FPS) or 30
+    pending=target.with_suffix('.pending.mp4')
+    with tempfile.TemporaryFile() as errors:
+        process=subprocess.Popen([ffmpeg,'-v','error','-y','-f','rawvideo','-pix_fmt','rgb24','-s',f'{w}x{h}','-r',str(fps),'-i','pipe:0','-an','-c:v','libx264','-preset','veryfast','-crf','18','-pix_fmt','yuv420p','-movflags','+faststart',str(pending)],stdin=subprocess.PIPE,stderr=errors)
+        try:
+            while True:
+                ok,bgr=cap.read()
+                if not ok:break
+                pixels,_=light_pixels(cv2.cvtColor(bgr,cv2.COLOR_BGR2RGB));process.stdin.write(pixels.tobytes())
+            process.stdin.close()
+            if process.wait(timeout=90):raise ValueError('Could not prepare the soft texture preview')
+            pending.replace(target)
+        finally:
+            cap.release()
+            if process.poll() is None:process.kill();process.wait()
+            pending.unlink(missing_ok=True)
+    return target
+
+
+def black_alpha(rgb):
+    # Black-backed photographed smoke/light is already premultiplied footage.
+    return np.max(rgb.astype(np.float32)/255,axis=2)
+
+
 def detect_green(path):
     cap = cv2.VideoCapture(str(path))
     votes = []
@@ -70,6 +110,9 @@ def remember(project, item):
 class VideoLayer:
     def __init__(self, raw, width, height, fps):
         from core.show_backgrounds import VideoBackground
+        from core.show_follow import Follow
+        self.follow=Follow(raw["follow_anchor"],width,height,raw.get("follow_template")) if raw.get("follow_anchor") else None
+        self.tracked_offset=(0.,0.);self.tracked_visible=True
         self.raw=raw;self.at=float(raw['at']);self.duration=float(raw['duration']);self.fps=fps
         self.video=VideoBackground(raw['video_layer'],width,height)
         self.masks=np.load(raw['masks'],mmap_mode='r') if raw.get('masks') else None
@@ -86,23 +129,29 @@ class VideoLayer:
         self.video.capture.release()
         if hasattr(self.background,'capture'):self.background.capture.release()
     def apply(self,frame,t):
+        if not self.tracked_visible:return
         local=t-self.at
         rgb=self.video.at(local+float(self.raw.get('clip_start') or 0)).astype(np.uint8)
+        if self.raw.get("matte")=="green-light":rgb,_=light_pixels(rgb)
         h,w=frame.shape[:2]
         if self.masks is not None:
             i=min(len(self.masks)-1,max(0,int(round(local*self.fps))))
             mask=cv2.resize(np.asarray(self.masks[i],dtype=np.float32)/255,(w,h))[...,None]
         else:
-            mask=green_alpha(rgb)[...,None]
+            mask=(black_alpha(rgb) if self.raw.get("matte") in ("black","green-light") else green_alpha(rgb))[...,None]
         behind=self.background.at(local) if hasattr(self.background,'at') else self.background
         if behind is None:behind=frame
-        person=np.full_like(rgb,8) if self.raw.get('person_style')=='silhouette' else rgb
-        foreground=person.astype(np.float32)*mask
+        from core.show_follow import colour
+        person=np.full_like(rgb,8) if self.raw.get('person_style')=='silhouette' else colour(rgb,self.raw.get('brightness',1),self.raw.get('saturation',1),self.raw.get('hue',0))
+        if self.raw.get('matte') in ('black','green-light'):mask=person.astype(np.float32)/255
+        foreground=person.astype(np.float32) if self.raw.get("matte") in ("black","green-light") else person.astype(np.float32)*mask
         scale=float(self.raw.get('person_scale',1));offset=self.raw.get('person_offset') or (0.,0.)
+        offset=(offset[0]+self.tracked_offset[0],offset[1]+self.tracked_offset[1])
         if scale!=1 or tuple(offset)!=(0.,0.):
             matrix=np.array([[scale,0,w*(1-scale)/2+offset[0]*w],[0,scale,h*(1-scale)+offset[1]*h]],np.float32)
             foreground=cv2.warpAffine(foreground,matrix,(w,h))
-            mask=cv2.warpAffine(mask,matrix,(w,h))[...,None]
+            mask=cv2.warpAffine(mask,matrix,(w,h))
+            if mask.ndim==2:mask=mask[...,None]
         frame[:]=np.clip(foreground+behind*(1-mask)+.5,0,255).astype(np.uint8)
 
 

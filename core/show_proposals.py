@@ -103,6 +103,13 @@ def from_gags(gags: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Director gags as proposals (photos from the library count as drawings)."""
     out = []
     for gag in gags:
+        if gag['kind'] in ('video_reference','texture_reference','internet_photo'):
+            is_photo=gag['kind']=='internet_photo'
+            params={'query':gag.get('query') or gag.get('subject'),'subject':gag.get('subject'),'auto_research':True,
+                    **({'kind':'drawing','picture':'','size':.25,'position':'left'} if is_photo else {'clip':'','clip_length':gag['duration'],'clip_start':0.}),
+                    **({'texture_footage':gag['query']} if gag['kind']=='texture_reference' else {})}
+            out.append(proposal('drawing' if is_photo else 'clip',gag['at'],gag['duration'],reason='Director · reference draft: '+str(params['query']),**params))
+            continue
         kind = {"photo": "drawing", "character": "drawing"}.get(gag["kind"], gag["kind"])
         params = {key: value for key, value in gag.items() if key not in ("at", "duration", "from_idea")}
         if kind == "background":
@@ -116,6 +123,8 @@ def check(item: dict[str, Any]) -> list[str]:
     """What still stops a proposal from being approved."""
     params = item["params"]
     needs = []
+    if params.get("auto_research") and item["kind"]=="drawing" and not Path(str(params.get("picture") or "")).is_file():
+        needs.append("choose an internet reference picture; automatic search was unavailable")
     if item['kind'] == 'word' and params.get('lettering_text') and (not params.get('picture') or params.get('text') != params['lettering_text']):
         needs.append('regenerate lettering for the changed text')
     if item["kind"] == "clip" and not Path(str(params.get("clip") or "")).is_file():
@@ -223,7 +232,7 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
                                   'start':params.get('clip_start',0),'volume':params.get('audio_volume',.7),'duck':1.,'fade':.02,'under_voice':params.get('under_voice',True)})
         elif item["kind"] == "clip" and params.get("matte", "none") != "none":
             items_out.append({"proposal": item["id"], "video_layer": params["clip"], "at": item["at"], "duration": item["duration"],
-                              **{k:params[k] for k in ("matte","clip_start","picture","person_style","person_scale","person_offset") if k in params}})
+                              **{k:params[k] for k in ("matte","clip_start","picture","person_style","person_scale","person_offset","follow_anchor","follow_template","brightness","saturation","hue") if k in params}})
             if params.get('clip_audio',True):
                 items_out.append({'proposal':item['id'],'jingle':params['clip'],'at':item['at'],'duration':item['duration'],
                                   'start':params.get('clip_start',0),'volume':params.get('audio_volume',1.),'duck':1.,'fade':0.,**({'under_voice':True} if params.get('under_voice') else {})})
@@ -246,7 +255,7 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
         elif item["kind"] == "background":
             # The person stays; the picture goes behind them (core.show_backgrounds).
             items_out.append({"proposal": item["id"], "background": params.get("picture"), "at": item["at"], "duration": item["duration"],
-                              **{key: params[key] for key in ('person_style', 'person_scale', 'person_offset') if key in params}})
+                              **{key: params[key] for key in ('person_style', 'person_scale', 'person_offset','brightness','saturation','hue') if key in params}})
         else:
             # The director's own kind (drawing, character, photo, word) travels in params.
             gags.append({**params, "proposal": item["id"], "at": item["at"], "duration": item["duration"]})

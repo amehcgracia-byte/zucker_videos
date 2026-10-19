@@ -1616,6 +1616,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                                 str(body.get("show_idea_source") or "typed"))
             except ValueError as exc:
                 return error_response("idea_needed", str(exc), 400)
+            state.project.data.setdefault("settings",{}).setdefault("wizard",{})["show_auto_research"]=bool(body.get("show_auto_research",True))
+            state.project.save()
             # The other videos and photos of the project are its close-ups.
             resources = [path for path in registered if path != source] + [str(path) for path in body.get("show_photos") or [] if isinstance(path, str)]
             try:
@@ -2352,6 +2354,35 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except (ValueError, TypeError) as exc:
             return error_response("invalid_reference", str(exc), 400)
 
+    @app.post('/api/v1/show/follow-template')
+    def api_follow_template():
+        import base64,hashlib
+        from PIL import Image
+        project=_require_project(state);image=str((request.get_json(silent=True) or {}).get('image') or '')
+        if not image.startswith('data:image/png;base64,') or len(image)>2_000_000:return error_response('bad_request','Mark a small visible object',400)
+        try:
+            raw=base64.b64decode(image.split(',',1)[1],validate=True)
+            with Image.open(io.BytesIO(raw)) as opened:
+                if not 6<=opened.width<=512 or not 6<=opened.height<=512:raise ValueError('Mark an object at least six pixels wide and high')
+                picture=opened.convert('RGB')
+            folder=project.folder/'assets/tracking';folder.mkdir(parents=True,exist_ok=True)
+            target=folder/(hashlib.sha256(raw).hexdigest()+'.png')
+            if not target.exists():picture.save(target)
+        except (ValueError,OSError) as exc:return error_response('bad_request',str(exc),400)
+        return jsonify({'path':str(target)})
+
+    @app.get('/api/v1/show/download-access')
+    def api_download_access():
+        from core.show_clips import browser_setting
+        return jsonify({'browser':browser_setting()})
+
+    @app.patch('/api/v1/show/download-access')
+    def api_download_access_save():
+        from core.show_clips import set_browser
+        try:set_browser((request.get_json(silent=True) or {}).get('browser'))
+        except ValueError as exc:return error_response('bad_request',str(exc),400)
+        return jsonify({'saved':True})
+
     @app.post("/api/v1/show/references/video/<reference_id>/download")
     @_proposals_locked
     def api_show_reference_download(reference_id: str) -> Response:
@@ -2377,7 +2408,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except ValueError as exc:
             return error_response("invalid_reference", str(exc), 400)
         except (RuntimeError, OSError, subprocess.CalledProcessError) as exc:
-            return error_response("clip_download_failed", str(exc)[:400], 502)
+            return error_response("clip_download_failed", str(exc)[:700], 502)
         proposals_path, _ = _show_review_files(project)
         stored = show_proposals.load(proposals_path)
         replace_id=body.get('replace_id')
@@ -2410,7 +2441,20 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                         _invalidate_scene(project, scene["id"])
         from core.show_video_assets import detect_green, remember
         item['params']['matte']='green' if detect_green(clip) else 'none'
-        item['duration']=min(float(body.get('duration') or item['duration']),length)
+        if body.get('texture'):
+            from core.show_textures import PRESETS
+            texture=str(body['texture'])
+            if texture not in PRESETS:return error_response('bad_request','Choose a known texture',400)
+            prior=next((p for p in stored['proposals'] if p['id']==body.get('replace_texture') and p['kind'] in ('texture','steam')),None)
+            point=(prior or {}).get('params',{}).get('point',[.5,.75])
+            item['params'].update(texture_footage=texture,clip_audio=False,audio_mode='mute',person_scale=.4,
+                                  person_offset=[point[0]-.5,point[1]-1],matte='green-light' if item['params']['matte']=='green' else 'black',
+                                  name=PRESETS[texture]+' · filmed texture')
+            if prior:
+                if prior['params'].get('anchor'):item['params']['follow_anchor']=prior['params']['anchor']
+                prior['status']='discarded'
+
+        item['duration']=float(body.get('duration') or item['duration']) if item['params'].get('texture_footage') else min(float(body.get('duration') or item['duration']),length)
         scene_path=_scene_files(project)
         if scene_path.is_file():
             owner=next((scene for scene in show_scenes.load(scene_path)['scenes'] if item['id'] in scene['effects']),None)
@@ -2686,7 +2730,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             start=float(body.get('clip_start',item['params'].get('clip_start') or 0))
             if not math.isfinite(start) or not 0<=start<float(item['params']['clip_length']):raise ValueError('Choose a position inside the downloaded clip')
             matte=body.get('matte',item['params'].get('matte','none'))
-            if matte not in ('auto','none','green','person'):raise ValueError('Choose a background removal mode')
+            if matte not in ('auto','none','green','green-light','black','person'):raise ValueError('Choose a background removal mode')
             if matte=='auto':matte='green' if detect_green(item['params']['clip']) else 'none'
             if matte=='person':
                 from core.show_backgrounds import available
@@ -3021,7 +3065,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 return error_response("bad_request", "Choose valid sticker start and duration", 400)
             if not math.isfinite(at + duration) or at < scene["start"] or duration <= 0 or at + duration > scene["end"] + .001:
                 return error_response("bad_request", "Keep each sticker inside its scene with a positive duration", 400)
-            overlays.append({"id": str(raw.get("id") or uuid.uuid4().hex)[:80], "asset": str(raw["asset"]), "x": max(-20.0, min(100.0, float(raw.get("x", 12)))),
+            from core.show_follow import validate_anchor
+            try:follow_anchor=validate_anchor(raw.get("follow_anchor"))
+            except (ValueError,TypeError):return error_response("bad_request","Mark a valid object rectangle",400)
+            template=raw.get('follow_template')
+            if template and (not Path(str(template)).is_file() or not Path(str(template)).resolve().is_relative_to((project.folder/'assets/tracking').resolve())):
+                return error_response('bad_request','Choose this project’s saved tracking template',400)
+            overlays.append({"follow_anchor":follow_anchor,**({'follow_template':template} if template else {}),"id": str(raw.get("id") or uuid.uuid4().hex)[:80], "asset": str(raw["asset"]), "x": max(-20.0, min(100.0, float(raw.get("x", 12)))),
                              "y": max(-20.0, min(100.0, float(raw.get("y", 12)))), "width": max(3.0, min(100.0, float(raw.get("width", 23)))),
                              "at": at, "duration": duration, "selected_text": str(raw.get("selected_text") or "")[:400],
                              "effect": str(raw.get("effect") or "pop"),
@@ -3533,6 +3583,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                                     "source_photo": str(photo), "crop": list(crop)}
             atomic_write_json(catalog_path, catalog)
             return jsonify({"cutout": str(target), "name": catalog[str(target)]["name"]}), 201
+        from core.show_pixel_layers import direction_vector
+        try:
+            direction_vector(body.get('eye_direction','horizontal'));direction_vector(body.get('mouth_direction','down'))
+        except (ValueError,TypeError) as exc:return error_response('bad_request',str(exc),400)
         eyes = body.get("eyes") or []
         if eyes:
             from core.show_pixel_layers import LookingPixels
@@ -3543,7 +3597,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 return error_response("bad_request", str(exc), 400)
         folder = show_characters.save_character(str(body.get("name") or source.get("name") or "Character"), photo, mask,
                                                 method=str(body.get("method") or ""), mouth=body.get("mouth"), pivot=body.get("pivot"),
-                                                voice=body.get("voice"), eyes=eyes,
+                                                voice=body.get("voice"), eyes=eyes, eye_direction=body.get("eye_direction","horizontal"), mouth_direction=body.get("mouth_direction","down"),
                                                 root=project.folder / "assets" / "show-library" / "Characters",
                                                 provenance={"video": source.get("video"), "second": source.get("second")})
         return jsonify(next(item for item in _show_characters(project) if item["folder"] == str(folder))), 201
@@ -3737,7 +3791,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                             "-map", "0:v", "-map", "[a]", "-shortest", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", str(backdrop)],
                            check=True, capture_output=True, timeout=120)
             sticker = {"image": str(picture_path), "at": lead, "duration": length, "x": 0.5, "y": 0.5, "width": 0.62, "effect": "none",
-                       "voice": [source, start, length]}
+                       "voice": [source, start, length], "eye_direction":body.get("eye_direction","horizontal"), "mouth_direction":body.get("mouth_direction","down")}
             if body.get("mouth"):
                 sticker.update(mouth=body["mouth"], mouth_open=0.08)
             if body.get("eyes"):
@@ -3771,7 +3825,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             picture, _ = show_characters.cutout(photo, np.load(mask_path))
             picture.save(temporary)
             show_pixel_layers.render_preview(temporary, body.get("eyes") or [], target,
-                                             str(tool_status().get("ffmpeg_path") or "ffmpeg"))
+                                             str(tool_status().get("ffmpeg_path") or "ffmpeg"),direction=body.get("eye_direction","horizontal"))
         except (ValueError, TypeError, KeyError) as exc:
             return error_response("bad_request", str(exc), 400)
         except (OSError, subprocess.SubprocessError) as exc:
@@ -3818,7 +3872,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         known = {item["folder"] for item in _show_characters(project)}
         if str(folder) not in known:
             return error_response("not_found", "That character is not in the library", 404)
-        changes = {key: body[key] for key in ("mouth", "eyes", "pivot", "voice", "name") if key in body}
+        changes = {key: body[key] for key in ("mouth", "eyes", "pivot", "voice", "name", "eye_direction", "mouth_direction") if key in body}
+        from core.show_pixel_layers import direction_vector
+        try:
+            for name in ('eye_direction','mouth_direction'):
+                if name in changes:direction_vector(changes[name])
+        except (ValueError,TypeError) as exc:return error_response('bad_request',str(exc),400)
         if changes.get("eyes"):
             import numpy as np
             from PIL import Image
@@ -3959,7 +4018,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         html = html.replace('The installed app is unchanged.', 'The first two seconds are shown here; the timeline controls the full effect duration.')
         html = html.replace('<span class="badge">', '<button id="saveLayers" type="button">Use in scene</button><span class="badge">')
         html = html.replace('src="'+prefix+'/media/host.mp4"', 'data-host-src="'+prefix+'/media/host.mp4"')
-        html = html.replace('</script>', '</script><script src="/show_video_layers.js" data-prefix="'+prefix+'"></script>')
+        html = html.replace('</script>', '</script><script src="/show_video_layers.js?v=2" data-prefix="'+prefix+'"></script>')
         return Response(html, mimetype='text/html')
 
     layer_jobs={}
@@ -4025,6 +4084,31 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             path = root/'tools/qa/show-backgrounds'/name
         return send_file(path, conditional=True)
 
+    def _layer_library(project):
+        from core.show_video_assets import catalog
+        pictures=[{**v,'media_kind':'image'} for v in [*_show_library_items(project),*_other_library_items(project)] if not v.get('retired')]
+        videos=[v for v in catalog(project).values() if v.get('media_kind','video')=='video']
+        return [v for v in pictures+videos if Path(v['path']).is_file()]
+
+    layer_library_choices={}
+
+    @app.get('/api/v1/show/video-layers/<proposal_id>/library')
+    def api_layer_library(proposal_id):
+        project=_require_project(state);_video_layer_item(project,proposal_id)
+        items=_layer_library(project)
+        if len(layer_library_choices)>16:layer_library_choices.clear()
+        layer_library_choices[(str(project.folder),proposal_id)]={v['path']:v for v in items}
+        return jsonify({'items':[{'path':v['path'],'name':v.get('name') or Path(v['path']).stem,'media_kind':v['media_kind']} for v in items]})
+
+    @app.get('/api/v1/show/video-layers/<proposal_id>/library-media')
+    def api_layer_library_media(proposal_id):
+        project=_require_project(state);_video_layer_item(project,proposal_id)
+        choices=layer_library_choices.get((str(project.folder),proposal_id))
+        if choices is None:choices={v['path']:v for v in _layer_library(project)}
+        item=choices.get(request.args.get('path'))
+        if item is None:abort(404)
+        return send_file(item['path'],conditional=True)
+
     @app.post('/api/v1/show/video-layers/<proposal_id>/save')
     @_proposals_locked
     def api_video_layer_save(proposal_id):
@@ -4062,6 +4146,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 except Exception:
                     target.unlink(missing_ok=True)
                     raise ValueError('This background cannot be decoded')
+            elif settings.get('library_path'):
+                raw=str(settings['library_path'])
+                chosen=next((v for v in _layer_library(project) if v['path']==raw),None)
+                if chosen is None:raise ValueError('Choose an available library background')
+                target=Path(raw) if chosen['media_kind']=='video' else Path(_bring_into_project(project,raw)['path'])
             elif settings.get('preset'):
                 choices = {p['file'] for p in json.loads((root/'tools/qa/show-backgrounds/manifest.json').read_text())}
                 if settings['preset'] not in choices:
@@ -4075,9 +4164,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 raise ValueError('Choose a background photo or video')
             if target:
                 item['params']['picture'] = str(target)
+            adjustments={k:float(settings.get(k,d)) for k,d in [('brightness',1),('saturation',1),('hue',0)]}
+            if any(not math.isfinite(v) or not (-180<=v<=180 if k=='hue' else 0<=v<=3) for k,v in adjustments.items()):raise ValueError('Choose valid colour and light settings')
             item['params'].update(person_style='person' if style == 'original' else style, person_scale=scale, person_offset=offset)
+            item['params'].update(adjustments)
             if item['kind']=='clip':
-                item['params']['matte']='none' if style=='original' else 'person'
+                item['params']['matte']='none' if style=='original' else item['params'].get('matte') if item['params'].get('matte') in ('green','green-light','black') else 'person'
                 from core.show_video_assets import remember
                 remember(project,item)
             item['status'] = 'discarded' if style == 'original' and item['kind']=='background' else 'proposed'
@@ -4194,12 +4286,23 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         allowed = {"status", "at", "duration", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action", "clip_audio", "audio_mode",
                    "amount", "offset", "voice", "hold", "subject", "text", "style", "position", "size", "effect", "warp", "point", "anchor", "scale",
                    "density", "strength", "rise", "colour", "texture", "font", "bold", "italic",
-                   "entrance", "prompt", "picture", "selected_text", "image_center", "intensity"}
+                   "entrance", "prompt", "picture", "selected_text", "image_center", "intensity", "follow_anchor", "follow_template", "person_scale", "person_offset", "brightness", "saturation", "hue"}
         changes = {key: value for key, value in body.items() if key in allowed}
         # All storyboard tools share the edited clock. Reject impossible placements
         # instead of silently accepting an image beyond its owning scene.
         try:
             current = next(p for p in stored["proposals"] if p["id"] == proposal_id)
+            if 'follow_template' in changes:
+                path=Path(str(changes['follow_template']))
+                if not path.is_file() or not path.resolve().is_relative_to((project.folder/'assets/tracking').resolve()):raise ValueError('Choose a saved tracking template from this project')
+            if 'follow_anchor' in changes:
+                from core.show_follow import validate_anchor
+                changes['follow_anchor']=validate_anchor(changes['follow_anchor'])
+            for field,lo,hi in [('brightness',0.,3.),('saturation',0.,3.),('hue',-180.,180.),('person_scale',.05,5.)]:
+                if field in changes and (not math.isfinite(float(changes[field])) or not lo<=float(changes[field])<=hi):raise ValueError('Choose a valid '+field)
+            if 'person_offset' in changes:
+                v=changes['person_offset']
+                if not isinstance(v,list) or len(v)!=2 or not all(math.isfinite(float(x)) and -10<=float(x)<=10 for x in v):raise ValueError('Choose a valid video-layer position')
             if 'intensity' in changes:
                 intensity=float(changes['intensity'])
                 if not math.isfinite(intensity) or not 0 <= intensity <= 3:raise ValueError('Choose a movement strength between zero and three')
@@ -4253,13 +4356,16 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         try:
             if current['kind']=='clip' and ('duration' in changes or 'at' in changes):
                 maximum=float(current['params']['clip_length'])-float(current['params'].get('clip_start') or 0)
-                if float(changes.get('duration',current['duration']))>maximum+.001:raise ValueError('This extends past the downloaded clip; reopen Clip settings to choose more source footage')
+                if not current['params'].get('texture_footage') and float(changes.get('duration',current['duration']))>maximum+.001:raise ValueError('This extends past the downloaded clip; reopen Clip settings to choose more source footage')
             item = show_proposals.update(stored["proposals"], proposal_id, **changes)
         except KeyError:
             return error_response("not_found", "That effect is not in this review", 404)
         except (ValueError, TypeError) as exc:
             return error_response("bad_request", str(exc), 400)
         show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
+        if item['kind']=='clip':
+            from core.show_video_assets import remember
+            remember(project,item)
         _effect_changed(project, proposal_id)
         return jsonify(item)
 

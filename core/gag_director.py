@@ -32,7 +32,7 @@ from typing import Any
 from captions.effects import FUN_EFFECTS
 from core.gag_paint import STYLES
 
-KINDS = ("drawing", "character", "word", "photo", "warp", "math", "background")
+KINDS = ("drawing", "character", "word", "photo", "warp", "math", "background", "video_reference", "internet_photo", "texture_reference")
 DRAWING_GAP = 20.0     # seconds between drawings/characters: each one is drawn, which takes a while
 POSITIONS = ("left", "right", "top-left", "top-right", "bottom-left", "bottom-right")
 EFFECTS = tuple(name for name in FUN_EFFECTS if name != "none")
@@ -54,7 +54,7 @@ GAG_SCHEMA: dict[str, Any] = {
                     "style": {"type": "string", "enum": list(STYLE_NAMES)},
                     "says": {"type": "string", "description": "character: its short reply to the host, in the language of the talk, max 8 words"},
                     "text": {"type": "string", "description": "word: one to three words shouted on screen, in the language of the talk"},
-                    "query": {"type": "string", "description": "photo: the library picture's name"},
+                    "query": {"type": "string", "description": "photo: library name; video_reference/internet_photo: precise search query; texture_reference: one of smoke, water, rain, fire, electricity, snow, leaves"},
                     "warp": {"type": "string", "enum": list(WARPS)},
                     "position": {"type": "string", "enum": list(POSITIONS)},
                     "size": {"type": "number", "description": "share of the frame width, 0.15 to 0.4"},
@@ -84,6 +84,10 @@ Rules:
 - The host's face is on the {face_side} of the frame: put pictures on the {free_side} side ("{free_side}", "top-{free_side}", "bottom-{free_side}"), small ones only on the other side.
 - "drawing": a picture of something said or implied; "subject" says what to paint (English, concrete: "a crying cup of coffee", not "sadness"). Literal or absurd, both work.
 - "character": someone who reacts to the host (the person they talk about, a random witness, an animal, an object with a face...). "subject" describes them visually (English); "says" is their short funny reply, in the language of the talk.
+- Use a small number of concrete external references when they improve the joke, not just drawings: at most THREE total among video_reference, internet_photo and texture_reference. Alternate techniques; do not use every one by quota.
+- "video_reference": a short reaction or named movie/person clip, with a precise "query" including the spoken phrase or scene. Do not invent URLs. Search results become drafts for review; avoid long clips and unrelated intros.
+- "internet_photo": a named real person/place/object where a reference photo works better than drawing. "query" must identify it precisely.
+- "texture_reference": stock-footage overlay, only when the host mentions or shows something relevant. "query" is smoke, water, rain, fire, electricity, snow or leaves. These are contextual drafts, not a claim of automatic object location.
 - "word": one to three words, shouted, in the language of the talk.
 - "photo": only for a picture listed in the library below ("query" = its name).
 - "math": hand-written formulas orbit the host's head for 3-5 s when they think, explain, philosophise or talk about time, numbers or ideas. At most one every 45 s.
@@ -357,6 +361,10 @@ def clean_gags(raw: list[Any], duration: float, *, face_side: str = "right") -> 
             continue
         kind = item["kind"]
         idea = item.get("from_idea") is True                      # asked for by the host: placed first, kept
+        if kind in ('video_reference','internet_photo','texture_reference'):
+            query=str(item.get('query') or item.get('subject') or '').strip()[:160]
+            if query:warps.append({'kind':kind,'query':query,'subject':str(item.get('subject') or query)[:120],'at':round(at,2),'duration':round(min(length,duration-at),2),'from_idea':idea})
+            continue
         if kind == "warp":
             if item.get("warp") in WARPS:
                 warps.append({"kind": "warp", "warp": item["warp"], "at": round(at, 2), "duration": round(min(length, duration - at), 2), "from_idea": idea})

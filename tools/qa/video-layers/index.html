@@ -45,9 +45,10 @@ function draw(){
  if(mode==='silhouette'){lc.fillStyle='#080909';lc.fillRect(0,0,960,540);}else lc.drawImage(host,0,0,960,540);
  // Draw video first, then apply the PNG alpha. Person and silhouette now share
  // exactly the same masking operation, independent of video drawing state.
- lc.globalCompositeOperation='destination-in';
- lc.drawImage(atlas,(i%config.columns)*config.maskWidth,Math.floor(i/config.columns)*config.maskHeight,config.maskWidth,config.maskHeight,0,0,960,540);
- lc.globalCompositeOperation='source-over';ctx.drawImage(layer,x+(960-960*scale)/2,y+540-540*scale,960*scale,540*scale);
+ const blackKey=['black','green-light'].includes(config.placement?.matte)&&mode==='person';
+ lc.filter='none';lc.globalCompositeOperation='destination-in';
+ if(!blackKey)lc.drawImage(atlas,(i%config.columns)*config.maskWidth,Math.floor(i/config.columns)*config.maskHeight,config.maskWidth,config.maskHeight,0,0,960,540);
+ lc.globalCompositeOperation='source-over';ctx.globalCompositeOperation=blackKey?'screen':'source-over';ctx.drawImage(layer,x+(960-960*scale)/2,y+540-540*scale,960*scale,540*scale);ctx.globalCompositeOperation='source-over';
 }
 function syncBackground(){if(backKind!=='video'||!Number.isFinite(behind.duration)||behind.duration<=0)return;const t=host.currentTime%behind.duration;if(Math.abs(behind.currentTime-t)>.12)behind.currentTime=t;}
 function clock(){ $('#seek').value=host.currentTime;$('#clock').textContent=`0:${String(Math.floor(host.currentTime)).padStart(2,'0')} / 0:${String(Math.ceil(config.duration||8)).padStart(2,'0')}`;}

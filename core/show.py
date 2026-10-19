@@ -336,11 +336,23 @@ def prepare_show(project, source: str, resources: list[str], *, style_name: str 
         planned, used, note = gag_module.plan_gags(words, float(plan["edited_duration"]), director=gags,
                                                    language=str(plan.get("language") or language or ""), face=face, library=library, idea=idea)
         director_items = show_proposals.from_gags(planned)
+    from core.show_research import prepare as prepare_references
+    research_resources,research_report=([],[])
+    if project.data.get('settings',{}).get('wizard',{}).get('show_auto_research',True) and any(p['params'].get('auto_research') for p in director_items):
+        research_resources,research_report=prepare_references(project,director_items,ffmpeg=ffmpeg,
+            progress=lambda detail:progress(91,detail),cancel=cancel)
+    if research_report:
+        from core.project import atomic_write_json
+        atomic_write_json(project.artifacts_dir/'show_research.json',research_report)
     proposals = sorted(cutaways + reactions + characters + director_items, key=lambda item: item["at"])
     show_proposals.save(project.artifacts_dir / "show_proposals.json", proposals, source=str(path),
                         resources=[{key: value for key, value in item.items() if key != "intervals"} | {"intervals": [
                             {k: v for k, v in interval.items() if k != "vector"} for interval in item["intervals"]]} for item in analysed],
                         note=note)
+    if research_resources:
+        saved=show_proposals.load(project.artifacts_dir/"show_proposals.json")
+        saved["resources"]+=research_resources
+        show_proposals.save(project.artifacts_dir/"show_proposals.json",saved.pop("proposals"),**{k:v for k,v in saved.items() if k!="version"})
     from core import show_scenes
     document = show_scenes.build(plan, words, pause_points(plan), proposals, suggested_title=str(project.data.get("name") or ""))
     show_scenes.save(project.artifacts_dir / "show_scenes.json", document)

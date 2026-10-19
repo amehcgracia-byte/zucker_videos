@@ -223,7 +223,7 @@ const icons = {
 };
 
 function todayName() {
-  return "New Jam";
+  const date=new Date();return "Jam "+[date.getFullYear(),String(date.getMonth()+1).padStart(2,"0"),String(date.getDate()).padStart(2,"0")].join("-");
 }
 
 async function api(path, options = {}) {
@@ -2843,7 +2843,7 @@ async function newProject() {
   document.querySelector("#medleyGap").value = 0.5;
   document.querySelector("#medleyFade").value = 0.5;
   resetSphericalSetupToGlobal();
-  document.querySelector("#videoName").value = "New Jam";
+  document.querySelector("#videoName").value = todayName();
   document.querySelector("#errorBox").hidden = true;
   document.querySelector("#resultBox").hidden = true;
   document.querySelector("#progressTitle").textContent = `Rendering ${document.querySelector("#videoName").value || "New Jam"}`;
@@ -3907,6 +3907,7 @@ async function waitForPreparedProject() {
   for (let attempt = 0; attempt < 240; attempt += 1) {
     const projectQuery = activeProjectId ? `?project_id=${encodeURIComponent(activeProjectId)}` : "";
     const status = await api(`/wizard/status${projectQuery}`);
+  statusReconnectShown=false;statusReconnectAttempts=0;statusRetryAt=0;
     const responseProjectId = projectIdFromStatus(status);
     if (activeProjectId && responseProjectId && !sameProjectId(activeProjectId, responseProjectId)) {
       await new Promise((resolve) => setTimeout(resolve, 500));
@@ -3978,6 +3979,7 @@ async function startWizard(options = {}) {
       show_style: document.querySelector("#showStyle")?.value || "choe",
       show_language: document.querySelector("#showLanguage")?.value || "",
       show_gags: document.querySelector("#showGags")?.value || "claude",
+      show_auto_research:document.querySelector("#showAutoResearch")?.checked??true,
       show_main: document.querySelector("#showMain")?.value || "",
       show_review: document.querySelector("#showReview")?.checked ?? true,
       ...(selectedPlatform === "show" && window.ShowIdea ? window.ShowIdea.payload() : {}),
@@ -4095,21 +4097,25 @@ function ensureStatusPolling() {
   if (!pollTimer) {
     const generation = statusPollGeneration;
     pollTimer = setInterval(() => {
+      if(Date.now()<statusRetryAt)return;
       pollStatus(generation).catch((error) => {
+        statusRetryAt=Date.now()+Math.min(15000,1000*2**Math.min(4,++statusReconnectAttempts));
         logFrontendError(`pollStatus failed: ${error.message}`, error.stack || "");
-        showToast(`${S.statusUpdateFailed}: ${error.message}`, true);
+        if(!statusReconnectShown){statusReconnectShown=true;showToast("Connection interrupted. Reconnecting…",true);}
       });
     }, 1000);
   }
 }
 
 let statusRequestInFlight = false;
+let statusReconnectShown = false, statusReconnectAttempts=0, statusRetryAt=0;
 async function pollStatus(generation = statusPollGeneration) {
   if (statusRequestInFlight) return;
   statusRequestInFlight = true;
   try {
   const projectQuery = activeProjectId ? `?project_id=${encodeURIComponent(activeProjectId)}` : "";
   const status = await api(`/wizard/status${projectQuery}`);
+  statusReconnectShown=false;statusReconnectAttempts=0;statusRetryAt=0;
   if (generation !== statusPollGeneration) return;
   const responseProjectId = projectIdFromStatus(status);
   if (activeProjectId && responseProjectId && !sameProjectId(activeProjectId, responseProjectId)) return;

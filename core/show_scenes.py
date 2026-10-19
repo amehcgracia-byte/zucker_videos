@@ -193,7 +193,7 @@ def overlay_items(document: dict[str, Any], frame_aspect: float = 16 / 9) -> lis
             item: dict[str, Any] = {"image": overlay["asset"], "at": float(overlay.get("at", scene["start"])),
                                     "duration": float(overlay.get("duration", min(4.0, scene["end"] - scene["start"]))),
                                     "x": x, "y": y, "width": width, "effect": effect,
-                                    **{key: overlay[key] for key in ("stretch", "rotate", "flip", "opacity") if key in overlay}}
+                                    **{key: overlay[key] for key in ("stretch", "rotate", "flip", "opacity", "follow_anchor", "follow_template") if key in overlay}}
             if preset in ("up", "down"):
                 shift = 0.15 * amount * (-1 if preset == "up" else 1)
                 item["path"] = [[0.0, x, y], [1.0, x, y + shift]]
@@ -203,6 +203,8 @@ def overlay_items(document: dict[str, Any], frame_aspect: float = 16 / 9) -> lis
             rig = _character_rig(overlay["asset"])
             if rig.get("pivot"):
                 item["pivot"] = rig["pivot"]
+            item["eye_direction"]=rig.get("eye_direction","horizontal")
+            item["mouth_direction"]=rig.get("mouth_direction","down")
             if action in ("look", "talk") and rig.get("eyes"):        # a talking character glances too
                 item["eyes"] = rig["eyes"]
                 item["eye_movement"] = min(0.5, max(0.0, 0.22 * amount))   # "Movement strength" scales the glance
