@@ -22,12 +22,21 @@ SCORE_SCHEMA = {
 
 
 def _provider_config(provider: str | None = None, model: str | None = None) -> dict[str, str]:
-    from core.narrative_credentials import saved_key
-    selected = (provider or os.environ.get("NARRATIVE_LLM_PROVIDER") or "deepseek").strip().lower()
-    key = (os.environ.get("NARRATIVE_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY" if selected == "openai" else "DEEPSEEK_API_KEY") or saved_key()).strip()
-    if selected == "openai":
-        return {"provider": "openai", "base_url": os.environ.get("NARRATIVE_LLM_BASE_URL", "https://api.openai.com/v1"), "model": model or os.environ.get("NARRATIVE_LLM_MODEL", "gpt-5-mini"), "key": key}
-    return {"provider": "deepseek", "base_url": os.environ.get("NARRATIVE_LLM_BASE_URL", "https://api.deepseek.com"), "model": model or os.environ.get("NARRATIVE_LLM_MODEL", "deepseek-v4-pro"), "key": key}
+    from core import ai_connections
+    preferences=ai_connections.preferences()
+    selected=(provider or os.environ.get("NARRATIVE_LLM_PROVIDER") or preferences.get('provider') or 'deepseek').strip().lower()
+    if selected not in ('openai','deepseek','anthropic'):raise ValueError('Unknown narrative provider')
+    defaults=ai_connections.PROVIDERS[selected]
+    key=ai_connections.api_key(selected).strip()
+    chosen=model or os.environ.get('NARRATIVE_LLM_MODEL') or (preferences.get('model') if preferences.get('provider')==selected else None) or defaults['model']
+    return {'provider':selected,'base_url':os.environ.get('NARRATIVE_LLM_BASE_URL') or defaults['base_url'],'model':chosen,'key':key}
+
+
+def _completion(client,config,**kwargs):
+    if config['provider']=='anthropic':
+        kwargs.pop('temperature',None)  # New Claude models reject sampling below 1.
+        kwargs.pop('response_format',None)  # JSON is validated by the caller.
+    return client.chat.completions.create(**kwargs)
 
 
 def _validate_scores(data: Any, expected_ids: set[str]) -> list[dict[str, Any]]:
@@ -78,7 +87,7 @@ def score_story_bites(bites: list[dict[str, Any]], batch_size: int = 25, model: 
             user = json.dumps({"format": {"scores": [{"id": "bite-id", "english_text": "English translation", "funny": 0, "story": 0, "hook": 0, "payoff": 0, "complete": True, "confidence": 0, "reason": "brief criterion-based reason"}]}, "bites": compact}, ensure_ascii=False)
             data = None
             for attempt in range(3):
-                response = client.chat.completions.create(model=model, messages=[{"role": "system", "content": system}, {"role": "user", "content": user}], response_format={"type": "json_object"}, max_tokens=6000, temperature=0.1, **({"extra_body": {"thinking": {"type": "disabled"}}} if config["provider"] == "deepseek" else {}))
+                response = _completion(client,config,model=model, messages=[{"role": "system", "content": system}, {"role": "user", "content": user}], response_format={"type": "json_object"}, max_tokens=6000, temperature=0.1, **({"extra_body": {"thinking": {"type": "disabled"}}} if config["provider"] == "deepseek" else {}))
                 usage = getattr(response, "usage", None)
                 input_tokens += int(getattr(usage, "prompt_tokens", getattr(usage, "input_tokens", 0)) or 0)
                 output_tokens += int(getattr(usage, "completion_tokens", getattr(usage, "output_tokens", 0)) or 0)
@@ -134,7 +143,7 @@ def score_story_sequences(sequences: list[dict[str, Any]], batch_size: int = 25,
             user = json.dumps({"format": {"sequences": [{"id": "sequence-id", "english_text": "full English translation", "funny": 0, "story": 0, "hook": 0, "payoff": 0, "complete": True, "confidence": 0, "reason": "criterion-based reason", "suggested_in": 0, "suggested_out": 1, "role": "body"}]}, "sequences": compact}, ensure_ascii=False)
             parsed = None
             for attempt in range(3):
-                response = client.chat.completions.create(model=config["model"], messages=[{"role": "system", "content": system}, {"role": "user", "content": user}], response_format={"type": "json_object"}, max_tokens=6000, temperature=0.1, **({"extra_body": {"thinking": {"type": "disabled"}}} if config["provider"] == "deepseek" else {}))
+                response = _completion(client,config,model=config["model"], messages=[{"role": "system", "content": system}, {"role": "user", "content": user}], response_format={"type": "json_object"}, max_tokens=6000, temperature=0.1, **({"extra_body": {"thinking": {"type": "disabled"}}} if config["provider"] == "deepseek" else {}))
                 usage = getattr(response, "usage", None)
                 input_tokens += int(getattr(usage, "prompt_tokens", 0) or 0); output_tokens += int(getattr(usage, "completion_tokens", 0) or 0)
                 cache_hit += int(getattr(usage, "prompt_cache_hit_tokens", 0) or 0); cache_miss += int(getattr(usage, "prompt_cache_miss_tokens", 0) or 0)
@@ -182,7 +191,7 @@ def generate_storyboard(sequences: list[dict[str, Any]], music_path: str = "", m
         compact = [{"id": x.get("id"), "clip": x.get("filename"), "start_sec": x.get("start_sec"), "end_sec": x.get("end_sec"), "text_original": x.get("text_original") or x.get("text"), "english_text": x.get("english_text") or "", "scores": x.get("narrative_scores") or {}} for x in sequences]
         system = """You are the documentary editor for a backstage music film. Create a complete storyboard from the supplied conversation sequences. Do not invent events, shots, dialogue, or timestamps. Do not select by keywords alone: prefer coherent conversations, clear human exchanges, hooks, jokes, and satisfying endings. Treat garbled transcription as unreliable and flag it. Return JSON only with exactly these top-level fields: title, logline, opening, development, closing, scene_notes, music_plan, risks. opening/development/closing are arrays of objects with sequence_id, role, reason, and suggested_duration_sec. scene_notes is an array with sequence_id, what_happens, why_it_works, humor_or_hook, original_text, english_text. music_plan is an array with phase, sequence_ids, policy, transition. Use the requested music rules: background music at the very beginning over black, progressive mix as image enters, fade toward relevant clip audio; never put background music over relevant dialogue or existing source music; use more music-led visual-only scenes when there is no relevant speech; end with background music and a clean fade-out. Include a final line/idea only if the supplied material supports it. risks should list transcription or editorial uncertainties."""
         user = json.dumps({"music_path": music_path, "sequences": compact}, ensure_ascii=False)
-        response = client.chat.completions.create(model=config["model"], messages=[{"role": "system", "content": system}, {"role": "user", "content": user}], response_format={"type": "json_object"}, max_tokens=9000, temperature=0.2, **({"extra_body": {"thinking": {"type": "disabled"}}} if config["provider"] == "deepseek" else {}))
+        response = _completion(client,config,model=config["model"], messages=[{"role": "system", "content": system}, {"role": "user", "content": user}], response_format={"type": "json_object"}, max_tokens=9000, temperature=0.2, **({"extra_body": {"thinking": {"type": "disabled"}}} if config["provider"] == "deepseek" else {}))
         raw = json.loads(response.choices[0].message.content or "{}")
         required = {"title", "logline", "opening", "development", "closing", "scene_notes", "music_plan", "risks"}
         if not isinstance(raw, dict) or not required.issubset(raw):
@@ -209,7 +218,7 @@ def generate_parchment_messages(sequences: list[dict[str, Any]], music_path: str
         client = OpenAI(api_key=config["key"], base_url=config["base_url"])
         source = [{"text_original": item.get("text_original") or item.get("text"), "english_text": item.get("english_text") or "", "role": (item.get("narrative_scores") or {}).get("role", "body")} for item in sequences]
         system = "Write up to four witty old-English-style parchment messages for a backstage music documentary. Maximum 45 words each. Use only supplied events and tone; do not invent facts. Return JSON only as {messages:[string]}. Messages are interstitial captions, not spoken dialogue."
-        response = client.chat.completions.create(model=config["model"], messages=[{"role": "system", "content": system}, {"role": "user", "content": json.dumps({"music_path": music_path, "selected_sequences": source}, ensure_ascii=False)}], response_format={"type": "json_object"}, max_tokens=500, temperature=0.4, **({"extra_body": {"thinking": {"type": "disabled"}}} if config["provider"] == "deepseek" else {}))
+        response = _completion(client,config,model=config["model"], messages=[{"role": "system", "content": system}, {"role": "user", "content": json.dumps({"music_path": music_path, "selected_sequences": source}, ensure_ascii=False)}], response_format={"type": "json_object"}, max_tokens=500, temperature=0.4, **({"extra_body": {"thinking": {"type": "disabled"}}} if config["provider"] == "deepseek" else {}))
         raw = json.loads(response.choices[0].message.content or "{}")
         messages = [str(value).strip() for value in raw.get("messages") or [] if str(value).strip() and len(str(value).split()) <= 45][:4]
         return {"status": "ready", "provider": config["provider"], "model": config["model"], "messages": messages}
@@ -228,7 +237,7 @@ def correct_transcription(transcription: dict[str, Any], glossary: str = "", mod
         rows = [{"source": source.get("filename"), "segments": [{"start_sec": row.get("start_sec"), "end_sec": row.get("end_sec"), "text": row.get("text")} for row in source.get("segments") or []]} for source in transcription.get("sources") or []]
         system = "Correct this complete transcript using the glossary and the full conversational context. Preserve every start_sec/end_sec exactly; change only text. Do not translate, summarize, merge, split, or reorder segments. Return JSON only as {sources:[{filename,segments:[{start_sec,end_sec,text}]}]}."
         user = json.dumps({"glossary": glossary, "transcript": rows}, ensure_ascii=False)
-        response = client.chat.completions.create(model=config["model"], messages=[{"role": "system", "content": system}, {"role": "user", "content": user}], response_format={"type": "json_object"}, max_tokens=12000, temperature=0.0, **({"extra_body": {"thinking": {"type": "disabled"}}} if config["provider"] == "deepseek" else {}))
+        response = _completion(client,config,model=config["model"], messages=[{"role": "system", "content": system}, {"role": "user", "content": user}], response_format={"type": "json_object"}, max_tokens=12000, temperature=0.0, **({"extra_body": {"thinking": {"type": "disabled"}}} if config["provider"] == "deepseek" else {}))
         raw = json.loads(response.choices[0].message.content or "{}")
         corrected = raw.get("sources") if isinstance(raw, dict) else None
         if not isinstance(corrected, list) or len(corrected) != len(rows):

@@ -31,16 +31,39 @@
     }
     dialog.innerHTML = `<header><h2>Connectors</h2><button type="button" data-close aria-label="Close connectors">×</button></header>
       <p class="connector-intro">The accounts this app works with. When one runs out of allowance, switch to another and carry on.</p>
-      <div data-list><p>Checking your accounts…</p></div><p role="status" data-status></p>
+      <div data-list><p>Checking your accounts…</p></div><div data-api-settings>Loading API settings…</div><p role="status" data-status></p>
       <div class="connector-actions"><button type="button" data-refresh>Check again</button></div>`;
     if (!dialog.open) dialog.showModal();
+    apiSettings().catch(error=>status(error.message));
     try { dialog.querySelector("[data-list]").innerHTML = (await call("/connectors")).connectors.map(row).join(""); }
     catch (error) { dialog.querySelector("[data-list]").innerHTML = `<p>${esc(error.message)}</p>`; }
+  }
+  async function apiSettings() {
+    const data=await call('/connectors/api'), host=dialog.querySelector('[data-api-settings]');
+    if(!host)return;
+    host.innerHTML='<h3>API models · optional</h3><p>API usage is billed by the provider, separately from signing in above. Keys stay in the system credential vault. No model request is made when you save a key.</p>'+data.providers.map(p=>`<section data-api-provider="${esc(p.id)}"><strong>${esc(p.name)}</strong> <span>${p.active?esc(p.masked)+' · configured (not verified)':'No key'}</span><input type="password" autocomplete="off" data-api-key aria-label="${esc(p.name)} API key" placeholder="Add or replace API key"><button data-api-save="${p.id}">Save key</button><button data-api-delete="${p.id}">Delete saved key</button>${p.environment?'<small>An environment key is also configured; deleting the saved key does not remove it.</small>':''}</section>`).join('')+
+      `<h3>Narrative model</h3><label>Provider <select data-model-provider>${data.providers.filter(p=>p.id!=='huggingface').map(p=>`<option value="${p.id}" data-model="${esc(p.default_model)}" ${p.id===data.provider?'selected':''} ${p.active?'':'disabled'}>${esc(p.name)}${p.active?'':' · Add your key in Connectors'}</option>`).join('')}</select></label><label>Model ID <input data-model-id value="${esc(data.model)}"></label><button data-model-save>Use this narrative model</button><h3>External control · this computer only</h3><p>A local tool can read status and request a render of the open project. This does not connect an online chat automatically.</p><button data-remote-copy>Copy local control token</button><p><small>Hugging Face tokens allow supported hosted tasks; they do not turn the existing local face swap into a hosted service.</small></p>`;
+    host.querySelector('[data-model-provider]').onchange=e=>{host.querySelector('[data-model-id]').value=e.target.selectedOptions[0].dataset.model;};
   }
   const status = (text) => { const line = dialog?.querySelector("[data-status]"); if (line) line.textContent = text; };
   async function act(event) {
     const target = event.target instanceof Element ? event.target.closest("button") : null;
     if (!target) return;
+    if(target.dataset.apiSave||target.dataset.apiDelete){
+      const provider=target.dataset.apiSave||target.dataset.apiDelete, row=target.closest('[data-api-provider]');
+      const value=target.dataset.apiDelete?'':row.querySelector('[data-api-key]').value;
+      await call('/connectors/api/'+provider,{method:'PUT',body:JSON.stringify({key:value})});
+      row.querySelector('[data-api-key]').value='';await apiSettings();status('Connection settings saved.');return;
+    }
+    if(target.hasAttribute('data-model-save')){
+      await call('/connectors/model',{method:'PUT',body:JSON.stringify({provider:dialog.querySelector('[data-model-provider]').value,model:dialog.querySelector('[data-model-id]').value})});
+      status('Narrative model saved for future analysis. Existing edits are kept.');return;
+    }
+    if(target.hasAttribute('data-remote-copy')){
+      const result=await call('/connectors/remote-token',{method:'POST',body:'{}'});
+      try{await navigator.clipboard.writeText(result.token);status('Local control token copied. Give it only to a tool you trust on this computer.');}
+      catch{status('Clipboard is unavailable. The token remains in the secure credential store.');}return;
+    }
     if (target.hasAttribute("data-close")) { dialog.close(); return; }
     if (target.hasAttribute("data-refresh")) { await show(); return; }
     if (target.dataset.signIn) {

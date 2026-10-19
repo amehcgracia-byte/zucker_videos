@@ -59,7 +59,8 @@
     for (const scene of review.scenes || []) {
       if (["queued", "rendering", "ready"].includes(scene.preview?.status)) wantEffects.add(scene.id);
     }
-    step = 0;
+    const resume=review.scenes.findIndex(scene=>scene.id===review.resume_scene);
+    step = resume>=0?resume+2:0;
     render();
     // Every scene's preview with effects is prepared in the background, from the first on;
     // the scene being edited always goes first.
@@ -134,6 +135,8 @@
     closeTimeline();
     stopWatching();
     stopQuick();
+    const current=step>=2?scenes()[step-2]:null;
+    if(current&&review.resume_scene!==current.id){review.resume_scene=current.id;api("/show/scenes/resume",{method:"POST",body:JSON.stringify({scene_id:current.id})}).catch(()=>{});}
     const names = stepNames();
     $("#showSteps").innerHTML = names.map((name, index) => {
       const scene = index >= 2 && index < names.length - 1 ? scenes()[index - 2] : null;
@@ -1466,8 +1469,8 @@
     const anchor=item.overlay?.follow_anchor||item.params.follow_anchor;
     return [{label:anchor?'Mark following object again…':'Follow an object: mark it…',action:()=>{
       selectedEffect=item.id;steamBoxFor=item.id;locateEffect(timelineItem(item.id));drawOverlays(currentScene());
-      showToast('At the effect start, draw a tight box around the hand or object. Keep the picture placed where you want it attached. Effects preview shows the tracked movement.');
-    }},...(anchor?[{label:'Stop following',action:()=>steamSave(item,{follow_anchor:null})}]:[])];
+      showToast('At the effect start, draw a tight box around the hand or object. The picture will be attached to the marked object. Effects preview shows the tracked movement.');
+    }},...(anchor?[{label:'Release at playhead · leave it here',action:()=>{const seconds=Math.max(0,editedPlayhead()-item.at);steamSave(item,{follow_seconds:seconds});showToast('Following stops here; the object stays at its last tracked position. Preview to check the placement.');}},{label:'Follow for the whole effect',action:()=>steamSave(item,{follow_seconds:null})},{label:'Stop following',action:()=>steamSave(item,{follow_anchor:null,follow_seconds:null})}]:[])];
   }
   function layerColourDialog(item){
     const dialog=document.createElement('dialog');dialog.className='show-layer-colours';
@@ -1791,16 +1794,25 @@
     steamBoxFor = null;
     const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(b.y - a.y);
     if (w < 0.02 || h < 0.02) { drawOverlays(currentScene()); renderTimeline(currentScene()); return; }
-    if(!isTexture(item)){
-      const video=$('#showStageVideo');
-      if(video.readyState<2){showToast('Wait for the video picture, then mark the object again.',true);return;}
-      const canvas=document.createElement('canvas'),k=Math.min(1,512/(w*video.videoWidth),512/(h*video.videoHeight));canvas.width=Math.max(6,Math.round(w*video.videoWidth*k));canvas.height=Math.max(6,Math.round(h*video.videoHeight*k));
-      canvas.getContext('2d').drawImage(video,x*video.videoWidth,y*video.videoHeight,w*video.videoWidth,h*video.videoHeight,0,0,canvas.width,canvas.height);
-      try{const template=await api('/show/follow-template',{method:'POST',body:JSON.stringify({image:canvas.toDataURL('image/png')})});
-      steamSave(item,{follow_anchor:[x,y,w,h].map(v=>Number(v.toFixed(4))),follow_template:template.path});}catch(error){showToast(error.message,true);return;}showToast("Object following saved. Preview the effects to see it move.");return;}
-    // The steam rises from the top middle of the mug and follows it.
-    steamSave(item, { anchor: [x, y, w, h].map((v) => Number(v.toFixed(4))), point: [Number((x + w / 2).toFixed(4)), Number(y.toFixed(4))] });
-    showToast("The texture follows this object; it hides on loss and searches for its return.");
+    const video=$('#showStageVideo');
+    if(video.readyState<2){showToast('Wait for the video picture, then mark the object again.',true);return;}
+    const canvas=document.createElement('canvas'),k=Math.min(1,512/(w*video.videoWidth),512/(h*video.videoHeight));
+    canvas.width=Math.max(6,Math.round(w*video.videoWidth*k));canvas.height=Math.max(6,Math.round(h*video.videoHeight*k));
+    canvas.getContext('2d').drawImage(video,x*video.videoWidth,y*video.videoHeight,w*video.videoWidth,h*video.videoHeight,0,0,canvas.width,canvas.height);
+    try {
+      const template=await api('/show/follow-template',{method:'POST',body:JSON.stringify({image:canvas.toDataURL('image/png')})});
+      const anchor=[x,y,w,h].map(v=>Number(v.toFixed(4)));
+      if(isTexture(item)) steamSave(item,{anchor,point:[x+w/2,y],follow_template:template.path});
+      else {
+        // Marking means attach here, rather than keeping the old screen position.
+        const element=item.overlay?$(`[data-overlay="${currentScene().overlays.indexOf(item.overlay)}"]`):null;
+        const height=(element?.getBoundingClientRect().height||0)/$('#showStageLayer').getBoundingClientRect().height;
+        const placement=item.overlay?{x:(x+w/2)*100-item.overlay.width/2,y:(y+h/2-height/2)*100,action:'none',path:[],effect:'none'}:item.kind==='clip'
+          ?{person_offset:[0,0],follow_place:true}:{image_center:[x+w/2,y+h/2],effect:'none'};
+        steamSave(item,{follow_anchor:anchor,follow_template:template.path,follow_seconds:null,...placement});
+      }
+    } catch(error){showToast(error.message,true);return;}
+    showToast('Attached to this object. Preview the effects to check the tracking across cuts.');
   });
   document.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target.closest("[data-steam-box],[data-steam-unbox]") : null;
@@ -3169,6 +3181,7 @@
     },
     playbackState:()=>({original:!!quick&&!quick.saved,at:editedPlayhead()}),
     async audioChanged(preview=false,item=null){
+      if(item?.overlay){const scene=scenes().find(s=>s.id===item.scene_id);const overlay=scene?.overlays.find(o=>o.id===item.overlay.id);if(overlay)Object.assign(overlay,item.overlay);item=null;}
       if(item){const index=review.proposals.findIndex(p=>p.id===item.id);if(index>=0)review.proposals[index]=item;}
       for(const scene of scenes()){scene.preview={status:'none'};dirtyScenes.add(scene.id);}
       const scene=currentScene();if(!scene)return;

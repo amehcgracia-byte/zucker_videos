@@ -193,7 +193,7 @@ def overlay_items(document: dict[str, Any], frame_aspect: float = 16 / 9) -> lis
             item: dict[str, Any] = {"image": overlay["asset"], "at": float(overlay.get("at", scene["start"])),
                                     "duration": float(overlay.get("duration", min(4.0, scene["end"] - scene["start"]))),
                                     "x": x, "y": y, "width": width, "effect": effect,
-                                    **{key: overlay[key] for key in ("stretch", "rotate", "flip", "opacity", "follow_anchor", "follow_template") if key in overlay}}
+                                    **{key: overlay[key] for key in ("stretch", "rotate", "flip", "opacity", "follow_anchor", "follow_template", "follow_seconds") if key in overlay}}
             if preset in ("up", "down"):
                 shift = 0.15 * amount * (-1 if preset == "up" else 1)
                 item["path"] = [[0.0, x, y], [1.0, x, y + shift]]
@@ -216,6 +216,17 @@ def overlay_items(document: dict[str, Any], frame_aspect: float = 16 / 9) -> lis
                     item["mouth_open"] = 0.08 * amount
                 voice = None if overlay.get("voice_mode") == "mine" else overlay.get("voice") or rig.get("voice")
                 if voice:
+                    mode=overlay.get('audio_mode','own')
+                    volume=float(overlay.get('volume',1.))
+                    if mode!='own':
+                        # Mixed speech stays on the original clock: no pause/repeated narration.
+                        item['voice']=voice
+                        items.append(item)
+                        items.append({'jingle':voice[0],'at':item['at'],'duration':min(float(voice[2]),item['duration']),
+                                      'start':float(voice[1]),'volume':volume if mode=='mix' else 0.,
+                                      'duck':0. if mode=='silent' else 1.,'fade':.02,
+                                      'under_voice':bool(overlay.get('under_voice',False))})
+                        continue
                     # It enters at once, rising from below, or the camera pushes in on it.
                     entrance = overlay.get("entrance") if overlay.get("entrance") in ENTRANCES else "cut"
                     sticker = {key: value for key, value in item.items() if key not in ("at", "duration")}
@@ -224,7 +235,7 @@ def overlay_items(document: dict[str, Any], frame_aspect: float = 16 / 9) -> lis
                     push = entrance == "zoom"
                     items.append({"insert": "character", "at": item["at"], "source": "host", "entrance": entrance,
                                   "zoom": PUSH_ZOOM if push else 1.0, "focus": [x, y] if push else [0.5, 0.5],
-                                  "zoom_sec": PUSH_SEC if push else 0, "voice": voice, "overlays": [sticker]})
+                                  "zoom_sec": PUSH_SEC if push else 0, "voice": voice, "overlays": [sticker], "volume":volume})
                     continue
             items.append(item)
     return items

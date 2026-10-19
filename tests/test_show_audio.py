@@ -158,3 +158,43 @@ def test_balance_does_not_overwrite_a_track_edited_while_it_measures(audio_proje
     assert result['balanced']==0 and len(result['unavailable'])==2
     assert show_audio.load(project)['narration_volume']==.25
     assert show_proposals.load(path)['proposals'][0]['params']['audio_volume']==.33
+
+
+def test_recorded_library_character_is_in_mixer_and_mix_does_not_pause_narration(tmp_path,monkeypatch):
+    monkeypatch.setenv('ZUCKER_DATA_ROOT',str(tmp_path/'data'))
+    from PIL import Image
+    p=create_project('Voice',str(tmp_path/'voice.zuckervid'))
+    asset=p.folder/'assets/show-library/character/cutout.png';asset.parent.mkdir(parents=True);Image.new('RGBA',(20,20),'red').save(asset)
+    voice=p.folder/'voice.wav';voice.write_bytes(b'placeholder')
+    (asset.parent/'character.json').write_text(json.dumps({'voice':[str(voice),0,1]}))
+    scene={'id':'scene-01','start':0,'end':3,'decision':'modified','effects':[],
+           'overlays':[{'id':'speaker','asset':str(asset),'at':.5,'duration':1,'action':'talk','x':60,'y':30,'width':10}]}
+    show_scenes.save(p.artifacts_dir/'show_scenes.json',{'scenes':[scene]})
+    show_proposals.save(p.artifacts_dir/'show_proposals.json',[])
+    (p.artifacts_dir/'show_plan.json').write_text(json.dumps({'source':str(voice),'shots':[],'words':[]}))
+    client=create_app(str(p.folder)).test_client()
+    tracks=client.get('/api/v1/show/audio').get_json()['tracks'];assert tracks[0]['id']=='sticker:speaker'
+    assert tracks[0]['mode']=='own'
+    response=client.patch('/api/v1/show/audio/tracks/sticker:speaker',json={'volume':.25,'mode':'mix','under_voice':True})
+    assert response.status_code==200,response.get_json()
+    doc=show_scenes.load(p.artifacts_dir/'show_scenes.json');items=show_scenes.overlay_items(doc)
+    assert not any(item.get('insert') for item in items)
+    assert next(item for item in items if item.get('jingle'))['volume']==.25
+    assert next(item for item in items if item.get('image'))['voice']==[str(voice),0,1]
+    # Re-saving the scene must retain its mixer controls.
+    response=client.post('/api/v1/show/scenes/scene-01/overlays',json={'overlays':doc['scenes'][0]['overlays']})
+    assert response.status_code==200,response.get_json()
+    assert response.get_json()['overlays'][0]['volume']==.25
+    assert response.get_json()['overlays'][0]['audio_mode']=='mix'
+    assert client.post('/api/v1/show/scenes/resume',json={'scene_id':'missing'}).status_code==404
+    assert client.post('/api/v1/show/scenes/resume',json={'scene_id':'scene-01'}).status_code==200
+    assert json.loads((p.artifacts_dir/'show_resume.json').read_text())['scene_id']=='scene-01'
+
+
+def test_recovered_project_reopens_review_without_rewriting_completed_stage_history(audio_project):
+    from server.api import _project_wizard_status
+    p,_,_=audio_project
+    before=json.loads(json.dumps(p.data))
+    (p.artifacts_dir/'show_resume.json').write_text(json.dumps({'scene_id':'s1','reopen_review':True}))
+    assert _project_wizard_status(p)['status']=='waiting_show_review'
+    assert p.data==before

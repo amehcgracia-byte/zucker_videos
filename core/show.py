@@ -491,7 +491,7 @@ def framed_layer(plan: dict[str, Any], layer: list[dict[str, Any]]) -> list[dict
     from core.show_framing import steam_on_screen
     out: list[dict[str, Any]] = []
     for entry in layer:
-        out.extend(steam_on_screen(plan, entry) if entry.get("steam") and (entry.get("anchor") or not entry.get("texture")) else [entry])
+        out.extend(steam_on_screen(plan, entry) if entry.get("steam") and not entry.get("follow_template") and (entry.get("anchor") or not entry.get("texture")) else [entry])
     return out
 
 

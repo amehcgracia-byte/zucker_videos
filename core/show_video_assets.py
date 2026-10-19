@@ -111,7 +111,7 @@ class VideoLayer:
     def __init__(self, raw, width, height, fps):
         from core.show_backgrounds import VideoBackground
         from core.show_follow import Follow
-        self.follow=Follow(raw["follow_anchor"],width,height,raw.get("follow_template")) if raw.get("follow_anchor") else None
+        self.follow=Follow(raw["follow_anchor"],width,height,raw.get("follow_template"),raw.get("follow_seconds")) if raw.get("follow_anchor") else None
         self.tracked_offset=(0.,0.);self.tracked_visible=True
         self.raw=raw;self.at=float(raw['at']);self.duration=float(raw['duration']);self.fps=fps
         self.video=VideoBackground(raw['video_layer'],width,height)
@@ -147,6 +147,15 @@ class VideoLayer:
         if screen:mask=person.astype(np.float32)/255
         foreground=person.astype(np.float32) if screen else person.astype(np.float32)*mask
         scale=float(self.raw.get('person_scale',1));offset=self.raw.get('person_offset') or (0.,0.)
+        if self.follow and self.raw.get('follow_place'):
+            alpha=mask if mask.ndim==2 else mask[...,0]
+            ys,xs=np.nonzero(alpha>.1)
+            if not len(xs):return
+            # The subject may occupy either side of its own source frame.
+            # Attach its visible bounding box, not the centre of the whole video.
+            cx=(xs.min()+xs.max()+1)/2/w;cy=(ys.min()+ys.max()+1)/2/h
+            offset=(offset[0]+self.follow.start[0]-(cx*scale+(1-scale)/2),
+                    offset[1]+self.follow.start[1]-(cy*scale+1-scale))
         offset=(offset[0]+self.tracked_offset[0],offset[1]+self.tracked_offset[1])
         if scale!=1 or tuple(offset)!=(0.,0.):
             matrix=np.array([[scale,0,w*(1-scale)/2+offset[0]*w],[0,scale,h*(1-scale)+offset[1]*h]],np.float32)

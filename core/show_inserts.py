@@ -398,6 +398,14 @@ class Steam:
         return self.at <= t < self.at + self.duration
 
 
+def _tracking_reference(path, rect):
+    if not path or not rect:return None
+    import cv2
+    template=cv2.imread(str(path),cv2.IMREAD_GRAYSCALE)
+    if template is None:raise ValueError('The saved tracking template is missing')
+    return {'template':cv2.resize(template,(max(6,round(rect[2])),max(6,round(rect[3])))), 'scale':1.}
+
+
 def load_steam(raw: dict[str, Any], width: int, height: int) -> Steam:
     x, y = (float(v) for v in raw["steam"])
     anchor = raw.get("anchor")
@@ -409,6 +417,7 @@ def load_steam(raw: dict[str, Any], width: int, height: int) -> Steam:
                  scale=float(raw.get("scale") or 1.0), rect=rect, puffs=int(min(120, max(5, float(raw.get("density") or 35)))),
                  strength=min(0.9, max(0.05, float(raw.get("strength") or STEAM_OPACITY))), rise=min(3.0, max(0.3, float(raw.get("rise") or 1.0))),
                  colour=colour, texture=str(raw.get("texture") or "rainbow"),
+                 reference=_tracking_reference(raw.get("follow_template"), rect),
                  fade_in=bool(raw.get('fade_in', True)), fade_out=bool(raw.get('fade_out', True)))
 
 
