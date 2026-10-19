@@ -103,7 +103,7 @@ project copy and credits. All actions used a disposable project and fake/no
 credential vault; they did not alter the recovered user project. The combined
 focused regression selection passes 118 tests (`/tmp/show-2613-final-checks.log`).
 Source screenshots: `/tmp/show-2613-mix-plan.png` and
-`/tmp/show-2613-voice-mixer.png`. Latest package validation remains pending.
+`/tmp/show-2613-voice-mixer.png`. Final package validation is recorded below.
 
 Frozen-package QA exposed another preservation edge case: if the global library
 folder changes or its copy is removed, the approved project's music must still
@@ -116,3 +116,36 @@ recording completed it: `ok`, transcription/Silero, scene tagging, instrument
 model, intro render and exact Metal remap all true. No footage was uploaded.
 This native dependency check does not certify Windows dialogs or live provider
 access. Final rebuilt package metadata and installation are recorded below.
+
+
+## Final package and installation — 19 October 2026
+
+Installed and launched **2.6.13**, application commit `09983ff8`, after strict
+signature verification and byte-for-byte checks of 5,664 bundle files/symlinks.
+The previous app was copied and all 5,663 files/symlinks verified before replacement:
+`~/Applications Backups/Zucker Editor before 2.6.13 20261019-121314.app`.
+The final frozen selftest passed transcription, scene tagging, instrument model,
+intro render, exact Metal remap and HTTP initialization. Windows UI and full
+Backstage export were not run by that selftest.
+
+The installed native process opened the recovered project, returned
+`waiting_show_review`, 14 scenes, 71 proposals and `resume_scene: scene-06`.
+Its served `show_review.js`, `show_audio.js`, `connectors.js` and
+`music_library.js` exactly match this source. Native window appearance was not
+independently captured; browser interaction QA used a disposable project.
+Recovery preserved the earlier proposal document and the first five creative
+scene states; the pre-recovery state remains separately backed up.
+
+GitHub fast-test run **39234362152** (earlier PR head `a5fe8c3b`) reported
+**28 failed, 1,141 passed**, with existing skips/xfail unchanged. Comparison with
+parent-branch run **39187579381** yields exactly the same 28 failing test IDs,
+no added or removed failures. These include the existing 360 failures and a
+version-format test that accepts only a one-digit patch number. They are not
+claimed fixed by the focused green tests. No skips/xfails were added.
+The newer packaging/provider/project-owned-music commits were checked locally;
+subsequent CI is separate evidence and must not be implied green.
+
+Evidence retained locally: `/tmp/show-2613-install-result.json`,
+`/tmp/show-2613-installed-verification.json`,
+`/tmp/show-2613-selftest-final.json`, browser screenshots and test logs listed
+above. No recordings, project state, credentials or private assets are in this PR.

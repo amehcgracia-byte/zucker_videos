@@ -74,9 +74,8 @@ fields, keeping the old recipe unchanged. No test was skipped or weakened.
 Connection tests use fake vaults and mocked network requests; no real provider
 credentials were saved or used for paid model requests.
 
-Music-library/Backstage auto-mix requested afterwards is a separate pending block;
-this document does not claim it has been delivered. Installed app remains 2.6.12
-until the combined changes are packaged and verified.
+The subsequently requested music library and Backstage auto-mix are documented
+in MUSIC_LIBRARY_AUTOMIX_2026-10-19.md; final package verification is recorded there.
 
 ## Subsequent checks
 
