@@ -66,3 +66,15 @@ def register_ai_connection_routes(app,state,render_show,render_review):
             return jsonify(error={'message':'Open the intended project and pass its project_id'}),409
         if body.get('mode') not in ('show','review'):return jsonify(error={'message':'Choose show or review'}),400
         return render_show() if body['mode']=='show' else render_review()
+
+    @app.post('/api/remote/audio-plan')
+    def remote_audio_plan():
+        if not authorized():return denied()
+        from core import music_mix_plan
+        body=request.get_json(silent=True) or {}
+        if not state.project or body.get('project_id')!=str(state.project.folder):return jsonify(error={'message':'Open the intended project first'}),409
+        try:
+            if not isinstance(body.get('approve',False),bool):raise ValueError('Choose whether to approve the plan')
+            result=music_mix_plan.save(state.project,body.get('segments'),approve=body.get('approve',False),revision=body.get('revision'),expected_signature=body.get('signature'))
+            return jsonify(result)
+        except (ValueError,TypeError) as exc:return jsonify(error={'message':str(exc)}),400

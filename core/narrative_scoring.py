@@ -24,11 +24,11 @@ SCORE_SCHEMA = {
 def _provider_config(provider: str | None = None, model: str | None = None) -> dict[str, str]:
     from core import ai_connections
     preferences=ai_connections.preferences()
-    selected=(provider or os.environ.get("NARRATIVE_LLM_PROVIDER") or preferences.get('provider') or 'deepseek').strip().lower()
+    selected=(provider or preferences.get('provider') or os.environ.get("NARRATIVE_LLM_PROVIDER") or 'deepseek').strip().lower()
     if selected not in ('openai','deepseek','anthropic'):raise ValueError('Unknown narrative provider')
     defaults=ai_connections.PROVIDERS[selected]
     key=ai_connections.api_key(selected).strip()
-    chosen=model or os.environ.get('NARRATIVE_LLM_MODEL') or (preferences.get('model') if preferences.get('provider')==selected else None) or defaults['model']
+    chosen=model or (preferences.get('model') if preferences.get('provider')==selected else None) or os.environ.get('NARRATIVE_LLM_MODEL') or defaults['model']
     return {'provider':selected,'base_url':os.environ.get('NARRATIVE_LLM_BASE_URL') or defaults['base_url'],'model':chosen,'key':key}
 
 
@@ -113,7 +113,7 @@ def score_story_bites(bites: list[dict[str, Any]], batch_size: int = 25, model: 
                             score[field] = 0
                     item["narrative_scores"] = {key: score.get(key) for key in ("funny", "story", "hook", "payoff", "complete", "confidence", "reason")}
         cost_usd = (cache_hit_tokens / 1_000_000 * cache_hit_price + cache_miss_tokens / 1_000_000 * price[0] + output_tokens / 1_000_000 * price[1]) if config["provider"] == "deepseek" else input_tokens / 1_000_000 * price[0] + output_tokens / 1_000_000 * price[1]
-        return {"status": "ready", "provider": config["provider"], "base_url": config["base_url"], "model": model, "batches": batch_count, "retries": retry_count, "input_tokens": input_tokens, "output_tokens": output_tokens, "cache_hit_tokens": cache_hit_tokens, "cache_miss_tokens": cache_miss_tokens, "cost_usd": round(cost_usd, 6), "bites": list(scored.values())}
+        return {"status": "ready", "provider": config["provider"], "base_url": config["base_url"], "model": model, "batches": batch_count, "retries": retry_count, "input_tokens": input_tokens, "output_tokens": output_tokens, "cache_hit_tokens": cache_hit_tokens, "cache_miss_tokens": cache_miss_tokens, "cost_usd": None if config["provider"]=="anthropic" else round(cost_usd, 6), "bites": list(scored.values())}
     except Exception as exc:
         return {"status": "error", "model": model, "reason": str(exc), "batches": 0, "bites": bites}
 
@@ -173,7 +173,7 @@ def score_story_sequences(sequences: list[dict[str, Any]], batch_size: int = 25,
                 item["english_text"] = str(score.get("english_text") or "")
                 item["narrative_scores"] = {field: score.get(field) for field in ("funny", "story", "hook", "payoff", "complete", "confidence", "reason", "suggested_in", "suggested_out", "role")}
         cost = (cache_hit * hit_price + cache_miss * miss_price + output_tokens * output_price) / 1_000_000 if config["provider"] == "deepseek" else (input_tokens * miss_price + output_tokens * output_price) / 1_000_000
-        return {"status": "ready", "provider": config["provider"], "base_url": config["base_url"], "model": config["model"], "batches": batch_count, "retries": retries, "input_tokens": input_tokens, "output_tokens": output_tokens, "cache_hit_tokens": cache_hit, "cache_miss_tokens": cache_miss, "cost_usd": round(cost, 6), "sequences": list(scored.values())}
+        return {"status": "ready", "provider": config["provider"], "base_url": config["base_url"], "model": config["model"], "batches": batch_count, "retries": retries, "input_tokens": input_tokens, "output_tokens": output_tokens, "cache_hit_tokens": cache_hit, "cache_miss_tokens": cache_miss, "cost_usd": None if config["provider"]=="anthropic" else round(cost, 6), "sequences": list(scored.values())}
     except Exception as exc:
         return {"status": "error", "provider": config["provider"], "model": config["model"], "reason": str(exc), "batches": 0, "sequences": sequences}
 
@@ -203,7 +203,7 @@ def generate_storyboard(sequences: list[dict[str, Any]], music_path: str = "", m
         # deliberately based on the returned usage, never an estimate of calls.
         price_in, price_out = (0.22, 0.66)
         cost = input_tokens / 1_000_000 * price_in + output_tokens / 1_000_000 * price_out if config["provider"] == "deepseek" else input_tokens / 1_000_000 * 0.25 + output_tokens / 1_000_000 * 2.0
-        return {"status": "ready", "provider": config["provider"], "model": config["model"], "input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": round(cost, 6), "storyboard": raw}
+        return {"status": "ready", "provider": config["provider"], "model": config["model"], "input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": None if config["provider"]=="anthropic" else round(cost, 6), "storyboard": raw}
     except Exception as exc:
         return {"status": "error", "provider": config["provider"], "model": config["model"], "reason": str(exc)}
 

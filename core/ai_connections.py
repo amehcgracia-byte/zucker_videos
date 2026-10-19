@@ -17,6 +17,8 @@ PROVIDERS={
     'openai':{'name':'OpenAI','model':'gpt-5-mini','base_url':'https://api.openai.com/v1','env':'OPENAI_API_KEY'},
     'anthropic':{'name':'Claude (Anthropic)','model':'claude-sonnet-4-6','base_url':'https://api.anthropic.com/v1','env':'ANTHROPIC_API_KEY'},
     'huggingface':{'name':'Hugging Face','env':'HF_TOKEN'},
+    'jamendo':{'name':'Jamendo client ID','env':'JAMENDO_CLIENT_ID'},
+    'freesound':{'name':'Freesound API key','env':'FREESOUND_API_KEY'},
 }
 
 def preferences_path():
@@ -56,7 +58,7 @@ def save_key(provider,value):
     except Exception:raise RuntimeError('The secure system credential store is unavailable; no key was saved') from None
 
 def select(provider,model=None):
-    if provider not in PROVIDERS or provider=='huggingface':raise ValueError('Choose a narrative model provider')
+    if provider not in ('deepseek','openai','anthropic'):raise ValueError('Choose a narrative model provider')
     if not api_key(provider):raise ValueError('Add your API key in Connectors first')
     model=str(model or PROVIDERS[provider]['model']).strip()
     if not re.fullmatch(r'[A-Za-z0-9_.:/-]{1,160}',model):raise ValueError('Enter a valid model ID')

@@ -1,0 +1,97 @@
+# Music library and reviewed Backstage auto-mix
+
+## Obtain credentials
+
+Open **Connectors → API models**. The existing subscription/CLI account logins
+remain separate. Enter a Jamendo client ID from https://devportal.jamendo.com/ or
+a Freesound API key from https://freesound.org/apiv2/apply. These identifiers are
+stored in the OS vault, with masked suffixes in the UI. No secret goes in a
+project, the repo, or a query sent to Zucker's own HTTP logs. Freesound uses an
+Authorization header upstream. Jamendo requires its client ID in the upstream
+API query; result/preview URLs containing it are never returned to the frontend.
+
+API access does not certify rights to a song. Jamendo's API can return NC/ND or
+non-downloadable tracks; this implementation asks for non-NC/non-ND/non-SA and
+also checks returned license URLs, allowing CC0 or CC BY only. Download-disabled
+tracks remain listenable but cannot be downloaded. Freesound searches CC0 and
+uses the MP3 preview, explicitly labeled **Preview audio**; original download via
+OAuth2 is not implemented. This is not a promise of unlimited free service.
+No provider account, key or terms were created/accepted on the user's behalf.
+
+## Catalog
+
+**Music library** in the nav has Local and Search sections, an audio preview,
+imports, a name filter and a configurable folder. Default: `data_root()/library`.
+Imported filenames are content hashes; JSON sidecars preserve source, source ID,
+name, artist, license, attribution, duration and preview-only status. Local files
+may remain in their existing formats. Service previews/downloads are MP3.
+
+Used tracks are copied once into the project's `assets/music/`, including their
+metadata. Cleaning or disconnecting the global library therefore does not remove
+the music needed by an already approved project. Importing/downloading is explicit;
+opening the library does not download songs or make a model inference request.
+
+## Plan, approve, render
+
+Open the Backstage paper edit, then **Auto-mix audio · review plan**. The existing
+storyboard music notes remain available. **Suggest mix with AI** sends only kept
+segment IDs, durations, text, existing audio policy and a bounded catalog of
+available tracks to the selected narrative API. No audio/video is uploaded. It
+runs as a background job and returns an editable draft. Without a narrative key,
+the manual cards remain usable. Review mode, track, music gain and fades before
+**Apply reviewed plan**. Neither a suggestion nor a draft changes the approved
+export plan. A paper-edit change invalidates approval instead of guessing new
+placement. Revising a draft keeps the previous approved plan available.
+
+Canonical plan row:
+
+```json
+{"segment_id":"backstage-0001","mode":"musica_bajo_narrador","track_id":"library-id","gain_db":-18,"fade_in_s":0.5,"fade_out_s":0.5}
+```
+
+Modes: `narrador_solo`, `musica_bajo_narrador`, `solo_video`, `musica_solo`.
+Spanish `segmento_id`, `modo`, `pista_id`, `ganancia_db` aliases are accepted;
+`mix_con_ducking` maps to `musica_bajo_narrador`. Backstage's narrator is the
+original camera soundtrack, so original-voice-only and original-video-sound-only
+both preserve that same source; no fictional separate narrator stem is created.
+
+The approved plan enters Backstage's existing **single FFmpeg pass** before
+concat. It does not add preview renders or generate music/assets during export.
+Music fades and sidechain compression apply per segment. Long files are trimmed;
+short files use concatenated repeats with a 1-second crossfade (reduced to one
+third for files shorter than 3 seconds). More than 128 repeats are rejected with
+a request for a longer track. Input indices for logos, subtitles and parchment
+remain correct. Original video encoding quality is unchanged.
+
+`credits.txt` in the project includes the used tracks' attributions and identifies
+Freesound previews. CC BY attribution requirements are visible in the catalog.
+No claim is made that music prevents Content ID claims.
+
+## External local control
+
+With the bearer token explicitly copied in Connectors:
+
+- `GET /api/remote/status`: open project/job.
+- `POST /api/remote/render`: `{project_id, mode: "show" | "review"}`.
+- `POST /api/remote/audio-plan`: `{project_id, segments, revision, signature,
+  approve: false | true}`. Same validation and project snapshots as the UI.
+
+Loopback address/Host and foreign-Origin checks apply. No token in URLs. This
+prepares a local HTTP integration; a cloud chat cannot reach this computer's
+localhost without a separate local bridge/MCP integration.
+
+## Evidence and limits
+
+- Service clients, vaults, plan generation and graph construction are tested with
+  mocks. No real credentials or paid model request were used for QA.
+- A disposable 4-second, 160×90 synthetic FFmpeg proof verifies both 300 Hz source
+  and 1500 Hz music are present, duration remains exactly 4 seconds, ducking and
+  loop crossfade are active (`/tmp/show-2613-graph-proof.log`). No private recording
+  was uploaded or rendered for that check.
+- Live provider availability, permission/allowance and original Freesound OAuth
+  downloads are not certified by those mocked tests.
+
+Primary references (checked 19 October 2026):
+https://developer.jamendo.com/v3.0/tracks
+https://freesound.org/docs/api/overview.html
+https://freesound.org/docs/api/authentication.html

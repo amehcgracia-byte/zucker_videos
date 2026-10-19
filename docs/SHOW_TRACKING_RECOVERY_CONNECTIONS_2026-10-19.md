@@ -77,3 +77,11 @@ credentials were saved or used for paid model requests.
 Music-library/Backstage auto-mix requested afterwards is a separate pending block;
 this document does not claim it has been delivered. Installed app remains 2.6.12
 until the combined changes are packaged and verified.
+
+## Subsequent checks
+
+The combined Show/gag/desktop/connection selection passed **353 tests** locally
+(`/tmp/show-2613-final-suite.log`); the only warning is the pre-existing Pillow
+getdata deprecation. A broader package/native and latest-source verification is
+still required after the subsequently requested music block. Connection status
+means configured, not a successful paid inference request.

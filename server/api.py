@@ -5672,6 +5672,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     register_show_studio_routes(app, state, root)
     from server.ai_connections import register_ai_connection_routes
     register_ai_connection_routes(app,state,api_show_review_render,api_wizard_review_render)
+    from server.music import register_music_routes
+    register_music_routes(app,state)
     return app
 
 

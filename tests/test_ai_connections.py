@@ -80,3 +80,10 @@ def test_external_control_needs_local_bearer_and_current_project(vault):
     assert called==['show']
     assert token not in client.get('/api/remote/status',headers=headers).get_data(as_text=True)
     assert client.put('/api/v1/connectors/api/openai',headers={'Origin':'https://foreign.example'},json={'key':'test'}).status_code==401
+
+
+def test_model_selected_in_ui_overrides_old_environment_provider(vault,monkeypatch):
+    monkeypatch.setenv('NARRATIVE_LLM_PROVIDER','deepseek')
+    ai_connections.save_key('openai','test-openai-key')
+    ai_connections.select('openai','gpt-5-mini')
+    assert narrative_scoring._provider_config()['provider']=='openai'

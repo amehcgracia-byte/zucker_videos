@@ -1623,6 +1623,7 @@
       ]),
       { separator: true },
       ...followItems(timelineItem("sticker:"+overlay.id)),
+      ...(overlay.action==='talk'?[{label:'Sound mixer…',action:()=>window.ShowAudio?.open()}]:[]),
       { label: "Animate", submenu: () => [
         {label:"Move mouth…",action:()=>layerCommand("mouth-regions")},
         {label:"Move eyes…",action:()=>layerCommand("regions")},
@@ -1807,7 +1808,7 @@
         // Marking means attach here, rather than keeping the old screen position.
         const element=item.overlay?$(`[data-overlay="${currentScene().overlays.indexOf(item.overlay)}"]`):null;
         const height=(element?.getBoundingClientRect().height||0)/$('#showStageLayer').getBoundingClientRect().height;
-        const placement=item.overlay?{x:(x+w/2)*100-item.overlay.width/2,y:(y+h/2-height/2)*100,action:'none',path:[],effect:'none'}:item.kind==='clip'
+        const placement=item.overlay?{x:(x+w/2)*100-item.overlay.width/2,y:(y+h/2-height/2)*100,action:['talk','look'].includes(item.overlay.action)?item.overlay.action:'none',path:[],effect:'none'}:item.kind==='clip'
           ?{person_offset:[0,0],follow_place:true}:{image_center:[x+w/2,y+h/2],effect:'none'};
         steamSave(item,{follow_anchor:anchor,follow_template:template.path,follow_seconds:null,...placement});
       }
