@@ -14,8 +14,9 @@ def validate_anchor(value):
 
 
 class Follow:
-    def __init__(self,anchor,width,height,template=None):
+    def __init__(self,anchor,width,height,template=None,until=None):
         self.anchor=validate_anchor(anchor);self.width=width;self.height=height;self.unmatchable=False
+        self.until=until;self.last=(0.,0.) if until==0 else None
         x,y,w,h=self.anchor
         self.start=(x+w/2,y+h/2)
         self.tracker=ObjectTracker([x*width,y*height,w*width,h*height])
@@ -26,13 +27,15 @@ class Follow:
             self.unmatchable=float(image.std())<4
             self.tracker.reference={'template':image,'scale':1.};self.tracker.visible=False
         self.bootstrap=bool(template)
-    def update(self,clean):
+    def update(self,clean,elapsed=0.):
+        if self.until is not None and elapsed>=self.until:return self.last
         if self.unmatchable:return None
         if self.bootstrap and not self.tracker.visible:self.tracker.frame=3
         box=self.tracker.update(cv2.cvtColor(clean,cv2.COLOR_RGB2GRAY))
         if box is None:return None
         x,y,w,h=box
-        return ((x+w/2)/self.width-self.start[0],(y+h/2)/self.height-self.start[1])
+        self.last=((x+w/2)/self.width-self.start[0],(y+h/2)/self.height-self.start[1])
+        return self.last
 
 
 def colour(pixels,brightness=1.,saturation=1.,hue=0.):

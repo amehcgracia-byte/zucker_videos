@@ -50,14 +50,33 @@ class ObjectTracker:
             self.reference.update(template=template, scale=self.scale)
             self.visible = True
             return self.rect
-        was_visible = self.visible
+        if float(self.reference['template'].std()) < 4:
+            self.visible = False
+            return None
         if cut:
             self.visible = False
             self.hits = 0
+        # Try local motion first. A jump/cut must reacquire in this same frame,
+        # not leave the last location visible or wait for every fourth frame.
+        best = self._match(grey, global_search=not self.visible)
         global_search = not self.visible
-        # Bound the expensive whole-frame search; local tracking still runs each frame.
-        if global_search and not cut and self.frame % 4:
+        if not global_search and (best[1] is None or best[0] < .72):
+            global_search = True
+            best = self._match(grey, global_search=True)
+        if best[1] is None or best[0] < (.86 if global_search else .72):
+            self.visible = False
+            self.hits = 0
+            self.misses += 1
             return None
+        self.rect = best[1]
+        self.misses = 0
+        self.hits += 1
+        self.visible = True
+        return self.rect
+
+    def _match(self, grey, *, global_search):
+        import cv2
+        height, width = grey.shape
         template = self.reference['template']
         hint = self.scale / self.reference['scale']
         current = self.rect[2] / template.shape[1]
@@ -84,21 +103,22 @@ class ObjectTracker:
                 match = cv2.resize(match, (max(3, round(tw*ratio)), max(3, round(th*ratio))), interpolation=cv2.INTER_AREA)
             scores = cv2.matchTemplate(area, match, cv2.TM_CCOEFF_NORMED)
             _, score, _, (mx, my) = cv2.minMaxLoc(scores)
+            px,py=left+mx/ratio,top+my/ratio
+            if ratio<1:
+                # Downsampling shifts small features by up to a source pixel.
+                # Verify the coarse location against full-resolution original pixels.
+                reach=max(3,math.ceil(2/ratio))
+                lx,ly=max(0,round(px)-reach),max(0,round(py)-reach)
+                rx,ry=min(width,round(px)+tw+reach),min(height,round(py)+th+reach)
+                full=grey[ly:ry,lx:rx]
+                if full.shape[0]>=th and full.shape[1]>=tw:
+                    exact=cv2.resize(template,(tw,th),interpolation=cv2.INTER_LINEAR)
+                    fine=cv2.matchTemplate(full,exact,cv2.TM_CCOEFF_NORMED)
+                    _,score,_,(fx,fy)=cv2.minMaxLoc(fine)
+                    px,py=lx+fx,ly+fy
             if math.isfinite(score) and score > best[0]:
-                best = score, [float(left+mx/ratio), float(top+my/ratio), float(tw), float(th)]
-        if best[1] is None or best[0] < (.82 if global_search else .72):
-            self.misses += 1
-            if was_visible and not cut and self.misses < 2:
-                return self.rect  # one bad frame is not an appearance/disappearance
-            self.visible = False
-            self.hits = 0
-            return None
-        self.rect = best[1]
-        self.misses = 0
-        self.hits += 1
-        # Two strong detections after a loss avoid flashing on one accidental match.
-        self.visible = (was_visible and not cut) or self.hits >= 2
-        return self.rect if self.visible else None
+                best = score, [float(px), float(py), float(tw), float(th)]
+        return best
 
 
 def draw_nature(frame: np.ndarray, texture: Any, t: float) -> None:

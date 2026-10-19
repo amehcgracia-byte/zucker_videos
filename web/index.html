@@ -26,6 +26,7 @@
         <button id="showWorkspaceOpen" class="icon-button small" type="button" title="Review the saved automatic Show, its transcript and scene decisions">Show storyboard</button>
         <button id="showStudioOpen" class="icon-button small" type="button" title="The Show editing desk for the open project">Show Studio</button>
         <button id="projectLibrary" class="icon-button small" type="button">Project library</button>
+        <button id="musicLibraryOpen" class="icon-button small" type="button">Music library</button>
         <button id="connectorsOpen" class="icon-button small" type="button" title="Your accounts: Claude, ChatGPT, Hugging Face, GitHub">Connectors</button>
         <button id="themeToggle" class="icon-button small" type="button">Dark mode</button>
         <button id="newProject" class="new-project">New project</button>
@@ -403,7 +404,7 @@
           </div>
           <div id="paperEditSummary" class="review-intro"></div>
           <div id="paperEditList" class="paper-edit-list"></div>
-          <div class="review-actions"><button id="approvePaperEdit" class="primary icon-button">Approve paper edit and render</button></div>
+          <div class="review-actions"><button id="backstageAudioMix" type="button">Auto-mix audio · review plan</button><button id="approvePaperEdit" class="primary icon-button">Approve paper edit and render</button></div>
         </div>
       </section>
 
@@ -523,7 +524,8 @@
     <script src="/show_live_captions.js?v=2"></script>
     <script src="/show_references.js?v=7"></script>
     <script src="/show_menu.js?v=6"></script>
-    <script src="/connectors.js?v=1"></script>
+    <script src="/connectors.js?v=2"></script>
+    <script src="/music_library.js?v=1"></script>
     <script src="/show_idea.js?v=1"></script>
     <script src="/show_clay_editor.js?v=1"></script>
     <script src="/show_review.js?v=68"></script>

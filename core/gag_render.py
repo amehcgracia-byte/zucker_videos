@@ -154,7 +154,7 @@ def load_sticker(raw: dict[str, Any], width: int, height: int) -> Sticker:
         sticker.eyes = LookingPixels(pixels, raw["eyes"], float(raw.get("eye_movement", EYE_GLANCE)),raw.get("eye_direction","horizontal"))
     if raw.get("follow_anchor"):
         from core.show_follow import Follow
-        sticker.follow=Follow(raw["follow_anchor"],width,height,raw.get("follow_template"))
+        sticker.follow=Follow(raw["follow_anchor"],width,height,raw.get("follow_template"),raw.get("follow_seconds"))
     return sticker
 
 
@@ -502,12 +502,13 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
     mouths = [load_mouth(raw, video, fps, width, height, ffmpeg) for raw in gags if raw.get("mouth") and not raw.get("image") and not raw.get("pixel_parts")]
     from core.show_inserts import AUDIO_RATE, draw_steam, fit, insert_frame, load_insert, load_steam, splice_audio
     inserts = sorted((load_insert(raw, width, height, fps, ffmpeg, video) for raw in gags if raw.get("insert")), key=lambda item: item.at)
+    character_layers=[load_insert(raw,width,height,fps,ffmpeg,video) for raw in gags if raw.get('character_layer')]
     steams = [load_steam(raw, width, height) for raw in gags if raw.get("steam")]
     texture_references = {}
     for raw, texture in zip((raw for raw in gags if raw.get("steam")), steams):
         # One marked object, including after an edited cut. Never learn the new
         # shot's wall as a new "cup" just because it occupies the old coordinates.
-        texture.reference = texture_references.setdefault(raw.get("proposal") or id(texture), {})
+        texture.reference = texture_references.setdefault(raw.get("proposal") or id(texture), texture.reference or {})
     from core import show_backgrounds
     pixel_parts=[raw for raw in gags if raw.get("pixel_parts")]
     from core.show_pixel_layers import framed_regions
@@ -635,16 +636,19 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
                 live_backgrounds = [layer for layer in backgrounds if layer.active(t)]
                 live_parts=[raw for raw in pixel_parts if raw["at"]<=t<raw["at"]+raw["duration"]]
                 live_videos=[layer for layer in video_layers if layer.active(t)]
-                if live or live_warps or live_mouths or live_steams or studio or live_backgrounds or live_videos or live_parts:
+                live_characters=[layer for layer in character_layers if layer.at<=t<layer.at+layer.duration]
+                if live_characters or live or live_warps or live_mouths or live_steams or studio or live_backgrounds or live_videos or live_parts:
                     frame = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3).copy()
                     for tracked in [*live,*live_videos]:
                         if tracked.follow:
-                            delta=tracked.follow.update(frame)
+                            delta=tracked.follow.update(frame,t-tracked.at)
                             tracked.tracked_visible=delta is not None
                             if delta is not None:tracked.tracked_offset=delta
                     texture_source = frame.copy() if any(steam.rect is not None for steam in live_steams) else None
                     for layer in live_backgrounds:
                         show_backgrounds.apply(frame, layer, t)
+                    for character in live_characters:
+                        frame=insert_frame(character,max(0,int(round((t-character.at)*fps))),fit(character.still,width,height))
                     for raw_part in live_parts:
                         from core.show_pixel_layers import apply_video_eyes
                         apply_video_eyes(frame,raw_part,t)

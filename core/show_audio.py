@@ -162,6 +162,24 @@ def measure(path, ffmpeg, start=0, length=6):
     voiced=levels[levels>.003]
     return float(np.median(voiced)) if len(voiced) else .001,float(np.max(np.abs(x)))
 
+def overlay_tracks(project):
+    """Voices on placed characters are tracks too, including library-default voices."""
+    from core import show_scenes
+    path=project.artifacts_dir/'show_scenes.json'
+    if not path.is_file():return []
+    tracks=[]
+    for scene in show_scenes.load(path)['scenes']:
+        for item in scene.get('overlays',[]):
+            if item.get('action')!='talk' or item.get('voice_mode')=='mine':continue
+            voice=item.get('voice') or show_scenes._character_rig(item['asset']).get('voice')
+            if not voice:continue
+            tracks.append(dict(id='sticker:'+item['id'],kind='character',scene_id=scene['id'],
+                name=Path(voice[0]).stem,source=voice[0],start=float(voice[1]),
+                at=float(item.get('at',scene['start'])),duration=float(voice[2]),
+                volume=item.get('volume',1.),mode=item.get('audio_mode','own'),under_voice=item.get('under_voice',False)))
+    return tracks
+
+
 def balance(project, ffmpeg, progress=None):
     from core import show_proposals
     plan=json.loads((project.artifacts_dir/'show_plan.json').read_text())
@@ -183,6 +201,13 @@ def balance(project, ffmpeg, progress=None):
             changes[item['id']]={'audio_volume':gain_track,'audio_mode':'mix','clip_audio':True,'under_voice':True} if item['kind']=='clip' else {'volume':gain_track,'duck':1.,'under_voice':True}
         except (OSError,ValueError,subprocess.SubprocessError) as exc:failed.append({'id':item['id'],'reason':str(exc)[:120]})
         if progress:progress((index+1)/max(1,len(tracks)))
+    # Placed, speaking library characters are not proposal records.
+    overlay_changes={}
+    for track in overlay_tracks(project):
+        try:
+            rms,peak=measure(track['source'],ffmpeg,track['start'],track['duration'])
+            overlay_changes[track['id']]=(track,min(2.,.1/max(rms,.001),.9/max(peak,.001)))
+        except (OSError,ValueError,subprocess.SubprocessError) as exc:failed.append({'id':track['id'],'reason':str(exc)[:120]})
     with show_proposals.LOCK:
         stored=show_proposals.load(path)
         for item in stored['proposals']:
@@ -190,6 +215,19 @@ def balance(project, ffmpeg, progress=None):
                 if item['params']!=snapshots[item['id']]:failed.append({'id':item['id'],'reason':'This track changed while balancing; your edit was kept.'});continue
                 item['params'].update(changes[item['id']]);applied+=1
         show_proposals.save(path,stored['proposals'],**{k:v for k,v in stored.items() if k not in ('proposals','version')})
+        if overlay_changes:
+            from core import show_scenes
+            scene_path=project.artifacts_dir/'show_scenes.json';document=show_scenes.load(scene_path)
+            current={t['id']:t for t in overlay_tracks(project)}
+            for scene in document['scenes']:
+                for overlay in scene.get('overlays',[]):
+                    key='sticker:'+overlay['id']
+                    if key not in overlay_changes:continue
+                    before,value=overlay_changes[key]
+                    if current.get(key)!=before:
+                        failed.append({'id':key,'reason':'This voice changed while balancing; your edit was kept.'});continue
+                    overlay.update(volume=value,under_voice=True);applied+=1
+            show_scenes.save(scene_path,document)
         if load(project)['revision']==settings['revision']:save(project,{'narration_volume':gain})
         else:failed.append({'id':'narration','reason':'Narration controls changed while balancing; your edit was kept.'})
     return {'balanced':applied,'unavailable':failed}

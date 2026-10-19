@@ -1416,8 +1416,10 @@ def _backstage_single_pass_filtergraph(
     width: int = 1920,
     height: int = 1080,
     fps: int = 30,
+    mix_plan: dict | None = None,
 ) -> tuple[list[str], str, str, float, list[tuple[float, float]]]:
     """Return inputs and one graph for all Backstage video operations."""
+    if mix_plan:music_path=''  # An approved segment plan replaces the legacy bed.
     inputs: list[str] = []
     filters: list[str] = []
     video_labels: list[str] = []
@@ -1430,11 +1432,16 @@ def _backstage_single_pass_filtergraph(
         audio_labels.append(f"a{index}")
         filters.append(f"[{index}:v]fps={fps},format=yuv420p,setpts=PTS-STARTPTS[v{index}]")
         filters.append(f"[{index}:a]aresample=48000:async=1:first_pts=0,apad,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[a{index}]")
-        if segment.get("background_music_policy") == "background_music_only":
+        if not mix_plan and segment.get("background_music_policy") == "background_music_only":
             filters.append(f"[a{index}]volume=0[a{index}muted]")
             audio_labels[-1] = f"a{index}muted"
         if segment.get("background_music_policy") == "clip_music_only":
             muted_ranges.append((sum(float(item.get("duration_sec") or 0.0) for item in segments[:index]), sum(float(item.get("duration_sec") or 0.0) for item in segments[:index + 1])))
+    music_inputs=0
+    if mix_plan:
+        from core.music_mix_plan import segment_graph
+        extra,clauses,audio_labels=segment_graph(segments,mix_plan,len(segments))
+        music_inputs=len(extra)//2;inputs.extend(extra);filters.extend(clauses)
     concat_inputs = "".join(f"[{label}][{audio_labels[index]}]" for index, label in enumerate(video_labels))
     filters.append(f"{concat_inputs}concat=n={len(segments)}:v=1:a=1[vcat][acat]")
     content_duration = sum(float(item.get("duration_sec") or 0.0) for item in segments)
@@ -1449,7 +1456,7 @@ def _backstage_single_pass_filtergraph(
     video_label = "vcat"
     if logo_path:
         inputs.extend(["-loop", "1", "-i", logo_path, "-loop", "1", "-i", logo_path])
-        logo_a = len(segments) + (1 if music_path else 0)
+        logo_a = len(segments) + music_inputs + (1 if music_path else 0)
         logo_b = logo_a + 1
         outro_start = max(0.0, content_duration - BACKSTAGE_LOGO_DURATION)
         filters.append(f"[{logo_a}:v]format=rgba,scale=-1:{int(height * .72)},fade=t=in:st=0:d=1:alpha=1,fade=t=out:st={max(0.0, BACKSTAGE_LOGO_DURATION - 1):.3f}:d=1:alpha=1[li]")
@@ -1462,7 +1469,7 @@ def _backstage_single_pass_filtergraph(
         for card_index, (card, start, end) in enumerate(parchment_cards, start=1):
             inputs.extend(["-loop", "1", "-i", str(card)])
             label = f"paper{card_index}"
-            card_input = len(segments) + (1 if music_path else 0) + (2 if logo_path else 0) + card_index - 1
+            card_input = len(segments) + music_inputs + (1 if music_path else 0) + (2 if logo_path else 0) + card_index - 1
             filters.append(f"[{card_input}:v]format=rgba,fade=t=in:st=0:d=.8:alpha=1,fade=t=out:st={max(0.0, end-start-.6):.3f}:d=.6:alpha=1[{label}]")
             filters.append(f"[{current}][{label}]overlay=0:0:enable='between(t,{start:.3f},{end:.3f})'[paperout{card_index}]")
             current = f"paperout{card_index}"
@@ -1487,7 +1494,8 @@ class BackstageExportStage(Stage):
         path = artifact_path(project, "backstage_edit.json")
         payload = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
         wizard = project.data.get("settings", {}).get("wizard", {}) or {}
-        return stable_fingerprint({"edit": payload, "export": project.data.get("settings", {}).get("export", {}), "messages": wizard.get("backstage_messages", []), "version": BACKSTAGE_EXPORT_VERSION})
+        from core.music_mix_plan import approved_path
+        return stable_fingerprint({"edit": payload, "export": project.data.get("settings", {}).get("export", {}), "messages": wizard.get("backstage_messages", []), "version": BACKSTAGE_EXPORT_VERSION, "segment_mix":json.loads(approved_path(project).read_text()) if approved_path(project).is_file() else None})
 
     def outputs(self, project: Project) -> dict[str, str]:
         return {"export_manifest": str(artifact_path(project, "export_manifest.json"))}
@@ -1496,6 +1504,8 @@ class BackstageExportStage(Stage):
         plan = json.loads(artifact_path(project, "backstage_edit.json").read_text(encoding="utf-8"))
         segments = selected_segments(plan.get("segments") or [])
         plan.update(selection_summary(segments))
+        from core.music_mix_plan import for_export
+        segment_mix=for_export(project,segments)
         if not segments:
             raise ValueError("Backstage found no moments with usable original audio")
         ffmpeg = tool_status().get("ffmpeg_path")
@@ -1531,7 +1541,7 @@ class BackstageExportStage(Stage):
                 ass_export_path = project.cache_dir / "subtitles" / f"{output_path.stem}.ass"
                 ass_export_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(ass_path, ass_export_path)
-            music_path = str(plan.get("music_path") or "")
+            music_path = "" if segment_mix else str(plan.get("music_path") or "")
             if not music_path or not Path(music_path).exists():
                 music_path = ""
             messages = [str(value).strip() for value in (wizard.get("backstage_messages") or []) if str(value).strip()][:4]
@@ -1546,6 +1556,7 @@ class BackstageExportStage(Stage):
                 ass_path=ass_path,
                 logo_path=str(_personal_logo_path() or _logo_path() or ""),
                 parchment_cards=parchment_cards,
+                **({'mix_plan':segment_mix} if segment_mix else {}),
                 width=int(_target_size("youtube")[0]),
                 height=int(_target_size("youtube")[1]),
                 fps=30,
@@ -1580,7 +1591,7 @@ class BackstageExportStage(Stage):
             policies[policy] = policies.get(policy, 0) + 1
         music_runs = _background_music_runs(content_duration, music_muted_ranges)
         subtitle_cue_count = len(entries)
-        manifest = {"stage": "backstage_export", "platform": "backstage", "render_logic": "single-pass filter_complex: CFR/audio-normalized concat, sidechain-ducked music, parchment, intro/outro logo and optional ASS subtitles", "warnings": [], "single_ffmpeg_pass": True, "av_drift_sec_at_thirds": av_drift, "music": {"path": str(plan.get("music_path") or ""), "base_volume": BACKSTAGE_MUSIC_VOLUME, "duck_threshold": BACKSTAGE_MUSIC_DUCK_THRESHOLD, "duck_ratio": BACKSTAGE_MUSIC_DUCK_RATIO, "mixed": bool(music_path), "segment_policies": policies, "runs": [{"start_sec": round(start, 3), "end_sec": round(end, 3), "duration_sec": round(end - start, 3)} for start, end in music_runs]}, "subtitles": {"format": "ass", "path": str(ass_export_path) if ass_export_path else None, "burned_in": bool(burn_subtitles and subtitle_cue_count), "cue_count": subtitle_cue_count, "filter": "subtitles/libass" if burn_subtitles else None}, "exports": [{"platform": "backstage", "path": str(output_path), "filename": output_path.name, "duration_sec": duration, "cut_count": plan.get("cut_count", 0), "camera_usage": {}, "logo_duration_sec": BACKSTAGE_LOGO_DURATION, "logo_outro_duration_sec": BACKSTAGE_LOGO_DURATION}]}
+        manifest = {"stage": "backstage_export", "platform": "backstage", "render_logic": "single-pass filter_complex: CFR/audio-normalized concat, sidechain-ducked music, parchment, intro/outro logo and optional ASS subtitles", "warnings": [], "single_ffmpeg_pass": True, "av_drift_sec_at_thirds": av_drift, "music": {"path": str(plan.get("music_path") or ""), "base_volume": BACKSTAGE_MUSIC_VOLUME, "duck_threshold": BACKSTAGE_MUSIC_DUCK_THRESHOLD, "duck_ratio": BACKSTAGE_MUSIC_DUCK_RATIO, "mixed": bool(music_path or segment_mix), **({'reviewed_plan':segment_mix} if segment_mix else {}), "segment_policies": policies, "runs": [{"start_sec": round(start, 3), "end_sec": round(end, 3), "duration_sec": round(end - start, 3)} for start, end in music_runs]}, "subtitles": {"format": "ass", "path": str(ass_export_path) if ass_export_path else None, "burned_in": bool(burn_subtitles and subtitle_cue_count), "cue_count": subtitle_cue_count, "filter": "subtitles/libass" if burn_subtitles else None}, "exports": [{"platform": "backstage", "path": str(output_path), "filename": output_path.name, "duration_sec": duration, "cut_count": plan.get("cut_count", 0), "camera_usage": {}, "logo_duration_sec": BACKSTAGE_LOGO_DURATION, "logo_outro_duration_sec": BACKSTAGE_LOGO_DURATION}]}
         write_artifact_json(artifact_path(project, "export_manifest.json"), manifest)
         progress_callback(100, "Backstage export ready")
         return self.outputs(project)

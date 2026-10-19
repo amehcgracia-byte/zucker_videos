@@ -2201,7 +2201,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 scene["references"] = [ref for ref in references if ref.get("scene_id") == scene["id"]]
         wizard = project.data.get("settings", {}).get("wizard", {})
         logo = Path(str(wizard.get("reel_logo_path") or ""))
-        return jsonify({**document, "proposals": stored["proposals"], "resources": stored.get("resources") or [], "source": stored.get("source"),
+        try:resume_scene=json.loads((project.artifacts_dir/'show_resume.json').read_text())['scene_id']
+        except (OSError,ValueError,KeyError):resume_scene=document.get('resume_scene')
+        return jsonify({**document, "resume_scene":resume_scene, "proposals": stored["proposals"], "resources": stored.get("resources") or [], "source": stored.get("source"),
                         "project_logo": str(logo) if logo.is_file() else None,
                         "caption_revision": caption_layout["revision"], "captions_enabled": captions_on, "project_id": str(project.folder),
                         "plan": {"edited_duration": plan["edited_duration"], "fps": plan.get("fps") or 30},
@@ -2508,8 +2510,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if not raw:continue
             tracks.append({'id':item['id'],'kind':item['kind'],'name':p.get('name') or p.get('title') or Path(raw).stem,
                 'volume':p.get('audio_volume',1.) if item['kind']=='clip' else p.get('volume',.8 if item['kind']=='jingle' else 1.),
-                'mode':('mute' if p.get('clip_audio') is False else p.get('audio_mode','mix' if p.get('matte','none')!='none' else 'own')) if item['kind']=='clip' else 'mix',
+                'mode':('mute' if p.get('clip_audio') is False else p.get('audio_mode','mix' if p.get('matte','none')!='none' else 'own')) if item['kind']=='clip' else p.get('audio_mode','own') if item['kind']=='character' else 'mix',
                 'under_voice':p.get('under_voice',False),'at':item['at'],'duration':item['duration']})
+        tracks.extend(show_audio.overlay_tracks(project))
         return jsonify(settings=plan['audio_settings'],words=plan['audio_censor_spans'],noise=plan.get('noise_report') or {'status':'not_analyzed'},tracks=tracks)
 
     @app.patch('/api/v1/show/audio')
@@ -2533,6 +2536,24 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_show_audio_track(proposal_id):
         from core import show_proposals
         project=_require_project(state);path=project.artifacts_dir/'show_proposals.json';stored=show_proposals.load(path)
+        if proposal_id.startswith('sticker:'):
+            from core import show_scenes
+            document=show_scenes.load(_scene_files(project));body=request.get_json(silent=True) or {}
+            if body.get('project_id') and body['project_id']!=str(project.folder):return error_response('stale_project','Reopen the mixer in the current project',409)
+            for scene in document['scenes']:
+                item=next((o for o in scene.get('overlays',[]) if 'sticker:'+o['id']==proposal_id),None)
+                if item is None:continue
+                try:
+                    volume=float(body.get('volume',item.get('volume',1)))
+                    if not math.isfinite(volume) or not 0<=volume<=2:raise ValueError('Volume must be between 0 and 200%')
+                    mode=body.get('mode',item.get('audio_mode','own'))
+                    if mode not in ('own','mix','mute','silent'):raise ValueError('Choose how this voice mixes with narration')
+                    if 'under_voice' in body and not isinstance(body['under_voice'],bool):raise ValueError('Choose whether narration stays in front')
+                except (ValueError,TypeError) as exc:return error_response('invalid_audio',str(exc),400)
+                item.update(volume=volume,audio_mode=mode,under_voice=body.get('under_voice',False))
+                show_scenes.save(_scene_files(project),document);_audio_changed(project)
+                return jsonify(overlay=item,scene_id=scene['id'])
+            return error_response('not_found','This character voice was removed',404)
         item=next((p for p in stored['proposals'] if p['id']==proposal_id and p['kind'] in ('clip','jingle','character')),None)
         if item is None:return error_response('not_found','This audio track was removed',404)
         body=request.get_json(silent=True) or {}
@@ -2541,10 +2562,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             volume=float(body.get('volume',1))
             if not math.isfinite(volume) or not 0<=volume<=2:raise ValueError('Volume must be between 0 and 200%')
             mode=body.get('mode','mix')
-            if mode not in ('own','mix','mute'):raise ValueError('Choose mixed, own sound or mute')
+            if mode not in (('own','mix','mute','silent') if item['kind']=='character' else ('own','mix','mute')):raise ValueError('Choose mixed, own sound or mute')
             if 'under_voice' in body and not isinstance(body['under_voice'],bool):raise ValueError('Choose whether narration stays in front')
             params=item['params'];params['audio_volume' if item['kind']=='clip' else 'volume']=volume
             if item['kind']=='clip':params.update(audio_mode=mode,clip_audio=mode!='mute')
+            elif item['kind']=='character':params['audio_mode']=mode
             params['under_voice']=body.get('under_voice',True)
             if item['kind']=='jingle':params['duck']=1.
             show_proposals.save(path,stored['proposals'],**{k:v for k,v in stored.items() if k not in ('proposals','version')})
@@ -2928,6 +2950,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 _prepare_scenes(project, [scene_id])
         return jsonify(scene)
 
+    @app.post("/api/v1/show/scenes/resume")
+    @_proposals_locked
+    def api_show_resume():
+        from core import show_scenes
+        project=_require_project(state);path=_scene_files(project)
+        document=show_scenes.load(path);body=request.get_json(silent=True) or {}
+        scene_id=body.get('scene_id')
+        if not any(scene['id']==scene_id for scene in document['scenes']):
+            return error_response('not_found','Choose a scene in this project',404)
+        from core.project import atomic_write_json
+        resume_path=project.artifacts_dir/'show_resume.json'
+        try:resume=json.loads(resume_path.read_text())
+        except (OSError,ValueError):resume={}
+        atomic_write_json(resume_path,{**resume,'scene_id':scene_id})
+        return jsonify(scene_id=scene_id)
+
     @app.post("/api/v1/show/scenes/prefetch")
     def api_show_scenes_prefetch() -> Response:
         """Every scene's preview with effects, prepared in the background from the scene
@@ -3071,10 +3109,17 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             template=raw.get('follow_template')
             if template and (not Path(str(template)).is_file() or not Path(str(template)).resolve().is_relative_to((project.folder/'assets/tracking').resolve())):
                 return error_response('bad_request','Choose this project’s saved tracking template',400)
-            overlays.append({"follow_anchor":follow_anchor,**({'follow_template':template} if template else {}),"id": str(raw.get("id") or uuid.uuid4().hex)[:80], "asset": str(raw["asset"]), "x": max(-20.0, min(100.0, float(raw.get("x", 12)))),
+            release=raw.get('follow_seconds')
+            if release is not None:
+                try:release=float(release)
+                except (ValueError,TypeError):return error_response('bad_request','Choose a valid release point',400)
+                if not math.isfinite(release) or release<0:return error_response('bad_request','Choose a valid release point',400)
+            overlays.append({"follow_seconds":release,"follow_anchor":follow_anchor,**({'follow_template':template} if template else {}),"id": str(raw.get("id") or uuid.uuid4().hex)[:80], "asset": str(raw["asset"]), "x": max(-20.0, min(100.0, float(raw.get("x", 12)))),
                              "y": max(-20.0, min(100.0, float(raw.get("y", 12)))), "width": max(3.0, min(100.0, float(raw.get("width", 23)))),
                              "at": at, "duration": duration, "selected_text": str(raw.get("selected_text") or "")[:400],
                              "effect": str(raw.get("effect") or "pop"),
+                             "audio_mode": raw.get("audio_mode") if raw.get("audio_mode") in ('own','mix','mute','silent') else 'own',
+                             "volume": max(0.,min(2.,float(raw.get("volume",1.)))), "under_voice": bool(raw.get("under_voice",False)),
                              "action": str(raw.get("action") or "none"), "intensity": max(0.2, min(3.0, float(raw.get("intensity", 1.0)))),
                              "stretch": max(0.25, min(4.0, float(raw.get("stretch", 1.0)))), "rotate": max(-180.0, min(180.0, float(raw.get("rotate", 0.0)))),
                              "flip": bool(raw.get("flip", False)), "opacity": max(0.05, min(1.0, float(raw.get("opacity", 1.0)))),
@@ -4286,7 +4331,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         allowed = {"status", "at", "duration", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action", "clip_audio", "audio_mode",
                    "amount", "offset", "voice", "hold", "subject", "text", "style", "position", "size", "effect", "warp", "point", "anchor", "scale",
                    "density", "strength", "rise", "colour", "texture", "font", "bold", "italic",
-                   "entrance", "prompt", "picture", "selected_text", "image_center", "intensity", "follow_anchor", "follow_template", "person_scale", "person_offset", "brightness", "saturation", "hue"}
+                   "entrance", "prompt", "picture", "selected_text", "image_center", "intensity", "follow_anchor", "follow_template", "follow_seconds", "follow_place", "person_scale", "person_offset", "brightness", "saturation", "hue"}
         changes = {key: value for key, value in body.items() if key in allowed}
         # All storyboard tools share the edited clock. Reject impossible placements
         # instead of silently accepting an image beyond its owning scene.
@@ -4295,6 +4340,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if 'follow_template' in changes:
                 path=Path(str(changes['follow_template']))
                 if not path.is_file() or not path.resolve().is_relative_to((project.folder/'assets/tracking').resolve()):raise ValueError('Choose a saved tracking template from this project')
+            if 'follow_seconds' in changes and changes['follow_seconds'] is not None:
+                value=float(changes['follow_seconds'])
+                if not math.isfinite(value) or value<0:raise ValueError('Choose a release point after this effect starts')
+                changes['follow_seconds']=value
             if 'follow_anchor' in changes:
                 from core.show_follow import validate_anchor
                 changes['follow_anchor']=validate_anchor(changes['follow_anchor'])
@@ -4519,6 +4568,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 lane["queue"].clear()
         try:
             job = state.wizard.render_show_review(project)
+            resume_path=project.artifacts_dir/'show_resume.json'
+            if resume_path.is_file():
+                from core.project import atomic_write_json
+                try:resume=json.loads(resume_path.read_text())
+                except (OSError,ValueError):resume={}
+                atomic_write_json(resume_path,{**resume,'reopen_review':False})
         except RuntimeError as exc:
             return error_response("wizard_busy", str(exc), 409)
         return jsonify(serialize_wizard_job(job)), 202
@@ -5615,6 +5670,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     register_library_routes(app, state, lambda: app_home() / "Library" / "projects.json")
     from server.show_studio_api import register_show_studio_routes
     register_show_studio_routes(app, state, root)
+    from server.ai_connections import register_ai_connection_routes
+    register_ai_connection_routes(app,state,api_show_review_render,api_wizard_review_render)
+    from server.music import register_music_routes
+    register_music_routes(app,state)
     return app
 
 
@@ -5662,6 +5721,11 @@ def _remember_project(project: Project) -> None:
 def _project_wizard_status(project: Project) -> dict[str, Any]:
     stages = project.data.get("stages") or {}
     logs_path = str(project.cache_dir / "logs")
+    try:resume=json.loads((project.artifacts_dir/'show_resume.json').read_text())
+    except (OSError,ValueError):resume={}
+    if resume.get('reopen_review') and (project.artifacts_dir/'show_scenes.json').is_file():
+        return {'id':'project','status':'waiting_show_review','stage':'show_review','progress':60,
+                'message':'Continue editing your show','project_path':str(project.folder),'logs_path':logs_path}
     failed = next(((name, stage) for name, stage in stages.items() if stage.get("status") == "failed"), None)
     if failed:
         name, stage = failed

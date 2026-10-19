@@ -194,3 +194,62 @@ def test_background_picker_accepts_library_images_and_rejects_unknown_files(tmp_
     assert r.get_json()['params']['matte']=='green'  # editing a key must not silently switch to person segmentation
     assert r.get_json()['params']['brightness']==1.4
     assert client.post(prefix+'/save',data={'settings':json.dumps({'library_path':'/etc/passwd'})}).status_code==400
+
+
+def test_tracking_jumps_to_the_marked_object_on_the_first_cut_frame():
+    from core.show_textures import ObjectTracker
+    rng=np.random.default_rng(121);patch=rng.integers(0,255,(24,24),dtype=np.uint8)
+    def frame(x):
+        grey=np.full((180,320),35,np.uint8)
+        if x is not None:grey[70:94,x:x+24]=patch
+        return grey
+    tracker=ObjectTracker([20,70,24,24])
+    assert tracker.update(frame(20))[:2]==[20,70]
+    assert tracker.update(frame(240))[:2]==pytest.approx([240,70],abs=1)
+    assert tracker.update(frame(None)) is None
+    assert tracker.update(frame(80))[:2]==pytest.approx([80,70],abs=1)
+
+
+def test_texture_uses_the_saved_mark_not_pixels_at_effect_start(tmp_path):
+    from core.show_inserts import load_steam,draw_steam
+    rng=np.random.default_rng(100);patch=rng.integers(0,255,(24,24),dtype=np.uint8)
+    Image.fromarray(patch).save(tmp_path/'mark.png')
+    steam=load_steam({'steam':[.8,.4],'anchor':[.75,.4,24/320,24/180],
+                      'follow_template':str(tmp_path/'mark.png'),'at':0,'duration':4},320,180)
+    clean=np.full((180,320,3),35,np.uint8);clean[30:54,40:64]=patch[...,None]
+    draw_steam(clean.copy(),steam,1,tracking_frame=clean)
+    assert not steam.lost
+    assert steam.x==pytest.approx(40+(.8-.75)*320,abs=1)
+    assert steam.y==pytest.approx(30,abs=1)
+
+
+def test_marked_screen_texture_is_not_reprojected_as_source_coordinates():
+    from core.show import framed_layer
+    entry={'steam':[.8,.6],'anchor':[.75,.6,.1,.1],'follow_template':'marked-frame.png','at':0,'duration':4}
+    plan={'fps':25,'shots':[{'start_frame':0,'end_frame':50,'zoom':2,'focus':[.3,.4]},
+                            {'start_frame':50,'end_frame':100,'zoom':1,'focus':[.5,.5]}]}
+    assert framed_layer(plan,[entry])==[entry]
+
+
+def test_release_leaves_the_object_at_last_position_instead_of_following_hand_back():
+    from core.show_follow import Follow
+    patch=np.random.default_rng(42).integers(0,255,(24,24,3),dtype=np.uint8)
+    def picture(x):
+        frame=np.zeros((180,320,3),np.uint8);frame[60:84,x:x+24]=patch;return frame
+    follow=Follow([20/320,60/180,24/320,24/180],320,180,until=1.)
+    assert follow.update(picture(20),0)==pytest.approx((0,0))
+    placed=follow.update(picture(35),.9)
+    assert placed[0]==pytest.approx(15/320,abs=.01)
+    assert follow.update(picture(20),1.1)==placed
+
+
+def test_full_hd_reacquisition_refines_coarse_search_coordinates():
+    from core.show_textures import ObjectTracker
+    patch=np.random.default_rng(12).integers(0,255,(78,93),dtype=np.uint8)
+    def frame(x,y):
+        out=np.full((1080,1920),35,np.uint8);out[y:y+78,x:x+93]=patch;return out
+    tracker=ObjectTracker([1451,608,93,78])
+    tracker.update(frame(1451,608))
+    found=tracker.update(frame(233,107))
+    assert found is not None
+    assert found[:2]==pytest.approx([233,107],abs=1)
