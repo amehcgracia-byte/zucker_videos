@@ -104,3 +104,15 @@ credential vault; they did not alter the recovered user project. The combined
 focused regression selection passes 118 tests (`/tmp/show-2613-final-checks.log`).
 Source screenshots: `/tmp/show-2613-mix-plan.png` and
 `/tmp/show-2613-voice-mixer.png`. Latest package validation remains pending.
+
+Frozen-package QA exposed another preservation edge case: if the global library
+folder changes or its copy is removed, the approved project's music must still
+be offered when revising its plan. Both the plan catalog and save validation now
+reuse the checked project-owned copy. An additional regression covers cleanup,
+reopening and re-approval. The focused music/connection selection passes 14 tests.
+The first frozen selftest had no audio fixture supplied and stopped before the
+mandatory transcription check; supplying six local seconds of the existing
+recording completed it: `ok`, transcription/Silero, scene tagging, instrument
+model, intro render and exact Metal remap all true. No footage was uploaded.
+This native dependency check does not certify Windows dialogs or live provider
+access. Final rebuilt package metadata and installation are recorded below.

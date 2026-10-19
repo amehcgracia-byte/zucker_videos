@@ -89,3 +89,12 @@ def test_single_pass_graph_contains_ducking_crossfade_and_correct_extra_input_in
     assert '[2:a]' in graph and '[3:v]' in graph and '[4:v]' in graph and '[5:v]' in graph
     assert 'volume=-18.000dB' in graph and duration==7
     assert inputs.count('-i')==6
+
+
+def test_project_music_still_appears_in_plan_after_global_cleanup(library,tmp_path):
+    p,items,rows=setup_plan(tmp_path,library)
+    doc=music_mix_plan.save(p,rows,approve=True)
+    (library/'bed.mp3').unlink()
+    assert 'bed' in music_mix_plan.available_tracks(p)
+    revised=music_mix_plan.save(p,rows,approve=True,revision=doc['revision'])
+    assert Path(revised['tracks']['bed']['path']).is_file()

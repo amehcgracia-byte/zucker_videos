@@ -30,6 +30,16 @@ def load(project):
     except (OSError,ValueError):return {'revision':0,'status':'empty','segments':[]}
 
 
+def available_tracks(project):
+    catalog={r['id']:r for r in music_library.local()}
+    try:approved=json.loads(approved_path(project).read_text())
+    except (OSError,ValueError):approved={}
+    for id,record in approved.get('tracks',{}).items():
+        p=Path(record.get('path',''))
+        if p.is_file() and p.resolve().is_relative_to((project.folder/'assets/music').resolve()):catalog.setdefault(id,record)
+    return catalog
+
+
 def validate(rows,items,catalog):
     if not isinstance(rows,list) or len(rows)!=len(items):raise ValueError('Provide one mix choice per kept segment')
     known={r['id']:r for r in items};result=[];seen=set()
@@ -65,8 +75,13 @@ def save(project,rows,*,approve=False,revision=None,expected_signature=None):
         current=load(project);items=segments(project)
         if revision is not None and int(revision)!=current['revision']:raise ValueError('The mix plan changed in another window; reopen it')
         if expected_signature and signature(items)!=expected_signature:raise ValueError('The paper edit changed while planning; generate the plan again')
-        catalog={r['id']:r for r in music_library.local()};rows=validate(rows,items,catalog)
-        tracks=music_library.project_tracks(project,[r['track_id'] for r in rows]) if approve else {}
+        catalog=available_tracks(project);rows=validate(rows,items,catalog)
+        tracks={}
+        if approve:
+            ids={r['track_id'] for r in rows if r['track_id']}
+            global_ids={r['id'] for r in music_library.local()}
+            tracks=music_library.project_tracks(project,ids & global_ids)
+            tracks.update({id:catalog[id] for id in ids-global_ids})
         result={'version':1,'revision':current['revision']+1,'status':'approved' if approve else 'draft',
                 'signature':signature(items),'segments':rows,'tracks':tracks}
         atomic_write_json(path(project),result)

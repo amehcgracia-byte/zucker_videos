@@ -68,7 +68,7 @@ def register_music_routes(app,state):
             p=current();items=music_mix_plan.segments(p)
             return jsonify(plan=music_mix_plan.load(p),signature=music_mix_plan.signature(items),project_id=str(p.folder),
                            segments=[{k:r.get(k) for k in ('id','duration_sec','text','text_original','english_text','filename')} for r in items],
-                           library=[{k:r.get(k) for k in ('id','name','duration','license','attribution')} for r in music_library.local()])
+                           library=[{k:r.get(k) for k in ('id','name','duration','license','attribution')} for r in music_mix_plan.available_tracks(p).values()])
         except ValueError as exc:return fail(exc,409)
     @app.put('/api/v1/music/plan')
     def save_plan():
