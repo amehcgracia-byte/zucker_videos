@@ -4274,6 +4274,17 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except (UnidentifiedImageError, OSError, SyntaxError):
             return error_response("bad_request", f"{storage.filename} is not a picture this app can read", 400)
         kept = _keep_picture(project, payload, storage.filename, origin="Your picture")
+        if not kept["cutout"]:
+            from core import show_characters
+            mask = show_characters.green_screen_mask(kept["path"])
+            if mask is not None:
+                original = kept["path"]
+                with Image.open(original).convert("RGBA") as picture:
+                    import numpy as np
+                    picture.putalpha(Image.fromarray((mask * 255).astype(np.uint8)))
+                    output = io.BytesIO(); picture.save(output, "PNG")
+                kept = _keep_picture(project, output.getvalue(), f"{Path(original).stem} transparent.png", origin="Your picture · green screen removed", cut_out=True)
+                kept["original"] = original
         if not kept["cutout"] and kept["path"] not in picture_masks:
             from core import show_characters
             picture_masks[kept["path"]] = mask_pool.submit(show_characters.auto_mask, kept["path"])
@@ -4291,7 +4302,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         waiting = picture_masks.pop(raw, None)
         mask, method = waiting.result() if waiting is not None else show_characters.auto_mask(raw)
         try:
-            picture, _box = show_characters.cutout(raw, mask)
+            if (request.get_json(silent=True) or {}).get("keep_canvas"):
+                from PIL import Image
+                import numpy as np
+                picture = Image.open(raw).convert("RGBA")
+                original_alpha = np.asarray(picture)[..., 3] / 255.
+                picture.putalpha(Image.fromarray((np.minimum(mask, original_alpha) * 255).astype(np.uint8)))
+            else:
+                picture, _box = show_characters.cutout(raw, mask)
         except ValueError as exc:
             return error_response("cutout_failed", str(exc), 422)
         buffer = io.BytesIO()

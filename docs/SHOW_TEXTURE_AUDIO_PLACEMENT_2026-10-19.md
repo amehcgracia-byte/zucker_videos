@@ -25,3 +25,7 @@ Catalog searches require the user's provider credentials and permitted downloads
 The user explicitly chose the earlier 71-effect / 14-scene snapshot and resume at scene 7, excluding recent experiments. Back up the current project state before restoration, and refuse replacement while the app is running. Keep all media local. Install only the verified package with a verified rollback copy.
 
 Claude: preserve this branch's same-ID replacement, selection lifecycle and audio source offsets. Do not reintroduce a new clip for a texture replacement or substitute unrelated drawings. Provider search and generated art are independent of placement and render approval.
+
+## Photo background shortcut (20 October)
+
+Remove background is now a direct context-menu action on placed photos and drawings. It uses the existing subject mask service and keeps the full canvas so replacement does not shift the element. Imported clear saturated green backings are removed automatically, only for border-connected green; enclosed green subject details survive. Originals stay in the library. Natural-photo masks remain approximate and can need manual correction.

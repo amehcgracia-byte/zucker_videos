@@ -1532,6 +1532,20 @@
     if(!cutoutDrag)return;const d=cutoutDrag;cutoutDrag=null;if(!d.changes)return;
     try{await patch(d.item.id,d.changes);await markModified(d.item.id);invalidateLocal(currentScene());drawOverlays(currentScene());prepareInBackground(currentScene());}catch(error){showToast(error.message,true);}
   });
+  async function removePictureBackground(item) {
+    const scene=currentScene(), path=item.overlay?.asset||item.params.picture;
+    if(!path)return;
+    showToast('Removing background…');
+    try {
+      const cut=await api('/show/library/pictures/cutout',{method:'POST',body:JSON.stringify({path,keep_canvas:true})});
+      await loadLibrary();
+      if(item.overlay){item.overlay.original_asset ||= path;await savePlacement(item,{asset:cut.path});}
+      else await savePlacement(item,{picture:cut.path});
+      drawOverlays(scene);invalidateLocal(scene);renderTimeline(scene);
+      showToast('Background removed. The original stays in Library.');
+    } catch(error){showToast('Could not remove background: '+error.message,true);}
+  }
+
   function effectItems(scene, item) {
     if(item.clay)return [{label:'Clay settings…',action:()=>openClaySettings(item.clay)},
       {label:'Create a new clay story…',action:()=>ShowClayEditor.open(currentScene(),{start:item.at,end:item.at+item.duration,text:currentScene().text})},
@@ -1539,6 +1553,7 @@
     const id = item.id;
     return [
       { label: "Settings…", action: () => effectSettings(id) },
+      ...(item.params.picture?[{label:"Remove background",action:()=>removePictureBackground(item)}]:[]),
       ...((item.kind==='background'||item.kind==='clip'&&item.params.matte!=='none')?[{label:"Colour & light…",action:()=>layerColourDialog(item)}]:[]),
       ...((item.params.picture || item.kind==='clip' && item.params.matte!=='none')?followItems(item):[]),
       { label: "Show on the video and timeline", action: () => locateEffect(timelineItem(id)) },
@@ -1654,6 +1669,7 @@
       { label: "Undo", hint: "⌘Z", disabled: !layerUndo.some((entry) => entry.scene === scene.id), action: () => layerCommand("undo") },
       ]),
       { separator: true },
+      {label:"Remove background",action:()=>removePictureBackground(timelineItem("sticker:"+overlay.id))},
       ...followItems(timelineItem("sticker:"+overlay.id)),
       ...(overlay.action==='talk'?[{label:'Sound mixer…',action:()=>window.ShowAudio?.open()}]:[]),
       { label: "Animate", submenu: () => [
@@ -2899,6 +2915,7 @@
       : `<select data-lib-recur="${index}" aria-label="Make ${escape(item.name)} recurring"><option value="">★ Make recurring…</option>${libraryShelves.map((shelf) => `<option value="${escape(shelf)}" ${item.character && shelf === "Characters" ? "selected" : ""}>${escape(shelf)}</option>`).join("")}</select>`;
     return `<figure class="show-lib-card ${item.retired ? "hidden-item" : ""}">
       <img src="${item.url}" alt="" loading="lazy">
+      ${item.section!=="other"?`<button type="button" data-lib-cutout="${index}">Remove background</button>`:""}
       <figcaption><b title="${escape(item.name)}">${escape(item.name)}</b><small>${escape(where)}${item.approved ? " · approved" : ""}</small></figcaption>
       <div class="show-lib-actions">
         ${libraryFor ? `<button type="button" class="icon-button small primary" data-lib-use-for="${escape(libraryFor.id)}" data-lib-path="${escape(item.path)}">${libraryFor.kind === "background" ? "Use as the background" : "Use for this drawing"}</button>` : ""}
@@ -3034,13 +3051,18 @@
   }
 
   async function onLibraryClick(event) {
-    const target = event.target instanceof Element ? event.target.closest("[data-lib-media],[data-lib-effect],[data-lib-toggle],[data-lib-close],[data-lib-tab],[data-lib-use-for],[data-lib-face],[data-lib-words],[data-lib-place],[data-lib-unrecur],[data-lib-hide]") : null;
+    const target = event.target instanceof Element ? event.target.closest("[data-lib-cutout],[data-lib-media],[data-lib-effect],[data-lib-toggle],[data-lib-close],[data-lib-tab],[data-lib-use-for],[data-lib-face],[data-lib-words],[data-lib-place],[data-lib-unrecur],[data-lib-hide]") : null;
     if (!target) return;
     if(target.dataset.libMedia){target.disabled=true;try{await placeLibraryMedia(target.dataset.libMedia);}finally{target.disabled=false;}return;}
     if(target.dataset.libEffect){libraryDialog.close();const key=target.dataset.libEffect,picked=libraryWords||pickedHere(currentScene());if(key.startsWith('texture_'))await extraTool(key,currentScene(),picked);else chooseAdd(key,picked,innerWidth/2,innerHeight/2);return;}
     if (target.dataset.libToggle) {
       libraryDialog.querySelectorAll("[data-lib-group]").forEach((group) => { group.open = target.dataset.libToggle === "open"; });
       return;
+    }
+    if(target.hasAttribute('data-lib-cutout')){
+      const item=libraryAll[Number(target.dataset.libCutout)];target.disabled=true;
+      try {await api('/show/library/pictures/cutout',{method:'POST',body:JSON.stringify({path:item.path,keep_canvas:true})});await loadLibrary();drawLibrary();showToast('Transparent copy saved. Original kept.');}
+      catch(error){showToast(error.message,true);target.disabled=false;}return;
     }
     if (target.hasAttribute("data-lib-close")) { libraryDialog.close(); return; }
     if (target.dataset.libTab) { libraryTab = target.dataset.libTab; drawLibrary(); return; }
