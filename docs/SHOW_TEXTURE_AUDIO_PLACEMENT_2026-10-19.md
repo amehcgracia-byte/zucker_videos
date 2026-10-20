@@ -29,3 +29,11 @@ Claude: preserve this branch's same-ID replacement, selection lifecycle and audi
 ## Photo background shortcut (20 October)
 
 Remove background is now a direct context-menu action on placed photos and drawings. It uses the existing subject mask service and keeps the full canvas so replacement does not shift the element. Imported clear saturated green backings are removed automatically, only for border-connected green; enclosed green subject details survive. Originals stay in the library. Natural-photo masks remain approximate and can need manual correction.
+
+## Follow-up 2026-10-20: cleanup and export consistency
+
+- Photo background removal is available in the image context menu and project library; clear green-backed imports retain an original and create a transparent copy with the same canvas.
+- Resuming composition from `cache/composition-base.mp4` now treats that file as a cache hit instead of copying it onto itself. Original provenance is preserved, including for filesystem aliases. Changed source exports still refresh the cache.
+- Imported clips with mixed or disabled source audio now use contain/letterbox, matching clips inserted with their own audio. Intentional close-ups retain their crop and zoom.
+- This is not yet a completed UI consolidation. Pending: shared media editor/action registry across canvas and timeline, consistent zoom/scale controls beyond the frame, background-video parity, and reviewed storage cleanup. No project media or useful libraries were removed.
+- The previously restored 71-effect project must not be restored again: the user's subsequent edits are now authoritative. Resume scene 7 was already applied with the 2.6.14 installation.

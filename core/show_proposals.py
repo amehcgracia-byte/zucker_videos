@@ -234,7 +234,7 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
                     'duck':0. if mode=='silent' else 1.,'under_voice':bool(params.get('under_voice',False)),'fade':.02})
         elif item['kind']=='clip' and params.get('audio_mode')=='mix' and params.get('matte','none')=='none':
             cutaways.append({'proposal':item['id'],'at':item['at'],'duration':item['duration'],'source':params['clip'],
-                             'source_start':params.get('clip_start',0),'zoom':1.,'focus':[.5,.5]})
+                             'source_start':params.get('clip_start',0),'zoom':1.,'focus':[.5,.5],'fit':'contain'})
             if params.get('clip_audio',True):
                 items_out.append({'proposal':item['id'],'jingle':params['clip'],'at':item['at'],'duration':item['duration'],
                                   'start':params.get('clip_start',0),'volume':params.get('audio_volume',.7),'duck':1.,'fade':.02,'under_voice':params.get('under_voice',True)})
@@ -247,7 +247,7 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
         elif item["kind"] == "clip" and params.get("clip_audio") is False:
             # Picture only: the clip replaces the image while the host's voice goes on, like a close-up.
             cutaways.append({"proposal": item["id"], "at": item["at"], "duration": item["duration"], "source": params["clip"],
-                             "source_start": params.get("clip_start", 0.0), "zoom": 1.0, "focus": [0.5, 0.5]})
+                             "source_start": params.get("clip_start", 0.0), "zoom": 1.0, "focus": [0.5, 0.5], "fit": "contain"})
         elif item["kind"] == "clip":
             # A video clip played whole with its own sound while the host pauses (core.show_inserts.load_clip).
             items_out.append({"proposal": item["id"], "insert": "clip", "at": item["at"], "source": params["clip"],

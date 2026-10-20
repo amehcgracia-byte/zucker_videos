@@ -92,6 +92,24 @@ _REVIEW_RENDER_LOCK = threading.Lock()
 _REVIEW_RENDERING_KEYS: set[str] = set()
 
 
+def _refresh_composition_base(source: Path, cache: Path, metadata: Path) -> bool:
+    """Return cache-hit status, preserving provenance when resuming the cache itself."""
+    if cache.is_file() and source.samefile(cache):
+        return True
+    source_stat = source.stat()
+    expected = {"source": str(source), "source_size": int(source_stat.st_size),
+                "source_mtime_ns": int(source_stat.st_mtime_ns)}
+    if cache.is_file() and cache.stat().st_size > 0 and metadata.is_file():
+        try:
+            if json.loads(metadata.read_text(encoding="utf-8")) == expected:
+                return True
+        except (OSError, json.JSONDecodeError):
+            pass
+    shutil.copy2(source, cache)
+    metadata.write_text(json.dumps(expected, indent=2) + "\n", encoding="utf-8")
+    return False
+
+
 def _queue_review_thumbnail_render(project: Project, indices: set[int]) -> None:
     """Queue review thumbnails and return before FFmpeg work starts."""
     if not indices:
@@ -529,24 +547,9 @@ class CompositionRunner:
             # compounds the previous final export, but refresh it whenever the
             # mounted export changes.  The old existence-only check silently
             # composed new UI state over a stale edit/export.
-            source_stat = original_base_path.stat()
-            expected_cache_meta = {
-                "source": str(original_base_path),
-                "source_size": int(source_stat.st_size),
-                "source_mtime_ns": int(source_stat.st_mtime_ns),
-            }
-            cache_is_current = False
-            if composition_cache.is_file() and composition_cache.stat().st_size > 0 and composition_cache_meta.is_file():
-                try:
-                    cache_is_current = json.loads(composition_cache_meta.read_text(encoding="utf-8")) == expected_cache_meta
-                except (OSError, json.JSONDecodeError):
-                    cache_is_current = False
-            if not cache_is_current:
-                shutil.copy2(original_base_path, composition_cache)
-                composition_cache_meta.write_text(
-                    json.dumps(expected_cache_meta, indent=2) + "\n",
-                    encoding="utf-8",
-                )
+            cache_is_current = _refresh_composition_base(
+                original_base_path, composition_cache, composition_cache_meta
+            )
             _composition_event(project, job, "cache_miss" if not cache_is_current else "cache_hit", input_path=original_base_path, output_path=composition_cache, duration=None, reason="composition_base_provenance")
             base_path = composition_cache
             output_stem = original_base_path.stem

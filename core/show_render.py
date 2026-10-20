@@ -144,8 +144,11 @@ def cutaway_filters(plan: dict[str, Any], first_input: int, width: int, height: 
         frame = (f"crop=w=iw/{z}:h=ih/{z}:x='max(0,min(iw-iw/{z},iw*{fx:.4f}-iw/{z}/2))'"
                  f":y='max(0,min(ih-ih/{z},ih*{fy:.4f}-ih/{z}/2))',") if zoom > 1.0 else ""
         label = f"cut{index}"
+        fit = (f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+               if cut.get("fit") == "contain" else
+               f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}")
         chains.append(f"[{first_input + index}:v]fps={fps},trim=duration={duration:.4f},setpts=PTS-STARTPTS,{frame}"
-                      f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,format=yuv420p,"
+                      f"{fit},setsar=1,format=yuv420p,"
                       f"setpts=PTS+{at:.4f}/TB[{label}]")
         chains.append(f"[{current}][{label}]overlay=enable='between(t,{at:.4f},{at + duration - 0.5 / fps:.4f})':eof_action=pass[{label}o]")
         current = f"{label}o"
