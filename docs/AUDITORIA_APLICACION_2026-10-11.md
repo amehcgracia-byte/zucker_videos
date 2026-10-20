@@ -290,3 +290,23 @@ skip/xfail ni se declara resuelto ese conjunto. El arranque original
 `38143215161` figura cancelado; se usan sus sucesoras, no se atribuye éxito a él.
 La auditoría continúa abierta, incluidas grabaciones reales y diálogos nativos.
 No se ha cerrado, instalado ni modificado la aplicación del usuario.
+
+## Seguimiento del 20 de octubre: recorridos sintéticos aprobados
+
+La ejecución `39215402129`, revisión `e6ecab74`, completa YouTube, Reel,
+Medley, 360 y Backstage tanto en Windows como en macOS: diez informes con
+`passed: true`. Ambos jobs superan además 89 tests (6 skips preexistentes).
+La carrera de publicación del resumen no se reproduce en esta ronda remota.
+Esto confirma los recorridos del harness; no acredita todos los diálogos nativos
+ni sustituye la inspección visual completa de sus artefactos.
+
+La suite rápida `39215410116` sigue roja: 28 fallos y 957 aprobados, además de
+10 skips y un xfail preexistentes. No se han añadido exclusiones.
+La ronda privada real `39112812590` terminó cancelada; no hay una sucesora
+real aprobada. La auditoría permanece abierta para esa ronda, 360 real,
+la revisión visual y los diálogos nativos. RAWVideos está conectado.
+
+Se revisaron las novedades: #44 incorpora texturas/audio sobre #43; estos
+cambios de Show no se atribuyen a los resultados de la rama de auditoría.
+No se ha instalado, cerrado ni modificado la aplicación del usuario en este
+seguimiento.
