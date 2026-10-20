@@ -13,6 +13,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
+import zlib
 from pathlib import Path
 from typing import Any, Callable
 
@@ -93,47 +95,94 @@ def _slug(text: str) -> str:
     return re.sub(r"[^\w -]+", "", text).strip()[:60] or "gag"
 
 
+def paint_seed(gag: dict[str, Any], index: int) -> int:
+    """The painting's seed: fixed by the storyboard effect it belongs to, so its own
+    preview, the scene's preview and the final render show one and the same picture
+    (by its place in the list only for gags that are not storyboard effects)."""
+    if gag.get("proposal"):
+        return 3 + zlib.crc32(str(gag["proposal"]).encode()) % 2
+    return 3 + index % 2
+
+
+_painting: dict[str, threading.Lock] = {}
+_painting_guard = threading.Lock()
+
+
 def painted_picture(subject: str, style: str, *, seed: int = 3, library_root: Path | None = None,
                     step: Callable[[int, int], None] | None = None, prompt: str | None = None) -> Image.Image:
     """A painted sticker, reused from the gag library when it was painted before
-    (a drawing with the person's own prompt is another drawing)."""
+    (a drawing with the person's own prompt is another drawing). Two previews that
+    need the same painting at once paint it once: the second waits and reuses it."""
     from core.gag_library import library_dir
     style = style if style in gag_paint.STYLES else "pencil"
     folder = (library_root or library_dir()) / "Painted" / gag_paint.STYLES[style].label
     key = f"{subject}|{style}|{seed}|rough-art-v2|{gag_paint.STYLES[style].prompt}" + (f"|{prompt}" if prompt else "")
     target = folder / f"{_slug(subject)} {hashlib.sha1(key.encode()).hexdigest()[:6]}.png"
+    with _painting_guard:
+        lock = _painting.setdefault(str(target), threading.Lock())
+    with lock:
+        return _paint_once(target, subject, style, seed, step, prompt)
+
+
+def _paint_once(target: Path, subject: str, style: str, seed: int, step: Callable[[int, int], None] | None,
+                prompt: str | None) -> Image.Image:
+    folder = target.parent
     if target.is_file():
         kept = Image.open(target).convert("RGBA")
         if not gag_paint.mostly_black(kept):          # painted before the blob check: paint it again
             return kept
+    # A drawing the painter could not make cleanly is not tried again by every preview.
+    failed = target.with_name(f".{target.stem}.unusable")
+    if failed.is_file():
+        raise gag_paint.UnusableDrawing(f"No clean drawing of {subject} (tried before)")
     # The drawing itself, its paper removed: no white sticker rim, only a soft shadow to read on video.
-    sticker = _shadowed(gag_paint.cut_out(gag_paint.paint_clean(subject, style, seed=seed, step=step, prompt=prompt)))
+    try:
+        painting = gag_paint.paint_clean(subject, style, seed=seed, step=step, prompt=prompt)
+    except gag_paint.UnusableDrawing:
+        folder.mkdir(parents=True, exist_ok=True)
+        failed.write_text(subject, encoding="utf-8")
+        raise
+    sticker = _shadowed(gag_paint.cut_out(painting))
     folder.mkdir(parents=True, exist_ok=True)
-    sticker.save(target)
+    pending = target.with_name(f".{target.stem}.part.png")
+    sticker.save(pending)
+    pending.replace(target)                           # never a half-written painting in the library
     return sticker
 
 
 def math_items(gag: dict[str, Any], folder: Path, index: int, centre: tuple[float, float]) -> list[dict[str, Any]]:
-    """Hand-written formulas orbiting the host's head, each on its own phase."""
-    import math
+    """Dense monochrome calculation field, using Studio's actual formula repertoire.
+
+    Keep a clear centre for the host; no rainbow toy glyphs or orbit across the face.
+    Each formula is rasterised once, then moved by the existing compositor.
+    """
+    from PIL import ImageDraw
+    from core.show_bridge_text import FORMULAS, fonts_for, runs
     items = []
-    count = 5
-    for k in range(count):
-        formula = FORMULAS[(index + k) % len(FORMULAS)]
-        # Chalkduster has no "²": those formulas are always in Marker Felt.
-        image = word_sticker(formula, colour=WORD_COLOURS[(index + k) % len(WORD_COLOURS)], font="marker" if "²" in formula else ("chalk", "marker")[k % 2],
-                             font_size=110, tilt=(-8, 6, -4, 9, -6)[k])
+    main, fallback = fonts_for("classic", 76)
+    if main is None:
+        raise RuntimeError("No mathematical lettering font is available")
+    for k, text in enumerate(FORMULAS):
+        pieces = runs(text, main, fallback)
+        widths = [font.getlength(part) for part, font in pieces]
+        ascent, descent = main.getmetrics()
+        image = Image.new("RGBA", (int(sum(widths)) + 16, ascent + descent + 16))
+        draw = ImageDraw.Draw(image)
+        x = 8.0
+        for (part, font), w in zip(pieces, widths):
+            draw.text((x, 8 + ascent), part, font=font, anchor="ls", fill=(255, 255, 255, 235),
+                      stroke_width=1, stroke_fill=(12, 12, 12, 160))
+            x += w
         path = folder / f"gag-{index:03d}-math{k}.png"
         image.save(path)
-        phase = k / count
-        keys = []
-        for step in range(9):
-            share = step / 8
-            angle = 2 * math.pi * (phase + share * 0.75)
-            keys.append([round(share, 3), round(centre[0] + MATH_ORBIT[0] * math.cos(angle), 4),
-                         round(centre[1] + MATH_ORBIT[1] * math.sin(angle), 4)])
-        items.append({"image": str(path), "at": round(gag["at"] + 0.12 * k, 3), "duration": round(gag["duration"] - 0.12 * k, 3),
-                      "width": 0.075 if len(formula) <= 3 else 0.12, "effect": "pop", "path": keys, "kind": "math"})
+        # Top/bottom bands and two outer columns leave the host's centre clear.
+        positions = [(x, y) for y in (0.10, 0.90) for x in (0.14, 0.38, 0.62, 0.86)]
+        positions += [(x, y) for y in (0.27, 0.44, 0.61, 0.76) for x in (0.13, 0.87)]
+        cx, cy = positions[k]
+        delay = min(k * 0.045, float(gag["duration"]) * 0.2)
+        items.append({"image": str(path), "at": round(gag["at"] + delay, 3),
+                      "duration": round(gag["duration"] - delay, 3), "width": min(0.22, image.width / 1280 * 0.5),
+                      "effect": "none", "path": [[0, cx, cy], [1, cx, cy - 0.015]], "kind": "math"})
     return items
 
 
@@ -141,7 +190,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
                progress: Progress | None = None, cancel: Callable[[], None] | None = None,
                frame_size: tuple[int, int] = (1920, 1080),
                face_at: Callable[[float], tuple[float, float] | None] | None = None,
-               outcomes: dict[str, tuple[str, str]] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+               outcomes: dict[str, tuple[str, str]] | None = None, allow_generation: bool = True) -> tuple[list[dict[str, Any]], list[str]]:
     """Render items for core.gag_render, and notes about gags that were skipped.
     ``outcomes`` receives, for each gag from a storyboard proposal, whether it was
     pictured ("applied") or why not ("failed")."""
@@ -155,7 +204,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
     painter = gag_paint.can_paint()
     notes: list[str] = []
     items: list[dict[str, Any]] = []
-    to_paint = sum(1 for gag in gags if gag["kind"] in ("drawing", "character"))
+    to_paint = sum(1 for gag in gags if gag["kind"] in ("drawing", "character") and not gag.get("picture"))
     painted = 0
     unusable: list[str] = []
     width, height = frame_size
@@ -175,7 +224,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
         position = gag.get("position") or ("left" if face == "right" else "right")
         side = "left" if centre(position, face)[0] < 0.5 else "right"
         image: Image.Image | None = None
-        if kind == "drawing" and gag.get("picture"):
+        if kind in ("drawing", "character") and gag.get("picture"):
             # The person chose one of their own approved pictures instead of a new painting.
             try:
                 with Image.open(gag["picture"]) as chosen:
@@ -183,7 +232,14 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
             except OSError:
                 result(gag, "failed", f"Your chosen picture {Path(str(gag['picture'])).name} is missing")
                 continue
+            if kind == "character" and gag.get("says"):
+                image = character_with_bubble(image, gag["says"], side=side, seed=index)
         elif kind in ("drawing", "character"):
+            if not allow_generation:
+                detail = f'Choose or generate and approve a picture for “{gag["subject"]}” first; no replacement was painted during rendering'
+                result(gag, "failed", detail)
+                notes.append(detail)
+                continue
             if not painter:
                 result(gag, "failed", "The drawing painter is not installed")
                 continue
@@ -199,15 +255,15 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
                 if progress:
                     progress((painted - 1 + done / max(1, total)) / max(1, to_paint), f"{message} — step {done}/{total}")
             try:
-                picture = painted_picture(gag["subject"], style, seed=3 + index % 2, prompt=gag.get("prompt") or None, step=paint_step)
+                picture = painted_picture(gag["subject"], style, seed=paint_seed(gag, index), prompt=gag.get("prompt") or None, step=paint_step)
             except gag_paint.UnusableDrawing:
                 unusable.append(gag["subject"])
                 result(gag, "failed", "The painter could not draw it on a clean background")
                 continue
             image = character_with_bubble(picture, gag["says"], side=side, seed=index) if kind == "character" and gag.get("says") else picture
         elif kind == "word":
-            image = word_sticker(gag["text"], colour=WORD_COLOURS[index % len(WORD_COLOURS)], font=WORD_FONTS[index % len(WORD_FONTS)],
-                                 tilt=(-6, 5, -3, 7)[index % 4])
+            image = word_sticker(gag["text"], colour="#fff4d6", font="note", handwritten=True,
+                                 tilt=(-3, 2, -2, 3)[index % 4])
         elif kind == "photo":
             found = search(gag["query"], library or [])
             if found:
@@ -215,7 +271,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
         if image is None:
             result(gag, "failed", f"No picture in your library matches “{gag.get('query', '')}”" if kind == "photo" else "Nothing to show")
             continue
-        result(gag, "applied", f"your picture {Path(str(gag['picture'])).name}" if kind == "drawing" and gag.get("picture")
+        result(gag, "applied", f"your picture {Path(str(gag['picture'])).name}" if kind in ("drawing", "character") and gag.get("picture")
                else f"{kind}: {gag.get('subject') or gag.get('text') or gag.get('query') or ''}".rstrip(": "))
         path = folder / f"gag-{index:03d}.png"
         image.save(path)
@@ -231,8 +287,9 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
         items.append({"image": str(path), "at": gag["at"], "duration": gag["duration"], "width": round(size, 4),
                       "x": round(x if explicit is not None else min(max(x, half_w + 0.01), 1 - half_w - 0.01), 4),
                       "y": round(y if explicit is not None else min(max(y, half_h + 0.01), 1 - half_h - 0.01), 4),
-                      "effect": gag.get("effect") or "pop", "kind": kind})
-    if not painter and to_paint:
+                      "effect": gag.get("effect") or "pop", "kind": kind,
+                      **({"strokes": gag["strokes"]} if gag.get("strokes") else {})})
+    if allow_generation and not painter and to_paint:
         notes.append(f"{to_paint} drawings were skipped: download the drawing painter (2.1 GB, once) to get them.")
     if unusable:
         notes.append(f"Left out, the painter could not draw them on a clean background: {', '.join(unusable)}.")

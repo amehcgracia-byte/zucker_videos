@@ -2036,7 +2036,7 @@ pre {
 .show-decide { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .show-decision { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); font-size: 0.85em; }
 .show-library { display: flex; flex-wrap: wrap; gap: 6px; max-height: 220px; overflow: auto; }
-.show-library button { padding: 2px; border: 1px solid var(--line); border-radius: 6px; background: #fff; cursor: pointer; }
+.show-library button { padding: 2px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: #1f2420; cursor: pointer; }
 .show-library img { width: 64px; height: 64px; object-fit: contain; display: block; }
 .show-step-buttons { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin-top: 10px; }
 .show-context-menu { position: fixed; z-index: 50; display: grid; gap: 8px; padding: 10px; width: 300px; background: var(--nav-bg); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.25); }
@@ -2085,6 +2085,8 @@ pre {
 .show-review > .show-steps { min-width: 0; max-width: 100%; }
 #step4:has(> #showReviewBox:not([hidden])) > .step-header { display: none; }
 
+.show-pin { font-size: .85em; margin-right: 2px; }
+.show-context-menu { max-height: calc(100vh - 16px); overflow: auto; }
 #showEffectMenu {position:fixed;z-index:10000;max-width:min(420px,calc(100vw - 16px));max-height:70vh;overflow:auto;padding:12px;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 32px #0008;}
 #showEffectMenu[hidden]{display:none}
 #showEffectMenu > div {display:flex;flex-wrap:wrap;gap:6px;border-bottom:1px solid var(--line);padding:9px 0;}
@@ -2154,6 +2156,24 @@ pre {
 .show-sticker-picker {margin:8px 0;}
 .show-sticker-picker summary {cursor:pointer;font-weight:600;}
 .show-sticker-picker .show-library {margin-top:8px;}
+.show-sticker-picker .show-library button {font-size:11px;max-width:150px;text-align:center;overflow-wrap:anywhere;}
+.show-sticker-picker .show-library img {margin-inline:auto;}
+/* Wide windows: the storyboard fits the window (show_review.js fitBoard) and each side scrolls on its own. */
+#showReviewBox.show-fit {display:flex;flex-direction:column;height:var(--show-fit-h);}
+#showReviewBox.show-fit > * {flex:none;}
+#showReviewBox.show-fit > .show-board {flex:1 1 0;min-height:0;align-items:stretch;}
+#showReviewBox.show-fit .show-stage-wrap {position:static;min-height:0;overflow-y:auto;overscroll-behavior:contain;}
+#showReviewBox.show-fit .show-stage {width:min(100%,calc(var(--show-stage-h) * 16 / 9));margin-inline:auto;}
+#showReviewBox.show-fit #showPanel {min-height:0;overflow-y:auto;overscroll-behavior:contain;align-content:start;padding-right:6px;}
+main.wizard:has(#showReviewBox.show-fit) {padding-block:10px;}
+#showReviewBox.show-fit {margin-block:6px;padding:12px 14px;}
+#showReviewBox.show-fit > .show-workspace-help {margin-block:0 6px;}
+#showReviewBox.show-fit > .show-workspace-help {padding:8px 12px;}
+body:has(#showReviewBox.show-fit) #backdropLogo {max-height:calc(100vh - 130px);}      /* the faint logo must not make the fitted page scroll */
+/* Your own pictures dropped on the scene. */
+.show-stage.show-drop-ready {outline:3px dashed #ffdc77;outline-offset:-3px;}
+.show-cutout-offer {display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel);}
+.show-cutout-offer span {flex:1 1 220px;}
 
 /* Mouse actions stay local; fly-outs group tools instead of covering the video. */
 .show-voice-input{border:1px dashed var(--line);padding:12px;border-radius:8px;margin:8px 0;display:grid;gap:6px}

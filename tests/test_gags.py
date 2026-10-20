@@ -104,17 +104,37 @@ def test_items_with_the_painter_get_painted_characters_with_their_bubble(tmp_pat
     assert Image.open(items[0]["image"]).height > 300   # the bubble sits above the character
 
 
-def test_math_formulas_orbit_the_host_s_face(tmp_path, monkeypatch):
+def test_math_formulas_fill_the_frame_without_rainbow_or_face_orbits(tmp_path, monkeypatch):
+    import numpy as np
+    from core.show_bridge_text import FORMULAS
     monkeypatch.setattr(gag_paint, "can_paint", lambda: False)
-    plan = [{"kind": "math", "at": 10.0, "duration": 4.0}]
-    items, _ = gags.make_items(plan, tmp_path, face_at=lambda t: (0.6, 0.3))
-    assert len(items) == 5 and all(item["path"] for item in items)
+    items, _ = gags.make_items([{"kind": "math", "at": 10.0, "duration": 0.5}], tmp_path,
+                              face_at=lambda t: (0.6, 0.3))
+    assert len(items) == len(FORMULAS) == 16
+    assert all(10 <= item["at"] < item["at"] + item["duration"] <= 10.501 for item in items)
+    assert min(item["path"][0][1] for item in items) < 0.2
+    assert max(item["path"][0][1] for item in items) > 0.8
     for item in items:
-        xs = [x for _, x, _ in item["path"]]
-        ys = [y for _, _, y in item["path"]]
-        assert min(xs) < 0.6 < max(xs) and min(ys) < 0.3 < max(ys)          # around the face
-        assert all(abs(x - 0.6) <= 0.16 and abs(y - 0.3) <= 0.14 for x, y in zip(xs, ys))
-    assert len({item["image"] for item in items}) == 5
+        assert item["effect"] == "none"
+        rgb = np.asarray(Image.open(item["image"]))
+        visible = rgb[rgb[..., 3] > 200, :3].astype(int)
+        assert len(visible) and np.max(np.ptp(visible, axis=1)) == 0
+
+
+def test_reviewed_render_never_generates_a_replacement_for_an_unbound_picture(tmp_path, monkeypatch):
+    monkeypatch.setattr(gag_paint, "can_paint", lambda: True)
+    def forbidden(*a, **kw):
+        raise AssertionError("The render must not start a painter")
+    monkeypatch.setattr(gags, "painted_picture", forbidden)
+    chosen = tmp_path / "approved.png"
+    Image.new("RGBA", (80, 80), (203, 24, 76, 255)).save(chosen)
+    plan = [{"kind": "drawing", "subject": "guitar", "at": 0, "duration": 1, "proposal": "missing"},
+            {"kind": "drawing", "subject": "guitar", "at": 2, "duration": 1, "proposal": "chosen", "picture": str(chosen)}]
+    outcomes = {}
+    items, notes = gags.make_items(plan, tmp_path / "render", allow_generation=False, outcomes=outcomes)
+    assert len(items) == 1 and notes and outcomes["missing"][0] == "failed"
+    assert outcomes["chosen"][0] == "applied"
+    assert Image.open(items[0]["image"]).tobytes() == Image.open(chosen).tobytes()
 
 
 def test_a_drawing_on_a_desk_is_painted_again_one_on_white_is_kept(monkeypatch):
@@ -253,3 +273,56 @@ def test_a_drawing_can_use_one_of_your_own_pictures_instead_of_a_painting(tmp_pa
                                  "proposal": "p2"}], tmp_path / "out", outcomes=outcomes)
     assert len(items) == 1 and Image.open(items[0]["image"]).size == (200, 300)
     assert outcomes["p1"] == ("applied", "your picture bulb.png") and outcomes["p2"][0] == "failed" and "gone.png" in outcomes["p2"][1]
+
+
+def test_a_talking_character_keeps_your_exact_picture_and_gets_its_bubble(tmp_path, monkeypatch):
+    from core import gag_paint, gags
+    monkeypatch.setattr(gag_paint, "can_paint", lambda: False)                  # never repainted
+    monkeypatch.setattr(gags, "painted_picture", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("repainted")))
+    own = tmp_path / "teen.png"
+    Image.new("RGBA", (200, 300), (40, 120, 200, 255)).save(own)
+    gag = {"kind": "character", "subject": "a bored teenager", "says": "Whatever", "picture": str(own), "at": 1.0, "duration": 2.0, "proposal": "p1"}
+    outcomes = {}
+    items, notes = gags.make_items([gag], tmp_path / "out", outcomes=outcomes)
+    shown = Image.open(items[0]["image"])
+    assert notes == []                                                          # nothing was waiting for the painter
+    assert outcomes["p1"] == ("applied", "your picture teen.png")
+    assert shown.tobytes() == gags.character_with_bubble(Image.open(own).convert("RGBA"), "Whatever", side="left", seed=0).tobytes()
+
+
+def test_a_storyboard_drawing_is_painted_once_for_every_preview(tmp_path, monkeypatch):
+    import threading
+    import time
+    from core import gag_paint, gags
+    gag = {"kind": "drawing", "subject": "a tiny potato", "proposal": "drawing-1234"}
+    # The same effect gets the same picture alone, in its scene or in the final render.
+    assert gags.paint_seed(gag, 0) == gags.paint_seed(gag, 7) == gags.paint_seed(gag, 8)
+    assert gags.paint_seed({"kind": "drawing"}, 0) != gags.paint_seed({"kind": "drawing"}, 1)
+    painted = []
+
+    def slow_paint(subject, style, **kwargs):
+        painted.append(subject)
+        time.sleep(0.3)
+        return Image.new("RGB", (64, 64), (200, 40, 40))
+    monkeypatch.setattr(gag_paint, "paint_clean", slow_paint)
+    monkeypatch.setattr(gag_paint, "cut_out", lambda image: image.convert("RGBA"))
+    pictures = []
+    threads = [threading.Thread(target=lambda: pictures.append(gags.painted_picture("a tiny potato", "crayon", seed=3, library_root=tmp_path)))
+               for _ in range(3)]
+    [thread.start() for thread in threads]
+    [thread.join() for thread in threads]
+    assert painted == ["a tiny potato"] and len(pictures) == 3                 # three previews, one painting
+
+
+def test_a_drawing_the_painter_cannot_make_is_not_retried_by_every_preview(tmp_path, monkeypatch):
+    from core import gag_paint, gags
+    tries = []
+
+    def unusable(subject, style, **kwargs):
+        tries.append(subject)
+        raise gag_paint.UnusableDrawing("blob")
+    monkeypatch.setattr(gag_paint, "paint_clean", unusable)
+    for _ in range(3):
+        with pytest.raises(gag_paint.UnusableDrawing):
+            gags.painted_picture("a tiny bald man", "crayon", seed=3, library_root=tmp_path)
+    assert tries == ["a tiny bald man"]

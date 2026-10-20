@@ -31,9 +31,12 @@ Warps bend the picture first, mouths move next, stickers are drawn on top.
 
 from __future__ import annotations
 
+import json
 import math
+import queue
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -68,6 +71,8 @@ class Sticker:
     mouth_drop: float = 0.0                        # largest drop, sprite pixels
     envelope: np.ndarray | None = None             # 0..1 per frame of the sticker: the voice's loudness
     fps: float = 30.0
+    painter: Any = None                            # draws itself: Claude's strokes in their order
+    draw_sec: float = 0.0                          # how long it takes to draw itself (0: it does not)
     eyes: Any = None                              # original-pixel layers with one-off glances
 
     def active(self, t: float) -> bool:
@@ -102,7 +107,17 @@ def load_sticker(raw: dict[str, Any], width: int, height: int) -> Sticker:
     prepared_w = max(8, int(round(target * PREPARED_SCALE)))
     prepared_h = max(8, int(round(image.height * prepared_w / image.width)))
     image = image.resize((prepared_w, prepared_h), Image.LANCZOS)
+    if not raw.get("mouth"):
+        # Placed pictures can be stretched, mirrored and turned (a talking one keeps its mouth where it is).
+        stretch = max(0.25, min(4.0, float(raw.get("stretch") or 1.0)))
+        if abs(stretch - 1.0) > 1e-3:
+            image = image.resize((prepared_w, max(8, int(round(prepared_h * stretch)))), Image.LANCZOS)
+        if raw.get("flip"):
+            image = image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        if float(raw.get("rotate") or 0.0):
+            image = image.rotate(-float(raw["rotate"]), resample=Image.BICUBIC, expand=True)
     pixels = np.asarray(image).astype(np.float32) / 255.0
+    pixels[..., 3] *= max(0.0, min(1.0, float(raw.get("opacity", 1.0))))
     pixels[..., :3] *= pixels[..., 3:4]
     box = raw.get("from_box")
     sticker = Sticker(
@@ -113,6 +128,12 @@ def load_sticker(raw: dict[str, Any], width: int, height: int) -> Sticker:
         path=[(float(a), float(b), float(c)) for a, b, c in raw.get("path") or []],
         hops=int(raw.get("hops") or 0),
     )
+    if sticker.effect == "draw":
+        # It draws itself first: Claude's strokes in their order, or (a painted picture) as a crayon colouring it in.
+        sticker.draw_sec = min(2.5, max(0.8, sticker.duration * 0.45))
+        if raw.get("strokes") and Path(str(raw["strokes"])).is_file():
+            from core.show_claude_drawing import Painter
+            sticker.painter = Painter(json.loads(Path(str(raw["strokes"])).read_text()), pixels.shape[1])
     if raw.get("pivot"):
         sticker.pivot = (float(raw["pivot"][0]) * prepared_w, float(raw["pivot"][1]) * prepared_h)
     if raw.get("mouth"):
@@ -194,6 +215,39 @@ def sticker_pose(sticker: Sticker, t: float, width: int, height: int) -> tuple[f
     return cx, cy, size * state["sx"], size * state["sy"], state["rot"]
 
 
+def drawing_pixels(sticker: Sticker, t: float) -> np.ndarray:
+    """The sprite while it draws itself: its strokes so far, or the part a crayon has coloured in."""
+    local = t - sticker.at
+    if not sticker.draw_sec or local >= sticker.draw_sec:
+        return sticker.pixels
+    share = max(0.0, local / sticker.draw_sec)
+    h, w = sticker.pixels.shape[:2]
+    if sticker.painter is not None:
+        painted = sticker.painter.at(share)
+        if painted.shape[:2] != (h, w):
+            painted = cv2.resize(painted, (w, h), interpolation=cv2.INTER_AREA)
+        pixels = painted.astype(np.float32) / 255.0
+        pixels[..., :3] *= pixels[..., 3:4]
+        return pixels
+    # A crayon going back and forth in six bands, top to bottom.
+    bands = 6
+    reach = share * bands
+    mask = np.zeros((h, w), np.float32)
+    band = h / bands
+    for index in range(bands):
+        if reach <= index:
+            break
+        y0, y1 = int(index * band), int(min(h, (index + 1) * band + band * 0.35))
+        part = min(1.0, reach - index)
+        edge = int(w * part)
+        if index % 2 == 0:
+            mask[y0:y1, :edge] = 1.0
+        else:
+            mask[y0:y1, w - edge:] = 1.0
+    mask = cv2.GaussianBlur(mask, (0, 0), max(1.0, band * 0.15))
+    return sticker.pixels * mask[..., None]
+
+
 def draw_sticker(frame: np.ndarray, sticker: Sticker, t: float) -> None:
     height, width = frame.shape[:2]
     cx, cy, sx, sy, rot = sticker_pose(sticker, t, width, height)
@@ -221,7 +275,8 @@ def draw_sticker(frame: np.ndarray, sticker: Sticker, t: float) -> None:
         return
     matrix = np.array([[a, b, cx - x0 - (a * px + b * py)],
                        [c, d, cy - y0 - (c * px + d * py)]], dtype=np.float32)
-    layer = cv2.warpAffine(talking_pixels(sticker, t), matrix, (x1 - x0, y1 - y0), flags=cv2.INTER_LINEAR,
+    pixels = drawing_pixels(sticker, t) if sticker.draw_sec else talking_pixels(sticker, t)
+    layer = cv2.warpAffine(pixels, matrix, (x1 - x0, y1 - y0), flags=cv2.INTER_LINEAR,
                            borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
     region = frame[y0:y1, x0:x1].astype(np.float32) / 255.0
     alpha = layer[..., 3:4]
@@ -402,7 +457,8 @@ def _video_info(path: Path) -> tuple[int, int, float, int]:
 
 def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Path, *, ffmpeg: str = "ffmpeg",
                 progress: Callable[[float], None] | None = None, cancel: Callable[[], None] | None = None,
-                timeline: list[tuple[float, float]] | None = None, drawings: Any = None) -> Path:
+                timeline: list[tuple[float, float]] | None = None, drawings: Any = None,
+                preset: str = "veryfast", crf: int = 19) -> Path:
     """Draw ``gags`` on ``video``. Character interventions lengthen it: their
     (at, duration) spans are appended to ``timeline`` for captions to follow.
     ``drawings`` (core.show_bridge.StudioDrawings) are Show Studio's effects,
@@ -448,10 +504,57 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
         encoder = subprocess.Popen([
             ffmpeg, "-y", "-v", "error", "-nostdin", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}",
             "-r", f"{fps:.6f}", "-i", "pipe:0", *audio_args,
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-pix_fmt", "yuv420p",
+            "-c:v", "libx264", "-preset", preset, "-crf", str(crf), "-pix_fmt", "yuv420p",
             "-shortest", "-movflags", "+faststart", str(pending)], stdin=subprocess.PIPE, stderr=encode_log)
         pending_inserts = list(inserts)
         written = 0
+        # Decoding, drawing and encoding overlap: one thread reads frames ahead from the
+        # decoder and another feeds the encoder, so neither ffmpeg waits for the drawing.
+        ahead: queue.Queue = queue.Queue(maxsize=16)
+        behind: queue.Queue = queue.Queue(maxsize=16)
+        halt = threading.Event()
+        broken: list[BaseException] = []
+
+        def hand(line: queue.Queue, item: Any) -> None:
+            while not halt.is_set():
+                try:
+                    line.put(item, timeout=0.2)
+                    return
+                except queue.Full:
+                    continue
+
+        def read_frames() -> None:
+            try:
+                while not halt.is_set():
+                    raw = decoder.stdout.read(frame_bytes)
+                    if len(raw) < frame_bytes:
+                        break
+                    hand(ahead, raw)
+            except (OSError, ValueError):
+                pass
+            finally:
+                hand(ahead, None)
+
+        def write_frames() -> None:
+            try:
+                while True:
+                    try:
+                        chunk = behind.get(timeout=0.2)
+                    except queue.Empty:
+                        if halt.is_set():
+                            return
+                        continue
+                    if chunk is None:
+                        return
+                    encoder.stdin.write(chunk)
+            except (OSError, ValueError) as exc:
+                broken.append(exc)
+                halt.set()
+
+        def send(chunk: bytes) -> None:
+            if broken:
+                raise RuntimeError(f"Gag render failed: the encoder stopped ({broken[0]})")
+            hand(behind, chunk)
 
         def write_inserts(before_frame: int | None) -> None:
             nonlocal written
@@ -459,16 +562,27 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
                 insert = pending_inserts.pop(0)
                 fitted = fit(insert.still, width, height)
                 for k in range(insert.frames):
-                    encoder.stdin.write(insert_frame(insert, k, fitted).tobytes())
+                    send(insert_frame(insert, k, fitted).tobytes())
                     written += 1
                     if written % 30 == 0 and cancel:
                         cancel()
+        reader = threading.Thread(target=read_frames, daemon=True, name="gag-render-read")
+        writer = threading.Thread(target=write_frames, daemon=True, name="gag-render-write")
         try:
             assert decoder.stdout is not None and encoder.stdin is not None
+            reader.start()
+            writer.start()
             index = 0
             while True:
-                raw = decoder.stdout.read(frame_bytes)
-                if len(raw) < frame_bytes:
+                try:
+                    raw = ahead.get(timeout=0.5)
+                except queue.Empty:
+                    if broken:
+                        raise RuntimeError(f"Gag render failed: the encoder stopped ({broken[0]})")
+                    if reader.is_alive():
+                        continue
+                    raw = None
+                if raw is None:
                     break
                 write_inserts(index)
                 t = index / fps
@@ -490,7 +604,7 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
                     for sticker in live:
                         draw_sticker(frame, sticker, t)
                     raw = frame.tobytes()
-                encoder.stdin.write(raw)
+                send(raw)
                 index += 1
                 written += 1
                 if index % 30 == 0:
@@ -499,6 +613,10 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
                     if progress:
                         progress(min(1.0, written / max(1, total)))
             write_inserts(None)   # interventions after the last frame
+            hand(behind, None)
+            writer.join()
+            if broken:
+                raise RuntimeError(f"Gag render failed: the encoder stopped ({broken[0]})")
             encoder.stdin.close()
             decoder.wait()
             if encoder.wait() != 0 or decoder.returncode != 0:
@@ -507,8 +625,12 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
                 raise RuntimeError("Gag render failed: " + (encode_log.read() + decode_log.read()).decode(errors="replace")[-1500:])
             pending.replace(output)
         finally:
+            halt.set()
             for process in (decoder, encoder):
                 if process.poll() is None:
                     process.kill()
+            for thread in (reader, writer):
+                if thread.is_alive():
+                    thread.join(timeout=2)
             pending.unlink(missing_ok=True)
     return output

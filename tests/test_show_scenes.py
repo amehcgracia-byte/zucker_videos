@@ -126,8 +126,9 @@ def _storyboard(tmp_path, monkeypatch):
     rendered = []
 
     def fake_preview(project, scene_id, **kwargs):
+        from core.show import scene_preview_path
         rendered.append(scene_id)
-        out = project.cache_dir / "show_previews" / f"{scene_id}.mp4"
+        out = scene_preview_path(project, scene_id)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"preview")
         return out
@@ -153,6 +154,12 @@ def test_the_storyboard_renders_effects_only_when_asked_and_keeps_every_decision
     assert rendered == [board["scenes"][0]["id"]]
     board = client.get("/api/v1/show/scenes").get_json()
     assert board["scenes"][0]["preview"]["status"] == "ready" and board["scenes"][0]["preview"]["url"]
+    assert client.post(f"/api/v1/show/scenes/{board['scenes'][0]['id']}/preview", json={"next": [board["scenes"][1]["id"]]}).get_json()["status"] == "ready"
+    for _ in range(50):                                     # made already: only the next scene is prepared
+        if len(rendered) == 2:
+            break
+        time.sleep(0.05)
+    assert rendered == [board["scenes"][0]["id"], board["scenes"][1]["id"]]
     first = board["scenes"][0]["id"]
     decided = client.post(f"/api/v1/show/scenes/{first}/decision", json={"decision": "plain"}).get_json()
     assert decided["decision"] == "plain"
@@ -165,7 +172,7 @@ def test_the_storyboard_renders_effects_only_when_asked_and_keeps_every_decision
     assert "attachment" in exported.headers["Content-Disposition"] and exported.get_json()["scenes"][0]["decision"] == "plain"
 
 
-def test_the_scene_you_ask_for_is_prepared_next_and_only_once(tmp_path, monkeypatch):
+def test_the_scene_you_ask_for_is_prepared_at_once_and_only_once(tmp_path, monkeypatch):
     import threading
     import time
     project, client, document, rendered = _storyboard(tmp_path, monkeypatch)
@@ -173,9 +180,14 @@ def test_the_scene_you_ask_for_is_prepared_next_and_only_once(tmp_path, monkeypa
 
     def slow_preview(project, scene_id, **kwargs):
         if not rendered:
-            busy.wait(5)                                   # the first preview keeps the worker busy
+            for _ in range(250):                           # the first preview keeps the worker busy…
+                kwargs["cancel"]()                         # …until the scene the person asks for stops it
+                if busy.is_set():
+                    break
+                time.sleep(0.02)
+        from core.show import scene_preview_path
         rendered.append(scene_id)
-        out = project.cache_dir / "show_previews" / f"{scene_id}.mp4"
+        out = scene_preview_path(project, scene_id)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"preview")
         return out
@@ -197,7 +209,9 @@ def test_the_scene_you_ask_for_is_prepared_next_and_only_once(tmp_path, monkeypa
     client.post(f"/api/v1/show/scenes/{ids[0]}/preview")
     wait_for(3)
     time.sleep(0.2)
-    assert rendered[:3] == [ids[1], last, ids[0]] and rendered.count(last) == 1
+    # The asked scene stopped the other one, which went on in the background lane.
+    assert sorted(rendered[:2]) == sorted([last, ids[1]]) and rendered[2] == ids[0]
+    assert rendered.count(last) == 1 and rendered.count(ids[1]) == 1
 
 
 def test_identity_intro_and_pictures_come_only_from_the_project_and_its_library(tmp_path, monkeypatch):
@@ -313,7 +327,7 @@ def test_edit_during_render_never_publishes_stale_preview_and_duplicate_requests
     assert calls == [sid] and scene['preview']['status'] == 'none'
 
 
-def test_scene_preview_reports_missing_drawings_instead_of_publishing_incomplete_video(tmp_path, monkeypatch):
+def test_scene_preview_shows_the_rest_and_says_which_drawing_is_missing(tmp_path, monkeypatch):
     import json
     from core import show, show_proposals
     project, _, document, _ = _storyboard(tmp_path, monkeypatch)
@@ -327,20 +341,25 @@ def test_scene_preview_reports_missing_drawings_instead_of_publishing_incomplete
     show_scenes.save(project.artifacts_dir/'show_scenes.json', document)
     monkeypatch.setattr(show, 'render_show', lambda source, part, output, **kwargs: output.write_bytes(b'cut'))
     monkeypatch.setattr('core.gags.make_items', lambda *args, **kwargs: ([], ['Drawing painter is not installed']))
-    with pytest.raises(RuntimeError, match='preview is incomplete.*not installed'):
-        render_scene_preview(project, document['scenes'][0]['id'])
-    assert not list((project.cache_dir/'show_previews').glob('scene-01-*.mp4')) or all(p.name.endswith('-cut.mp4') for p in (project.cache_dir/'show_previews').glob('scene-01-*.mp4'))
+    # One drawing the painter cannot make no longer hides the whole scene: it is listed instead.
+    preview = render_scene_preview(project, document['scenes'][0]['id'])
+    assert preview.read_bytes() == b'cut' and show.scene_preview_notes(preview) == ['Drawing painter is not installed']
 
 
-def test_scene_preview_rejects_an_unfinished_character_before_rendering(tmp_path, monkeypatch):
-    from core import show_proposals
+def test_scene_preview_leaves_out_an_unfinished_character_and_says_so(tmp_path, monkeypatch):
+    import json
+    from core import show, show_proposals
     project, _, document, _ = _storyboard(tmp_path, monkeypatch)
+    plan_path = project.artifacts_dir/'show_plan.json'
+    plan = json.loads(plan_path.read_text()); plan['words'] = []; plan_path.write_text(json.dumps(plan))
     character = show_proposals.proposal('character', 1, 2, reason='Speaks', source='person.mp4')
     show_proposals.save(project.artifacts_dir/'show_proposals.json', [character])
     document['scenes'][0]['effects'] = [character['id']]
     show_scenes.save(project.artifacts_dir/'show_scenes.json', document)
-    with pytest.raises(ValueError, match='Finish or remove.*region, voice'):
-        render_scene_preview(project, document['scenes'][0]['id'])
+    monkeypatch.setattr(show, 'render_show', lambda source, part, output, **kwargs: output.write_bytes(b'cut'))
+    preview = render_scene_preview(project, document['scenes'][0]['id'])
+    assert preview.read_bytes() == b'cut'                                      # the scene itself, without the character
+    assert show.scene_preview_notes(preview) == ['Talking character at 1.0 s needs its region and voice']
 
 
 def test_failed_final_preview_pass_is_not_reused_as_a_completed_cache(tmp_path, monkeypatch):
@@ -364,7 +383,8 @@ def test_failed_final_preview_pass_is_not_reused_as_a_completed_cache(tmp_path, 
         render_scene_preview(project, document['scenes'][0]['id'])
     monkeypatch.setattr(show, '_lay_jingles', lambda *args: None)
     result = render_scene_preview(project, document['scenes'][0]['id'])
-    assert result.read_bytes() == b'render 2'
+    # Only the failed last pass is done again: the scene's cut was fine and is kept.
+    assert result.read_bytes() == b'render 1' and len(renders) == 1
     assert '-building' not in result.name
 
 
@@ -385,3 +405,27 @@ def test_the_last_step_lists_what_the_render_does_with_each_show_studio_effect(t
     status = {item["id"]: item["status"] for item in data["effects"]}
     assert status == {"zoom1": "superseded", "spiral1": "applied", "gone": "failed"}      # source 496 s was cut
     assert data["counts"] == {"superseded": 1, "applied": 1, "failed": 1}
+
+
+def test_a_placed_picture_can_be_stretched_turned_mirrored_and_see_through(tmp_path):
+    import numpy as np
+    from PIL import Image
+
+    from core.gag_render import PREPARED_SCALE, load_sticker
+    picture = tmp_path / "guy.png"
+    image = Image.new("RGBA", (100, 50), (0, 0, 0, 0))
+    image.paste((255, 0, 0, 255), (0, 0, 50, 50))                                  # red on the left half
+    image.save(picture)
+    scene = {"id": "s", "start": 0.0, "end": 10.0, "decision": "accepted", "overlays": [
+        {"asset": str(picture), "x": 10, "y": 10, "width": 20, "at": 1.0, "duration": 2.0, "stretch": 2.0, "rotate": 90, "flip": True, "opacity": 0.5}]}
+    item = show_scenes.overlay_items({"scenes": [scene]})[0]
+    assert (item["stretch"], item["rotate"], item["flip"], item["opacity"]) == (2.0, 90, True, 0.5)
+    plain = load_sticker({**item, "stretch": 1, "rotate": 0, "flip": False, "opacity": 1}, 1000, 563)
+    shaped = load_sticker(item, 1000, 563)
+    h, w = plain.pixels.shape[:2]
+    assert shaped.pixels.shape[0] == pytest.approx(w, abs=3) and shaped.pixels.shape[1] == pytest.approx(2 * h, abs=3)   # stretched, then turned
+    assert shaped.pixels[..., 3].max() == pytest.approx(0.5, abs=0.02)
+    # Mirrored (red to the right), then turned a quarter clockwise like the stage's CSS: red ends at the bottom.
+    rows = shaped.pixels[..., 0].mean(axis=1)
+    assert rows[len(rows) // 2:].mean() > rows[: len(rows) // 2].mean()
+    assert plain.width_px == pytest.approx(200) and PREPARED_SCALE > 1

@@ -152,8 +152,10 @@ def cutaway_filters(plan: dict[str, Any], first_input: int, width: int, height: 
 
 def render_show(source: str | Path, plan: dict[str, Any], output: str | Path, *, ffmpeg: str = "ffmpeg",
                 width: int = 1920, height: int = 1080, progress: Callable[[float], None] | None = None,
-                cancel: Callable[[], None] | None = None) -> Path:
-    """Render the plan. ``cancel`` raises to stop: FFmpeg is stopped at once."""
+                cancel: Callable[[], None] | None = None, preset: str = "veryfast", crf: int = 20) -> Path:
+    """Render the plan. ``cancel`` raises to stop: FFmpeg is stopped at once.
+    The picture is rendered first and the edited sound joined to it after: fed
+    together, FFmpeg can spin for minutes on a part of the edit (a scene preview)."""
     import threading
     source, output = Path(source), Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -161,8 +163,9 @@ def render_show(source: str | Path, plan: dict[str, Any], output: str | Path, *,
     if cancel:
         cancel()
     pending = output.with_name(f".{output.stem}.part{output.suffix}")
+    picture = output.with_name(f".{output.stem}.picture{output.suffix}")
     frames = sum(b - a for a, b in kept_ranges(plan))
-    extra_inputs, chains, last = cutaway_filters(plan, 2, width, height)
+    extra_inputs, chains, last = cutaway_filters(plan, 1, width, height)
     # A part of the edit far into the recording (a scene preview) starts decoding a
     # second before its first frame instead of at the start of the recording.
     fps = int(plan.get("fps") or 30)
@@ -174,14 +177,12 @@ def render_show(source: str | Path, plan: dict[str, Any], output: str | Path, *,
     command = [
         ffmpeg, "-y", "-v", "error", "-nostdin", "-progress", "pipe:2",
         *seek, "-i", str(source),
-        "-f", "f32le", "-ar", str(SAMPLE_RATE), "-ac", "2", "-i", "pipe:0",
         *extra_inputs,
         "-filter_complex", graph,
-        "-map", f"[{last}]", "-map", "1:a", "-frames:v", str(frames),
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-        "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(pending),
+        "-map", f"[{last}]", "-frames:v", str(frames), "-an",
+        "-c:v", "libx264", "-preset", preset, "-crf", str(crf), str(picture),
     ]
-    process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.PIPE, text=False)
+    process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stderr=subprocess.PIPE, text=False)
     errors: list[bytes] = []
     failures: list[BaseException] = []
 
@@ -197,18 +198,8 @@ def render_show(source: str | Path, plan: dict[str, Any], output: str | Path, *,
                 except BaseException as exc:  # a progress callback that cancels
                     failures.append(exc)
 
-    def write_audio() -> None:
-        assert process.stdin is not None
-        try:
-            process.stdin.write(audio.astype(np.float32).tobytes())
-            process.stdin.close()
-        except (BrokenPipeError, ValueError, OSError):
-            pass  # FFmpeg stopped early: its own error is reported below
-
     reader = threading.Thread(target=read_progress, daemon=True)
-    writer = threading.Thread(target=write_audio, daemon=True)
     reader.start()
-    writer.start()
     try:
         while process.poll() is None:
             if failures:
@@ -220,12 +211,21 @@ def render_show(source: str | Path, plan: dict[str, Any], output: str | Path, *,
             except subprocess.TimeoutExpired:
                 pass
         reader.join(timeout=5)
-        writer.join(timeout=5)
         if failures:
             raise failures[0]
         if process.returncode != 0:
             detail = b"".join(line for line in errors[-40:] if not line.startswith((b"frame=", b"fps=", b"out_", b"progress=", b"bitrate=", b"total_size=", b"speed=", b"dup_", b"drop_", b"stream_")))
             raise RuntimeError(f"Show render failed: {detail.decode(errors='replace').strip()[-2000:]}")
+        if cancel:
+            cancel()
+        # The edited sound, joined to the finished picture without touching it.
+        joined = subprocess.run([ffmpeg, "-y", "-v", "error", "-nostdin", "-i", str(picture),
+                                 "-f", "f32le", "-ar", str(SAMPLE_RATE), "-ac", "2", "-i", "pipe:0",
+                                 "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                                 "-shortest", "-movflags", "+faststart", str(pending)],
+                                input=audio.astype(np.float32).tobytes(), capture_output=True)
+        if joined.returncode != 0:
+            raise RuntimeError(f"Show render failed joining the sound: {joined.stderr.decode(errors='replace').strip()[-2000:]}")
         pending.replace(output)
         return output
     finally:
@@ -233,3 +233,4 @@ def render_show(source: str | Path, plan: dict[str, Any], output: str | Path, *,
             process.kill()
             process.wait()
         pending.unlink(missing_ok=True)
+        picture.unlink(missing_ok=True)
