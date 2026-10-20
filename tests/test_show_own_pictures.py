@@ -62,3 +62,16 @@ def test_a_dropped_picture_is_kept_and_placed_and_a_photo_can_be_cut_out(tmp_pat
     assert client.post("/api/v1/show/library/pictures", data={"file": (io.BytesIO(b"hello"), "notes.txt")}).status_code == 400
     assert client.post("/api/v1/show/library/pictures", data={"file": (io.BytesIO(b"not a picture"), "fake.png")}).status_code == 400
     assert client.post("/api/v1/show/library/pictures/cutout", json={"path": "/etc/hosts"}).status_code == 404
+
+
+def test_green_import_keeps_original_and_removal_can_keep_canvas(tmp_path, monkeypatch):
+    project,client=_client(tmp_path,monkeypatch)
+    photo=Image.new('RGB',(120,100),(0,230,0));photo.paste((230,20,30),(30,20,90,80))
+    response=client.post('/api/v1/show/library/pictures',data={'file':(io.BytesIO(_png(photo)),'green.png')})
+    assert response.status_code==200,response.get_json()
+    made=response.get_json();assert made['cutout'] and Path(made['original']).is_file()
+    pixels=np.asarray(Image.open(made['path']))
+    assert pixels.shape==(100,120,4) and pixels[0,0,3]==0 and pixels[40,40,3]==255
+    removed=client.post('/api/v1/show/library/pictures/cutout',json={'path':made['original'],'keep_canvas':True})
+    assert removed.status_code==200,removed.get_json()
+    assert (removed.get_json()['width'],removed.get_json()['height'])==(120,100)
