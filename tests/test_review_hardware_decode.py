@@ -76,24 +76,50 @@ def test_review_uses_two_workers_and_preserves_card_order(tmp_path, monkeypatch)
     assert progress == sorted(progress) and progress[-1] == 100
 
 
+def test_distinct_review_assets_do_not_share_locks_and_idle_locks_are_released(tmp_path, monkeypatch):
+    import gc
+    import weakref
+    locks = weakref.WeakValueDictionary()
+    monkeypatch.setattr(shot_review, '_THUMBNAIL_LOCKS', locks)
+    active = [shot_review._thumbnail_lock(tmp_path / f'frame-{i}.jpg') for i in range(128)]
+    assert len({id(lock) for lock in active}) == 128
+    assert shot_review._thumbnail_lock(tmp_path / 'frame-0.jpg') is active[0]
+    assert shot_review._thumbnail_lock(tmp_path / 'sub/../frame-0.jpg') is active[0]
+    del active
+    gc.collect()
+    assert not locks
+
+
 def test_simultaneous_preview_requests_render_same_asset_only_once(tmp_path, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     import threading
     project = review_project(tmp_path)
-    barrier = threading.Barrier(2)
-    actual = shot_review._render_thumbnail_to_path
+    # Coordinate contention at the actual asset lock, not with a three-second
+    # barrier around all review setup (which includes OS executable discovery).
+    actual_lock = shot_review._thumbnail_lock
+    both_attempting = threading.Event()
+    count_lock = threading.Lock()
+    attempts = 0
     calls = []
-    def enter(*args):
-        barrier.wait(timeout=3)
-        return actual(*args)
+    def entering_lock(output):
+        nonlocal attempts
+        lock = actual_lock(output)
+        with count_lock:
+            attempts += 1
+            if attempts == 2:
+                both_attempting.set()
+        return lock
     def render(command):
         calls.append(command)
+        assert both_attempting.wait(10), 'The second request never attempted the same asset lock'
         Path(command[-1]).write_bytes(b'complete JPEG')
-    monkeypatch.setattr(shot_review,'_render_thumbnail_to_path',enter)
+    monkeypatch.setattr(shot_review, '_thumbnail_lock', entering_lock)
+    monkeypatch.setattr(shot_review, 'locate_executable', lambda name: name)
     monkeypatch.setattr(shot_review,'_run_thumbnail_command',render)
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(shot_review.review_items,project,render_indices={0}) for _ in range(2)]
-        results = [future.result(timeout=5) for future in futures]
+        results = [future.result(timeout=15) for future in futures]
+    assert attempts == 2
     assert len(calls) == 1
     assert results[0][0]['thumbnail'] == results[1][0]['thumbnail']
 
@@ -149,9 +175,33 @@ def test_prefetch_closes_workers_after_render_failure(tmp_path, monkeypatch):
     prefetch = shot_review.ReviewFramePrefetch(project)
     try:
         prefetch.submit(0, segment)
-        with pytest.raises(shot_review.ThumbnailRenderError):
-            prefetch.finish()
+        # A failed photo is recorded for its card; it does not stop the edit.
+        prefetch.finish()
     finally:
         prefetch.close()
     with pytest.raises(RuntimeError):
         prefetch.submit(1, segment)
+
+
+def test_candidate_summary_and_pool_share_slot_lock(tmp_path, monkeypatch):
+    """Concurrent status requests cannot rebuild/replace a summary being read."""
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    project = review_project(tmp_path)
+    segment = {'source_path': 'camera.mp4', 'master_start_sec': 0, 'duration_sec': 1}
+    path = shot_review._candidate_reserve_path(project, {}, [segment], segment, 'youtube')
+    lock = shot_review._candidate_reserve_lock(path)
+    assert lock is shot_review._candidate_reserve_lock(path.with_suffix('.summary.json'))
+    calls = []
+    start = threading.Barrier(8)
+    def build(*args):
+        calls.append(1)
+        return [], 'test reserve'
+    def count():
+        start.wait(timeout=10)
+        return shot_review._project_candidate_count(project, {}, [segment], segment, 'youtube')
+    monkeypatch.setattr(shot_review, '_review_candidate_pool', build)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: count(), range(8)))
+    assert results == [(0, 'test reserve')] * 8
+    assert calls == [1]

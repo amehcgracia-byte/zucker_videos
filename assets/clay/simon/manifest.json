@@ -1,0 +1,25 @@
+{
+  "character_id": "simon-plant-character",
+  "generator": "built-in image_gen",
+  "identity_reference": "simon-clay-proposal-v1.png",
+  "assets": {
+    "neighbours-poses-v1.png": "bd76885a613d4fe682fa8f5ccbfc878978da0891bacdf316feff5f79d6af5f8a",
+    "simon-clay-proposal-v1.png": "f02f87c9cb1ee5f904e5bea3b416012a8f6d8e99b2fc05ca954baa912e96a15b",
+    "meadow-poses-v1.png": "56b8c9d5493e6abee8ee4ebe44af58e9b1a55756b387da300267427376d27ac6"
+  },
+  "prompt_set": {
+    "common": "Preserve the actual Simón figurine: olive green grooved cap, round pale face, black dot eyes, pink cheeks, yellow coat, dark zipper, brown pocket trims. Crude child-made plasticine, no beard/glasses, no polished mascot. Fixed 3x2 equal-cell pose sheet, no text.",
+    "meadow": "Same puppet and meadow. Neutral; head tilt; lift hand; point at cottage; lower hand; quiet hold.",
+    "neighbours": "Same puppet with two anonymous neighbours in rust/blue coats. City: approach, gather, ask question. Village: arrive, welcome, quiet hold."
+  },
+  "private_media": "Original photo, source video, voice and contextual MP4 are project-local only; not included in this public asset pack.",
+  "future_generation_overrides": {
+    "cap": {
+      "confirmed_by_user": "2026-10-16",
+      "shape": "A green flat cap, similar to the real cap worn by the host, slightly tilted with a small projecting front brim. It sits above and away from the head, with visible overhang and shadow beneath the brim.",
+      "avoid": "No helmet, skullcap, beanie or clay hair stuck to the scalp.",
+      "reference_override": "The frontal generated v1 image obscures the cap shape. This explicit user clarification takes precedence over that interpretation.",
+      "existing_animation": "User accepts the current animations; keep them. Apply the corrected cap geometry to future generations."
+    }
+  }
+}

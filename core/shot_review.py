@@ -12,6 +12,7 @@ import sys
 import subprocess
 import tempfile
 import threading
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -283,14 +284,18 @@ def _candidate_key(candidate: dict[str, Any]) -> str:
     return f"{path}|{start:.6f}{_spherical_pose_suffix(candidate)}"
 
 
-def _candidate_keys(candidate: dict[str, Any]) -> set[str]:
-    """Return current and legacy spellings of a candidate identity."""
+def _candidate_keys(candidate: dict[str, Any], synced: bool = True) -> set[str]:
+    """Return current and legacy spellings of a candidate identity.
+
+    In synced edits a coverage camera is identified by its sync offset, so
+    the offset spellings are part of the identity. An unsynchronised Reel has
+    offset 0 everywhere: counting it made every window of a file look
+    "already tried", so Other frame always jumped to a different file.
+    """
     path = candidate.get("path") or candidate.get("clip_path") or candidate.get("source_path") or ""
-    starts = {
-        candidate.get("clip_start_sec"),
-        candidate.get("offset_sec"),
-        candidate.get("clip_offset_sec"),
-    }
+    starts = {candidate.get("clip_start_sec")}
+    if synced or candidate.get("clip_start_sec") is None:
+        starts |= {candidate.get("offset_sec"), candidate.get("clip_offset_sec")}
     keys = set()
     pose_suffix = _spherical_pose_suffix(candidate)
     for raw_start in starts:
@@ -479,6 +484,16 @@ def _path_aliases(raw: Any) -> set[str]:
     return aliases
 
 
+def _same_source_file(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Same Drop box file (proxy aliases included); unlike _same_source_identity,
+    two files from one camera folder are different videos here."""
+    left_paths, right_paths = set(), set()
+    for key in ("path", "clip_path", "source_path", "proxy_path"):
+        left_paths.update(_path_aliases(left.get(key)))
+        right_paths.update(_path_aliases(right.get(key)))
+    return bool(left_paths & right_paths)
+
+
 def _same_source_identity(left: dict[str, Any], right: dict[str, Any]) -> bool:
     """Match a camera even when coverage uses its proxy path."""
     left_paths = set()
@@ -627,33 +642,51 @@ def _write_reserve_json(path: Path, payload: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+_CANDIDATE_RESERVE_LOCKS = weakref.WeakValueDictionary()
+_CANDIDATE_RESERVE_LOCKS_GUARD = threading.Lock()
+
+
+def _candidate_reserve_lock(path: Path):
+    # Pool and summary belong to one slot. On Windows, even an atomic replace
+    # can fail while another thread has the destination open for reading.
+    key = str(path.resolve()).replace(".summary.json", ".json")
+    with _CANDIDATE_RESERVE_LOCKS_GUARD:
+        lock = _CANDIDATE_RESERVE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _CANDIDATE_RESERVE_LOCKS[key] = lock
+        return lock
+
+
 def _project_candidate_pool(project: Project, coverage: dict[str, Any], segments: list[dict[str, Any]], segment: dict[str, Any], platform: str, context=None) -> tuple[list[dict[str, Any]], str]:
     """Persist a slot's reserve; clicking/polling never rebuilds the whole plan."""
     path = _candidate_reserve_path(project, coverage, segments, segment, platform, context)
-    try:
-        saved = json.loads(path.read_text(encoding="utf-8"))
-        pool, origin = saved["candidates"], saved["origin"]
-    except (OSError, ValueError, KeyError):
-        pool, origin = _review_candidate_pool(coverage, segments, segment, platform)
-        _write_reserve_json(path, {"candidates": pool, "origin": origin})
-    summary = path.with_suffix(".summary.json")
-    if not summary.exists():
-        eligible = [_candidate_keys(candidate) for candidate in pool
-                    if _candidate_covers_slot(candidate, segment, platform) and _candidate_has_subject(candidate, segment)]
-        _write_reserve_json(summary, {"keys": [sorted(keys) for keys in eligible], "origin": origin})
-    return pool, origin
+    with _candidate_reserve_lock(path):
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            pool, origin = saved["candidates"], saved["origin"]
+        except (OSError, ValueError, KeyError):
+            pool, origin = _review_candidate_pool(coverage, segments, segment, platform)
+            _write_reserve_json(path, {"candidates": pool, "origin": origin})
+        summary = path.with_suffix(".summary.json")
+        if not summary.exists():
+            eligible = [_candidate_keys(candidate, platform != "reel") for candidate in pool
+                        if _candidate_covers_slot(candidate, segment, platform) and _candidate_has_subject(candidate, segment)]
+            _write_reserve_json(summary, {"keys": [sorted(keys) for keys in eligible], "origin": origin})
+        return pool, origin
 
 
 def _project_candidate_count(project: Project, coverage: dict[str, Any], segments: list[dict[str, Any]], segment: dict[str, Any], platform: str, context=None) -> tuple[int, str]:
     """Status requests read tiny summaries, never the full source records."""
     path = _candidate_reserve_path(project, coverage, segments, segment, platform, context).with_suffix(".summary.json")
-    try:
-        summary = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        _project_candidate_pool(project, coverage, segments, segment, platform, context)
-        summary = json.loads(path.read_text(encoding="utf-8"))
-    current = _candidate_keys(segment)
-    return sum(not (set(keys) & current) for keys in summary["keys"]), summary["origin"]
+    with _candidate_reserve_lock(path):
+        try:
+            summary = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            _project_candidate_pool(project, coverage, segments, segment, platform, context)
+            summary = json.loads(path.read_text(encoding="utf-8"))
+        current = _candidate_keys(segment, platform != "reel")
+        return sum(not (set(keys) & current) for keys in summary["keys"]), summary["origin"]
 
 
 def _render_status_path(root: Path) -> Path:
@@ -710,6 +743,7 @@ def _replacement_candidates(
     segment: dict[str, Any],
     tried: set[str],
     platform: str,
+    require_subject: bool = True,
 ) -> tuple[list[tuple[float, dict[str, Any], str]], dict[str, int]]:
     """Return eligible candidates and counts used in Replace diagnostics.
 
@@ -726,9 +760,9 @@ def _replacement_candidates(
         if not _candidate_covers_slot(candidate, segment, platform):
             continue
         counts["covers_slot"] += 1
-        if not _candidate_has_subject(candidate, segment):
+        if require_subject and not _candidate_has_subject(candidate, segment):
             continue
-        if _candidate_keys(candidate) & tried:
+        if _candidate_keys(candidate, platform != "reel") & tried:
             continue
         counts["unused"] += 1
         candidates.append((float(candidate.get("shot_quality_score") or candidate.get("motion_score") or 0.0), candidate, _candidate_key(candidate)))
@@ -758,13 +792,27 @@ def _run_thumbnail_command(command: list[str]) -> None:
     subprocess.run(command, check=True, capture_output=True, text=True, timeout=45)
 
 
-_THUMBNAIL_LOCKS = [threading.Lock() for _ in range(64)]
+_THUMBNAIL_LOCKS = weakref.WeakValueDictionary()
+_THUMBNAIL_LOCKS_GUARD = threading.Lock()
+
+
+def _thumbnail_lock(output):
+    # Unrelated assets must not share a hash stripe: with two workers a stripe
+    # collision serialises both renders. Waiting/active callers own strong
+    # references, and idle locks disappear instead of accumulating forever.
+    key = str(Path(output).resolve())
+    with _THUMBNAIL_LOCKS_GUARD:
+        lock = _THUMBNAIL_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _THUMBNAIL_LOCKS[key] = lock
+        return lock
 
 
 def _render_thumbnail_to_path(project, segment, source, timestamp, output, root, ffmpeg, color_profile):
     # API preview requests and the foreground pipeline can target the same
     # asset. Check again after acquiring its bounded, process-local lock.
-    with _THUMBNAIL_LOCKS[int(hashlib.sha256(str(output).encode()).hexdigest()[:8], 16) % len(_THUMBNAIL_LOCKS)]:
+    with _thumbnail_lock(output):
         if output.is_file() and output.stat().st_size > 0:
             return
         render_source = source
@@ -795,7 +843,9 @@ def _render_thumbnail_to_path(project, segment, source, timestamp, output, root,
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ThumbnailRenderError) as exc:
                 temporary_thumbnail.unlink(missing_ok=True)
                 detail = getattr(exc, "stderr", None) or str(exc)
-                thumbnail_error = str(detail).strip() or "FFmpeg failed to render the thumbnail"
+                from core.media_integrity import DAMAGE_MESSAGE, looks_like_damage
+                thumbnail_error = (DAMAGE_MESSAGE if looks_like_damage(str(detail))
+                                   else str(detail).strip()[-600:] or "FFmpeg failed to render the thumbnail")
                 _set_render_status(root, output.name, {"state": "failed", "error": thumbnail_error})
                 if isinstance(exc, ThumbnailRenderError):
                     raise
@@ -830,7 +880,12 @@ class ReviewFramePrefetch:
 
     def finish(self, progress_callback: ProgressCallback | None = None) -> None:
         for completed, future in enumerate(as_completed(self.futures), 1):
-            future.result()
+            try:
+                future.result()
+            except ThumbnailRenderError as exc:
+                # Recorded as failed in the render status; the card offers
+                # Other frame. One unreadable shot must not stop the edit.
+                LOGGER.warning("Review photo prefetch failed: %s", str(exc)[:300])
             if progress_callback:
                 progress_callback(int(100 * completed / max(1, len(self.futures))),
                                   f"Review photos ready: {completed}/{len(self.futures)}")
@@ -945,17 +1000,22 @@ def review_items(
                               f"Preparing {len(pending)} review thumbnails")
         def render_one(item):
             index, segment, source, timestamp, output, profile = item
-            _render_thumbnail_to_path(project, segment, source, timestamp, output, root, ffmpeg, profile)
+            try:
+                _render_thumbnail_to_path(project, segment, source, timestamp, output, root, ffmpeg, profile)
+                return True
+            except ThumbnailRenderError as exc:
+                items[index].update(thumbnail_status="failed", thumbnail_error=str(exc)[-600:])
+                return False
         if len(pending) == 1:
-            render_one(pending[0])
-            publish_ready(pending[0])
+            if render_one(pending[0]):
+                publish_ready(pending[0])
         else:
             with ThreadPoolExecutor(max_workers=2, thread_name_prefix="review-frame") as pool:
                 futures = {pool.submit(render_one, item):item for item in pending}
                 try:
                     for future in as_completed(futures):
-                        future.result()
-                        publish_ready(futures[future])
+                        if future.result():
+                            publish_ready(futures[future])
                 except BaseException:
                     for future in futures:
                         future.cancel()
@@ -1061,7 +1121,7 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         slot_key = str(slot)
         tried.update(attempts.get(slot_key) or attempts.get(slot) or [])
         tried.update(exclusions.get(slot_key) or exclusions.get(slot) or [])
-        tried.update(_candidate_keys(segment))
+        tried.update(_candidate_keys(segment, platform != "reel"))
         if segment.get("filler"):
             # A filler covers a stretch no camera recorded: offer another
             # compatible filler window, never a camera that is not there.
@@ -1083,9 +1143,22 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
             continue
         pool, pool_origin = _project_candidate_pool(project, coverage, segments, segment, platform)
         candidates, counts = _replacement_candidates(pool, segment, tried, platform)
+        sole_shot = not any(other_index != index and _same_source_file(other, segment)
+                            for other_index, other in enumerate(segments))
+        if sole_shot:
+            # Every Drop box video must stay in the edit (coverage guard). The
+            # only shot of a video may move to another moment, never to another
+            # camera: replacing Conteint.mp4's only shot with a second
+            # 360ZZSession shot blocked a real Reel export at step 6.
+            candidates = [item for item in candidates if _same_source_file(item[1], segment)]
+            if not candidates:
+                candidates, _ = _replacement_candidates(
+                    [item for item in pool if _same_source_file(item, segment)], segment, tried, platform,
+                    require_subject=False)
         if not candidates:
             unavailable.add(index)
-            reason = "pool_empty" if counts["pool"] == 0 else "no_unused_candidate_covers_slot"
+            reason = ("only_shot_of_this_video" if sole_shot else
+                      "pool_empty" if counts["pool"] == 0 else "no_unused_candidate_covers_slot")
             LOGGER.info(
                 "Review replace slot=%s unavailable current=%s pool_origin=%s counts=%s",
                 index, _candidate_key(segment), pool_origin, counts,

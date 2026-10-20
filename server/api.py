@@ -8,6 +8,7 @@ import io
 import logging
 import math
 import os
+import re
 import signal
 import sys
 import threading
@@ -22,7 +23,7 @@ from typing import Any
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.datastructures import FileStorage
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from core.engine import PipelineEngine, StageBlockedError, StageNotFoundError
 from core.ffmpeg import FFmpegError, ffprobe, muxer_args_for, tool_status
@@ -633,9 +634,10 @@ class CompositionRunner:
                     _set_job_progress(job, 55 + round(min(1.0, seconds / duration if duration else 0.0) * 40))
                 output = burn_captions(
                     composed,
-                    _expand_caption_animations(track),
+                    track,
                     style,
                     output_path=final,
+                    ffmpeg=str(tool_status().get("ffmpeg_path") or "ffmpeg"),
                     header=header,
                     # Flyer and logo are already in the first composition pass.
                     logo_path=None,
@@ -1102,49 +1104,6 @@ def _compose_visual_overlays(
             pending_destination.unlink(missing_ok=True)
     return destination
 
-def _expand_caption_animations(track: CueTrack) -> CueTrack:
-    """Encode per-cue slide/scale motion as short ASS cue segments.
-
-    The captions package remains deliberately pure; this adapter translates
-    UI-only animation overrides into ordinary position/size overrides before
-    the package's single-pass burn is invoked.
-    """
-    expanded: list[Cue] = []
-    for cue in track.cues:
-        override = dict(cue.style_override or {})
-        enter = str(override.pop("animation_in", "none") or "none")
-        exit_ = str(override.pop("animation_out", "none") or "none")
-        if enter == "fade":
-            override["_fade_in_ms"] = 250
-        if exit_ == "fade":
-            override["_fade_out_ms"] = 250
-        base_vertical = float(override.get("vertical", 68))
-        base_size = float(override.get("size", 54))
-        cuts = {float(cue.start), float(cue.end)}
-        if enter in {"slide", "scale"}:
-            cuts.update(float(cue.start) + step for step in (0.08, 0.16, 0.24) if float(cue.start) + step < float(cue.end))
-        if exit_ in {"slide", "scale"}:
-            cuts.update(float(cue.end) - step for step in (0.24, 0.16, 0.08) if float(cue.end) - step > float(cue.start))
-        points = sorted(cuts)
-        for index, (start, end) in enumerate(zip(points, points[1:])):
-            local = dict(override)
-            progress_in = min(1.0, max(0.0, (start - float(cue.start)) / 0.24))
-            progress_out = min(1.0, max(0.0, (float(cue.end) - end) / 0.24))
-            if enter == "slide" and start < float(cue.start) + 0.24:
-                # Stay inside the frame while approaching the preset's
-                # position. Horizontal centering remains controlled by the
-                # preset's explicit ASS alignment.
-                local["vertical"] = max(5.0, min(95.0, base_vertical + 12.0 * (1.0 - progress_in)))
-            elif exit_ == "slide" and end > float(cue.end) - 0.24:
-                local["vertical"] = max(5.0, min(95.0, base_vertical + 12.0 * progress_out))
-            if enter == "scale" and start < float(cue.start) + 0.24:
-                local["size"] = base_size * (0.72 + 0.28 * progress_in)
-            elif exit_ == "scale" and end > float(cue.end) - 0.24:
-                local["size"] = base_size * (0.72 + 0.28 * progress_out)
-            expanded.append(Cue(cue.lines, start, end, cue.words, local))
-    return CueTrack(tuple(expanded), track.lang)
-
-
 def _invalidate_stale_sync_on_open(project: Project) -> None:
     if invalidate_stale_sync_artifact(project):
         LOGGER.warning("Invalidated stale sync_map.json for %s; sync will be recomputed", project.folder)
@@ -1243,7 +1202,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.get("/api/v1/project")
     def api_get_project() -> Response:
         project = _require_project(state)
-        if project.refresh_input_records():
+        if project.refresh_input_records(missing_invalidates=False):
             project.save()
         return jsonify(project.snapshot())
 
@@ -1634,6 +1593,28 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         requested_id = str(body.get("project_id") or "")
         if requested_id and (state.project is None or not same_project_path(requested_id, str(state.project.folder))):
             return error_response("project_mismatch", "The selected project is no longer open", 409)
+        if body.get("platform") == "show":
+            if state.project is None:
+                return error_response("bad_request", "Save the project location first", 400)
+            videos = [str(path) for path in body.get("videos") or [] if isinstance(path, str)]
+            if not videos:
+                return error_response("bad_request", "Add the video where you talk", 400)
+            registered = {str(record.get("path")) for record in state.project.data.get("inputs", {}).get("videos", [])}
+            chosen = str(body.get("show_main") or "")
+            source = chosen if chosen in videos else next((path for path in videos if path in registered), videos[0])
+            style = str(body.get("show_style") or "choe")
+            language = str(body.get("show_language") or "").strip().lower() or None
+            gags = str(body.get("show_gags") or "claude")
+            # The other videos and photos of the project are its close-ups.
+            resources = [path for path in registered if path != source] + [str(path) for path in body.get("show_photos") or [] if isinstance(path, str)]
+            try:
+                job = state.wizard.start_show(state.project, source, style if style in {"choe", "calm"} else "choe", language,
+                                              gags if gags in {"claude", "keywords", "off"} else "claude",
+                                              review=bool(body.get("show_review", True)), resources=resources)
+            except RuntimeError as exc:
+                return error_response("wizard_busy", str(exc), 409)
+            state.composition.reset()
+            return jsonify(serialize_wizard_job(job)), 202
         if body.get("platform") == "medley":
             try:
                 if state.project is None:
@@ -1944,6 +1925,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_wizard_review_render() -> Response:
         try:
             state.project = state.project or _active_wizard_project(state)
+            if state.project is None:
+                # A Frames screen left open after "New project" can still ask.
+                return error_response("not_ready", "No project is active; open the project again to render its shots", 409)
             body = _json_body()
             if body.get("transitions") is not None:
                 set_review_transition_types(state.project, body.get("transitions"))
@@ -1980,6 +1964,1098 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not project:
             return error_response("not_ready", "No project is active", 404)
         return send_from_directory(project.cache_dir / "shot_review" / signature, Path(filename).name)
+
+    def _show_review_files(project: Project) -> tuple[Path, Path]:
+        return project.artifacts_dir / "show_proposals.json", project.artifacts_dir / "show_plan.json"
+
+    def _show_allowed_source(project: Project, raw: str) -> Path | None:
+        from core import show_proposals
+        proposals_path, _ = _show_review_files(project)
+        if not proposals_path.is_file():
+            return None
+        stored = show_proposals.load(proposals_path)
+        allowed = ({str(stored.get("source") or "")} | {str(item.get("path")) for item in stored.get("resources") or []}
+                   | {str(item["source"]) for item in _show_voices(project)})
+        return Path(raw) if raw in allowed and Path(raw).is_file() else None
+
+    scene_previews: dict[str, dict[str, Any]] = {}
+    scene_queue: list[tuple[Project, str]] = []
+    scene_lock = threading.Lock()
+    scene_worker: dict[str, Any] = {"thread": None, "stop": threading.Event()}
+
+    def _scene_key(project: Project, scene_id: str) -> str:
+        return f"{project.folder}|{scene_id}"
+
+    def _prepare_scenes(project: Project, scene_ids: list[str], *, first: bool = False) -> None:
+        """Render previews of these scenes in the background, in order (next scenes
+        first). ``first``: the person asked for it, so it goes before the others."""
+        from core.show import preview_scene
+        with scene_lock:
+            for scene_id in reversed(scene_ids) if first else scene_ids:
+                key = _scene_key(project, scene_id)
+                status = scene_previews.get(key, {}).get("status")
+                if status in {"rendering", "ready"} or (status == "queued" and not first):
+                    continue
+                scene_queue[:] = [entry for entry in scene_queue if _scene_key(*entry) != key]     # never twice
+                scene_previews[key] = {"status": "queued"}
+                if first:
+                    scene_queue.insert(0, (project, scene_id))
+                else:
+                    scene_queue.append((project, scene_id))
+            if scene_worker["thread"] and scene_worker["thread"].is_alive():
+                return
+            scene_worker["stop"].clear()
+
+            def work() -> None:
+                while not scene_worker["stop"].is_set():
+                    with scene_lock:
+                        if not scene_queue:
+                            scene_worker["thread"] = None
+                            return
+                        item_project, scene_id = scene_queue.pop(0)
+                        key = _scene_key(item_project, scene_id)
+                        ticket = scene_previews[key] = {"status": "rendering", "message": "Rendering the scene cut"}
+
+                    def report(_fraction, message):
+                        with scene_lock:
+                            if scene_previews.get(key) is ticket:
+                                ticket["message"] = message
+
+                    def stop() -> None:
+                        with scene_lock:
+                            stale = scene_previews.get(key) is not ticket
+                        if stale or scene_worker["stop"].is_set():
+                            raise InterruptedError("Scene preview superseded or stopped")
+                    try:
+                        path = preview_scene(item_project, scene_id, cancel=stop, progress=report)
+                        result = {"status": "ready", "url": f"/api/v1/show/media?path={quote(str(path))}"}
+                    except InterruptedError:
+                        result = {"status": "stopped"}
+                    except Exception as exc:  # shown on the scene; the review stays usable
+                        LOGGER.exception("Scene preview failed")
+                        result = {"status": "failed", "error": str(exc)}
+                    with scene_lock:
+                        # An edit during rendering invalidates this exact ticket.
+                        # Never publish an old result over a newer queued revision.
+                        if scene_previews.get(key) is ticket:
+                            scene_previews[key] = result
+            scene_worker["thread"] = threading.Thread(target=work, daemon=True, name="zucker-show-scene-previews")
+            scene_worker["thread"].start()
+
+    def _scene_files(project: Project) -> Path:
+        return project.artifacts_dir / "show_scenes.json"
+
+    def _invalidate_scene(project: Project, scene_id: str) -> None:
+        with scene_lock:
+            scene_previews.pop(_scene_key(project, scene_id), None)
+
+    def _effect_changed(project, proposal_id):
+        from core import show_scenes
+        path = _scene_files(project)
+        if not path.is_file():
+            return
+        document = show_scenes.load(path)
+        for scene in document["scenes"]:
+            if proposal_id in scene["effects"]:
+                scene["decision"] = "modified"
+                _invalidate_scene(project, scene["id"])
+        show_scenes.save(path, document)
+
+    def _saved_show_render(project):
+        # The saved snapshot belongs to this project, never an arbitrary path.
+        try:
+            manifest = json.loads((project.artifacts_dir / "export_manifest.json").read_text(encoding="utf-8"))
+            if manifest.get("platform") != "show":
+                return None
+            root = project.exports_dir.resolve()
+            for entry in manifest.get("exports", []):
+                path = Path(str(entry.get("path") or "")).resolve()
+                if root in path.parents and path.is_file() and path.suffix.lower() == ".mp4":
+                    return {"path": path, "url": f"/api/v1/show/rendered/video?file={quote(path.name)}", "filename": path.name}
+        except (OSError, ValueError, TypeError):
+            pass
+        return None
+
+    @app.get("/api/v1/show/rendered/video")
+    def api_show_saved_render():
+        saved = _saved_show_render(_require_project(state))
+        if not saved or request.args.get("file") != saved["filename"]:
+            return error_response("not_found", "No matching saved Show render in this project", 404)
+        return send_file_with_range(str(saved["path"]))
+
+    @app.get("/api/v1/show/scenes")
+    def api_show_scenes() -> Response:
+        """The storyboard: identity, intro, scenes with their effects and previews.
+        The current scene and the next two are prepared in the background."""
+        from core import show_proposals, show_scenes
+        project = _require_project(state)
+        path = _scene_files(project)
+        proposals_path, plan_path = _show_review_files(project)
+        if not path.is_file() or not proposals_path.is_file():
+            return error_response("not_ready", "No Show storyboard has been prepared for this project", 404)
+        try:
+            state.wizard.adopt_show_review(project)
+        except RuntimeError as exc:
+            LOGGER.info("Show review not adopted: %s", exc)
+        document = show_scenes.load(path)
+        stored = show_proposals.load(proposals_path)
+        for item in stored["proposals"]:
+            item["needs"] = show_proposals.check(item)
+        # Each scene plays at once from the original video, its cuts skipped in the page;
+        # the preview with zooms and effects is rendered only when the person asks for it.
+        from core.show import edited_words, scene_segments
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        timed = edited_words(plan) if plan.get("words") else []
+        with scene_lock:
+            for scene in document["scenes"]:
+                scene["preview"] = scene_previews.get(_scene_key(project, scene["id"]), {"status": "none"})
+                scene["segments"] = scene_segments(plan, float(scene["start"]), float(scene["end"])) if plan.get("shots") else []
+                scene["words"] = [[text, a, b] for text, a, b in timed if scene["start"] <= a < scene["end"]]
+        wizard = project.data.get("settings", {}).get("wizard", {})
+        logo = Path(str(wizard.get("reel_logo_path") or ""))
+        return jsonify({**document, "proposals": stored["proposals"], "resources": stored.get("resources") or [], "source": stored.get("source"),
+                        "project_logo": str(logo) if logo.is_file() else None,
+                        "plan": {"edited_duration": plan["edited_duration"]},
+                        "source_url": f"/api/v1/show/source?path={quote(str(plan.get('source') or ''))}",
+                        "saved_render": ({k: v for k, v in saved.items() if k != "path"} if (saved := _saved_show_render(project)) else None)})
+
+    @app.get("/api/v1/show/studio-effects")
+    def api_show_studio_effects() -> Response:
+        """What the render will do with each Show Studio effect: drawn, off, kept from
+        the automatic edit, failed or not drawn yet, before anything is rendered."""
+        from core import show_proposals
+        from core.show_bridge import studio_layers
+        project = _require_project(state)
+        proposals_path, plan_path = _show_review_files(project)
+        if not plan_path.is_file():
+            return error_response("not_ready", "No Show edit has been prepared for this project", 404)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        cutaways = show_proposals.render_inputs(show_proposals.load(proposals_path)["proposals"])[0] if proposals_path.is_file() else []
+        _, report = studio_layers(project.folder, plan, hidden=[(c["at"], c["at"] + c["duration"]) for c in cutaways])
+        counts: dict[str, int] = {}
+        for item in report:
+            counts[item["status"]] = counts.get(item["status"], 0) + 1
+        return jsonify({"effects": report, "counts": counts})
+
+    def _clay_state(project: Project) -> dict[str, Any]:
+        from core import show_clay
+        from core.show_bridge import source_pieces
+        data = show_clay.ClayStore(project.folder).load()
+        _, plan_path = _show_review_files(project)
+        plan = json.loads(plan_path.read_text(encoding="utf-8")) if plan_path.is_file() else {"shots": []}
+        stories = {item["id"]: item["story"] for item in data.get("stories") or []}
+        placements = []
+        for placement in data.get("placements") or []:
+            story = stories.get(placement.get("story"))
+            edited = []
+            if story and plan.get("shots"):
+                start = float(story["source_start"])
+                edited = [[round(a, 3), round(b, 3), round(sa - start, 3)]
+                          for a, b, sa, _ in source_pieces(plan, start + float(placement["start"]), start + float(placement["end"]))
+                          if b - a >= 0.02]                                  # slivers shorter than a frame show nothing
+            placements.append({**placement, "edited": edited})
+        return {"revision": int(data.get("revision") or 0), "modes": list(show_clay.MODES), "placements": placements,
+                "characters": [{"id": item["id"], "version": item["version"], "status": item["record"].get("status")}
+                               for item in data.get("characters") or []],
+                "stories": [{"id": story["id"], "quote": story.get("quote"), "duration": story["duration"],
+                             "source_start": story["source_start"], "source_end": story["source_end"],
+                             "shots": [{"title": shot.get("title"), "start": shot["start"], "end": shot["end"],
+                                        "cues": [[key["time"], key["pose"], key.get("cue", "")] for key in shot.get("poseKeys") or []]}
+                                       for shot in story["shots"]]} for story in stories.values()]}
+
+    @app.get("/api/v1/show/clay")
+    def api_show_clay() -> Response:
+        """The project's clay stories and their placements in the montage (with the
+        edited moments each placement reaches)."""
+        return jsonify(_clay_state(_require_project(state)))
+
+    @app.put("/api/v1/show/clay/placements")
+    def api_show_clay_placements() -> Response:
+        from core import show_clay
+        from core.show_studio_store import StaleRevision
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        store = show_clay.ClayStore(project.folder)
+        data = store.load()
+        stories = {item["id"]: item["story"] for item in data.get("stories") or []}
+        try:
+            placements = []
+            for raw in body.get("placements") or []:
+                if raw.get("story") not in stories:
+                    raise ValueError("That clay story is not in this project")
+                placements.append(show_clay.check_placement({k: v for k, v in raw.items() if k != "edited"}, stories[raw["story"]]))
+            store.save({**data, "placements": placements}, revision=int(body.get("revision", -1)))
+        except StaleRevision as exc:
+            return error_response("stale_revision", str(exc), 409)
+        except (ValueError, TypeError) as exc:
+            return error_response("invalid_clay", str(exc), 400)
+        return jsonify(_clay_state(project))
+
+    @app.post("/api/v1/show/scenes/<scene_id>/decision")
+    def api_show_scene_decision(scene_id: str) -> Response:
+        from core import show_proposals, show_scenes
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        document = show_scenes.load(_scene_files(project))
+        proposals_path, _ = _show_review_files(project)
+        stored = show_proposals.load(proposals_path)
+        for item in stored["proposals"]:
+            item["needs"] = show_proposals.check(item)
+        try:
+            scene = show_scenes.decide(document, stored["proposals"], scene_id, str(body.get("decision") or ""))
+        except KeyError:
+            return error_response("not_found", "That scene is not in this Show", 404)
+        except ValueError as exc:
+            return error_response("bad_request", str(exc), 400)
+        show_scenes.save(_scene_files(project), document)
+        show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
+        if body.get("decision") != "accepted":
+            _invalidate_scene(project, scene_id)
+        return jsonify(scene)
+
+    @app.post("/api/v1/show/scenes/<scene_id>/preview")
+    def api_show_scene_preview(scene_id: str) -> Response:
+        project = _require_project(state)
+        from core import show_scenes
+        if not any(scene["id"] == scene_id for scene in show_scenes.load(_scene_files(project))["scenes"]):
+            return error_response("not_found", "That scene is not in this Show", 404)
+        _prepare_scenes(project, [scene_id], first=True)
+        return jsonify({"status": "queued"}), 202
+
+    @app.patch("/api/v1/show/scenes/identity")
+    def api_show_scene_identity() -> Response:
+        """Title card: title, the project's logo (or none), seconds; intro: a video or none."""
+        from core import show_scenes
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        document = show_scenes.load(_scene_files(project))
+        identity = document["identity"]
+        if "title" in body:
+            identity["title"] = str(body.get("title") or "")[:80]
+        if "use_logo" in body:
+            logo = Path(str(project.data.get("settings", {}).get("wizard", {}).get("reel_logo_path") or ""))
+            identity["logo"] = str(logo) if body.get("use_logo") and logo.is_file() else None
+        if "seconds" in body:
+            identity["seconds"] = max(1.0, min(6.0, float(body.get("seconds") or 2.0)))
+        if "intro" in body:
+            raw = str(body.get("intro") or "")
+            if raw and not (Path(raw).is_file() and raw in {str(record.get("path")) for record in project.data.get("inputs", {}).get("videos", [])}):
+                return error_response("bad_request", "The intro must be one of this project's videos", 400)
+            document["intro"] = {"path": raw} if raw else None
+        show_scenes.save(_scene_files(project), document)
+        return jsonify({"identity": identity, "intro": document["intro"]})
+
+    @app.post("/api/v1/show/scenes/<scene_id>/overlays")
+    def api_show_scene_overlays(scene_id: str) -> Response:
+        """Pictures placed on a scene: [{asset, x, y, width, at, duration, effect}] (percent like the storyboard)."""
+        from core import show_scenes
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        document = show_scenes.load(_scene_files(project))
+        scene = next((item for item in document["scenes"] if item["id"] == scene_id), None)
+        if scene is None:
+            return error_response("not_found", "That scene is not in this Show", 404)
+        library = {item["path"] for item in _show_library_items(project)}
+        overlays = []
+        for raw in body.get("overlays") or []:
+            if not isinstance(raw, dict) or str(raw.get("asset") or "") not in library:
+                return error_response("bad_request", "Pictures must come from the library", 400)
+            import uuid
+            try:
+                at = float(raw.get("at", scene["start"]))
+                duration = float(raw.get("duration", min(4.0, scene["end"] - at)))
+            except (ValueError, TypeError):
+                return error_response("bad_request", "Choose valid sticker start and duration", 400)
+            if not math.isfinite(at + duration) or at < scene["start"] or duration <= 0 or at + duration > scene["end"] + .001:
+                return error_response("bad_request", "Keep each sticker inside its scene with a positive duration", 400)
+            overlays.append({"id": str(raw.get("id") or uuid.uuid4().hex)[:80], "asset": str(raw["asset"]), "x": max(-20.0, min(100.0, float(raw.get("x", 12)))),
+                             "y": max(-20.0, min(100.0, float(raw.get("y", 12)))), "width": max(3.0, min(100.0, float(raw.get("width", 23)))),
+                             "at": at, "duration": duration, "selected_text": str(raw.get("selected_text") or "")[:400],
+                             "effect": str(raw.get("effect") or "pop"),
+                             "action": str(raw.get("action") or "none"), "intensity": max(0.2, min(3.0, float(raw.get("intensity", 1.0)))),
+                             **({"entrance": raw["entrance"]} if raw.get("entrance") in show_scenes.ENTRANCES else {}),
+                             **({"path": [[max(0.0, min(1.0, float(a))), float(x), float(y)] for a, x, y in raw["path"][:40]],
+                                 "hops": max(0, min(20, int(raw.get("hops", 4))))} if isinstance(raw.get("path"), list) and raw["path"] else {}),
+                             **({"voice": [str(_show_allowed_source(project, str(raw["voice"][0]))), max(0.0, float(raw["voice"][1])),
+                                           max(0.2, min(60.0, float(raw["voice"][2])))]}
+                                if isinstance(raw.get("voice"), list) and len(raw["voice"]) == 3 and _show_allowed_source(project, str(raw["voice"][0])) else {})})
+        scene["overlays"] = overlays
+        scene["decision"] = "modified"
+        show_scenes.save(_scene_files(project), document)
+        _invalidate_scene(project, scene_id)
+        return jsonify(scene)
+
+    def _show_library_items(project: Project) -> list[dict[str, Any]]:
+        """Pictures to place: the flyer library and the drawings painted for gags."""
+        from core.gag_library import library_dir
+        items = []
+        roots = [app_home() / "ReelOverlays", project.folder / "assets" / "show-library"]
+        try:
+            roots.append(library_dir())
+        except OSError:
+            pass
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for path in sorted(root.rglob("*")):
+                if path.name == "mask.png" and (path.parent / "character.json").is_file():
+                    continue
+                if path.is_file() and path.suffix.lower() in {".png", ".webp", ".jpg", ".jpeg"}:
+                    name = path.stem
+                    if path.name == "cutout.png" and (path.parent / "character.json").is_file():
+                        try:
+                            name = str(json.loads((path.parent / "character.json").read_text()).get("name") or name) + " · photo character"
+                        except (OSError, ValueError):
+                            pass
+                    items.append({"name": name, "path": str(path.resolve()), "folder": path.parent.name})
+        ai_root = project.folder / "assets" / "show-ai"
+        if ai_root.is_dir():
+            for picture in ai_root.glob("*/image.png"):
+                try:
+                    meta = json.loads((picture.parent / "request.json").read_text())
+                    if meta.get("status") == "ready":
+                        items.append({"name": meta.get("direction", "ChatGPT image")[:80], "path": str(picture.resolve()), "folder": "ChatGPT images"})
+                except (OSError, ValueError):
+                    continue
+        catalog_path = project.folder / "assets" / "show-library" / "catalog.json"
+        try:
+            catalog = json.loads(catalog_path.read_text())
+        except (OSError, ValueError):
+            catalog = {}
+        for item in items:
+            meta = catalog.get(item["path"], {})
+            local = "Painted" in Path(item["path"]).parts
+            item.update(origin=meta.get("origin") or ("Local painter" if local else "ChatGPT" if item["folder"] == "ChatGPT images" else "Your library"),
+                        retired=bool(meta.get("retired", local)))
+            item["name"] = meta.get("name") or item["name"]
+        return items
+
+    ai_jobs_lock = threading.Lock()
+    ai_jobs = set()
+
+    @app.get("/api/v1/show/ai/images")
+    def api_show_ai_versions():
+        from core import show_ai_images
+        project = _require_project(state)
+        items = []
+        root = project.folder / "assets" / "show-ai"
+        for path in sorted(root.glob("*/request.json"), key=lambda p:p.stat().st_mtime, reverse=True):
+            try:
+                job = show_ai_images.load(project, path.parent.name)
+            except (OSError, ValueError):
+                continue
+            if job["scene_id"] != request.args.get("scene_id"):
+                continue
+            if job["status"] == "ready":
+                job["url"] = f"/api/v1/show/ai/images/{job['id']}/image"
+            items.append(job)
+            if len(items) >= 20:
+                break
+        return jsonify({"items":items})
+
+    @app.post("/api/v1/show/ai/images")
+    def api_show_ai_create():
+        from core import show_ai_images, show_scenes
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        document = show_scenes.load(_scene_files(project))
+        scene = next((s for s in document["scenes"] if s["id"] == body.get("scene_id")), None)
+        if not scene:
+            return error_response("not_found", "Choose a scene first", 404)
+        if body.get("replace_id") and body["replace_id"] not in scene["effects"]:
+            return error_response("bad_request", "That effect is not in this scene", 400)
+        key = str(project.folder)
+        with ai_jobs_lock:
+            if key in ai_jobs:
+                return error_response("busy", "One image is already being generated for this project", 409)
+            try:
+                job = show_ai_images.create(project, scene, body)
+            except (ValueError, TypeError, OSError) as exc:
+                return error_response("bad_request", str(exc), 400)
+            ai_jobs.add(key)
+        def work():
+            try:
+                show_ai_images.run(project, job["id"])
+            finally:
+                with ai_jobs_lock:
+                    ai_jobs.discard(key)
+        threading.Thread(target=work, daemon=True, name="show-chatgpt-image").start()
+        return jsonify(job), 202
+
+    def _ai_request(project, job_id):
+        from core import show_ai_images
+        return show_ai_images.load(project, job_id)
+
+    @app.get("/api/v1/show/ai/images/<job_id>")
+    def api_show_ai_status(job_id):
+        project = _require_project(state)
+        try:
+            job = _ai_request(project, job_id)
+        except (ValueError, OSError):
+            return error_response("not_found", "Unknown image request", 404)
+        if job["status"] == "ready":
+            job["url"] = f"/api/v1/show/ai/images/{job_id}/image"
+        elif job["status"] in {"queued", "generating"}:
+            with ai_jobs_lock:
+                if str(project.folder) not in ai_jobs:
+                    job.update(status="failed", error="The app restarted before this image finished. Retry your request.")
+        return jsonify(job)
+
+    @app.get("/api/v1/show/ai/images/<job_id>/image")
+    def api_show_ai_image(job_id):
+        from core import show_ai_images
+        project = _require_project(state)
+        try:
+            job = _ai_request(project, job_id)
+            if job["status"] != "ready":
+                raise ValueError("Not ready")
+            return send_file(show_ai_images.folder(project, job_id)/"image.png")
+        except (ValueError, OSError):
+            return error_response("not_found", "This image is not ready", 404)
+
+    @app.post("/api/v1/show/ai/images/<job_id>/apply")
+    def api_show_ai_apply(job_id):
+        from core import show_ai_images, show_proposals, show_scenes
+        project = _require_project(state)
+        try:
+            job = _ai_request(project, job_id)
+        except (ValueError, OSError):
+            return error_response("not_found", "Unknown image request", 404)
+        if job["status"] != "ready":
+            return error_response("not_ready", "Review a completed image first", 409)
+        document = show_scenes.load(_scene_files(project))
+        scene = next((s for s in document["scenes"] if s["id"] == job["scene_id"]), None)
+        if not scene:
+            return error_response("not_found", "This scene no longer exists", 404)
+        proposals_path, _ = _show_review_files(project)
+        stored = show_proposals.load(proposals_path)
+        params = dict(picture=str(show_ai_images.folder(project, job_id)/"image.png"), image_engine=job["engine"],
+                      subject=job["direction"][:80], prompt=job["direction"][:600], ai_direction=job["direction"], selected_text=job["selected_text"],
+                      style=job["style"], position=job["position"], size=.25, effect="pop", kind="drawing")
+        prior = job.get("applied_id") or job.get("replace_id")
+        item = next((p for p in stored["proposals"] if p["id"] == prior and p["id"] in scene["effects"]), None)
+        if item:
+            # Changing the artwork must not reset the user's animation or sizing.
+            params.pop("size", None)
+            params.pop("effect", None)
+            item["params"].update(params)
+            item.update(status="proposed", needs=[])
+        else:
+            item = show_proposals.proposal("drawing", job["at"], job["duration"], reason="Your idea · ChatGPT image", **params)
+            stored["proposals"].append(item)
+            show_scenes.attach(document, item)
+            show_scenes.save(_scene_files(project), document)
+        show_proposals.save(proposals_path, stored["proposals"], **{k:v for k,v in stored.items() if k not in ("proposals","version")})
+        _effect_changed(project, item["id"])
+        job["applied_id"] = item["id"]
+        show_ai_images.save(show_ai_images.folder(project, job_id)/"request.json", job)
+        return jsonify(item)
+
+    @app.get("/api/v1/show/source")
+    def api_show_source() -> Response:
+        """One of this project's own videos (to watch the intro), nothing else."""
+        project = _require_project(state)
+        raw = str(request.args.get("path") or "")
+        registered = {str(record.get("path")) for record in project.data.get("inputs", {}).get("videos", [])}
+        if raw not in registered or not Path(raw).is_file():
+            return error_response("not_found", "Not a video of this project", 404)
+        return send_file_with_range(raw)
+
+    def _show_photos(project: Project) -> list[dict[str, Any]]:
+        folder = project.folder / "photos"
+        listing = folder / "photos.json"
+        try:
+            return [item for item in json.loads(listing.read_text(encoding="utf-8")) if Path(item["photo"]).is_file()]
+        except (OSError, ValueError, KeyError, TypeError):
+            return []
+
+    def _allowed_photo(project: Project, raw: str) -> Path | None:
+        return Path(raw) if raw in {item["photo"] for item in _show_photos(project)} else None
+
+    show_voices_lock = threading.Lock()
+
+    def _show_voices(project: Project) -> list[dict[str, Any]]:
+        try:
+            return [item for item in json.loads((project.folder / "assets" / "show-voices" / "voices.json").read_text())
+                    if Path(item["source"]).is_file()]
+        except (OSError, ValueError, KeyError, TypeError):
+            return []
+
+    @app.post("/api/v1/show/voices")
+    def api_show_voice_upload() -> Response:
+        import uuid
+        import wave
+        from core.project import atomic_write_json
+        project = _require_project(state)
+        if not same_project_path(str(request.form.get("project_id") or ""), str(project.folder)):
+            return error_response("project_changed", "The project changed. Record or import the voice again.", 409)
+        upload = request.files.get("file")
+        if not upload:
+            return error_response("bad_request", "Choose an audio file or record a voice", 400)
+        payload = upload.read(32 * 1024 * 1024 + 1)
+        if not payload or len(payload) > 32 * 1024 * 1024:
+            return error_response("bad_request", "Use a voice clip smaller than 32 MB", 400)
+        folder = project.folder / "assets" / "show-voices"
+        folder.mkdir(parents=True, exist_ok=True)
+        key = uuid.uuid4().hex
+        raw, target = folder / f"{key}.upload", folder / f"{key}.wav"
+        raw.write_bytes(payload)
+        try:
+            ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
+            subprocess.run([ffmpeg, "-v", "error", "-y", "-i", str(raw), "-map", "0:a:0", "-t", "180", "-vn",
+                            "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", str(target)],
+                           capture_output=True, check=True, timeout=60)
+            with wave.open(str(target)) as sound:
+                duration = sound.getnframes() / sound.getframerate()
+            if duration <= 0:
+                raise ValueError("The clip has no audio")
+            voice = {"source": str(target), "start": 0, "length": duration,
+                     "text": Path(upload.filename or "Recorded voice").stem[:120]}
+            with show_voices_lock:
+                atomic_write_json(folder / "voices.json", _show_voices(project) + [voice])
+        except (OSError, ValueError, wave.Error, subprocess.SubprocessError):
+            target.unlink(missing_ok=True)
+            return error_response("invalid_audio", "Could not read this audio. Try WAV, MP3, M4A, OGG or WEBM.", 400)
+        finally:
+            raw.unlink(missing_ok=True)
+        return jsonify(voice), 201
+
+    @app.get("/api/v1/show/photos")
+    def api_show_photos() -> Response:
+        """Photos of the things around the host (taken from the videos, or added)."""
+        project = _require_project(state)
+        return jsonify({"items": [{**item, "url": f"/api/v1/show/photo?path={quote(item['photo'])}"} for item in _show_photos(project)]})
+
+    @app.get("/api/v1/show/photo")
+    def api_show_photo() -> Response:
+        project = _require_project(state)
+        path = _allowed_photo(project, str(request.args.get("path") or ""))
+        if path is None:
+            return error_response("not_found", "Not a photo of this Show", 404)
+        return send_file(str(path))
+
+    @app.post("/api/v1/show/photos")
+    def api_show_photo_from_video() -> Response:
+        """Keep a frame of one of the Show's videos as a photo (its own pixels, full size)."""
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        source = _show_allowed_source(project, str(body.get("source") or ""))
+        if source is None:
+            return error_response("bad_request", "Choose one of this Show's videos", 400)
+        second = max(0.0, float(body.get("second") or 0))
+        name = re.sub(r"[^\w -]+", "", str(body.get("name") or "photo")).strip()[:60] or "photo"
+        folder = project.folder / "photos"
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / f"{source.stem}-{second:06.1f}s-{re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')}.png"
+        ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
+        result = subprocess.run([ffmpeg, "-v", "error", "-y", "-nostdin", "-ss", f"{second:.3f}", "-i", str(source), "-frames:v", "1", str(target)],
+                                capture_output=True, check=False)
+        if result.returncode != 0 or not target.is_file():
+            return error_response("photo_failed", "No picture at that moment", 422)
+        items = [item for item in _show_photos(project) if item["photo"] != str(target)]
+        items.append({"name": name, "photo": str(target), "video": str(source), "second": round(second, 2), "chosen": "by hand"})
+        (folder / "photos.json").write_text(json.dumps(items, indent=1, ensure_ascii=False), encoding="utf-8")
+        return jsonify(items[-1]), 201
+
+    @app.post("/api/v1/show/photos/library")
+    def api_show_photo_library() -> Response:
+        """Photos of every steady moment of one of the Show's videos, to choose what to cut out."""
+        from core import show_characters, show_proposals
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        source = _show_allowed_source(project, str(body.get("source") or ""))
+        if source is None:
+            return error_response("bad_request", "Choose one of this Show's videos", 400)
+        proposals_path, _ = _show_review_files(project)
+        resources = show_proposals.load(proposals_path).get("resources") or [] if proposals_path.is_file() else []
+        resource = next((item for item in resources if item.get("path") == str(source)), {"path": str(source)})
+        ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
+        taken = show_characters.library_photos({**resource, "path": str(source)}, project.folder / "photos", ffmpeg)
+        items = _show_photos(project)
+        known = {item["photo"] for item in items}
+        added = [item for item in taken if item["photo"] not in known]
+        (project.folder / "photos").mkdir(parents=True, exist_ok=True)
+        (project.folder / "photos" / "photos.json").write_text(json.dumps(items + added, indent=1, ensure_ascii=False), encoding="utf-8")
+        return jsonify({"added": len(added), "photos": len(taken)})
+
+    @app.post("/api/v1/show/characters/cutout")
+    def api_show_character_cutout() -> Response:
+        """Cut a thing out of a photo (automatic, or inside a box) and apply brush
+        strokes; returns a preview. Only the mask changes, never the pixels."""
+        import hashlib
+
+        import numpy as np
+        from PIL import Image as PILImage
+
+        from core import show_characters
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        photo = _allowed_photo(project, str(body.get("photo") or ""))
+        if photo is None:
+            return error_response("bad_request", "Choose one of this Show's photos", 400)
+        box = body.get("box")
+        folder = project.cache_dir / "show_cutouts"
+        folder.mkdir(parents=True, exist_ok=True)
+        # A newly supplied close-up can replace a photo at the same path. Never
+        # reuse the old silhouette merely because its filename stayed the same.
+        photo_digest = hashlib.sha256(photo.read_bytes()).hexdigest()
+        base_key = hashlib.sha256(json.dumps([str(photo), photo_digest, box]).encode()).hexdigest()[:24]
+        base = folder / f"{base_key}-auto.npz"
+        if base.is_file():
+            stored = np.load(base)
+            mask, method = stored["mask"], str(stored["method"])
+        else:
+            mask, method = show_characters.auto_mask(photo, box)
+            np.savez_compressed(base, mask=mask, method=method)
+        mask = show_characters.apply_strokes(mask, body.get("strokes") or [])
+        if body.get("background"):
+            mask = 1.0 - mask
+        key = hashlib.sha1(json.dumps([base_key, body.get("strokes") or [], bool(body.get("background"))]).encode()).hexdigest()[:16]
+        np.save(folder / f"{key}.npy", mask)
+        try:
+            picture, crop = show_characters.cutout(photo, mask)
+        except ValueError as exc:
+            return error_response("bad_request", str(exc), 400)
+        preview = folder / f"{key}.png"
+        picture.save(preview)
+        return jsonify({"mask": key, "method": method, "crop": list(crop), "size": list(picture.size),
+                        "url": f"/api/v1/show/media?path={quote(str(preview))}",
+                        "mask_url": f"/api/v1/show/media?path={quote(str(_mask_preview(folder, key, mask)))}"})
+
+    def _mask_preview(folder: Path, key: str, mask: Any) -> Path:
+        import numpy as np
+        from PIL import Image as PILImage
+        target = folder / f"{key}-mask.png"
+        PILImage.fromarray((np.clip(mask, 0, 1) * 255).astype(np.uint8)).save(target)
+        return target
+
+    @app.post("/api/v1/show/characters")
+    def api_show_character_save() -> Response:
+        import numpy as np
+
+        from core import show_characters
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        photo = _allowed_photo(project, str(body.get("photo") or ""))
+        key = re.sub(r"[^0-9a-f]", "", str(body.get("mask") or ""))
+        mask_path = project.cache_dir / "show_cutouts" / f"{key}.npy"
+        if photo is None or not key or not mask_path.is_file():
+            return error_response("bad_request", "Cut the character out of one of this Show's photos first", 400)
+        source = next((item for item in _show_photos(project) if item["photo"] == str(photo)), {})
+        mask = np.load(mask_path)
+        if body.get("gallery_only"):
+            import uuid
+            from core.project import atomic_write_json
+            folder = project.folder / "assets" / "show-library"
+            folder.mkdir(parents=True, exist_ok=True)
+            target = folder / f"cutout-{uuid.uuid4().hex}.png"
+            picture, crop = show_characters.cutout(photo, mask)
+            picture.save(target)
+            catalog_path = folder / "catalog.json"
+            try:
+                catalog = json.loads(catalog_path.read_text())
+            except (OSError, ValueError):
+                catalog = {}
+            catalog[str(target)] = {"name": str(body.get("name") or source.get("name") or "Photo cutout"),
+                                    "origin": "Your photo · original pixels", "retired": False,
+                                    "source_photo": str(photo), "crop": list(crop)}
+            atomic_write_json(catalog_path, catalog)
+            return jsonify({"cutout": str(target), "name": catalog[str(target)]["name"]}), 201
+        eyes = body.get("eyes") or []
+        if eyes:
+            from core.show_pixel_layers import LookingPixels
+            try:
+                picture, _ = show_characters.cutout(photo, mask)
+                LookingPixels(np.asarray(picture).astype(np.float32) / 255, eyes)
+            except (ValueError, TypeError, KeyError) as exc:
+                return error_response("bad_request", str(exc), 400)
+        folder = show_characters.save_character(str(body.get("name") or source.get("name") or "Character"), photo, mask,
+                                                method=str(body.get("method") or ""), mouth=body.get("mouth"), pivot=body.get("pivot"),
+                                                voice=body.get("voice"), eyes=eyes,
+                                                root=project.folder / "assets" / "show-library" / "Characters",
+                                                provenance={"video": source.get("video"), "second": source.get("second")})
+        return jsonify(next(item for item in _show_characters(project) if item["folder"] == str(folder))), 201
+
+    @app.post("/api/v1/show/characters/eyes-preview")
+    def api_show_character_eyes_preview() -> Response:
+        import uuid
+        import numpy as np
+        from core import show_characters, show_pixel_layers
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        photo = _allowed_photo(project, str(body.get("photo") or ""))
+        key = re.sub(r"[^0-9a-f]", "", str(body.get("mask") or ""))
+        folder = project.cache_dir / "show_cutouts"
+        mask_path = folder / f"{key}.npy"
+        if photo is None or not key or not mask_path.is_file():
+            return error_response("bad_request", "Cut out a photo of this Show first", 400)
+        temporary = folder / f"eyes-{uuid.uuid4().hex}.png"
+        target = temporary.with_suffix(".mp4")
+        try:
+            picture, _ = show_characters.cutout(photo, np.load(mask_path))
+            picture.save(temporary)
+            show_pixel_layers.render_preview(temporary, body.get("eyes") or [], target,
+                                             str(tool_status().get("ffmpeg_path") or "ffmpeg"))
+        except (ValueError, TypeError, KeyError) as exc:
+            return error_response("bad_request", str(exc), 400)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return error_response("preview_failed", f"Could not render the glance: {exc}", 500)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return jsonify({"url": f"/api/v1/show/media?path={quote(str(target))}"})
+
+    def _show_characters(project: Project) -> list[dict[str, Any]]:
+        from core import show_characters
+        return show_characters.list_characters(project.folder / "assets" / "show-library" / "Characters") + show_characters.list_characters()
+
+    @app.get("/api/v1/show/characters")
+    def api_show_characters() -> Response:
+        from core import show_characters
+        project = _require_project(state)
+        return jsonify({"items": [{**item, "url": f"/api/v1/show/library/file?path={quote(str(Path(item['cutout']).resolve()))}"}
+                                  for item in _show_characters(project)]})
+
+    @app.get("/api/v1/show/characters/edit")
+    def api_show_character_edit() -> Response:
+        import uuid
+        import numpy as np
+        from PIL import Image
+        project = _require_project(state)
+        record = next((item for item in _show_characters(project) if item["cutout"] == request.args.get("asset")), None)
+        if not record or _allowed_photo(project, record["photo"]) is None:
+            return error_response("not_found", "The original photo is not available in this project", 404)
+        folder = project.cache_dir / "show_cutouts"
+        folder.mkdir(parents=True, exist_ok=True)
+        key = uuid.uuid4().hex
+        mask = np.asarray(Image.open(Path(record["folder"]) / "mask.png").convert("L"), dtype=np.float32) / 255
+        np.save(folder / f"{key}.npy", mask)
+        return jsonify({"record": record, "cut": {"mask": key, "method": record["method"], "url": f"/api/v1/show/library/file?path={quote(record['cutout'])}"},
+                        "photo": next(item for item in _show_photos(project) if item["photo"] == record["photo"])})
+
+    @app.patch("/api/v1/show/characters")
+    def api_show_character_rig() -> Response:
+        """Mark the mouth, the pivot or the default voice once."""
+        from core import show_characters
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        folder = Path(str(body.get("folder") or ""))
+        known = {item["folder"] for item in _show_characters(project)}
+        if str(folder) not in known:
+            return error_response("not_found", "That character is not in the library", 404)
+        changes = {key: body[key] for key in ("mouth", "eyes", "pivot", "voice", "name") if key in body}
+        if changes.get("eyes"):
+            import numpy as np
+            from PIL import Image
+            from core.show_pixel_layers import LookingPixels
+            try:
+                LookingPixels(np.asarray(Image.open(folder / "cutout.png").convert("RGBA"), dtype=np.float32) / 255, changes["eyes"])
+            except (ValueError, TypeError, KeyError) as exc:
+                return error_response("bad_request", str(exc), 400)
+        return jsonify(show_characters.rig(folder, **changes))
+
+    @app.post("/api/v1/show/scenes/<scene_id>/stickers/<sticker_id>/preview")
+    def api_show_sticker_preview(scene_id: str, sticker_id: str) -> Response:
+        from core import show_scenes
+        from core.show import preview_scene
+        project = _require_project(state)
+        try:
+            scene = next(s for s in show_scenes.load(_scene_files(project))["scenes"] if s["id"] == scene_id)
+            sticker = next(o for o in scene["overlays"] if o.get("id") == sticker_id)
+            path = preview_scene(project, scene_id, only_sticker_id=sticker_id)
+        except StopIteration:
+            return error_response("not_found", "This sticker is no longer in the scene", 404)
+        except Exception as exc:
+            return error_response("preview_failed", str(exc), 500)
+        return jsonify({"url": f"/api/v1/show/media?path={quote(str(path))}", "origin": max(scene["start"], sticker["at"] - 1.5)})
+
+    @app.get("/api/v1/show/library")
+    def api_show_library() -> Response:
+        project = _require_project(state)
+        items = _show_library_items(project)
+        return jsonify({"items": [{**item, "url": f"/api/v1/show/library/file?path={quote(item['path'])}"} for item in items if request.args.get("retired") == "1" or not item["retired"]],
+                        "retired_count": sum(item["retired"] for item in items)})
+
+    @app.post("/api/v1/show/library/visibility")
+    def api_show_library_visibility() -> Response:
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        raw = str(body.get("path") or "")
+        if raw not in {item["path"] for item in _show_library_items(project)}:
+            return error_response("not_found", "Not in this library", 404)
+        path = project.folder / "assets" / "show-library" / "catalog.json"
+        try:
+            catalog = json.loads(path.read_text())
+        except (OSError, ValueError):
+            catalog = {}
+        catalog.setdefault(raw, {})["retired"] = bool(body.get("retired", True))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_suffix(".tmp")
+        temp.write_text(json.dumps(catalog, ensure_ascii=False, indent=2))
+        temp.replace(path)
+        return jsonify({"path": raw, "retired": catalog[raw]["retired"]})
+
+    @app.get("/api/v1/show/library/file")
+    def api_show_library_file() -> Response:
+        project = _require_project(state)
+        raw = str(request.args.get("path") or "")
+        if raw not in {item["path"] for item in _show_library_items(project)}:
+            return error_response("not_found", "Not in the library", 404)
+        return send_file(raw)
+
+    @app.get("/api/v1/show/scenes/decisions")
+    def api_show_scene_decisions() -> Response:
+        from core import show_scenes
+        project = _require_project(state)
+        response = jsonify(show_scenes.decisions(show_scenes.load(_scene_files(project))))
+        response.headers["Content-Disposition"] = "attachment; filename=show-storyboard.json"
+        return response
+
+    @app.get("/api/v1/show/review")
+    def api_show_review() -> Response:
+        from core import show_proposals
+        project = _require_project(state)
+        proposals_path, plan_path = _show_review_files(project)
+        if not proposals_path.is_file() or not plan_path.is_file():
+            return error_response("not_ready", "No Show review has been prepared for this project", 404)
+        try:
+            state.wizard.adopt_show_review(project)
+        except RuntimeError as exc:
+            LOGGER.info("Show review not adopted: %s", exc)
+        stored = show_proposals.load(proposals_path)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        for item in stored["proposals"]:
+            item["needs"] = show_proposals.check(item)
+        return jsonify({**stored, "plan": {"edited_duration": plan["edited_duration"], "cuts": plan["cuts"], "source": plan["source"],
+                                           "framing": plan.get("framing"), "language": plan.get("language")}})
+
+    @app.patch("/api/v1/show/review/<proposal_id>")
+    def api_show_review_update(proposal_id: str) -> Response:
+        from core import show_proposals
+        project = _require_project(state)
+        proposals_path, _ = _show_review_files(project)
+        body = request.get_json(silent=True) or {}
+        stored = show_proposals.load(proposals_path)
+        allowed = {"status", "at", "duration", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action",
+                   "amount", "offset", "voice", "hold", "subject", "text", "style", "position", "size", "effect", "warp", "point", "anchor", "scale",
+                   "entrance", "prompt", "picture", "selected_text", "image_center"}
+        changes = {key: value for key, value in body.items() if key in allowed}
+        # All storyboard tools share the edited clock. Reject impossible placements
+        # instead of silently accepting an image beyond its owning scene.
+        try:
+            current = next(p for p in stored["proposals"] if p["id"] == proposal_id)
+            if "at" in changes or "duration" in changes:
+                at = float(changes.get("at", current["at"]))
+                duration = float(changes.get("duration", current["duration"]))
+                if not math.isfinite(at + duration) or at < 0 or duration < 0 or (duration == 0 and current["kind"] != "character"):
+                    raise ValueError("Choose a positive duration and a finite start time")
+                scene_path = _scene_files(project)
+                if scene_path.is_file():
+                    from core import show_scenes
+                    owner = next((s for s in show_scenes.load(scene_path)["scenes"] if proposal_id in s["effects"]), None)
+                    if owner and (at < owner["start"] - .001 or at + duration > owner["end"] + .001):
+                        raise ValueError("Place this effect within its scene: select words in What you say or drag its timeline bar")
+            if "image_center" in changes and changes["image_center"] is not None:
+                point = changes["image_center"]
+                if not isinstance(point, list) or len(point) != 2 or not all(isinstance(n, (int, float)) and math.isfinite(n) and -1 <= n <= 2 for n in point):
+                    raise ValueError("Choose a valid picture position")
+            if "selected_text" in changes and (not isinstance(changes["selected_text"], str) or len(changes["selected_text"]) > 400):
+                raise ValueError("Select up to 400 characters of the transcript")
+        except StopIteration:
+            return error_response("not_found", "That effect is not in this review", 404)
+        except (ValueError, TypeError) as exc:
+            return error_response("bad_request", str(exc), 400)
+        if changes.get("picture") and changes["picture"] not in {item["path"] for item in _show_library_items(project)}:
+            return error_response("bad_request", "Choose one of the pictures in your library", 400)
+        if "prompt" in changes and (not isinstance(changes["prompt"], str) or len(changes["prompt"]) > 600):
+            return error_response("bad_request", "A drawing's prompt is a text of up to 600 characters", 400)
+        from core.show_inserts import ENTRANCES
+        if "entrance" in changes and changes["entrance"] not in ENTRANCES:
+            return error_response("bad_request", "A character enters with a cut, a push-in or a bounce", 400)
+        try:
+            item = show_proposals.update(stored["proposals"], proposal_id, **changes)
+        except KeyError:
+            return error_response("not_found", "That effect is not in this review", 404)
+        except (ValueError, TypeError) as exc:
+            return error_response("bad_request", str(exc), 400)
+        show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
+        _effect_changed(project, proposal_id)
+        return jsonify(item)
+
+    @app.get("/api/v1/show/drawing-prompt")
+    def api_show_drawing_prompt() -> Response:
+        """The words the painter gets for a drawing, to read and change before it is painted."""
+        from core import gag_paint
+        style = str(request.args.get("style") or "crayon")
+        style = style if style in gag_paint.STYLES else "crayon"
+        subject = str(request.args.get("subject") or "").strip()[:80] or "something"
+        return jsonify({"prompt": gag_paint.prompt_for(subject, style), "style": style,
+                        "styles": {key: value.label for key, value in gag_paint.STYLES.items()}})
+
+    @app.post("/api/v1/show/review/add")
+    def api_show_review_add() -> Response:
+        """An effect the person adds: rainbow steam, a talking character, a close-up, formulas or a word."""
+        from core import show_proposals
+        project = _require_project(state)
+        proposals_path, plan_path = _show_review_files(project)
+        if not proposals_path.is_file():
+            return error_response("not_ready", "No Show review has been prepared for this project", 404)
+        body = request.get_json(silent=True) or {}
+        kind = str(body.get("kind") or "")
+        stored = show_proposals.load(proposals_path)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        at = max(0.0, min(float(plan["edited_duration"]) - 0.5, float(body.get("at") or 0)))
+        voices = [{"source": item["path"], "start": line["start"], "length": round(line["end"] - line["start"], 2), "text": line["text"]}
+                  for item in stored.get("resources") or [] for line in item.get("speech") or []]
+        source = str(body.get("source") or "")
+        if kind in {"character", "cutaway"} and _show_allowed_source(project, source) is None:
+            return error_response("bad_request", "Choose one of this Show's videos or photos", 400)
+        if kind == "steam":
+            item = show_proposals.proposal("steam", at, float(body.get("duration") or 4.0), reason="Added by you", point=[0.35, 0.75], anchor=None, scale=1.0)
+        elif kind == "character":
+            item = show_proposals.proposal("character", at, 0.0, reason="Added by you", source=source, still_time=float(body.get("still_time") or 0),
+                                           zoom=1.25, focus=[0.5, 0.5], zoom_sec=1.2, region=None, action="mouth", amount=0.02,
+                                           offset=[0.0, 0.0], voice=None, voices=voices, hold=2.0)
+        elif kind == "cutaway":
+            item = show_proposals.proposal("cutaway", at, float(body.get("duration") or 2.0), reason="Added by you", source=source,
+                                           source_start=float(body.get("source_start") or 0), zoom=1.0, focus=[0.5, 0.5], thumb=None, alternatives=[])
+        elif kind == "math":
+            item = show_proposals.proposal("math", at, float(body.get("duration") or 4.0), reason="Added by you", kind="math")
+        elif kind == "drawing":
+            from core import gag_paint
+            subject = str(body.get("subject") or body.get("text") or "").strip()[:80]
+            if not subject:
+                return error_response("bad_request", "Say what is drawn", 400)
+            style = str(body.get("style") or "crayon") if str(body.get("style") or "crayon") in gag_paint.STYLES else "crayon"
+            item = show_proposals.proposal("drawing", at, float(body.get("duration") or 3.0), reason="Added by you", kind="drawing",
+                                           subject=subject, style=style,
+                                           prompt=(gag_paint.prompt_for(subject, style) + "\nAdditional direction: " + str(body["direction"]).strip()[:2000]) if str(body.get("direction") or "").strip() else "",
+                                           selected_text=str(body.get("selected_text") or "")[:400], says="", text="", query="",
+                                           position="left", size=0.25, effect="pop")
+        elif kind == "word":
+            item = show_proposals.proposal("word", at, float(body.get("duration") or 2.0), reason="Added by you", kind="word",
+                                           text=str(body.get("text") or "WOW")[:40], position="left", size=0.3, effect="pop")
+        else:
+            return error_response("bad_request", "Unknown effect", 400)
+        item["needs"] = show_proposals.check(item)
+        items = sorted([*stored["proposals"], item], key=lambda entry: entry["at"])
+        show_proposals.save(proposals_path, items, **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
+        scenes_path = project.artifacts_dir / "show_scenes.json"
+        if scenes_path.is_file():
+            from core import show_scenes
+            document = show_scenes.load(scenes_path)
+            show_scenes.attach(document, item)
+            show_scenes.save(scenes_path, document)
+            _effect_changed(project, item["id"])
+        return jsonify(item), 201
+
+    @app.post("/api/v1/show/review/<proposal_id>/preview")
+    def api_show_review_preview(proposal_id: str) -> Response:
+        from core.show import preview_proposal
+        project = _require_project(state)
+        try:
+            path = preview_proposal(project, proposal_id)
+        except StopIteration:
+            return error_response("not_found", "That effect is not in this review", 404)
+        except Exception as exc:  # shown in the review card; the review itself stays usable
+            LOGGER.exception("Show preview failed")
+            return error_response("preview_failed", str(exc), 500)
+        return jsonify({"url": f"/api/v1/show/media?path={quote(str(path))}"})
+
+    @app.post("/api/v1/show/review/render")
+    def api_show_review_render() -> Response:
+        project = _require_project(state)
+        scene_worker["stop"].set()      # the final render needs the computer, not previews
+        try:
+            job = state.wizard.render_show_review(project)
+        except RuntimeError as exc:
+            return error_response("wizard_busy", str(exc), 409)
+        return jsonify(serialize_wizard_job(job)), 202
+
+    @app.get("/api/v1/show/media")
+    def api_show_media() -> Response:
+        project = _require_project(state)
+        path = Path(str(request.args.get("path") or "")).resolve()
+        roots = [project.cache_dir.resolve(), (project.folder / "gags").resolve()]
+        if not path.is_file() or not any(root == path.parent or root in path.parents for root in roots):
+            return error_response("not_found", "Not a Show review file", 404)
+        return send_file_with_range(str(path))
+
+    @app.get("/api/v1/show/still")
+    def api_show_still() -> Response:
+        import hashlib
+        project = _require_project(state)
+        source = _show_allowed_source(project, str(request.args.get("source") or ""))
+        if source is None:
+            return error_response("not_found", "Not a video of this Show", 404)
+        photo = source.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".heic"}
+        at = 0.0 if photo else max(0.0, float(request.args.get("t") or 0))
+        folder = project.cache_dir / "show_stills"
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / f"{hashlib.sha1(f'{source}|{at:.2f}'.encode()).hexdigest()[:16]}.jpg"
+        if not target.is_file():
+            ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
+            command = [ffmpeg, "-v", "error", "-y", "-nostdin", *([] if photo else ["-ss", f"{at:.3f}"]), "-i", str(source),
+                       "-frames:v", "1", "-vf", "scale=1280:-2", str(target)]
+            if subprocess.run(command, capture_output=True, check=False).returncode != 0 or not target.is_file():
+                return error_response("still_failed", "No picture at that moment", 422)
+        return send_file(str(target), mimetype="image/jpeg")
+
+    @app.get("/api/v1/show/frame")
+    def api_show_frame() -> Response:
+        """The host's picture at an edited moment, for placing things on it."""
+        import hashlib
+        project = _require_project(state)
+        _, plan_path = _show_review_files(project)
+        if not plan_path.is_file():
+            return error_response("not_found", "No Show plan", 404)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        at = max(0.0, float(request.args.get("t") or 0))
+        fps = int(plan.get("fps") or 30)
+        offset, source_time = 0.0, None
+        for shot in plan["shots"]:
+            length = (shot["end_frame"] - shot["start_frame"]) / fps
+            if at < offset + length:
+                source_time = shot["start_frame"] / fps + (at - offset)
+                break
+            offset += length
+        if source_time is None:
+            return error_response("not_found", "After the end of the show", 404)
+        folder = project.cache_dir / "show_stills"
+        folder.mkdir(parents=True, exist_ok=True)
+        key = f"{plan['source']}|{source_time:.2f}"
+        target = folder / f"main-{hashlib.sha1(key.encode()).hexdigest()[:16]}.jpg"
+        if not target.is_file():
+            ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
+            subprocess.run([ffmpeg, "-v", "error", "-y", "-nostdin", "-ss", f"{source_time:.3f}", "-i", str(plan["source"]), "-frames:v", "1",
+                            "-vf", "scale=1280:-2", str(target)], capture_output=True, check=False)
+        if not target.is_file():
+            return error_response("still_failed", "No picture at that moment", 422)
+        return send_file(str(target), mimetype="image/jpeg")
+
+    @app.get("/api/v1/gags/status")
+    def api_gags_status() -> Response:
+        from core.gag_director import claude_status
+        from core.gag_paint import download_status
+        return jsonify({"claude": claude_status(), "painter": download_status()})
+
+    @app.post("/api/v1/gags/painter/download")
+    def api_gags_painter_download() -> Response:
+        from core.gag_paint import start_download
+        return jsonify({"painter": start_download()}), 202
+
+    @app.post("/api/v1/gags/claude/sign-in")
+    def api_gags_claude_sign_in() -> Response:
+        from core.gag_director import DirectorError, open_sign_in
+        try:
+            open_sign_in()
+        except (DirectorError, OSError, subprocess.SubprocessError) as exc:
+            return error_response("claude_sign_in_failed", str(exc), 409)
+        return jsonify({"opened": True})
+
+    @app.post("/api/v1/gags/library/open")
+    def api_gags_library_open() -> Response:
+        from core.gag_library import reveal
+        return jsonify({"path": str(reveal())})
 
     @app.get("/api/v1/wizard/overlays")
     def api_wizard_overlays() -> Response:
@@ -2168,7 +3244,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if audio_paths is not None:
                 project.data["inputs"]["additional_audio"] = [{"path": path, "filename": Path(path).name, "kind": "master"} for path in dict.fromkeys(audio_paths)]
             platform = str(body.get("platform") or "")
-            if platform in {"youtube", "reel", "360", "backstage", "medley"}:
+            if platform in {"youtube", "reel", "360", "backstage", "medley", "show"}:
                 project.data.setdefault("settings", {}).setdefault("wizard", {})["platform"] = platform
             if not requested_id:
                 project.data.setdefault("settings", {}).setdefault("wizard", {})["reel_logo_mode"] = "default"
@@ -2258,7 +3334,15 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.get("/api/v1/wizard/projects")
     def api_wizard_projects() -> Response:
-        return jsonify({"projects": list_projects()})
+        projects = list_projects()
+        # A saved "running" stage outlives a quit or crash; only the job
+        # running now is really running.
+        current = state.wizard.status()
+        active = str(current.get("project_path") or "") if current.get("status") in {"running", "cancelling"} else ""
+        for project in projects:
+            if project.get("status") == "running" and not (active and Path(active).resolve() == Path(project["path"]).resolve()):
+                project["status"] = "interrupted"
+        return jsonify({"projects": projects})
 
     @app.post("/api/v1/wizard/projects/open")
     def api_wizard_project_open() -> Response:
@@ -2335,6 +3419,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return jsonify({"ok": True, "status": "cancelling"})
         cancelled = state.wizard.cancel()
         if not cancelled:
+            # Preparation can finish between the UI status poll and this request.
+            # Navigation only needs the worker stopped; already idle is success.
+            if _json_body().get("if_idle") is True:
+                return jsonify({"ok": True, "status": state.wizard.status().get("status")})
             return error_response("not_running", "No job is currently running", 409)
         return jsonify({"ok": True, "status": state.wizard.status().get("status")})
 
@@ -2393,6 +3481,15 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.post("/api/v1/sync-diagnostics/cleanup")
     def api_sync_diagnostics_cleanup() -> Response:
         return jsonify({"ok": True, "removed_projects": cleanup_closed_sync_diagnostics()})
+
+    @app.get("/api/v1/wizard/compose-base")
+    def api_wizard_compose_base() -> Response:
+        """The clean export the caption/overlay editor previews on."""
+        project = state.project or _active_wizard_project(state)
+        result = _composition_base_result(project) if project else None
+        if not result or not Path(str(result.get("path") or "")).is_file():
+            return error_response("not_found", "No exported video yet", 404)
+        return send_file_with_range(str(result["path"]))
 
     @app.get("/api/v1/wizard/result")
     def api_wizard_result() -> Response:
@@ -2518,7 +3615,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.post("/api/v1/captions/burn")
     def api_captions_burn() -> Response:
         project = _require_project(state)
-        result = _latest_media_result(state, project)
+        # Burn onto the caption-free base; the latest result may already carry
+        # burned captions, which produced doubled captions.
+        result = _composition_base_result(project)
         if not result:
             return error_response("not_found", "No exported video yet", 404)
         body = request.get_json(silent=True) or {}
@@ -2545,8 +3644,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             elif header and header.get("logo_source") == "default":
                 candidate = Path(str(load_global_config().get("personal_logo_path") or ""))
                 if candidate.is_file(): logo = candidate
-            track = _expand_caption_animations(track)
-            output = burn_captions(result["path"], track, style, output_path=destination, header=header, logo_path=logo, letterbox=letterbox)
+            output = burn_captions(result["path"], track, style, output_path=destination, ffmpeg=str(tool_status().get("ffmpeg_path") or "ffmpeg"), header=header, logo_path=logo, letterbox=letterbox)
             return jsonify({"path": str(output), "filename": output.name, "media_url": "/api/v1/captions/result", "version": CAPTIONS_VERSION})
         except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError) as exc:
             return error_response("caption_burn_failed", str(exc), 400)
@@ -2576,7 +3674,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         # turn a YouTube result into a vertical Reel composition.
         base_result = _export_result(project)
         compose_platform = str((base_result or {}).get("platform") or wizard.get("platform") or "youtube").strip().lower()
-        if compose_platform not in {"youtube", "reel", "reel_horizontal", "360", "backstage"}:
+        if compose_platform not in {"youtube", "reel", "reel_horizontal", "360", "backstage", "show"}:
             compose_platform = "youtube"
         if compose_platform == "youtube":
             # YouTube is one horizontal flyer/base composition. Captions and
@@ -2649,6 +3747,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         sources = {str(record.get("path") or "") for record in project.data.get("inputs", {}).get("videos", [])}
         if any(path not in sources or subject not in allowed for path, subject in assignments.items()):
             return error_response("bad_request", "Choose a registered camera and supported subject", 400)
+        # Continue resubmits these settings while speculative ingest is active.
+        # An identical request is read-only and must not block the handoff.
+        current = project.data.get("settings", {}).get("edit", {}).get("camera_subjects") or {}
+        if assignments == current:
+            return jsonify({"camera_subjects": current})
         if state.wizard.status().get("status") in {"running", "cancelling"}:
             return error_response("wizard_busy", "Wait for the current edit before changing camera subjects", 409)
         edit = project.data.setdefault("settings", {}).setdefault("edit", {})
@@ -2665,6 +3768,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         sources = {str(record.get("path") or "") for record in project.data.get("inputs", {}).get("videos", [])}
         if any(path not in sources for path in paths):
             return error_response("bad_request", "Choose registered videos as filler", 400)
+        current_edit = project.data.get("settings", {}).get("edit", {})
+        current = sorted(set(current_edit.get("fillers") or []))
+        subjects = current_edit.get("camera_subjects") or {}
+        if sorted(set(paths)) == current and not any(path in subjects for path in current):
+            return jsonify({"fillers": current})
         if state.wizard.status().get("status") in {"running", "cancelling"}:
             return error_response("wizard_busy", "Wait for the current edit before changing filler videos", 409)
         edit = project.data.setdefault("settings", {}).setdefault("edit", {})
@@ -2792,7 +3900,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.get("/api/v1/stages/status")
     def api_stage_status() -> Response:
-        if state.project and state.project.refresh_input_records():
+        if state.project and state.project.refresh_input_records(missing_invalidates=False):
             state.project.save()
         return jsonify(state.engine.status(state.project))
 
@@ -2932,6 +4040,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         LOGGER.exception("Unhandled API error")
         return error_response("internal_error", str(exc), 500)
 
+    from server.project_library_api import register_library_routes
+    register_library_routes(app, state, lambda: app_home() / "Library" / "projects.json")
+    from server.show_studio_api import register_show_studio_routes
+    register_show_studio_routes(app, state, root)
     return app
 
 
@@ -3535,6 +4647,8 @@ def _project_audio_trim(project: Project) -> tuple[float, float]:
 def _enable_cors(app: Flask) -> None:
     @app.after_request
     def add_cors(response: Response) -> Response:
+        if "Access-Control-Allow-Origin" in response.headers:
+            return response                      # a route's own, narrower policy (Show Studio) stays
         response.headers["Access-Control-Allow-Origin"] = "*"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Range"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"

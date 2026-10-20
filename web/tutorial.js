@@ -100,9 +100,9 @@
   function start() { open(); index = 0; show(); }
   async function offer() {
     const response = await fetch('/api/v1/tutorial');
-    if (!response.ok) return;
+    if (!response.ok) return false;
     const state = await response.json();
-    if (state.answer) return;
+    if (state.answer) return false;
     open(); index = -1; dialog.classList.add('tour-welcome');
     dialog.querySelector('#tourTitle').textContent = 'Want to learn what Zucker Editor can do?';
     dialog.querySelector('.tour-count').textContent = 'WELCOME · YOUR GUIDE, EINSTEIN';
@@ -111,6 +111,7 @@
     button('No', async () => { if (await answer('no')) close(); });
     button('Yes, show me', async () => { if (await answer('yes')) { index = 0; show(); } }, true).focus();
     position();
+    return true;
   }
   window.EditorTutorial = {start, offer, isOpen: () => Boolean(dialog?.open)};
 })();

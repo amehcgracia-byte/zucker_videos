@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Zucker Editor</title>
     <link rel="icon" href="/logo_editor_green.png?v=editor-ui-4" />
-    <link rel="stylesheet" href="/styles.css?v=editor-ui-5" />
+    <link rel="stylesheet" href="/styles.css?v=editor-ui-15" />
     <script src="/theme.js?v=editor-ui-4"></script>
   </head>
   <body>
@@ -23,6 +23,9 @@
         <button class="step-nav" data-step-nav="6">Result</button>
       </div>
       <div class="nav-actions">
+        <button id="showWorkspaceOpen" class="icon-button small" type="button" title="Review the saved automatic Show, its transcript and scene decisions">Show storyboard</button>
+        <button id="showStudioOpen" class="icon-button small" type="button" title="The Show editing desk for the open project">Show Studio</button>
+        <button id="projectLibrary" class="icon-button small" type="button">Project library</button>
         <button id="themeToggle" class="icon-button small" type="button">Dark mode</button>
         <button id="newProject" class="new-project">New project</button>
       </div>
@@ -49,6 +52,11 @@
             <strong>Backstage</strong>
             <span>Documentary diary with original camera audio</span>
           </button>
+          <button class="platform-card" data-platform="show">
+            <span class="platform-glyph" data-glyph="show"></span>
+            <strong>Show</strong>
+            <span>You talking to camera: pauses, "eh" and retakes cut, fast punch-ins</span>
+          </button>
         </div>
 </div></dialog>
     <main class="wizard">
@@ -57,7 +65,7 @@
         <div class="step-header">
           <div class="brand-line">
             <img src="/logo_editor_green.png?v=editor-ui-4" alt="" />
-          <span>Step 1 of 5</span>
+          <span>Step 1 of 6</span>
           </div>
           <h1>Zucker Editor</h1>
         </div>
@@ -124,7 +132,7 @@
 
       <section class="step" id="step2">
         <div class="step-header">
-          <span>Step 2 of 5</span>
+          <span>Step 2 of 6</span>
           <h1 id="editParametersTitle">Edit parameters</h1>
         </div>
         <div id="settingsPreparation" class="song-picker" role="status" aria-live="polite" hidden>
@@ -149,6 +157,24 @@
           <label>Black between songs (seconds) <input id="medleyGap" type="number" min="0" step="0.1" value="0.5"></label>
           <label>Video and audio fades (seconds) <input id="medleyFade" type="number" min="0" step="0.1" value="0.5"></label>
           <div id="medleySources"></div>
+        </div>
+        <div id="showOptions" class="song-picker" hidden>
+          <h2>Show</h2>
+          <p>Your talking video is cleaned and cut automatically: long pauses, "eh"/"um" and phrases you said twice are removed (the last take stays), then it is cut into short shots with punch-in zooms. Captions from what you say are ready in Overlay &amp; Captions.</p>
+          <ol class="show-assistant">
+            <li><strong>Your talking video.</strong> <select id="showMain"></select> <span class="show-hint">The one where you talk to the camera (up to ten minutes works well).</span></li>
+            <li><strong>Close-ups of what you mention</strong> (optional): every other video or photo of the project. <span id="showResourceList" class="show-hint"></span> Film the things you talk about, close and steady, a few seconds each.</li>
+            <li><strong>Their voices</strong> (optional): while filming a thing, say its lines in its voice. In the review you choose which recorded line each character says.</li>
+          </ol>
+          <label><input type="checkbox" id="showReview" checked> Review every effect before rendering (preview, adjust, approve or discard)</label>
+          <label>Pace <select id="showStyle"><option value="choe" selected>Fast: a cut every ~1.5 s with zooms (David Choe style)</option><option value="calm">Calm: longer shots, softer zooms</option></select></label>
+          <label>Language <select id="showLanguage"><option value="" selected>Detect automatically</option><option value="es">Spanish</option><option value="en">English</option></select></label>
+          <label>Gags <select id="showGags"><option value="claude" selected>Drawings, characters and words planned by your Claude</option><option value="keywords">Drawings and words from keywords (offline)</option><option value="off">No gags</option></select></label>
+          <div id="showGagStatus" class="show-gag-status">
+            <p><span id="showClaudeStatus">Checking your Claude…</span> <button id="showClaudeSignIn" class="icon-button small" type="button" hidden>Connect my Claude</button></p>
+            <p><span id="showPainterStatus">Checking the drawing painter…</span> <button id="showPainterDownload" class="icon-button small" type="button" hidden>Download the painter (2.1 GB, once)</button></p>
+            <p>Your own pictures are used first: <button id="showOpenLibrary" class="icon-button small" type="button">Open the gag library</button></p>
+          </div>
         </div>
         <div id="songPicker" class="song-picker" hidden>
           <h2>Which song?</h2>
@@ -251,7 +277,7 @@
 
       <section class="step" id="step3">
         <div class="step-header">
-          <span>Step 3 of 5</span>
+          <span>Step 3 of 6</span>
           <h1 id="progressTitle">Rendering New Jam</h1>
         </div>
         <div id="stageTransition" class="stage-transition" hidden aria-live="polite">
@@ -300,9 +326,10 @@
 
       <section class="step" id="step4">
         <div class="step-header">
-          <span>Step 4 of 5</span>
+          <span>Step 4 of 6</span>
           <h1>Frames</h1>
         </div>
+        <div class="review-empty" role="status"><strong>No shots waiting for review</strong><span>Frames shows the planned shots while an edit waits for your review, before its video is rendered. Start an edit with Make it in Parameters; when its shots are ready they appear here. A project that is already rendered is planned again the same way.</span><div class="review-actions"><button type="button" class="icon-button" data-step-nav="2">Go to Parameters</button><button type="button" class="icon-button" data-step-nav="6">See the result</button></div></div>
         <div id="reviewBox" class="review-box" hidden>
           <div id="reviewReadyNotice" class="review-ready-notice" role="status" aria-live="assertive" hidden>
             <strong>Review shots are ready — choose your takes now</strong>
@@ -313,6 +340,36 @@
           <div id="reviewGrid" class="review-grid"></div>
           <div id="reviewLargeModal" class="review-large-modal" hidden role="dialog" aria-modal="true" aria-label="Enlarged shot"><button id="closeReviewLarge" class="review-large-close" type="button" aria-label="Close">×</button><img id="reviewLarge" alt="Selected shot" /></div>
           <div class="review-actions"><button id="replaceRejected" class="icon-button">Replace rejected</button><button id="renderReviewed" class="primary icon-button">Render Frames</button></div>
+        </div>
+        <div id="showReviewBox" class="review-box show-review" hidden>
+          <details class="review-ready-notice show-workspace-help"><summary><strong>Your show, scene by scene</strong> · How it works</summary><span>Each scene plays at once as you cut it and explains what it proposes: accept it, modify it or leave it without effect; not every moment needs decorating. To add something of your own, select words in “What you say” and right-click them. Ask for “Preview with effects” to see a scene with its zooms and drawings. Nothing else is rendered until the last step.</span></details>
+          <div id="showProgress" class="show-progress" aria-live="polite"><span></span><progress max="1" value="0"></progress></div>
+          <nav id="showSteps" class="show-steps" aria-label="Show storyboard"></nav>
+          <div class="show-board">
+            <div class="show-stage-wrap"><div class="show-stage" id="showStage">
+              <video id="showStageVideo" controls playsinline></video>
+              <canvas id="showStageCard" width="1280" height="720" hidden></canvas>
+              <div id="showStageLayer" class="show-stage-layer"></div>
+              </div><p id="showStageStatus" class="show-stage-status" role="status"></p>
+            </div>
+            <aside id="showPanel" class="show-panel"></aside>
+          </div>
+          <div class="show-step-buttons"><button id="showBack" class="icon-button small" type="button">Back</button><span id="showStepCount"></span><button id="showNext" class="primary icon-button small" type="button">Next</button></div>
+          <div id="showCharacterStudio" class="show-studio" role="dialog" aria-modal="true" aria-label="Photo cutouts and original-pixel layers" hidden>
+            <div class="show-studio-card">
+              <header><strong>Photo cutouts and original-pixel layers</strong><button type="button" class="icon-button small" data-studio="close">Close</button></header>
+              <ol class="show-studio-steps"><li data-studio-step="1">Photo</li><li data-studio-step="2">Cut out</li><li data-studio-step="3">Eyes, mouth, motion</li></ol>
+              <div id="showStudioBody"></div>
+            </div>
+          </div>
+          <div id="showContextMenu" class="show-context-menu" role="dialog" aria-label="Element tools" hidden>
+            <strong>Selected image / layer</strong><div class="show-context-edit"><button type="button" data-menu="copy">Copy</button><button type="button" data-menu="cut">Cut</button><button type="button" data-menu="paste">Paste</button><button type="button" data-menu="duplicate">Duplicate</button><button type="button" data-menu="undo">Undo layer edit</button><button type="button" data-menu="remove">Remove layer</button></div><details class="show-submenu"><summary>Edit this effect ▸</summary><div>
+            <button type="button" data-menu="regions">Edit original eyes / mouth…</button><div class="show-actions-grid" id="showActionButtons"></div>
+            <label class="show-field"><span>Intensity</span><input type="range" id="showIntensity" min="0.2" max="3" step="0.1" value="1"></label>
+            <label class="show-field" id="showEntranceField" hidden><span>Enters</span><select id="showEntrance"><option value="cut">Straight cut: talks at once</option><option value="zoom">The camera pushes in on it</option><option value="bounce">Rises from below with a little jump</option></select></label>
+            </div></details><details class="show-submenu"><summary>Timing ▸</summary><div class="show-fields"><label class="show-field"><span>Enters at (s)</span><input type="number" id="showOverlayAt" step="0.1"></label><label class="show-field"><span>Lasts (s)</span><input type="number" id="showOverlayDuration" step="0.1" min="0.5"></label></div></details>
+            <details class="show-submenu"><summary>Size ▸</summary><div class="show-actions"><button type="button" data-menu="bigger">Bigger</button><button type="button" data-menu="smaller">Smaller</button></div></details>
+          </div>
         </div>
         <div id="paperEditBox" class="review-box paper-edit-box" hidden>
           <div class="review-ready-notice" role="status"><strong>Backstage paper edit ready</strong><span>Review the written sequence before any video render starts.</span></div>
@@ -329,12 +386,12 @@
       </section>
 
       <section class="step compose-step" id="step5">
-        <div class="step-header"><span>Step 5 of 6</span><h1>Overlay &amp; Captions</h1><p>Compose everything while the exported video plays. The mode export and caption burn remain separate.</p></div>
+        <div class="step-header"><span>Step 5 of 6</span><h1>Overlay &amp; Captions</h1><p>Add captions, images and your logo while the video plays. Burning captions makes a separate copy; your exported video stays as it is.</p></div>
         <div class="compose-workspace">
           <div class="compose-panel compose-captions-panel">
             <div class="setup-heading"><h2>Captions</h2><span>Text, timing and caption style</span><button id="captionDisclosure" class="icon-button small" type="button" aria-expanded="true" aria-controls="captionPanelBody">Hide captions</button></div>
             <div id="captionPanelBody">
-              <div class="caption-text-heading"><label class="field-label" for="captionText">Lyrics or text</label><button id="captionAutoRead" class="icon-button" type="button">Auto Read</button></div><div id="captionDictation" hidden><button id="captionMic" type="button">🎙 Record phrases</button><button id="captionDictationImport" type="button">Import voice clip</button><input id="captionVoiceFile" type="file" accept="audio/*" hidden><button id="captionAutoArrange" type="button">Distribute text as captions</button><p class="field-help">Record, stop and review the text below. Separate phrases with blank lines, then distribute them in order with gaps and varied colors, glow and entrances.</p><p id="captionMicStatus" role="status"></p></div><textarea id="captionText" rows="8" placeholder="One block per paragraph&#10;&#10;A second block..."></textarea><div class="caption-auto-read-options"><label class="field-help" for="captionWhisperModel">Model</label><select id="captionWhisperModel"><option value="auto" selected>Auto (large-v3 on the mounted Reel)</option><option value="small">small</option><option value="large-v3">large-v3</option><option value="base">base</option><option value="tiny">tiny</option></select></div><p id="captionAutoReadHelp" class="field-help">Auto Read transcribes the mounted Reel itself, so its timestamps already match the final video. It creates editable captions and leaves the lyrics field alone.</p><p id="captionAutoReadStatus" class="field-help" role="status" aria-live="polite"></p>
+              <div class="caption-text-heading"><label class="field-label" for="captionText">Lyrics or text</label><button id="captionAutoCompose" class="icon-button" type="button" title="Write a short philosophical caption about music">✨ Auto caption</button><button id="captionAutoRead" class="icon-button" type="button">Auto Read</button></div><div id="captionComposeCard" class="caption-compose-card" role="status" aria-live="polite" hidden><p id="captionComposeStatus" class="caption-compose-status"></p><blockquote id="captionComposePhrase"></blockquote><p id="captionComposeAuthor" class="field-help"></p><div id="captionComposeActions" class="caption-compose-actions" hidden><button id="captionComposeUse" class="primary" type="button">Yes, use it</button><button id="captionComposeAnother" class="icon-button" type="button">Another one</button><button id="captionComposeDismiss" class="icon-button small" type="button">Close</button></div></div><div id="captionDictation" hidden><button id="captionMic" type="button">🎙 Record phrases</button><button id="captionDictationImport" type="button">Import voice clip</button><input id="captionVoiceFile" type="file" accept="audio/*" hidden><button id="captionAutoArrange" type="button">Distribute text as captions</button><p class="field-help">Record, stop and review the text below. Separate phrases with blank lines, then distribute them: each phrase gets its own wild look (colour, size, outline, shadow, glow, place and effect), and long phrases, or phrases typed on two lines, are chained across overlapping captions.</p><p id="captionMicStatus" role="status"></p></div><textarea id="captionText" rows="8" placeholder="One block per paragraph&#10;&#10;A second block..."></textarea><div class="caption-auto-read-options"><label class="field-help" for="captionWhisperModel">Model</label><select id="captionWhisperModel"><option value="auto" selected>Auto (large-v3 on the mounted Reel)</option><option value="small">small</option><option value="large-v3">large-v3</option><option value="base">base</option><option value="tiny">tiny</option></select></div><p id="captionAutoReadHelp" class="field-help">Auto Read transcribes the mounted Reel itself, so its timestamps already match the final video. It creates editable captions and leaves the lyrics field alone.</p><p id="captionAutoReadStatus" class="field-help" role="status" aria-live="polite"></p>
               <div class="srt-controls" aria-labelledby="srtHeading"><h3 id="srtHeading">SRT</h3><div class="srt-actions"><label class="file-button icon-button" title="Import SRT or LRC" aria-label="Import SRT or LRC">⇩ <span>Import</span><input id="captionImport" type="file" accept=".srt,.lrc" hidden /></label><button id="captionExportSrt" class="icon-button" type="button" title="Export SRT" aria-label="Export SRT">⇧ <span>Export</span></button></div></div>
               <div class="compose-caption-list-actions"><strong>Caption blocks</strong><button id="captionDeleteAll" class="icon-button small" type="button">Delete all captions</button></div>
               <div id="captionBlocks" class="caption-blocks"></div>
@@ -344,14 +401,17 @@
           </div>
           <div class="compose-center">
             <div class="compose-player-wrap">
-              <div id="composeVideoStage" class="compose-video-stage"><video id="composeVideo" controls playsinline preload="metadata"></video><div id="composeOverlayLayer" class="compose-overlay-layer"></div></div>
+              <div id="composeVideoStage" class="compose-video-stage"><video id="composeVideo" playsinline preload="metadata"></video><div id="composeOverlayLayer" class="compose-overlay-layer"></div><p id="composeVideoMissing" class="compose-video-missing" role="status" hidden>This project's exported video could not be found. Go back to Frames and render the shots again; your captions and overlays are kept.</p></div>
               <div class="compose-player-tools"><button id="composePlayPause" class="icon-button" type="button">Play</button><button id="composeFrameBack" class="icon-button small" type="button">◀ frame</button><button id="composeFrameForward" class="icon-button small" type="button">frame ▶</button><span id="composeTime">00:00.00</span><input id="composeScrub" type="range" min="0" max="1" step="0.01" value="0" /><button id="composeExpand" class="icon-button small" type="button" aria-expanded="false" aria-label="Expand player">Expand</button></div>
+              <div id="composeCaptionEditBar" class="compose-caption-edit-bar" role="status" hidden><span id="composeCaptionEditHint">Editing caption: drag it to move it, drag a corner to make it bigger or smaller.</span><button id="composeCaptionEditReset" class="icon-button small" type="button">Reset position and size</button><button id="composeCaptionEditExit" class="primary" type="button">Exit caption edition</button></div>
             </div>
           </div>
           <div class="compose-panel compose-overlays-panel"><div class="setup-heading"><h2>Visual overlays</h2><span>Flyers, images, logos and video clips</span><button id="composeDuplicateOverlay" class="icon-button small" type="button">Duplicate</button></div><div class="compose-overlay-actions"><button id="reuseReelOverlays" type="button" class="icon-button">Reuse last overlays</button><label class="file-button">Import flyer<input id="addReelImage" type="file" accept="image/png,image/webp,image/jpeg" hidden /></label><label class="file-button">Import video<input id="composeAddReelVideo" type="file" accept="video/mp4,video/webm,video/quicktime" hidden /></label></div><div id="reelFlyerLibrary" class="reel-flyer-library" aria-label="Saved flyers"></div><div id="reelImageLines"></div><div id="reelVideoLines"></div><div class="compose-logo-controls"><div class="setup-heading"><h3>Logo</h3><span>Optional for this project</span></div><div class="logo-choice-row"><label><input id="captionLogoCustom" type="radio" name="captionLogoChoice" value="custom" /> Custom logo for this project</label><label><input id="captionLogoDefault" type="radio" name="captionLogoChoice" value="default" /> Use default brand logo</label><label><input id="captionLogoNone" type="radio" name="captionLogoChoice" value="none" checked /> No logo</label></div><div class="logo-file-row"><label class="file-button">Upload logo<input id="composeLogoInput" type="file" accept="image/png,image/jpeg,image/webp" hidden /></label><button id="composeRemoveLogo" class="icon-button" type="button">Remove logo</button></div><div id="composeLogoPreview" class="compose-logo-preview" hidden><img id="composeLogoThumbnail" alt="Current project logo" /><span id="composeLogoName"></span></div><p id="composeLogoStatus" class="field-help"></p></div></div>
         </div>
-        <div class="compose-timeline-tools"><label for="composeTimelineZoom">Timeline zoom</label><select id="composeTimelineZoom"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option></select><span id="composeTimelineHint">Click to seek · drag overlays to retime</span></div>
-        <div class="compose-timeline"><div class="compose-lane-label">Overlays</div><div class="compose-lane-scroll" data-compose-timeline><div id="composeOverlayLane" class="compose-lane"></div></div><div class="compose-lane-label">Captions</div><div class="compose-lane-scroll" data-compose-timeline><div id="composeCaptionLane" class="compose-lane"></div></div></div>
+        <div class="compose-timeline-dock">
+          <div class="compose-timeline-tools"><label for="composeTimelineZoom">Timeline zoom</label><select id="composeTimelineZoom"><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option></select><span id="composeTimelineHint">Click to seek · drag a block to move it · drag its edges to change its length · right-click a caption to edit it on the video</span></div>
+          <div class="compose-timeline"><div class="compose-lane-label">Overlays</div><div class="compose-lane-scroll" data-compose-timeline><div id="composeOverlayLane" class="compose-lane"></div></div><div class="compose-lane-label">Captions</div><div class="compose-lane-scroll" data-compose-timeline><div id="composeCaptionLane" class="compose-lane"></div></div></div>
+        </div>
         <div class="compose-actions"><button id="composeContinue" class="primary icon-button" type="button">Continue to Result</button></div>
       </section>
       <section class="step" id="step6">
@@ -435,6 +495,13 @@
     <script src="/native_bridge.js?v=editor-ui-4"></script>
     <link rel="stylesheet" href="/tutorial.css" />
     <script src="/tutorial.js"></script>
-    <script src="/app.js?v=editor-ui-9"></script>
+    <script src="/app.js?v=editor-ui-11"></script>
+    <script src="/show_edit_queue.js?v=1"></script>
+    <script src="/show_clock.js?v=1"></script>
+    <script src="/show_review.js?v=23"></script>
+    <script src="/show_einstein.js?v=3"></script>
+    <script src="/show_characters.js?v=5"></script>
+    <script src="/show_voice.js?v=1"></script>
+    <script src="/project_library.js?v=1"></script>
   </body>
 </html>
