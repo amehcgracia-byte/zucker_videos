@@ -76,6 +76,24 @@ def test_real_render_follows_the_clean_video_not_the_added_picture(tmp_path):
     cap.release();assert centers[1]-centers[0]==pytest.approx(39,abs=4)
 
 
+def test_word_length_picture_does_not_outlast_its_timeline_bar(tmp_path):
+    from core.gag_render import render_gags
+    import cv2
+    exe=shutil.which('ffmpeg');assert exe
+    source=tmp_path/'source.mp4';output=tmp_path/'out.mp4';asset=tmp_path/'mask.png'
+    Image.new('RGBA',(20,20),'red').save(asset)
+    subprocess.run([exe,'-v','error','-y','-f','lavfi','-i','color=black:s=160x90:r=25:d=0.5',
+                    '-c:v','libx264','-threads','1',str(source)],check=True)
+    render_gags(source,[{'image':str(asset),'at':0,'duration':.12,'x':.5,'y':.5,'width':.3,'effect':'none'}],output,ffmpeg=exe)
+    cap=cv2.VideoCapture(str(output))
+    try:
+        cap.set(cv2.CAP_PROP_POS_FRAMES,1);ok,active=cap.read();assert ok
+        cap.set(cv2.CAP_PROP_POS_FRAMES,4);ok,ended=cap.read();assert ok
+        assert active[:,:,2].max()>180
+        assert ended.max()<20
+    finally:cap.release()
+
+
 def test_browser_access_is_explicit_and_errors_explain_verification(tmp_path,monkeypatch):
     from core import show_clips
     monkeypatch.setenv('ZUCKER_DATA_ROOT',str(tmp_path))

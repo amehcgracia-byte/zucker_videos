@@ -89,3 +89,29 @@ def test_concurrent_catalog_writes_do_not_lose_assets(media_workshop):
     items=[dict(id=str(i),params=dict(clip=str(source),clip_length=1),duration=1) for i in range(20)]
     with ThreadPoolExecutor(max_workers=4) as pool:list(pool.map(lambda item:show_video_assets.remember(project,item),items))
     assert len(show_video_assets.catalog(project))==20
+
+
+def test_saved_video_edit_survives_later_changes_and_reuses_its_duration(media_workshop):
+    project,source,client,_=media_workshop
+    item=show_proposals.proposal('clip',0,.4,reason='Reusable edit',clip=str(source),
+        clip_length=1,clip_start=.1,matte='none',name='Kitchen',
+        crop=[.1,.1,.8,.8],person_offset=[.2,-.1],person_scale=.7)
+    show_proposals.save(project.artifacts_dir/'show_proposals.json',[item],resources=[])
+    endpoint='/api/v1/show/clips/'+item['id']+'/save-edit'
+    response=client.post(endpoint,json={})
+    assert response.status_code==201,response.get_json()
+    saved=response.get_json()['asset']
+    assert client.post(endpoint,json={}).get_json()['asset']['id']==saved['id']
+    item['params']['person_offset']=[0,0]
+    item['duration']=.8
+    show_proposals.save(project.artifacts_dir/'show_proposals.json',[item],resources=[])
+    different=client.post(endpoint,json={}).get_json()['asset']
+    assert different['id']!=saved['id']
+    placed=client.post('/api/v1/show/video-library/'+saved['id']+'/place',json={'scene_id':'s1','at':1})
+    assert placed.status_code==201,placed.get_json()
+    restored=placed.get_json()['proposal']
+    assert restored['duration']==.4
+    assert restored['params']['person_offset']==[.2,-.1]
+    assert restored['params']['crop']==[.1,.1,.8,.8]
+    assert restored['params']['clip']==str(source)
+    assert client.get('/api/v1/show/video-library/'+saved['id']+'/thumbnail').status_code==200

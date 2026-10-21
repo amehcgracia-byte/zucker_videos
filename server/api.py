@@ -2721,6 +2721,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not path.is_file() or not path.resolve().is_relative_to(project.folder.resolve()):return error_response('not_found','This media is missing from the project',404)
         return send_file_with_range(str(path))
 
+    @app.post('/api/v1/show/clips/<proposal_id>/save-edit')
+    @_proposals_locked
+    def api_show_clip_save_edit(proposal_id):
+        from core import show_proposals, show_video_assets
+        project=_require_project(state)
+        body=request.get_json(silent=True) or {}
+        if body.get('project_id') and body['project_id']!=str(project.folder):
+            return error_response('stale_project','Reopen the original project before saving this edit',409)
+        item=next((p for p in show_proposals.load(project.artifacts_dir/'show_proposals.json')['proposals']
+                   if p['id']==proposal_id and p['kind']=='clip'),None)
+        if item is None:return error_response('not_found','Choose a video clip in this project',404)
+        source=Path(item['params']['clip']).resolve()
+        if not source.is_file() or not source.is_relative_to(project.folder.resolve()):
+            return error_response('not_found','The source video is missing from this project',404)
+        return jsonify(asset=show_video_assets.save_edit(project,item)),201
+
     @app.post('/api/v1/show/video-library/<asset_id>/place')
     @_proposals_locked
     def api_show_video_library_place(asset_id):
@@ -2734,7 +2750,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         doc=show_scenes.load(_scene_files(project));scene=next((s for s in doc['scenes'] if s['id']==body.get('scene_id')),None)
         if record is None or scene is None:return error_response('not_found','Choose project media and a scene',404)
         try:
-            at=float(body.get('at',scene['start']));duration=float(body.get('duration',3))
+            at=float(body.get('at',scene['start']));duration=float(body.get('duration',record.get('saved_duration',3)))
             if not math.isfinite(at+duration) or duration<=0 or not scene['start']<=at<scene['end']:raise ValueError('Choose words inside this scene')
             params=dict(record.get('params') or (source or {}).get('params') or {'clip':record['path'],'clip_length':record['duration'],'clip_start':0,'matte':record.get('matte','none')})
             duration=min(duration,scene['end']-at,float(record['duration'])-float(params.get('clip_start') or 0))

@@ -1,0 +1,54 @@
+# Show consolidation: acceptance ledger
+
+Scope: user-requested six-step consolidation, starting from installed 2.6.15 / 2b29856b. No further installation until the reviewed work is complete. Existing project edits and approved assets are authoritative. A passing test does not replace a UI/render walkthrough.
+
+Status vocabulary: **implemented** = source exists; **verified** = observed behaviour with named evidence; **gap** = concrete missing/broken path; **pending verification** = must not be described as finished.
+
+| ID | Request / acceptance | Existing implementation | Status / next evidence |
+|---|---|---|---|
+| U1 | Same actions on canvas and timeline | show_review.effectItems / overlayMenu / timelineMenu | IMPLEMENTED shared overlay action provider and clipboard/history; VERIFIED timeline Animate → Spin → Undo restores Jump, and Copy → Paste creates two pieces on the same row in isolated UI fixture. Other media routes remain to audit |
+| U2 | One common media editor, contextual specialist tools | editMedia / effectSettings / ShowVideoLayers / PhotoStudio / ClayEditor | PARTIAL: framing shared; independent specialist windows; keep useful tools behind a single action entry |
+| U3 | Group and name tools consistently | mediaCategory / groupedEffects / groupAddOptions / addItems | PARTIAL: category definitions repeated; labels and menus need parity review |
+| U4 | Native keyboard, context scroll, topmost dialogs | show_menu.js / show_review key handlers | PENDING: check narrow viewport, nested dialogs, keyboard and trackpad |
+| M1 | Crop, scale beyond frame, rotate, stretch | show_geometry.py / ShowGeometry / editMedia | VERIFIED 2.6.15 targeted geometry renders; common pointer preview needs transformed-handle audit |
+| M2 | Save edited image/video to Library | edited-copy endpoint / video catalog | VERIFIED immutable video recipe snapshots retain crop/offset/duration, deduplicate identical saves and reuse source bytes; background-composition library saving remains a gap |
+| M3 | Auto-fit imports including portrait / embedded bars | media_framing.py, inserts, opaque layers | VERIFIED synthetic portrait render; PENDING all import/live-preview paths, explicit user framing precedence |
+| B1 | Moving person over photo/video, reuse masks, export cutout | show_backgrounds.py / show_video_assets.py / ShowVideoLayers | PENDING end-to-end compositing and library reuse including silhouette |
+| T1 | Attach image/video exactly to marked object | show_follow.py / steam mark handler | PENDING coordinate conversion and rendered vs clean-video selection; inspect before declaring fixed |
+| T2 | Recover tracking after cuts / hide on loss / release to fixed position | ObjectTracker / Follow.until | PENDING discontinuous-shot render and release case |
+| T3 | Texture replacement edits same effect; guides never baked | texture_footage / overlay lifecycle | VERIFIED previous targeted tests; PENDING all UI entry paths |
+| A1 | Same mouth/eyes/part animation and strength on all access points | overlayMenu / proposalAnimationItems / pixel_layers | GAP menu parity U1; PENDING source-pixel render axes and no duplicate proposal |
+| A2 | Character speech removable and mixed | removePiece / show_audio.overlay_tracks | PENDING UI and render audio proof |
+| S1 | Local/link audio MP3, named editable bars | audio_import / show_audio / music_library | IMPLEMENTED, targeted tests pass; PENDING integrated library/mixer route |
+| S2 | Censor profanity, noise reduction, balanced narrator/clip/music | show_audio.py / music_mix_plan.py | IMPLEMENTED; PENDING audible bounded fixture and timing evidence |
+| P1 | Play always useful or explain why unavailable | preview transport / quick source player | PENDING all no-render/loading/error cases |
+| P2 | Captions editable live and aligned to selected words | caption layout / clock / word placement | IMPLEMENTED; PENDING full UI-to-render parity |
+| L1 | Approved art, Simón cap, sharp photos, no unwanted fallback | project/recurring/other/hidden libraries | PENDING inventory without deleting source/used assets |
+| L2 | Video thumbnails, swapped versions, collapsible library | show_video_assets / drawLibrary | IMPLEMENTED; PENDING recipe/source preservation and grouped reuse |
+| C1 | Clay clips editable; story-specific motion with pauses | show_clay / ShowClayEditor | IMPLEMENTED partly; PENDING placement and duration editing across routes; no unsupported video-generation claim |
+| D1 | Planner uses actual tools and approved art, matches editorial reference | gag_director / show_proposals / show_research | PARTIAL: prompt improved; tool catalog and executable proposal contract need audit |
+| R1 | Smaller/faster app measured, safe cleanup | bounded sprites / cached hashes / cache cleanup | PARTIAL: no substantial binary-size reduction demonstrated; collect measurements before removal |
+| R2 | Full application + Windows verification | existing tests / CI | PENDING: 314 Show tests do not establish whole-app or Windows status |
+| R3 | Preserve user work and installation rollback | previous verified install | VERIFIED 142 project JSON files unchanged during installation; no restore over later edits |
+
+## Execution order
+1. Inventory and reproduce gaps; maintain this ledger with evidence.
+2. Consolidate commands/entry points before removing duplicate controls.
+3. Tracking, moving layers and preview parity.
+4. Audio, captions, library and clay integrated paths.
+5. Executable automatic-edit capability catalog and reference-based review.
+6. Measurements, reversible cleanup, full validation and final package. Installation deferred.
+
+## Findings
+- U1 reproduced in code: timelineMenu special-cases overlays to one Edit media entry; overlayMenu separately supplies animation, tracking and clipboard actions. Outside the timeline, copy/paste uses layerClipboard; inside, timelineClipboard. This explains actions disappearing and copy/paste differing by location. Consolidate actions rather than add a third menu.
+- M2 requires a saved recipe separate from source catalog identity. Saving placement cannot truthfully promise the same edited clip is reused if the place endpoint reconstructs only raw source parameters.
+
+## 21 October checkpoint — not completion
+- UI evidence: `/tmp/show-consolidation-menu.png`; isolated project `/tmp/Show cleanup lab.zuckervid`. No user project modified.
+- 322 Show/framing/music-plan tests passed in 115.77 s before the subsequent short-duration regression fix. One existing Pillow deprecation warning.
+- New render regression: a 0.12 s picture is absent at frame 4 of a 25 fps export. Removed renderer's implicit 0.3 s minimum; timeline timing is authoritative. Test passed.
+- Initial regression fixture had invalid FFmpeg `d=.5`; corrected to `d=0.5`. This was a test-fixture failure, not a product fault.
+- Saved video recipes use a separate content-derived identity and never overwrite the original catalog entry; endpoint rejects a stale project ID.
+- Installed package baseline: 1.5 GB; web 11 MB; core 5.2 MB. Frameworks: torch 462 MB, cv2 144 MB, llvmlite 127 MB, numpy 82 MB, onnxruntime 65 MB, av 64 MB, ctranslate2 58 MB. These are measurements, not savings. No engine or user asset deleted.
+- Full application suite is a separate check; targeted Show success does not establish its result or Windows compatibility.
+- Remaining: common editor/library coverage for moving compositions, all tracking/coordinate cases, audio/captions/clay walkthroughs, planner capability coverage, full-suite findings and packaging. No new installation.

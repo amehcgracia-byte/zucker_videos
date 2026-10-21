@@ -126,7 +126,7 @@ def load_sticker(raw: dict[str, Any], width: int, height: int) -> Sticker:
     pixels[..., :3] *= pixels[..., 3:4]
     box = raw.get("from_box")
     sticker = Sticker(
-        pixels=pixels, at=float(raw["at"]), duration=max(0.3, float(raw["duration"])),
+        pixels=pixels, at=float(raw["at"]), duration=max(0.001, float(raw["duration"])),
         x=float(raw.get("x", 0.5)), y=float(raw.get("y", 0.5)), width_px=target,
         effect=str(raw.get("effect") or "pop"),
         from_box=tuple(float(v) for v in box) if box else None,

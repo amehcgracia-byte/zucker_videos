@@ -107,6 +107,24 @@ def remember(project, item):
         atomic_write_json(path,records)
 
 
+@_catalog_locked
+def save_edit(project, item):
+    """Keep an immutable named recipe without copying the source video bytes."""
+    import copy, hashlib
+    from core.project import atomic_write_json
+    recipe=copy.deepcopy(item)
+    fingerprint=json.dumps({"params":recipe['params'],"duration":recipe['duration']},sort_keys=True,separators=(',',':'))
+    recipe['id']='edit-'+hashlib.sha256(fingerprint.encode()).hexdigest()[:24]
+    remember(project,recipe)
+    path=project.folder/'assets/video-library/catalog.json'
+    records=json.loads(path.read_text())
+    record=records[recipe['id']]
+    record.update(saved_edit=True,saved_duration=float(item['duration']),
+                  name=(item['params'].get('name') or Path(item['params']['clip']).stem)+' · edited')
+    atomic_write_json(path,records)
+    return record
+
+
 class VideoLayer:
     def __init__(self, raw, width, height, fps):
         from core.show_backgrounds import VideoBackground
