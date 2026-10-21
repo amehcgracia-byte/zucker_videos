@@ -3519,7 +3519,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             subprocess.run([ffmpeg, "-v", "error", "-y", "-i", str(raw), "-map", "0:a:0", "-t", "180", "-vn",
                             "-ac", "1", "-ar", "48000", "-c:a", "libmp3lame", "-b:a", "128k", str(target)],
                            capture_output=True, check=True, timeout=60)
-            duration = show_clips.length(target, str(tools.get("ffprobe_path") or "ffprobe"))
+            probe = str(tools.get("ffprobe_path") or "ffprobe")
+            duration = show_clips.length(target, probe)
+            original_duration = show_clips.length(raw, probe)
+            # MP3 container duration may include encoder padding. The speaking
+            # intervention must retain the input's timing, not add that silence.
+            if duration and original_duration and original_duration > 0:
+                duration = min(duration, original_duration, 180.)
             if not duration or duration <= 0:
                 raise ValueError("The clip has no audio")
             voice = {"source": str(target), "start": 0, "length": duration,

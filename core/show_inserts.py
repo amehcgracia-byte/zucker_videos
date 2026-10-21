@@ -174,7 +174,11 @@ def load_clip(raw: dict[str, Any], width: int, height: int, fps: float, ffmpeg: 
     if not Path(source).is_file():
         raise ValueError(f"The clip {Path(source).name} is missing")
     from core.media_framing import filters
-    framing = ";".join(filters("0:v", "fitted", source, width, height)+[f"[fitted]fps={fps}[output]"])
+    frame_count=max(1,round(length*fps))
+    # Older FFmpeg framesync can omit the final frame of the blurred-background
+    # composite at EOF. Hold its last decoded picture to the requested boundary.
+    framing = ";".join(filters("0:v", "fitted", source, width, height)+[
+        f"[fitted]fps={fps}:start_time=0,tpad=stop_mode=clone:stop_duration={1/fps:.9f},trim=end_frame={frame_count}[output]"])
     size = width * height * 3
     scratch = tempfile.NamedTemporaryFile(prefix="zucker-clip-", suffix=".rgb", delete=False)
     try:
@@ -190,6 +194,8 @@ def load_clip(raw: dict[str, Any], width: int, height: int, fps: float, ffmpeg: 
                 if transformed:
                     chunk = place_frame(np.frombuffer(chunk, np.uint8).reshape(height,width,3), raw).tobytes()
                 scratch.write(chunk)
+            if decoder.wait():
+                raise ValueError(f"Could not decode the clip {Path(source).name}")
         frames = os.path.getsize(scratch.name) // size
         if frames == 0:
             raise ValueError(f"The clip {Path(source).name} has no picture to play")

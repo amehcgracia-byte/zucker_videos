@@ -52,3 +52,9 @@ Status vocabulary: **implemented** = source exists; **verified** = observed beha
 - Installed package baseline: 1.5 GB; web 11 MB; core 5.2 MB. Frameworks: torch 462 MB, cv2 144 MB, llvmlite 127 MB, numpy 82 MB, onnxruntime 65 MB, av 64 MB, ctranslate2 58 MB. These are measurements, not savings. No engine or user asset deleted.
 - Full application suite is a separate check; targeted Show success does not establish its result or Windows compatibility.
 - Remaining: common editor/library coverage for moving compositions, all tracking/coordinate cases, audio/captions/clay walkthroughs, planner capability coverage, full-suite findings and packaging. No new installation.
+
+## Cross-platform findings
+- Previous PR run https://github.com/amehcgracia-byte/zucker_videos/actions/runs/39532099501: fast job failed with 30 failures; slow advisory job succeeded. This predates this consolidation checkpoint. Do not describe CI as green.
+- Two directly relevant failures addressed: older FFmpeg's blurred portrait composite lost its EOF frame (retain last picture to the requested frame boundary); MP3 encoder padding changed a 0.5 s recorded voice to 0.528 s (bound saved timing to the original and the 180 s recording limit).
+- Local validation after these changes: 31 tests passed across media framing, pixel layers, clip editing and inserts. Remote confirmation still required.
+- Whole local suite interrupted before completion when it reached heavy 360 renders; no completed full-suite result claimed. The runner and its child processes were stopped. Remote jobs remain the appropriate place for broad render verification.
