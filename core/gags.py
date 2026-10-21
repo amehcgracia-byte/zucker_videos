@@ -75,6 +75,26 @@ def centre(position: str, face: str) -> tuple[float, float]:
     return (x if left else 1 - x), y
 
 
+def placement(gag: dict[str, Any], image_size: tuple[int, int], face: str, frame_size: tuple[int, int] = (1920, 1080)) -> tuple[float, float, float]:
+    """Where a picture is drawn (centre x, y and width, shares of the frame): where the person
+    put it, or the free side of the frame kept inside it. The live view shows it there too."""
+    width, height = frame_size
+    size = float(gag.get("size") or 0.25)
+    position = gag.get("position") or ("left" if face == "right" else "right")
+    x, y = centre(position, face)
+    explicit = gag.get("image_center")
+    if explicit is not None:
+        x, y = map(float, explicit)
+    image_w, image_h = image_size
+    half_w, half_h = size / 2, size * width * image_h / max(1, image_w) / height / 2
+    if half_h > 0.45 and explicit is None:  # automatic placement fits; explicit placement may leave the frame
+        size *= 0.45 / half_h
+        half_w, half_h = size / 2, 0.45
+    if explicit is None:
+        x, y = min(max(x, half_w + 0.01), 1 - half_w - 0.01), min(max(y, half_h + 0.01), 1 - half_h - 0.01)
+    return round(x, 4), round(y, 4), round(size, 4)
+
+
 def plan_gags(words: list[tuple[str, float, float]], duration: float, *, director: str = "claude", language: str = "",
               face: str = "right", library: list[dict[str, Any]] | None = None, idea: str = "") -> tuple[list[dict[str, Any]], str, str]:
     """(gags, director used, note for the user)."""
@@ -323,7 +343,7 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
             result(gag, 'failed', detail)
             notes.append(detail)
             continue
-        if kind in ("drawing", "character", "word") and gag.get("picture"):
+        if kind in ("drawing", "character", "word", "photo") and gag.get("picture"):
             if kind == 'word' and gag.get('lettering_text') and gag.get('text') != gag['lettering_text']:
                 detail = 'Caption text changed: create and approve new lettering first'
                 result(gag, 'failed', detail)
@@ -384,8 +404,8 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
                                  font=gag.get("font") or "note", handwritten=True, tilt=(-3, 2, -2, 3)[index % 4],
                                  bold=bool(gag.get("bold")), italic=bool(gag.get("italic")))
         elif kind == "photo":
-            # The picture the director named in your library; previews and the reviewed render
-            # pass no index, so the name is looked up exactly (never a look-alike).
+            # The picture the director named in your library (the one you chose wins, above);
+            # previews and the reviewed render pass no index, so the name is looked up exactly.
             found = search(gag["query"], library) if library else None
             named = Path(found["path"]) if found else named_picture(gag["query"])
             if named:
@@ -396,24 +416,23 @@ def make_items(gags: list[dict[str, Any]], folder: Path, *, face: str = "right",
             if kind == "photo":
                 notes.append(detail)
             continue
-        result(gag, "applied", f"your picture {Path(str(gag['picture'])).name}" if kind in ("drawing", "character", "word") and gag.get("picture")
+        result(gag, "applied", f"your picture {Path(str(gag['picture'])).name}" if kind in ("drawing", "character", "word", "photo") and gag.get("picture")
                else f"{kind}: {gag.get('subject') or gag.get('text') or gag.get('query') or ''}".rstrip(": "))
         path = folder / f"gag-{index:03d}.png"
         image.save(path)
-        size = float(gag.get("size") or 0.25)
-        x, y = centre(position, face)
-        explicit = gag.get("image_center")
-        if explicit is not None:
-            x, y = map(float, explicit)
-        half_w, half_h = size / 2, size * width * image.height / image.width / height / 2
-        if half_h > 0.45 and explicit is None:  # automatic placement fits; explicit placement may leave the frame
-            size *= 0.45 / half_h
-            half_w, half_h = size / 2, 0.45
-        items.append({"image": str(path), "at": gag["at"], "duration": gag["duration"], "width": round(size, 4),
-                      "x": round(x if explicit is not None else min(max(x, half_w + 0.01), 1 - half_w - 0.01), 4),
-                      "y": round(y if explicit is not None else min(max(y, half_h + 0.01), 1 - half_h - 0.01), 4),
-                      "effect": gag.get("effect") or "pop", "kind": kind,
-                      **({"strokes": gag["strokes"]} if gag.get("strokes") else {})})
+        x, y, size = placement({**gag, "position": position}, image.size, face, frame_size)
+        item = {"image": str(path), "at": gag["at"], "duration": gag["duration"], "width": size, "x": x, "y": y,
+                "effect": gag.get("effect") or "pop", "kind": kind,
+                **({"strokes": gag["strokes"]} if gag.get("strokes") else {})}
+        # The person's "Movement" (move up, jump, grow, swing…), the same as for placed stickers.
+        from core.show_scenes import ACTIONS
+        if gag.get("action") in ACTIONS and gag["action"] not in ("talk", "look", "path") and (gag["action"] != "draw" or gag.get("strokes")):
+            effect, preset = ACTIONS[gag["action"]]
+            item["effect"] = effect
+            if preset in ("up", "down"):
+                shift = 0.15 * float(gag.get("intensity") or 1.0) * (-1 if preset == "up" else 1)
+                item["path"] = [[0.0, item["x"], item["y"]], [1.0, item["x"], item["y"] + shift]]
+        items.append(item)
     if allow_generation and not painter and to_paint:
         notes.append(f"{to_paint} drawings were skipped: download the drawing painter (2.1 GB, once) to get them.")
     if unusable:

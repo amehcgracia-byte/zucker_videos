@@ -2308,3 +2308,5 @@ body:has(#showReviewBox.show-fit) #backdropLogo {max-height:calc(100vh - 130px);
 .show-background-live { left: 2% !important; top: 2% !important; transform: none; width: 22%; outline: 2px dashed #8fd3ff; background: rgba(0,0,0,.55); border-radius: 6px; cursor: pointer; }
 .show-background-live img { opacity: .9; border-radius: 4px 4px 0 0; }
 .show-background-live span { display: block; padding: 3px 6px; font-size: 11px; color: #fff; }
+
+.show-timeline-tools .show-movement { display: inline-flex; gap: 4px; align-items: center; margin-left: 6px; }

@@ -403,8 +403,10 @@
   function drawingPosition(item) {
     const p=item.params,vertical=p.position?.startsWith('top')?'top':p.position?.startsWith('bottom')?'bottom':'';
     const preset={top:[.2,.24],bottom:[.22,.72],'':[.21,.42]}[vertical];
-    return p.image_center || [p.position?.endsWith('right')?1-preset[0]:preset[0],preset[1]];
+    // Where the render draws it (the server sends params.shown), so both agree.
+    return p.image_center || (p.shown ? p.shown.slice(0,2) : [p.position?.endsWith('right')?1-preset[0]:preset[0],preset[1]]);
   }
+  const drawingWidth=item=>(item.params.image_center?item.params.size:item.params.shown?.[2]??item.params.size)||.25;
   function liveDrawings(scene) {
     const layer=$('#showStageLayer');
     layer.querySelectorAll('.show-picture-placement').forEach(element=>element.remove());
@@ -419,7 +421,7 @@
       const p=item.params,pos=drawingPosition(item);
       const element=document.createElement('div');element.className='show-picture-placement';element.dataset.liveEffect=item.id;
       element.classList.toggle('selected',item.id===selectedEffect);
-      element.style.cssText=`left:${pos[0]*100}%;top:${pos[1]*100}%;width:${(p.size||.25)*100}%`;
+      element.style.cssText=`left:${pos[0]*100}%;top:${pos[1]*100}%;width:${drawingWidth(item)*100}%`;
       element.innerHTML=p.picture?`<img src="${picture(item)}" draggable="false" alt="${escape(p.subject||p.text||'Drawing')}"><span class="picture-corner" title="Drag to resize"></span>`
         :item.kind==='word'?`<span class="show-word-live-text" style="${wordStyle(p)}">${escape(p.text)}</span><span class="picture-corner" title="Drag to resize"></span>`:'';
       if(!element.innerHTML)continue;
@@ -428,7 +430,7 @@
         event.preventDefault();event.stopPropagation();element.setPointerCapture(event.pointerId);
         selectedEffect=item.id;wordPlacementControls();
         layer.querySelectorAll('.show-picture-placement').forEach(el=>el.classList.toggle('selected',el===element));
-        const bounds=$('#showStage').getBoundingClientRect(),start=[event.clientX,event.clientY],initial=[...drawingPosition(item)],width=p.size||.25,resize=event.target.classList.contains('picture-corner');
+        const bounds=$('#showStage').getBoundingClientRect(),start=[event.clientX,event.clientY],initial=[...drawingPosition(item)],width=drawingWidth(item),resize=event.target.classList.contains('picture-corner');
         const playing=!$('#showStageVideo').paused;$('#showStageVideo').pause();
         let changes={},moved=false;
         element.onpointermove=e=>{
@@ -492,7 +494,7 @@
       <details class="show-sticker-picker"><summary>Add sticker</summary><div class="show-library">${library.map((asset,index)=>asset.retired?'':`<button type="button" data-library="${index}" aria-label="Add ${escape(asset.name)}"><img src="${asset.url}" alt="" loading="lazy">${escape(asset.name)}</button>`).join('')}</div></details>
       <p>Play or scrub to check when a picture appears and disappears. Drag a bar to move it; drag either edge to trim.</p>
       <div class="show-timeline-edit" role="toolbar" aria-label="Edit the timeline">${[['split','Split at playhead','⌘B'],['cut','Cut','⌘X'],['copy','Copy','⌘C'],['paste','Paste at playhead','⌘V'],['duplicate','Duplicate','⌘D'],['delete','Delete','⌫'],['undo','Undo','⌘Z'],['redo','Redo','⇧⌘Z']].map(([action,label,keys])=>`<button type="button" class="icon-button small" data-timeline-command="${action}" title="${label} (${keys})" ${timelineCommandOff(action,scene)?'disabled':''}>${label}</button>`).join('')}</div>
-      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${selected.kind==='steam'?steamTools(selected):''}${selected.kind==='drawing'?`<button type="button" data-open-library="${selected.id}">Choose from library</button>`:''}${selected.kind==='background'?`<button type="button" data-open-library="${selected.id}">${selected.params.picture?'Change':'Choose'} the background picture</button>`:''}${selected.kind==='clip'?`<button type="button" data-face-clip="${selected.id}">Put my face on it</button>${selected.params.clip_original?`<button type="button" data-face-original="${selected.id}">Use the original clip</button>`:''}`:''}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
+      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${selected.kind==='steam'?steamTools(selected):''}${selected.kind==='drawing'?`<button type="button" data-open-library="${selected.id}">Choose from library</button>`:''}${selected.kind==='background'?`<button type="button" data-open-library="${selected.id}">${selected.params.picture?'Change':'Choose'} the background picture</button>`:''}${selected.overlay||['drawing','word'].includes(selected.kind)?`<label class="show-movement">Movement <select data-movement="${selected.id}">${movementChoices(selected).map(([key,label])=>`<option value="${key}" ${movementOf(selected)===key?'selected':''}>${label}</option>`).join('')}</select></label>`:''}${selected.kind==='clip'?`<button type="button" data-face-clip="${selected.id}">Put my face on it</button>${selected.params.clip_original?`<button type="button" data-face-original="${selected.id}">Use the original clip</button>`:''}`:''}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
       <div class="show-time-row"><span>Video</span><div class="show-time-source" data-scene-seek>Original video · your cut</div></div>
       <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
       ${(clay?.placements||[]).filter(p=>p.enabled!==false).flatMap(p=>(p.edited||[]).filter(([a,b])=>a<scene.end&&b>scene.start).map(([a,b])=>`<div class="show-time-row"><span>Clay memory</span><div class="show-time-track"><button type="button" class="show-caption-time" data-clay-at="${a}" style="left:${pct(Math.max(a,scene.start))}%;width:${Math.max(.2,pct(Math.min(b,scene.end))-pct(Math.max(a,scene.start)))}%">Simón · ${escape(CLAY_MODES[p.mode]||p.mode)}</button></div></div>`)).join('')}
@@ -548,6 +550,28 @@
     syncPlayback();
     box.onkeydown=event=>{const clip=event.target.closest('[data-time-clip]');if(clip && ['Enter',' '].includes(event.key)){event.preventDefault();locateEffect(timelineItem(clip.dataset.timeClip));}};
   }
+  // Movement for any picture: a placed sticker or an effect (drawing, word, library picture).
+  function movementChoices(item){
+    const talkable=item.overlay&&isCharacter(item.overlay.asset);
+    return Object.entries(ANIMATIONS).filter(([key])=>item.overlay?(!['talk','look'].includes(key)||talkable):!['talk','look','path'].includes(key)&&(key!=='draw'||item.params.strokes));
+  }
+  const movementOf=item=>(item.overlay?item.overlay.action:item.params.action)||'none';
+  async function setMovement(scene,item,key){
+    if(item.overlay){const index=scene.overlays.indexOf(item.overlay);await timelineEdit(scene,()=>animateOverlay(scene,index,key));}
+    else {await flushEdits();await patch(item.id,{action:key});await markModified(item.id);refreshCard(item.id);}
+    renderTimeline(scene);liveDrawings(scene);
+    showToast(`${ANIMATIONS[key]}: ${key==='path'?'click the points on the video':'it shows in the effects preview (Render effect preview, or Play scene with every effect)'}.`);
+  }
+  function movementItems(scene,item){
+    return movementChoices(item).map(([key,label])=>({label,checked:movementOf(item)===key,action:()=>setMovement(scene,item,key)}));
+  }
+  document.addEventListener('change',event=>{
+    const select=event.target instanceof Element?event.target.closest('[data-movement]'):null;
+    if(!select||!review)return;
+    const scene=currentScene(),item=timelineItem(select.dataset.movement);
+    if(scene&&item)setMovement(scene,item,select.value).catch(error=>showToast(error.message,true));
+  });
+
   // A new background behind the person on the picked words; its picture is chosen next.
   async function addBackground(scene,picked){
     const at=Math.max(scene.start,Math.min(scene.end-.5,picked.start));
@@ -683,6 +707,7 @@
       {label:`Split at playhead (${clock(editedPlayhead())})`,hint:'⌘B',disabled:!item.overlay&&['character','clip'].includes(item.kind),action:run('split')},
       {label:'Delete',hint:'⌫',action:run('delete')},
       {separator:true},
+      ...(item.overlay||['drawing','word'].includes(item.kind)?[{label:'Movement',submenu:()=>movementItems(scene,item)}]:[]),
       {label:'Undo',hint:'⌘Z',disabled:timelineCommandOff('undo',scene),action:run('undo')},
       {label:'Redo',hint:'⇧⌘Z',disabled:timelineCommandOff('redo',scene),action:run('redo')},
       {separator:true},
@@ -1353,6 +1378,7 @@
       ...(["cutaway", "character"].includes(item.kind) || item.params.picture ? [{ label: "Animate original eyes / mouth…", action: () => clickLike("data-original-parts", id) }] : []),
       ...(item.kind === "drawing" ? [{ label: "Choose from library…", action: () => openLibrary(id) }] : []),
       ...(item.kind === "background" ? [{ label: item.params.picture ? "Change the background picture…" : "Choose the background picture…", action: () => openLibrary(id) }] : []),
+      ...(["drawing", "word"].includes(item.kind) ? [{ label: "Movement", submenu: () => movementItems(scene, item) }] : []),
       ...(item.kind === "word" && !item.params.picture ? wordItems(item) : []),
       ...(item.kind === "clip" ? [{ label: "Put my face on it…", action: () => openLibrary(null, null, id) }] : []),
       { separator: true },
