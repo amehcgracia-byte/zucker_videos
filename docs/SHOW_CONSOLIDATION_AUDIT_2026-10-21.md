@@ -58,3 +58,7 @@ Status vocabulary: **implemented** = source exists; **verified** = observed beha
 - Two directly relevant failures addressed: older FFmpeg's blurred portrait composite lost its EOF frame (retain last picture to the requested frame boundary); MP3 encoder padding changed a 0.5 s recorded voice to 0.528 s (bound saved timing to the original and the 180 s recording limit).
 - Local validation after these changes: 31 tests passed across media framing, pixel layers, clip editing and inserts. Remote confirmation still required.
 - Whole local suite interrupted before completion when it reached heavy 360 renders; no completed full-suite result claimed. The runner and its child processes were stopped. Remote jobs remain the appropriate place for broad render verification.
+
+## Remote confirmation — 21 October follow-up
+- Commit b1fed79a, run https://github.com/amehcgracia-byte/zucker_videos/actions/runs/39533601357: the portrait-clip EOF and MP3 voice-length failures no longer appear; remaining failures are still blocking the fast job. Slow advisory job succeeded. This confirms the two codec fixes remotely, not the entire application.
+- The follow-up automation now targets the current PR #44 and this six-phase ledger, rather than the obsolete PR #30 checkout. Installation stays deferred.
