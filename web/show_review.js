@@ -1556,6 +1556,7 @@
   // editors keep their behaviour; placement controls no longer live in separate menus.
   function editMedia(item) {
     if(!item)return;
+    if(item.kind==='jingle'){ShowAudio.open(item.id);return;}
     selectedEffect=item.id;
     if(item.overlay)selectedOverlay=currentScene().overlays.indexOf(item.overlay);
     const p=item.overlay||item.params, isVideo=['clip','background'].includes(item.kind);
@@ -1648,7 +1649,7 @@
       ...(item.kind === "drawing" ? [{ label: "Choose from library…", action: () => openLibrary(id) }] : []),
       ...(item.kind === "background" ? [{ label: "Edit moving video layers…", action: () => openVideoLayers(id,item.params.person_style||"person") }, {label:"Background from library…", action:()=>openLibrary(id)}] : []),
       ...(item.kind === "word" && !item.params.picture ? wordItems(item) : []),
-      ...(["clip","jingle","character"].includes(item.kind)?[{label:"Sound mixer…",action:()=>ShowAudio.open()}]:[]),
+      ...(["clip","jingle","character"].includes(item.kind)?[{label:"Sound mixer…",action:()=>ShowAudio.open(item.id)}]:[]),
       ...(item.kind === "clip" ? [{label:"Clip settings…",action:()=>ShowReferences.openClip(currentScene(),item,review.project_id)}, { label: "Put my face on it…", action: () => openLibrary(null, null, id) }] : []),
       { separator: true },
       { label: item.status === "discarded" ? "Restore effect" : "Remove effect", action: async () => { await patch(id, { status: item.status === "discarded" ? "proposed" : "discarded" }); await markModified(); renderScene(); } },
@@ -1743,7 +1744,7 @@
       {label:"Edit media…",action:()=>editMedia(timelineItem("sticker:"+overlay.id))},
       {label:"Remove background",action:()=>removePictureBackground(timelineItem("sticker:"+overlay.id))},
       ...followItems(timelineItem("sticker:"+overlay.id)),
-      ...(overlay.action==='talk'?[{label:'Sound mixer…',action:()=>window.ShowAudio?.open()}]:[]),
+      ...(overlay.action==='talk'?[{label:'Sound mixer…',action:()=>window.ShowAudio?.open(item.id)}]:[]),
       { label: "Animate", submenu: () => [
         {label:"Move mouth…",action:()=>command("mouth-regions")},
         {label:"Move eyes…",action:()=>command("regions")},

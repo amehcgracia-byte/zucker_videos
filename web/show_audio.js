@@ -38,10 +38,17 @@
     liveDoc=data;owner=project;
     if(dialog?.open){doc=data;render();}
   }
-  async function open(){
+  async function open(trackId=null){
     if(!window.ShowReview?.active()){showToast('Open a Show project and scene to use the sound mixer.');return;}
     ensure();status('Reading audio tracks…');if(!dialog.open)dialog.showModal();
-    try{await refresh();status('Changes are saved in this project.');}catch(error){status(error.message);}
+    try{
+      await refresh();status('Changes are saved in this project.');
+      if(typeof trackId==='string'){
+        const row=dialog.querySelector(`[data-audio-track="${CSS.escape(trackId)}"]`);
+        if(row){row.scrollIntoView({block:'nearest'});row.querySelector('[data-track-volume]').focus({preventScroll:true});status('Selected track: '+row.querySelector('strong').textContent+'. Changes are saved in this project.');}
+        else status('This effect has no active audio track. Choose or record its voice first.');
+      }
+    }catch(error){status(error.message);}
   }
   async function save(event){
     if(owner!==ShowReview.projectId())throw Error('Reopen the mixer in the current project.');
