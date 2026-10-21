@@ -114,7 +114,7 @@ class VideoLayer:
         self.follow=Follow(raw["follow_anchor"],width,height,raw.get("follow_template"),raw.get("follow_seconds")) if raw.get("follow_anchor") else None
         self.tracked_offset=(0.,0.);self.tracked_visible=True
         self.raw=raw;self.at=float(raw['at']);self.duration=float(raw['duration']);self.fps=fps
-        self.video=VideoBackground(raw['video_layer'],width,height)
+        self.video=VideoBackground(raw['video_layer'],width,height,contain=raw.get('matte')=='opaque')
         self.masks=np.load(raw['masks'],mmap_mode='r') if raw.get('masks') else None
         if raw.get('matte')=='person' and self.masks is None:
             self.video.capture.release()
@@ -137,6 +137,8 @@ class VideoLayer:
         if self.masks is not None:
             i=min(len(self.masks)-1,max(0,int(round(local*self.fps))))
             mask=cv2.resize(np.asarray(self.masks[i],dtype=np.float32)/255,(w,h))[...,None]
+        elif self.raw.get('matte')=='opaque':
+            mask=np.ones((h,w,1),np.float32)
         else:
             mask=(black_alpha(rgb) if self.raw.get("matte") in ("black","green-light") else green_alpha(rgb))[...,None]
         behind=self.background.at(local) if hasattr(self.background,'at') else self.background

@@ -91,7 +91,7 @@ def test_browser_access_is_explicit_and_errors_explain_verification(tmp_path,mon
 def test_black_footage_keeps_the_host_visible_and_foreground_colour_is_isolated(tmp_path,monkeypatch):
     from core import show_backgrounds,show_video_assets
     class Video:
-        def __init__(self,*args):self.capture=self
+        def __init__(self,*args,**kwargs):self.capture=self
         def release(self):pass
         def at(self,t):
             out=np.zeros((18,32,3),np.uint8);out[5:12,10:20]=255;return out

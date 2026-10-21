@@ -173,15 +173,22 @@ def load_clip(raw: dict[str, Any], width: int, height: int, fps: float, ffmpeg: 
     source, start, length = str(raw["source"]), float(raw.get("clip_start") or 0.0), float(raw["clip_length"])
     if not Path(source).is_file():
         raise ValueError(f"The clip {Path(source).name} is missing")
+    from core.media_framing import filters
+    framing = ";".join(filters("0:v", "fitted", source, width, height)+[f"[fitted]fps={fps}[output]"])
     size = width * height * 3
     scratch = tempfile.NamedTemporaryFile(prefix="zucker-clip-", suffix=".rgb", delete=False)
     try:
         with scratch, subprocess.Popen([ffmpeg, "-v", "error", "-nostdin", "-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", source, "-an",
-                                        "-vf", f"fps={fps},scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                                               f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black",
+                                        "-filter_complex", framing, "-map", "[output]",
                                         "-pix_fmt", "rgb24", "-f", "rawvideo", "-"], stdout=subprocess.PIPE) as decoder:
             assert decoder.stdout is not None
-            while chunk := decoder.stdout.read(size * 8):
+            from core.show_geometry import PLACEMENT_FIELDS, place_frame
+            transformed = any(key in raw for key in PLACEMENT_FIELDS)
+            while chunk := decoder.stdout.read(size):
+                if len(chunk) != size:
+                    raise ValueError("The imported clip ended with an incomplete frame")
+                if transformed:
+                    chunk = place_frame(np.frombuffer(chunk, np.uint8).reshape(height,width,3), raw).tobytes()
                 scratch.write(chunk)
         frames = os.path.getsize(scratch.name) // size
         if frames == 0:

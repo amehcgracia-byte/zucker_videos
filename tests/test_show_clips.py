@@ -98,7 +98,7 @@ def test_a_clip_can_play_its_picture_over_the_hosts_voice():
     clip["status"] = "approved"
     cutaways, items, _ = show_proposals.render_inputs([clip])
     assert items == [] and cutaways == [{"proposal": clip["id"], "at": 4.0, "duration": 1.2, "source": "/x/clip.mp4", "source_start": 0.0,
-                                         "zoom": 1.0, "focus": [0.5, 0.5]}]
+                                         "zoom": 1.0, "focus": [0.5, 0.5], "fit": "contain"}]
 
 
 def test_legacy_steam_keeps_its_look_and_the_selected_texture_duration():

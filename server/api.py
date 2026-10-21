@@ -2166,13 +2166,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except RuntimeError as exc:
             LOGGER.info("Show review not adopted: %s", exc)
         document = show_scenes.load(path)
-        stored = show_proposals.load(proposals_path)
         from core import show_drafts
+        stored = show_drafts.snapshot(project, proposals_path)
         for item in stored["proposals"]:
             item["needs"] = show_proposals.check(item)
-            drafting = show_drafts.state(project, item["id"])
-            if drafting:
-                item["drafting"] = drafting                     # being drawn, or why it could not be
         # Each scene plays at once from the original video, its cuts skipped in the page;
         # the preview with zooms and effects is rendered only when the person asks for it.
         from core.show import edited_words, scene_segments
@@ -3118,6 +3115,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         library = {item["path"] for item in _show_library_items(project)}
         overlays = []
         for raw in body.get("overlays") or []:
+            if isinstance(raw, dict):
+                raw = {**raw, "asset": str(Path(str(raw.get("asset") or "")).resolve())}
             if not isinstance(raw, dict) or str(raw.get("asset") or "") not in library:
                 return error_response("bad_request", "Pictures must come from the library", 400)
             import uuid
@@ -3145,8 +3144,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 try:release=float(release)
                 except (ValueError,TypeError):return error_response('bad_request','Choose a valid release point',400)
                 if not math.isfinite(release) or release<0:return error_response('bad_request','Choose a valid release point',400)
-            overlays.append({"follow_seconds":release,"follow_anchor":follow_anchor,**({'follow_template':template} if template else {}),"id": str(raw.get("id") or uuid.uuid4().hex)[:80], "asset": str(raw["asset"]), "x": max(-20.0, min(100.0, float(raw.get("x", 12)))),
-                             "y": max(-20.0, min(100.0, float(raw.get("y", 12)))), "width": max(3.0, min(100.0, float(raw.get("width", 23)))),
+            try:
+                placement = {k: float(raw.get(k, default)) for k, default in (("x",12),("y",12),("width",23))}
+                if not all(math.isfinite(v) for v in placement.values()) or placement["width"] <= 0:
+                    raise ValueError("Use a positive size and finite position")
+            except (TypeError, ValueError) as exc:
+                return error_response("bad_request", str(exc), 400)
+            overlays.append({"follow_seconds":release,"follow_anchor":follow_anchor,**({'follow_template':template} if template else {}),"id": str(raw.get("id") or uuid.uuid4().hex)[:80], "asset": str(raw["asset"]), "x": placement["x"],
+                             "y": placement["y"], "width": placement["width"],
                              "at": at, "duration": duration, "selected_text": str(raw.get("selected_text") or "")[:400],
                              "effect": str(raw.get("effect") or "pop"),
                              "audio_mode": raw.get("audio_mode") if raw.get("audio_mode") in ('own','mix','mute','silent') else 'own',
@@ -4054,8 +4059,20 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         folder = project.folder / "assets" / "show-library" / "yours"
         folder.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256(payload).hexdigest()
-        target = next((path for path in sorted(folder.iterdir()) if path.is_file() and path.suffix.lower() in SHOW_PICTURE_SUFFIXES
-                       and hashlib.sha256(path.read_bytes()).hexdigest() == digest), None)
+        from core import show_library
+        catalog = show_library.read_catalog(project.folder)
+        target = None
+        for path in folder.iterdir():
+            if not path.is_file() or path.suffix.lower() not in SHOW_PICTURE_SUFFIXES:
+                continue
+            stat = path.stat(); metadata = catalog.get(str(path.resolve()), {})
+            cached = metadata.get('sha256') if metadata.get('size') == stat.st_size and metadata.get('mtime_ns') == stat.st_mtime_ns else None
+            candidate = cached or hashlib.sha256(path.read_bytes()).hexdigest()
+            if not cached:
+                _catalog_picture(project, path, sha256=candidate, size=stat.st_size, mtime_ns=stat.st_mtime_ns)
+            if candidate == digest:
+                target = path
+                break
         if target is None:
             stem = re.sub(r"[^\w .-]+", "", Path(filename).stem).strip()[:60] or "picture"
             target = unique_destination(folder / f"{stem}{Path(filename).suffix.lower()}")
@@ -4066,7 +4083,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             # Cut out: a real share of it is see-through (not just a few soft corners).
             cut = cut_out or bool(alpha is not None and sum(alpha.point(lambda v: 255 if v < 250 else 0).histogram()[255:]) > 0.01 * width * height)
         name = re.sub(r"[_-]+", " ", target.stem).strip().capitalize()
-        _catalog_picture(project, target, name=name, origin=origin, retired=False, sha256=digest, source=filename)
+        _catalog_picture(project, target, name=name, origin=origin, retired=False, sha256=digest, source=filename, size=target.stat().st_size, mtime_ns=target.stat().st_mtime_ns)
         return {"path": str(target.resolve()), "url": f"/api/v1/show/library/file?path={quote(str(target.resolve()))}",
                 "name": name, "cutout": cut, "width": width, "height": height}
 
@@ -4198,7 +4215,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             style = settings.get('person_style', 'person')
             scale = settings.get('person_scale', 1)
             offset = settings.get('person_offset', [0, 0])
-            if style not in ('person', 'silhouette', 'original') or not isinstance(scale, (int, float)) or not .05 <= scale <= 5.0:
+            if style not in ('person', 'silhouette', 'original') or not isinstance(scale, (int, float)) or not math.isfinite(scale) or scale <= 0:
                 raise ValueError('Choose a valid person style and size')
             if not isinstance(offset, list) or len(offset) != 2 or not all(isinstance(v,(int,float)) and math.isfinite(v) and -10 <= v <= 10 for v in offset):
                 raise ValueError('Choose a valid person position')
@@ -4293,6 +4310,34 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             picture_masks[kept["path"]] = mask_pool.submit(show_characters.auto_mask, kept["path"])
         return jsonify(kept)
 
+    @app.post("/api/v1/show/library/pictures/edited-copy")
+    def api_show_picture_edited_copy():
+        from PIL import Image
+        from core.show_geometry import validate_crop
+        project=_require_project(state);body=request.get_json(silent=True) or {}
+        raw=str(Path(str(body.get('path') or '')).resolve())
+        if raw not in {item['path'] for item in _show_library_items(project)}:
+            return error_response('bad_request','Choose a picture from this project library',400)
+        try:
+            crop=validate_crop(body.get('crop',[0,0,0,0]));rotation=float(body.get('rotate',0))
+            if not math.isfinite(rotation):raise ValueError('Choose a finite rotation')
+            with Image.open(raw) as source:image=source.convert('RGBA')
+            w,h=image.size;l,t,r,b=crop
+            image=image.crop((round(l*w),round(t*h),round((1-r)*w),round((1-b)*h)))
+            sx,sy=float(body.get('stretch_x',1)),float(body.get('stretch',1))
+            opacity=float(body.get('opacity',1))
+            if not all(math.isfinite(v) for v in (sx,sy,opacity)) or not .1<=sx<=10 or not .1<=sy<=10 or not 0<=opacity<=1:
+                raise ValueError('Choose valid shape and opacity settings')
+            target=(max(1,round(image.width*sx)),max(1,round(image.height*sy)))
+            factor=min(1.,4096/max(target));target=tuple(max(1,round(v*factor)) for v in target)
+            image=image.resize(target,Image.Resampling.LANCZOS)
+            if body.get('flip'):image=image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+            image.putalpha(image.getchannel('A').point(lambda a:round(a*opacity)))
+            image=image.rotate(-rotation,resample=Image.Resampling.BICUBIC,expand=True)
+            out=io.BytesIO();image.save(out,format='PNG')
+            return jsonify(_keep_picture(project,out.getvalue(),Path(raw).stem+'-edited.png',origin='Your edited picture',cut_out=True)),201
+        except (ValueError,TypeError,OSError) as exc:return error_response('bad_request',str(exc),400)
+
     @app.post("/api/v1/show/library/pictures/cutout")
     def api_show_library_cutout() -> Response:
         """The subject of one of the person's photos, cut out with the Mac's own subject
@@ -4336,7 +4381,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.get("/api/v1/show/library/file")
     def api_show_library_file() -> Response:
         project = _require_project(state)
-        raw = str(request.args.get("path") or "")
+        raw = str(Path(str(request.args.get("path") or "")).resolve())
         if (str(project.folder), raw) not in listed_paths:
             known = {item["path"] for item in _show_library_items(project)}
             if raw not in known and raw not in {item["path"] for item in _other_library_items(project)}:
@@ -4408,7 +4453,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if 'follow_anchor' in changes:
                 from core.show_follow import validate_anchor
                 changes['follow_anchor']=validate_anchor(changes['follow_anchor'])
-            for field,lo,hi in [('brightness',0.,3.),('saturation',0.,3.),('hue',-180.,180.),('person_scale',.05,5.)]:
+            for field,lo,hi in [('brightness',0.,3.),('saturation',0.,3.),('hue',-180.,180.),('person_scale',.0001,float('inf'))]:
                 if field in changes and (not math.isfinite(float(changes[field])) or not lo<=float(changes[field])<=hi):raise ValueError('Choose a valid '+field)
             if 'person_offset' in changes:
                 v=changes['person_offset']

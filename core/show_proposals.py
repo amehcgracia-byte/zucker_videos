@@ -207,6 +207,7 @@ def approved(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """(cutaways for the Show render, gag-pass items, director gags still to be pictured)."""
+    from core.show_geometry import PLACEMENT_FIELDS
     cutaways, items_out, gags = [], [], []
     for item in approved(items):
         params = item["params"]
@@ -232,6 +233,12 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
                     'duration':float(voice['length']),'start':float(voice['start']),
                     'volume':float(params.get('volume',1.)) if mode=='mix' else 0.,
                     'duck':0. if mode=='silent' else 1.,'under_voice':bool(params.get('under_voice',False)),'fade':.02})
+        elif item['kind']=='clip' and params.get('matte','none')=='none' and (params.get('audio_mode')=='mix' or params.get('clip_audio') is False) and any(k in params for k in PLACEMENT_FIELDS):
+            items_out.append({'proposal':item['id'],'video_layer':params['clip'],'at':item['at'],'duration':item['duration'],
+                              'matte':'opaque','clip_start':params.get('clip_start',0),**{k:params[k] for k in PLACEMENT_FIELDS if k in params}})
+            if params.get('clip_audio',True):
+                items_out.append({'proposal':item['id'],'jingle':params['clip'],'at':item['at'],'duration':item['duration'],
+                                  'start':params.get('clip_start',0),'volume':params.get('audio_volume',.7),'duck':1.,'fade':.02,'under_voice':params.get('under_voice',True)})
         elif item['kind']=='clip' and params.get('audio_mode')=='mix' and params.get('matte','none')=='none':
             cutaways.append({'proposal':item['id'],'at':item['at'],'duration':item['duration'],'source':params['clip'],
                              'source_start':params.get('clip_start',0),'zoom':1.,'focus':[.5,.5],'fit':'contain'})
@@ -250,7 +257,7 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
                              "source_start": params.get("clip_start", 0.0), "zoom": 1.0, "focus": [0.5, 0.5], "fit": "contain"})
         elif item["kind"] == "clip":
             # A video clip played whole with its own sound while the host pauses (core.show_inserts.load_clip).
-            items_out.append({"proposal": item["id"], "insert": "clip", "at": item["at"], "source": params["clip"],
+            items_out.append({"proposal": item["id"], "insert": "clip", "at": item["at"], "source": params["clip"], **{k:params[k] for k in PLACEMENT_FIELDS if k in params},
                               **({"audio_volume":params["audio_volume"]} if "audio_volume" in params else {}), "clip_start": params.get("clip_start", 0.0), "clip_length": min(float(item["duration"]), max(0.,float(params["clip_length"])-float(params.get("clip_start") or 0)))})
         elif item["kind"] in ("steam", "texture"):
             items_out.append({"proposal": item["id"], "steam": params["point"], "anchor": params.get("anchor"), **({"follow_template":params["follow_template"]} if params.get("follow_template") else {}), "at": item["at"], "duration": item["duration"],
@@ -263,7 +270,7 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
         elif item["kind"] == "background":
             # The person stays; the picture goes behind them (core.show_backgrounds).
             items_out.append({"proposal": item["id"], "background": params.get("picture"), "at": item["at"], "duration": item["duration"],
-                              **{key: params[key] for key in ('person_style', 'person_scale', 'person_offset','brightness','saturation','hue') if key in params}})
+                              **{key: params[key] for key in ('person_style', 'person_scale', 'person_offset','brightness','saturation','hue','crop','rotate','stretch','stretch_x') if key in params}})
         else:
             # The director's own kind (drawing, character, photo, word) travels in params.
             gags.append({**params, "proposal": item["id"], "at": item["at"], "duration": item["duration"]})

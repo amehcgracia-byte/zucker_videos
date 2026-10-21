@@ -290,7 +290,7 @@
       ${(scene.references||[]).length?`<details class="show-scene-drawings" open><summary>Video references (${scene.references.length})</summary>${scene.references.map(ref=>`<p>${escape(ref.url)} · ${ref.start}–${ref.end} s<br>${ref.status==='downloaded'?'<small>Downloaded: it plays on its words with its own sound (see the timeline).</small>':`<small>Only the link is saved.</small> <button type="button" class="icon-button small" data-ref-download="${escape(ref.id)}">Download these seconds &amp; put them in</button>`}</p>`).join('')}</details>`:''}
       ${sceneDrawings(scene, effects)}
       <div id="showClay" class="show-clay"></div>
-      <div id="showSceneEffects" class="show-review-list">${effects.filter((item) => !(item.status === "discarded" && item.params.group)).map(card).join("") || "<p class=\"show-hint\">No effect in this scene.</p>"}
+      <div id="showSceneEffects" class="show-review-list">${groupedEffects(effects.filter((item) => !(item.status === "discarded" && item.params.group))) || "<p class=\"show-hint\">No effect in this scene.</p>"}
         <form id="showSceneAdd" class="show-review-add"><strong>Add</strong>
           <select name="kind"><option value="drawing">A drawing</option><optgroup label="Textures">${Object.entries(TEXTURES).map(([key,name])=>`<option value="texture_${key}">${name}</option>`).join("")}</optgroup><option value="character">A character that speaks</option><option value="cutaway">A close-up</option><option value="math">Formulas around you</option><option value="word">A shouted word</option><option value="library">Take from the library</option><option value="original_eyes">Move original eyes</option><option value="original_mouth">Animate original mouth</option><option value="music_library">Add audio · music / jingles</option><option value="original_part">Move original part (sideways)</option><option value="references">Search internet references</option><option value="local_media">Video / audio from this computer</option><option value="video_reference">Video clip from a link</option><option value="video_library">Video cutouts library</option><option value="face_clip">Put my face on a clip</option><option value="generate_video">Create video · external prompt</option><option value="photo_edit">Realistic photo of me</option><option value="cutout">Cut out a person / background (photo)</option><option value="silhouette">Black silhouette (photo)</option><option value="video_cutout">Moving person · change photo / video background</option><option value="video_silhouette">Moving black silhouette · video</option><option value="clay">Clay memory · Simón</option><option value="captions">Normal speech captions</option></select>
           <label>at <input name="at" type="number" step="any" min="${scene.start}" max="${scene.end}" value="${scene.start.toFixed(1)}"> s</label>
@@ -299,12 +299,13 @@
           <select name="source">${[review.source, ...(review.resources || []).map((item) => item.path)].map((path) => `<option value="${escape(path)}">${escape(baseName(path))}</option>`).join("")}</select>
           <label>from <input name="source_time" type="number" min="0" step="any" value="0"> s of it</label>
           <button class="icon-button small" type="submit">Add &amp; preview</button></form>
-        <h4>Your drawings &amp; stickers</h4><p class="show-hint">Choose a picture to add it as an editable timeline clip. Right-click a picture to remove it.</p><button type="button" class="icon-button small" data-open-library>Open the whole library…</button><button type="button" data-add-audio>Add audio…</button> <button type="button" data-toggle-retired>${showRetired?"Hide retired images":`Retired images (${retiredCount})`}</button>
-        <div class="show-library">${library.slice(0, 80).map((item, index) => `<div class="show-library-entry"><button type="button" data-library="${index}" aria-label="Add ${escape(item.name)}" title="${escape(item.name)}" ${item.retired?"disabled":""}><img src="${item.url}" alt="" loading="lazy">${escape(item.name)}</button><small>${escape(item.origin||"Your library")}</small><button type="button" data-library-retire="${index}">${item.retired?"Restore":"Remove from library"}</button></div>`).join("") || "<p class=\"show-hint\">The library is empty: add images in Overlay &amp; Captions, or keep painted drawings.</p>"}</div>
+        <h4>Your drawings &amp; stickers</h4><p class="show-hint">Choose a picture to add it as an editable timeline clip. Right-click a picture to remove it.</p><button type="button" class="icon-button small" data-open-library>Open the whole library…</button><button type="button" data-add-audio>Add audio…</button>
+
         <p class="show-hint">Drag a picture on the video to move it, its corner to resize it; click it for its tools.</p>
         <button type="button" class="icon-button small" data-studio="open">Cut out a photo / create a layer</button>
       </div>`;
     for (const id of open) if (scene.effects.includes(id)) mountEditor(id);
+    groupAddOptions();
     bindAddForm(scene);
     drawOverlays(scene);
     showScenePicture(scene);
@@ -451,7 +452,7 @@
         let changes={},moved=false;
         element.onpointermove=e=>{
           moved ||= Math.abs(e.clientX-start[0])+Math.abs(e.clientY-start[1])>2;
-          if(resize){changes={size:Math.max(.02,Math.min(2,width+2*(e.clientX-start[0])/bounds.width)),image_center:initial};element.style.width=`${changes.size*100}%`;}
+          if(resize){changes={size:Math.max(.001,width+2*(e.clientX-start[0])/bounds.width),image_center:initial};element.style.width=`${changes.size*100}%`;}
           else {changes={image_center:[Math.max(-1,Math.min(2,initial[0]+(e.clientX-start[0])/bounds.width)),Math.max(-1,Math.min(2,initial[1]+(e.clientY-start[1])/bounds.height))]};element.style.left=`${changes.image_center[0]*100}%`;element.style.top=`${changes.image_center[1]*100}%`;}
         };
         const finish=()=>{element.onpointermove=null;element.onpointerup=null;element.onpointercancel=null;};
@@ -727,13 +728,9 @@
     }
     renderTimeline(currentScene());liveDrawings(currentScene());refreshSceneDrawings();wordPlacementControls();
   }
-  function timelineMenu(x,y,id){
-    const scene=currentScene(),item=timelineItem(id);if(!scene||!item)return;
-    selectedEffect=item.id;selectedOverlay=item.overlay?scene.overlays.indexOf(item.overlay):null;renderTimeline(scene);
+  function pieceActions(scene,item) {
     const run=action=>()=>timelineCommand(action,scene);
-    const name=item.params.name||item.params.subject||item.params.text||KIND_LABELS[item.kind]||item.kind;
-    ShowMenu.open(x,y,[
-      {heading:`${KIND_LABELS[item.kind]||item.kind} · ${name} · ${clock(item.at)}–${clock(item.at+item.duration)}`},
+    return [
       {label:'Cut',hint:'⌘X',action:run('cut')},{label:'Copy',hint:'⌘C',action:run('copy')},
       {label:`Paste at playhead (${clock(editedPlayhead())})`,hint:'⌘V',disabled:!timelineClipboard,action:run('paste')},
       {label:'Duplicate after it',hint:'⌘D',action:run('duplicate')},
@@ -742,8 +739,17 @@
       {separator:true},
       {label:'Undo',hint:'⌘Z',disabled:timelineCommandOff('undo',scene),action:run('undo')},
       {label:'Redo',hint:'⇧⌘Z',disabled:timelineCommandOff('redo',scene),action:run('redo')},
+    ];
+  }
+  function timelineMenu(x,y,id){
+    const scene=currentScene(),item=timelineItem(id);if(!scene||!item)return;
+    selectedEffect=item.id;selectedOverlay=item.overlay?scene.overlays.indexOf(item.overlay):null;renderTimeline(scene);
+    const name=item.params.name||item.params.subject||item.params.text||KIND_LABELS[item.kind]||item.kind;
+    ShowMenu.open(x,y,[
+      {heading:`${KIND_LABELS[item.kind]||item.kind} · ${name} · ${clock(item.at)}–${clock(item.at+item.duration)}`},
+      ...pieceActions(scene,item),
       {separator:true},
-      item.overlay?{label:'Picture settings…',action:()=>overlayMenu(scene.overlays.indexOf(item.overlay),x,y)}
+      item.overlay?{label:'Edit media…',action:()=>editMedia(item)}
         :{label:'Effect',submenu:()=>effectItems(scene,item)},
     ],{host:menuHost()});
   }
@@ -1388,7 +1394,7 @@
       ["character", "A character speaks here…", null],
     ];
     menu.innerHTML = `<strong>Create an animation over this selection</strong><small>${clock(picked.start)}–${clock(picked.end)}</small>
-      <div class="show-actions-grid">${choices.map(([key, label]) => `<button type="button" data-say="${key}">${label}</button>`).join("")}</div>
+      ${[...new Set(choices.map(([key])=>mediaCategory(key)))].map(group=>`<details class="show-effect-group"><summary>${escape(group)}</summary><div class="show-actions-grid">${choices.filter(([key])=>mediaCategory(key)===group).map(([key,label])=>`<button type="button" data-say="${key}">${label}</button>`).join('')}</div></details>`).join('')}
       <label>Your drawing idea for this selection<textarea aria-label="Drawing idea for selected words" maxlength="2000" placeholder="For example: a clumsy hand-drawn sun peeking from the corner"></textarea></label>
       <small>Generate this proposal in the scene first. Watch the result before accepting it.</small>
       <div class="show-actions"><button type="button" data-say="idea">Create with Einstein…</button><button type="button" data-say="copy">Copy</button></div>`;
@@ -1525,7 +1531,7 @@
   },true);
   document.addEventListener('pointermove',event=>{
     if(!cutoutDrag)return;const d=cutoutDrag,dx=(event.clientX-d.x)/d.bounds.width,dy=(event.clientY-d.y)/d.bounds.height;
-    const scale=d.resize?Math.max(.05,Math.min(5,d.scale+dx*2)):d.scale,offset=d.resize?d.offset:[d.offset[0]+dx,d.offset[1]+dy];
+    const scale=d.resize?Math.max(.001,d.scale+dx*2):d.scale,offset=d.resize?d.offset:[d.offset[0]+dx,d.offset[1]+dy];
     d.changes={person_scale:scale,person_offset:offset};Object.assign(d.box.style,{left:((1-scale)/2+offset[0])*100+'%',top:(1-scale+offset[1])*100+'%',width:scale*100+'%',height:scale*100+'%'});
   });
   document.addEventListener('pointerup',async()=>{
@@ -1546,13 +1552,88 @@
     } catch(error){showToast('Could not remove background: '+error.message,true);}
   }
 
+  // One entry point from both the picture and its timeline piece. Specialist
+  // editors keep their behaviour; placement controls no longer live in separate menus.
+  function editMedia(item) {
+    if(!item)return;
+    selectedEffect=item.id;
+    if(item.overlay)selectedOverlay=currentScene().overlays.indexOf(item.overlay);
+    const p=item.overlay||item.params, isVideo=['clip','background'].includes(item.kind);
+    if(!item.overlay&&!p.picture&&!isVideo){effectSettings(item.id);return;}
+    const dialog=document.createElement('dialog');dialog.className='show-media-editor';
+    const initial=structuredClone(p);
+    const position=item.overlay?[p.x||0,p.y||0]:isVideo?(p.person_offset||[0,0]).map(v=>v*100):drawingPosition(item).map(v=>v*100);
+    const size=item.overlay?p.width:isVideo?(p.person_scale??1)*100:(p.size??.25)*100;
+    const number=(name,label,value,step='1')=>`<label>${label}<input type="number" data-media-field="${name}" value="${Number(value)}" step="${step}"></label>`;
+    dialog.innerHTML=`<header><strong>Edit media · ${escape(p.name||p.subject||p.text||baseName(p.asset||p.picture||p.clip)||'Layer')}</strong><button type="button" data-media-close aria-label="Close media editor">×</button></header>
+      <p>Drag the media on the paused video to position it. Drag its edges to crop, its corner to resize; Command / Ctrl-drag to rotate.</p>
+      <div data-media-preview></div><div class="show-media-fields">${number('scale','Size (%)',size)}${number('x','Horizontal position (%)',position[0])}${number('y','Vertical position (%)',position[1])}${number('rotate','Rotation (°)',p.rotate||0)}${number('stretch_x','Horizontal stretch',p.stretch_x??1,'.1')}${number('stretch','Vertical stretch',p.stretch??1,'.1')}
+      ${['Left','Top','Right','Bottom'].map((label,i)=>number('crop'+i,'Crop '+label+' (%)',(p.crop||[0,0,0,0])[i]*100)).join('')}</div>
+      <div class="show-media-actions"><button type="button" data-media-place>Position on video</button><button type="button" data-media-more>Animation &amp; other tools…</button>${isVideo?'<button type="button" data-media-background>Person cutout / change background…</button>':'<button type="button" data-media-remove>Remove background</button>'}<button type="button" data-media-reset>Reset framing</button><button type="button" data-media-library>Save in library</button></div>
+      <p data-media-status role="status">Changes apply to this piece only. The original stays in Library.</p><footer><button type="button" data-media-cancel>Cancel</button><button type="button" class="primary" data-media-save>Save changes</button></footer>`;
+    document.body.append(dialog);dialog.showModal();
+    let pending={},saved=false,preview=null;
+    const status=dialog.querySelector('[data-media-status]');
+    function read(){
+      const v=Object.fromEntries([...dialog.querySelectorAll('[data-media-field]')].map(el=>[el.dataset.mediaField,Number(el.value)]));
+      if(!Object.values(v).every(Number.isFinite)||v.scale<=0)throw Error('Choose a positive size and valid numbers.');
+      const crop=[0,1,2,3].map(i=>v['crop'+i]/100);
+      if(crop.some(c=>c<0)||crop[0]+crop[2]>.98||crop[1]+crop[3]>.98)throw Error('Leave at least 2% of the image visible.');
+      return {crop,stretch_x:Math.max(.1,Math.min(10,v.stretch_x)),stretch:Math.max(.1,Math.min(10,v.stretch)),rotate:((v.rotate+180)%360+360)%360-180,...(item.overlay?{width:v.scale,x:v.x,y:v.y}:isVideo?{person_scale:v.scale/100,person_offset:[v.x/100,v.y/100]}:{size:v.scale/100,image_center:[v.x/100,v.y/100]})};
+    }
+    dialog.oninput=()=>{try{pending=read();preview?.draw();Object.assign(p,pending);drawOverlays(currentScene());status.textContent=isVideo?'Framing updated. Save, then preview the scene to check the moving video.':'Preview updated. Save changes to keep this framing.';}catch(e){status.textContent=e.message;}};
+    const restore=()=>{for(const key of Object.keys(p))delete p[key];Object.assign(p,initial);drawOverlays(currentScene());};
+    dialog.onclose=()=>{preview?.close();if(!saved)restore();dialog.remove();};
+    if(item.kind!=='background' && (!isVideo || (p.matte||'none')==='none')) {
+      preview=ShowMediaPreview.mount(dialog.querySelector('[data-media-preview]'),{
+        src:isVideo?`/api/v1/show/clips/${encodeURIComponent(item.id)}/media`:`/api/v1/show/library/file?path=${encodeURIComponent(p.asset||p.picture)}`,video:isVideo,centered:!item.overlay&&!isVideo,
+        read:()=>{const v=Object.fromEntries([...dialog.querySelectorAll('[data-media-field]')].map(el=>[el.dataset.mediaField,Number(el.value)]));return {...v,flip:!!p.flip,opacity:p.opacity??1,crop:[0,1,2,3].map(i=>v['crop'+i]/100)};},
+        change:values=>{for(const el of dialog.querySelectorAll('[data-media-field]')){const key=el.dataset.mediaField;el.value=key.startsWith('crop')?values.crop[Number(key.slice(4))]*100:values[key];}pending=read();},
+        onError:message=>status.textContent=message
+      });
+    }
+    dialog.querySelector('[data-media-close]').onclick=()=>dialog.close();dialog.querySelector('[data-media-cancel]').onclick=()=>dialog.close();
+    async function save(){pending=read();restore();await savePlacement(item,pending);saved=true;dialog.close();}
+    dialog.querySelector('[data-media-save]').onclick=()=>save().catch(e=>status.textContent=e.message);
+    dialog.querySelector('[data-media-reset]').onclick=()=>{const values={scale:item.overlay?100:isVideo?100:25,x:item.overlay?0:isVideo?0:50,y:item.overlay?0:isVideo?0:50,rotate:0,stretch_x:1,stretch:1,crop0:0,crop1:0,crop2:0,crop3:0};for(const input of dialog.querySelectorAll('[data-media-field]'))input.value=values[input.dataset.mediaField];dialog.oninput();};
+    dialog.querySelector('[data-media-place]').onclick=()=>save().then(()=>locateEffect(timelineItem(item.id))).catch(e=>status.textContent=e.message);
+    dialog.querySelector('[data-media-more]').onclick=()=>save().then(()=>{if(item.overlay){const r=$('#showStage').getBoundingClientRect();overlayMenu(currentScene().overlays.indexOf(item.overlay),r.left+20,r.top+20);}else effectSettings(item.id);}).catch(e=>status.textContent=e.message);
+    dialog.querySelector('[data-media-library]').onclick=async()=>{
+      try {
+        pending=read();
+        if(isVideo){await save();await loadLibrary();showToast(item.kind==='clip'?'Video settings saved. Reuse this clip from Library → Videos.':'Moving layers saved in this project. The background remains in Library.');}
+        else {const result=await api('/show/library/pictures/edited-copy',{method:'POST',body:JSON.stringify({...p,path:p.asset||p.picture,...pending})});await loadLibrary();status.textContent='Edited copy saved in Library. Your original is kept.';}
+      }catch(e){status.textContent=e.message;}
+    };
+    dialog.querySelector('[data-media-remove]')?.addEventListener('click',()=>save().then(()=>removePictureBackground(timelineItem(item.id))).catch(e=>showToast(e.message,true)));
+    dialog.querySelector('[data-media-background]')?.addEventListener('click',()=>save().then(()=>openVideoLayers(item.id,item.params.person_style||'person')).catch(e=>showToast(e.message,true)));
+  }
+
+  function mediaCategory(kind) {
+    if(kind==='texture'||kind==='steam'||kind.startsWith('texture_'))return 'Textures & nature';
+    if(['clip','local_media','video_reference','video_library','generate_video','references'].includes(kind))return 'Videos & references';
+    if(['cutaway','background','video_cutout','video_silhouette','cutout','silhouette','photo_edit','face_clip'].includes(kind))return 'Camera, cutouts & backgrounds';
+    if(['jingle','music_library','captions','word'].includes(kind))return 'Audio & words';
+    return 'Drawings & animation';
+  }
+  function groupedEffects(items) {
+    const groups=new Map();
+    for(const item of items){const group=mediaCategory(item.kind);if(!groups.has(group))groups.set(group,[]);groups.get(group).push(item);}
+    return [...groups].map(([name,items])=>`<details class="show-effect-group" open><summary>${escape(name)} · ${items.length}</summary>${items.map(card).join('')}</details>`).join('');
+  }
+  function groupAddOptions() {
+    const select=$('#showSceneAdd select[name="kind"]');if(!select)return;
+    const options=[...select.options],groups=new Map();select.replaceChildren();
+    for(const option of options){const name=mediaCategory(option.value);if(!groups.has(name)){const group=document.createElement('optgroup');group.label=name;groups.set(name,group);select.append(group);}groups.get(name).append(option);}
+  }
+
   function effectItems(scene, item) {
     if(item.clay)return [{label:'Clay settings…',action:()=>openClaySettings(item.clay)},
       {label:'Create a new clay story…',action:()=>ShowClayEditor.open(currentScene(),{start:item.at,end:item.at+item.duration,text:currentScene().text})},
       {label:'Remove effect',action:()=>removePiece(scene,item)}];
     const id = item.id;
     return [
-      { label: "Settings…", action: () => effectSettings(id) },
+      { label: "Edit media…", action: () => editMedia(item) },
       ...(item.params.picture?[{label:"Remove background",action:()=>removePictureBackground(item)}]:[]),
       ...((item.kind==='background'||item.kind==='clip'&&item.params.matte!=='none')?[{label:"Colour & light…",action:()=>layerColourDialog(item)}]:[]),
       ...((item.params.picture || item.kind==='clip' && item.params.matte!=='none')?followItems(item):[]),
@@ -1623,7 +1704,7 @@
     const effects = sceneEffects(scene);
     const name = (item) => item.params.subject || item.params.text || KIND_LABELS[item.kind] || item.kind;
     ShowMenu.open(x, y, [
-      ...(own ? [{ heading: `${KIND_LABELS[own.kind] || own.kind} · ${name(own)}` }, ...effectItems(scene, own), { separator: true }] : []),
+      ...(own ? [{ heading: `${KIND_LABELS[own.kind] || own.kind} · ${name(own)}` }, ...pieceActions(scene,own), { separator: true }, ...effectItems(scene, own), { separator: true }] : []),
       ...(timelineDialog?.open ? [
         { label: `Paste at playhead (${clock(editedPlayhead())})`, hint: "⌘V", disabled: !timelineClipboard, action: () => timelineCommand("paste", scene) },
         { label: "Undo", hint: "⌘Z", disabled: timelineCommandOff("undo", scene), action: () => timelineCommand("undo", scene) },
@@ -1669,6 +1750,7 @@
       { label: "Undo", hint: "⌘Z", disabled: !layerUndo.some((entry) => entry.scene === scene.id), action: () => layerCommand("undo") },
       ]),
       { separator: true },
+      {label:"Edit media…",action:()=>editMedia(timelineItem("sticker:"+overlay.id))},
       {label:"Remove background",action:()=>removePictureBackground(timelineItem("sticker:"+overlay.id))},
       ...followItems(timelineItem("sticker:"+overlay.id)),
       ...(overlay.action==='talk'?[{label:'Sound mixer…',action:()=>window.ShowAudio?.open()}]:[]),
@@ -1926,7 +2008,7 @@
     const scene = currentScene();
     const overlay = scene.overlays[dragging.index];
     const dx = (event.clientX - dragging.x) / dragging.box.width * 100, dy = (event.clientY - dragging.y) / dragging.box.height * 100;
-    if (dragging.resize) overlay.width = Math.max(3, Math.min(100, dragging.start.width + dx));
+    if (dragging.resize) overlay.width = Math.max(.1, dragging.start.width + dx);
     else { overlay.x = dragging.start.x + dx; overlay.y = dragging.start.y + dy; }
     drawOverlays(scene);
   });
@@ -1936,7 +2018,7 @@
     const index = dragging.index;
     dragging = null;
     if (moved) saveOverlays(currentScene());
-    else openTools(index, event.clientX, event.clientY);     // a plain click shows the element's tools beside it
+    else editMedia(timelineItem("sticker:"+currentScene().overlays[index].id));     // a plain click shows the element's tools beside it
   });
   const ANIMATIONS = { none: "Still", up: "Move up", down: "Move down", jump: "Jump", grow: "Grow", grow_return: "Grow and back",
     pulse: "Grow and shrink", swing: "Swing", spin: "Spin", talk: "Talk", look: "Look left and right", path: "Follow a path", draw: "Draws itself" };
@@ -1963,7 +2045,7 @@
       } else if(action==='cut'||action==='remove'){
         if(action==='cut')layerClipboard=structuredClone(overlay);
         scene.overlays.splice(selectedOverlay,1);selectedOverlay=null;selectedEffect=null;
-      } else if(action==='bigger')overlay.width=Math.min(100,overlay.width*1.2);
+      } else if(action==='bigger')overlay.width=overlay.width*1.2;
       else if(action==='smaller')overlay.width=Math.max(3,overlay.width/1.2);
     }
     drawOverlays(scene);await saveOverlays(scene);

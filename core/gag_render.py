@@ -115,6 +115,11 @@ def load_sticker(raw: dict[str, Any], width: int, height: int) -> Sticker:
     target = max(8.0, float(raw.get("width") or 0.25) * width)
     prepared_w = max(8, int(round(target * PREPARED_SCALE)))
     prepared_h = max(8, int(round(image.height * prepared_w / image.width)))
+    # Placement may exceed the frame. Keep the working sprite bounded; affine
+    # compositing samples only its visible region instead of allocating a giant image.
+    reduction = min(1., 2048 / max(prepared_w, prepared_h))
+    prepared_w = max(1, round(prepared_w * reduction))
+    prepared_h = max(1, round(prepared_h * reduction))
     image = image.resize((prepared_w, prepared_h), Image.LANCZOS)
     pixels = np.asarray(image).astype(np.float32) / 255.0
     pixels[..., 3] *= max(0.0, min(1.0, float(raw.get("opacity", 1.0))))
@@ -268,8 +273,8 @@ def draw_sticker(frame: np.ndarray, sticker: Sticker, t: float) -> None:
     cx+=sticker.tracked_offset[0]*width;cy+=sticker.tracked_offset[1]*height
     if sx <= 0.01 or sy <= 0.01:
         return
-    scale = 1.0 / PREPARED_SCALE
     h, w = sticker.pixels.shape[:2]
+    scale = sticker.width_px / w
     angle = math.radians(rot - sticker.rotation)
     cos, sin = math.cos(angle), math.sin(angle)
     # Sprite pixel -> frame pixel: position + R(counter-clockwise on screen) * S * (p - pivot).

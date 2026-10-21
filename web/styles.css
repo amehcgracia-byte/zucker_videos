@@ -2401,3 +2401,8 @@ dialog.show-studio::backdrop {background:#0009;}
 [data-crop-edge=top],[data-crop-edge=bottom]{height:10px;left:0;right:0;cursor:ns-resize;}
 [data-crop-edge=top]{top:-5px;}[data-crop-edge=bottom]{bottom:-5px;}
 #showStageLayer:not(.show-editing) .show-crop-frame{display:none!important;}
+\n/* Shared media framing editor: scroll body, reachable controls on small screens. */
+.show-media-editor{width:min(680px,92vw);max-height:85dvh;overflow:auto;border:1px solid #64746b;border-radius:16px;padding:20px;background:#17231d;color:#f5f3e9;overscroll-behavior:contain}
+.show-media-editor header,.show-media-editor footer{display:flex;justify-content:space-between;gap:12px;position:sticky;background:#17231d;padding:8px 0;z-index:1}
+.show-media-editor header{top:-20px}.show-media-editor footer{bottom:-20px}
+.show-media-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.show-media-fields label{display:flex;flex-direction:column;gap:4px}.show-media-fields input{width:100%;box-sizing:border-box}.show-media-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}

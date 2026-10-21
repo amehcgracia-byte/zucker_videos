@@ -29,3 +29,23 @@ def transform_pixels(pixels, crop=None, pan=None):
         h,w=pixels.shape[:2]
         pixels=cv2.warpAffine(pixels,np.array([[1,0,float(pan[0])*w],[0,1,float(pan[1])*h]],np.float32),(w,h))
     return crop_alpha(pixels,crop)
+
+
+PLACEMENT_FIELDS = ("crop", "rotate", "stretch", "stretch_x", "person_scale", "person_offset")
+
+
+def place_frame(frame, settings):
+    """Crop/transform on a fixed output canvas; scale never allocates a larger frame."""
+    import cv2
+    h, w = frame.shape[:2]
+    pixels = transform_pixels(frame, settings.get("crop"))
+    scale = float(settings.get("person_scale", 1))
+    ox, oy = settings.get("person_offset") or (0, 0)
+    sx = scale * float(settings.get("stretch_x", 1))
+    sy = scale * float(settings.get("stretch", 1))
+    matrix = np.array([[sx, 0, w*(1-sx)/2+ox*w],
+                       [0, sy, h*(1-scale)+h*(scale-sy)/2+oy*h]], np.float32)
+    if settings.get("rotate"):
+        rotation = cv2.getRotationMatrix2D((w*(.5+ox), h*(1-scale/2+oy)), -float(settings["rotate"]), 1.)
+        matrix = (np.vstack([rotation, [0,0,1]]) @ np.vstack([matrix, [0,0,1]]))[:2].astype(np.float32)
+    return cv2.warpAffine(pixels, matrix, (w, h))

@@ -35,7 +35,7 @@
   const baseDraw=draw;draw=function(){
     const c=colours();lc.filter=`brightness(${c.brightness}) saturate(${c.saturation}) hue-rotate(${c.hue}deg)`;
     baseDraw();lc.filter='none';
-    if(ready&&mode!=='original'){
+    if(ready&&mode!=='original'&&host.paused){
       ctx.save();ctx.strokeStyle='#ffdc77';ctx.lineWidth=2;ctx.setLineDash([8,6]);
       ctx.strokeRect(x+(960-960*scale)/2,y+540-540*scale,960*scale,540*scale);ctx.restore();
     }

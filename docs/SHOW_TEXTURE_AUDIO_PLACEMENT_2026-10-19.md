@@ -34,6 +34,22 @@ Remove background is now a direct context-menu action on placed photos and drawi
 
 - Photo background removal is available in the image context menu and project library; clear green-backed imports retain an original and create a transparent copy with the same canvas.
 - Resuming composition from `cache/composition-base.mp4` now treats that file as a cache hit instead of copying it onto itself. Original provenance is preserved, including for filesystem aliases. Changed source exports still refresh the cache.
-- Imported clips with mixed or disabled source audio now use contain/letterbox, matching clips inserted with their own audio. Intentional close-ups retain their crop and zoom.
+- Initial contain/letterbox behaviour was superseded by the automatic fit described below, following the subsequent user request. Intentional close-ups retain their crop and zoom.
 - This is not yet a completed UI consolidation. Pending: shared media editor/action registry across canvas and timeline, consistent zoom/scale controls beyond the frame, background-video parity, and reviewed storage cleanup. No project media or useful libraries were removed.
 - The previously restored 71-effect project must not be restored again: the user's subsequent edits are now authoritative. Resume scene 7 was already applied with the 2.6.14 installation.
+
+## Unified framing and automatic clip fit (20 October, continuation)
+
+- `Edit media…` is shared by the timeline and image context menus, with a pointer preview for photos and ordinary clips, crop/rotation/size, and links to specialist animation and moving-background controls. A saved edited image copy goes back into Library; video recipes remain in the video catalog.
+- Placement is no longer clamped to the frame width or its edges. The image renderer bounds its working bitmap and transforms onto the visible output canvas, so a large placement does not allocate a correspondingly huge bitmap.
+- Imported full-frame horizontal videos fill the output. Portrait clips retain their whole central picture with enlarged blurred sides. A bounded nine-frame inspection removes only consistently black border strips; dark shots and keyed texture footage are excluded. This is stable per clip, not zoom pumping frame by frame.
+- Same geometry fields reach own-audio clip inserts, mixed/silent clips and moving-person backgrounds. Ordinary inserts and opaque layers use the same automatic framing policy.
+- Effects and Add options are grouped; the redundant inline picture gallery is removed in favour of the searchable library. Picture deduplication reuses size/mtime-qualified content hashes instead of rereading every picture on each import.
+- The director brief now asks for varied editorial techniques and reuse of approved art, with serious mathematical notation rather than cartoon equations. It cannot claim an asset exists before its tool succeeds.
+- Cache cleanup now explains its scope before deletion. User projects, historical edits, source media and approved asset packs are not deleted by this change.
+
+Remaining architectural limits: this consolidates entry points and framing; specialist rigging, clay and moving-person editors still exist behind those entry points. It does not replace them with a single universal compositor. Model dependencies remain bundled because transcription/segmentation/face tools use them. Automatic black-border detection is conservative and cannot prove that a black strip is unwanted in every artistic shot. Image/clip pointer preview is immediate; tracking, segmentation and animated effects still need their effects preview. No claim of perfect automatic editing or a completely green legacy suite is made.
+
+## Verification on 21 October
+
+The broader Show run reached 312 passing tests and exposed a draft-status snapshot race. The snapshot now reads the picture link and worker status consistently. Its targeted rerun, own-picture/library path checks, and real portrait framing renders pass (11 tests). The earlier clip/follow/scene geometry rerun passed 46 tests. A browser walkthrough in an isolated synthetic project verified Edit media above the timeline, 120% sizing, cropping and saving an edited Library copy while preserving the original. Equivalent filesystem paths no longer incorrectly reject a listed image; unlisted files remain inaccessible. Full-suite and installed-package results follow after packaging.
