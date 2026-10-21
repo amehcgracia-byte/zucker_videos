@@ -2166,6 +2166,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except RuntimeError as exc:
             LOGGER.info("Show review not adopted: %s", exc)
         document = show_scenes.load(path)
+        with show_proposals.LOCK:
+            stored = show_proposals.load(proposals_path)
+            if _link_named_photos(project, stored["proposals"]):     # the director's library pictures, shown live too
+                show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
         from core import show_drafts
         stored = show_drafts.snapshot(project, proposals_path)
         for item in stored["proposals"]:
@@ -2203,7 +2207,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         logo = Path(str(wizard.get("reel_logo_path") or ""))
         try:resume_scene=json.loads((project.artifacts_dir/'show_resume.json').read_text())['scene_id']
         except (OSError,ValueError,KeyError):resume_scene=document.get('resume_scene')
-        return jsonify({**document, "resume_scene":resume_scene, "proposals": stored["proposals"], "resources": stored.get("resources") or [], "source": stored.get("source"),
+        return jsonify({**document, "resume_scene":resume_scene, "proposals": _with_shown(project, stored["proposals"]), "resources": stored.get("resources") or [], "source": stored.get("source"),
                         "project_logo": str(logo) if logo.is_file() else None,
                         "caption_revision": caption_layout["revision"], "captions_enabled": captions_on, "project_id": str(project.folder),
                         "plan": {"edited_duration": plan["edited_duration"], "fps": plan.get("fps") or 30},
@@ -2901,7 +2905,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         remember(project, item)
         show_proposals.save(proposals_path, stored["proposals"], **{k: v for k, v in stored.items() if k not in ("proposals", "version")})
         _effect_changed(project, proposal_id)
-        return jsonify(item)
+        return jsonify(_with_shown(project, [item])[0])
 
     @app.post("/api/v1/show/clay/sample")
     @_proposals_locked
@@ -3059,7 +3063,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
         show_drafts.forget(project, proposal_id)
         _effect_changed(project, proposal_id)
-        return jsonify(item)
+        return jsonify(_with_shown(project, [item])[0])
 
     def _library_draft(project: Project) -> Callable[[str], dict[str, Any] | None]:
         """For a drawing about to be drawn: a picture you already have with that name, if any."""
@@ -4420,6 +4424,51 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         response.headers["Content-Disposition"] = "attachment; filename=show-storyboard.json"
         return response
 
+    def _with_shown(project: Project, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Copies of the effects with params.shown = [x, y, width]: where the render draws each
+        picture, so the live view puts it in the same place (not saved)."""
+        from PIL import Image
+        from core.gags import placement
+        try:
+            shots = json.loads((project.artifacts_dir / "show_plan.json").read_text(encoding="utf-8")).get("shots") or []
+        except (OSError, ValueError):
+            shots = []
+        face = "right" if sum((shot.get("focus") or [0.5])[0] for shot in shots) / max(1, len(shots)) >= 0.5 else "left"
+        out = []
+        for item in items:
+            params = item.get("params") or {}
+            if item.get("kind") in ("drawing", "word") and params.get("picture"):
+                try:
+                    with Image.open(params["picture"]) as picture:
+                        size = picture.size
+                    item = {**item, "params": {**params, "shown": list(placement(params, size, face))}}
+                except (OSError, ValueError):
+                    pass
+            out.append(item)
+        return out
+
+    def _link_named_photos(project: Project, proposals: list[dict[str, Any]]) -> bool:
+        """A library picture the director named ("photo") gets its file linked, once, like a
+        picture you chose: the live view then shows it where the render puts it, and it can be
+        moved, resized or replaced. Only an exact name is linked (never a look-alike)."""
+        from core.gag_library import named_picture
+        changed = False
+        for item in proposals:
+            params = item["params"]
+            if item["kind"] != "drawing" or params.get("kind") != "photo" or params.get("picture") or item["status"] == "discarded":
+                continue
+            found = named_picture(str(params.get("query") or ""))
+            if found is None:
+                continue
+            try:
+                chosen = _bring_into_project(project, str(found.resolve()))
+                path, sha = chosen["path"], chosen.get("sha256") or ""
+            except (KeyError, OSError):
+                path, sha = str(found.resolve()), ""
+            params.update(picture=path, picture_sha256=sha, image_engine=f"Your library · {found.stem}")
+            changed = True
+        return changed
+
     @app.get("/api/v1/show/review")
     def api_show_review() -> Response:
         from core import show_proposals
@@ -4431,10 +4480,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             state.wizard.adopt_show_review(project)
         except RuntimeError as exc:
             LOGGER.info("Show review not adopted: %s", exc)
-        stored = show_proposals.load(proposals_path)
+        with show_proposals.LOCK:
+            stored = show_proposals.load(proposals_path)
+            if _link_named_photos(project, stored["proposals"]):
+                show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
         for item in stored["proposals"]:
             item["needs"] = show_proposals.check(item)
+        stored = {**stored, "proposals": _with_shown(project, stored["proposals"])}
         return jsonify({**stored, "plan": {"edited_duration": plan["edited_duration"], "cuts": plan["cuts"], "source": plan["source"],
                                            "framing": plan.get("framing"), "language": plan.get("language")}})
 
@@ -4515,6 +4568,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 raise ValueError("Bold and italic are on or off")
             if "audio_mode" in changes and changes["audio_mode"] not in ("own","mix","mute"):
                 raise ValueError("Choose mixed, own sound or mute")
+            if "action" in changes and current["kind"] in ("drawing", "word"):
+                from core.show_scenes import ACTIONS
+                if changes["action"] not in ACTIONS or changes["action"] in ("talk", "look", "path"):
+                    raise ValueError("Choose one of the movements")
             if "clip_audio" in changes and not isinstance(changes["clip_audio"], bool):
                 raise ValueError("Choose whether the clip plays its own sound")
             if "selected_text" in changes and (not isinstance(changes["selected_text"], str) or len(changes["selected_text"]) > 400):
@@ -4544,7 +4601,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             from core.show_video_assets import remember
             remember(project,item)
         _effect_changed(project, proposal_id)
-        return jsonify(item)
+        return jsonify(_with_shown(project, [item])[0])
 
     @app.post("/api/v1/show/review/<proposal_id>/piece")
     @_proposals_locked

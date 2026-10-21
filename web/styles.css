@@ -2406,3 +2406,4 @@ dialog.show-studio::backdrop {background:#0009;}
 .show-media-editor header,.show-media-editor footer{display:flex;justify-content:space-between;gap:12px;position:sticky;background:#17231d;padding:8px 0;z-index:1}
 .show-media-editor header{top:-20px}.show-media-editor footer{bottom:-20px}
 .show-media-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.show-media-fields label{display:flex;flex-direction:column;gap:4px}.show-media-fields input{width:100%;box-sizing:border-box}.show-media-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.show-timeline-tools .show-movement { display: inline-flex; gap: 4px; align-items: center; margin-left: 6px; }
