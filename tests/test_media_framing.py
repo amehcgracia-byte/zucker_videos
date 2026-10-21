@@ -122,3 +122,19 @@ def test_the_clip_settings_say_what_was_done_and_keep_the_mark_on_request(tmp_pa
     assert show_proposals.load(project.artifacts_dir / "show_proposals.json")["proposals"][0]["params"]["watermark"] == "keep"
     assert client.post(f"/api/v1/show/clips/{item['id']}/framing", json={"keep_watermark": "yes"}).status_code == 400
     assert client.get("/api/v1/show/clips/nope/framing").status_code == 404
+
+
+def test_a_clip_is_read_while_it_plays_not_unpacked_to_disk(tmp_path, monkeypatch):
+    import tempfile
+    def no_scratch(*a, **kw):
+        raise AssertionError("clip frames must not be written to a scratch file")
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", no_scratch)
+    source = tmp_path / "count.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10:duration=1", "-pix_fmt", "yuv420p", str(source)], check=True)
+    insert = load_clip({"source": str(source), "at": 0, "clip_length": 1.5}, 160, 90, 10, "ffmpeg")
+    assert len(insert.clip) == 10                                  # one second of picture, not the 1.5 asked
+    first, last = np.array(insert.clip[0]), np.array(insert.clip[9])
+    assert not np.array_equal(first, last)
+    assert np.array_equal(np.array(insert.clip[30]), last)          # past its end the last picture holds
+    assert np.array_equal(np.array(insert.clip[0]), first)          # going back reads it again
+    insert.clip.close()
