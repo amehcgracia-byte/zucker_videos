@@ -62,3 +62,8 @@ Status vocabulary: **implemented** = source exists; **verified** = observed beha
 ## Remote confirmation — 21 October follow-up
 - Commit b1fed79a, run https://github.com/amehcgracia-byte/zucker_videos/actions/runs/39533601357: the portrait-clip EOF and MP3 voice-length failures no longer appear; remaining failures are still blocking the fast job. Slow advisory job succeeded. This confirms the two codec fixes remotely, not the entire application.
 - The follow-up automation now targets the current PR #44 and this six-phase ledger, rather than the obsolete PR #30 checkout. Installation stays deferred.
+
+## Common media pointer checkpoint
+- Fixed shared preview selection geometry: the visible outline, crop edges and resize corner now use the same rotation, mirror and stretching as the image. Pointer coordinates are inverted through that transform; clicks outside the cropped image no longer move it.
+- The common editor's “Animation & other tools” opens the same contextual action provider as the timeline. Errors saving a video library copy remain visible even after the edit dialog closes.
+- Validation: 15 tests passed (pointer coordinates, Show review and preview transport), plus syntax checks for both changed scripts. Coordinate regression covers 90-degree and free rotation, mirror, unequal stretch, cropped corners and outside clicks. Interactive verification of this new checkpoint remains pending; this is not a completed six-phase audit or an installed build.

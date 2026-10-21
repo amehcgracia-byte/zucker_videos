@@ -1597,13 +1597,16 @@
     dialog.querySelector('[data-media-save]').onclick=()=>save().catch(e=>status.textContent=e.message);
     dialog.querySelector('[data-media-reset]').onclick=()=>{const values={scale:item.overlay?100:isVideo?100:25,x:item.overlay?0:isVideo?0:50,y:item.overlay?0:isVideo?0:50,rotate:0,stretch_x:1,stretch:1,crop0:0,crop1:0,crop2:0,crop3:0};for(const input of dialog.querySelectorAll('[data-media-field]'))input.value=values[input.dataset.mediaField];dialog.oninput();};
     dialog.querySelector('[data-media-place]').onclick=()=>save().then(()=>locateEffect(timelineItem(item.id))).catch(e=>status.textContent=e.message);
-    dialog.querySelector('[data-media-more]').onclick=()=>save().then(()=>{if(item.overlay){const r=$('#showStage').getBoundingClientRect();overlayMenu(currentScene().overlays.indexOf(item.overlay),r.left+20,r.top+20);}else effectSettings(item.id);}).catch(e=>status.textContent=e.message);
+    dialog.querySelector('[data-media-more]').onclick=()=>save().then(()=>{
+      const r=$('#showStage').getBoundingClientRect();
+      timelineMenu(r.left+20,r.top+20,item.id);
+    }).catch(e=>showToast(e.message,true));
     dialog.querySelector('[data-media-library]').onclick=async()=>{
       try {
         pending=read();
         if(isVideo){if(item.kind==='background'){status.textContent='Use the moving-layers editor to export this composition; saving a background picture alone would lose your moving foreground.';return;}await save();await api('/show/clips/'+encodeURIComponent(item.id)+'/save-edit',{method:'POST',body:JSON.stringify({project_id:review.project_id})});await loadLibraryAll();showToast('Edited video saved in Library → Videos. The source and previous versions are kept.');}
         else {const result=await api('/show/library/pictures/edited-copy',{method:'POST',body:JSON.stringify({...p,path:p.asset||p.picture,...pending})});await loadLibrary();status.textContent='Edited copy saved in Library. Your original is kept.';}
-      }catch(e){status.textContent=e.message;}
+      }catch(e){if(dialog.isConnected)status.textContent=e.message;else showToast('Could not save the library copy: '+e.message,true);}
     };
     dialog.querySelector('[data-media-remove]')?.addEventListener('click',()=>save().then(()=>removePictureBackground(timelineItem(item.id))).catch(e=>showToast(e.message,true)));
     dialog.querySelector('[data-media-background]')?.addEventListener('click',()=>save().then(()=>openVideoLayers(item.id,item.params.person_style||'person')).catch(e=>showToast(e.message,true)));
