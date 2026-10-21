@@ -599,6 +599,24 @@
     if(scene&&item)setMovement(scene,item,select.value).catch(error=>showToast(error.message,true));
   });
 
+  // Earlier versions of the storyboard: making the Show again saves the one it replaces.
+  async function storyboardHistory(){
+    const {items}=await api('/show/history');
+    const when=id=>`${id.slice(6,8)}/${id.slice(4,6)} ${id.slice(9,11)}:${id.slice(11,13)}`;
+    ShowMenu.open(innerWidth/2-160,120,items.length?[{heading:'Earlier versions of this storyboard'},...items.slice(0,20).map(item=>({
+      label:`${when(item.id)} · ${item.decided??'?'} of ${item.scenes??'?'} scenes decided · ${item.effects??'?'} effects · ${item.pictures??0} pictures`,
+      title:item.reason,
+      action:async()=>{
+        if(!confirm(`Go back to the version of ${when(item.id)}? The current storyboard is saved first, so you can come back to it.`))return;
+        await api(`/show/history/${encodeURIComponent(item.id)}/restore`,{method:'POST',body:'{}'});
+        showToast('Earlier version restored. Reloading the storyboard…');
+        setTimeout(()=>location.reload(),600);
+      }}))]:[{heading:'No earlier versions yet: one is saved each time the Show is made again.'}],{host:menuHost()});
+  }
+  document.addEventListener('click',event=>{
+    if(event.target instanceof Element&&event.target.closest('[data-show-history]'))storyboardHistory().catch(error=>showToast(error.message,true));
+  });
+
   // A new background behind the person on the picked words; its picture is chosen next.
   async function addBackground(scene,picked,style="person"){
     const at=Math.max(scene.start,Math.min(scene.end-.5,picked.start));

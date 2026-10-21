@@ -291,13 +291,79 @@ def run_show(project, source: str, *, style_name: str = "choe", language: str | 
     return destination, manifest
 
 
+HISTORY_KEEP = 30
+
+
+def keep_storyboard(project, reason: str) -> Path | None:
+    """A copy of the Show's creative documents (storyboard, effects, captions, references,
+    sound, idea…) in ``artifacts/history/<time>/`` before something replaces them: making
+    the Show again planned it from scratch over the person's edits. Media are not copied
+    (they stay where they are); the newest copies are kept."""
+    import shutil
+    artifacts = project.artifacts_dir
+    documents = sorted(path for path in artifacts.glob("show_*.json") if path.is_file())
+    if not (artifacts / "show_scenes.json").is_file():
+        return None
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    folder, n = artifacts / "history" / stamp, 1
+    while folder.exists():
+        n += 1
+        folder = artifacts / "history" / f"{stamp}-{n}"
+    folder.mkdir(parents=True)
+    for path in documents:
+        shutil.copy2(path, folder / path.name)
+    try:
+        scenes = json.loads((artifacts / "show_scenes.json").read_text(encoding="utf-8"))["scenes"]
+        proposals = json.loads((artifacts / "show_proposals.json").read_text(encoding="utf-8"))["proposals"]
+        summary = {"decided": sum(1 for scene in scenes if scene.get("decision") != "pending"), "scenes": len(scenes),
+                   "effects": sum(1 for item in proposals if item.get("status") != "discarded"),
+                   "pictures": sum(len(scene.get("overlays") or []) for scene in scenes)}
+    except (OSError, ValueError, KeyError, TypeError):
+        summary = {}
+    (folder / "about.json").write_text(json.dumps({"reason": reason, "saved": time.strftime("%Y-%m-%dT%H:%M:%S"), **summary},
+                                                  ensure_ascii=False, indent=1), encoding="utf-8")
+    for old in sorted((artifacts / "history").iterdir())[:-HISTORY_KEEP]:
+        if old.is_dir():
+            shutil.rmtree(old, ignore_errors=True)
+    return folder
+
+
+def storyboard_history(project) -> list[dict[str, Any]]:
+    """The saved copies, newest first."""
+    out = []
+    for folder in sorted((project.artifacts_dir / "history").glob("*"), reverse=True):
+        try:
+            about = json.loads((folder / "about.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        out.append({"id": folder.name, **about})
+    return out
+
+
+def restore_storyboard(project, history_id: str) -> dict[str, Any]:
+    """Put a saved copy back (the current one is saved first, so this can be undone too)."""
+    import re
+    import shutil
+    if not re.fullmatch(r"\d{8}-\d{6}(-\d+)?", history_id or ""):
+        raise KeyError(history_id)
+    folder = project.artifacts_dir / "history" / history_id
+    if not (folder / "show_scenes.json").is_file():
+        raise KeyError(history_id)
+    keep_storyboard(project, f"Before going back to the copy of {history_id}")
+    for path in folder.glob("show_*.json"):
+        shutil.copy2(path, project.artifacts_dir / path.name)
+    return json.loads((folder / "about.json").read_text(encoding="utf-8"))
+
+
 def prepare_show(project, source: str, resources: list[str], *, style_name: str = "choe", language: str | None = None,
                  gags: str = "claude", model_name: str = DEFAULT_MODEL, progress: Callable[[int, str], None],
                  cancel: Callable[[], None]) -> dict[str, Any]:
-    """Everything up to the review: the cut, the framing and every proposed effect."""
+    """Everything up to the review: the cut, the framing and every proposed effect.
+    A storyboard already made is copied to the project's history first (keep_storyboard)."""
     from core import gags as gag_module
     from core import show_proposals, show_resources
     from core.gag_library import index_library
+    keep_storyboard(project, "Before making the Show again")
     path = Path(source)
     if not path.is_file():
         raise RuntimeError(f"The talking video is not on disk: {path.name}")

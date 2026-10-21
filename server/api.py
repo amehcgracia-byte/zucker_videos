@@ -2984,6 +2984,27 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         for scene in (show_scenes.load(_scene_files(project)).get('scenes',[]) if _scene_files(project).is_file() else []):_invalidate_scene(project,scene['id'])
         return jsonify(_clay_state(project))
 
+    @app.get("/api/v1/show/history")
+    def api_show_history() -> Response:
+        """Earlier versions of this Show's storyboard (saved before it was made again)."""
+        from core.show import storyboard_history
+        return jsonify({"items": storyboard_history(_require_project(state))})
+
+    @app.post("/api/v1/show/history/<history_id>/restore")
+    @_proposals_locked
+    def api_show_history_restore(history_id: str) -> Response:
+        """Go back to an earlier version; the current one is saved first, so it can come back too."""
+        from core.show import restore_storyboard
+        project = _require_project(state)
+        try:
+            about = restore_storyboard(project, history_id)
+        except KeyError:
+            return error_response("not_found", "That earlier version is not in this project", 404)
+        with scene_lock:
+            for key in [key for key in scene_previews if key.startswith(f"{project.folder}|")]:
+                scene_previews.pop(key, None)
+        return jsonify({"restored": history_id, **about})
+
     @app.post("/api/v1/show/scenes/<scene_id>/decision")
     @_proposals_locked
     def api_show_scene_decision(scene_id: str) -> Response:
