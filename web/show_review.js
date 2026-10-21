@@ -1894,7 +1894,13 @@
     const item = timelineItem(cross ? cross.dataset.steamCross : steamBoxFor);
     if(!item)return;
     const at = { x: (event.clientX - box.left) / box.width, y: (event.clientY - box.top) / box.height };
-    steamDrag = { item, box, cross: !!cross, start: at, now: at };
+    const video=$('#showStageVideo');
+    if(!cross){
+      if(!video || video.readyState<2){showToast('Wait for the video picture, then mark the object again.',true);return;}
+      video.pause();
+    }
+    steamDrag = { item, box, cross: !!cross, start: at, now: at,
+      projectId:review.project_id,sceneId:currentScene()?.id,videoTime:video?.currentTime };
   }, true);
   document.addEventListener("pointermove", (event) => {
     if (!steamDrag) return;
@@ -1911,19 +1917,22 @@
   });
   document.addEventListener("pointerup", async () => {
     if (!steamDrag) return;
-    const { item, cross, start: a, now: b } = steamDrag;
+    const { item, cross, start: a, now: b, projectId, sceneId, videoTime } = steamDrag;
     steamDrag = null;
+    $('#showSteamDrawing')?.remove();
+    if(review?.project_id!==projectId || currentScene()?.id!==sceneId){steamBoxFor=null;return;}
     if (cross) { steamSave(item, { point: [Number(b.x.toFixed(4)), Number(b.y.toFixed(4))] }); return; }
     steamBoxFor = null;
     const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(b.x - a.x), h = Math.abs(b.y - a.y);
     if (w < 0.02 || h < 0.02) { drawOverlays(currentScene()); renderTimeline(currentScene()); return; }
     const video=$('#showStageVideo');
-    if(video.readyState<2){showToast('Wait for the video picture, then mark the object again.',true);return;}
+    if(video.readyState<2 || Math.abs(video.currentTime-videoTime)>.001){showToast('The video frame changed. Mark the object again on the paused frame.',true);return;}
     const canvas=document.createElement('canvas'),k=Math.min(1,512/(w*video.videoWidth),512/(h*video.videoHeight));
     canvas.width=Math.max(6,Math.round(w*video.videoWidth*k));canvas.height=Math.max(6,Math.round(h*video.videoHeight*k));
     canvas.getContext('2d').drawImage(video,x*video.videoWidth,y*video.videoHeight,w*video.videoWidth,h*video.videoHeight,0,0,canvas.width,canvas.height);
     try {
       const template=await api('/show/follow-template',{method:'POST',body:JSON.stringify({image:canvas.toDataURL('image/png')})});
+      if(review?.project_id!==projectId || currentScene()?.id!==sceneId)return;
       const anchor=[x,y,w,h].map(v=>Number(v.toFixed(4)));
       if(isTexture(item)) steamSave(item,{anchor,point:[x+w/2,y],follow_template:template.path});
       else {
