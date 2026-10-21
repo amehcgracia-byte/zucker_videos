@@ -2779,6 +2779,7 @@
     }
     open.add(scene.id);
     renderScene();
+    return timelineItem('sticker:'+placed.id);
   }
 
   // The Show editing desk works on the open project, in this same window.
@@ -2962,7 +2963,7 @@
     if(item.effect)return `<figure class="show-lib-card"><figcaption><b>${escape(item.name)}</b></figcaption><button type="button" data-lib-effect="${escape(item.effect)}" ${scene?'':'disabled'}>Add to scene…</button></figure>`;
     if(item.media_kind) {
       const id=encodeURIComponent(item.id), url=`/api/v1/show/video-library/${id}/media`;
-      return `<figure class="show-lib-card">${item.media_kind==='video'?`<video controls preload="none" poster="/api/v1/show/video-library/${id}/thumbnail" src="${url}" aria-label="Preview ${escape(item.name)}"></video>`:`<audio controls preload="none" src="${url}" aria-label="Preview ${escape(item.name)}"></audio>`}<figcaption><b>${escape(item.name)}</b><small>${item.saved_edit?'Saved edit · ':''}${item.face_swapped?'Face-swapped · ':''}${item.transparent?'Cutout · ':''}${Number(item.duration).toFixed(1)} s</small></figcaption><button type="button" data-lib-media="${escape(item.id)}" ${scene?'':'disabled'}>${libraryWords?'Place on selected words':'Place at playhead'}</button></figure>`;
+      return `<figure class="show-lib-card">${item.media_kind==='video'?`<video controls preload="none" poster="/api/v1/show/video-library/${id}/thumbnail" src="${url}" aria-label="Preview ${escape(item.name)}"></video>`:`<audio controls preload="none" src="${url}" aria-label="Preview ${escape(item.name)}"></audio>`}<figcaption><b>${escape(item.name)}</b><small>${item.saved_edit?'Saved edit · ':''}${item.face_swapped?'Face-swapped · ':''}${item.transparent?'Cutout · ':''}${Number(item.duration).toFixed(1)} s</small></figcaption><button type="button" data-lib-media="${escape(item.id)}" ${scene?'':'disabled'}>${libraryWords?'Place on selected words':'Place at playhead'}</button><button type="button" data-lib-media="${escape(item.id)}" data-lib-edit ${scene?'':'disabled'}>Place &amp; edit…</button></figure>`;
     }
     const index = libraryAll.indexOf(item);
     const where = item.section === "other" ? `from ${item.project}` : item.section === "recurring" ? `Recurring · ${item.shelf}` : (item.origin || "Your library");
@@ -2979,6 +2980,7 @@
         ${libraryFace && !item.retired ? `<button type="button" class="icon-button small primary" data-lib-face="${index}">Use this face</button>` : ""}
         ${libraryWords && !item.retired ? `<button type="button" class="icon-button small primary" data-lib-words="${index}">Put on “${escape(libraryWords.text.length > 24 ? `${libraryWords.text.slice(0, 22)}…` : libraryWords.text)}”</button>`
           : scene && !item.retired ? `<button type="button" class="icon-button small" data-lib-place="${index}">Place in scene</button>` : ""}
+        ${scene && !item.retired && !libraryFor && !libraryFace ? `<button type="button" class="icon-button small" data-lib-place="${index}" data-lib-edit>Place &amp; edit…</button>` : ""}
         ${item.retired ? "" : shelfControl}
         ${item.section === "other" ? "" : `<button type="button" class="icon-button small" data-lib-hide="${index}">${item.retired ? "Show again" : "Hide"}</button>`}
       </div></figure>`;
@@ -3090,6 +3092,7 @@
     const result=await api('/show/video-library/'+encodeURIComponent(id)+'/place',{method:'POST',body:JSON.stringify({project_id:owner,scene_id:scene.id,at,...(words?{duration:words.end-words.start}:{})})});
     if(review.project_id!==owner){showToast('Media placed in the original project.');return;}
     libraryDialog?.close();clipAdded(result);
+    return timelineItem(result.proposal.id);
   }
   async function addLibraryFiles(files, nativeDrop=false) {
     const native=nativeDrop?await window.waitForNativeDrop?.(files):null;
@@ -3110,7 +3113,7 @@
   async function onLibraryClick(event) {
     const target = event.target instanceof Element ? event.target.closest("[data-lib-cutout],[data-lib-media],[data-lib-effect],[data-lib-toggle],[data-lib-close],[data-lib-tab],[data-lib-use-for],[data-lib-face],[data-lib-words],[data-lib-place],[data-lib-unrecur],[data-lib-hide]") : null;
     if (!target) return;
-    if(target.dataset.libMedia){target.disabled=true;try{await placeLibraryMedia(target.dataset.libMedia);}finally{target.disabled=false;}return;}
+    if(target.dataset.libMedia){target.disabled=true;try{const placed=await placeLibraryMedia(target.dataset.libMedia);if(placed&&target.hasAttribute('data-lib-edit'))editMedia(placed);}finally{target.disabled=false;}return;}
     if(target.dataset.libEffect){libraryDialog.close();const key=target.dataset.libEffect,picked=libraryWords||pickedHere(currentScene());if(key.startsWith('texture_'))await extraTool(key,currentScene(),picked);else chooseAdd(key,picked,innerWidth/2,innerHeight/2);return;}
     if (target.dataset.libToggle) {
       libraryDialog.querySelectorAll("[data-lib-group]").forEach((group) => { group.open = target.dataset.libToggle === "open"; });
@@ -3135,10 +3138,14 @@
       await putOnWords(item, libraryWords);
     } else if (target.dataset.libPlace !== undefined) {
       target.disabled = true;
+      const owner=review.project_id, scene=currentScene(), words=libraryWords;
+      const at=words?.start??editedPlayhead();
       const own = await projectCopy(item);
+      if(review.project_id!==owner||currentScene()?.id!==scene?.id)throw Error('The scene changed. Reopen the library in the intended scene.');
       libraryDialog.close();
-      await addToScene(own.path);
+      const placed=await addToScene(own.path,{sceneId:scene.id,at,...(words?{duration:words.end-words.start}:{})});
       await libraryChanged();
+      if(target.hasAttribute('data-lib-edit'))editMedia(placed);
       showToast(`${item.name} is on the video. Drag it to move it; drag its bar to time it.`);
     } else if (target.dataset.libUnrecur !== undefined) {
       if (!confirm(`Take “${item.name}” off the ${item.shelf} shelf? It goes to the Trash (recoverable); projects that used it keep their own copy.`)) return;
