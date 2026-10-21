@@ -21,6 +21,7 @@
       <p>The playhead chooses the source picture. The effect's timeline edges choose its duration.</p><button data-clip-use-playhead>Start at this picture</button>
       <label>Background<select data-clip-matte><option value="auto">Detect green screen automatically</option><option value="none">Keep the complete video</option><option value="green">Remove green screen</option><option value="green-light">Soft green · smoke / rain / light</option><option value="black">Remove black · light / smoke footage</option><option value="person">Cut out the moving person (macOS)</option></select></label>
       <label><input type="checkbox" data-clip-audio> Use the clip's audio</label><label>Sound mode<select data-clip-mode><option value="own">Clip sound · pause narration</option><option value="mix">Mix with narration</option><option value="mute">Mute clip · keep narration</option></select></label><button type="button" data-clip-mixer>Sound mixer…</button><p>Mix with narration keeps both sources playing. Clip sound pauses narration for a full-frame insert; mute keeps only your narration. Use Sound mixer to balance the levels.</p>
+      <p data-clip-watermark></p>
       <button data-clip-save class="primary">Apply clip settings</button><button data-clip-layers>Edit moving person &amp; background…</button></div></section>
       <section data-ref-section="library" hidden><h3>Video library</h3><label><input data-ref-transparent type="checkbox"> Cutouts / transparent backgrounds only</label><div data-ref-video-library></div><p>Original files stay in this project. A cutout is a reusable recipe; it does not duplicate the video.</p></section>
       <section data-ref-section="generate" hidden><h3>Create a video outside the editor</h3><p>No video generator is connected. Describe the shot, copy the prompt to your chosen video generator, then bring back the result. Do not expect ChatGPT image generation to return a video.</p>
@@ -111,6 +112,22 @@
     const video=dialog.querySelector('[data-clip-preview]');video.src='/api/v1/show/clips/'+encodeURIComponent(item.id)+'/media';video.onloadedmetadata=()=>video.currentTime=context.clipStart;
     dialog.querySelector('[data-clip-matte]').value=item.params.matte||'none';dialog.querySelector('[data-clip-audio]').checked=item.params.clip_audio!==false;dialog.querySelector('[data-clip-mode]').value=item.params.clip_audio===false?'mute':item.params.audio_mode||'own';
     dialog.querySelector('h2').textContent='Video clip settings';
+    showWatermark(item);
+  }
+  // A watermark found in the clip is zoomed out automatically; the person can keep it instead.
+  async function showWatermark(item,keep=null){
+    const line=dialog.querySelector('[data-clip-watermark]');line.textContent='';
+    try{
+      const info=await api('/show/clips/'+encodeURIComponent(item.id)+'/framing',keep===null?{}:{method:'POST',body:JSON.stringify({keep_watermark:keep})});
+      const mark=info.watermark;
+      if(!mark){line.textContent='No watermark found in this clip.';return;}
+      const where=`${mark.box[1]<.5?'top':'bottom'}-${mark.box[0]<.5?'left':'right'}`;
+      if(!mark.zoom){line.textContent=`A watermark is in the ${where} corner, but hiding it would need too much zoom: it stays.`;return;}
+      line.innerHTML=mark.hidden?`Watermark in the ${where} corner: hidden by zooming ${mark.zoom}×. <button type="button" data-watermark-keep>Show it instead</button>`
+        :`Watermark in the ${where} corner: visible. <button type="button" data-watermark-hide>Hide it (zoom ${mark.zoom}×)</button>`;
+      line.querySelector('button').onclick=()=>showWatermark(item,mark.hidden);
+      if(keep!==null)message(keep?'The watermark stays visible.':'The watermark is zoomed out of the picture. Render the scene preview to see it.');
+    }catch(error){line.textContent=error.message;}
   }
   window.ShowReferences={open,openClip,openAudio(scene,picked,projectId){open(scene,picked,projectId,'video');dialog.querySelector('h2').textContent='Add audio from a link';message('Download audio only saves MP3 in this project and your music library.');},openTexture(scene,picked,projectId,texture='smoke',replaceTexture=null){
     open(scene,picked,projectId,'video');context.texture=texture;context.replaceTexture=replaceTexture;

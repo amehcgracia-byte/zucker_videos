@@ -2780,6 +2780,30 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not path.is_file() or not path.is_relative_to(project.folder.resolve()):abort(404)
         return send_file_with_range(str(path))
 
+    @app.route('/api/v1/show/clips/<proposal_id>/framing', methods=['GET', 'POST'])
+    @_proposals_locked
+    def api_show_clip_framing(proposal_id):
+        """A clip's automatic framing: black edges trimmed and, when one was found safely, its
+        watermark zoomed out of the picture. POST {"keep_watermark": true} keeps the mark."""
+        from core import media_framing, show_proposals
+        project = _require_project(state)
+        path = project.artifacts_dir / 'show_proposals.json'
+        stored = show_proposals.load(path)
+        item = next((p for p in stored['proposals'] if p['id'] == proposal_id and p['kind'] == 'clip'), None)
+        clip = Path(str((item or {}).get('params', {}).get('clip') or ''))
+        if item is None or not clip.is_file() or not clip.resolve().is_relative_to(project.folder.resolve()):
+            return error_response('not_found', 'That clip is not in this Show', 404)
+        if request.method == 'POST':
+            keep = (request.get_json(silent=True) or {}).get('keep_watermark')
+            if not isinstance(keep, bool):
+                return error_response('bad_request', 'Choose whether to keep the watermark', 400)
+            media_framing.set_watermark(clip, keep)
+            item['params']['watermark'] = 'keep' if keep else 'auto'      # previews made with the other choice are not reused
+            show_proposals.save(path, stored['proposals'], **{k: v for k, v in stored.items() if k not in ('proposals', 'version')})
+            _effect_changed(project, proposal_id)
+        info = media_framing.inspect(clip) or {}
+        return jsonify({'watermark': info.get('watermark'), 'crop': {k: info.get(k) for k in ('x', 'y', 'width', 'height')}})
+
     @app.post('/api/v1/show/clips/<proposal_id>/settings')
     @_proposals_locked
     def api_show_clip_settings(proposal_id):
