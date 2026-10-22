@@ -274,6 +274,12 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
         else:
             # The director's own kind (drawing, character, photo, word) travels in params.
             gags.append({**params, "proposal": item["id"], "at": item["at"], "duration": item["duration"]})
+    # A clip's speed (10 %-200 %) reaches whatever plays it: picture, own sound, layer or close-up.
+    speeds = {item["id"]: float(item["params"]["speed"]) for item in approved(items)
+              if item["kind"] == "clip" and item["params"].get("speed") not in (None, 1, 1.0)}
+    for entry in cutaways + items_out:
+        if entry.get("proposal") in speeds:
+            entry["speed"] = speeds[entry["proposal"]]
     return cutaways, items_out, gags
 
 

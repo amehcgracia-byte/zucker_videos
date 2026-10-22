@@ -20,6 +20,7 @@
       <div data-clip-settings hidden><h3>Edit this clip</h3><video data-clip-preview controls playsinline preload="metadata" style="width:100%;max-height:260px"></video>
       <p>The playhead chooses the source picture. The effect's timeline edges choose its duration.</p><button data-clip-use-playhead>Start at this picture</button>
       <label>Background<select data-clip-matte><option value="auto">Detect green screen automatically</option><option value="none">Keep the complete video</option><option value="green">Remove green screen</option><option value="green-light">Soft green · smoke / rain / light</option><option value="black">Remove black · light / smoke footage</option><option value="person">Cut out the moving person (macOS)</option></select></label>
+      <label>Speed<select data-clip-speed>${[10,25,50,75,100,125,150,200].map(pct=>`<option value="${pct}">${pct===100?'100 % · normal':pct+' %'+(pct<100?' · slow motion':' · faster')}</option>`).join('')}</select></label>
       <label><input type="checkbox" data-clip-audio> Use the clip's audio</label><label>Sound mode<select data-clip-mode><option value="own">Clip sound · pause narration</option><option value="mix">Mix with narration</option><option value="mute">Mute clip · keep narration</option></select></label><button type="button" data-clip-mixer>Sound mixer…</button><p>Mix with narration keeps both sources playing. Clip sound pauses narration for a full-frame insert; mute keeps only your narration. Use Sound mixer to balance the levels.</p>
       <p data-clip-watermark></p>
       <button data-clip-save class="primary">Apply clip settings</button><button data-clip-layers>Edit moving person &amp; background…</button></div></section>
@@ -110,6 +111,8 @@
     dialog.querySelector('[data-ref-url]').value=item.params.url||'';dialog.querySelector('[data-ref-start]').value=item.params.source_start||0;
     dialog.querySelector('[data-clip-settings]').hidden=false;
     const video=dialog.querySelector('[data-clip-preview]');video.src='/api/v1/show/clips/'+encodeURIComponent(item.id)+'/media';video.onloadedmetadata=()=>video.currentTime=context.clipStart;
+    const speed=dialog.querySelector('[data-clip-speed]');speed.value=String(Math.round((item.params.speed||1)*100));
+    speed.onchange=async()=>{try{await ShowReview.clipSpeed(item.id,Number(speed.value)/100);message(`Speed ${speed.value} %. Its timeline bar now lasts as long as the clip plays.`);}catch(error){message(error.message);}};
     dialog.querySelector('[data-clip-matte]').value=item.params.matte||'none';dialog.querySelector('[data-clip-audio]').checked=item.params.clip_audio!==false;dialog.querySelector('[data-clip-mode]').value=item.params.clip_audio===false?'mute':item.params.audio_mode||'own';
     dialog.querySelector('h2').textContent='Video clip settings';
     showWatermark(item);

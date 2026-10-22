@@ -127,9 +127,35 @@ def load_still(source: str | Path, at: float | None, ffmpeg: str, *, allow_dark:
     return picture
 
 
-def decode_voice(source: str | Path, start: float, length: float, ffmpeg: str) -> np.ndarray:
+SPEEDS = (0.1, 2.0)            # a clip's speed: 10 % (slow motion) to 200 %
+
+
+def clip_speed(raw: dict[str, Any]) -> float:
+    try:
+        return min(SPEEDS[1], max(SPEEDS[0], float(raw.get("speed") or 1.0)))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def atempo(speed: float) -> str:
+    """FFmpeg's atempo filters for ``speed`` (each one works between 0.5 and 2)."""
+    parts, left = [], float(speed)
+    while left < 0.5:
+        parts.append("atempo=0.5")
+        left /= 0.5
+    while left > 2.0:
+        parts.append("atempo=2.0")
+        left /= 2.0
+    if abs(left - 1.0) > 1e-6 or not parts:
+        parts.append(f"atempo={left:.6f}")
+    return ",".join(parts)
+
+
+def decode_voice(source: str | Path, start: float, length: float, ffmpeg: str, speed: float = 1.0) -> np.ndarray:
+    """``length`` seconds of ``source`` from ``start``, played at ``speed`` (its pitch kept)."""
+    tempo = ["-af", atempo(speed)] if abs(speed - 1.0) > 1e-6 else []
     raw = subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", str(source),
-                          "-vn", "-ac", "2", "-ar", str(AUDIO_RATE), "-f", "f32le", "-"], capture_output=True, check=True).stdout
+                          "-vn", *tempo, "-ac", "2", "-ar", str(AUDIO_RATE), "-f", "f32le", "-"], capture_output=True, check=True).stdout
     return np.frombuffer(raw, dtype=np.float32).reshape(-1, 2).copy()
 
 
@@ -234,13 +260,14 @@ def load_clip(raw: dict[str, Any], width: int, height: int, fps: float, ffmpeg: 
         available = float((ffprobe(source).get("format") or {}).get("duration") or 0) - start
     except Exception:
         available = 0.0
-    frame_count = max(1, round(length * fps))
+    speed = clip_speed(raw)                                 # 0.5: twice as long, slow motion
     if 0 < available < length:
-        frame_count = max(1, round(available * fps))       # a clip shorter than asked plays what it has
+        length = available                                  # a clip shorter than asked plays what it has
+    frame_count = max(1, round(length / speed * fps))
     # Older FFmpeg framesync can omit the final frame of the blurred-background
     # composite at EOF. Hold its last decoded picture to the requested boundary.
     framing = ";".join(filters("0:v", "fitted", source, width, height)+[
-        f"[fitted]fps={fps}:start_time=0,tpad=stop_mode=clone:stop_duration={1/fps:.9f},trim=end_frame={frame_count}[output]"])
+        f"[fitted]{f'setpts=(PTS-STARTPTS)/{speed:.6f},' if speed != 1.0 else ''}fps={fps}:start_time=0,tpad=stop_mode=clone:stop_duration={1/fps:.9f},trim=end_frame={frame_count}[output]"])
     command = [ffmpeg, "-v", "error", "-nostdin", "-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", source, "-an",
                "-filter_complex", framing, "-map", "[output]", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
     from core.show_geometry import PLACEMENT_FIELDS, place_frame
@@ -254,7 +281,7 @@ def load_clip(raw: dict[str, Any], width: int, height: int, fps: float, ffmpeg: 
         first.close()
     clip = ClipFrames(command, width, height, frame_count, transform)
     try:
-        voice = decode_voice(source, start, frame_count / fps, ffmpeg)
+        voice = decode_voice(source, start, frame_count / fps * speed, ffmpeg, speed)
     except subprocess.CalledProcessError:
         voice = None                       # a clip without sound plays silent
     insert = Insert(at=float(raw["at"]), still=still, width=width, height=height, fps=fps, zoom=1.0,

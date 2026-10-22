@@ -577,6 +577,17 @@
     syncPlayback();
     box.onkeydown=event=>{const clip=event.target.closest('[data-time-clip]');if(clip && event.key==='Enter'){event.preventDefault();locateEffect(timelineItem(clip.dataset.timeClip));}};
   }
+  // A clip's speed: 100 % normal, down to 10 % (slow motion), up to 200 %. The same seconds of
+  // the clip play slower or faster, so its bar gets longer or shorter.
+  const CLIP_SPEEDS = [10, 25, 50, 75, 100, 125, 150, 200];
+  async function setClipSpeed(scene, item, speed) {
+    await flushEdits();
+    await timelineEdit(scene, () => patch(item.id, { speed }));
+    await markModified(item.id);
+    renderTimeline(currentScene()); refreshCard(item.id);
+    showToast(`Speed ${Math.round(speed * 100)} %: it plays like that in the effects preview and the video.`);
+  }
+
   // Movement for any picture: a placed sticker or an effect (drawing, word, library picture).
   function movementChoices(item){
     const talkable=item.overlay&&isCharacter(item.overlay.asset);
@@ -1694,7 +1705,10 @@
       ...(["drawing", "word"].includes(item.kind) ? [{ label: "Movement", submenu: () => movementItems(scene, item) }] : []),
       ...(item.kind === "word" && !item.params.picture ? wordItems(item) : []),
       ...(["clip","jingle","character"].includes(item.kind)?[{label:"Sound mixer…",action:()=>ShowAudio.open(item.id)}]:[]),
-      ...(item.kind === "clip" ? [{label:"Clip settings…",action:()=>ShowReferences.openClip(currentScene(),item,review.project_id)}, { label: "Put my face on it…", action: () => openLibrary(null, null, id) }] : []),
+      ...(item.kind === "clip" ? [{label:"Clip settings…",action:()=>ShowReferences.openClip(currentScene(),item,review.project_id)},
+        { label: "Speed", submenu: () => CLIP_SPEEDS.map((pct) => ({ label: pct === 100 ? "100 % · normal" : `${pct} %${pct < 100 ? " · slow motion" : " · faster"}`,
+          checked: Math.round((item.params.speed || 1) * 100) === pct, action: () => setClipSpeed(scene, item, pct / 100) })) },
+        { label: "Put my face on it…", action: () => openLibrary(null, null, id) }] : []),
       { separator: true },
       { label: item.status === "discarded" ? "Restore effect" : "Remove effect", action: async () => { await patch(id, { status: item.status === "discarded" ? "proposed" : "discarded" }); await markModified(); renderScene(); } },
     ];
@@ -3350,6 +3364,7 @@
     audioTarget(){const scene=currentScene();if(!scene)return null;const picked=pickedWords||pickedHere(scene);return {project_id:review.project_id,scene_id:scene.id,at:picked.start,duration:Math.max(.04,picked.end-picked.start),text:picked.text};},
     addAudioLink(){const scene=currentScene();if(scene)ShowReferences.openAudio(scene,pickedWords||pickedHere(scene),review.project_id);},
     open: openReview, openWorkspace, hull, refreshLibrary, addToScene, openLibrary, openVideoLayers,
+    async clipSpeed(id, speed) { const scene = scenes().find((entry) => entry.effects.includes(id)); const item = review?.proposals.find((entry) => entry.id === id); if (scene && item) await setClipSpeed(scene, item, speed); },
     shortcuts(){
       let dialog=$('#showKeyboardShortcuts');
       if(!dialog){dialog=document.createElement('dialog');dialog.id='showKeyboardShortcuts';dialog.setAttribute('aria-label','Show Studio keyboard shortcuts');

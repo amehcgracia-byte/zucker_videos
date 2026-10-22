@@ -139,7 +139,10 @@ def cutaway_filters(plan: dict[str, Any], first_input: int, width: int, height: 
         # On whole frames: a start a fraction of a frame late showed one frame of the host first.
         first_frame = round(float(cut["at"]) * fps)
         at, duration = first_frame / fps, max(1, round((float(cut["at"]) + float(cut["duration"])) * fps) - first_frame) / fps
-        inputs += ["-ss", f"{float(cut.get('source_start') or 0):.3f}", "-t", f"{duration + 0.5:.3f}", "-i", str(cut["source"])]
+        from core.show_inserts import clip_speed
+        speed = clip_speed(cut)                     # the clip's own speed: 0.5 is slow motion
+        slow = f"setpts=(PTS-STARTPTS)/{speed:.6f}," if speed != 1.0 else ""
+        inputs += ["-ss", f"{float(cut.get('source_start') or 0):.3f}", "-t", f"{duration * speed + 0.5:.3f}", "-i", str(cut["source"])]
         zoom = max(1.0, float(cut.get("zoom") or 1.0))
         fx, fy = cut.get("focus") or (0.5, 0.5)
         z = f"{zoom:.4f}"
@@ -148,11 +151,11 @@ def cutaway_filters(plan: dict[str, Any], first_input: int, width: int, height: 
         label = f"cut{index}"
         if cut.get("fit") == "contain":
             from core.media_framing import filters
-            chains.append(f"[{first_input + index}:v]fps={fps},trim=duration={duration:.4f},setpts=PTS-STARTPTS[{label}source]")
+            chains.append(f"[{first_input + index}:v]{slow}fps={fps},trim=duration={duration:.4f},setpts=PTS-STARTPTS[{label}source]")
             chains.extend(filters(label+'source',label+'fitted',cut['source'],width,height))
             chains.append(f"[{label}fitted]setpts=PTS+{at:.6f}/TB[{label}]")
         else:
-            chains.append(f"[{first_input + index}:v]fps={fps},trim=duration={duration:.4f},setpts=PTS-STARTPTS,{frame}"
+            chains.append(f"[{first_input + index}:v]{slow}fps={fps},trim=duration={duration:.4f},setpts=PTS-STARTPTS,{frame}"
                           f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,format=yuv420p,"
                           f"setpts=PTS+{at:.6f}/TB[{label}]")
         chains.append(f"[{current}][{label}]overlay=enable='between(t,{at - 0.5 / fps:.4f},{at + duration - 0.5 / fps:.4f})':eof_action=pass[{label}o]")

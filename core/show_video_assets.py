@@ -149,7 +149,8 @@ class VideoLayer:
     def apply(self,frame,t):
         if not self.tracked_visible:return
         local=t-self.at
-        rgb=self.video.at(local+float(self.raw.get('clip_start') or 0)).astype(np.uint8)
+        from core.show_inserts import clip_speed
+        rgb=self.video.at(local*clip_speed(self.raw)+float(self.raw.get('clip_start') or 0)).astype(np.uint8)
         if self.raw.get("matte")=="green-light":rgb,_=light_pixels(rgb)
         h,w=frame.shape[:2]
         if self.masks is not None:

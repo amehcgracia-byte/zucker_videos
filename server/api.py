@@ -4615,7 +4615,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         allowed = {"status", "at", "duration", "start", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action", "clip_audio", "audio_mode",
                    "amount", "offset", "voice", "hold", "subject", "text", "style", "position", "size", "effect", "warp", "point", "anchor", "scale",
                    "density", "strength", "rise", "colour", "texture", "font", "bold", "italic",
-                   "entrance", "prompt", "picture", "selected_text", "image_center", "intensity", "follow_anchor", "follow_template", "follow_seconds", "follow_place", "person_scale", "person_offset", "brightness", "saturation", "hue", "crop", "pan", "stretch", "stretch_x", "rotate"}
+                   "entrance", "prompt", "picture", "selected_text", "image_center", "intensity", "speed", "follow_anchor", "follow_template", "follow_seconds", "follow_place", "person_scale", "person_offset", "brightness", "saturation", "hue", "crop", "pan", "stretch", "stretch_x", "rotate"}
         changes = {key: value for key, value in body.items() if key in allowed}
         # All storyboard tools share the edited clock. Reject impossible placements
         # instead of silently accepting an image beyond its owning scene.
@@ -4681,6 +4681,20 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 raise ValueError("Bold and italic are on or off")
             if "audio_mode" in changes and changes["audio_mode"] not in ("own","mix","mute"):
                 raise ValueError("Choose mixed, own sound or mute")
+            if "speed" in changes:
+                speed = changes["speed"]
+                if current["kind"] != "clip" or not (isinstance(speed, (int, float)) and not isinstance(speed, bool) and 0.1 <= speed <= 2.0):
+                    raise ValueError("Choose a speed between 10 % and 200 % for a video clip")
+                # The same seconds of the clip, faster or slower: its bar gets shorter or longer.
+                old_speed = float(current["params"].get("speed") or 1.0)
+                if "duration" not in changes and current["duration"] > 0:
+                    changes["duration"] = round(current["duration"] * old_speed / float(speed), 3)
+                    scene_path = _scene_files(project)
+                    if scene_path.is_file():
+                        from core import show_scenes
+                        owner = next((s for s in show_scenes.load(scene_path)["scenes"] if proposal_id in s["effects"]), None)
+                        if owner:
+                            changes["duration"] = round(min(changes["duration"], owner["end"] - float(changes.get("at", current["at"]))), 3)
             if "action" in changes and current["kind"] in ("drawing", "word"):
                 from core.show_scenes import ACTIONS
                 if changes["action"] not in ACTIONS or changes["action"] in ("talk", "look", "path"):
@@ -4703,6 +4717,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         try:
             if current['kind']=='clip' and ('duration' in changes or 'at' in changes):
                 maximum=float(current['params']['clip_length'])-float(current['params'].get('clip_start') or 0)
+                maximum/=float(changes.get('speed',current['params'].get('speed') or 1.))       # slow motion makes the same footage last longer
                 if not current['params'].get('texture_footage') and float(changes.get('duration',current['duration']))>maximum+.001:raise ValueError('This extends past the downloaded clip; reopen Clip settings to choose more source footage')
             item = show_proposals.update(stored["proposals"], proposal_id, **changes)
         except KeyError:

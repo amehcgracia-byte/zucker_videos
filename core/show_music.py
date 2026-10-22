@@ -133,7 +133,10 @@ def mix(video: Path, jingles: list[dict[str, Any]], output: Path, *, ffmpeg: str
         fade = max(0.01, min(float(item.get("fade") or 0.05), length / 2))
         delay = int(round(at * 1000))
         inputs += ["-i", str(item["jingle"])]
-        chains.append(f"[{index}:a]atrim=start={start:.3f}:duration={length:.3f},asetpts=PTS-STARTPTS,"
+        from core.show_inserts import atempo, clip_speed
+        speed = clip_speed(item)                    # a clip played faster or slower: its sound follows
+        tempo = f"{atempo(speed)}," if speed != 1.0 else ""
+        chains.append(f"[{index}:a]atrim=start={start:.3f}:duration={length * speed:.3f},asetpts=PTS-STARTPTS,{tempo}"
                       f"aformat=sample_rates=48000:channel_layouts=stereo,afade=t=in:d={fade:.3f},"
                       f"afade=t=out:st={max(0.0, length - fade):.3f}:d={fade:.3f},volume={float(item.get('volume') if item.get('volume') is not None else 0.8):.3f},"
                       f"adelay={delay}|{delay}[j{index}]")
