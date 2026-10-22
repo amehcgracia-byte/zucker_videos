@@ -2436,3 +2436,7 @@ dialog.show-studio::backdrop {background:#0009;}
 #showAudioDialog .mixer-empty{color:#cfd8d2;align-self:center;padding:0 12px;}
 #showAudioDialog .mixer-cleanup{border:1px solid var(--line);border-radius:8px;padding:8px 12px;}
 #showAudioDialog .mixer-cleanup>*{margin:6px 0;}
+
+/* A clip's own picture inside its box on the stage. */
+.show-cutout-box .show-cutout-frame{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none;user-select:none;}
+.show-cutout-box small{position:relative;z-index:1;}

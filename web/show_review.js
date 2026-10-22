@@ -500,6 +500,8 @@
       const item=timelineItem(selectedEffect);
       node.hidden=!editing || !item || item.status==='discarded' || !ShowClock.visible(item,at);
     }
+    const clipFrame=layer.querySelector('[data-cutout-frame]');
+    if(clipFrame&&editing){const item=timelineItem(clipFrame.dataset.cutoutFrame);const url=item&&clipFrameUrl(item);if(url&&clipFrame.getAttribute('src')!==url)clipFrame.setAttribute('src',url);}
     window.ShowLiveCaptions?.sync({scene,at,video:$('#showStageVideo'),projectId:review.project_id,revision:review.caption_revision,
       saved:!!quick?.saved&&!quick?.effects,
       replaced:sceneEffects(scene).filter(item=>item.kind==='word'&&item.status!=='discarded'&&item.params.picture&&ShowClock.visible(item,at)).map(item=>item.params.replaces_caption)});
@@ -1547,11 +1549,22 @@
     document.body.append(dialog);dialog.querySelector('[data-cancel]').onclick=()=>dialog.close();dialog.onclose=()=>dialog.remove();dialog.showModal();
     dialog.querySelector('[data-apply]').onclick=async event=>{event.target.disabled=true;try{await patch(item.id,Object.fromEntries([...dialog.querySelectorAll('[data-colour]')].map(v=>[v.dataset.colour,Number(v.value)])));await markModified(item.id);dialog.close();invalidateLocal(currentScene());await requestScenePreview(currentScene());}catch(error){showToast(error.message,true);event.target.disabled=false;}};
   }
+  // A clip over the video (background removed, mixed with your voice or muted) shows its own
+  // picture at the playhead in its box: move it, resize it from the corner, crop it from the edges.
+  function clipFrameUrl(item){
+    const t=Math.max(item.at,Math.min(item.at+item.duration-.04,editedPlayhead()));
+    const recipe=[item.params.matte,item.params.clip_start,item.params.speed,item.params.clip].join('|');
+    return `/api/v1/show/clips/${encodeURIComponent(item.id)}/frame?t=${(Math.round(t*5)/5).toFixed(1)}&w=480&r=${encodeURIComponent(recipe)}`;
+  }
   function cutoutHandles(){
     const item=timelineItem(selectedEffect),p=item?.params;
-    if(!item||item.status==='discarded'||isTexture(item)||!timelineDialog?.open||!(item.kind==='background'||item.kind==='clip'&&p.matte&&p.matte!=='none'))return '';
+    if(!item||item.status==='discarded'||isTexture(item)||!timelineDialog?.open)return '';
+    const layered=item.kind==='background'||item.kind==='clip'&&((p.matte&&p.matte!=='none')||p.audio_mode==='mix'||p.clip_audio===false);
+    if(!layered)return '';
     const scale=p.person_scale??1,[x,y]=p.person_offset||[0,0];
-    return `<div class="show-cutout-box" data-cutout-id="${item.id}" style="left:${((1-scale)/2+x)*100}%;top:${(1-scale+y)*100}%;width:${scale*100}%;height:${scale*100}%">${ShowGeometry.handles(p)}<small>Moving cutout · drag to move</small><span class="show-resize" data-cutout-resize="${item.id}"></span></div>`;
+    const frame=item.kind==='clip'?`<img class="show-cutout-frame" alt="" draggable="false" data-cutout-frame="${item.id}" style="${shapeStyle(p)}" src="${clipFrameUrl(item)}">`:'';
+    const label=item.kind==='clip'?`${escape(p.name||'Clip')} · drag to move, corner to resize, edges to crop`:'Moving cutout · drag to move';
+    return `<div class="show-cutout-box" data-cutout-id="${item.id}" style="left:${((1-scale)/2+x)*100}%;top:${(1-scale+y)*100}%;width:${scale*100}%;height:${scale*100}%">${frame}${ShowGeometry.handles(p)}<small>${label}</small><span class="show-resize" data-cutout-resize="${item.id}"></span></div>`;
   }
   let geometryDrag=null;
   document.addEventListener('pointerdown',event=>{

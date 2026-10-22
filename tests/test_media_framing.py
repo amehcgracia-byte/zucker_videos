@@ -138,3 +138,26 @@ def test_a_clip_is_read_while_it_plays_not_unpacked_to_disk(tmp_path, monkeypatc
     assert np.array_equal(np.array(insert.clip[30]), last)          # past its end the last picture holds
     assert np.array_equal(np.array(insert.clip[0]), first)          # going back reads it again
     insert.clip.close()
+
+
+def test_a_clips_frame_is_served_keyed_for_the_stage(tmp_path, monkeypatch):
+    import json
+    from PIL import Image as PILImage
+    from core import show_proposals
+    from core.project import create_project
+    from server.api import create_app
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path / "data"))
+    project = create_project("Frames", str(tmp_path / "Frames.zuckervid"))
+    clip = project.folder / "assets" / "clips" / "green.mp4"
+    clip.parent.mkdir(parents=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=0x00c800:s=320x180:r=10:d=2",
+                    "-vf", "drawbox=x=120:y=50:w=80:h=80:color=0xc04040:t=fill", "-pix_fmt", "yuv420p", str(clip)], check=True)
+    (project.artifacts_dir / "show_plan.json").write_text(json.dumps({"edited_duration": 10, "shots": [], "words": [], "cuts": 0, "source": str(clip)}))
+    item = show_proposals.proposal("clip", 1.0, 2.0, reason="test", clip=str(clip), clip_start=0, clip_length=2.0, matte="green", audio_mode="mix")
+    show_proposals.save(project.artifacts_dir / "show_proposals.json", [item], resources=[])
+    client = create_app(str(project.folder)).test_client()
+    response = client.get(f"/api/v1/show/clips/{item['id']}/frame?t=1.5&w=320")
+    assert response.status_code == 200 and response.mimetype == "image/png"
+    picture = np.asarray(PILImage.open(__import__("io").BytesIO(response.data)))
+    assert picture.shape[2] == 4 and picture[5, 5, 3] < 30 and picture[90, 160, 3] > 200    # the green goes, the subject stays
+    assert client.get("/api/v1/show/clips/nope/frame?t=1").status_code == 404

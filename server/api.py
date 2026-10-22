@@ -2849,6 +2849,80 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not path.is_file() or not path.is_relative_to(project.folder.resolve()):abort(404)
         return send_file_with_range(str(path))
 
+    @app.get('/api/v1/show/clips/<proposal_id>/frame')
+    def api_show_clip_frame(proposal_id):
+        """The clip's picture at edited time ``t`` (its speed and start counted), as the video
+        will show it: framed like the render and with its background removed (PNG with
+        transparency), to see and place it on the stage."""
+        import hashlib
+        import cv2
+        import numpy as np
+        from PIL import Image
+        from core import show_proposals
+        project = _require_project(state)
+        item = next((p for p in show_proposals.load(project.artifacts_dir / 'show_proposals.json')['proposals'] if p['id'] == proposal_id), None)
+        params = (item or {}).get('params') or {}
+        clip = Path(str(params.get('clip') or ''))
+        if item is None or not clip.is_file() or not clip.resolve().is_relative_to(project.folder.resolve()):
+            return error_response('not_found', 'That clip is not in this Show', 404)
+        try:
+            t = float(request.args.get('t', item['at']))
+            width = int(min(960, max(160, int(request.args.get('w', 480)))))
+        except (TypeError, ValueError):
+            return error_response('bad_request', 'Choose a time and a width', 400)
+        from core.show_inserts import clip_speed
+        local = min(max(0.0, t - float(item['at'])), max(0.0, float(item['duration']) - 0.04))
+        second = round(float(params.get('clip_start') or 0) + local * clip_speed(params), 2)
+        height = width * 9 // 16
+        matte = params.get('matte', 'none')
+        stamp = clip.stat().st_mtime_ns
+        key = hashlib.sha1(json.dumps([str(clip), stamp, second, matte, params.get('key'), width], sort_keys=True, default=str).encode()).hexdigest()[:20]
+        folder = project.cache_dir / 'clip_frames'
+        target = folder / f'{key}.png'
+        if not target.is_file():
+            from core.show_backgrounds import VideoBackground
+            try:
+                video = VideoBackground(clip, width, height, contain=matte in ('none', 'opaque'))
+                try:
+                    rgb = np.asarray(video.at(second)).astype(np.uint8)
+                finally:
+                    video.capture.release()
+            except Exception:
+                # Some files OpenCV cannot seek in: FFmpeg reads that one picture instead.
+                ffmpeg = str(tool_status().get('ffmpeg_path') or 'ffmpeg')
+                fit = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+                decoded = subprocess.run([ffmpeg, '-v', 'error', '-nostdin', '-ss', f'{second:.3f}', '-i', str(clip), '-frames:v', '1', '-vf', fit,
+                                          '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], capture_output=True, timeout=30).stdout
+                if len(decoded) < width * height * 3:
+                    decoded = subprocess.run([ffmpeg, '-v', 'error', '-nostdin', '-sseof', '-0.5', '-i', str(clip), '-frames:v', '1', '-vf', fit,
+                                              '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], capture_output=True, timeout=30).stdout
+                if len(decoded) < width * height * 3:
+                    return error_response('frame_failed', 'Could not read a picture from this clip', 500)
+                rgb = np.frombuffer(decoded[:width * height * 3], np.uint8).reshape(height, width, 3).copy()
+            alpha = np.ones(rgb.shape[:2], np.float32)
+            if matte == 'green':
+                from core.show_video_assets import green_alpha
+                alpha = green_alpha(rgb)
+            elif matte == 'plain' and params.get('key'):
+                from core import plain_key
+                alpha = plain_key.alpha(rgb, params['key'])
+                rgb = plain_key.despill(rgb, alpha, params['key'])
+            elif matte in ('black', 'green-light'):
+                from core.show_video_assets import black_alpha
+                alpha = black_alpha(rgb)
+            elif matte == 'person':
+                try:
+                    from core.show_backgrounds import MASK_SIZE, Segmenter
+                    mask = Segmenter()(cv2.resize(rgb, (640, 360)))
+                    alpha = cv2.resize(mask.astype(np.float32) / 255, (width, height))
+                except Exception:
+                    pass                                  # shown whole when the Mac cannot cut the person out
+            folder.mkdir(parents=True, exist_ok=True)
+            pending = target.with_suffix('.pending.png')
+            Image.fromarray(np.dstack([rgb, np.clip(alpha * 255 + 0.5, 0, 255).astype(np.uint8)]), 'RGBA').save(pending)
+            pending.replace(target)
+        return send_file(str(target), mimetype='image/png', max_age=3600)
+
     @app.route('/api/v1/show/clips/<proposal_id>/framing', methods=['GET', 'POST'])
     @_proposals_locked
     def api_show_clip_framing(proposal_id):
