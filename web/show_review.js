@@ -2842,6 +2842,8 @@
       } else if (target.dataset.showPreview) {
         await flushEdits();
         const item=timelineItem(target.dataset.showPreview);
+        if(!item)throw Error('This effect is no longer in the scene.');
+        if(item.clay){await requestScenePreview(currentScene());return;}
         if(item.needs?.length)throw Error('Complete this effect first: '+item.needs.join(', '));
         target.disabled=true;target.textContent='Preparing effect preview…';
         const previewRoute=item.overlay?`/show/scenes/${currentScene().id}/stickers/${encodeURIComponent(item.overlay.id)}/preview`:`/show/review/${encodeURIComponent(item.id)}/preview`;
