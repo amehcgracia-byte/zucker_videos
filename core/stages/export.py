@@ -4795,16 +4795,18 @@ def _verify_video_cadence(
     else:
         span = max(0.0, window - sample_window)
         sample_starts = [start + span * fraction for fraction in (0.0, 0.10, 0.25, 0.50, 0.75, 0.90, 1.0)]
-    pts: list[float] = []
+    # Deltas are measured inside each sampled window only. Concatenating the
+    # windows and diffing across them reported the distance between two
+    # windows as a "gap" whenever they were less than one window apart
+    # (e.g. a ~40 s export), rejecting perfectly regular videos.
+    total_frames = 0
+    deltas: list[float] = []
     for sample_start in sample_starts:
-        pts.extend(_frame_pts_times(path, sample_start, sample_window))
-    if len(pts) < 3:
-        raise FFmpegError(f"Could not verify video cadence for {label}: only {len(pts)} frame timestamps")
-    deltas = [
-        later - earlier
-        for earlier, later in zip(pts, pts[1:])
-        if later > earlier and later - earlier < sample_window
-    ]
+        window_pts = sorted(_frame_pts_times(path, sample_start, sample_window))
+        total_frames += len(window_pts)
+        deltas.extend(later - earlier for earlier, later in zip(window_pts, window_pts[1:]) if later > earlier)
+    if total_frames < 3:
+        raise FFmpegError(f"Could not verify video cadence for {label}: only {total_frames} frame timestamps")
     if not deltas:
         raise FFmpegError(f"Could not verify video cadence for {label}: no usable frame timestamp deltas")
     low = expected_delta * (1.0 - FRAME_INTERVAL_TOLERANCE)
