@@ -473,7 +473,7 @@ class ExportStage(Stage):
         output_path = _output_path(project, platform, run_id)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         content_duration = _plan_duration(segments)
-        duration = content_duration if platform == "reel" else content_duration + INTRO_DURATION + OUTRO_DURATION
+        duration = content_duration if platform == "reel" or _branding_none() else content_duration + INTRO_DURATION + OUTRO_DURATION
         bitrate_info = _bitrate_for_duration(duration)
         required_space = _required_export_space_bytes(duration, bitrate_info["video_bitrate"], len(segments))
         _check_export_disk_space(output_path, required_space)
@@ -780,7 +780,7 @@ def _render_plan(
     phase_times: dict[str, Any] = {}
     export_started = time.perf_counter()
     try:
-        include_bookends = platform not in {"reel", "reel_horizontal"}
+        include_bookends = platform not in {"reel", "reel_horizontal"} and not _branding_none()
         if include_bookends:
             phase_started = time.perf_counter()
             intro_path = temp_dir / "intro.mp4"
@@ -5183,12 +5183,42 @@ def _global_config() -> dict[str, Any]:
         return {}
 
 
+def _branding() -> dict[str, Any]:
+    """Optional branding override from config.json ``branding``.
+
+    Absent (Zucker's default) everything behaves as before. Keys:
+      mode: "default" | "custom" | "none" -- "none" removes watermark, intro
+            and outro; "custom" uses ``personal_logo_path`` as today.
+      logo_path / watermark_path: replace the bundled app logo / watermark.
+      intro_card: False skips the designed intro card (the logo is used).
+    """
+    value = _global_config().get("branding")
+    return value if isinstance(value, dict) else {}
+
+
+def _branding_asset(key: str) -> Path | None:
+    raw = _branding().get(key)
+    if not raw:
+        return None
+    candidate = Path(str(raw)).expanduser()
+    return candidate if candidate.is_file() else None
+
+
+def _branding_none() -> bool:
+    return str(_branding().get("mode") or "default") == "none"
+
+
 def _watermark_path() -> Path | None:
+    if _branding_none():
+        return None
     personal = _global_config().get("personal_logo_path")
     if personal:
         candidate = Path(str(personal)).expanduser()
         if candidate.exists():
             return candidate
+    branded = _branding_asset("watermark_path")
+    if branded and _has_real_alpha(branded):
+        return branded
     candidates = [
         Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "logo_watermark.png",
         Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "watermark.png",
@@ -5202,6 +5232,9 @@ def _watermark_path() -> Path | None:
 
 
 def _logo_path() -> Path | None:
+    branded = _branding_asset("logo_path")
+    if branded:
+        return branded
     candidates = [
         Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "logo_editor_green.png",
         Path(__file__).resolve().parents[2] / "assets" / "logo_editor_green.png",
@@ -5221,6 +5254,8 @@ def _personal_logo_path() -> Path | None:
 
 
 def _intro_card_path() -> Path | None:
+    if _branding_none() or _branding().get("intro_card") is False:
+        return None
     bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
     candidates = [
         bundle_root / "assets" / "intro_card_watermark.png",
@@ -5252,6 +5287,9 @@ def _is_intro_card(path: Path | None, kind: str) -> bool:
 
 
 def _intro_logo_path() -> Path | None:
+    branded = _branding_asset("logo_path")
+    if branded:
+        return branded
     candidates = [
         Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2])) / "web" / "logo_watermark.png",
         Path(__file__).resolve().parents[2] / "assets" / "logo_watermark.png",
