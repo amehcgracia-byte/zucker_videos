@@ -136,7 +136,9 @@ def cutaway_filters(plan: dict[str, Any], first_input: int, width: int, height: 
     chains: list[str] = []
     current = "v"
     for index, cut in enumerate(plan.get("cutaways") or []):
-        at, duration = float(cut["at"]), max(1.0 / fps, float(cut["duration"]))
+        # On whole frames: a start a fraction of a frame late showed one frame of the host first.
+        first_frame = round(float(cut["at"]) * fps)
+        at, duration = first_frame / fps, max(1, round((float(cut["at"]) + float(cut["duration"])) * fps) - first_frame) / fps
         inputs += ["-ss", f"{float(cut.get('source_start') or 0):.3f}", "-t", f"{duration + 0.5:.3f}", "-i", str(cut["source"])]
         zoom = max(1.0, float(cut.get("zoom") or 1.0))
         fx, fy = cut.get("focus") or (0.5, 0.5)
@@ -148,12 +150,12 @@ def cutaway_filters(plan: dict[str, Any], first_input: int, width: int, height: 
             from core.media_framing import filters
             chains.append(f"[{first_input + index}:v]fps={fps},trim=duration={duration:.4f},setpts=PTS-STARTPTS[{label}source]")
             chains.extend(filters(label+'source',label+'fitted',cut['source'],width,height))
-            chains.append(f"[{label}fitted]setpts=PTS+{at:.4f}/TB[{label}]")
+            chains.append(f"[{label}fitted]setpts=PTS+{at:.6f}/TB[{label}]")
         else:
             chains.append(f"[{first_input + index}:v]fps={fps},trim=duration={duration:.4f},setpts=PTS-STARTPTS,{frame}"
                           f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,format=yuv420p,"
-                          f"setpts=PTS+{at:.4f}/TB[{label}]")
-        chains.append(f"[{current}][{label}]overlay=enable='between(t,{at:.4f},{at + duration - 0.5 / fps:.4f})':eof_action=pass[{label}o]")
+                          f"setpts=PTS+{at:.6f}/TB[{label}]")
+        chains.append(f"[{current}][{label}]overlay=enable='between(t,{at - 0.5 / fps:.4f},{at + duration - 0.5 / fps:.4f})':eof_action=pass[{label}o]")
         current = f"{label}o"
     return inputs, chains, current
 

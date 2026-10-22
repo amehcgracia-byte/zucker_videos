@@ -483,7 +483,8 @@ def _video_info(path: Path) -> tuple[int, int, float, int]:
 def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Path, *, ffmpeg: str = "ffmpeg",
                 progress: Callable[[float], None] | None = None, cancel: Callable[[], None] | None = None,
                 timeline: list[tuple[float, float]] | None = None, drawings: Any = None,
-                preset: str = "veryfast", crf: int = 19, hardware: bool = False) -> Path:
+                preset: str = "veryfast", crf: int = 19, hardware: bool = False,
+                holds: list[tuple[int, int, int]] | None = None) -> Path:
     """Draw ``gags`` on ``video``. Character interventions lengthen it: their
     (at, duration) spans are appended to ``timeline`` for captions to follow.
     ``drawings`` (core.show_bridge.StudioDrawings) are Show Studio's effects,
@@ -619,17 +620,43 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
             reader.start()
             writer.start()
             index = 0
+            # Frames of another shot right at a cut (core.source_cuts.holds) show their clean
+            # neighbour instead: a few recent frames are kept and a few read ahead.
+            shown_instead = {frame: shown for first, last, shown in (holds or []) for frame in range(first, last + 1)}
+            recent: dict[int, bytes] = {}
+            upcoming: dict[int, bytes] = {}
+            read_next = 0
+
+            def pull() -> bytes | None:
+                while True:
+                    try:
+                        return ahead.get(timeout=0.5)
+                    except queue.Empty:
+                        if broken:
+                            raise RuntimeError(f"Gag render failed: the encoder stopped ({broken[0]})")
+                        if not reader.is_alive():
+                            return None
+
+            def frame_at(wanted: int) -> bytes | None:
+                nonlocal read_next
+                while read_next <= wanted:
+                    chunk = pull()
+                    if chunk is None:
+                        return None
+                    upcoming[read_next] = chunk
+                    read_next += 1
+                return upcoming.get(wanted)
+
             while True:
-                try:
-                    raw = ahead.get(timeout=0.5)
-                except queue.Empty:
-                    if broken:
-                        raise RuntimeError(f"Gag render failed: the encoder stopped ({broken[0]})")
-                    if reader.is_alive():
-                        continue
-                    raw = None
+                raw = frame_at(index)
                 if raw is None:
                     break
+                upcoming.pop(index, None)
+                recent[index] = raw
+                recent.pop(index - 16, None)
+                if index in shown_instead:
+                    other = shown_instead[index]
+                    raw = recent.get(other) or frame_at(other) or raw
                 write_inserts(index)
                 t = index / fps
                 live_warps = [warp for warp in warps if warp.active(t)]

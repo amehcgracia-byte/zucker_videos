@@ -447,6 +447,21 @@ def _encoded(render: Callable[[bool], Any]) -> Any:
         return render(False)
 
 
+def clean_cut_holds(project, plan: dict[str, Any], part: dict[str, Any], ffmpeg: str) -> list[tuple[int, int, int]]:
+    """Frames of ``part``'s cut that would flash another shot (the talking video is already an
+    edit and an old cut falls next to a new one), and the clean frame each shows instead;
+    none where a close-up covers the picture."""
+    from core import source_cuts
+    try:
+        cuts = source_cuts.detect(plan["source"], project.cache_dir / "source_cuts", ffmpeg, fps=float(plan.get("fps") or 30))
+    except Exception:  # finding old cuts never stops a render
+        return []
+    fps = float(plan.get("fps") or 30)
+    covered = [(round(float(c["at"]) * fps), round((float(c["at"]) + float(c["duration"])) * fps)) for c in part.get("cutaways") or []]
+    return [hold for hold in source_cuts.holds(part, cuts)
+            if not any(a <= hold[0] and hold[1] < b for a, b in covered)]
+
+
 def render_reviewed_show(project, *, progress: Callable[[int, str], None], cancel: Callable[[], None]) -> tuple[Path, dict[str, Any]]:
     """Render the edit with the approved effects only."""
     from core import gags as gag_module
@@ -464,11 +479,14 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
             item["needs"] = show_proposals.check(item)
         items = show_scenes.as_seen(document, items)       # the video shows what the scene previews showed
     cutaways, layer, director = show_proposals.render_inputs(items)
+    from core import source_cuts
+    edges = source_cuts.plan_cuts(plan)
+    cutaways = source_cuts.snap(cutaways, edges, float(plan.get("fps") or 30))   # no frame of the host between a close-up and a cut
     plan["cutaways"] = cutaways
     layer = framed_layer(plan, layer)
     if document:
         layer += show_scenes.overlay_items(document)
-    layer = steam_within_its_shot(plan, between_words(plan, layer))
+    layer = steam_within_its_shot(plan, source_cuts.snap(between_words(plan, layer), edges, float(plan.get("fps") or 30)))
     jingles = [entry for entry in layer if entry.get("jingle")]
     layer = [entry for entry in layer if not entry.get("jingle")]
     path = Path(plan["source"])
@@ -509,10 +527,12 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
                                           progress=lambda share, text: progress(80, text))
     spans: list[tuple[float, float]] = []
     body = project.cache_dir / "show-body.mp4"
-    if pictures or layer or studio:
+    holds = clean_cut_holds(project, plan, plan, ffmpeg)
+    if pictures or layer or studio or holds:
         progress(80, "Drawing the effects on the video")
         _encoded(lambda hardware: render_gags(cut, pictures + layer, body, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio,
-                                              hardware=hardware, progress=lambda share: progress(80 + int(share * 15), "Drawing the effects on the video")))
+                                              hardware=hardware, holds=holds,
+                                              progress=lambda share: progress(80 + int(share * 15), "Drawing the effects on the video")))
         cut.unlink(missing_ok=True)
     else:
         cut.replace(body)
@@ -639,12 +659,14 @@ def preview_proposal(project, proposal_id: str, *, width: int | None = None, hei
         raise ValueError("Complete this effect first: " + ", ".join(missing))
     trial = {**item, "status": "approved"}
     cutaways, layer, director = show_proposals.render_inputs([trial])
+    from core import source_cuts
+    cutaways = source_cuts.snap(cutaways, source_cuts.plan_cuts(plan), float(plan.get("fps") or 30))
     start = max(0.0, item["at"] - 1.5)
     end = min(float(plan["edited_duration"]), item["at"] + max(1.0, item["duration"]) + 1.5)
     plan["cutaways"] = cutaways
     part = window_plan(plan, start, end)
     from core.show_bridge import studio_fingerprint
-    signature = hashlib.sha1(json.dumps(["placement-preview-v8-clay-animate", plan, trial, _picture_recipe_hashes(trial), start, end, width, height, studio_fingerprint(project.folder)], sort_keys=True,
+    signature = hashlib.sha1(json.dumps(["placement-preview-v9-clean-cuts", plan, trial, _picture_recipe_hashes(trial), start, end, width, height, studio_fingerprint(project.folder)], sort_keys=True,
                                         default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     folder.mkdir(parents=True, exist_ok=True)
@@ -676,8 +698,9 @@ def preview_proposal(project, proposal_id: str, *, width: int | None = None, hei
         if missing:
             raise RuntimeError("; ".join(missing))
     spans: list[tuple[float, float]] = []
-    if pictures or shifted or studio:
-        render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio, **PREVIEW_ENCODING)
+    holds = clean_cut_holds(project, plan, part, ffmpeg)
+    if pictures or shifted or studio or holds:
+        render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio, holds=holds, **PREVIEW_ENCODING)
     else:
         shutil.copyfile(cut, output)
     _lay_jingles(output, jingles, spans, ffmpeg)
@@ -759,7 +782,7 @@ def _scene_preview_inputs(project, scene_id: str, width: int, height: int, only_
     from core.gags import drawing_engine
     local_art_recipe = [drawing_engine(), gag_paint.NEGATIVE, {key: vars(style) for key, style in gag_paint.STYLES.items()}] if any(
         item["kind"] == "drawing" and not item["params"].get("picture") for item in live) else None
-    signature = hashlib.sha1(json.dumps(["scene-preview-v9-clay-animate", plan, live, overlays, _picture_recipe_hashes([live, overlays]), start, end, width, height, studio_fingerprint(project.folder),
+    signature = hashlib.sha1(json.dumps(["scene-preview-v10-clean-cuts", plan, live, overlays, _picture_recipe_hashes([live, overlays]), start, end, width, height, studio_fingerprint(project.folder),
                                          local_art_recipe], sort_keys=True, default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     return plan, live, overlays, start, end, folder, left_out, folder / f"{scene_id}-{signature}.mp4"
@@ -818,13 +841,17 @@ def preview_scene(project, scene_id: str, *, width: int | None = None, height: i
     signature = completed.stem.rsplit("-", 1)[-1]
     output = folder / f"{scene_id}-{signature}-building.mp4"
     cutaways, layer, director = show_proposals.render_inputs(live)
+    from core import source_cuts
+    cutaways = source_cuts.snap(cutaways, source_cuts.plan_cuts(plan), float(plan.get("fps") or 30))
     plan["cutaways"] = cutaways
     part = window_plan(plan, start, end)
     ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
     cut = _cached_cut(Path(plan["source"]), part, folder, scene_id if only_sticker_id is None else f"{scene_id}-{only_sticker_id[:8]}",
                       ffmpeg=ffmpeg, width=width, height=height, cancel=cancel_cut if cancel_cut is not None else cancel,
                       progress=(lambda fraction: progress(fraction, f"Rendering the scene cut — {fraction:.0%}")) if progress else None)
-    shifted = [{**entry, "at": round(entry["at"] - start, 3)} for entry in steam_within_its_shot(plan, between_words(plan, framed_layer(plan, layer) + overlays))]
+    from core import source_cuts
+    snapped = source_cuts.snap(between_words(plan, framed_layer(plan, layer) + overlays), source_cuts.plan_cuts(plan), float(plan.get("fps") or 30))
+    shifted = [{**entry, "at": round(entry["at"] - start, 3)} for entry in steam_within_its_shot(plan, snapped)]
     jingles = [entry for entry in shifted if entry.get("jingle")]
     shifted = [entry for entry in shifted if not entry.get("jingle")]
     pictures: list[dict[str, Any]] = []
@@ -845,8 +872,9 @@ def preview_scene(project, scene_id: str, *, width: int | None = None, height: i
                                              hidden=[(c["at"], c["at"] + c["duration"]) for c in part["cutaways"]],
                                              progress=progress, cancel=cancel_cut if cancel_cut is not None else cancel)
     spans: list[tuple[float, float]] = []
-    if pictures or shifted or studio:
-        render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio, **PREVIEW_ENCODING)
+    holds = clean_cut_holds(project, plan, part, ffmpeg)
+    if pictures or shifted or studio or holds:
+        render_gags(cut, pictures + shifted, output, ffmpeg=ffmpeg, cancel=cancel, timeline=spans, drawings=studio, holds=holds, **PREVIEW_ENCODING)
     else:
         shutil.copyfile(cut, output)
     _lay_jingles(output, jingles, spans, ffmpeg)
