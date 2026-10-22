@@ -496,10 +496,11 @@
     const video=$('#showStageVideo'),layer=$('#showStageLayer');
     const editing=!!timelineDialog?.open && video.paused && !quick?.saved;
     layer.classList.toggle('show-editing',editing);
-    for(const node of layer.querySelectorAll('.show-cutout-box,.show-steam-box,.show-steam-cross,#showSteamDrawing')){
+    for(const node of layer.querySelectorAll('.show-cutout-box:not(.show-clay-box),.show-steam-box,.show-steam-cross,#showSteamDrawing')){
       const item=timelineItem(selectedEffect);
       node.hidden=!editing || !item || item.status==='discarded' || !ShowClock.visible(item,at);
     }
+    for(const node of layer.querySelectorAll('.show-clay-box')){const item=timelineItem('clay:'+node.dataset.clayBox);node.hidden=!editing||!item||at<item.at||at>=item.at+item.duration;}
     const clipFrame=layer.querySelector('[data-cutout-frame]');
     if(clipFrame&&editing){const item=timelineItem(clipFrame.dataset.cutoutFrame);const url=item&&clipFrameUrl(item);if(url&&clipFrame.getAttribute('src')!==url)clipFrame.setAttribute('src',url);}
     window.ShowLiveCaptions?.sync({scene,at,video:$('#showStageVideo'),projectId:review.project_id,revision:review.caption_revision,
@@ -1566,6 +1567,36 @@
     const label=item.kind==='clip'?`${escape(p.name||'Clip')} · drag to move, corner to resize, edges to crop`:'Moving cutout · drag to move';
     return `<div class="show-cutout-box" data-cutout-id="${item.id}" style="left:${((1-scale)/2+x)*100}%;top:${(1-scale+y)*100}%;width:${scale*100}%;height:${scale*100}%">${frame}${ShowGeometry.handles(p)}<small>${label}</small><span class="show-resize" data-cutout-resize="${item.id}"></span></div>`;
   }
+  // A Clay window or thought bubble shows its picture on the stage: drag to move, corner to resize.
+  function clayHandles(){
+    const item=timelineItem(selectedEffect),p=item?.clay;
+    if(!p||p.enabled===false||!timelineDialog?.open||!['pip','bubble'].includes(p.mode))return '';
+    const size=p.size??(p.mode==='pip'?.34:.32),x=p.x??.21,y=p.y??(p.mode==='pip'?.27:.24);
+    return `<div class="show-cutout-box show-clay-box" data-clay-box="${escape(p.id)}" style="left:${(x-size/2)*100}%;top:${(y-size/2)*100}%;width:${size*100}%;height:${size*100}%">
+      <img class="show-cutout-frame" alt="" draggable="false" src="/api/v1/show/clay/placements/${encodeURIComponent(p.id)}/picture?w=480&r=${encodeURIComponent(p.story||'')}">
+      <small>Clay · ${p.mode==='pip'?'small window':'thought bubble'} · drag to move, corner to resize</small><span class="show-resize" data-clay-resize="${escape(p.id)}"></span></div>`;
+  }
+  let clayDrag=null;
+  document.addEventListener('pointerdown',event=>{
+    const box=event.target.closest?.('[data-clay-box]');if(!box)return;
+    const scene=currentScene(),item=timelineItem('clay:'+box.dataset.clayBox);if(!item?.clay)return;
+    event.preventDefault();event.stopPropagation();try{box.setPointerCapture(event.pointerId);}catch{}
+    const p=item.clay;
+    clayDrag={scene,p,box,bounds:$('#showStageLayer').getBoundingClientRect(),x:event.clientX,y:event.clientY,size:p.size??.34,cx:p.x??.21,cy:p.y??.27,resize:!!event.target.closest('[data-clay-resize]')};
+  },true);
+  document.addEventListener('pointermove',event=>{
+    const d=clayDrag;if(!d)return;
+    const dx=(event.clientX-d.x)/d.bounds.width,dy=(event.clientY-d.y)/d.bounds.height;
+    const size=d.resize?Math.max(.1,Math.min(1,d.size+dx*2)):d.size,x=d.resize?d.cx:Math.max(0,Math.min(1,d.cx+dx)),y=d.resize?d.cy:Math.max(0,Math.min(1,d.cy+dy));
+    d.changes={size:Math.round(size*1000)/1000,x:Math.round(x*1000)/1000,y:Math.round(y*1000)/1000};
+    Object.assign(d.box.style,{left:(x-size/2)*100+'%',top:(y-size/2)*100+'%',width:size*100+'%',height:size*100+'%'});
+  });
+  document.addEventListener('pointerup',async()=>{
+    const d=clayDrag;if(!d)return;clayDrag=null;if(!d.changes)return;
+    try{await timelineEdit(d.scene,async()=>{Object.assign(d.p,d.changes);await saveClay(d.scene);});drawOverlays(currentScene());showToast('Clay placed. Preview the scene to see it with its crayon frame.');}
+    catch(error){showToast(error.message,true);drawOverlays(currentScene());}
+  });
+
   let geometryDrag=null;
   document.addEventListener('pointerdown',event=>{
     const host=event.target.closest?.('.show-overlay,.show-picture-placement,.show-cutout-box');
@@ -2045,7 +2076,7 @@
       const item = library.find((entry) => entry.path === overlay.asset);
       return `<div class="show-overlay ${selectedOverlay === index || selectedEffect==='sticker:'+overlay.id ? "selected" : ""}" data-overlay="${index}" style="left:${overlay.x}%;top:${overlay.y}%;width:${overlay.width}%">
         <img src="${item ? item.url : `/api/v1/show/library/file?path=${encodeURIComponent(overlay.asset)}`}" alt="" draggable="false" style="${shapeStyle(overlay)}">${ShowGeometry.handles(overlay)}<span class="show-resize" data-resize="${index}"></span></div>`;
-    }).join("") + cutoutHandles() + steamHandles(scene);
+    }).join("") + cutoutHandles() + clayHandles() + steamHandles(scene);
     liveDrawings(scene);
     syncPlayback();
   }

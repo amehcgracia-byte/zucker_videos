@@ -2295,6 +2295,32 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         edited moments each placement reaches)."""
         return jsonify(_clay_state(_require_project(state)))
 
+    @app.get("/api/v1/show/clay/placements/<placement_id>/picture")
+    def api_show_clay_picture(placement_id: str) -> Response:
+        """A Clay placement's picture (its first pose, or at story second ``t``), to see and place
+        it on the stage."""
+        import numpy as np
+        from PIL import Image
+        from core.show_clay import ClayStore, STORE
+        project = _require_project(state)
+        if not (project.folder / "show_studio" / STORE).is_file():
+            return error_response("not_found", "This Show has no clay", 404)
+        store = ClayStore(project.folder)
+        placement = next((p for p in store.load().get("placements") or [] if p.get("id") == placement_id), None)
+        if placement is None:
+            return error_response("not_found", "That clay placement is not in this Show", 404)
+        try:
+            story = store.load_story(str(placement.get("story") or ""))
+            width = int(min(960, max(160, int(request.args.get("w", 480)))))
+            t = float(request.args.get("t", float(placement.get("start") or 0) + 0.2))
+            picture = np.asarray(story.picture(t, width, width * 9 // 16)).astype(np.uint8)
+        except (ValueError, KeyError, OSError, TypeError) as exc:
+            return error_response("clay_unavailable", str(exc)[:300], 404)
+        output = io.BytesIO()
+        Image.fromarray(picture).save(output, "PNG")
+        output.seek(0)
+        return send_file(output, mimetype="image/png", max_age=600)
+
     @app.post("/api/v1/show/references/open")
     def api_show_reference_open() -> Response:
         import webbrowser
