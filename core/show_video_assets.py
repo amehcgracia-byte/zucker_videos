@@ -228,7 +228,11 @@ def import_media(project, stream, filename, ffprobe, ffmpeg):
                 pending.unlink();converted.replace(pending)
                 digest=hashlib.sha256(pending.read_bytes());ext='.mp3'
             finally:converted.unlink(missing_ok=True)
-        kind='video' if video else 'audio';sha=digest.hexdigest();target=folder/('local-'+sha+ext)
+        kind='video' if video else 'audio';sha=digest.hexdigest()
+        # Named after the original file, with part of its content code (the same bytes are kept once).
+        from core.media_names import find_coded,unique_file
+        target=folder/('local-'+sha+ext)
+        if not target.exists():target=find_coded(folder,sha[:16],ext) or unique_file(folder,Path(filename).stem,sha[:16],ext)
         if target.exists():pending.unlink()
         else:pending.replace(target)
         preview=target

@@ -62,6 +62,17 @@ def media_title(path: Path, fallback: str = "") -> str:
         return fallback
 
 
+def _info_title(work: Path) -> str:
+    for info in work.glob("*.info.json"):
+        try:
+            title = str(json.loads(info.read_text()).get("title") or "").strip()
+        except (OSError, ValueError, TypeError):
+            continue
+        if title:
+            return title
+    return ""
+
+
 def _save_title(work: Path, target: Path, url: str) -> None:
     for info in work.glob("*.info.json"):
         try:
@@ -82,9 +93,11 @@ def download(project, reference: dict[str, Any], ffmpeg: str) -> Path:
         raise ValueError("Choose an end after the start (seconds)")
     if end - start > MAX_SECONDS:
         raise ValueError(f"Download at most {MAX_SECONDS:.0f} seconds of a clip")
+    from core.media_names import find_coded, unique_file
+    made = find_coded(folder(project), str(reference["id"]), ".mp4")   # made once (old "clip-<id>" names too)
+    if made is not None:
+        return made
     target = folder(project) / f"clip-{reference['id']}.mp4"
-    if target.is_file():
-        return target
     target.parent.mkdir(parents=True, exist_ok=True)
     work = target.parent / f".{target.stem}.part"
     shutil.rmtree(work, ignore_errors=True)
@@ -112,6 +125,9 @@ def download(project, reference: dict[str, Any], ffmpeg: str) -> Path:
                         "-vf", "fps=30,format=yuv420p", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
                         "-c:a", "aac", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", str(evened)],
                        check=True, capture_output=True, timeout=180)
+        title = _info_title(work)
+        if title:                                           # named after the video, the code keeps it unique
+            target = unique_file(target.parent, title, str(reference["id"]), ".mp4")
         evened.replace(target)
         _save_title(work, target, url)
     finally:
@@ -129,8 +145,10 @@ def download_audio(project,reference,ffmpeg):
     """Download only the chosen interval's audio; persist MP3, not the source video."""
     url=check_link(reference.get('url'));start,end=float(reference['start']),float(reference['end'])
     if not 0<=start<end or end-start>MAX_SECONDS:raise ValueError('Choose up to 30 seconds after the source start')
+    from core.media_names import find_coded
+    made=find_coded(folder(project),str(reference['id']),'.mp3')
+    if made is not None:return made
     target=folder(project)/f"audio-{reference['id']}.mp3"
-    if target.is_file():return target
     target.parent.mkdir(parents=True,exist_ok=True)
     import tempfile
     with tempfile.TemporaryDirectory(prefix='.audio-download-',dir=target.parent) as temp:
@@ -149,6 +167,10 @@ def download_audio(project,reference,ffmpeg):
         if source is None:raise ValueError('The download returned no playable audio')
         from core.audio_import import mp3
         mp3(source,work/'ready.mp3',ffmpeg)
+        title=_info_title(work)
+        if title:
+            from core.media_names import unique_file
+            target=unique_file(target.parent,title,str(reference['id']),'.mp3')
         (work/'ready.mp3').replace(target)
         _save_title(work, target, url)
     return target

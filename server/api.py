@@ -2695,13 +2695,19 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             params=record.get('params') or {}
             key=json.dumps([record['path'],record.get('matte','none'),*[params.get(k) for k in ('clip_start','person_style','picture','person_scale','person_offset')]],sort_keys=True)
             unique.setdefault(key,record)
-        return jsonify(items=list(unique.values()))
+        return jsonify(items=[_named_media(record,'Video') for record in unique.values()])
+
+    def _named_media(record,label):
+        """A library record with a name people recognise (title, original file, words), never a code."""
+        from core.media_names import clip_name
+        params={**(record.get('params') or {}),'name':record.get('name'),'clip':record.get('path')}
+        return {**record,'name':clip_name(params,kind_label=label)}
 
     @app.get('/api/v1/show/audio-library')
     @_proposals_locked
     def api_show_audio_library():
         records=_show_media_catalog(_require_project(state))
-        return jsonify(items=[r for r in records.values() if r.get('media_kind')=='audio'])
+        return jsonify(items=[_named_media(r,'Audio') for r in records.values() if r.get('media_kind')=='audio'])
 
     media_thumbnail_slots=threading.Semaphore(2)
     @app.get('/api/v1/show/video-library/<asset_id>/thumbnail')
@@ -3246,6 +3252,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         app's recurring shelves, the flyer library and Einstein's images. The painters' own
         caches are listed hidden; other projects' libraries are listed apart."""
         from core import show_library
+        from core.media_names import coded, readable
         items = []
         try:
             recurring = show_library.recurring_root()
@@ -3300,6 +3307,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             item.update(origin=origin, retired=not show_library.visible(meta, item["path"], approved, default_hidden=cache),
                         approved=item["path"] in approved)
             item["name"] = meta.get("name") or item["name"]
+            if coded(item["name"]):                      # a code is not a name: what is left, or what it is
+                kind = next((word for word in ("reference", "background", "cutout", "layer", "out", "image") if word in item["name"].lower()), "")
+                item["name"] = readable(item["name"]) or {"out": "Edited picture", "image": "Picture", "layer": "Picture layer"}.get(kind, kind.capitalize() or "Picture")
+                item["name"] = {"cutout": "Cut-out", "reference": "Reference picture", "background": "Background picture"}.get(item["name"].lower(), item["name"])
         listed_paths.update((str(project.folder), item["path"]) for item in items)
         return items
 
@@ -4480,8 +4491,28 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             shots = []
         face = "right" if sum((shot.get("focus") or [0.5])[0] for shot in shots) / max(1, len(shots)) >= 0.5 else "left"
         out = []
+        from core.media_names import clip_name, coded
+        labels = {"clip": "Clip", "jingle": "Audio", "background": "Background", "steam": "Texture"}
+        library_names = None
         for item in items:
             params = item.get("params") or {}
+            if item.get("kind") in labels and (not params.get("name") or coded(str(params.get("name")))):
+                # The timeline shows what each clip is (its title, the file it came from, its words),
+                # not "Video clip" on every row.
+                if library_names is None:
+                    try:
+                        from core import show_video_assets           # read only: the names given at import
+                        library_names = {str(record.get("path")): record.get("name") for record in show_video_assets.catalog(project).values()
+                                         if record.get("name") and not coded(str(record.get("name")))}
+                    except Exception:
+                        library_names = {}
+                media = str(params.get("clip") or params.get("source") or params.get("path") or "")
+                name = library_names.get(media) or clip_name(params, kind_label=labels[item["kind"]])
+                if name == labels[item["kind"]]:
+                    at = float(item.get("at") or 0)
+                    name = f"{name} at {int(at // 60)}:{int(at % 60):02d}"
+                params = {**params, "name": name}
+                item = {**item, "params": params}
             if item.get("kind") in ("drawing", "word") and params.get("picture"):
                 try:
                     with Image.open(params["picture"]) as picture:
