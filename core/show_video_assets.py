@@ -86,6 +86,37 @@ def detect_green(path):
     return len(votes) >= 2 and sum(votes) >= 2
 
 
+def detect_background(path):
+    """How a clip's plain background is removed automatically: ("green", None) for a green
+    screen, ("plain", key) for blue, another strong colour or black (core.plain_key), or
+    ("none", None) when it has no plain background."""
+    if detect_green(path):
+        return "green", None
+    from core import plain_key
+    frames = plain_key.sample_frames(path, size=(320, 180))
+    from core.media_framing import active_rectangle
+    bars = active_rectangle(frames)                     # letterbox/pillarbox bars are not a background
+    if bars and (bars[2], bars[3]) != (frames[0].shape[1], frames[0].shape[0]):
+        x, y, w, h = bars
+        frames = [frame[y:y + h, x:x + w] for frame in frames]
+    key = plain_key.find(frames)
+    if key and key["kind"] == "black":
+        # Light, fire, smoke or sparks on black: the light-footage blend. Not a person on a dark
+        # stage (a black jacket touching the edge would go with the background).
+        return ("none", None) if _faces(frames) else ("black", None)
+    return ("plain", key) if key else ("none", None)
+
+
+def _faces(frames):
+    from core.show_framing import face_detectors
+    for rgb in frames:
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        for detector, neighbours in face_detectors():
+            if len(detector.detectMultiScale(gray, 1.1, neighbours, minSize=(18, 18))):
+                return True
+    return False
+
+
 @_catalog_locked
 def remember(project, item):
     """Recipes reference an existing project-owned clip; never duplicate its bytes."""
@@ -158,6 +189,10 @@ class VideoLayer:
             mask=cv2.resize(np.asarray(self.masks[i],dtype=np.float32)/255,(w,h))[...,None]
         elif self.raw.get('matte')=='opaque':
             mask=np.ones((h,w,1),np.float32)
+        elif self.raw.get('matte')=='plain' and self.raw.get('key'):
+            from core import plain_key
+            matte=plain_key.alpha(rgb,self.raw['key'])
+            rgb=plain_key.despill(rgb,matte,self.raw['key']);mask=matte[...,None]
         else:
             mask=(black_alpha(rgb) if self.raw.get("matte") in ("black","green-light") else green_alpha(rgb))[...,None]
         behind=self.background.at(local) if hasattr(self.background,'at') else self.background

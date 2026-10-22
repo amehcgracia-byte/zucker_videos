@@ -2476,8 +2476,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                     if item["id"] in scene["effects"]:
                         _invalidate_scene(project, scene["id"])
         item['params']['name']=show_clips.media_title(clip,reference.get('title') or reference['url'])
-        from core.show_video_assets import detect_green, remember
-        item['params']['matte']='green' if detect_green(clip) else 'none'
+        from core.show_video_assets import detect_background, remember
+        # A plain background (green, blue, another strong colour, black) goes automatically.
+        matte,key=detect_background(clip)
+        item['params']['matte']=matte
+        if key:item['params']['key']=key
+        else:item['params'].pop('key',None)
         if body.get('texture'):
             from core.show_textures import PRESETS
             texture=str(body['texture'])
@@ -2861,8 +2865,17 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             start=float(body.get('clip_start',item['params'].get('clip_start') or 0))
             if not math.isfinite(start) or not 0<=start<float(item['params']['clip_length']):raise ValueError('Choose a position inside the downloaded clip')
             matte=body.get('matte',item['params'].get('matte','none'))
-            if matte not in ('auto','none','green','green-light','black','person'):raise ValueError('Choose a background removal mode')
-            if matte=='auto':matte='green' if detect_green(item['params']['clip']) else 'none'
+            if matte not in ('auto','none','green','green-light','black','person','plain'):raise ValueError('Choose a background removal mode')
+            from core.show_video_assets import detect_background
+            key=item['params'].get('key')
+            if matte in ('auto','plain'):
+                found,found_key=detect_background(item['params']['clip'])
+                if matte=='plain' and found=='none':
+                    from core import plain_key                      # asked for: white backgrounds too
+                    found_key=plain_key.find(plain_key.sample_frames(item['params']['clip']),allow_white=True)
+                    found='plain' if found_key else 'none'
+                    if found=='none':raise ValueError('This clip has no plain background to remove; try Cut out the moving person')
+                matte,key=found,found_key
             if matte=='person':
                 from core.show_backgrounds import available
                 if not available():raise ValueError('Moving person cutouts need macOS 12 or later')
@@ -2870,6 +2883,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             audio_mode=body.get('audio_mode',item['params'].get('audio_mode','own'))
             if audio_mode not in ('own','mix','mute'):raise ValueError('Choose mixed, own sound or mute')
             item['params'].update(clip_start=start,matte=matte,audio_mode=audio_mode,clip_audio=body.get('clip_audio',item['params'].get('clip_audio',True)))
+            if matte=='plain' and key:item['params']['key']=key
+            else:item['params'].pop('key',None)
             item['duration']=min(item['duration'],float(item['params']['clip_length'])-start)
             show_proposals.save(path,stored['proposals'],**{k:v for k,v in stored.items() if k not in ('proposals','version')})
             remember(project,item);_effect_changed(project,proposal_id)
@@ -4416,13 +4431,15 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not kept["cutout"]:
             from core import show_characters
             mask = show_characters.green_screen_mask(kept["path"])
+            if mask is None:
+                mask = show_characters.plain_screen_mask(kept["path"])     # blue, another strong colour, black
             if mask is not None:
                 original = kept["path"]
                 with Image.open(original).convert("RGBA") as picture:
                     import numpy as np
                     picture.putalpha(Image.fromarray((mask * 255).astype(np.uint8)))
                     output = io.BytesIO(); picture.save(output, "PNG")
-                kept = _keep_picture(project, output.getvalue(), f"{Path(original).stem} transparent.png", origin="Your picture · green screen removed", cut_out=True)
+                kept = _keep_picture(project, output.getvalue(), f"{Path(original).stem} transparent.png", origin="Your picture · background removed", cut_out=True)
                 kept["original"] = original
         if not kept["cutout"] and kept["path"] not in picture_masks:
             from core import show_characters
