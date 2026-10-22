@@ -139,6 +139,7 @@ def mix(video: Path, jingles: list[dict[str, Any]], output: Path, *, ffmpeg: str
         chains.append(f"[{index}:a]atrim=start={start:.3f}:duration={length * speed:.3f},asetpts=PTS-STARTPTS,{tempo}"
                       f"aformat=sample_rates=48000:channel_layouts=stereo,afade=t=in:d={fade:.3f},"
                       f"afade=t=out:st={max(0.0, length - fade):.3f}:d={fade:.3f},volume={float(item.get('volume') if item.get('volume') is not None else 0.8):.3f},"
+                      f"{'alimiter=limit=0.5:attack=5:release=150:level=disabled,' if item.get('tame_peaks') else ''}"
                       f"adelay={delay}|{delay}[j{index}]")
         ducks.append((at, at + length, float(item.get("duck") if item.get("duck") is not None else 0.5)))
     host = "[0:a]aformat=sample_rates=48000:channel_layouts=stereo"

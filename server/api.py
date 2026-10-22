@@ -2545,12 +2545,34 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if item['kind'] not in ('clip','jingle','character') or item['status']=='discarded':continue
             p=item['params'];raw=p.get('clip') or p.get('path') or (p.get('voice') or {}).get('source')
             if not raw:continue
-            tracks.append({'id':item['id'],'kind':item['kind'],'name':p.get('name') or p.get('title') or Path(raw).stem,
+            from core.media_names import clip_name, sidecar_url
+            url=str(p.get('url') or p.get('source_url') or sidecar_url(raw) or '')
+            tracks.append({'id':item['id'],'kind':item['kind'],'name':clip_name({**p,'clip':raw},kind_label={'clip':'Clip','jingle':'Music','character':'Voice'}[item['kind']]),
+                'source':_track_source(item['kind'],url,p),
                 'volume':p.get('audio_volume',1.) if item['kind']=='clip' else p.get('volume',.8 if item['kind']=='jingle' else 1.),
                 'mode':('mute' if p.get('clip_audio') is False else p.get('audio_mode','mix' if p.get('matte','none')!='none' else 'own')) if item['kind']=='clip' else p.get('audio_mode','own') if item['kind']=='character' else 'mix',
-                'under_voice':p.get('under_voice',False),'at':item['at'],'duration':item['duration']})
-        tracks.extend(show_audio.overlay_tracks(project))
+                'under_voice':p.get('under_voice',False),'at':item['at'],'duration':item['duration'],'tamed':bool(p.get('tame_peaks'))})
+        tracks.extend({**track,'source':'voice'} for track in show_audio.overlay_tracks(project))
+        # Each channel says which scene it plays in (S3), so the desk reads in order.
+        try:
+            from core import show_scenes
+            scenes=show_scenes.load(_scene_files(project))['scenes']
+            for track in tracks:
+                index=next((n for n,scene in enumerate(scenes,1) if scene['start']<=track['at']<scene['end']),None)
+                if index:track['scene']=f'S{index}'
+        except (OSError,ValueError,KeyError):
+            pass
+        tracks.sort(key=lambda track:track['at'])
         return jsonify(settings=plan['audio_settings'],words=plan['audio_censor_spans'],noise=plan.get('noise_report') or {'status':'not_analyzed'},tracks=tracks)
+
+    def _track_source(kind,url,params):
+        """What a sound channel is, for its small badge: a video from a link (which site), a file,
+        music, or a voice."""
+        if kind=='character':return 'voice'
+        host=url.split('//',1)[-1].split('/',1)[0].removeprefix('www.').removeprefix('m.') if url else ''
+        site={'youtube.com':'YouTube','youtu.be':'YouTube','tiktok.com':'TikTok','vimeo.com':'Vimeo','instagram.com':'Instagram'}.get(host,host.split('.')[0].capitalize() if host else '')
+        if kind=='jingle':return f'link:{site}' if site else 'music'
+        return f'link:{site}' if site else 'file'
 
     @app.patch('/api/v1/show/audio')
     def api_show_audio_settings():

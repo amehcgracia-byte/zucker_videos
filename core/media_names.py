@@ -66,6 +66,16 @@ def sidecar_title(path: str | Path) -> str:
     return ""
 
 
+def sidecar_url(path: str | Path) -> str:
+    """The link a downloaded file came from, kept beside it (a version with your face: its original's)."""
+    try:
+        return str(json.loads(Path(str(path) + ".json").read_text(encoding="utf-8")).get("source_url") or "").strip()
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    match = re.match(r"(.+)-face-[0-9a-f]+(\.\w+)$", str(path or ""))
+    return sidecar_url(match.group(1) + match.group(2)) if match else ""
+
+
 def clip_name(params: dict[str, Any], *, kind_label: str = "Clip") -> str:
     """What a clip (or any timeline media) is called: its name, the downloaded video's title,
     the original file's name, then the words it sits on; never a code."""

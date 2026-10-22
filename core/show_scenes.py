@@ -225,7 +225,7 @@ def overlay_items(document: dict[str, Any], frame_aspect: float = 16 / 9) -> lis
                         items.append({'jingle':voice[0],'at':item['at'],'duration':min(float(voice[2]),item['duration']),
                                       'start':float(voice[1]),'volume':volume if mode=='mix' else 0.,
                                       'duck':0. if mode=='silent' else 1.,'fade':.02,
-                                      'under_voice':bool(overlay.get('under_voice',False))})
+                                      'under_voice':bool(overlay.get('under_voice',False)),**({'tame_peaks':True} if overlay.get('tame_peaks') else {})})
                         continue
                     # It enters at once, rising from below, or the camera pushes in on it.
                     entrance = overlay.get("entrance") if overlay.get("entrance") in ENTRANCES else "cut"
@@ -235,7 +235,8 @@ def overlay_items(document: dict[str, Any], frame_aspect: float = 16 / 9) -> lis
                     push = entrance == "zoom"
                     items.append({"insert": "character", "at": item["at"], "source": "host", "entrance": entrance,
                                   "zoom": PUSH_ZOOM if push else 1.0, "focus": [x, y] if push else [0.5, 0.5],
-                                  "zoom_sec": PUSH_SEC if push else 0, "voice": voice, "overlays": [sticker], "volume":volume})
+                                  "zoom_sec": PUSH_SEC if push else 0, "voice": voice, "overlays": [sticker], "volume":volume,
+                                  **({"tame_peaks": True} if overlay.get("tame_peaks") else {})})
                     continue
             items.append(item)
     return items

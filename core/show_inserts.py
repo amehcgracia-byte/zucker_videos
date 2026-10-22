@@ -127,6 +127,25 @@ def load_still(source: str | Path, at: float | None, ffmpeg: str, *, allow_dark:
     return picture
 
 
+def tame_peaks(samples: np.ndarray, ceiling: float = 0.5, rate: int = 48000) -> np.ndarray:
+    """A limiter: sudden loud moments (an explosion, a shout) brought down to ``ceiling``
+    smoothly, the rest untouched (10 ms look, 150 ms release)."""
+    if samples is None or not len(samples):
+        return samples
+    window = max(1, int(rate * 0.01))
+    count = len(samples) // window + (1 if len(samples) % window else 0)
+    padded = np.zeros((count * window, samples.shape[1]), np.float32)
+    padded[:len(samples)] = samples
+    peaks = np.abs(padded).reshape(count, window, -1).max(axis=(1, 2))
+    wanted = np.minimum(1.0, ceiling / np.maximum(peaks, 1e-6))
+    gain, level = np.empty(count, np.float32), 1.0
+    release = 1 - np.exp(-0.01 / 0.15)
+    for index, target in enumerate(wanted):
+        level = target if target < level else level + (target - level) * release
+        gain[index] = level
+    return (padded * np.repeat(gain, window)[:, None])[:len(samples)].astype(np.float32)
+
+
 SPEEDS = (0.1, 2.0)            # a clip's speed: 10 % (slow motion) to 200 %
 
 
@@ -287,6 +306,7 @@ def load_clip(raw: dict[str, Any], width: int, height: int, fps: float, ffmpeg: 
     insert = Insert(at=float(raw["at"]), still=still, width=width, height=height, fps=fps, zoom=1.0,
                     zoom_frames=0, hold_frames=frame_count, voice=voice, entrance="cut")
     if insert.voice is not None:insert.voice*=float(raw.get('audio_volume',1.))
+    if insert.voice is not None and raw.get('tame_peaks'):insert.voice=tame_peaks(insert.voice)
     insert.clip = clip
     insert.envelope = np.zeros(frame_count, dtype=np.float32)
     return insert
@@ -337,6 +357,7 @@ def load_insert(raw: dict[str, Any], width: int, height: int, fps: float, ffmpeg
                 sticker.envelope = speaking
             insert.overlays.append(sticker)
     if insert.voice is not None:insert.voice*=float(raw.get('volume',1.))
+    if insert.voice is not None and raw.get('tame_peaks'):insert.voice=tame_peaks(insert.voice)
     return insert
 
 
