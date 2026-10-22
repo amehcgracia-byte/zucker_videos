@@ -30,3 +30,24 @@ def test_new_files_start_with_their_title_and_old_ones_are_still_found(tmp_path)
     old.write_bytes(b"x")
     assert find_coded(tmp_path, "0892d82d9183a1eb2064", ".mp4") == old
     assert find_coded(tmp_path, "nothing", ".mp4") is None
+
+
+def test_a_version_with_your_face_has_its_originals_title(tmp_path):
+    from core.media_names import sidecar_title
+    (tmp_path / "clip-4f7afe01c78c291ebd66.mp4.json").write_text(json.dumps({"title": "Brad Pitt Wins Best Supporting Actor"}))
+    assert sidecar_title(tmp_path / "clip-4f7afe01c78c291ebd66-face-ae4dc40f.mp4") == "Brad Pitt Wins Best Supporting Actor · your face"
+
+
+def test_the_same_video_under_different_links_is_one_video(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from core import show_clips, show_video_assets
+    assert show_clips.video_key("https://youtu.be/IaaOhY9ivI0?t=3") == show_clips.video_key("https://www.youtube.com/watch?v=IaaOhY9ivI0&list=X")
+    assert show_clips.video_key("https://www.youtube.com/shorts/_hCMeI_BAyY") == "youtube:_hCMeI_BAyY"
+    kept = tmp_path / "clip-a.mp4"
+    kept.write_bytes(b"x")
+    monkeypatch.setattr(show_video_assets, "catalog", lambda project: {"a": {"path": str(kept), "url": "https://www.youtube.com/watch?v=IaaOhY9ivI0",
+                                                                         "params": {"source_start": 174.0, "clip_length": 30.0}}})
+    project = SimpleNamespace(folder=tmp_path)
+    assert show_clips.reuse(project, {"url": "https://youtu.be/IaaOhY9ivI0", "start": 180, "end": 190}) == (kept, 6.0)
+    assert show_clips.reuse(project, {"url": "https://youtu.be/IaaOhY9ivI0", "start": 200, "end": 210}) is None   # not covered
+    assert show_clips.reuse(project, {"url": "https://youtu.be/other", "start": 180, "end": 190}) is None

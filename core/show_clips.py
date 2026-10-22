@@ -84,6 +84,77 @@ def _save_title(work: Path, target: Path, url: str) -> None:
             break
 
 
+def video_key(url: str) -> str:
+    """The same online video under its different links (watch?v=, shorts/, youtu.be/, extra
+    parameters) has one key."""
+    from urllib.parse import parse_qs, urlparse
+    try:
+        parsed = urlparse(str(url or "").strip())
+    except ValueError:
+        return str(url or "")
+    host = parsed.netloc.lower().removeprefix("www.").removeprefix("m.")
+    if host in ("youtube.com", "music.youtube.com"):
+        video = parse_qs(parsed.query).get("v", [""])[0] or next((part for part in parsed.path.split("/")[2:3] if parsed.path.startswith(("/shorts/", "/embed/", "/live/"))), "")
+        if video:
+            return f"youtube:{video}"
+    if host == "youtu.be" and parsed.path.strip("/"):
+        return f"youtube:{parsed.path.strip('/').split('/')[0]}"
+    return f"{host}{parsed.path.rstrip('/')}"
+
+
+def fetch_title(url: str) -> str:
+    """The online video's title (metadata only: nothing is downloaded)."""
+    from yt_dlp import YoutubeDL
+    options = {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True, "socket_timeout": 15, "retries": 1}
+    browser = browser_setting()
+    if browser:
+        options["cookiesfrombrowser"] = (browser,)
+    with YoutubeDL(options) as ydl:
+        info = ydl.extract_info(check_link(url), download=False) or {}
+    return str(info.get("title") or "").strip()
+
+
+def name_downloads(files: dict[str, list[str]]) -> int:
+    """Titles for downloads saved before titles were kept: ``{url: [file, …]}``. Each title is
+    written beside its files (``<file>.json``); returns how many were found."""
+    found = 0
+    for url, paths in files.items():
+        try:
+            title = fetch_title(url)
+        except Exception:  # offline, removed video, a site that wants a sign-in…
+            continue
+        if not title:
+            continue
+        for path in paths:
+            sidecar = Path(str(path) + ".json")
+            try:
+                data = json.loads(sidecar.read_text()) if sidecar.is_file() else {}
+            except (OSError, ValueError):
+                data = {}
+            if not data.get("title"):
+                sidecar.write_text(json.dumps({**data, "title": title, "source_url": data.get("source_url") or url}, ensure_ascii=False))
+        found += 1
+    return found
+
+
+def reuse(project, reference: dict[str, Any]) -> tuple[Path, float] | None:
+    """A download of the same video that already covers the chosen seconds, and where they
+    start in it: the same video is not downloaded again for another moment inside it."""
+    from core import show_video_assets
+    key, start, end = video_key(reference.get("url") or ""), float(reference["start"]), float(reference["end"])
+    best = None
+    for record in show_video_assets.catalog(project).values():
+        params = record.get("params") or {}
+        path = Path(str(record.get("path") or ""))
+        if video_key(record.get("url") or params.get("url") or "") != key or record.get("face_swapped") or not path.is_file():
+            continue
+        begins = float(params.get("source_start") or 0.0)
+        length = float(params.get("clip_length") or record.get("duration") or 0.0)
+        if begins - 0.05 <= start and end <= begins + length + 0.05:
+            best = best or (path, round(max(0.0, start - begins), 3))
+    return best
+
+
 def download(project, reference: dict[str, Any], ffmpeg: str) -> Path:
     """The reference's interval as a file in the project (made once; the same one is reused)."""
     ffmpeg=shutil.which(ffmpeg) or ffmpeg

@@ -2409,9 +2409,16 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             except (ValueError,TypeError):return error_response('invalid_duration','Choose a positive timeline duration',400)
         tools = tool_status()
         try:
-            download=show_clips.download_audio if body.get("audio_only") else show_clips.download
-            clip = download(project, reference, str(tools.get("ffmpeg_path") or "ffmpeg"))
+            offset = 0.0
+            reused = None if body.get("audio_only") else show_clips.reuse(project, reference)
+            if reused:                                     # already downloaded: the same file, from the right second
+                clip, offset = reused
+            else:
+                download=show_clips.download_audio if body.get("audio_only") else show_clips.download
+                clip = download(project, reference, str(tools.get("ffmpeg_path") or "ffmpeg"))
             length = show_clips.length(clip, str(tools.get("ffprobe_path") or "ffprobe"))
+            if reused:
+                length = round(min(length - offset, float(reference["end"]) - float(reference["start"])), 3)
         except ValueError as exc:
             return error_response("invalid_reference", str(exc), 400)
         except (RuntimeError, OSError, subprocess.CalledProcessError) as exc:
@@ -2445,12 +2452,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if replacing:
             replacing['kind']='clip'
             replacing['status']='approved'
-            replacing['params'].update(clip=str(clip),clip_start=0.,clip_length=length,reference=reference_id,url=reference['url'],source_start=reference['start'])
+            replacing['params'].update(clip=str(clip),clip_start=offset,clip_length=length,reference=reference_id,url=reference['url'],source_start=reference['start'])
         item = replacing or next((entry for entry in stored["proposals"] if entry["kind"] == "clip" and entry["params"].get("reference") == reference_id
                      and entry["status"] != "discarded"), None)
         if item is None:
             item = show_proposals.proposal("clip", float(reference.get("at") or 0.0), length, reason=f"Clip from {reference['url']}",
-                                           clip=str(clip), clip_start=0.0, clip_length=length, reference=reference_id,
+                                           clip=str(clip), clip_start=offset, clip_length=length, reference=reference_id,
                                            url=reference["url"], source_start=reference["start"], selected_text=reference.get("selected_text", ""))
             item["status"] = "approved"          # chosen and downloaded by the person, like a picture they place
             stored["proposals"].append(item)
@@ -2695,7 +2702,37 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             params=record.get('params') or {}
             key=json.dumps([record['path'],record.get('matte','none'),*[params.get(k) for k in ('clip_start','person_style','picture','person_scale','person_offset')]],sort_keys=True)
             unique.setdefault(key,record)
-        return jsonify(items=[_named_media(record,'Video') for record in unique.values()])
+        # One entry per video (two at most: the complete one and a cut-out), not every saved
+        # copy: the newest of each.
+        from core.show_clips import video_key
+        shown,kept={},[]
+        for record in reversed(list(unique.values())):
+            who=video_key(record.get('url') or (record.get('params') or {}).get('url') or '') if (record.get('url') or (record.get('params') or {}).get('url')) else record['path']
+            kind='cutout' if record.get('transparent') else 'complete'
+            if (who,kind) in shown or sum(1 for w,_ in shown if w==who)>=2:continue
+            shown[(who,kind)]=True;kept.append(record)
+        _titles_soon(unique.values())
+        return jsonify(items=[_named_media(record,'Video') for record in reversed(kept)])
+
+    titles_asked: set[str] = set()
+    titles_lock = threading.Lock()
+
+    def _titles_soon(records):
+        """Downloads saved before titles were kept get their video's title in the background
+        (metadata only, once per link); the next listing shows it."""
+        from core.media_names import sidecar_title
+        from core import show_clips
+        wanted: dict[str, list[str]] = {}
+        for record in records:
+            url = record.get('url') or (record.get('params') or {}).get('url')
+            path = str(record.get('path') or '')
+            if url and path and Path(path).is_file() and not sidecar_title(path):
+                wanted.setdefault(url, []).append(path)
+        with titles_lock:
+            wanted = {url: paths for url, paths in wanted.items() if url not in titles_asked}
+            titles_asked.update(wanted)
+        if wanted:
+            threading.Thread(target=show_clips.name_downloads, args=(wanted,), daemon=True, name='zucker-video-titles').start()
 
     def _named_media(record,label):
         """A library record with a name people recognise (title, original file, words), never a code."""

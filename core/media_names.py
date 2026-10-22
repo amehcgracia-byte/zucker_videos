@@ -53,11 +53,17 @@ def readable(name: str) -> str:
 
 
 def sidecar_title(path: str | Path) -> str:
-    """The title kept beside a downloaded file (``<file>.json``), if any."""
+    """The title kept beside a downloaded file (``<file>.json``), if any; a version with your
+    face (``<clip>-face-<code>.mp4``) has its original's title, marked."""
     try:
         return str(json.loads(Path(str(path) + ".json").read_text(encoding="utf-8")).get("title") or "").strip()
     except (OSError, ValueError, TypeError, AttributeError):
-        return ""
+        pass
+    match = re.match(r"(.+)-face-[0-9a-f]+(\.\w+)$", str(path or ""))
+    if match:
+        title = sidecar_title(match.group(1) + match.group(2))
+        return f"{title} · your face" if title else ""
+    return ""
 
 
 def clip_name(params: dict[str, Any], *, kind_label: str = "Clip") -> str:
