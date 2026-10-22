@@ -107,6 +107,11 @@ def test_saved_video_edit_survives_later_changes_and_reuses_its_duration(media_w
     show_proposals.save(project.artifacts_dir/'show_proposals.json',[item],resources=[])
     different=client.post(endpoint,json={}).get_json()['asset']
     assert different['id']!=saved['id']
+    item['params']['rotate']=30
+    show_proposals.save(project.artifacts_dir/'show_proposals.json',[item],resources=[])
+    rotated=client.post(endpoint,json={}).get_json()['asset']
+    visible={entry['id'] for entry in client.get('/api/v1/show/video-library').get_json()['items']}
+    assert {saved['id'],different['id'],rotated['id']} <= visible
     placed=client.post('/api/v1/show/video-library/'+saved['id']+'/place',json={'scene_id':'s1','at':1})
     assert placed.status_code==201,placed.get_json()
     restored=placed.get_json()['proposal']

@@ -236,10 +236,7 @@ def _publish(project, plan: dict[str, Any], destination: Path, *, style_name: st
         applied_ids = {e['id'] for e in effects or [] if e.get('status') == 'applied'}
         cues = show_caption_layout.without_artwork(cues, load_proposals(proposal_path)['proposals'], applied_ids)
     if spans:
-        for cue in cues:
-            cue["start"], cue["end"] = round(shift(cue["start"], spans), 3), round(shift(cue["end"] - 1e-3, spans) + 1e-3, 3)
-            cue["words"] = [{**word, "start": round(shift(word["start"], spans), 3), "end": round(shift(word["end"] - 1e-3, spans) + 1e-3, 3)}
-                            for word in cue["words"]]
+        cues = show_caption_layout.with_insertions(cues, spans)
     duration = float(plan["edited_duration"]) + sum(length for _, length in spans)
     (project.folder / "cue_track.json").write_text(json.dumps({
         "version": 1, "platform": "show", "lang": plan.get("language") or language or "", "cues": cues,

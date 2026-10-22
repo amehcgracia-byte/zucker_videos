@@ -20,7 +20,7 @@ assert.equal(opened,'music-1');
 const window={ShowReview:{active:()=>true}};
 const showToast=()=>{},ensure=()=>{},refresh=async()=>{},status=s=>message=s;
 const CSS={escape:s=>s};
-const row={scrollIntoView(){scrolled++},querySelector(s){return s==='strong'?{textContent:'My music'}:{focus(){focused++}}}};
+const row={classList:{add(){}},scrollIntoView(){scrolled++},querySelector(s){return s==='.mixer-name'?{textContent:'My music'}:{focus(){focused++}}}};
 const dialog={open:false,showModal(){this.open=true},querySelector(s){return s.includes('music-1')?row:null}};
 ''' + opening + r'''
 (async()=>{
