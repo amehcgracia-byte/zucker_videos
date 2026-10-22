@@ -7,7 +7,7 @@
   function ensure(){
     if(dialog)return;
     dialog=document.createElement('dialog');dialog.id='showAudioDialog';dialog.setAttribute('aria-label','Sound mixer');
-    dialog.innerHTML='<header><h2>Sound mixer</h2><button type="button" data-audio-close aria-label="Close sound mixer">×</button></header><p>Keep your voice clear, mix imported clips underneath it, or let a clip speak on its own. Originals are never changed.</p><div data-audio-controls></div><p role="status" data-audio-status></p><div class="show-actions"><button type="button" data-audio-balance class="primary">Mix &amp; balance audio</button><button type="button" data-audio-noise>Analyze &amp; reduce noise</button><button type="button" data-audio-preview>Preview scene mix</button></div><p class="show-hint">Mix &amp; balance measures each source, sets separate levels, and lowers mixed clips while you speak. Use the effects preview to hear the complete mix; live source playback plays narration.</p>';
+    dialog.innerHTML='<header><h2>Sound mixer</h2><button type="button" data-audio-close aria-label="Close sound mixer">×</button></header><p>One channel per sound: your voice first, then each clip, music and voice in the order they play. Originals are never changed.</p><div data-audio-controls></div><p role="status" data-audio-status></p><div class="show-actions"><button type="button" data-audio-balance class="primary">Balance audio levels</button><button type="button" data-audio-noise>Analyze &amp; reduce noise</button><button type="button" data-audio-preview>Preview scene mix</button></div><p class="show-hint">Balance audio levels keeps every choice you made (a clip with its own sound, mixed under your voice, muted) and only evens out the loudness: a clip heard on its own sounds like your voice, music and mixed clips sit lower, and sudden loud moments (an explosion) are tamed. Preview the scene to hear the whole mix.</p>';
     document.body.append(dialog);
     dialog.querySelector('[data-audio-close]').onclick=()=>dialog.close();
     dialog.addEventListener('input',event=>{const row=event.target.closest('[data-audio-row]');if(row&&event.target.type==='range')row.querySelector('output').textContent=Math.round(Number(event.target.value)*100)+'%';
@@ -23,12 +23,31 @@
     const field=['data-narration','data-audio-censor','data-audio-denoise','data-audio-excluded','data-track-volume','data-track-mode','data-track-under'].find(name=>active?.hasAttribute?.(name));
     const track=active?.closest?.('[data-audio-track]')?.dataset.audioTrack;
     const selector=field?(track?`[data-audio-track="${CSS.escape(track)}"] `:'')+`[${field}]`:null;
-    dialog.querySelector('[data-audio-controls]').innerHTML=`<section data-audio-row><label>Narration <input data-narration type="range" min="0" max="2" step=".01" value="${cfg.narration_volume}"></label><output>${Math.round(cfg.narration_volume*100)}%</output></section>
+    // A mixing desk: one vertical fader per channel, your voice first, each with a badge for
+    // what it is (a video from a link, a file, music, a voice), a short name, its scene and time.
+    const clock=t=>`${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;
+    const badge=track=>{const source=track.source||'file';
+      if(source.startsWith('link:'))return ['link','▶ '+source.slice(5)];
+      return {music:['music','♪ Music'],voice:['voice','🗣 Voice'],file:['file','🎞 Video']}[source]||['file','🎞 '+source];};
+    const modes=track=>track.kind==='jingle'?'':`<div class="mixer-modes" role="radiogroup" aria-label="How ${esc(track.name)} sounds">${[
+        ['own','Own','Its own sound: your narration pauses'],['mix','Mix','Mixed with your narration'],['mute','Voice only','Muted: only your narration'],
+        ...(track.kind==='character'?[['silent','Silent','Both muted']]:[])].map(([value,label,hint])=>
+        `<label title="${hint}"><input type="radio" name="mode-${esc(track.id)}" data-track-mode value="${value}" ${track.mode===value?'checked':''}><span>${label}</span></label>`).join('')}</div>`;
+    const strip=track=>{const [kind,label]=badge(track);return `<div class="mixer-strip" data-audio-row data-audio-track="${esc(track.id)}" title="${esc(track.name)} · ${clock(track.at)}–${clock(track.at+track.duration)}">
+        <span class="mixer-badge ${kind}">${esc(label)}</span><b class="mixer-name">${esc(track.name)}</b><small>${esc(track.scene||'')} ${clock(track.at)}</small>
+        <div class="mixer-fader"><input data-track-volume type="range" min="0" max="2" step=".01" value="${track.volume}" aria-label="Volume of ${esc(track.name)}"></div>
+        <output>${Math.round(track.volume*100)}%</output>${modes(track)}
+        <label class="mixer-front" title="Your narration stays in front: this channel dips while you speak"><input data-track-under type="checkbox" ${track.under_voice?'checked':''}> Voice in front</label>
+        ${track.tamed?'<small class="mixer-tamed" title="Sudden loud moments are brought down">peaks tamed</small>':''}</div>`;};
+    dialog.querySelector('[data-audio-controls]').innerHTML=`<div class="mixer-desk">
+      <div class="mixer-strip mixer-master" data-audio-row title="Your narration (the talking video)"><span class="mixer-badge voice-main">🎙 You</span><b class="mixer-name">Your voice</b><small>narration</small>
+        <div class="mixer-fader"><input data-narration type="range" min="0" max="2" step=".01" value="${cfg.narration_volume}" aria-label="Narration volume"></div><output>${Math.round(cfg.narration_volume*100)}%</output></div>
+      ${doc.tracks.map(strip).join('')||'<p class="mixer-empty">No other sound yet: clips with sound, music and character voices appear here as channels.</p>'}</div>
+      <details class="mixer-cleanup"><summary>Clean-up · strong language &amp; background noise</summary>
       <label><input data-audio-censor type="checkbox" ${cfg.censor?'checked':''}> Automatically censor strong language · Soft error</label><audio controls preload="metadata" src="/api/v1/show/audio/censor-sound" aria-label="Listen to the soft censorship sound"></audio>
       <small>${doc.words.length} detected word${doc.words.length===1?'':'s'}; only the word is replaced. Detection follows Whisper and may need corrections.</small>
       <details><summary>Detected words &amp; exceptions</summary><p>${doc.words.map(word=>`${esc(word.word)} · ${word.start.toFixed(2)}s${word.estimated?' (estimated)':''}`).join(', ')||'No matching words in the transcript.'}</p><label>Do not censor these words (comma separated)<input data-audio-excluded value="${esc(cfg.excluded_words.join(', '))}"></label></details>
-      <label><input data-audio-denoise type="checkbox" ${cfg.denoise?'checked':''}> Use prepared background-noise reduction</label><p class="show-hint">${esc({reduced:'Clean audio prepared and cached. Originals are kept.',clean:'Sample is already quiet; no noise filter was applied.',uncertain:'No reliable quiet noise floor found; keeping the original to protect speech.',not_analyzed:'Not analyzed yet. Use Analyze & reduce noise.',off:'Noise reduction was off during analysis.',unavailable:'Noise analysis unavailable; using the original audio.'}[doc.noise.status]||doc.noise.status)}</p>
-      <h3>Imported clips, music &amp; voices</h3>${doc.tracks.map(track=>`<section class="show-audio-track" data-audio-row data-audio-track="${esc(track.id)}"><strong>${esc(track.name)}</strong><small>${track.at.toFixed(2)}s · ${track.duration.toFixed(2)}s</small><label>Volume <input data-track-volume type="range" min="0" max="2" step=".01" value="${track.volume}"></label><output>${Math.round(track.volume*100)}%</output>${['clip','character'].includes(track.kind)?`<label>Sound <select data-track-mode><option value="own" ${track.mode==='own'?'selected':''}>Own sound · pause narration</option><option value="mix" ${track.mode==='mix'?'selected':''}>Mix with narration</option><option value="mute" ${track.mode==='mute'?'selected':''}>Narration only</option>${track.kind==='character'?`<option value="silent" ${track.mode==='silent'?'selected':''}>Mute both</option>`:''}</select></label>`:''}<label><input data-track-under type="checkbox" ${track.under_voice?'checked':''}> Keep narration in front</label></section>`).join('')||'<p>No extra audio tracks yet. Import a video or audio file from Library.</p>'}`;
+      <label><input data-audio-denoise type="checkbox" ${cfg.denoise?'checked':''}> Use prepared background-noise reduction</label><p class="show-hint">${esc({reduced:'Clean audio prepared and cached. Originals are kept.',clean:'Sample is already quiet; no noise filter was applied.',uncertain:'No reliable quiet noise floor found; keeping the original to protect speech.',not_analyzed:'Not analyzed yet. Use Analyze & reduce noise.',off:'Noise reduction was off during analysis.',unavailable:'Noise analysis unavailable; using the original audio.'}[doc.noise.status]||doc.noise.status)}</p></details>`;
     dialog.scrollTop=scroll;if(selector)dialog.querySelector(selector)?.focus({preventScroll:true});
   }
   async function refresh(){
@@ -45,7 +64,7 @@
       await refresh();status('Changes are saved in this project.');
       if(typeof trackId==='string'){
         const row=dialog.querySelector(`[data-audio-track="${CSS.escape(trackId)}"]`);
-        if(row){row.scrollIntoView({block:'nearest'});row.querySelector('[data-track-volume]').focus({preventScroll:true});status('Selected track: '+row.querySelector('strong').textContent+'. Changes are saved in this project.');}
+        if(row){row.scrollIntoView({block:'nearest',inline:'center'});row.classList.add('selected');row.querySelector('[data-track-volume]').focus({preventScroll:true});status('Selected channel: '+row.querySelector('.mixer-name').textContent+'. Changes are saved in this project.');}
         else status('This effect has no active audio track. Choose or record its voice first.');
       }
     }catch(error){status(error.message);}
@@ -54,7 +73,8 @@
     if(owner!==ShowReview.projectId())throw Error('Reopen the mixer in the current project.');
     const track=event.target.closest('[data-audio-track]');
     if(track){
-      const item=await call('/tracks/'+encodeURIComponent(track.dataset.audioTrack),{method:'PATCH',body:JSON.stringify({volume:Number(track.querySelector('[data-track-volume]').value),mode:track.querySelector('[data-track-mode]')?.value||'mix',under_voice:track.querySelector('[data-track-under]').checked})});
+      const mode=track.querySelector('[data-track-mode]:checked')?.value||'mix';
+      const item=await call('/tracks/'+encodeURIComponent(track.dataset.audioTrack),{method:'PATCH',body:JSON.stringify({volume:Number(track.querySelector('[data-track-volume]').value),mode,under_voice:track.querySelector('[data-track-under]').checked})});
       await ShowReview.audioChanged(false,item);
     } else {
       const field=event.target,changes={};

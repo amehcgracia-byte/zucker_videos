@@ -238,19 +238,19 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
                               'matte':'opaque','clip_start':params.get('clip_start',0),**{k:params[k] for k in PLACEMENT_FIELDS if k in params}})
             if params.get('clip_audio',True):
                 items_out.append({'proposal':item['id'],'jingle':params['clip'],'at':item['at'],'duration':item['duration'],
-                                  'start':params.get('clip_start',0),'volume':params.get('audio_volume',.7),'duck':1.,'fade':.02,'under_voice':params.get('under_voice',True)})
+                                  'start':params.get('clip_start',0),'volume':params.get('audio_volume',.7),'duck':1.,'fade':.02,'under_voice':params.get('under_voice',True),**({'tame_peaks':True} if params.get('tame_peaks') else {})})
         elif item['kind']=='clip' and params.get('audio_mode')=='mix' and params.get('matte','none')=='none':
             cutaways.append({'proposal':item['id'],'at':item['at'],'duration':item['duration'],'source':params['clip'],
                              'source_start':params.get('clip_start',0),'zoom':1.,'focus':[.5,.5],'fit':'contain'})
             if params.get('clip_audio',True):
                 items_out.append({'proposal':item['id'],'jingle':params['clip'],'at':item['at'],'duration':item['duration'],
-                                  'start':params.get('clip_start',0),'volume':params.get('audio_volume',.7),'duck':1.,'fade':.02,'under_voice':params.get('under_voice',True)})
+                                  'start':params.get('clip_start',0),'volume':params.get('audio_volume',.7),'duck':1.,'fade':.02,'under_voice':params.get('under_voice',True),**({'tame_peaks':True} if params.get('tame_peaks') else {})})
         elif item["kind"] == "clip" and params.get("matte", "none") != "none":
             items_out.append({"proposal": item["id"], "video_layer": params["clip"], "at": item["at"], "duration": item["duration"],
-                              **{k:params[k] for k in ("crop","pan","rotate","stretch","stretch_x","matte","clip_start","picture","person_style","person_scale","person_offset","follow_anchor","follow_template","follow_seconds","follow_place","brightness","saturation","hue") if k in params}})
+                              **{k:params[k] for k in ("crop","pan","rotate","stretch","stretch_x","matte","key","clip_start","picture","person_style","person_scale","person_offset","follow_anchor","follow_template","follow_seconds","follow_place","brightness","saturation","hue") if k in params}})
             if params.get('clip_audio',True):
                 items_out.append({'proposal':item['id'],'jingle':params['clip'],'at':item['at'],'duration':item['duration'],
-                                  'start':params.get('clip_start',0),'volume':params.get('audio_volume',1.),'duck':1.,'fade':0.,**({'under_voice':True} if params.get('under_voice') else {})})
+                                  'start':params.get('clip_start',0),'volume':params.get('audio_volume',1.),'duck':1.,'fade':0.,**({'under_voice':True} if params.get('under_voice') else {}),**({'tame_peaks':True} if params.get('tame_peaks') else {})})
         elif item["kind"] == "clip" and params.get("clip_audio") is False:
             # Picture only: the clip replaces the image while the host's voice goes on, like a close-up.
             cutaways.append({"proposal": item["id"], "at": item["at"], "duration": item["duration"], "source": params["clip"],
@@ -258,7 +258,9 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
         elif item["kind"] == "clip":
             # A video clip played whole with its own sound while the host pauses (core.show_inserts.load_clip).
             items_out.append({"proposal": item["id"], "insert": "clip", "at": item["at"], "source": params["clip"], **{k:params[k] for k in PLACEMENT_FIELDS if k in params},
-                              **({"audio_volume":params["audio_volume"]} if "audio_volume" in params else {}), "clip_start": params.get("clip_start", 0.0), "clip_length": min(float(item["duration"]), max(0.,float(params["clip_length"])-float(params.get("clip_start") or 0)))})
+                              **({"audio_volume":params["audio_volume"]} if "audio_volume" in params else {}), **({"tame_peaks":True} if params.get("tame_peaks") else {}),
+                              # The clip's seconds its bar plays: at 200 % a one-second bar plays two seconds of it.
+                              "clip_start": params.get("clip_start", 0.0), "clip_length": min(float(item["duration"]) * float(params.get("speed") or 1.0), max(0.,float(params["clip_length"])-float(params.get("clip_start") or 0)))})
         elif item["kind"] in ("steam", "texture"):
             items_out.append({"proposal": item["id"], "steam": params["point"], "anchor": params.get("anchor"), **({"follow_template":params["follow_template"]} if params.get("follow_template") else {}), "at": item["at"], "duration": item["duration"],
                               "scale": params.get("scale", 1.0), "texture": params.get("texture", "rainbow"), **{key: params[key] for key in ("density", "strength", "rise", "colour") if key in params}})
@@ -274,6 +276,12 @@ def render_inputs(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
         else:
             # The director's own kind (drawing, character, photo, word) travels in params.
             gags.append({**params, "proposal": item["id"], "at": item["at"], "duration": item["duration"]})
+    # A clip's speed (10 %-200 %) reaches whatever plays it: picture, own sound, layer or close-up.
+    speeds = {item["id"]: float(item["params"]["speed"]) for item in approved(items)
+              if item["kind"] == "clip" and item["params"].get("speed") not in (None, 1, 1.0)}
+    for entry in cutaways + items_out:
+        if entry.get("proposal") in speeds:
+            entry["speed"] = speeds[entry["proposal"]]
     return cutaways, items_out, gags
 
 

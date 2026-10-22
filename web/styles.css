@@ -2406,3 +2406,37 @@ dialog.show-studio::backdrop {background:#0009;}
 .show-media-editor header,.show-media-editor footer{display:flex;justify-content:space-between;gap:12px;position:sticky;background:#17231d;padding:8px 0;z-index:1}
 .show-media-editor header{top:-20px}.show-media-editor footer{bottom:-20px}
 .show-media-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.show-media-fields label{display:flex;flex-direction:column;gap:4px}.show-media-fields input{width:100%;box-sizing:border-box}.show-media-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.show-timeline-tools .show-movement { display: inline-flex; gap: 4px; align-items: center; margin-left: 6px; }
+
+/* Sound mixer as a desk: one vertical fader per channel. */
+#showAudioDialog{width:min(1040px,96vw);}
+#showAudioDialog .mixer-desk{display:flex;gap:8px;overflow-x:auto;padding:10px;border-radius:10px;background:#141a17;scroll-snap-type:x proximity;}
+#showAudioDialog .mixer-desk [data-audio-row]{display:flex;grid-template-columns:none;}
+#showAudioDialog .mixer-strip{flex:0 0 116px;flex-direction:column;align-items:center;gap:5px;padding:9px 6px;border:1px solid #2f3a34;border-radius:8px;background:#1e2521;color:#e8efe9;text-align:center;scroll-snap-align:start;}
+#showAudioDialog .mixer-strip.selected{outline:2px solid var(--accent);}
+#showAudioDialog .mixer-master{background:#26302a;border-color:#56685c;}
+#showAudioDialog .mixer-badge{font-size:11px;padding:1px 7px;border-radius:9px;background:#34413a;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis;}
+#showAudioDialog .mixer-badge.link{background:#6b2b2b;}
+#showAudioDialog .mixer-badge.music{background:#2a4166;}
+#showAudioDialog .mixer-badge.voice,#showAudioDialog .mixer-badge.voice-main{background:#53406b;}
+#showAudioDialog .mixer-badge.file{background:#3b4f3f;}
+#showAudioDialog .mixer-name{font-size:12px;line-height:1.25;width:100%;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.5em;}
+#showAudioDialog .mixer-strip small{font-size:10px;opacity:.7;}
+#showAudioDialog .mixer-fader{position:relative;width:36px;height:150px;margin:4px 0;background:linear-gradient(to top,#2b3530,#2b3530) center/4px 100% no-repeat;}
+#showAudioDialog .mixer-fader input{position:absolute;left:50%;top:50%;width:150px;margin:0;transform:translate(-50%,-50%) rotate(-90deg);accent-color:var(--accent);cursor:ns-resize;}
+#showAudioDialog .mixer-strip output{font-variant-numeric:tabular-nums;font-size:12px;font-weight:600;}
+#showAudioDialog .mixer-modes{display:flex;flex-wrap:wrap;gap:3px;justify-content:center;}
+#showAudioDialog .mixer-modes label{position:relative;font-size:10px;}
+#showAudioDialog .mixer-modes input{position:absolute;opacity:0;pointer-events:none;}
+#showAudioDialog .mixer-modes span{display:inline-block;padding:2px 6px;border:1px solid #56685c;border-radius:5px;cursor:pointer;}
+#showAudioDialog .mixer-modes input:checked+span{background:var(--accent);border-color:var(--accent);color:#142011;}
+#showAudioDialog .mixer-modes input:focus-visible+span{outline:2px solid #fff;}
+#showAudioDialog .mixer-front{font-size:10px;display:flex;gap:3px;align-items:center;}
+#showAudioDialog .mixer-tamed{color:#f0c674;opacity:1!important;}
+#showAudioDialog .mixer-empty{color:#cfd8d2;align-self:center;padding:0 12px;}
+#showAudioDialog .mixer-cleanup{border:1px solid var(--line);border-radius:8px;padding:8px 12px;}
+#showAudioDialog .mixer-cleanup>*{margin:6px 0;}
+
+/* A clip's own picture inside its box on the stage. */
+.show-cutout-box .show-cutout-frame{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none;user-select:none;}
+.show-cutout-box small{position:relative;z-index:1;}

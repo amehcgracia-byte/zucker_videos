@@ -177,7 +177,8 @@ def named_picture(name: str, root: Path | None = None) -> Path | None:
             continue
         stem = " ".join(path.stem.lower().split())
         head, _, code = stem.rpartition(" ")
-        if wanted in (stem, code) or (wanted == head and re.fullmatch(r"[0-9a-f]{6}", code)):
+        coded = re.fullmatch(r"[0-9a-f]{6}", code) is not None        # the library's own code at the end of a name
+        if wanted == stem or (coded and wanted in (code, head)):
             return path
     return None
 

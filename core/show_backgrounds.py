@@ -368,9 +368,12 @@ def editor_sample(project, item, *, ffmpeg='ffmpeg', progress=None):
             light_host=host.with_name(host.stem+'-soft-key.mp4')
             if not light_host.is_file():light_sample(host,light_host,ffmpeg)
             host=light_host
-        if matte in ('green','black','green-light'):
+        if matte in ('green','black','green-light','plain'):
             from core.show_video_assets import green_alpha,black_alpha
-            key=hashlib.sha256((file_digest(host)+matte).encode()).hexdigest()[:24]
+            from core import plain_key
+            plain=item['params'].get('key') if matte=='plain' else None
+            if matte=='plain' and not plain:raise ValueError('Choose how to remove this clip\'s background again (Clip settings)')
+            key=hashlib.sha256((file_digest(host)+matte+json.dumps(plain,sort_keys=True)).encode()).hexdigest()[:24]
             mask_path=folder/('key-'+key+'.npy')
             if not mask_path.is_file():
                 import cv2
@@ -380,7 +383,7 @@ def editor_sample(project, item, *, ffmpeg='ffmpeg', progress=None):
                         ok,bgr=capture.read()
                         if not ok:break
                         rgb=cv2.cvtColor(cv2.resize(bgr,MASK_SIZE),cv2.COLOR_BGR2RGB)
-                        made.append(np.rint((black_alpha(rgb) if matte in ('black','green-light') else green_alpha(rgb))*255).astype(np.uint8))
+                        made.append(np.rint((plain_key.alpha(rgb,plain) if plain else black_alpha(rgb) if matte in ('black','green-light') else green_alpha(rgb))*255).astype(np.uint8))
                 finally:capture.release()
                 if not made:raise ValueError('The texture has no decodable frames')
                 pending=mask_path.with_suffix('.pending.npy');np.save(pending,np.asarray(made));pending.replace(mask_path)

@@ -126,12 +126,26 @@ def green_screen_mask(photo: str | Path) -> np.ndarray | None:
     return (~remove).astype(np.float32) * (rgba[..., 3] / 255.)
 
 
+def plain_screen_mask(photo: str | Path, *, allow_white: bool = False) -> np.ndarray | None:
+    """A plain background of any strong colour or black (white only when asked), removed where
+    it touches the edges (core.plain_key); None when the photo has none."""
+    from core import plain_key
+    rgba = np.asarray(Image.open(photo).convert("RGBA"))
+    key = plain_key.find([rgba[..., :3]], allow_white=allow_white)
+    if key is None:
+        return None
+    return plain_key.alpha(rgba[..., :3], key) * (rgba[..., 3] / 255.)
+
+
 def auto_mask(photo: str | Path, box: list[float] | None = None) -> tuple[np.ndarray, str]:
     """The subject's mask: macOS subject lifting first (unless a box is given), else GrabCut."""
     if box is None:
         green = green_screen_mask(photo)
         if green is not None:
             return green, "green-screen"
+        plain = plain_screen_mask(photo, allow_white=True)     # asked for: a white background goes too
+        if plain is not None:
+            return plain, "plain-background"
         mask = vision_mask(photo)
         if mask is not None and float((mask > 0.5).mean()) > 0.002:
             return mask, "macos-vision"

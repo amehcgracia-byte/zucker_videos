@@ -275,7 +275,7 @@
       <div class="show-preview-mode">
         ${review.saved_render ? `<button type="button" class="icon-button small ${useSaved(scene) ? "active" : ""}" data-preview-mode="saved" title="The last completed export, including its captions and effects">Saved render</button>` : ""}
         <button type="button" class="icon-button small ${!wantEffects.has(scene.id) && !useSaved(scene) ? "active" : ""}" data-preview-mode="quick" title="Your cut and chosen pictures, with immediate timing updates">Live timing preview</button>
-        <button type="button" class="icon-button small ${wantEffects.has(scene.id) ? "active" : ""}" data-preview-mode="effects" title="Generate this scene with your current proposed effects before accepting">Generate scene preview</button>
+        <button type="button" class="icon-button small ${wantEffects.has(scene.id) ? "active" : ""}" data-preview-mode="effects" title="Make this scene with every effect, to watch it before accepting (Space on the timeline)">Preview</button>
       </div>
       <p class="show-proposal">${escape(scene.proposal)}</p>
       <p class="show-hint" role="status">${dirtyScenes.has(scene.id) ? "Changes saved. Generate a new scene preview to see them before accepting." : "Generate this scene with its effects, watch it, then accept or change it."}</p>
@@ -421,8 +421,10 @@
   function drawingPosition(item) {
     const p=item.params,vertical=p.position?.startsWith('top')?'top':p.position?.startsWith('bottom')?'bottom':'';
     const preset={top:[.2,.24],bottom:[.22,.72],'':[.21,.42]}[vertical];
-    return p.image_center || [p.position?.endsWith('right')?1-preset[0]:preset[0],preset[1]];
+    // Where the render draws it (the server sends params.shown), so both agree.
+    return p.image_center || (p.shown ? p.shown.slice(0,2) : [p.position?.endsWith('right')?1-preset[0]:preset[0],preset[1]]);
   }
+  const drawingWidth=item=>(item.params.image_center?item.params.size:item.params.shown?.[2]??item.params.size)||.25;
   function liveDrawings(scene) {
     const layer=$('#showStageLayer');
     layer.querySelectorAll('.show-picture-placement').forEach(element=>element.remove());
@@ -437,7 +439,7 @@
       const p=item.params,pos=drawingPosition(item);
       const element=document.createElement('div');element.className='show-picture-placement';element.dataset.liveEffect=item.id;
       element.classList.toggle('selected',item.id===selectedEffect);
-      element.style.cssText=`left:${pos[0]*100}%;top:${pos[1]*100}%;width:${(p.size||.25)*100}%`;
+      element.style.cssText=`left:${pos[0]*100}%;top:${pos[1]*100}%;width:${drawingWidth(item)*100}%`;
       element.innerHTML=p.picture?`<img src="${picture(item)}" draggable="false" style="${shapeStyle(p)}" alt="${escape(p.subject||p.text||'Drawing')}"><span class="picture-corner" title="Drag to resize"></span>`
         :item.kind==='word'?`<span class="show-word-live-text" style="${wordStyle(p)}">${escape(p.text)}</span><span class="picture-corner" title="Drag to resize"></span>`:'';
       if(!element.innerHTML)continue;
@@ -447,7 +449,7 @@
         event.preventDefault();event.stopPropagation();element.setPointerCapture(event.pointerId);
         selectedEffect=item.id;wordPlacementControls();
         layer.querySelectorAll('.show-picture-placement').forEach(el=>el.classList.toggle('selected',el===element));
-        const bounds=$('#showStage').getBoundingClientRect(),start=[event.clientX,event.clientY],initial=[...drawingPosition(item)],width=p.size||.25,resize=event.target.classList.contains('picture-corner');
+        const bounds=$('#showStage').getBoundingClientRect(),start=[event.clientX,event.clientY],initial=[...drawingPosition(item)],width=drawingWidth(item),resize=event.target.classList.contains('picture-corner');
         const playing=!$('#showStageVideo').paused;$('#showStageVideo').pause();
         let changes={},moved=false;
         element.onpointermove=e=>{
@@ -494,10 +496,13 @@
     const video=$('#showStageVideo'),layer=$('#showStageLayer');
     const editing=!!timelineDialog?.open && video.paused && !quick?.saved;
     layer.classList.toggle('show-editing',editing);
-    for(const node of layer.querySelectorAll('.show-cutout-box,.show-steam-box,.show-steam-cross,#showSteamDrawing')){
+    for(const node of layer.querySelectorAll('.show-cutout-box:not(.show-clay-box),.show-steam-box,.show-steam-cross,#showSteamDrawing')){
       const item=timelineItem(selectedEffect);
       node.hidden=!editing || !item || item.status==='discarded' || !ShowClock.visible(item,at);
     }
+    for(const node of layer.querySelectorAll('.show-clay-box')){const item=timelineItem('clay:'+node.dataset.clayBox);node.hidden=!editing||!item||at<item.at||at>=item.at+item.duration;}
+    const clipFrame=layer.querySelector('[data-cutout-frame]');
+    if(clipFrame&&editing){const item=timelineItem(clipFrame.dataset.cutoutFrame);const url=item&&clipFrameUrl(item);if(url&&clipFrame.getAttribute('src')!==url)clipFrame.setAttribute('src',url);}
     window.ShowLiveCaptions?.sync({scene,at,video:$('#showStageVideo'),projectId:review.project_id,revision:review.caption_revision,
       saved:!!quick?.saved&&!quick?.effects,
       replaced:sceneEffects(scene).filter(item=>item.kind==='word'&&item.status!=='discarded'&&item.params.picture&&ShowClock.visible(item,at)).map(item=>item.params.replaces_caption)});
@@ -518,7 +523,7 @@
       <details class="show-sticker-picker"><summary>Add sticker</summary><div class="show-library">${library.map((asset,index)=>asset.retired?'':`<button type="button" data-library="${index}" aria-label="Add ${escape(asset.name)}"><img src="${asset.url}" alt="" loading="lazy">${escape(asset.name)}</button>`).join('')}</div></details>
       <p>Play or scrub to check when a picture appears and disappears. Drag a bar to move it; drag either edge to trim.</p>
       <div class="show-timeline-edit" role="toolbar" aria-label="Edit the timeline">${[['split','Split at playhead','⌘B'],['cut','Cut','⌘X'],['copy','Copy','⌘C'],['paste','Paste at playhead','⌘V'],['duplicate','Duplicate','⌘D'],['delete','Delete','⌫'],['undo','Undo','⌘Z'],['redo','Redo','⇧⌘Z']].map(([action,label,keys])=>`<button type="button" class="icon-button small" data-timeline-command="${action}" title="${label} (${keys})" ${timelineCommandOff(action,scene)?'disabled':''}>${label}</button>`).join('')}</div>
-      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.name||selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}">Render effect preview</button>${selected.clay?`<button type="button" data-clay-remove="${selected.clay.id}">Remove clay</button>`:selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${isTexture(selected)?steamTools(selected):''}${selected.kind==='drawing'?`<button type="button" data-open-library="${selected.id}">Choose from library</button>`:''}${selected.kind==='background'?`<button type="button" data-video-layers="${selected.id}">Edit moving video layers</button><button type="button" data-open-library="${selected.id}">Background from library</button>`:''}${selected.kind==='clay'?`<button type="button" data-clay-settings="${selected.clay.id}">Clay settings…</button>`:''}${selected.kind==='clip'?`<button type="button" data-clip-settings="${selected.id}">Clip settings…</button><button type="button" data-face-clip="${selected.id}">Put my face on it</button>${selected.params.clip_original?`<button type="button" data-face-original="${selected.id}">Use the original clip</button>`:''}`:''}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
+      ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.name||selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}" title="This effect with a little of the scene around it">Preview</button>${selected.clay?`<button type="button" data-clay-remove="${selected.clay.id}">Remove clay</button>`:selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${isTexture(selected)?steamTools(selected):''}${selected.kind==='drawing'?`<button type="button" data-open-library="${selected.id}">Choose from library</button>`:''}${selected.kind==='background'?`<button type="button" data-video-layers="${selected.id}">Edit moving video layers</button><button type="button" data-open-library="${selected.id}">Background from library</button>`:''}${selected.overlay||['drawing','word'].includes(selected.kind)?`<label class="show-movement">Movement <select data-movement="${selected.id}">${movementChoices(selected).map(([key,label])=>`<option value="${key}" ${movementOf(selected)===key?'selected':''}>${label}</option>`).join('')}</select></label>`:''}${selected.kind==='clay'?`<button type="button" data-clay-settings="${selected.clay.id}">Clay settings…</button>`:''}${selected.kind==='clip'?`<button type="button" data-clip-settings="${selected.id}">Clip settings…</button><button type="button" data-face-clip="${selected.id}">Put my face on it</button>${selected.params.clip_original?`<button type="button" data-face-original="${selected.id}">Use the original clip</button>`:''}`:''}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
       <div class="show-time-row"><span>Video</span><div class="show-time-source" data-scene-seek>Original video · your cut</div></div>
       <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
 
@@ -575,6 +580,57 @@
     syncPlayback();
     box.onkeydown=event=>{const clip=event.target.closest('[data-time-clip]');if(clip && event.key==='Enter'){event.preventDefault();locateEffect(timelineItem(clip.dataset.timeClip));}};
   }
+  // A clip's speed: 100 % normal, down to 10 % (slow motion), up to 200 %. The same seconds of
+  // the clip play slower or faster, so its bar gets longer or shorter.
+  const CLIP_SPEEDS = [10, 25, 50, 75, 100, 125, 150, 200];
+  async function setClipSpeed(scene, item, speed) {
+    await flushEdits();
+    await timelineEdit(scene, () => patch(item.id, { speed }));
+    await markModified(item.id);
+    renderTimeline(currentScene()); refreshCard(item.id);
+    showToast(`Speed ${Math.round(speed * 100)} %: it plays like that in the effects preview and the video.`);
+  }
+
+  // Movement for any picture: a placed sticker or an effect (drawing, word, library picture).
+  function movementChoices(item){
+    const talkable=item.overlay&&isCharacter(item.overlay.asset);
+    return Object.entries(ANIMATIONS).filter(([key])=>item.overlay?(!['talk','look'].includes(key)||talkable):!['talk','look','path'].includes(key)&&(key!=='draw'||item.params.strokes));
+  }
+  const movementOf=item=>(item.overlay?item.overlay.action:item.params.action)||'none';
+  async function setMovement(scene,item,key){
+    if(item.overlay){const index=scene.overlays.indexOf(item.overlay);await timelineEdit(scene,()=>animateOverlay(scene,index,key));}
+    else {await flushEdits();await patch(item.id,{action:key});await markModified(item.id);refreshCard(item.id);}
+    renderTimeline(scene);liveDrawings(scene);
+    showToast(`${ANIMATIONS[key]}: ${key==='path'?'click the points on the video':'it shows in the preview (Preview, or Space on the timeline)'}.`);
+  }
+  function movementItems(scene,item){
+    return movementChoices(item).map(([key,label])=>({label,checked:movementOf(item)===key,action:()=>setMovement(scene,item,key)}));
+  }
+  document.addEventListener('change',event=>{
+    const select=event.target instanceof Element?event.target.closest('[data-movement]'):null;
+    if(!select||!review)return;
+    const scene=currentScene(),item=timelineItem(select.dataset.movement);
+    if(scene&&item)setMovement(scene,item,select.value).catch(error=>showToast(error.message,true));
+  });
+
+  // Earlier versions of the storyboard: making the Show again saves the one it replaces.
+  async function storyboardHistory(){
+    const {items}=await api('/show/history');
+    const when=id=>`${id.slice(6,8)}/${id.slice(4,6)} ${id.slice(9,11)}:${id.slice(11,13)}`;
+    ShowMenu.open(innerWidth/2-160,120,items.length?[{heading:'Earlier versions of this storyboard'},...items.slice(0,20).map(item=>({
+      label:`${when(item.id)} · ${item.decided??'?'} of ${item.scenes??'?'} scenes decided · ${item.effects??'?'} effects · ${item.pictures??0} pictures`,
+      title:item.reason,
+      action:async()=>{
+        if(!confirm(`Go back to the version of ${when(item.id)}? The current storyboard is saved first, so you can come back to it.`))return;
+        await api(`/show/history/${encodeURIComponent(item.id)}/restore`,{method:'POST',body:'{}'});
+        showToast('Earlier version restored. Reloading the storyboard…');
+        setTimeout(()=>location.reload(),600);
+      }}))]:[{heading:'No earlier versions yet: one is saved each time the Show is made again.'}],{host:menuHost()});
+  }
+  document.addEventListener('click',event=>{
+    if(event.target instanceof Element&&event.target.closest('[data-show-history]'))storyboardHistory().catch(error=>showToast(error.message,true));
+  });
+
   // A new background behind the person on the picked words; its picture is chosen next.
   async function addBackground(scene,picked,style="person"){
     const at=Math.max(scene.start,Math.min(scene.end-.5,picked.start));
@@ -738,6 +794,7 @@
       {label:`Split at playhead (${clock(editedPlayhead())})`,hint:'⌘B',disabled:!item.overlay&&['character','clip'].includes(item.kind),action:run('split')},
       {label:'Delete',hint:'⌫',action:run('delete')},
       {separator:true},
+      ...(item.overlay||['drawing','word'].includes(item.kind)?[{label:'Movement',submenu:()=>movementItems(scene,item)}]:[]),
       {label:'Undo',hint:'⌘Z',disabled:timelineCommandOff('undo',scene),action:run('undo')},
       {label:'Redo',hint:'⇧⌘Z',disabled:timelineCommandOff('redo',scene),action:run('redo')},
     ];
@@ -902,7 +959,7 @@
       return;
     }
     if(['failed','stopped'].includes(scene.preview?.status)){
-      $('#showStageStatus').textContent=`Effects preview failed: ${scene.preview.error||'try Generate scene preview again'}`;return;
+      $('#showStageStatus').textContent=`Preview failed: ${scene.preview.error||'try Preview again'}`;return;
     }
     backgroundPreview=setTimeout(()=>refreshLivePreview(scene,stamp),1200);
   }
@@ -1493,12 +1550,53 @@
     document.body.append(dialog);dialog.querySelector('[data-cancel]').onclick=()=>dialog.close();dialog.onclose=()=>dialog.remove();dialog.showModal();
     dialog.querySelector('[data-apply]').onclick=async event=>{event.target.disabled=true;try{await patch(item.id,Object.fromEntries([...dialog.querySelectorAll('[data-colour]')].map(v=>[v.dataset.colour,Number(v.value)])));await markModified(item.id);dialog.close();invalidateLocal(currentScene());await requestScenePreview(currentScene());}catch(error){showToast(error.message,true);event.target.disabled=false;}};
   }
+  // A clip over the video (background removed, mixed with your voice or muted) shows its own
+  // picture at the playhead in its box: move it, resize it from the corner, crop it from the edges.
+  function clipFrameUrl(item){
+    const t=Math.max(item.at,Math.min(item.at+item.duration-.04,editedPlayhead()));
+    const recipe=[item.params.matte,item.params.clip_start,item.params.speed,item.params.clip].join('|');
+    return `/api/v1/show/clips/${encodeURIComponent(item.id)}/frame?t=${(Math.round(t*5)/5).toFixed(1)}&w=480&r=${encodeURIComponent(recipe)}`;
+  }
   function cutoutHandles(){
     const item=timelineItem(selectedEffect),p=item?.params;
-    if(!item||item.status==='discarded'||isTexture(item)||!timelineDialog?.open||!(item.kind==='background'||item.kind==='clip'&&p.matte&&p.matte!=='none'))return '';
+    if(!item||item.status==='discarded'||isTexture(item)||!timelineDialog?.open)return '';
+    const layered=item.kind==='background'||item.kind==='clip'&&((p.matte&&p.matte!=='none')||p.audio_mode==='mix'||p.clip_audio===false);
+    if(!layered)return '';
     const scale=p.person_scale??1,[x,y]=p.person_offset||[0,0];
-    return `<div class="show-cutout-box" data-cutout-id="${item.id}" style="left:${((1-scale)/2+x)*100}%;top:${(1-scale+y)*100}%;width:${scale*100}%;height:${scale*100}%">${ShowGeometry.handles(p)}<small>Moving cutout · drag to move</small><span class="show-resize" data-cutout-resize="${item.id}"></span></div>`;
+    const frame=item.kind==='clip'?`<img class="show-cutout-frame" alt="" draggable="false" data-cutout-frame="${item.id}" style="${shapeStyle(p)}" src="${clipFrameUrl(item)}">`:'';
+    const label=item.kind==='clip'?`${escape(p.name||'Clip')} · drag to move, corner to resize, edges to crop`:'Moving cutout · drag to move';
+    return `<div class="show-cutout-box" data-cutout-id="${item.id}" style="left:${((1-scale)/2+x)*100}%;top:${(1-scale+y)*100}%;width:${scale*100}%;height:${scale*100}%">${frame}${ShowGeometry.handles(p)}<small>${label}</small><span class="show-resize" data-cutout-resize="${item.id}"></span></div>`;
   }
+  // A Clay window or thought bubble shows its picture on the stage: drag to move, corner to resize.
+  function clayHandles(){
+    const item=timelineItem(selectedEffect),p=item?.clay;
+    if(!p||p.enabled===false||!timelineDialog?.open||!['pip','bubble'].includes(p.mode))return '';
+    const size=p.size??(p.mode==='pip'?.34:.32),x=p.x??.21,y=p.y??(p.mode==='pip'?.27:.24);
+    return `<div class="show-cutout-box show-clay-box" data-clay-box="${escape(p.id)}" style="left:${(x-size/2)*100}%;top:${(y-size/2)*100}%;width:${size*100}%;height:${size*100}%">
+      <img class="show-cutout-frame" alt="" draggable="false" src="/api/v1/show/clay/placements/${encodeURIComponent(p.id)}/picture?w=480&r=${encodeURIComponent(p.story||'')}">
+      <small>Clay · ${p.mode==='pip'?'small window':'thought bubble'} · drag to move, corner to resize</small><span class="show-resize" data-clay-resize="${escape(p.id)}"></span></div>`;
+  }
+  let clayDrag=null;
+  document.addEventListener('pointerdown',event=>{
+    const box=event.target.closest?.('[data-clay-box]');if(!box)return;
+    const scene=currentScene(),item=timelineItem('clay:'+box.dataset.clayBox);if(!item?.clay)return;
+    event.preventDefault();event.stopPropagation();try{box.setPointerCapture(event.pointerId);}catch{}
+    const p=item.clay;
+    clayDrag={scene,p,box,bounds:$('#showStageLayer').getBoundingClientRect(),x:event.clientX,y:event.clientY,size:p.size??.34,cx:p.x??.21,cy:p.y??.27,resize:!!event.target.closest('[data-clay-resize]')};
+  },true);
+  document.addEventListener('pointermove',event=>{
+    const d=clayDrag;if(!d)return;
+    const dx=(event.clientX-d.x)/d.bounds.width,dy=(event.clientY-d.y)/d.bounds.height;
+    const size=d.resize?Math.max(.1,Math.min(1,d.size+dx*2)):d.size,x=d.resize?d.cx:Math.max(0,Math.min(1,d.cx+dx)),y=d.resize?d.cy:Math.max(0,Math.min(1,d.cy+dy));
+    d.changes={size:Math.round(size*1000)/1000,x:Math.round(x*1000)/1000,y:Math.round(y*1000)/1000};
+    Object.assign(d.box.style,{left:(x-size/2)*100+'%',top:(y-size/2)*100+'%',width:size*100+'%',height:size*100+'%'});
+  });
+  document.addEventListener('pointerup',async()=>{
+    const d=clayDrag;if(!d)return;clayDrag=null;if(!d.changes)return;
+    try{await timelineEdit(d.scene,async()=>{Object.assign(d.p,d.changes);await saveClay(d.scene);});drawOverlays(currentScene());showToast('Clay placed. Preview the scene to see it with its crayon frame.');}
+    catch(error){showToast(error.message,true);drawOverlays(currentScene());}
+  });
+
   let geometryDrag=null;
   document.addEventListener('pointerdown',event=>{
     const host=event.target.closest?.('.show-overlay,.show-picture-placement,.show-cutout-box');
@@ -1648,9 +1746,13 @@
       ...(["cutaway", "character"].includes(item.kind) || item.params.picture ? [{ label: "Animate", submenu: () => proposalAnimationItems(scene,item) }] : []),
       ...(item.kind === "drawing" ? [{ label: "Choose from library…", action: () => openLibrary(id) }] : []),
       ...(item.kind === "background" ? [{ label: "Edit moving video layers…", action: () => openVideoLayers(id,item.params.person_style||"person") }, {label:"Background from library…", action:()=>openLibrary(id)}] : []),
+      ...(["drawing", "word"].includes(item.kind) ? [{ label: "Movement", submenu: () => movementItems(scene, item) }] : []),
       ...(item.kind === "word" && !item.params.picture ? wordItems(item) : []),
       ...(["clip","jingle","character"].includes(item.kind)?[{label:"Sound mixer…",action:()=>ShowAudio.open(item.id)}]:[]),
-      ...(item.kind === "clip" ? [{label:"Clip settings…",action:()=>ShowReferences.openClip(currentScene(),item,review.project_id)}, { label: "Put my face on it…", action: () => openLibrary(null, null, id) }] : []),
+      ...(item.kind === "clip" ? [{label:"Clip settings…",action:()=>ShowReferences.openClip(currentScene(),item,review.project_id)},
+        { label: "Speed", submenu: () => CLIP_SPEEDS.map((pct) => ({ label: pct === 100 ? "100 % · normal" : `${pct} %${pct < 100 ? " · slow motion" : " · faster"}`,
+          checked: Math.round((item.params.speed || 1) * 100) === pct, action: () => setClipSpeed(scene, item, pct / 100) })) },
+        { label: "Put my face on it…", action: () => openLibrary(null, null, id) }] : []),
       { separator: true },
       { label: item.status === "discarded" ? "Restore effect" : "Remove effect", action: async () => { await patch(id, { status: item.status === "discarded" ? "proposed" : "discarded" }); await markModified(); renderScene(); } },
     ];
@@ -1719,7 +1821,7 @@
       { label: "Speech captions", submenu: [{ label: "On", checked: !!review.captions_enabled, action: () => setCaptions(true) }, { label: "Off", checked: !review.captions_enabled, action: () => setCaptions(false) }] },
       { label: "Cuts and audio", submenu: [{label:"Sound mixer…",action:()=>ShowAudio.open()}, { label: "Add a close-up…", action: () => addHere(x, y, "cutaway") }, { label: "Open the video / audio cutting desk…", action: () => { window.location.href = "/show-studio/"; } }] },
       { separator: true },
-      { label: "Generate scene preview", action: () => requestScenePreview(scene) },
+      { label: "Preview", hint: "Space on the timeline", action: () => requestScenePreview(scene) },
     ], { host: menuHost() });
   }
   function overlayMenu(index, x, y) {
@@ -1974,7 +2076,7 @@
       const item = library.find((entry) => entry.path === overlay.asset);
       return `<div class="show-overlay ${selectedOverlay === index || selectedEffect==='sticker:'+overlay.id ? "selected" : ""}" data-overlay="${index}" style="left:${overlay.x}%;top:${overlay.y}%;width:${overlay.width}%">
         <img src="${item ? item.url : `/api/v1/show/library/file?path=${encodeURIComponent(overlay.asset)}`}" alt="" draggable="false" style="${shapeStyle(overlay)}">${ShowGeometry.handles(overlay)}<span class="show-resize" data-resize="${index}"></span></div>`;
-    }).join("") + cutoutHandles() + steamHandles(scene);
+    }).join("") + cutoutHandles() + clayHandles() + steamHandles(scene);
     liveDrawings(scene);
     syncPlayback();
   }
@@ -2743,7 +2845,7 @@
         target.disabled=true;target.textContent='Preparing effect preview…';
         const previewRoute=item.overlay?`/show/scenes/${currentScene().id}/stickers/${encodeURIComponent(item.overlay.id)}/preview`:`/show/review/${encodeURIComponent(item.id)}/preview`;
         const result=await api(previewRoute,{method:'POST',body:'{}'});
-        showVideo(result.url,'This effect, rendered with a little context. Generate scene preview to review every effect together.');
+        showVideo(result.url,'This effect, with a little of the scene around it. Preview the scene to watch every effect together.');
         previewOrigin=result.origin??Math.max(0,item.at-1.5);
         $('#showStageLayer').querySelector('.show-picture-placement')?.remove();
         $('#showStageVideo').play().catch(()=>{});
@@ -2753,7 +2855,7 @@
       if (target.dataset.showPreview) target.textContent = "Preview";
     } finally {
       if (target.dataset.showPreview || target.id === "showRenderNow") target.disabled = false;
-      if (target.dataset.showPreview) target.textContent=target.closest("#showTimeline")?"Render effect preview":"Preview in scene";
+      if (target.dataset.showPreview) target.textContent=target.closest("#showTimeline")?"Preview":"Preview in scene";
     }
   });
 
@@ -2765,6 +2867,14 @@
     if(modal && modal!==timelineDialog)return;
     if(event.metaKey || event.ctrlKey || event.altKey)return;
     if(event.key===' ' && target.closest?.('button') && !target.closest('[data-scene-play]'))return;
+    if(event.key===' ' && !event.repeat && timelineDialog?.open && target.closest?.('#showTimeline')) {
+      // On the timeline, Space makes the preview with every effect (and plays it once it is made).
+      event.preventDefault();
+      const scene=currentScene();
+      if(scene?.preview?.status==='ready' && wantEffects.has(scene.id)) playScene();
+      else if(scene) requestScenePreview(scene).then(()=>showToast('Making the preview with every effect: it plays here when it is ready.')).catch(error=>showToast(error.message,true));
+      return;
+    }
     if(event.key===' ' && !event.repeat) { event.preventDefault(); playScene(); }
     else if(['ArrowLeft','ArrowRight'].includes(event.key) && (timelineDialog?.open || target.closest?.('#showStage'))) {
       event.preventDefault();stepVideo(event.key==='ArrowLeft'?-1:1,event.shiftKey?10:1);
@@ -3306,10 +3416,11 @@
     audioTarget(){const scene=currentScene();if(!scene)return null;const picked=pickedWords||pickedHere(scene);return {project_id:review.project_id,scene_id:scene.id,at:picked.start,duration:Math.max(.04,picked.end-picked.start),text:picked.text};},
     addAudioLink(){const scene=currentScene();if(scene)ShowReferences.openAudio(scene,pickedWords||pickedHere(scene),review.project_id);},
     open: openReview, openWorkspace, hull, refreshLibrary, addToScene, openLibrary, openVideoLayers,
+    async clipSpeed(id, speed) { const scene = scenes().find((entry) => entry.effects.includes(id)); const item = review?.proposals.find((entry) => entry.id === id); if (scene && item) await setClipSpeed(scene, item, speed); },
     shortcuts(){
       let dialog=$('#showKeyboardShortcuts');
       if(!dialog){dialog=document.createElement('dialog');dialog.id='showKeyboardShortcuts';dialog.setAttribute('aria-label','Show Studio keyboard shortcuts');
-        dialog.innerHTML='<h2>Show Studio keyboard shortcuts</h2><p>When editing text, the usual text shortcuts stay active.</p><dl><dt>Space</dt><dd>Play / pause the scene or intro</dd><dt>← / → over the preview or timeline</dt><dd>Previous / next frame; Shift moves 10 frames</dd><dt>Ctrl / ⌘ C, X, V</dt><dd>Copy, cut, paste the selected timeline clip</dd><dt>Ctrl / ⌘ Z · Shift Z / Ctrl Y</dt><dd>Undo / redo in the timeline</dd><dt>Ctrl / ⌘ B or K</dt><dd>Split the selected clip at the playhead</dd><dt>Delete / Backspace</dt><dd>Remove the selected timeline clip</dd><dt>Enter in video link settings</dt><dd>Download the link or apply the clip settings</dd><dt>Escape</dt><dd>Close the current menu or dialog</dd></dl><form method="dialog"><button autofocus>Close</button></form>';
+        dialog.innerHTML='<h2>Show Studio keyboard shortcuts</h2><p>When editing text, the usual text shortcuts stay active.</p><dl><dt>Space</dt><dd>Play / pause the scene or intro; on the timeline, make the preview with every effect and play it</dd><dt>← / → over the preview or timeline</dt><dd>Previous / next frame; Shift moves 10 frames</dd><dt>Ctrl / ⌘ C, X, V</dt><dd>Copy, cut, paste the selected timeline clip</dd><dt>Ctrl / ⌘ Z · Shift Z / Ctrl Y</dt><dd>Undo / redo in the timeline</dd><dt>Ctrl / ⌘ B or K</dt><dd>Split the selected clip at the playhead</dd><dt>Delete / Backspace</dt><dd>Remove the selected timeline clip</dd><dt>Enter in video link settings</dt><dd>Download the link or apply the clip settings</dd><dt>Escape</dt><dd>Close the current menu or dialog</dd></dl><form method="dialog"><button autofocus>Close</button></form>';
         document.body.append(dialog);
       }
       if(!dialog.open)dialog.showModal();
