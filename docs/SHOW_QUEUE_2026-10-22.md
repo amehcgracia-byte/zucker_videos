@@ -20,10 +20,10 @@ Branch `claude/show-1022`, on top of 2.6.16 (`claude/show-after-44`, PR #45).
 
 ## Still open from earlier lists
 
-- Captions kept running during an inserted clip (to check in the final video).
+- Narration captions spanning inserted footage: corrected on the integrated Codex branch (dde66199), with cue splitting and live suppression. Targeted tests pass; the complete final montage still needs visual review.
 - "Write the script together" as a back-and-forth with the director (only "follow my idea" exists).
 - The "next, next… lottery" mode (a half-made edit with pictures and voices already generated).
 - The edits made to «La prueba» after 19 October (kanji clips in scene 10) need redoing; the clips are in its library.
 - Freesound originals (only previews download today).
 - Windows: the package passes its self-test; the interface was not walked through on Windows.
-- The 360 tests that fail on GitHub (28, inherited) and the open PR stack (#33–#45) to merge into `main`.
+- The general fast CI remains red: latest complete run 39717899980 at 1cefcf6d has 24 failures / 1201 passing. Slow tests: 16 passing. Individual 360 contract review is in progress; do not treat all remaining failures as obsolete. PR #45 is merged; PR #44 remains open.
