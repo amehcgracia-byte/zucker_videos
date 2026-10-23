@@ -141,6 +141,9 @@ def _dialogue_body(cue, style: Style, *, width: int, event_start: float, first_e
     override = cue.style_override or {}
     lines, fitted_size, requested_size = _layout(cue, style, width=width)
     tags: list[str] = []
+    font = str(override.get("font") or "").strip()
+    if font and all(ch not in font for ch in "\\{}"):
+        tags.append(f"\\fn{font}")
     color = _ass_color(override.get("color"))
     if color:
         tags.append(f"\\c{color}")

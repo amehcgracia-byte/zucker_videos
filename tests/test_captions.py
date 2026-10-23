@@ -370,3 +370,16 @@ def test_auto_caption_library_is_twenty_attributed_lines() -> None:
     assert all(len(caption_layout(phrase["text"], width=1080, requested_size=54, margin_l=65, margin_r=65)[0]) <= 2 for phrase in phrases)
     page = (Path(__file__).parents[1] / "web" / "index.html").read_text(encoding="utf-8")
     assert 'id="captionAutoCompose"' in page and 'id="captionComposeUse"' in page and 'id="captionComposeAnother"' in page
+
+
+def test_a_caption_can_choose_its_own_font_and_colour():
+    from captions.model import Cue, CueTrack
+    from captions.render import render_ass
+    from captions.styles import get_style
+
+    track = CueTrack((Cue(("Hello",), 0.0, 2.0, style_override={"font": "Georgia", "color": "#ff4f2e"}),
+                      Cue(("Plain",), 2.0, 4.0)))
+    ass = render_ass(track, get_style("clean_bottom"), width=1080, height=1920)
+    first, second = [line for line in ass.splitlines() if line.startswith("Dialogue:")][-2:]
+    assert "\\fnGeorgia" in first and "\\c&H002E4FFF&" in first
+    assert "\\fn" not in second
