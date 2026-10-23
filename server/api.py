@@ -743,11 +743,23 @@ def _composition_event(project: Project, job: CompositionJob, event: str, *, inp
         handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
 
+def _composed_name(path: Path) -> bool:
+    return "_composed" in path.stem or "_overlay-composed" in path.stem or "_captions" in path.stem
+
+
 def _composition_base_result(project: Project) -> dict[str, Any] | None:
-    """Return the clean export, never the last composed result."""
+    """Return the clean export, never the last composed result. A new export (the edit
+    rendered again) always wins over the private copy of an earlier one: returning that
+    copy first composed the final video over an old edit (19 October's in «La prueba»)
+    and the new render was then removed with the other exports."""
     manifest_result = _export_result(project)
     cache = project.cache_dir / "composition-base.mp4"
     meta = project.cache_dir / "composition-base.json"
+    if manifest_result:
+        current = Path(str(manifest_result.get("path") or ""))
+        if current.is_file() and current.stat().st_size > 0 and not _composed_name(current):
+            return manifest_result
+    # The export is the composed final now: its clean base is the private copy.
     if cache.is_file() and cache.stat().st_size > 0 and meta.is_file():
         try:
             record = json.loads(meta.read_text(encoding="utf-8"))
@@ -759,9 +771,9 @@ def _composition_base_result(project: Project) -> dict[str, Any] | None:
     if not result:
         return None
     path = Path(str(result.get("path") or ""))
-    if "_composed" in path.stem or "_overlay-composed" in path.stem or "_captions" in path.stem:
+    if _composed_name(path):
         candidates = sorted(project.exports_dir.glob("*.mp4"), key=lambda item: item.stat().st_mtime, reverse=True)
-        path = next((item for item in candidates if "_composed" not in item.stem and "_overlay-composed" not in item.stem and "_captions" not in item.stem and item.stat().st_size > 0), Path())
+        path = next((item for item in candidates if not _composed_name(item) and item.stat().st_size > 0), Path())
         if not path:
             return None
     return {**result, "path": str(path), "filename": path.name}
@@ -5176,6 +5188,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.post("/api/v1/show/review/render")
     def api_show_review_render() -> Response:
         project = _require_project(state)
+        composing = state.composition.status(project)
+        if composing and composing.get("status") in {"running", "cancelling"}:
+            return error_response("wizard_busy", "The final video is still being put together; wait for it to finish", 409)
+        state.composition.reset()       # the last final video is not this render's result
         scene_stop.set()                # the final render needs the computer, not previews
         with scene_lock:
             for lane in scene_lanes.values():
@@ -5544,6 +5560,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 # persisted state instead; the browser also validates the id.
                 return jsonify(_project_wizard_status(requested_project))
         composition_status = state.composition.status(state.project)
+        wizard_now = state.wizard.status()
+        if wizard_now.get("status") in {"running", "cancelling"} and not (
+                composition_status and composition_status.get("status") in {"running", "cancelling"}):
+            # A new render is under way: an earlier final video is not its result.
+            return jsonify(wizard_now)
         if composition_status and composition_status.get("status") in {"running", "cancelling", "cancelled", "failed"}:
             return jsonify(composition_status)
         if composition_status and composition_status.get("status") == "done":
