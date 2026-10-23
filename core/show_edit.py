@@ -57,7 +57,7 @@ PODCAST = ShowStyle(max_pause=1.2, lead=0.15, tail=0.3, target_shot=30.0, min_sh
 # pauses go, and a sentence said twice keeps its last take (a narration recorded phrase by phrase).
 STORYTELLING = ShowStyle(max_pause=1.2, lead=0.12, tail=0.25, target_shot=30.0, min_shot=30.0, max_shot=600.0, zooms=(1.0,),
                          push_every=0, reveal_every=0, glide_every=0)
-STYLES = {"choe": CHOE, "calm": CALM, "podcast": PODCAST, "storytelling": STORYTELLING}
+STYLES = {"choe": CHOE, "calm": CALM, "fast": ShowStyle(target_shot=1.75,min_shot=1.5,max_shot=2.0), "normal": CALM, "podcast": PODCAST, "storytelling": STORYTELLING}
 
 
 @dataclass

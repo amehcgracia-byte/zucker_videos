@@ -1651,9 +1651,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             # The other videos and photos of the project are its close-ups.
             resources = [] if podcast or style == "storytelling" else [path for path in registered if path != source] + [str(path) for path in body.get("show_photos") or [] if isinstance(path, str)]
             try:
-                job = state.wizard.start_show(state.project, source, style if style in {"choe", "calm", "podcast", "storytelling"} else "choe", language,
+                job = state.wizard.start_show(state.project, source, style if style in {"choe", "calm", "fast", "normal", "podcast", "storytelling"} else "choe", language,
                                               "off" if podcast else gags if gags in {"claude", "keywords", "off"} else "claude",
-                                              review=bool(body.get("show_review", True)) and not podcast, resources=resources)
+                                              review=bool(body.get("show_review", True)), resources=resources)
             except RuntimeError as exc:
                 return error_response("wizard_busy", str(exc), 409)
             state.composition.reset()
@@ -2776,7 +2776,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_show_video_library():
         records=_show_media_catalog(_require_project(state))
         unique={}
-        for record in records.values():
+        # A saved excerpt must survive alongside its original and other lengths.
+        # Prefer its immutable recipe over an equivalent transient proposal.
+        for record in sorted(records.values(), key=lambda r: not r.get('saved_edit', False)):
             if record.get('media_kind','video')!='video':continue
             params=record.get('params') or {}
             key=('saved:'+record['id']) if record.get('saved_edit') else json.dumps([record['path'],record.get('matte','none'),*[params.get(k) for k in ('clip_start','person_style','picture','person_scale','person_offset')]],sort_keys=True)
@@ -6135,6 +6137,29 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         edit["camera_subjects"] = dict(assignments)
         project.save()
         return jsonify({"camera_subjects": edit["camera_subjects"]})
+
+    @app.post("/api/v1/settings/camera-roles")
+    def api_camera_roles() -> Response:
+        """How each flat camera was filmed: on a tripod (fixed_rear) or handheld.
+
+        Filenames cannot tell a phone on a tripod from a handheld camera; the
+        role decides steadiness scoring and motion on static shots."""
+        project = _require_project(state)
+        roles = _json_body().get("camera_roles")
+        if not isinstance(roles, dict) or not all(isinstance(k, str) and v in {"fixed_rear", "handheld"} for k, v in roles.items()):
+            return error_response("bad_request", "camera_roles must map source paths to fixed_rear or handheld", 400)
+        sources = {str(record.get("path") or "") for record in project.data.get("inputs", {}).get("videos", [])}
+        if any(path not in sources for path in roles):
+            return error_response("bad_request", "Choose a registered camera", 400)
+        current = project.data.get("settings", {}).get("edit", {}).get("camera_roles") or {}
+        if roles == current:
+            return jsonify({"camera_roles": current})
+        if state.wizard.status().get("status") in {"running", "cancelling"}:
+            return error_response("wizard_busy", "Wait for the current edit before changing camera roles", 409)
+        edit = project.data.setdefault("settings", {}).setdefault("edit", {})
+        edit["camera_roles"] = dict(roles)
+        project.save()
+        return jsonify({"camera_roles": edit["camera_roles"]})
 
     @app.post("/api/v1/settings/fillers")
     def api_fillers() -> Response:

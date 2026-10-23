@@ -7,6 +7,10 @@ passes can consume it without decoding the clips again.
 
 from __future__ import annotations
 
+import threading
+_MODEL_LOCK = threading.RLock()
+_WARM_MODELS = {}
+
 import json
 import logging
 import os
@@ -255,7 +259,13 @@ def transcribe_sources(
                     _configure_faster_whisper_assets()
                     from faster_whisper import WhisperModel  # type: ignore
                     compute_type = "int8_float16" if platform.machine() in {"arm64", "aarch64"} else "int8"
-                    models[source_model] = WhisperModel(whisper_model_path(source_model), device="auto", compute_type=compute_type)
+                    with _MODEL_LOCK:
+                        model_key = (source_model, compute_type)
+                        if model_key not in _WARM_MODELS:
+                            _WARM_MODELS[model_key] = WhisperModel(whisper_model_path(source_model), device="auto", compute_type=compute_type)
+                            while len(_WARM_MODELS) > 2:
+                                del _WARM_MODELS[next(iter(_WARM_MODELS))]
+                        models[source_model] = _WARM_MODELS[model_key]
                 elif backend == "mlx-whisper":
                     import mlx_whisper  # type: ignore
                     models[source_model] = mlx_whisper

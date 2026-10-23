@@ -120,3 +120,19 @@ def test_saved_video_edit_survives_later_changes_and_reuses_its_duration(media_w
     assert restored['params']['crop']==[.1,.1,.8,.8]
     assert restored['params']['clip']==str(source)
     assert client.get('/api/v1/show/video-library/'+saved['id']+'/thumbnail').status_code==200
+
+
+def test_saved_excerpts_with_different_lengths_stay_visible_after_reload(media_workshop):
+    _, source, client, _ = media_workshop
+    uploaded = client.post('/api/v1/show/library/media', json={'path': str(source)}).get_json()['asset']
+    ids = []
+    for duration in (.3, .6):
+        item = client.post('/api/v1/show/video-library/' + uploaded['id'] + '/place', json={'scene_id':'s1','at':0,'duration':duration}).get_json()['proposal']
+        saved = client.post('/api/v1/show/clips/' + item['id'] + '/save-edit', json={}).get_json()['asset']
+        ids.append(saved['id'])
+        client.patch('/api/v1/show/review/' + item['id'], json={'status':'discarded'})
+    visible = client.get('/api/v1/show/video-library').get_json()['items']
+    saved = [item for item in visible if item.get('saved_edit')]
+    assert {item['id'] for item in saved} == set(ids)
+    assert sorted(item['saved_duration'] for item in saved) == [.3, .6]
+    assert any(not item.get('saved_edit') for item in visible)
