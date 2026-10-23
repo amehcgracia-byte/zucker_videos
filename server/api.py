@@ -2764,13 +2764,18 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         for record in records.values():
             if record.get('media_kind','video')!='video':continue
             params=record.get('params') or {}
-            key=json.dumps([record['path'],record.get('matte','none'),*[params.get(k) for k in ('clip_start','person_style','picture','person_scale','person_offset')]],sort_keys=True)
+            key=('saved:'+record['id']) if record.get('saved_edit') else json.dumps([record['path'],record.get('matte','none'),*[params.get(k) for k in ('clip_start','person_style','picture','person_scale','person_offset')]],sort_keys=True)
             unique.setdefault(key,record)
         # One entry per video (two at most: the complete one and a cut-out), not every saved
         # copy: the newest of each.
         from core.show_clips import video_key
         shown,kept={},[]
         for record in reversed(list(unique.values())):
+            # Explicitly saved recipes are intentional versions, not download duplicates.
+            # Each keeps its immutable identity, timing and framing in the library.
+            if record.get('saved_edit'):
+                kept.append(record)
+                continue
             who=video_key(record.get('url') or (record.get('params') or {}).get('url') or '') if (record.get('url') or (record.get('params') or {}).get('url')) else record['path']
             kind='cutout' if record.get('transparent') else 'complete'
             if (who,kind) in shown or sum(1 for w,_ in shown if w==who)>=2:continue

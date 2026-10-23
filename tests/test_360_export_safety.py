@@ -7,8 +7,10 @@ from core.stages.export import (
 )
 
 
-def test_packaged_360_export_uses_static_projection_safety_mode():
-    assert SPHERICAL_EXPORT_MOTION_MODE == "static"
+def test_packaged_360_export_uses_native_frame_remapping():
+    # Moving shots use complete-frame reprojection instead of runtime v360
+    # reconfiguration. Explicit static holds remain covered below.
+    assert SPHERICAL_EXPORT_MOTION_MODE == "native_remap"
 
 
 def test_static_export_segment_does_not_emit_runtime_v360_commands():

@@ -506,6 +506,7 @@
     if(clipFrame&&editing){const item=timelineItem(clipFrame.dataset.cutoutFrame);const url=item&&clipFrameUrl(item);if(url&&clipFrame.getAttribute('src')!==url)clipFrame.setAttribute('src',url);}
     window.ShowLiveCaptions?.sync({scene,at,video:$('#showStageVideo'),projectId:review.project_id,revision:review.caption_revision,
       saved:!!quick?.saved&&!quick?.effects,
+      inserted:!!quick?.effects&&ShowCaptionClock.insideInsertion(video.currentTime,scene.preview?.inserted||[]),
       replaced:sceneEffects(scene).filter(item=>item.kind==='word'&&item.status!=='discarded'&&item.params.picture&&ShowClock.visible(item,at)).map(item=>item.params.replaces_caption)});
     const input=box?.querySelector('[data-timeline-seek]');
     if(input){input.value=at;box.querySelector('[data-playhead-label]').textContent=clock(at);box.style.setProperty('--playhead',`${Math.max(0,Math.min(100,100*(at-scene.start)/(scene.end-scene.start)))}%`);}
@@ -2883,6 +2884,8 @@
       } else if (target.dataset.showPreview) {
         await flushEdits();
         const item=timelineItem(target.dataset.showPreview);
+        if(!item)throw Error('This effect is no longer in the scene.');
+        if(item.clay){await requestScenePreview(currentScene());return;}
         if(item.needs?.length)throw Error('Complete this effect first: '+item.needs.join(', '));
         target.disabled=true;target.textContent='Preparing effect preview…';
         const previewRoute=item.overlay?`/show/scenes/${currentScene().id}/stickers/${encodeURIComponent(item.overlay.id)}/preview`:`/show/review/${encodeURIComponent(item.id)}/preview`;

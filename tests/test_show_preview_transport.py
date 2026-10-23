@@ -117,3 +117,23 @@ assert.equal(video.currentTime,5);frame();assert.equal(pauses,0);
 video.currentTime=6;frame();assert.equal(pauses,1,'real end still pauses');
 """
     subprocess.run(['node','-e',program],check=True,capture_output=True,text=True)
+
+
+def test_clay_preview_uses_scene_composition_instead_of_a_nonexistent_proposal():
+    script=Path('web/show_review.js').read_text()
+    start=script.index('        const item=timelineItem(target.dataset.showPreview);')
+    branch=script[start:script.index('        target.disabled=true;',start)]
+    program='''
+const assert=require('node:assert/strict');
+const target={dataset:{showPreview:'clay:story'}},scene={id:'s1'};
+const currentScene=()=>scene;
+let requests=0;
+const timelineItem=()=>({id:'clay:story',clay:{id:'story'}});
+const requestScenePreview=async s=>{assert.equal(s,scene);requests++};
+async function click(){
+'''+branch+'''
+throw Error('Clay must not use the proposal preview endpoint');
+}
+click().then(()=>assert.equal(requests,1)).catch(e=>{console.error(e);process.exitCode=1});
+'''
+    subprocess.run(['node','-e',program],check=True)
