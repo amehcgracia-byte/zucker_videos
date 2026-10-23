@@ -48,14 +48,14 @@ REEL_MAX_CUT_SEC = 2.0
 REEL_DEFAULT_CUT_TARGET_SEC = 1.75
 REEL_DEFAULT_CUTS_PER_SOURCE = 1.0
 REEL_SINGLE_SOURCE_MIX_INTERVAL_SEC = 5.0
-REEL_PLAN_VERSION = 7  # v7: shots avoid unreadable (zero-filled) stretches of their file
+REEL_PLAN_VERSION = 8  # v8: subject rotation, never the same person in consecutive shots (v7: avoid unreadable stretches)
 MOTION_CATALOG = CATALOG
 MOTION_WEIGHTS = {name: 1.0 for name in MOTION_CATALOG}
 # The previous 1.32x fast setting was too abrupt.  Normal is now the fastest
 # authored speed, and a new very-slow option keeps close-ups composed.
 MOTION_SPEEDS = (("very_slow", 0.50), ("slow", 0.72), ("fast", 1.0))
 IPHONE_CROP_TOP_LIMIT = 0.80
-YOUTUBE_CAMERA_SELECTION_VERSION = 23
+YOUTUBE_CAMERA_SELECTION_VERSION = 24  # v24: skip a handheld camera while it moves when a steady camera covers the moment
 # Legacy diagnostic threshold retained in project settings/manifests. The
 # production policy now stops close-up filler as soon as one alternative
 # physical camera covers the same synced window.
@@ -207,7 +207,7 @@ class EditStage(Stage):
     def run(self, project: Project, progress_callback: ProgressCallback) -> dict[str, Any]:
         """Write the edit plan consumed by export."""
         progress_callback(10, t("analyzing_rhythm"))
-        coverage = load_coverage(project)
+        coverage = _with_camera_roles(load_coverage(project), project.data.get("settings", {}).get(self.name, {}))
         platform = str(coverage.get("platform") or "youtube")
         # 360 direction is fixed automatic configuration. Director takes are
         # no longer part of the product and must never affect a new plan.
@@ -446,6 +446,115 @@ def _readable_reel_start(source: dict[str, Any], duration: float, used: list, st
     return start, found
 
 
+def _with_camera_roles(coverage: dict[str, Any], edit_settings: dict[str, Any]) -> dict[str, Any]:
+    """Apply camera roles the person declared (tripod = fixed_rear, handheld).
+
+    Filenames cannot tell a phone on a tripod from a handheld camera; the
+    declared role decides which cameras get steadiness scoring and motion."""
+    roles = edit_settings.get("camera_roles") if isinstance(edit_settings, dict) else None
+    if not isinstance(roles, dict) or not roles:
+        return coverage
+    sources = []
+    for source in coverage.get("sources") or []:
+        source = dict(source)
+        if _source_role(source) != "360":
+            for identity in (str(source.get("source_path") or ""), str(source.get("path") or ""), str(source.get("filename") or "")):
+                role = roles.get(identity)
+                if role in {"fixed_rear", "handheld"}:
+                    source["camera_role"] = role
+                    break
+        sources.append(source)
+    return {**coverage, "sources": sources}
+
+
+def _with_camera_subjects(sources: list[dict[str, Any]], assignments: dict[str, str]) -> list[dict[str, Any]]:
+    """Attach the person's camera subject assignments (keyed by path or camera id)."""
+    result = []
+    for source in sources:
+        source = dict(source)
+        for identity in (_camera_id(source), str(source.get("source_path") or ""),
+                         str(source.get("path") or ""), str(source.get("filename") or "")):
+            if identity in assignments:
+                source["camera_subject"] = assignments[identity]
+                break
+        result.append(source)
+    return result
+
+
+def _reel_identity(source: dict[str, Any], shot: dict[str, Any] | None = None) -> str:
+    """Who a Reel shot shows. Named performers keep one identity across all
+    cameras and 360 views; wide shots share "general"; a clip without any
+    subject information is its own identity (its source)."""
+    subject = _editorial_subject(source, shot)
+    if subject:
+        return subject
+    raw = str((shot or {}).get("subject") or (shot or {}).get("type") or source.get("camera_subject") or "").strip().lower()
+    if raw in {"general", "full_stage", "audience_stage_wide", "planet", "recorded_move"}:
+        return "general"
+    return f"source:{_source_id(source)}"
+
+
+def _reel_shot_options(sources: list[dict[str, Any]], spherical_shots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every distinct shot the Reel can cut to: one per flat camera, one per enabled 360 view."""
+    options = []
+    for order, source in enumerate(sources):
+        if _source_role(source) == "360" and spherical_shots:
+            for shot in spherical_shots:
+                options.append({"source": source, "shot": shot, "order": order,
+                                "identity": _reel_identity(source, shot), "key": f"{_source_id(source)}|{shot.get('type')}"})
+        else:
+            options.append({"source": source, "shot": None, "order": order,
+                            "identity": _reel_identity(source), "key": _source_id(source)})
+    return options
+
+
+class _ReelSubjectRotation:
+    """Deterministic shot picker for the unsynchronised Reel.
+
+    1. every source is used once before any source repeats (keeps the old
+       guarantee that each dropped camera contributes);
+    2. the same identity never appears in two consecutive shots while any
+       other identity is available;
+    3. otherwise the identity with the least screen time goes next, so the
+       whole band shares the Reel evenly; between equals, a different
+       source than the previous shot wins.
+    """
+
+    def __init__(self, options: list[dict[str, Any]]) -> None:
+        self.options = options
+        self.identity_seconds: dict[str, float] = {}
+        self.source_uses: dict[str, int] = {}
+        self.option_uses: dict[str, int] = {}
+        self.previous: dict[str, Any] | None = None
+        self.forced_repeats = 0
+
+    def next(self, duration: float) -> dict[str, Any]:
+        previous = self.previous
+        pool = [o for o in self.options if previous is None or o["identity"] != previous["identity"]]
+        if not pool:
+            pool = self.options
+            self.forced_repeats += 1
+        previous_source = _source_id(previous["source"]) if previous else None
+        def rank(option):
+            source_id = _source_id(option["source"])
+            return (self.source_uses.get(source_id, 0) > 0,
+                    round(self.identity_seconds.get(option["identity"], 0.0), 6),
+                    source_id == previous_source,
+                    self.option_uses.get(option["key"], 0),
+                    self.source_uses.get(source_id, 0),
+                    option["order"])
+        chosen = min(pool, key=rank)
+        source_id = _source_id(chosen["source"])
+        self.identity_seconds[chosen["identity"]] = self.identity_seconds.get(chosen["identity"], 0.0) + duration
+        self.source_uses[source_id] = self.source_uses.get(source_id, 0) + 1
+        self.option_uses[chosen["key"]] = self.option_uses.get(chosen["key"], 0) + 1
+        self.previous = chosen
+        return chosen
+
+    def seconds_by_identity(self) -> dict[str, float]:
+        return {key: round(value, 3) for key, value in sorted(self.identity_seconds.items())}
+
+
 def _reel_promo_plan(
     coverage: dict[str, Any],
     beats: dict[str, Any],
@@ -604,8 +713,11 @@ def _reel_promo_plan_pass(
 
     landmarks = migrate_spherical_landmarks(settings.get("spherical_landmarks") or {})
     spherical_shots = _available_spherical_shots(landmarks, sweep_enabled=False)
+    edit_settings = settings.get("edit") if isinstance(settings.get("edit"), dict) else {}
+    sources = _with_camera_subjects(sources, edit_settings.get("camera_subjects") or {})
+    shot_options = _reel_shot_options(sources, spherical_shots)
+    rotation = _ReelSubjectRotation(shot_options)
     segments: list[dict[str, Any]] = []
-    previous_source = None
     used_highlights = {}
     # Unreadable stretches found per source while placing shots.
     damaged_by_source: dict[str, list] = {}
@@ -613,12 +725,11 @@ def _reel_promo_plan_pass(
     fixed_index = 0
     for index, (master_start, master_end) in enumerate(zip(boundaries, boundaries[1:])):
         seg_duration = max(0.1, master_end - master_start)
-        source = sources[index % len(sources)]
-        # With more than one source, the round-robin index guarantees that a
-        # source is not repeated until all other sources have had a turn.
-        if len(sources) > 1 and _source_id(source) == previous_source:
-            source = sources[(index + 1) % len(sources)]
-        previous_source = _source_id(source)
+        # Every source gets a turn first; after that the person (subject) with
+        # the least screen time is next, and the same person is never shown in
+        # two consecutive shots, even from different cameras or 360 views.
+        option = rotation.next(seg_duration)
+        source = option["source"]
         source_duration = max(seg_duration, float(source.get("duration_sec") or seg_duration))
         # Deterministic spread over each source, independent of master time.
         clip_start = max(0.0, ((index * 1.37) % max(0.1, source_duration - seg_duration))) if source_duration > seg_duration else 0.0
@@ -644,8 +755,9 @@ def _reel_promo_plan_pass(
             "camera_id": _camera_id(source),
         }
         role = _source_role(source)
+        segment["editorial_subject"] = option["identity"]
         if role == "360":
-            shot = dict(spherical_shots[index % len(spherical_shots)]) if spherical_shots else {
+            shot = dict(option["shot"]) if option.get("shot") else {
                 "type": "promo_360", "label": "360 promo", "yaw": 0.0, "pitch": 0.0, "fov": 95.0, "weight": 1.0,
             }
             segment["spherical_shot"] = _spherical_motion_profile(shot, index, enabled=False, hold_motion="none")
@@ -693,6 +805,8 @@ def _reel_promo_plan_pass(
         "master_window_start_sec": round(start, 6),
         "master_window_end_sec": round(end, 6),
         "real_edit_logic": "reel unsynchronised promo: independent dynamic source selection on master beats",
+        "subject_distribution_seconds": rotation.seconds_by_identity(),
+        "subject_unavoidable_repeats": rotation.forced_repeats,
         "warnings": list(coverage.get("warnings") or []) + [
             f"{name} has damaged (unreadable) stretches; its shots were taken from the readable parts."
             for name in sorted(damaged_sources)
@@ -1960,7 +2074,18 @@ def _quality_filtered_sources(
         # Quality is a soft preference, not a camera-wide veto. A dominant
         # camera must still participate when it has usable synced coverage;
         # its score and rejected-window reasons remain in diagnostics.
-        filtered.append({**source, "director_segment_score": quality.get("score")})
+        filtered.append({**source, "director_segment_score": quality.get("score"),
+                         "director_segment_moving": bool(quality.get("moving"))})
+    # The one hard rule: never cut to a handheld camera while it is moving
+    # (pans, re-framing, walking) when another camera covers the moment
+    # steadily. Only this slot is skipped; the camera keeps its other slots.
+    steady = [source for source in filtered if not source.get("director_segment_moving")]
+    if steady and len(steady) < len(filtered):
+        for source in filtered:
+            if source.get("director_segment_moving"):
+                stats = selection_stats.setdefault(_source_id(source), _selection_stats_for_source(source, start, end))
+                stats["camera_moving_skipped"] = int(stats.get("camera_moving_skipped") or 0) + 1
+        filtered = steady
     return filtered
 
 
@@ -2306,7 +2431,9 @@ def _editorial_subject(source: dict[str, Any], shot: dict[str, Any] | None = Non
               or source.get("camera_subject") or source.get("subject") or "").strip().lower()
     aliases = {"bateria": "drummer", "batería": "drummer", "drums": "drummer",
                "cantante": "singer", "voz": "singer", "pianista": "pianist",
-               "keys": "pianist", "guitarrista": "guitarist", "bajista": "bassist"}
+               "keys": "pianist", "guitarrista": "guitarist", "bajista": "bassist",
+               "drum": "drummer", "drummer": "drummer", "piano": "pianist", "keyboard": "pianist",
+               "guitar": "guitarist", "bass": "bassist", "vocals": "singer", "vocal": "singer"}
     raw = aliases.get(raw, raw)
     return "" if raw in {"", "unknown", "general", "full_stage", "audience_stage_wide", "planet", "recorded_move"} else raw
 

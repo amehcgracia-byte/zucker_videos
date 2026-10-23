@@ -21,6 +21,8 @@ from core.normalization import global_cache_root
 from core.stages.base import stable_fingerprint
 
 SHOT_QUALITY_VERSION = 1
+STABILITY_MIN = 0.42  # below this a window counts as "camera moving"
+MOVING_MIN_SEC = 0.75  # this much movement inside one shot is visible
 SAMPLE_FPS = 2
 # Sampling at 2 fps only needs decoded keyframes when a camera writes one at
 # least every half second (Sony a6000: every 0.48 s). Decoding only those is
@@ -44,7 +46,7 @@ def score_director_window(signals: dict[str, float]) -> tuple[float, list[str]]:
     reasons: list[str] = []
     if face < 0.18:
         reasons.append("no face")
-    if stability < 0.42:
+    if stability < STABILITY_MIN:
         reasons.append("camera moving")
     if sharpness < 0.05:
         reasons.append("blur")
@@ -74,8 +76,11 @@ def director_quality_for_segment(source: dict[str, Any], master_start: float, ma
     # reasons are surfaced for diagnostics but do not veto an otherwise good segment.
     reasons: dict[str, int] = {}
     weighted_score = 0.0
+    moving_seconds = 0.0
     for overlap, window in overlaps:
         signals = window.get("signals")
+        if signals and 1.0 - max(0.0, min(1.0, float(signals.get("motion") or 0.0))) < STABILITY_MIN:
+            moving_seconds += overlap
         if signals:
             win_score, win_reasons = score_director_window(signals)
             win_eligible = win_score >= DIRECTOR_SCORE_THRESHOLD and not win_reasons
@@ -92,6 +97,8 @@ def director_quality_for_segment(source: dict[str, Any], master_start: float, ma
         "score": round(score, 4),
         "eligible": score >= DIRECTOR_SCORE_THRESHOLD,
         "reasons": sorted(reasons, key=lambda key: (-reasons[key], key)),
+        # The camera is moving for a noticeable part of the shot.
+        "moving": moving_seconds >= MOVING_MIN_SEC or moving_seconds / total >= .34,
     }
 
 
@@ -345,6 +352,9 @@ def _exposure_score(gray: np.ndarray) -> float:
 
 
 def _source_role(source: dict[str, Any]) -> str:
+    explicit = str(source.get("camera_role") or "").strip().lower()
+    if explicit in {"360", "fixed_rear", "handheld"}:
+        return explicit
     projection = str(source.get("projection") or "").lower()
     filename = str(source.get("filename") or source.get("path") or source.get("source_path") or "").lower()
     if projection in {"equirect", "raw_insv"} or filename.endswith(".insv") or "360" in filename:
