@@ -530,7 +530,13 @@ class _ReelSubjectRotation:
 
     def next(self, duration: float) -> dict[str, Any]:
         previous = self.previous
-        pool = [o for o in self.options if previous is None or o["identity"] != previous["identity"]]
+        def repeats(option) -> bool:
+            # A named person never twice in a row. Wide shots ("general") may
+            # follow each other only from a different camera or 360 view.
+            if previous is None or option["identity"] != previous["identity"]:
+                return False
+            return option["identity"] != "general" or option["key"] == previous["key"]
+        pool = [o for o in self.options if not repeats(o)]
         if not pool:
             pool = self.options
             self.forced_repeats += 1

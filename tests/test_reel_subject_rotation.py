@@ -74,3 +74,11 @@ def test_declared_tripod_role_overrides_the_filename_guess():
     assert quality_role(coverage["sources"][0]) == "handheld"
     declared = _with_camera_roles(coverage, {"camera_roles": {"/tmp/cam-fixed.mp4": "fixed_rear"}})
     assert quality_role(declared["sources"][0]) == "fixed_rear"
+
+
+def test_wide_shots_from_different_cameras_are_not_counted_as_repeats():
+    sources = [{"path": f"/tmp/wide-{i}.mp4", "source_path": f"/tmp/wide-{i}.mp4", "duration_sec": 40.0} for i in range(3)]
+    plan = _plan(sources, camera_subjects={source["path"]: "general" for source in sources})
+    assert plan["subject_unavoidable_repeats"] == 0
+    paths = [segment["source_path"] for segment in plan["segments"]]
+    assert all(a != b for a, b in zip(paths, paths[1:]))
