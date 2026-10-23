@@ -28,6 +28,12 @@ Branch `claude/show-1022`, on top of 2.6.16 (`claude/show-after-44`, PR #45).
 6. ✅ **Captions: right-click → Edit this caption…** (on the video or on the timeline; double-click too): correct words that were heard wrong, typeface, size, colour, italics; "Back to the words heard" undoes a correction. The final video draws them the same way.
 7. ✅ **Library**: a video plays (silently) while the pointer is over it; an effect shows what it does on a picture of your video (close-up zooms in, smoke rises, a word pops…); a picture moves a little.
 
+## 23 October, evening: the render showed an old edit
+
+- ✅ **The final video was built on 19 October's edit.** The last step (captions and overlays over the rendered Show) took its private copy of an earlier render instead of the new one, then removed the new 52-minute render with the other exports. It now always starts from the newest render. While a render runs, the app no longer shows the previous final video as if it were ready.
+- The edits of «La prueba» are intact (14 scenes accepted, 65 effects approved, 18 stickers); a copy of everything editable is in `Documents/Zucker recovery/La prueba 20261023-183819 (antes de instalar 2.6.17)`. The final video file itself is no longer in `exports`: render once more.
+- 2.6.18 joins Codex's installed 2.6.17 (saved video versions, captions paused during inserted clips, Clay timeline preview, 360 thumbnails) with this branch.
+
 ## Still open from earlier lists
 
 - Narration captions spanning inserted footage: corrected on the integrated Codex branch (dde66199), with cue splitting and live suppression. Targeted tests pass; the complete final montage still needs visual review.
