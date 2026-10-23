@@ -33,6 +33,7 @@ MIN_TURN = 1.0          # shorter turns ("yes", "mm") do not move the camera
 MIN_SHOT = 1.8          # no shot is shorter than this
 CUT_DELAY = 0.25        # the camera goes to a new speaker this long after they start
 ANGLE_EVERY = 9.0       # in a long answer, another angle of the same person every so often
+HOLD = 6.0              # a picture on screen this long changes at the next speaker, even on the same camera
 REACTION_AFTER = 10.0   # an answer this long shows the listener once...
 REACTION_LENGTH = 2.2   # ...for this long
 OPENING = 4.0           # the program opens on the whole table
@@ -238,6 +239,16 @@ def _covers(camera: dict[str, Any], start: float, end: float) -> bool:
     return start + offset >= -0.05 and end + offset <= duration + 0.05
 
 
+def _since(shots: list[dict[str, Any]]) -> float:
+    """When the picture now on screen came (shots of the same view in a row are one)."""
+    at = shots[-1]["start"]
+    for shot in reversed(shots[:-1]):
+        if shot["view"] != shots[-1]["view"] or abs(shot["end"] - at) > 0.5:
+            break
+        at = shot["start"]
+    return at
+
+
 def plan(turn_list: list[Turn], cameras: list[dict[str, Any]], people: int, duration: float) -> list[dict[str, Any]]:
     """Shots of the program: {"start", "end", "view": index into views(), "why"}."""
     every = views(cameras, people)
@@ -282,7 +293,10 @@ def plan(turn_list: list[Turn], cameras: list[dict[str, Any]], people: int, dura
             add(start, end, table(start, end) if turn.length >= 2.0 else (shots[-1]["view"] if shots else table(start, end)), "nobody speaks")
         else:
             who = turn.speaker
-            first = pick((who,), start, end, ("single", "pair", "group"))
+            # A picture already on screen for a while (two people talking on the same
+            # camera) gives way to another one of the new speaker: their close-up.
+            held = shots[-1]["view"] if shots and turn.start - _since(shots) >= HOLD else None
+            first = pick((who,), start, end, ("single", "pair", "group"), avoid=held)
             if first is None:
                 add(start, end, table(start, end), "speaks, seen with everyone")
             else:
@@ -314,7 +328,39 @@ def plan(turn_list: list[Turn], cameras: list[dict[str, Any]], people: int, dura
             previous_speaker = who
     if not shots:
         add(0.0, duration, table(0.0, duration), "nobody speaks")
-    return tidy(shots, duration, table(0.0, min(duration, OPENING)))
+    return vary(tidy(shots, duration, table(0.0, min(duration, OPENING))), turn_list, every, cameras)
+
+
+LONGEST = 12.0      # no picture of someone speaking stays longer: another angle of them comes
+
+
+def vary(shots: list[dict[str, Any]], turn_list: list[Turn], every: list[View], cameras: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Shots of people speaking longer than LONGEST are split where someone starts talking
+    (or after ANGLE_EVERY), the rest showing whoever speaks then from another angle."""
+    out = [dict(shot) for shot in shots]
+    index = 0
+    while index < len(out):
+        shot = out[index]
+        if shot["end"] - shot["start"] <= LONGEST or every[shot["view"]].kind == "table":
+            index += 1
+            continue
+        target = shot["start"] + ANGLE_EVERY
+        starts = [t.start for t in turn_list if shot["start"] + MIN_SHOT * 2 <= t.start <= shot["end"] - MIN_SHOT * 2 and t.speaker is not None]
+        at = min(starts, key=lambda t: abs(t - target)) if starts and min(abs(t - target) for t in starts) <= 3.0 else target
+        if at >= shot["end"] - MIN_SHOT * 2:
+            index += 1
+            continue
+        speaker = next((t.speaker for t in turn_list if t.start <= at + 0.05 < t.end), None)
+        options = [i for i, view in enumerate(every) if i != shot["view"] and view.kind in ("single", "pair", "group")
+                   and speaker is not None and speaker in view.people and _covers(cameras[view.camera], at, shot["end"])]
+        if not options:
+            index += 1
+            continue
+        other = min(options, key=lambda i: ({"single": 0, "pair": 1, "group": 2}[every[i].kind], every[i].camera == every[shot["view"]].camera))
+        out.insert(index + 1, {"start": round(at, 3), "end": shot["end"], "view": other, "why": "another angle"})
+        shot["end"] = round(at, 3)
+        index += 1
+    return out
 
 
 def tidy(shots: list[dict[str, Any]], duration: float, opening: int | None) -> list[dict[str, Any]]:
@@ -505,7 +551,7 @@ def seats(path: str | Path, *, samples: int = 8, cancel: Callable[[], None] | No
     out = []
     for group in groups:
         seen = len(group) / max(1, samples * 1.4)     # each moment looks twice (the shifted copy)
-        if seen >= 0.25:
+        if seen >= 0.18:                               # a face behind a microphone is seen less often
             out.append({"yaw": round(float(np.median([v for v, _ in group])), 1),
                         "pitch": round(float(np.median([p for _, p in group])), 1), "seen": round(min(1.0, seen), 2)})
     return sorted(out, key=lambda seat: seat["yaw"])
@@ -715,7 +761,7 @@ def identify(cameras: list[dict[str, Any]], speaking: np.ndarray, ffmpeg: str, *
             continue
         if progress:
             progress(f"Finding who is who in {Path(str(camera['path'])).name}")
-        places = (camera.get("seats") or seats(camera["path"])) if is360 else faces(camera["path"])
+        places = (camera.get("seats") or seats(camera["path"], samples=16)) if is360 else faces(camera["path"], samples=12)
         if not places:
             continue
         offset = float(camera.get("offset") or 0.0)

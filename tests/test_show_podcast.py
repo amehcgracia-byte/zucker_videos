@@ -227,3 +227,12 @@ def test_podcast_subtitles_are_burnt_on_the_video(tmp_path, monkeypatch):
     raw = subprocess.run([ffmpeg, "-v", "error", "-ss", "1.5", "-i", str(video), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
                          check=True, capture_output=True).stdout
     assert np.frombuffer(raw, np.uint8).max() > 200                           # white letters on black
+
+
+def test_two_people_on_one_camera_do_not_hold_the_same_picture_for_long():
+    cameras = _cameras()                                                   # the flat camera shows 0 and 1
+    every = pod.views(cameras, 3)
+    turns = [pod.Turn(i * 5.0, i * 5.0 + 5.0, i % 2) for i in range(8)]     # 0 and 1 answer each other for 40 s
+    shots = pod.plan(turns, cameras, 3, 40.0)
+    assert max(s["end"] - s["start"] for s in shots) <= 12.0
+    assert any(every[s["view"]].kind == "single" for s in shots) and any(every[s["view"]].kind == "pair" for s in shots)
