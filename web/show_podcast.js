@@ -55,11 +55,11 @@
           <select data-camera-kind="${c}" aria-label="Kind of camera"><option value="flat" ${camera.kind !== "360" ? "selected" : ""}>Normal camera</option><option value="360" ${camera.kind === "360" ? "selected" : ""}>360 camera</option></select>
           <button type="button" class="icon-button small" data-camera-remove="${c}">Remove</button></div>
         ${camera.kind === "360" ? `
-          <div class="podcast-row"><button type="button" class="icon-button small" data-find-seats="${c}">Find the people in it</button><small>Then say who sits at each place.</small></div>
+          <div class="podcast-row"><small>Who sits where is found by itself.</small><button type="button" class="icon-button small" data-find-seats="${c}">Look now and set it by hand…</button></div>
           <div class="podcast-seats">${(camera.seats || []).map((seat, s) => `<figure>
             <img src="/api/v1/show/podcast/view?path=${encodeURIComponent(camera.path)}&yaw=${seat.yaw}&pitch=${seat.pitch}" alt="Seat at ${Math.round(seat.yaw)}°" loading="lazy">
-            <figcaption><select data-seat="${c}:${s}" aria-label="Who sits at ${Math.round(seat.yaw)}°"><option value="">Nobody / not used</option>${names.map((name, p) => `<option value="${p}" ${seat.person === p ? "selected" : ""}>${esc(name)}</option>`).join("")}</select></figcaption></figure>`).join("")}</div>`
-        : `<div class="podcast-row podcast-shows"><small>Shows:</small>${names.map((name, p) => `<label><input type="checkbox" data-shows="${c}:${p}" ${(camera.people || []).includes(p) ? "checked" : ""}> ${esc(name)}</label>`).join("") || '<small>add the microphones first</small>'}</div>`}
+            <figcaption><select data-seat="${c}:${s}" aria-label="Who sits at ${Math.round(seat.yaw)}°"><option value="">Found by itself</option>${names.map((name, p) => `<option value="${p}" ${seat.person === p ? "selected" : ""}>${esc(name)}</option>`).join("")}</select></figcaption></figure>`).join("")}</div>`
+        : `<div class="podcast-row podcast-shows"><small>Shows (found by itself if none is ticked):</small>${names.map((name, p) => `<label><input type="checkbox" data-shows="${c}:${p}" ${(camera.people || []).includes(p) ? "checked" : ""}> ${esc(name)}</label>`).join("") || '<small>add the microphones first</small>'}</div>`}
       </div>`).join("") : '<p class="show-hint">Every camera of the recording: normal ones (usually two people each) and the 360 in the middle.</p>';
   }
 
@@ -114,8 +114,8 @@
         try {
           await api("/show/podcast", { method: "PUT", body: JSON.stringify(setup) });
           const { seats } = await api("/show/podcast/seats", { method: "POST", body: JSON.stringify({ path: camera.path }) });
-          camera.seats = seats.map((seat, i) => ({ ...seat, person: i < setup.people.length ? i : null }));
-          status(seats.length ? `${seats.length} places found: say who sits at each one.` : "No faces found: is it the 360 camera?");
+          camera.seats = seats.map(seat => ({ ...seat, person: null }));
+          status(seats.length ? `${seats.length} places found. Leave them as "found by itself" or say who sits at each one.` : "No faces found: is it the 360 camera?");
           render(); save();
         } catch (error) { status(error.message); }
         t.disabled = false;
@@ -128,7 +128,9 @@
     const el = box(); if (!el) return;
     const podcast = kind === "podcast";
     el.hidden = !podcast;
-    document.querySelector(".show-assistant")?.toggleAttribute("hidden", podcast);
+    // A podcast is automatic: no idea, effects or review; only whether it has subtitles.
+    document.querySelectorAll(".show-assistant, .show-not-podcast").forEach(node => node.toggleAttribute("hidden", podcast));
+    document.querySelectorAll(".show-only-podcast").forEach(node => node.toggleAttribute("hidden", !podcast));
     if (podcast) { attach(); if (!loaded) load(); }
   }
   document.addEventListener("change", event => { if (event.target.id === "showStyle") sync(); });

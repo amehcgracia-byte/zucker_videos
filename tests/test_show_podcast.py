@@ -179,3 +179,51 @@ def test_a_whole_podcast_becomes_one_program_with_its_mix(tmp_path, monkeypatch)
     late = np.frombuffer(raw, np.uint8).reshape(90, 160, 3)
     # Without a table view the first seconds show the first speaker: Ana (red); later Bea (blue).
     assert early[..., 0].mean() > early[..., 2].mean() and late[..., 2].mean() > late[..., 0].mean()
+
+
+def test_mouths_say_who_speaks_and_which_seat_is_which_microphone():
+    frames = 300
+    motion = np.random.default_rng(2).normal(0.01, 0.002, (3, frames)).clip(0)
+    db = np.full(frames, -60.0)
+    turns = [(0, 0, 80), (2, 100, 180), (1, 200, 290)]                    # seat, from, to (STEP frames)
+    for seat, a, b in turns:
+        motion[seat, a:b] += 0.05
+        db[a:b] = -22.0
+    speaking = pod.speakers_from_mouths(db, motion)
+    for seat, a, b in turns:
+        assert speaking[seat, a + 10:b - 10].all() and not speaking[[s for s in range(3) if s != seat], a + 10:b - 10].any()
+    # Microphones in another order than the seats: matched by who moves their mouth when.
+    mics = speaking[[2, 0, 1]]
+    assert pod.match_seats(mics, motion) == {2: 0, 0: 1, 1: 2}
+
+
+def test_english_captions_follow_the_edit_and_skip_what_was_cut():
+    from core.show import edited_captions, english_edited_words
+    plan = {"fps": 30, "language": "it", "words": [], "shots": [
+        {"start_frame": 0, "end_frame": 60, "words": []}, {"start_frame": 120, "end_frame": 180, "words": []}],
+        "english_words": [{"text": "Hello", "start": 0.2, "end": 0.6}, {"text": "friends.", "start": 0.7, "end": 1.2},
+                          {"text": "cut", "start": 2.5, "end": 3.0}, {"text": "Welcome", "start": 4.1, "end": 4.6}]}
+    words = english_edited_words(plan)
+    assert [w for w, _, _ in words] == ["Hello", "friends.", "Welcome"]
+    assert words[2][1] == pytest.approx(2.1)                                  # 4.1 s of source, 2.1 s of the edit
+    cues = edited_captions(plan, "calm")
+    assert cues[0]["lines"] == ["Hello friends."] and cues[-1]["lines"] == ["Welcome"]
+
+
+def test_podcast_subtitles_are_burnt_on_the_video(tmp_path, monkeypatch):
+    import json
+    from core.project import create_project
+    from core.show import burn_captions
+    ffmpeg = _ffmpeg()
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path / "data"))
+    project = create_project("Subs", str(tmp_path / "Subs.zuckervid"))
+    video = tmp_path / "program.mp4"
+    subprocess.run([ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", "color=black:s=320x180:r=30:d=3", "-f", "lavfi", "-i", "sine=d=3",
+                    "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(video)], check=True)
+    assert not burn_captions(project, video, ffmpeg)                          # no captions: nothing done
+    (project.folder / "cue_track.json").write_text(json.dumps({"style": "autoread_fixed_white", "lang": "en", "cues": [
+        {"lines": ["HELLO THERE"], "start": 0.0, "end": 3.0, "style_override": {"size": 90, "vertical": 50}, "words": []}]}))
+    assert burn_captions(project, video, ffmpeg)
+    raw = subprocess.run([ffmpeg, "-v", "error", "-ss", "1.5", "-i", str(video), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                         check=True, capture_output=True).stdout
+    assert np.frombuffer(raw, np.uint8).max() > 200                           # white letters on black

@@ -3924,7 +3924,8 @@ async function waitForPreparedProject() {
 
 async function startWizard(options = {}) {
   // Show asks for the person's idea before anything is planned.
-  if (selectedPlatform === "show" && window.ShowIdea && !window.ShowIdea.ready()) { window.ShowIdea.ask(); return; }
+  const podcastShow = selectedPlatform === "show" && document.querySelector("#showStyle")?.value === "podcast";
+  if (selectedPlatform === "show" && !podcastShow && window.ShowIdea && !window.ShowIdea.ready()) { window.ShowIdea.ask(); return; }
   if (selectedPlatform === "show" && document.querySelector("#showStyle")?.value === "podcast" && window.ShowPodcast && !window.ShowPodcast.ready()) {
     showToast("Add the microphones (one per person) and the cameras of the podcast first.", true); return;
   }
@@ -3985,6 +3986,7 @@ async function startWizard(options = {}) {
       show_auto_research:document.querySelector("#showAutoResearch")?.checked??true,
       show_main: document.querySelector("#showMain")?.value || "",
       show_review: document.querySelector("#showReview")?.checked ?? true,
+      show_captions: document.querySelector("#showPodcastCaptions")?.checked ?? true,
       ...(selectedPlatform === "show" && window.ShowIdea ? window.ShowIdea.payload() : {}),
       song_index: selectedSong,
       trim_start_sec: timeToSeconds(document.querySelector("#trimStart").value),

@@ -60,6 +60,53 @@ def edited_words(plan: dict[str, Any]) -> list[tuple[str, float, float]]:
     return timed
 
 
+def english_edited_words(plan: dict[str, Any]) -> list[tuple[str, float, float]]:
+    """The English translation's words (``plan["english_words"]``, on the source's clock) on
+    the edited video; what the edit cut out is left out."""
+    fps = int(plan.get("fps") or 30)
+    shots, offset = [], 0.0
+    for shot in plan["shots"]:
+        start, end = shot["start_frame"] / fps, shot["end_frame"] / fps
+        shots.append((start, end, offset))
+        offset += end - start
+    timed: list[tuple[str, float, float]] = []
+    for word in plan.get("english_words") or []:
+        middle = (float(word["start"]) + float(word["end"])) / 2
+        hit = next(((a, b, at) for a, b, at in shots if a <= middle < b), None)
+        if hit is None:
+            continue
+        a, b, at = hit
+        start = at + max(0.0, float(word["start"]) - a)
+        timed.append((str(word["text"]).strip(), round(start, 3), round(max(at + min(b, float(word["end"])) - a, start + 0.05), 3)))
+    return timed
+
+
+def translate_to_english(project, path: Path, plan: dict[str, Any], *, model_name: str,
+                         progress: Callable[[int, str], None] | None = None) -> None:
+    """Captions are always in English: when the talk is in another language, Whisper (on this
+    Mac) translates it, and its words go in ``plan["english_words"]``."""
+    from core.backstage_transcription import transcribe_sources
+    language = str(plan.get("language") or "").lower()
+    if not language or language.startswith("en"):
+        plan.pop("english_words", None)
+        return
+    if progress:
+        progress(0, f"Translating what is said ({language}) for English captions")
+    noise = plan.get("noise_report") or {}
+    audio = Path(noise["path"]) if noise.get("path") and Path(noise["path"]).is_file() else path
+    result = transcribe_sources([{"path": str(audio), "filename": path.name, "language_hint": language}],
+                                project.artifacts_dir / "show_transcript_en.json", model_name=model_name, task="translate", vad_filter=True)
+    words = []
+    for segment in ((result.get("sources") or [{}])[0].get("segments") or []):
+        for item in segment.get("words") or []:
+            text = str(item.get("word") or item.get("text") or "").strip()
+            start = float(item.get("start_sec", item.get("start", 0.0)))
+            end = float(item.get("end_sec", item.get("end", start)))
+            if text and end >= start:
+                words.append({"text": text, "start": round(start, 3), "end": round(max(end, start + 0.02), 3)})
+    plan["english_words"] = words
+
+
 def pause_points(plan: dict[str, Any]) -> list[float]:
     """Moments of the edited video where the host had paused (a silence was cut)."""
     fps = int(plan.get("fps") or 30)
@@ -107,8 +154,9 @@ def steam_within_its_shot(plan: dict[str, Any], entries: list[dict[str, Any]]) -
 
 
 def edited_captions(plan: dict[str, Any], style: str) -> list[dict[str, Any]]:
-    """Short caption cues from the kept words, on the edited timeline."""
-    timed = edited_words(plan)
+    """Short caption cues from the kept words, on the edited timeline (in English when the
+    talk was in another language and was translated)."""
+    timed = english_edited_words(plan) if plan.get("english_words") else edited_words(plan)
     cues: list[dict[str, Any]] = []
     group: list[tuple[str, float, float]] = []
     loud = style == "choe"
@@ -202,6 +250,9 @@ def _transcribe_and_plan(project, path: Path, *, style_name: str, language: str 
     progress(first + int((last - first) * 0.62), "Cutting pauses, hesitations and repeated takes")
     plan = plan_show(sources[0], _duration(path), style)
     plan.update(source=str(path), style=style_name, language=sources[0].get("language"), noise_report=noise_report)
+    if (project.data.get("settings", {}).get("wizard", {}).get("captions_english", True)):
+        translate_to_english(project, path, plan, model_name=model_name,
+                             progress=lambda value, detail: progress(first + int((last - first) * 0.61), detail))
     if not plan["shots"]:
         raise RuntimeError("Nothing was left after removing pauses: is there speech in this video?")
     progress(first + int((last - first) * 0.65), "Finding your face to frame close shots")
@@ -290,8 +341,33 @@ def run_show(project, source: str, *, style_name: str = "choe", language: str | 
         cut.unlink(missing_ok=True)
     manifest = _publish(project, plan, destination, style_name=style_name, language=language or "", started=started,
                         summary={"gags": gag_summary}, warnings=list(gag_summary.get("notes") or []))
+    if style_name == "podcast":
+        progress(96, "Writing the subtitles on the video")
+        burn_captions(project, destination, ffmpeg)            # automatic: no captions page to visit
     progress(100, "Show ready")
     return destination, manifest
+
+
+def burn_captions(project, video: Path, ffmpeg: str) -> bool:
+    """The captions of the cue track (written by _publish) burnt on ``video`` in place; False
+    when there are none (captions off)."""
+    from captions.burn import burn
+    from captions.model import Cue, CueTrack, Word
+    from captions.styles import get_style
+    track_path = project.folder / "cue_track.json"
+    track = json.loads(track_path.read_text(encoding="utf-8")) if track_path.is_file() else {}
+    cues = tuple(Cue(tuple(str(line) for line in cue.get("lines") or []), float(cue["start"]), float(cue["end"]),
+                     tuple(Word(str(w["text"]), float(w["start"]), float(w["end"])) for w in cue.get("words") or []
+                           if float(w["end"]) > float(w["start"])),
+                     dict(cue.get("style_override") or {}))
+                 for cue in track.get("cues") or [])
+    if not cues:
+        return False
+    burnt = video.with_name(f".{video.stem}.captions{video.suffix}")
+    burn(video, CueTrack(cues, str(track.get("lang") or "und")), get_style(str(track.get("style") or "autoread_fixed_white")),
+         output_path=burnt, ffmpeg=ffmpeg)
+    burnt.replace(video)
+    return True
 
 
 HISTORY_KEEP = 30

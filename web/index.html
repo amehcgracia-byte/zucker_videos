@@ -52,7 +52,7 @@
           <button class="platform-card" data-platform="show">
             <span class="platform-glyph" data-glyph="show"></span>
             <strong>Show</strong>
-            <span>You talking to camera (fast or calm), or a podcast: pauses, "eh" and retakes cut, effects, captions</span>
+            <span>You talking to camera (gamer or influencer), or a podcast: pauses, "eh" and retakes cut, effects, captions</span>
           </button>
         </div>
 </div></dialog>
@@ -155,21 +155,21 @@
           <h2>Show</h2>
           <p>Your talking video is cleaned and cut automatically: long pauses, "eh"/"um" and phrases you said twice are removed (the last take stays), then it is cut into short shots with punch-in zooms. Captions from what you say are ready in Overlay &amp; Captions.</p>
           <label class="show-kind">Kind of video <select id="showStyle">
-            <option value="choe" selected>Fast: jokes, influencer — a cut every ~1.5 s with zooms</option>
-            <option value="calm">Normal: informative, calm — longer shots, softer zooms</option>
+            <option value="choe" selected>Gamer: fast, jokes — a cut every ~1.5 s with zooms</option>
+            <option value="calm">Influencer: informative, calm — longer shots, softer zooms</option>
             <option value="podcast">Podcast: several people, a microphone each, several cameras</option>
             <option value="storytelling" disabled>Storytelling: a narration over pictures and clips (coming next)</option>
           </select></label>
           <section id="showPodcast" class="show-podcast" hidden>
             <h3>Podcast</h3>
-            <p class="show-hint">Recorded live, edited after: the program shows who speaks (from their microphone), the whole table when several talk or laugh, and now and then the person listening. The microphones are mixed so nobody echoes.</p>
+            <p class="show-hint">Add each person's microphone track and every camera: the rest is automatic. Everything is put in sync by its sound, who sits where is found from who speaks while each mouth moves, the program shows who speaks (the whole table when several talk or laugh, now and then the person listening) and the microphones are mixed so nobody echoes.</p>
             <h4>Microphones <button type="button" class="icon-button small" data-add-mics>Add microphone tracks…</button></h4>
             <div data-podcast-people></div>
             <h4>Cameras <button type="button" class="icon-button small" data-add-cameras>Add cameras…</button></h4>
             <div data-podcast-cameras></div>
             <p id="showPodcastStatus" class="show-hint" role="status"></p>
           </section>
-          <section id="showIdea" class="show-idea">
+          <section id="showIdea" class="show-idea show-not-podcast">
             <h3>Your idea for this video</h3>
             <p class="show-hint">Before anything is planned, tell us what you have in mind: the story, the jokes, which pictures or characters should appear and when, the tone. Your idea goes first; the program adds its own around it.</p>
             <div class="show-idea-modes"><label><input type="radio" name="showIdeaMode" value="together" checked> With my idea (recommended)</label><label><input type="radio" name="showIdeaMode" value="automatic"> Fully automatic</label></div>
@@ -184,11 +184,12 @@
             <li><strong>Close-ups of what you mention</strong> (optional): every other video or photo of the project. <span id="showResourceList" class="show-hint"></span> Film the things you talk about, close and steady, a few seconds each.</li>
             <li><strong>Their voices</strong> (optional): while filming a thing, say its lines in its voice. In the review you choose which recorded line each character says.</li>
           </ol>
-          <label><input type="checkbox" id="showReview" checked> Review every effect before rendering (preview, adjust, approve or discard)</label>
+          <label class="show-not-podcast"><input type="checkbox" id="showReview" checked> Review every effect before rendering (preview, adjust, approve or discard)</label>
           <label>Language <select id="showLanguage"><option value="" selected>Detect automatically</option><option value="es">Spanish</option><option value="en">English</option></select></label>
-          <label>Gags <select id="showGags"><option value="claude" selected>Drawings, characters and words planned by your Claude</option><option value="keywords">Drawings and words from keywords (offline)</option><option value="off">No gags</option></select></label>
-          <label><input type="checkbox" id="showAutoResearch" checked> Find internet reference drafts automatically (up to 3 per show; text searches only)</label>
-          <div id="showGagStatus" class="show-gag-status">
+          <label class="show-not-podcast">Gags <select id="showGags"><option value="claude" selected>Drawings, characters and words planned by your Claude</option><option value="keywords">Drawings and words from keywords (offline)</option><option value="off">No gags</option></select></label>
+          <label class="show-not-podcast"><input type="checkbox" id="showAutoResearch" checked> Find internet reference drafts automatically (up to 3 per show; text searches only)</label>
+          <label class="show-only-podcast" hidden><input type="checkbox" id="showPodcastCaptions" checked> Subtitles in English (translated when people speak another language)</label>
+          <div id="showGagStatus" class="show-gag-status show-not-podcast">
             <p><span id="showClaudeStatus">Checking your Claude…</span> <button id="showClaudeSignIn" class="icon-button small" type="button" hidden>Connect my Claude</button></p>
             <p><span id="showPainterStatus">Checking the drawing painter…</span> <button id="showPainterDownload" class="icon-button small" type="button" hidden>Download the painter (2.1 GB, once)</button></p>
             <p>Your own pictures are used first: <button id="showOpenLibrary" class="icon-button small" type="button">Open the gag library</button></p>
@@ -523,7 +524,7 @@
     <script src="/native_bridge.js?v=editor-ui-4"></script>
     <link rel="stylesheet" href="/tutorial.css" />
     <script src="/tutorial.js"></script>
-    <script src="/app.js?v=editor-ui-16"></script>
+    <script src="/app.js?v=editor-ui-17"></script>
     <script src="/show_edit_queue.js?v=1"></script>
     <script src="/show_clock.js?v=1"></script>
     <script src="/show_live_captions.js?v=4"></script>
@@ -538,7 +539,7 @@
   <script src="/show_review.js?v=80"></script>
     <script src="/show_audio.js?v=3"></script>
     <script src="/show_narrator.js?v=2"></script>
-    <script src="/show_podcast.js?v=1"></script>
+    <script src="/show_podcast.js?v=2"></script>
     <script src="/show_einstein.js?v=9"></script>
     <script src="/show_characters.js?v=14"></script>
     <script src="/show_voice.js?v=1"></script>

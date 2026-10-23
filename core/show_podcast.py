@@ -511,6 +511,225 @@ def seats(path: str | Path, *, samples: int = 8, cancel: Callable[[], None] | No
     return sorted(out, key=lambda seat: seat["yaw"])
 
 
+# ---- Mouths: who speaks, seen in the 360 picture ---------------------------------------------
+
+def _mouth_reader():
+    """A function (RGB picture) -> how open the largest face's mouth is (the gap between the
+    inner lips over the mouth's width), or None; the Mac's face landmarks."""
+    import ctypes
+    import sys
+    import warnings
+    if sys.platform != "darwin":
+        return None
+    try:
+        import objc
+        import Quartz
+        bundle: dict[str, Any] = {}
+        objc.loadBundle("Vision", bundle, bundle_path="/System/Library/Frameworks/Vision.framework")
+    except Exception:
+        return None
+    warnings.filterwarnings("ignore", category=getattr(objc, "ObjCPointerWarning", Warning))
+    space = Quartz.CGColorSpaceCreateDeviceRGB()
+
+    def points(region) -> np.ndarray:
+        count = int(region.pointCount())
+        raw = ctypes.cast(region.normalizedPoints().pointerAsInteger, ctypes.POINTER(ctypes.c_double * (2 * count))).contents
+        return np.array(raw).reshape(count, 2)
+
+    def read(rgb: np.ndarray) -> float | None:
+        height, width = rgb.shape[:2]
+        data = np.dstack([rgb[..., ::-1], np.full((height, width, 1), 255, np.uint8)]).tobytes()
+        provider = Quartz.CGDataProviderCreateWithData(None, data, len(data), None)
+        image = Quartz.CGImageCreate(width, height, 8, 32, width * 4, space,
+                                     Quartz.kCGBitmapByteOrder32Little | Quartz.kCGImageAlphaPremultipliedFirst,
+                                     provider, None, False, Quartz.kCGRenderingIntentDefault)
+        handler = bundle["VNImageRequestHandler"].alloc().initWithCGImage_options_(image, {})
+        request = bundle["VNDetectFaceLandmarksRequest"].alloc().init()
+        handler.performRequests_error_([request], None)
+        faces = list(request.results() or [])
+        if not faces:
+            return None
+        face = max(faces, key=lambda f: f.boundingBox().size.width)
+        marks = face.landmarks()
+        if marks is None or marks.innerLips() is None or marks.outerLips() is None:
+            return None
+        inner, outer = points(marks.innerLips()), points(marks.outerLips())
+        wide = float(outer[:, 0].max() - outer[:, 0].min())
+        return float(inner[:, 1].max() - inner[:, 1].min()) / wide if wide > 1e-6 else None
+    return read
+
+
+def mouth_motion(path: str | Path, seats_list: list[dict[str, Any]], ffmpeg: str, *, fps: float = 5.0,
+                 start: float = 0.0, duration: float | None = None, flat: bool = False,
+                 progress: Callable[[float], None] | None = None, cancel: Callable[[], None] | None = None) -> np.ndarray:
+    """(places, frames at ``fps``): how much the mouth of the person at each place moves (0
+    where no face is read), from ``start`` (seconds of the camera) for ``duration``. Places
+    are seats of a 360 camera ({"yaw", "pitch"}) or, with ``flat``, faces of a normal camera
+    ({"x", "y", "w"}: shares of its picture)."""
+    read = _mouth_reader()
+    if read is None:
+        raise RuntimeError("Reading mouths needs the Mac's face detector")
+    import cv2
+    width, height = (1280, 720) if flat else (1920, 960)
+    window = ["-ss", f"{start:.2f}"] if start else []
+    length = ["-t", f"{duration:.2f}"] if duration else []
+    reader = subprocess.Popen([ffmpeg, "-v", "error", "-nostdin", *window, "-i", str(path), *length,
+                               "-vf", f"fps={fps},scale={width}:{height}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                              stdout=subprocess.PIPE)
+    side = int(width * 44 / 360)                            # 44 degrees around each face
+    openness: list[list[float]] = [[] for _ in seats_list]
+    try:
+        index = 0
+        while True:
+            raw = reader.stdout.read(width * height * 3)
+            if len(raw) < width * height * 3:
+                break
+            frame = np.frombuffer(raw, np.uint8).reshape(height, width, 3)
+            for seat_index, seat in enumerate(seats_list):
+                if flat:
+                    size = int(max(48, float(seat["w"]) * width * 2.2))
+                    cx, cy = int(float(seat["x"]) * width), int(float(seat["y"]) * height)
+                    crop = frame[max(0, cy - size // 2):cy + size // 2, max(0, cx - size // 2):cx + size // 2]
+                else:
+                    cx = int((float(seat["yaw"]) / 360 + 0.5) * width)
+                    cy = int((0.5 - float(seat.get("pitch") or 0) / 180) * height)
+                    crop = np.roll(frame, width // 2 - cx, axis=1)[max(0, cy - side // 2):cy + side // 2, width // 2 - side // 2:width // 2 + side // 2]
+                value = read(cv2.resize(crop, (448, 448), interpolation=cv2.INTER_CUBIC)) if crop.size else None
+                openness[seat_index].append(np.nan if value is None else value)
+            index += 1
+            if index % 25 == 0:
+                if cancel:
+                    cancel()
+                if progress:
+                    progress(index)
+    finally:
+        reader.kill()
+        reader.wait()
+    out = []
+    window = max(1, int(round(fps * 0.8)))
+    for row in openness:
+        values = np.asarray(row, np.float64)
+        filled = np.where(np.isnan(values), np.nanmedian(values) if np.isfinite(values).any() else 0.0, values)
+        change = np.abs(np.diff(filled, prepend=filled[0]))
+        motion = np.convolve(change, np.ones(window) / window, mode="same")
+        motion[np.isnan(values)] = 0.0
+        out.append(motion)
+    return np.vstack(out) if out else np.zeros((0, 0))
+
+
+def _on_steps(motion: np.ndarray, fps: float, offset: float, frames: int) -> np.ndarray:
+    """Mouth motion (camera clock, ``fps``) on the program's STEP frames (``offset``: the
+    camera's time is the program's plus it)."""
+    times = np.arange(frames) * STEP + offset
+    own = np.arange(motion.shape[1]) / fps
+    return np.vstack([np.interp(times, own, row, left=0.0, right=0.0) for row in motion])
+
+
+def match_seats(speaking: np.ndarray, motion: np.ndarray) -> dict[int, int]:
+    """{seat: person}: each microphone's person is the face whose mouth moves when they speak
+    (the most alike first)."""
+    if not speaking.size or not motion.size:
+        return {}
+    z = (motion - motion.mean(axis=1, keepdims=True)) / (motion.std(axis=1, keepdims=True) + 1e-9)
+    talk = speaking.astype(np.float64)
+    talk = (talk - talk.mean(axis=1, keepdims=True)) / (talk.std(axis=1, keepdims=True) + 1e-9)
+    alike = z @ talk.T / max(1, z.shape[1])                 # (seats, people) correlations
+    out: dict[int, int] = {}
+    for _ in range(min(alike.shape)):
+        seat, person = np.unravel_index(int(np.argmax(alike)), alike.shape)
+        if alike[seat, person] <= 0.05:
+            break
+        out[int(seat)] = int(person)
+        alike[seat, :] = -np.inf
+        alike[:, person] = -np.inf
+    return out
+
+
+def speakers_from_mouths(db: np.ndarray, motion: np.ndarray) -> np.ndarray:
+    """(seats, frames) who speaks from one recording of the room (``db``: its loudness on STEP
+    frames) and the mouths (``motion`` on the same frames): when there is a voice, the seat
+    whose mouth moves most (each seat measured against itself), held at least MIN_TURN."""
+    floor = np.percentile(db, 15)
+    voiced = db > floor + SPEAK_ABOVE_FLOOR
+    z = (motion - motion.mean(axis=1, keepdims=True)) / (motion.std(axis=1, keepdims=True) + 1e-9)
+    window = max(1, int(0.8 / STEP))
+    z = np.vstack([np.convolve(row, np.ones(window) / window, mode="same") for row in z])
+    who = np.where(voiced, np.argmax(z, axis=0), -1)
+    out = np.zeros_like(z, dtype=bool)
+    for seat in range(z.shape[0]):
+        out[seat] = who == seat
+        _fill(out[seat], gap=int(0.6 / STEP))
+        _drop(out[seat], shorter=int(MIN_TURN / STEP))
+    return out
+
+
+def faces(path: str | Path, *, samples: int = 8) -> list[dict[str, float]]:
+    """The people a normal camera shows: faces found in a few moments, as {"x", "y", "w"}
+    (shares of its picture), left to right."""
+    import cv2
+    from core.show_reframe import detector
+    detect = detector()
+    capture = cv2.VideoCapture(str(path))
+    found: list[tuple[float, float, float]] = []
+    try:
+        total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        for index in np.linspace(total * 0.05, max(0, total * 0.95 - 1), samples).astype(int):
+            capture.set(cv2.CAP_PROP_POS_FRAMES, int(index))
+            ok, bgr = capture.read()
+            if ok:
+                found += [face for face in detect(cv2.cvtColor(cv2.resize(bgr, (1280, 720)), cv2.COLOR_BGR2RGB)) if face[2] >= 0.03]
+    finally:
+        capture.release()
+    groups: list[list[tuple[float, float, float]]] = []
+    for face in sorted(found):
+        group = next((g for g in groups if abs(np.median([f[0] for f in g]) - face[0]) < 0.08), None)
+        (group.append(face) if group else groups.append([face]))
+    return [{"x": round(float(np.median([f[0] for f in g])), 4), "y": round(float(np.median([f[1] for f in g])), 4),
+             "w": round(float(np.median([f[2] for f in g])), 4)} for g in groups if len(g) >= max(2, samples * 0.3)]
+
+
+SAMPLE = 240.0      # seconds of conversation looked at to know who sits where
+
+
+def _busy_window(speaking: np.ndarray, length: float) -> tuple[int, int]:
+    """The stretch (STEP frames) where most people speak: the best sample of who is who."""
+    span = int(length / STEP)
+    if speaking.shape[1] <= span:
+        return 0, speaking.shape[1]
+    starts = range(0, speaking.shape[1] - span, int(30 / STEP))
+    best = max(starts, key=lambda a: (int((speaking[:, a:a + span].sum(axis=1) > 20).sum()), int(speaking[:, a:a + span].sum())))
+    return best, best + span
+
+
+def identify(cameras: list[dict[str, Any]], speaking: np.ndarray, ffmpeg: str, *,
+             progress: Callable[[str], None] | None = None, cancel: Callable[[], None] | None = None) -> None:
+    """Who is where, without asking (in place): the seats of a 360 camera and the faces of a
+    normal one are found, and each is given the person whose microphone speaks while that
+    mouth moves, on a few busy minutes. What the person set by hand stays."""
+    a, b = _busy_window(speaking, SAMPLE)
+    for camera in cameras:
+        is360 = camera.get("kind") == "360"
+        if is360 and any(seat.get("person") is not None for seat in camera.get("seats") or []):
+            continue
+        if not is360 and camera.get("people"):
+            continue
+        if progress:
+            progress(f"Finding who is who in {Path(str(camera['path'])).name}")
+        places = (camera.get("seats") or seats(camera["path"])) if is360 else faces(camera["path"])
+        if not places:
+            continue
+        offset = float(camera.get("offset") or 0.0)
+        start = max(0.0, a * STEP + offset)
+        motion = mouth_motion(camera["path"], places, ffmpeg, fps=4.0, start=start, duration=(b - a) * STEP, flat=not is360, cancel=cancel)
+        on_steps = np.vstack([np.interp(np.arange(b - a) * STEP, np.arange(motion.shape[1]) / 4.0, row, left=0, right=0) for row in motion])
+        match = match_seats(speaking[:, a:b], on_steps)
+        if is360:
+            camera["seats"] = [{**place, "person": match.get(i)} for i, place in enumerate(places)]
+        else:
+            camera["people"] = sorted(match.values())
+            camera["faces"] = [{**place, "person": match.get(i)} for i, place in enumerate(places)]
+
+
 # ---- The whole of it -------------------------------------------------------------------------
 
 def setup_path(project) -> Path:
@@ -551,6 +770,7 @@ def build(project, *, progress: Callable[[int, str], None], cancel: Callable[[],
     rate = 8000
     db = np.vstack([levels(_decode(mic, ffmpeg, rate), rate, float(person["offset"]), frames) for mic, person in zip(mics, people)])
     speaking = activity(db)
+    identify(cameras, speaking, ffmpeg, cancel=cancel, progress=lambda text: progress(16, text))
     turn_list = turns(speaking, db)
     progress(20, f"Choosing the cameras: {len(turn_list)} turns of conversation")
     shots = plan(turn_list, cameras, len(people), duration)

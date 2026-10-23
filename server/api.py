@@ -1619,11 +1619,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             style = str(body.get("show_style") or "choe")
             podcast = style == "podcast"
             if podcast:
-                # The cameras and microphones of the podcast setup make the program first.
-                from core import show_podcast
+                # The cameras and microphones of the podcast setup make the program first; the
+                # rest is automatic (no effects, no review), with English subtitles or none.
+                from core import show_caption_layout, show_podcast
                 setup = show_podcast.load_setup(state.project)
                 if not setup.get("people") or not setup.get("cameras"):
                     return error_response("bad_request", "Add the microphones and cameras of the podcast", 400)
+                show_caption_layout.set_enabled(state.project, bool(body.get("show_captions", True)))
             elif not videos:
                 return error_response("bad_request", "Add the video where you talk", 400)
             registered = {str(record.get("path")) for record in state.project.data.get("inputs", {}).get("videos", [])}
@@ -1644,8 +1646,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             resources = [] if podcast else [path for path in registered if path != source] + [str(path) for path in body.get("show_photos") or [] if isinstance(path, str)]
             try:
                 job = state.wizard.start_show(state.project, source, style if style in {"choe", "calm", "podcast"} else "choe", language,
-                                              gags if gags in {"claude", "keywords", "off"} else "claude",
-                                              review=bool(body.get("show_review", True)), resources=resources)
+                                              "off" if podcast else gags if gags in {"claude", "keywords", "off"} else "claude",
+                                              review=bool(body.get("show_review", True)) and not podcast, resources=resources)
             except RuntimeError as exc:
                 return error_response("wizard_busy", str(exc), 409)
             state.composition.reset()
