@@ -42,13 +42,18 @@ class ShowStyle:
     reveal_every: int = 9        # ...and every Mth starts close and opens up
     move_min_sec: float = 2.0    # only shots this long move
     glide_every: int = 2         # where the picture runs on, every Nth change of framing is a camera move, not a cut
+    remove_fillers: bool = True  # "eh", "um" taken out (not in a conversation: it would cut another voice)
     retake_window: float = 25.0  # how far apart two takes of a phrase can be
     fps: int = 30
 
 
 CHOE = ShowStyle()
 CALM = ShowStyle(max_pause=0.6, target_shot=3.5, min_shot=1.5, max_shot=7.0, zooms=(1.0, 1.15, 1.35), reveal_every=0, glide_every=1)
-STYLES = {"choe": CHOE, "calm": CALM}
+# A conversation: the cameras already change with who speaks, so no zooms; only long silences
+# go (the rhythm of a conversation stays) and nothing is taken out from under another voice.
+PODCAST = ShowStyle(max_pause=1.2, lead=0.15, tail=0.3, target_shot=30.0, min_shot=30.0, max_shot=600.0, zooms=(1.0,),
+                    push_every=0, reveal_every=0, glide_every=0, retake_window=0.0, remove_fillers=False)
+STYLES = {"choe": CHOE, "calm": CALM, "podcast": PODCAST}
 
 
 @dataclass
@@ -129,7 +134,7 @@ def _is_retake(first: list[Word], later: list[Word]) -> bool:
 
 def mark_removals(words: list[Word], style: ShowStyle = CHOE) -> list[Word]:
     for word in words:
-        if word.norm in FILLERS:
+        if word.norm in FILLERS and style.remove_fillers:
             word.removed = "filler"
     phrases = _phrases(words)
     for index, phrase in enumerate(phrases):

@@ -510,11 +510,23 @@ class WizardRunner:
         job.status = "done"
         job.message = "Show ready"
 
+    @staticmethod
+    def _podcast_program(project, style, source, progress, cancel):
+        """A podcast is first edited into one program from its cameras and microphones
+        (core.show_podcast); the Show then works on that program. Its progress takes the
+        first third of the bar."""
+        if style != "podcast":
+            return source, progress
+        from core.show_podcast import build
+        program = build(project, progress=lambda value, detail: progress(int(value * 30 / 52), detail), cancel=cancel)
+        return str(program), (lambda value, detail, **kw: progress(30 + int(value * 0.7), detail, **kw))
+
     def _run_show(self, job, project, source, style, language, gags="claude"):
         from core.show import run_show
         started = time.monotonic()
         cancel, progress = self._show_hooks(job)
         try:
+            source, progress = self._podcast_program(project, style, source, progress, cancel)
             project.data.setdefault("settings", {}).setdefault("wizard", {}).update(platform="show", show={"source": source, "style": style, "language": language or "", "gags": gags})
             project.save()
             destination, manifest = run_show(project, source, style_name=style, language=language, gags=gags, progress=progress, cancel=cancel)
@@ -534,6 +546,7 @@ class WizardRunner:
         cancel, progress = self._show_hooks(job)
         held = False
         try:
+            source, progress = self._podcast_program(project, style, source, progress, cancel)
             project.data.setdefault("settings", {}).setdefault("wizard", {}).update(
                 platform="show", show={"source": source, "style": style, "language": language or "", "gags": gags, "review": True, "resources": resources})
             project.save()

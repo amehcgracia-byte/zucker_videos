@@ -1616,12 +1616,19 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if state.project is None:
                 return error_response("bad_request", "Save the project location first", 400)
             videos = [str(path) for path in body.get("videos") or [] if isinstance(path, str)]
-            if not videos:
+            style = str(body.get("show_style") or "choe")
+            podcast = style == "podcast"
+            if podcast:
+                # The cameras and microphones of the podcast setup make the program first.
+                from core import show_podcast
+                setup = show_podcast.load_setup(state.project)
+                if not setup.get("people") or not setup.get("cameras"):
+                    return error_response("bad_request", "Add the microphones and cameras of the podcast", 400)
+            elif not videos:
                 return error_response("bad_request", "Add the video where you talk", 400)
             registered = {str(record.get("path")) for record in state.project.data.get("inputs", {}).get("videos", [])}
             chosen = str(body.get("show_main") or "")
-            source = chosen if chosen in videos else next((path for path in videos if path in registered), videos[0])
-            style = str(body.get("show_style") or "choe")
+            source = "podcast" if podcast else chosen if chosen in videos else next((path for path in videos if path in registered), videos[0])
             language = str(body.get("show_language") or "").strip().lower() or None
             gags = str(body.get("show_gags") or "claude")
             # The person's own idea, asked before anything is planned (core.show_brief).
@@ -1634,9 +1641,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             state.project.data.setdefault("settings",{}).setdefault("wizard",{})["show_auto_research"]=bool(body.get("show_auto_research",True))
             state.project.save()
             # The other videos and photos of the project are its close-ups.
-            resources = [path for path in registered if path != source] + [str(path) for path in body.get("show_photos") or [] if isinstance(path, str)]
+            resources = [] if podcast else [path for path in registered if path != source] + [str(path) for path in body.get("show_photos") or [] if isinstance(path, str)]
             try:
-                job = state.wizard.start_show(state.project, source, style if style in {"choe", "calm"} else "choe", language,
+                job = state.wizard.start_show(state.project, source, style if style in {"choe", "calm", "podcast"} else "choe", language,
                                               gags if gags in {"claude", "keywords", "off"} else "claude",
                                               review=bool(body.get("show_review", True)), resources=resources)
             except RuntimeError as exc:
@@ -3201,6 +3208,95 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             for key in [key for key in scene_previews if key.startswith(f"{project.folder}|")]:
                 scene_previews.pop(key, None)
         return jsonify({"restored": history_id, **about})
+
+    # ---- Podcast: microphones (one per person) and cameras --------------------------------
+    @app.get("/api/v1/show/podcast")
+    def api_show_podcast() -> Response:
+        from core import show_podcast
+        project = _require_project(state)
+        setup = show_podcast.load_setup(project)
+        return jsonify({"people": setup.get("people") or [], "cameras": setup.get("cameras") or [],
+                        "program": setup.get("program"), "duration": setup.get("duration")})
+
+    @app.put("/api/v1/show/podcast")
+    def api_show_podcast_save() -> Response:
+        """The podcast's setup: each person with their microphone track, each camera with what
+        it shows (a normal camera: who; a 360 camera: who sits where)."""
+        from core import show_podcast
+        from core.project import atomic_write_json
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        try:
+            people = []
+            for raw in body.get("people") or []:
+                mic = str(raw.get("mic") or "")
+                if not Path(mic).is_file():
+                    raise ValueError(f"The microphone track is not on disk: {Path(mic).name or '(none)'}")
+                people.append({"name": str(raw.get("name") or "").strip()[:60] or Path(mic).stem, "mic": mic})
+            cameras = []
+            for raw in body.get("cameras") or []:
+                path = str(raw.get("path") or "")
+                if not Path(path).is_file():
+                    raise ValueError(f"The camera video is not on disk: {Path(path).name or '(none)'}")
+                kind = "360" if raw.get("kind") == "360" else "flat"
+                camera = {"path": path, "kind": kind, "name": str(raw.get("name") or Path(path).stem)[:60]}
+                if kind == "360":
+                    camera["seats"] = [{"yaw": float(seat["yaw"]), "pitch": float(seat.get("pitch") or 0),
+                                        "person": None if seat.get("person") in (None, "") else int(seat["person"])}
+                                       for seat in raw.get("seats") or []]
+                    camera["table_yaw"] = float(raw.get("table_yaw") or 0)
+                else:
+                    camera["people"] = sorted({int(p) for p in raw.get("people") or [] if 0 <= int(p) < max(1, len(body.get("people") or []))})
+                cameras.append(camera)
+        except (TypeError, ValueError, KeyError) as exc:
+            return error_response("invalid_podcast", str(exc), 400)
+        if len(people) > 12 or len(cameras) > 16:
+            return error_response("invalid_podcast", "Up to 12 people and 16 cameras", 400)
+        old = show_podcast.load_setup(project)
+        atomic_write_json(show_podcast.setup_path(project), {**{k: v for k, v in old.items() if k not in ("people", "cameras")},
+                                                            "people": people, "cameras": cameras})
+        return jsonify({"people": people, "cameras": cameras})
+
+    @app.post("/api/v1/show/podcast/seats")
+    def api_show_podcast_seats() -> Response:
+        """Where people sit around a 360 camera (faces found in its picture)."""
+        from core import show_podcast
+        _require_project(state)
+        path = str((request.get_json(silent=True) or {}).get("path") or "")
+        if not Path(path).is_file():
+            return error_response("not_found", "That camera video is not on disk", 404)
+        try:
+            return jsonify({"seats": show_podcast.seats(path)})
+        except Exception as exc:  # shown to the person; they can still set seats by hand
+            return error_response("seats_failed", f"Could not look for the people: {exc}", 422)
+
+    @app.get("/api/v1/show/podcast/view")
+    def api_show_podcast_view() -> Response:
+        """A picture of what a 360 camera shows towards ``yaw``/``pitch`` (a seat), to say who sits there."""
+        import hashlib
+        from core.show_podcast import load_setup
+        from core.spherical_view import spherical_view_filter
+        project = _require_project(state)
+        path = Path(str(request.args.get("path") or ""))
+        setup_paths = {str(c.get("path")) for c in load_setup(project).get("cameras") or []}
+        if str(path) not in setup_paths or not path.is_file():
+            return error_response("not_found", "Not a camera of this podcast", 404)
+        try:
+            yaw, pitch = float(request.args.get("yaw") or 0), float(request.args.get("pitch") or 0)
+            at = max(0.0, float(request.args.get("t") or 30))
+        except ValueError:
+            return error_response("bad_request", "yaw and pitch are degrees", 400)
+        folder = project.cache_dir / "podcast_views"
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / f"{hashlib.sha1(f'{path}|{yaw:.1f}|{pitch:.1f}|{at:.1f}'.encode()).hexdigest()[:16]}.jpg"
+        if not target.is_file():
+            projection = "raw_insv" if path.suffix.lower() == ".insv" else "equirect"
+            view = spherical_view_filter(projection, yaw, pitch, 70.0, width=320, height=180)
+            subprocess.run([str(tool_status().get("ffmpeg_path") or "ffmpeg"), "-v", "error", "-y", "-nostdin", "-ss", f"{at:.2f}",
+                            "-i", str(path), "-frames:v", "1", "-vf", view, str(target)], capture_output=True, check=False)
+        if not target.is_file():
+            return error_response("view_failed", "No picture there", 422)
+        return send_file(str(target), mimetype="image/jpeg")
 
     # ---- The narrator's track: the talking video's framing (zooms, aim, camera moves) -----
     narrator_jobs: dict[str, dict[str, Any]] = {}

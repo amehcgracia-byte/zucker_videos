@@ -2580,3 +2580,17 @@ dialog.show-studio::backdrop {background:#0009;}
 #showCaptionEditor .cap-italic{display:inline-flex;grid-auto-flow:column;align-items:center;gap:6px;}
 #showCaptionEditor .cap-sample{margin:0;padding:12px;border-radius:8px;text-align:center;background:#2b3a32;text-shadow:1px 1px 2px #000,-1px -1px 2px #000;line-height:1.15;}
 #showCaptionEditor .cap-actions{display:flex;justify-content:flex-end;gap:8px;}
+
+/* Show: kind of video, and the podcast's microphones and cameras. */
+.show-kind{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-weight:600;margin:6px 0 10px;}
+.show-podcast{border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:8px 0 12px;display:grid;gap:8px;}
+.show-podcast h3,.show-podcast h4{margin:4px 0;display:flex;align-items:center;gap:10px;}
+.show-podcast .podcast-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
+.show-podcast .podcast-row input[data-person-name]{width:180px;}
+.show-podcast .podcast-row small{color:var(--muted);}
+.show-podcast .podcast-dot{width:12px;height:12px;border-radius:50%;background:hsl(var(--hue) 65% 55%);}
+.show-podcast .podcast-camera{border:1px solid var(--line);border-radius:10px;padding:8px 10px;display:grid;gap:6px;}
+.show-podcast .podcast-shows label{display:inline-flex;align-items:center;gap:4px;font-size:13px;}
+.show-podcast .podcast-seats{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;}
+.show-podcast .podcast-seats figure{margin:0;display:grid;gap:4px;}
+.show-podcast .podcast-seats img{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:6px;background:#111;}

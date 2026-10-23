@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Zucker Editor</title>
     <link rel="icon" href="/logo_editor_green.png?v=editor-ui-4" />
-    <link rel="stylesheet" href="/styles.css?v=editor-ui-42" />
+    <link rel="stylesheet" href="/styles.css?v=editor-ui-43" />
     <script src="/theme.js?v=editor-ui-4"></script>
   </head>
   <body>
@@ -49,15 +49,10 @@
             <span>Full 360 clip</span>
           </button>
           <button class="platform-card" data-platform="medley"><span>♫</span><strong>Medley Populi</strong><span>Highlights from different songs</span></button>
-          <button class="platform-card" data-platform="backstage">
-            <span class="platform-glyph" data-glyph="backstage"></span>
-            <strong>Backstage</strong>
-            <span>Documentary diary with original camera audio</span>
-          </button>
           <button class="platform-card" data-platform="show">
             <span class="platform-glyph" data-glyph="show"></span>
             <strong>Show</strong>
-            <span>You talking to camera: pauses, "eh" and retakes cut, fast punch-ins</span>
+            <span>You talking to camera (fast or calm), or a podcast: pauses, "eh" and retakes cut, effects, captions</span>
           </button>
         </div>
 </div></dialog>
@@ -105,10 +100,6 @@
           <strong>Single video detected</strong>
           <p>Choose how to continue with this video:</p>
           <div class="single-video-options">
-            <button type="button" class="platform-card" data-single-platform="backstage">
-              <strong>Backstage</strong>
-              <span>Use the original camera audio; no master audio required.</span>
-            </button>
             <button type="button" class="platform-card" data-single-platform="reel">
               <strong>Reel</strong>
               <span>One continuous video cut, with the selected audio offset and aspect ratio applied.</span>
@@ -163,6 +154,21 @@
         <div id="showOptions" class="song-picker" hidden>
           <h2>Show</h2>
           <p>Your talking video is cleaned and cut automatically: long pauses, "eh"/"um" and phrases you said twice are removed (the last take stays), then it is cut into short shots with punch-in zooms. Captions from what you say are ready in Overlay &amp; Captions.</p>
+          <label class="show-kind">Kind of video <select id="showStyle">
+            <option value="choe" selected>Fast: jokes, influencer — a cut every ~1.5 s with zooms</option>
+            <option value="calm">Normal: informative, calm — longer shots, softer zooms</option>
+            <option value="podcast">Podcast: several people, a microphone each, several cameras</option>
+            <option value="storytelling" disabled>Storytelling: a narration over pictures and clips (coming next)</option>
+          </select></label>
+          <section id="showPodcast" class="show-podcast" hidden>
+            <h3>Podcast</h3>
+            <p class="show-hint">Recorded live, edited after: the program shows who speaks (from their microphone), the whole table when several talk or laugh, and now and then the person listening. The microphones are mixed so nobody echoes.</p>
+            <h4>Microphones <button type="button" class="icon-button small" data-add-mics>Add microphone tracks…</button></h4>
+            <div data-podcast-people></div>
+            <h4>Cameras <button type="button" class="icon-button small" data-add-cameras>Add cameras…</button></h4>
+            <div data-podcast-cameras></div>
+            <p id="showPodcastStatus" class="show-hint" role="status"></p>
+          </section>
           <section id="showIdea" class="show-idea">
             <h3>Your idea for this video</h3>
             <p class="show-hint">Before anything is planned, tell us what you have in mind: the story, the jokes, which pictures or characters should appear and when, the tone. Your idea goes first; the program adds its own around it.</p>
@@ -179,7 +185,6 @@
             <li><strong>Their voices</strong> (optional): while filming a thing, say its lines in its voice. In the review you choose which recorded line each character says.</li>
           </ol>
           <label><input type="checkbox" id="showReview" checked> Review every effect before rendering (preview, adjust, approve or discard)</label>
-          <label>Pace <select id="showStyle"><option value="choe" selected>Fast: a cut every ~1.5 s with zooms (David Choe style)</option><option value="calm">Calm: longer shots, softer zooms</option></select></label>
           <label>Language <select id="showLanguage"><option value="" selected>Detect automatically</option><option value="es">Spanish</option><option value="en">English</option></select></label>
           <label>Gags <select id="showGags"><option value="claude" selected>Drawings, characters and words planned by your Claude</option><option value="keywords">Drawings and words from keywords (offline)</option><option value="off">No gags</option></select></label>
           <label><input type="checkbox" id="showAutoResearch" checked> Find internet reference drafts automatically (up to 3 per show; text searches only)</label>
@@ -518,7 +523,7 @@
     <script src="/native_bridge.js?v=editor-ui-4"></script>
     <link rel="stylesheet" href="/tutorial.css" />
     <script src="/tutorial.js"></script>
-    <script src="/app.js?v=editor-ui-15"></script>
+    <script src="/app.js?v=editor-ui-16"></script>
     <script src="/show_edit_queue.js?v=1"></script>
     <script src="/show_clock.js?v=1"></script>
     <script src="/show_live_captions.js?v=4"></script>
@@ -533,6 +538,7 @@
   <script src="/show_review.js?v=80"></script>
     <script src="/show_audio.js?v=3"></script>
     <script src="/show_narrator.js?v=2"></script>
+    <script src="/show_podcast.js?v=1"></script>
     <script src="/show_einstein.js?v=9"></script>
     <script src="/show_characters.js?v=14"></script>
     <script src="/show_voice.js?v=1"></script>

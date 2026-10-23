@@ -3925,6 +3925,9 @@ async function waitForPreparedProject() {
 async function startWizard(options = {}) {
   // Show asks for the person's idea before anything is planned.
   if (selectedPlatform === "show" && window.ShowIdea && !window.ShowIdea.ready()) { window.ShowIdea.ask(); return; }
+  if (selectedPlatform === "show" && document.querySelector("#showStyle")?.value === "podcast" && window.ShowPodcast && !window.ShowPodcast.ready()) {
+    showToast("Add the microphones (one per person) and the cameras of the podcast first.", true); return;
+  }
   const requestedProjectId = activeProjectId;
   if (backgroundPreparation) await backgroundPreparation;
   if (!sameProjectId(activeProjectId, requestedProjectId)) return;
