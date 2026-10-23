@@ -250,7 +250,7 @@ function renderShowAssistant() {
   const select = document.querySelector("#showMain");
   if (!select) return;
   const videos = detected.videos.map((item) => item.path).filter(Boolean);
-  const previous = select.value;
+  const previous = select.value || sphericalProjectSettings?.settings?.wizard?.show?.source || "";
   select.innerHTML = videos.map((path) => `<option value="${escapeHtml(path)}">${escapeHtml(path.split(/[\\/]/).pop())}</option>`).join("");
   if (videos.includes(previous)) select.value = previous;
   const list = document.querySelector("#showResourceList");
@@ -2153,6 +2153,13 @@ async function resumeInputsFromProject() {
   const savedPlatform = project.settings?.wizard?.platform;
   if(document.querySelector("#backstageWhisperModel"))document.querySelector("#backstageWhisperModel").value=project.settings?.wizard?.backstage_whisper_model||"medium";
   if (savedPlatform) choosePlatformInUi(savedPlatform);
+  // A Show opens as it was set: its kind (Gamer, Influencer, Podcast) and its main video.
+  const savedShow = project.settings?.wizard?.show || {};
+  const kind = document.querySelector("#showStyle");
+  if (kind && savedShow.style && [...kind.options].some((option) => option.value === savedShow.style && !option.disabled)) {
+    kind.value = savedShow.style;
+    window.ShowPodcast?.sync();
+  }
   const inputs = project.inputs || {};
   for (const warning of inputs.warnings || []) {
     if (!inputWarningsShown.has(warning)) {

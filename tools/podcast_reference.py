@@ -27,6 +27,25 @@ from core.spherical_view import spherical_view_filter  # noqa: E402
 
 BLEED = 10 ** (-15 / 20)
 CAMERA_LATE = [0.0, 3.2, 7.5]       # seconds each normal camera started after the 360
+FPS = 4.0
+CHUNK = 150.0                        # seconds of video each worker reads mouths in
+
+
+def _mouths(job: tuple[str, list, str, float, float]) -> np.ndarray:
+    source, seats, ffmpeg, start, length = job
+    return pod.mouth_motion(source, seats, ffmpeg, fps=FPS, start=start, duration=length)
+
+
+def mouths(source: Path, seats: list, ffmpeg: str, duration: float) -> np.ndarray:
+    """Mouth movement of every seat, read by several workers on stretches of the video."""
+    from concurrent.futures import ProcessPoolExecutor
+    jobs = [(str(source), seats, ffmpeg, start, min(CHUNK, duration - start)) for start in np.arange(0.0, duration, CHUNK)]
+    with ProcessPoolExecutor(max_workers=4) as pool:
+        parts = []
+        for number, part in enumerate(pool.map(_mouths, jobs)):
+            parts.append(part)
+            print(f"  mouths: {min(duration, (number + 1) * CHUNK) / 60:.1f} of {duration / 60:.1f} min", flush=True)
+    return np.hstack(parts)
 
 
 def main(source: Path, out: Path) -> None:
@@ -34,18 +53,18 @@ def main(source: Path, out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     seats = [seat for seat in pod.seats(source, samples=12) if seat["seen"] >= 0.3]
     print(f"{len(seats)} seats:", [(s["yaw"], s["pitch"]) for s in seats], flush=True)
+    rate = 48000
+    room = pod._decode(source, ffmpeg, rate)
+    duration = len(room) / rate
     cache = out / "mouths.npy"
     if cache.is_file():
         motion = np.load(cache)
     else:
-        motion = pod.mouth_motion(source, seats, ffmpeg, fps=5.0, progress=lambda n: print(f"  mouths: {n / 5 / 60:.1f} min", flush=True))
+        motion = mouths(source, seats, ffmpeg, duration)
         np.save(cache, motion)
-    rate = 48000
-    room = pod._decode(source, ffmpeg, rate)
-    duration = len(room) / rate
     frames = int(duration / pod.STEP)
     db = pod.levels(pod._decode(source, ffmpeg, 8000), 8000, 0.0, frames)
-    speaking = pod.speakers_from_mouths(db, pod._on_steps(motion, 5.0, 0.0, frames))
+    speaking = pod.speakers_from_mouths(db, pod._on_steps(motion, FPS, 0.0, frames))
     print("speaking share per seat:", speaking.mean(axis=1).round(3).tolist(), flush=True)
     rng = np.random.default_rng(7)
     people = []

@@ -131,7 +131,7 @@
     // A podcast is automatic: no idea, effects or review; only whether it has subtitles.
     document.querySelectorAll(".show-assistant, .show-not-podcast").forEach(node => node.toggleAttribute("hidden", podcast));
     document.querySelectorAll(".show-only-podcast").forEach(node => node.toggleAttribute("hidden", !podcast));
-    if (podcast) { attach(); if (!loaded) load(); }
+    if (podcast) { attach(); load(); }                  // the open project's setup, every time
   }
   document.addEventListener("change", event => { if (event.target.id === "showStyle") sync(); });
   document.addEventListener("DOMContentLoaded", sync);
