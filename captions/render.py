@@ -141,6 +141,9 @@ def _dialogue_body(cue, style: Style, *, width: int, event_start: float, first_e
     override = cue.style_override or {}
     lines, fitted_size, requested_size = _layout(cue, style, width=width)
     tags: list[str] = []
+    font = str(override.get("font") or "").strip()
+    if font and all(ch not in font for ch in "\\{}"):
+        tags.append(f"\\fn{font}")
     color = _ass_color(override.get("color"))
     if color:
         tags.append(f"\\c{color}")
@@ -200,6 +203,9 @@ def _glow_tags(cue, style: Style, *, width: int) -> tuple[list[str], int] | None
         return None
     _lines, fitted_size, requested_size = _layout(cue, style, width=width)
     tags = []
+    font = str(override.get("font") or "").strip()
+    if font and all(ch not in font for ch in "\\{}"):
+        tags.append(f"\\fn{font}")
     if override.get("size") is not None or fitted_size != requested_size:
         tags.append(f"\\fs{max(8, fitted_size):g}")
     tags.extend((f"\\1a&HFF&", f"\\3c{color}", f"\\3a{_ass_alpha(intensity)}", f"\\bord{max(2.0, blur * 1.7):g}", f"\\blur{blur:g}", "\\shad0"))

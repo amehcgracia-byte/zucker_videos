@@ -47,7 +47,11 @@ class ShowStyle:
 
 CHOE = ShowStyle()
 CALM = ShowStyle(max_pause=0.6, target_shot=3.5, min_shot=1.5, max_shot=7.0, zooms=(1.0, 1.15, 1.35), reveal_every=0)
-STYLES = {"choe": CHOE, "calm": CALM}
+FAST = ShowStyle(target_shot=1.75, min_shot=1.5, max_shot=2.0)
+NORMAL = CALM
+STORYTELLING = ShowStyle(max_pause=1.0, lead=.12, tail=.22, target_shot=6.0, min_shot=3.0, max_shot=12.0, zooms=(1.0,1.08), push_every=8, reveal_every=0, retake_window=0)
+PODCAST = ShowStyle(max_pause=1.5, lead=.15, tail=.25, target_shot=12.0, min_shot=6.0, max_shot=30.0, zooms=(1.0,), push_every=0, reveal_every=0, retake_window=0)
+STYLES = {"choe": CHOE, "calm": CALM, "fast": FAST, "normal": NORMAL, "storytelling": STORYTELLING, "podcast": PODCAST}
 
 
 @dataclass
