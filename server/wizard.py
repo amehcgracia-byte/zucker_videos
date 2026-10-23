@@ -512,12 +512,15 @@ class WizardRunner:
 
     @staticmethod
     def _podcast_program(project, style, source, progress, cancel):
-        """A podcast is first edited into one program from its cameras and microphones
-        (core.show_podcast); the Show then works on that program. Its progress takes the
-        first third of the bar."""
-        if style != "podcast":
+        """A podcast (its cameras and microphones, core.show_podcast) or a story (its narration
+        over pictures, core.show_story) is first made into one program; the Show then works
+        on that program. Making it takes the first third of the bar."""
+        if style not in ("podcast", "storytelling"):
             return source, progress
-        from core.show_podcast import build
+        if style == "podcast":
+            from core.show_podcast import build
+        else:
+            from core.show_story import build
         program = build(project, progress=lambda value, detail: progress(int(value * 30 / 52), detail), cancel=cancel)
         return str(program), (lambda value, detail, **kw: progress(30 + int(value * 0.7), detail, **kw))
 

@@ -1626,11 +1626,17 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 if not setup.get("people") or not setup.get("cameras"):
                     return error_response("bad_request", "Add the microphones and cameras of the podcast", 400)
                 show_caption_layout.set_enabled(state.project, bool(body.get("show_captions", True)))
+            elif style == "storytelling":
+                from core import show_story
+                story = show_story.setup(state.project)
+                if not story.get("narration") or not story.get("clips"):
+                    return error_response("bad_request", "Add the narration and the pictures or clips of the story", 400)
             elif not videos:
                 return error_response("bad_request", "Add the video where you talk", 400)
             registered = {str(record.get("path")) for record in state.project.data.get("inputs", {}).get("videos", [])}
             chosen = str(body.get("show_main") or "")
-            source = "podcast" if podcast else chosen if chosen in videos else next((path for path in videos if path in registered), videos[0])
+            source = ("podcast" if podcast else "storytelling" if style == "storytelling"
+                      else chosen if chosen in videos else next((path for path in videos if path in registered), videos[0]))
             language = str(body.get("show_language") or "").strip().lower() or None
             gags = str(body.get("show_gags") or "claude")
             # The person's own idea, asked before anything is planned (core.show_brief).
@@ -1643,9 +1649,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             state.project.data.setdefault("settings",{}).setdefault("wizard",{})["show_auto_research"]=bool(body.get("show_auto_research",True))
             state.project.save()
             # The other videos and photos of the project are its close-ups.
-            resources = [] if podcast else [path for path in registered if path != source] + [str(path) for path in body.get("show_photos") or [] if isinstance(path, str)]
+            resources = [] if podcast or style == "storytelling" else [path for path in registered if path != source] + [str(path) for path in body.get("show_photos") or [] if isinstance(path, str)]
             try:
-                job = state.wizard.start_show(state.project, source, style if style in {"choe", "calm", "podcast"} else "choe", language,
+                job = state.wizard.start_show(state.project, source, style if style in {"choe", "calm", "podcast", "storytelling"} else "choe", language,
                                               "off" if podcast else gags if gags in {"claude", "keywords", "off"} else "claude",
                                               review=bool(body.get("show_review", True)) and not podcast, resources=resources)
             except RuntimeError as exc:
@@ -3210,6 +3216,32 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             for key in [key for key in scene_previews if key.startswith(f"{project.folder}|")]:
                 scene_previews.pop(key, None)
         return jsonify({"restored": history_id, **about})
+
+    # ---- Storytelling: the narration and the pictures it is told over --------------------
+    @app.get("/api/v1/show/story")
+    def api_show_story() -> Response:
+        from core import show_story
+        project = _require_project(state)
+        story = show_story.setup(project)
+        if not story.get("clips"):
+            # To begin with, the project's videos and photos are the material.
+            story["clips"] = [str(record.get("path")) for record in project.data.get("inputs", {}).get("videos", [])
+                              if record.get("path") and str(record.get("path")) != story.get("narration")]
+        return jsonify({"narration": story.get("narration"), "clips": story.get("clips") or []})
+
+    @app.put("/api/v1/show/story")
+    def api_show_story_save() -> Response:
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        narration = str(body.get("narration") or "")
+        clips = [str(path) for path in body.get("clips") or [] if isinstance(path, str)]
+        missing = [Path(path).name for path in [narration, *clips] if path and not Path(path).is_file()]
+        if missing:
+            return error_response("invalid_story", f"Not on disk: {', '.join(missing[:3])}", 400)
+        wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
+        wizard["storytelling"] = {**(wizard.get("storytelling") or {}), "narration": narration or None, "clips": clips}
+        project.save()
+        return jsonify({"narration": narration or None, "clips": clips})
 
     # ---- Podcast: microphones (one per person) and cameras --------------------------------
     @app.get("/api/v1/show/podcast")

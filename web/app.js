@@ -2159,6 +2159,7 @@ async function resumeInputsFromProject() {
   if (kind && savedShow.style && [...kind.options].some((option) => option.value === savedShow.style && !option.disabled)) {
     kind.value = savedShow.style;
     window.ShowPodcast?.sync();
+    window.ShowStory?.sync();
   }
   const inputs = project.inputs || {};
   for (const warning of inputs.warnings || []) {
@@ -3933,6 +3934,9 @@ async function startWizard(options = {}) {
   // Show asks for the person's idea before anything is planned.
   const podcastShow = selectedPlatform === "show" && document.querySelector("#showStyle")?.value === "podcast";
   if (selectedPlatform === "show" && !podcastShow && window.ShowIdea && !window.ShowIdea.ready()) { window.ShowIdea.ask(); return; }
+  if (selectedPlatform === "show" && document.querySelector("#showStyle")?.value === "storytelling" && window.ShowStory && !window.ShowStory.ready()) {
+    showToast("Choose the narration and the pictures or clips of the story first.", true); return;
+  }
   if (selectedPlatform === "show" && document.querySelector("#showStyle")?.value === "podcast" && window.ShowPodcast && !window.ShowPodcast.ready()) {
     showToast("Add the microphones (one per person) and the cameras of the podcast first.", true); return;
   }

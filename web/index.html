@@ -158,7 +158,7 @@
             <option value="choe" selected>Gamer: fast, jokes — a cut every ~1.5 s with zooms</option>
             <option value="calm">Influencer: informative, calm — longer shots, softer zooms</option>
             <option value="podcast">Podcast: several people, a microphone each, several cameras</option>
-            <option value="storytelling" disabled>Storytelling: a narration over pictures and clips (coming next)</option>
+            <option value="storytelling">Storytelling: a narration over pictures and clips</option>
           </select></label>
           <section id="showPodcast" class="show-podcast" hidden>
             <h3>Podcast</h3>
@@ -168,6 +168,15 @@
             <h4>Cameras <button type="button" class="icon-button small" data-add-cameras>Add cameras…</button></h4>
             <div data-podcast-cameras></div>
             <p id="showPodcastStatus" class="show-hint" role="status"></p>
+          </section>
+          <section id="showStory" class="show-podcast" hidden>
+            <h3>Storytelling</h3>
+            <p class="show-hint">The narration tells the story; a picture or clip goes under each moment of it (the one that goes best with what is said, not repeated), photos move slowly, clips play under the voice. Then the storyboard: effects, references from the internet, captions in English.</p>
+            <h4>Narration <button type="button" class="icon-button small" data-story-narration>Choose the narration…</button></h4>
+            <p data-story-narration-name class="show-hint"></p>
+            <h4>Pictures and clips <button type="button" class="icon-button small" data-story-add>Add…</button></h4>
+            <p data-story-clips class="show-hint"></p>
+            <p id="showStoryStatus" class="show-hint" role="status"></p>
           </section>
           <section id="showIdea" class="show-idea show-not-podcast">
             <h3>Your idea for this video</h3>
@@ -524,7 +533,7 @@
     <script src="/native_bridge.js?v=editor-ui-4"></script>
     <link rel="stylesheet" href="/tutorial.css" />
     <script src="/tutorial.js"></script>
-    <script src="/app.js?v=editor-ui-18"></script>
+    <script src="/app.js?v=editor-ui-19"></script>
     <script src="/show_edit_queue.js?v=1"></script>
     <script src="/show_clock.js?v=1"></script>
     <script src="/show_live_captions.js?v=4"></script>
@@ -540,6 +549,7 @@
     <script src="/show_audio.js?v=3"></script>
     <script src="/show_narrator.js?v=2"></script>
     <script src="/show_podcast.js?v=3"></script>
+    <script src="/show_story.js?v=1"></script>
     <script src="/show_einstein.js?v=9"></script>
     <script src="/show_characters.js?v=14"></script>
     <script src="/show_voice.js?v=1"></script>

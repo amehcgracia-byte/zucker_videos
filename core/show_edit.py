@@ -53,7 +53,11 @@ CALM = ShowStyle(max_pause=0.6, target_shot=3.5, min_shot=1.5, max_shot=7.0, zoo
 # go (the rhythm of a conversation stays) and nothing is taken out from under another voice.
 PODCAST = ShowStyle(max_pause=1.2, lead=0.15, tail=0.3, target_shot=30.0, min_shot=30.0, max_shot=600.0, zooms=(1.0,),
                     push_every=0, reveal_every=0, glide_every=0, retake_window=0.0, remove_fillers=False)
-STYLES = {"choe": CHOE, "calm": CALM, "podcast": PODCAST}
+# A narration over pictures: the pictures change with the story, so no zooms; only long
+# pauses go, and a sentence said twice keeps its last take (a narration recorded phrase by phrase).
+STORYTELLING = ShowStyle(max_pause=1.2, lead=0.12, tail=0.25, target_shot=30.0, min_shot=30.0, max_shot=600.0, zooms=(1.0,),
+                         push_every=0, reveal_every=0, glide_every=0)
+STYLES = {"choe": CHOE, "calm": CALM, "podcast": PODCAST, "storytelling": STORYTELLING}
 
 
 @dataclass
