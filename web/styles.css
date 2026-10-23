@@ -2559,3 +2559,24 @@ dialog.show-studio::backdrop {background:#0009;}
 .tx-water .fx-p{top:72%;width:14%;aspect-ratio:3/1;filter:none;background:none;border:1px solid #bfe4ffcc;animation:fx-ripple 1.6s ease-out infinite;}
 @keyframes fx-ripple{to{transform:scale(2.4);opacity:0;}}
 @media (prefers-reduced-motion:reduce){.fx-demo *,.show-lib-card>img{animation:none!important;}}
+
+/* Caption editor (right-click a caption): its words, typeface, size and colour. */
+.show-live-caption [data-caption-text]{font-weight:700;}
+#showCaptionEditor{width:min(520px,94vw);padding:16px 18px;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:0 20px 70px #0006;}
+#showCaptionEditor::backdrop{background:#0008;}
+#showCaptionEditor h3{margin:0 0 10px;}
+#showCaptionEditor form{display:grid;gap:10px;}
+#showCaptionEditor label{display:grid;gap:4px;font-size:13px;font-weight:600;}
+#showCaptionEditor textarea{font:inherit;font-size:15px;padding:8px;border-radius:8px;resize:vertical;}
+#showCaptionEditor small{color:var(--muted);}
+#showCaptionEditor small button{padding:2px 8px;font-size:12px;margin-left:6px;}
+#showCaptionEditor .cap-row{display:flex;flex-wrap:wrap;align-items:center;gap:12px;}
+#showCaptionEditor .cap-row>label:has(input[type=range]){grid-template-columns:auto 1fr auto;align-items:center;}
+#showCaptionEditor .cap-colour{display:inline-flex;cursor:pointer;}
+#showCaptionEditor .cap-colour input{position:absolute;opacity:0;}
+#showCaptionEditor .cap-colour i{width:22px;height:22px;border-radius:50%;border:2px solid var(--line);}
+#showCaptionEditor .cap-colour input:checked+i{outline:2px solid var(--primary);outline-offset:2px;}
+#showCaptionEditor .cap-colour input:focus-visible+i{outline:2px dashed var(--primary);outline-offset:2px;}
+#showCaptionEditor .cap-italic{display:inline-flex;grid-auto-flow:column;align-items:center;gap:6px;}
+#showCaptionEditor .cap-sample{margin:0;padding:12px;border-radius:8px;text-align:center;background:#2b3a32;text-shadow:1px 1px 2px #000,-1px -1px 2px #000;line-height:1.15;}
+#showCaptionEditor .cap-actions{display:flex;justify-content:flex-end;gap:8px;}

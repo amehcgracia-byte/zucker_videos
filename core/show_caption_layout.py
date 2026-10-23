@@ -26,12 +26,33 @@ def set_enabled(project, on):
     return data
 
 
+# Typefaces a caption can use: on the Mac and on Windows alike.
+FONTS = ('Arial Bold', 'Arial Black', 'Impact', 'Georgia', 'Verdana', 'Trebuchet MS', 'Courier New', 'Comic Sans MS')
+
+
+def _words(text, start, end):
+    """Words of a corrected caption spread over its time by length (the heard words' timings
+    belong to what was heard)."""
+    words = text.split()
+    total = sum(len(word) + 1 for word in words) or 1
+    out, at = [], float(start)
+    for word in words:
+        length = (float(end) - float(start)) * (len(word) + 1) / total
+        out.append({'text': word, 'start': round(at, 3), 'end': round(at + length, 3)})
+        at += length
+    return out
+
+
 def apply(cues, layout):
+    """The cues with the person's changes: position, size, typeface, colour and the words
+    corrected (a caption keeps its identity, the words it was made from, when corrected)."""
     result = []
     for cue in cues:
         key = hashlib.sha256(json.dumps([cue['lines'], cue['start'], cue['end']], ensure_ascii=False).encode()).hexdigest()[:20]
         override = {**cue.get('style_override', {}), **layout.get('cues', {}).get(key, {})}
-        result.append({**cue, 'id': key, 'style_override': override})
+        text = override.pop('text', None)
+        changed = {'lines': [text], 'words': _words(text, cue['start'], cue['end']), 'heard': ' '.join(cue['lines'])} if text else {}
+        result.append({**cue, **changed, 'id': key, 'style_override': override})
     return result
 
 
@@ -42,16 +63,39 @@ def save(project, key, changes, revision, cues):
     if key not in {cue['id'] for cue in cues}:
         raise ValueError('That caption is no longer in this edit')
     allowed = {'horizontal': (0, 100), 'vertical': (0, 100), 'size': (12, 400)}
-    values = {}
+    values, cleared = {}, []
     for name, value in changes.items():
+        if name == 'text':
+            text = ' '.join(str(value or '').split())
+            if len(text) > 240:
+                raise ValueError('A caption holds 240 letters at most')
+            if text:
+                values['text'] = text
+            else:
+                cleared.append('text')                  # back to the words that were heard
+            continue
+        if name == 'font':
+            if value not in FONTS:
+                raise ValueError('Choose one of the caption typefaces')
+            values['font'] = value
+            continue
+        if name == 'color':
+            if not isinstance(value, str) or len(value) != 7 or not value.startswith('#') or any(c not in '0123456789abcdefABCDEF' for c in value[1:]):
+                raise ValueError('A caption colour is #rrggbb')
+            values['color'] = value.lower()
+            continue
+        if name == 'italic':
+            values['italic'] = bool(value)
+            continue
         if name not in allowed or isinstance(value, bool):
-            raise ValueError('Choose caption position or size')
+            raise ValueError('Choose caption words, typeface, colour, position or size')
         number = float(value)
         lo, hi = allowed[name]
         if not math.isfinite(number) or not lo <= number <= hi:
             raise ValueError(f'Caption {name} must be between {lo} and {hi}')
         values[name] = number
-    data['cues'][key] = {**data['cues'].get(key, {}), **values}
+    kept = {name: value for name, value in data['cues'].get(key, {}).items() if name not in cleared}
+    data['cues'][key] = {**kept, **values}
     data['revision'] += 1
     atomic_write_json(path(project), data)
     return data

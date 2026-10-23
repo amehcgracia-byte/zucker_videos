@@ -4,8 +4,9 @@ The first framing pass read keyframes only and kept faces near the usual place, 
 that is already an edit (its own zooms burned in) most shots had no face and took a far one,
 or the middle of the picture: zooms landed on the chest. Here three moments of every shot are
 looked at with the Mac's face detector (faces turned aside too; OpenCV's frontal detector
-elsewhere), the shot's zoom is aimed at the face found there, and a shot with no face, or
-whose face jumps inside it (an old cut), is not zoomed at all rather than zoomed at random.
+elsewhere) and the shot's zoom is aimed at the face found there. When the person leans or turns
+the zoom eases off just enough to keep the face in; a shot with no face, or whose face jumps
+further than any zoom can follow (an old cut inside it), is not zoomed rather than zoomed at random.
 A shot the person aimed by hand (``aimed``) is left as it is.
 """
 from __future__ import annotations
@@ -75,9 +76,9 @@ def detector():
     return _vision_faces() or _haar_faces()
 
 
-def shot_face(frames: list[np.ndarray], detect) -> tuple[float, float] | None:
-    """The host's face in a shot from a few of its frames: the largest face in each, their
-    middle; None when there is none, or when it jumps (two shots of an old edit inside one)."""
+def shot_faces(frames: list[np.ndarray], detect) -> list[tuple[float, float]] | None:
+    """The host's face in each of a shot's frames (the largest one), or None when most of
+    them have none."""
     found = []
     for rgb in frames:
         faces = [face for face in detect(rgb) if face[2] >= 0.04]
@@ -86,10 +87,37 @@ def shot_face(frames: list[np.ndarray], detect) -> tuple[float, float] | None:
             found.append((x, y))
     if not found or len(found) < max(1, len(frames) - 1):
         return None
+    return found
+
+
+def shot_face(frames: list[np.ndarray], detect) -> tuple[float, float] | None:
+    """The host's face in a shot from a few of its frames: the largest face in each, their
+    middle; None when there is none, or when it jumps (two shots of an old edit inside one)."""
+    found = shot_faces(frames, detect)
+    if not found:
+        return None
     xs, ys = [x for x, _ in found], [y for _, y in found]
     if max(xs) - min(xs) > JUMP or max(ys) - min(ys) > JUMP:
         return None
     return float(np.median(xs)), float(np.median(ys))
+
+
+ROOM = 0.7         # the face's travel inside a shot may take this share of the zoomed window
+
+
+def fitted(found: list[tuple[float, float]], zoom: float) -> tuple[tuple[float, float], float] | None:
+    """(face to aim at, zoom) keeping every place the face is in the shot inside the picture:
+    the person leaning or turning moves it, and the zoom eases off to keep it in; None when
+    even a gentle zoom cannot (an old cut inside the shot, to another framing)."""
+    xs, ys = [x for x, _ in found], [y for _, y in found]
+    spread = max(max(xs) - min(xs), max(ys) - min(ys))
+    middle = ((max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2)
+    if spread <= JUMP:
+        return (float(np.median(xs)), float(np.median(ys))), zoom
+    fits = min(zoom, ROOM / spread)
+    if fits < 1.15:
+        return None
+    return middle, round(fits * 20) / 20 if fits < zoom else zoom
 
 
 def reaim(plan: dict[str, Any], source: str | Path, *, progress: Callable[[float], None] | None = None,
@@ -101,7 +129,7 @@ def reaim(plan: dict[str, Any], source: str | Path, *, progress: Callable[[float
     capture = cv2.VideoCapture(str(source))
     rate = float(capture.get(cv2.CAP_PROP_FPS) or 0)
     rate = rate if 1 <= rate <= 240 else fps            # the plan's frames are on its own grid
-    counts = {"aimed": 0, "unzoomed": 0, "kept": 0, "wide": 0}
+    counts = {"aimed": 0, "unzoomed": 0, "kept": 0, "wide": 0, "eased": 0}
     try:
         shots = plan.get("shots") or []
         for index, shot in enumerate(shots):
@@ -123,16 +151,23 @@ def reaim(plan: dict[str, Any], source: str | Path, *, progress: Callable[[float
                 ok, bgr = capture.read()
                 if ok:
                     frames.append(cv2.cvtColor(cv2.resize(bgr, SIZE), cv2.COLOR_BGR2RGB))
-            face = shot_face(frames, detect)
-            if face is None:
+            found = shot_faces(frames, detect)
+            aim = fitted(found, zoom) if found else None
+            if aim is None:
                 shot["zoom"] = 1.0                        # no face: the whole picture, not a random close-up
                 shot.pop("zoom_end", None)
                 shot.pop("face", None)
                 shot["focus"] = [0.5, 0.42]
                 counts["unzoomed"] += 1
             else:
+                face, fits = aim
+                if fits < zoom:                           # eased off so the moving face stays in
+                    shot["zoom"] = min(float(shot.get("zoom") or 1.0), fits)
+                    if shot.get("zoom_end"):
+                        shot["zoom_end"] = min(float(shot["zoom_end"]), fits)
+                    counts["eased"] += 1
                 shot["face"] = [round(v, 4) for v in face]
-                shot["focus"] = [round(v, 4) for v in frame_centre(face, zoom)]
+                shot["focus"] = [round(v, 4) for v in frame_centre(face, min(zoom, fits))]
                 counts["aimed"] += 1
     finally:
         capture.release()

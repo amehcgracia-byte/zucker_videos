@@ -66,7 +66,8 @@ def test_live_positions_survive_reopen_and_reach_final_cue_track(board):
 def test_stale_project_and_invalid_values_are_rejected(board):
     p,c,_=board;data=c.get('/api/v1/show/scenes').get_json();key=data['scenes'][0]['captions'][0]['id']
     assert c.patch('/api/v1/show/captions/'+key,json=dict(project_id='other',revision=0,changes={})).status_code==409
-    for changes in [dict(size=9999),dict(text='unsafe contract'),dict(horizontal=True)]:
+    # The words can be corrected now; only values out of range are refused.
+    for changes in [dict(size=9999),dict(text='x'*241),dict(font='Papyrus'),dict(color='red'),dict(horizontal=True)]:
         assert c.patch('/api/v1/show/captions/'+key,json=dict(project_id=str(p.folder),revision=data['caption_revision'],changes=changes)).status_code==400
 
 
@@ -177,3 +178,32 @@ def test_reference_urls_and_video_intervals_are_validated(board,monkeypatch):
     assert c.post('/api/v1/show/references/open',json={'kind':'video','url':body['url']}).status_code==200
     assert opened==[body['url']]
     assert c.post('/api/v1/show/references/open',json={'kind':'video','url':'file:///etc/passwd'}).status_code==400
+
+
+def test_a_caption_heard_wrong_is_corrected_and_restyled_and_keeps_its_place(board):
+    p, client, plan = board
+    data = client.get('/api/v1/show/scenes').get_json()
+    cue = data['scenes'][0]['captions'][0]
+    edit = lambda changes, revision: client.patch(f"/api/v1/show/captions/{cue['id']}",
+                                                  json={'project_id': str(p.folder), 'revision': revision, 'changes': changes})
+    saved = edit({'text': 'This  gal.', 'font': 'Georgia', 'color': '#FFE066', 'italic': True, 'size': 90}, data['caption_revision'])
+    assert saved.status_code == 200, saved.get_json()
+    fixed = saved.get_json()['cue']
+    assert fixed['id'] == cue['id'] and fixed['lines'] == ['This gal.'] and fixed['heard'] == 'This guy.'
+    assert fixed['style_override']['font'] == 'Georgia' and fixed['style_override']['color'] == '#ffe066' and fixed['style_override']['italic']
+    assert [w['text'] for w in fixed['words']] == ['This', 'gal.'] and fixed['words'][-1]['end'] == pytest.approx(fixed['end'])
+    assert client.get('/api/v1/show/scenes').get_json()['scenes'][0]['captions'][0]['lines'] == ['This gal.']
+    revision = saved.get_json()['revision']
+    assert edit({'font': 'Papyrus'}, revision).status_code == 400
+    assert edit({'color': 'red'}, revision).status_code == 400
+    back = edit({'text': ''}, revision).get_json()['cue']                 # back to what was heard
+    assert back['lines'] == ['This guy.'] and 'heard' not in back and back['style_override']['font'] == 'Georgia'
+
+
+def test_the_final_captions_draw_the_chosen_typeface_and_italics():
+    from captions.model import Cue
+    from captions.render import _dialogue_body
+    from captions.styles import get_style
+    cue = Cue(('Hello there',), 0.0, 1.0, (), {'font': 'Georgia', 'italic': True, 'color': '#ffe066'})
+    tags, text = _dialogue_body(cue, get_style("autoread_fixed_white"), width=1920, event_start=0.0, first_event=True)
+    assert '\\fnGeorgia' in tags and '\\b1' in tags and '\\i1' in tags and text == 'Hello there'

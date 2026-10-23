@@ -3205,20 +3205,17 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     def _narrator_changed(project: Project, before: dict[str, Any], after: dict[str, Any]) -> list[str]:
         """Scenes whose picture changed are previewed again; the others keep their preview.
-        Returns the changed scenes."""
+        A scene's decision stays: the person changed its framing on purpose. Returns the
+        changed scenes."""
         from core import show_narrator, show_scenes
         span = show_narrator.changed(before, after)
         if span is None or not _scene_files(project).is_file():
             return []
-        document = show_scenes.load(_scene_files(project))
         touched = []
-        for scene in document["scenes"]:
+        for scene in show_scenes.load(_scene_files(project))["scenes"]:
             if scene["start"] < span[1] and scene["end"] > span[0]:
                 _invalidate_scene(project, scene["id"])
                 touched.append(scene["id"])
-                if scene.get("decision") == "accepted":
-                    scene["decision"] = "modified"
-        show_scenes.save(_scene_files(project), document)
         return touched
 
     @app.get("/api/v1/show/narrator")

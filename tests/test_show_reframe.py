@@ -48,7 +48,7 @@ def test_reaim_aims_zooms_at_the_face_and_opens_up_shots_without_one(tmp_path, m
         {"start_frame": 80, "end_frame": 100, "zoom": 1.65, "focus": [0.7, 0.2], "aimed": True},
     ]}
     counts = show_reframe.reaim(plan, source)
-    assert counts == {"aimed": 1, "unzoomed": 1, "kept": 1, "wide": 1}
+    assert counts == {"aimed": 1, "unzoomed": 1, "kept": 1, "wide": 1, "eased": 0}
     first, wide, empty, chosen = plan["shots"]
     assert first["face"] == pytest.approx([80 / 320, 120 / 180], abs=0.01)
     assert first["focus"] == pytest.approx(list(frame_centre(tuple(first["face"]), 1.65)), abs=1e-3)
@@ -56,3 +56,12 @@ def test_reaim_aims_zooms_at_the_face_and_opens_up_shots_without_one(tmp_path, m
     assert empty["zoom"] == 1.0 and "zoom_end" not in empty and "face" not in empty
     assert chosen["focus"] == [0.7, 0.2]                                  # aimed by hand: left alone
     assert plan["framing"]["reaimed"]["aimed"] == 1
+
+
+def test_a_face_that_moves_keeps_its_zoom_eased_just_enough():
+    leaning = [(0.6, 0.3), (0.62, 0.42), (0.61, 0.5)]                    # the person leans in
+    face, zoom = show_reframe.fitted(leaning, 1.65)
+    assert zoom == 1.65 and face == pytest.approx((0.61, 0.4))           # aimed between, all of it in frame
+    face, zoom = show_reframe.fitted([(0.3, 0.3), (0.3, 0.4), (0.3, 0.8)], 1.65)
+    assert zoom == 1.4                                                    # eased off to keep it in
+    assert show_reframe.fitted([(0.1, 0.3), (0.9, 0.3), (0.5, 0.3)], 1.65) is None   # an old cut: no zoom follows that

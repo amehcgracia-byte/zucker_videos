@@ -529,7 +529,7 @@
       <div class="show-time-row"><span>Video</span><div class="show-time-source film" data-scene-seek title="Your video as the edit frames it. Right-click: edit the narrator track (zooms, where they aim, camera moves, cuts)"><img class="show-time-film" data-scene-film alt="" draggable="false"><b>Your video · right-click to edit zooms</b></div></div>
       <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
 
-      <div class="show-time-row"><span>Speech captions <button type="button" class="show-caption-switch" data-captions-on="${review.captions_enabled?'0':'1'}" title="Subtitles of everything you say, at the bottom. Off unless you want them.">${review.captions_enabled?'On · turn off':'Off · turn on'}</button></span><div class="show-time-track show-caption-track">${(review.captions_enabled?scene.captions||[]:[]).map(cue=>`<button type="button" class="show-caption-time" data-caption-at="${Math.max(scene.start,cue.start)}" style="left:${pct(Math.max(scene.start,cue.start))}%;width:${Math.max(.2,pct(Math.min(scene.end,cue.end))-pct(Math.max(scene.start,cue.start)))}%" title="${escape(cue.lines.join(' '))} · click to edit on the video">${escape(cue.lines.join(' '))}</button>`).join('')}</div></div>
+      <div class="show-time-row"><span>Speech captions <button type="button" class="show-caption-switch" data-captions-on="${review.captions_enabled?'0':'1'}" title="Subtitles of everything you say, at the bottom. Off unless you want them.">${review.captions_enabled?'On · turn off':'Off · turn on'}</button></span><div class="show-time-track show-caption-track">${(review.captions_enabled?scene.captions||[]:[]).map(cue=>`<button type="button" class="show-caption-time" data-caption-at="${Math.max(scene.start,cue.start)}" style="left:${pct(Math.max(scene.start,cue.start))}%;width:${Math.max(.2,pct(Math.min(scene.end,cue.end))-pct(Math.max(scene.start,cue.start)))}%" title="${escape(cue.lines.join(' '))} · click to see it on the video · right-click to edit the words">${escape(cue.lines.join(' '))}</button>`).join('')}</div></div>
       ${timelineRows(rows).map(group=>{
         // One row per effect: its pieces (split, pasted) sit side by side on it.
         const first=group[0],label=KIND_LABELS[first.kind]||first.kind,name=first.params.name||first.params.subject||first.params.text||label;
@@ -2714,8 +2714,15 @@
     if (!review || $("#showReviewBox")?.hidden || !(event.target instanceof Element)) return;
     if (event.target.closest("#showSaid, [data-overlay], canvas, input, textarea")) return;
     const scene = currentScene();
-    if (!scene || !event.target.closest("#showStage, [data-show-id], [data-cutout-id], [data-time-clip], [data-track], [data-locate-effect], [data-scene-seek]")) return;
+    if (!scene || !event.target.closest("#showStage, [data-show-id], [data-cutout-id], [data-time-clip], [data-track], [data-locate-effect], [data-scene-seek], [data-caption-at]")) return;
     event.preventDefault();
+    const bar=event.target.closest("[data-caption-at]");
+    if(bar){
+      // A caption on the timeline: the same menu as on the video (edit its words, draw it).
+      const at=Number(bar.dataset.captionAt),cue=(scene.captions||[]).find(c=>c.start<=at+1e-3&&at<c.end);
+      if(cue)window.ShowLiveCaptions?.menu(cue,scene,event.clientX,event.clientY);
+      return;
+    }
     const row=event.target.closest(".show-time-source");
     if(row){
       // The talking video's own rows: its framing is edited in the narrator track.
@@ -3506,7 +3513,7 @@
     // The narrator track changed the framing of these scenes: their previews are made again.
     narratorChanged(ids){
       filmVersion++;
-      for(const scene of scenes()){if(!ids.includes(scene.id))continue;scene.preview={status:'none'};dirtyScenes.add(scene.id);if(scene.decision==='accepted')scene.decision='modified';}
+      for(const scene of scenes()){if(!ids.includes(scene.id))continue;scene.preview={status:'none'};dirtyScenes.add(scene.id);}
       const scene=currentScene();if(!scene)return;
       if(ids.includes(scene.id))invalidateLocal(scene);
       renderScene();
@@ -3543,7 +3550,9 @@
     captionSaved(result){
       review.caption_revision=result.revision;
       for(const scene of scenes())scene.captions=(scene.captions||[]).map(c=>c.id===result.cue.id?result.cue:c);
+      const scene=currentScene();if(scene&&timelineDialog?.open)renderTimeline(scene);
     },
+    captionRevision:()=>review?.caption_revision,
     async imageApplied(item,sceneId) {
       const scene=scenes().find(s=>s.id===sceneId); if(!scene)throw Error("Open the image's scene before applying it");
       const index=review.proposals.findIndex(p=>p.id===item.id);

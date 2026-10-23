@@ -98,8 +98,9 @@ def test_the_editor_api_frames_undoes_and_draws_the_filmstrip(tmp_path, monkeypa
     done = client.post("/api/v1/show/narrator/framing", json={"op": "frame", "start": 0.5, "end": 1.5, "zoom": 1.65, "face": [0.5, 0.3], "backup": True})
     assert done.status_code == 200, done.get_json()
     assert done.get_json()["can_undo"] and len(done.get_json()["segments"]) == 5
+    assert done.get_json()["changed_scenes"] == ["scene-01"]              # only the scene whose picture changed
     decisions = {s["id"]: s["decision"] for s in json.loads((project.artifacts_dir / "show_scenes.json").read_text())["scenes"]}
-    assert decisions == {"scene-01": "modified", "scene-02": "accepted"}   # only the scene whose picture changed
+    assert decisions == {"scene-01": "accepted", "scene-02": "accepted"}   # framing on purpose: still decided
     assert (project.artifacts_dir / "history").is_dir()
     undone = client.post("/api/v1/show/narrator/framing", json={"op": "undo"}).get_json()
     assert len(undone["segments"]) == 3

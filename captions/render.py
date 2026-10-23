@@ -141,6 +141,13 @@ def _dialogue_body(cue, style: Style, *, width: int, event_start: float, first_e
     override = cue.style_override or {}
     lines, fitted_size, requested_size = _layout(cue, style, width=width)
     tags: list[str] = []
+    font = str(override.get("font") or "").strip()
+    if font and not any(mark in font for mark in "\\{}"):
+        tags.append(f"\\fn{font}")
+        if font not in ("Arial Bold", "Arial Black", "Impact"):
+            tags.append("\\b1")                      # a caption reads in a heavy weight
+    if override.get("italic"):
+        tags.append("\\i1")
     color = _ass_color(override.get("color"))
     if color:
         tags.append(f"\\c{color}")
