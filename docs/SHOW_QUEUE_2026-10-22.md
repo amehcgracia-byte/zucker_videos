@@ -18,6 +18,15 @@ Branch `claude/show-1022`, on top of 2.6.16 (`claude/show-after-44`, PR #45).
 11. ❓ **Remove Backstage** from the app to make it smaller, proving nothing in Show depends on it (Show uses some of its transcription/audio code: those parts stay).
 12. ⏳ **Clearer names in the interface** (an ongoing pass; tell me the ones that confuse you).
 
+## The person's notes of 23 October
+
+1. ✅ **Zooms on the face, not the chest.** Every zoomed shot is looked at again (three moments, the Mac's face detector, faces turned aside too) and aimed at the face in it; a shot with no face, or an old cut inside it, goes wide instead of zooming at random. Making the Show does it; for a Show already made, "Aim every zoom at the face" in the narrator track (on the copy of «La prueba»: 89 aimed, 27 went wide). Zooms aimed by hand stay.
+2. ✅ **Camera moves instead of quick zooms.** A change of framing can be a camera move: from the previous framing to the new one in half a second, eased, in the render and in the editor alike. Making the Show turns every second change of framing on running footage into a move (the calm style, all of them); each zoom can be a cut or a move, or all at once.
+3. ✅ **Narrator track editor** (right-click the Video or Audio row of the scene timeline, or "Narrator track…"): the edit played from your video with its framing live; time marks, scenes, pictures, zooms, cuts and your voice's waveform; change a zoom (wide, medium, close, closer, any value), a slow push in or pull out, cut or camera move into it, aim it by clicking the whole picture; drag a zoom to move it, its edges to extend or shorten it, Delete removes it, double-click a wide stretch to add one; Undo / Redo; a copy is kept in Earlier versions before the first change; the list of every zoom and cut. Timing never changes: effects stay put; only the scenes whose picture changed are previewed again.
+4. ⏳ **Undo or extend a cut** (put back what a cut took out): it moves every effect after it, so it comes next, with a copy kept first. Today the cuts are listed and you can jump to them.
+5. ✅ **Effects timeline**: time marks with seconds, faint second lines on every row, and pictures of the edit under "Video".
+6. ✅ **Library**: a video plays (silently) while the pointer is over it; an effect shows what it does on a picture of your video (close-up zooms in, smoke rises, a word pops…); a picture moves a little.
+
 ## Still open from earlier lists
 
 - Captions kept running during an inserted clip (to check in the final video).

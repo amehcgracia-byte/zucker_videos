@@ -110,7 +110,8 @@ def _frames_key(plan: dict[str, Any], start: float, count: int) -> str:
         length = int(shot["end_frame"]) - int(shot["start_frame"])
         lo, hi = max(first, offset), min(first + count, offset + length)
         if hi > lo:
-            frames.append([int(shot["start_frame"]) + lo - offset, hi - lo, shot.get("zoom"), shot.get("focus")])
+            frames.append([int(shot["start_frame"]) + lo - offset, hi - lo, shot.get("zoom"), shot.get("focus"),
+                           *([shot["move"], shot.get("glide_from"), shot.get("zoom_end")] if shot.get("move") == "glide" else [])])
         offset += length
     source = Path(str(plan.get("source") or ""))
     stamp = plan.get("_mask_source_hash") or (file_digest(source) if source.is_file() else '')

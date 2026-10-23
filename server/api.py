@@ -3185,6 +3185,171 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 scene_previews.pop(key, None)
         return jsonify({"restored": history_id, **about})
 
+    # ---- The narrator's track: the talking video's framing (zooms, aim, camera moves) -----
+    narrator_jobs: dict[str, dict[str, Any]] = {}
+
+    def _narrator_state(project: Project) -> dict[str, Any]:
+        from core import show_narrator, show_scenes
+        _, plan_path = _show_review_files(project)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        scenes = show_scenes.load(_scene_files(project))["scenes"] if _scene_files(project).is_file() else []
+        undo = project.artifacts_dir / "show_plan_undo.json"
+        try:
+            stack = json.loads(undo.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            stack = {}
+        return {**show_narrator.track(plan, scenes), "project_id": str(project.folder),
+                "source_url": f"/api/v1/show/source?path={quote(str(plan.get('source') or ''))}",
+                "can_undo": bool(stack.get("undo")), "can_redo": bool(stack.get("redo")),
+                "job": narrator_jobs.get(str(project.folder))}
+
+    def _narrator_changed(project: Project, before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+        """Scenes whose picture changed are previewed again; the others keep their preview.
+        Returns the changed scenes."""
+        from core import show_narrator, show_scenes
+        span = show_narrator.changed(before, after)
+        if span is None or not _scene_files(project).is_file():
+            return []
+        document = show_scenes.load(_scene_files(project))
+        touched = []
+        for scene in document["scenes"]:
+            if scene["start"] < span[1] and scene["end"] > span[0]:
+                _invalidate_scene(project, scene["id"])
+                touched.append(scene["id"])
+                if scene.get("decision") == "accepted":
+                    scene["decision"] = "modified"
+        show_scenes.save(_scene_files(project), document)
+        return touched
+
+    @app.get("/api/v1/show/narrator")
+    def api_show_narrator() -> Response:
+        project = _require_project(state)
+        if not _show_review_files(project)[1].is_file():
+            return error_response("not_found", "Make the Show first", 404)
+        return jsonify(_narrator_state(project))
+
+    @app.post("/api/v1/show/narrator/framing")
+    @_proposals_locked
+    def api_show_narrator_framing() -> Response:
+        """One change to the framing: a stretch framed anew, a zoom moved, extended or removed,
+        every change of framing made a camera move or a cut, or Undo / Redo."""
+        from core import show_narrator
+        from core.project import atomic_write_json
+        from core.show import keep_storyboard
+        project = _require_project(state)
+        body = request.get_json(silent=True) or {}
+        if body.get("project_id") and body["project_id"] != str(project.folder):
+            return error_response("stale_project", "Reopen the narrator track in the current project", 409)
+        _, plan_path = _show_review_files(project)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        before = json.loads(json.dumps(plan))
+        undo = project.artifacts_dir / "show_plan_undo.json"
+        op = str(body.get("op") or "")
+        try:
+            if op in ("undo", "redo"):
+                if not show_narrator.step(undo, plan, op):
+                    return error_response("nothing_to_undo", f"Nothing to {op}", 409)
+            else:
+                if body.get("backup"):
+                    keep_storyboard(project, "Before editing the narrator track")
+                if op == "frame":
+                    number = lambda key: float(body[key]) if body.get(key) is not None else None
+                    face = body.get("face")
+                    show_narrator.frame(plan, float(body["start"]), float(body["end"]), zoom=number("zoom"),
+                                        zoom_end=number("zoom_end") if "zoom_end" in body else None,
+                                        face=[float(face[0]), float(face[1])] if face else None, move=body.get("move"),
+                                        aimed=body.get("aimed"))
+                elif op == "move":
+                    show_narrator.move(plan, (float(body["from"][0]), float(body["from"][1])), (float(body["to"][0]), float(body["to"][1])))
+                elif op == "moves":
+                    show_narrator.all_moves(plan, str(body.get("kind") or ""))
+                else:
+                    return error_response("invalid_framing", "Unknown change to the narrator track", 400)
+                show_narrator.remember(undo, before)
+        except (KeyError, TypeError, ValueError, IndexError) as exc:
+            return error_response("invalid_framing", str(exc) or "That change does not fit the edit", 400)
+        atomic_write_json(plan_path, plan)
+        touched = _narrator_changed(project, before, plan)
+        return jsonify({**_narrator_state(project), "changed_scenes": touched})
+
+    @app.route("/api/v1/show/narrator/aim", methods=["GET", "POST"])
+    def api_show_narrator_aim() -> Response:
+        """Aim every zoom at the face actually in its shot (in the background; a minute or so)."""
+        project = _require_project(state)
+        key = str(project.folder)
+        job = narrator_jobs.get(key) or {"status": "none"}
+        if request.method == "GET" or job.get("status") == "working":
+            return jsonify(job), (202 if job.get("status") == "working" else 200)
+        job = {"status": "working", "progress": 0.0}
+        narrator_jobs[key] = job
+
+        def run() -> None:
+            from core import show_narrator, show_proposals
+            from core.project import atomic_write_json
+            from core.show import keep_storyboard
+            from core.show_reframe import reaim
+            try:
+                _, plan_path = _show_review_files(project)
+                plan = json.loads(plan_path.read_text(encoding="utf-8"))
+                stamp = json.dumps(plan["shots"])
+                aimed = json.loads(stamp)
+                counts = reaim({**plan, "shots": aimed}, plan["source"], progress=lambda share: job.update(progress=round(share, 3)))
+                with show_proposals.LOCK:
+                    now = json.loads(plan_path.read_text(encoding="utf-8"))
+                    if json.dumps(now["shots"]) != stamp:
+                        raise ValueError("The track changed while aiming: aim again")
+                    keep_storyboard(project, "Before aiming every zoom at the face")
+                    show_narrator.remember(project.artifacts_dir / "show_plan_undo.json", now)
+                    after = {**now, "shots": aimed, "framing": {**(now.get("framing") or {}), "reaimed": counts}}
+                    atomic_write_json(plan_path, after)
+                    touched = _narrator_changed(project, now, after)
+                job.update(status="done", progress=1.0, result=counts, changed_scenes=touched)
+            except Exception as exc:  # shown in the editor
+                app.logger.exception("Aiming the zooms failed")
+                job.update(status="failed", error=str(exc)[-240:])
+        threading.Thread(target=run, daemon=True, name="show-narrator-aim").start()
+        return jsonify(job), 202
+
+    @app.get("/api/v1/show/filmstrip")
+    def api_show_filmstrip() -> Response:
+        """Pictures of the edit side by side (``start``–``end`` edited seconds, ``count`` of them),
+        framed as the edit shows them: the timelines' thumbnails."""
+        from core import show_narrator
+        project = _require_project(state)
+        _, plan_path = _show_review_files(project)
+        if not plan_path.is_file():
+            return error_response("not_found", "No Show plan", 404)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        try:
+            start, end = float(request.args.get("start") or 0), float(request.args.get("end") or 0)
+            count = max(1, min(60, int(request.args.get("count") or 10)))
+            height = max(24, min(180, int(request.args.get("h") or 54)))
+        except ValueError:
+            return error_response("invalid_filmstrip", "Give a start, an end and a count", 400)
+        if end <= start:
+            return error_response("invalid_filmstrip", "The end comes after the start", 400)
+        step = (end - start) / count
+        data = show_narrator.filmstrip(plan, [start + step * (i + 0.5) for i in range(count)], height,
+                                       project.cache_dir / "show_thumbs", framed=request.args.get("framed", "1") != "0")
+        response = Response(data, mimetype="image/jpeg")
+        response.headers["Cache-Control"] = "private, max-age=600"
+        return response
+
+    @app.get("/api/v1/show/narrator/waveform")
+    def api_show_narrator_waveform() -> Response:
+        from core import show_narrator
+        project = _require_project(state)
+        _, plan_path = _show_review_files(project)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        noise = plan.get("noise_report") or {}
+        clean = Path(noise["path"]) if noise.get("path") else None
+        try:
+            values = show_narrator.peaks(plan, str(tool_status().get("ffmpeg_path") or "ffmpeg"), project.cache_dir / "show_thumbs",
+                                         int(request.args.get("buckets") or 1200), audio=clean if clean and clean.is_file() else None)
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            return error_response("waveform_failed", f"Could not read the voice: {exc}", 422)
+        return jsonify({"peaks": values})
+
     @app.post("/api/v1/show/scenes/<scene_id>/decision")
     @_proposals_locked
     def api_show_scene_decision(scene_id: str) -> Response:

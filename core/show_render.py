@@ -20,10 +20,10 @@ from typing import Any, Callable
 import numpy as np
 
 from core.ffmpeg import h264_args
+from core.show_camera import FACE_HEIGHT, glide
 
 SAMPLE_RATE = 48000
 CROSSFADE_SEC = 0.008
-FACE_HEIGHT = 0.42   # framing centre, share of the picture height
 
 
 def _sum(terms: list[str]) -> str:
@@ -47,30 +47,41 @@ def kept_ranges(plan: dict[str, Any]) -> list[tuple[int, int]]:
     return [(a, b) for a, b in ranges]
 
 
-def _per_shot(plan: dict[str, Any], value: Callable[[dict[str, Any], int, int], str | None], default: str) -> str:
-    """An expression of the output frame number ``on``: ``value(shot, first, length)``
+def _per_shot(plan: dict[str, Any], value: Callable[..., str | None], default: str) -> str:
+    """An expression of the output frame number ``on``: ``value(shot, first, length, index)``
     during each shot (shots returning None keep ``default``)."""
     terms: list[str] = []
     position = 0
-    for shot in plan["shots"]:
+    for index, shot in enumerate(plan["shots"]):
         length = int(shot["end_frame"]) - int(shot["start_frame"])
-        part = value(shot, position, length)
+        part = value(shot, position, length, index)
         if part is not None:
             terms.append(f"between(on,{position},{position + length - 1})*({part}-({default}))")
         position += length
     return f"{default}+{_sum(terms)}" if terms else default
 
 
+def _eased(plan: dict[str, Any], index: int, first: int, start: str, target: str) -> str:
+    """``target`` reached from ``start`` by the camera move opening shot ``index`` (if any)."""
+    move = glide(plan, index)
+    if not move:
+        return target
+    _, frames, skip = move
+    t = f"min(1,(on-{first}+{skip})/{frames})"
+    return f"({start}+(({target})-{start})*{t}*{t}*(3-2*{t}))"
+
+
 def zoom_expression(plan: dict[str, Any]) -> str:
-    """zoompan z(on): each shot's zoom, moving linearly to ``zoom_end`` if it has one."""
-    def value(shot: dict[str, Any], first: int, length: int) -> str | None:
+    """zoompan z(on): each shot's zoom, moving linearly to ``zoom_end`` if it has one, and
+    reached by a camera move from the previous framing when the shot glides in."""
+    def value(shot: dict[str, Any], first: int, length: int, index: int) -> str | None:
         start = float(shot.get("zoom") or 1.0)
         end = float(shot.get("zoom_end") or start)
-        if start == 1.0 and end == 1.0:
+        move = glide(plan, index)
+        if start == 1.0 and end == 1.0 and not move:
             return None
-        if end == start:
-            return f"{start:.4f}"
-        return f"({start:.4f}+{(end - start) / max(1, length - 1):.6f}*(on-{first}))"
+        target = f"{start:.4f}" if end == start else f"({start:.4f}+{(end - start) / max(1, length - 1):.6f}*(on-{first}))"
+        return _eased(plan, index, first, f"{move[0][0]:.4f}", target) if move else target
     return _per_shot(plan, value, "1")
 
 
@@ -78,7 +89,13 @@ def focus_expressions(plan: dict[str, Any]) -> tuple[str, str]:
     """zoompan x and y: the crop window centred on each shot's ``focus`` (shares
     of the picture), kept inside it."""
     def axis(index: int, default: float) -> str:
-        centre = _per_shot(plan, lambda shot, *_: f"{shot['focus'][index]:.4f}" if shot.get("focus") else None, f"{default:.4f}")
+        def value(shot: dict[str, Any], first: int, length: int, number: int) -> str | None:
+            move = glide(plan, number)
+            if not shot.get("focus") and not move:
+                return None
+            target = f"{(shot.get('focus') or (0.5, FACE_HEIGHT))[index]:.4f}"
+            return _eased(plan, number, first, f"{move[0][1 + index]:.4f}", target) if move else target
+        centre = _per_shot(plan, value, f"{default:.4f}")
         size = "iw" if index == 0 else "ih"
         return f"max(0,min({size}-{size}/zoom,{size}*({centre})-{size}/zoom/2))"
     return axis(0, 0.5), axis(1, FACE_HEIGHT)

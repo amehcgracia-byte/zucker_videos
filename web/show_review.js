@@ -382,6 +382,7 @@
       timelineDialog.querySelector('[data-scene-editor-body]').append(wrap);
       $('#showTimeline').hidden=false;$('#showTimelineLauncher').hidden=true;
       timelineDialog.showModal();
+      timelineScale(currentScene());
     }
     const scene=currentScene(),at=editedPlayhead(),cue=scene.captions?.find(c=>c.start<scene.end&&c.end>scene.start);
     if(!selectedEffect && cue && !scene.captions.some(c=>c.start<=at&&at<c.end)){
@@ -519,12 +520,13 @@
     const selected=timelineItems(scene).find(item=>item.id===selectedEffect);
     const rows=timelineItems(scene).filter(item=>item.status!=='discarded');
     box.innerHTML=`<header><strong>Scene timeline</strong><small>${clock(scene.start)}–${clock(scene.end)}</small></header>
-      <button type="button" class="icon-button small primary" data-editor-add>Add ▸</button> <button type="button" class="icon-button small" data-open-library>Library</button>
+      <button type="button" class="icon-button small primary" data-editor-add>Add ▸</button> <button type="button" class="icon-button small" data-open-library>Library</button> <button type="button" class="icon-button small" data-open-narrator title="Zooms on your video, where they aim, camera moves and cuts">Narrator track…</button>
       <details class="show-sticker-picker"><summary>Add sticker</summary><div class="show-library">${library.map((asset,index)=>asset.retired?'':`<button type="button" data-library="${index}" aria-label="Add ${escape(asset.name)}"><img src="${asset.url}" alt="" loading="lazy">${escape(asset.name)}</button>`).join('')}</div></details>
       <p>Play or scrub to check when a picture appears and disappears. Drag a bar to move it; drag either edge to trim.</p>
       <div class="show-timeline-edit" role="toolbar" aria-label="Edit the timeline">${[['split','Split at playhead','⌘B'],['cut','Cut','⌘X'],['copy','Copy','⌘C'],['paste','Paste at playhead','⌘V'],['duplicate','Duplicate','⌘D'],['delete','Delete','⌫'],['undo','Undo','⌘Z'],['redo','Redo','⇧⌘Z']].map(([action,label,keys])=>`<button type="button" class="icon-button small" data-timeline-command="${action}" title="${label} (${keys})" ${timelineCommandOff(action,scene)?'disabled':''}>${label}</button>`).join('')}</div>
       ${selected?`<div class="show-timeline-tools"><strong>${escape(selected.params.name||selected.params.subject||selected.params.text||KIND_LABELS[selected.kind]||selected.kind)}</strong><button type="button" data-place-words="${selected.id}">Choose words</button><button type="button" data-locate-effect="${selected.id}">Go to effect</button><button type="button" data-show-preview="${selected.id}" title="This effect with a little of the scene around it">Preview</button>${selected.clay?`<button type="button" data-clay-remove="${selected.clay.id}">Remove clay</button>`:selected.overlay?`<button type="button" data-remove-sticker="${selected.id}">Remove sticker</button>`:`<button type="button" data-show-status="discarded" data-id="${selected.id}">Remove effect</button>`}${isTexture(selected)?steamTools(selected):''}${selected.kind==='drawing'?`<button type="button" data-open-library="${selected.id}">Choose from library</button>`:''}${selected.kind==='background'?`<button type="button" data-video-layers="${selected.id}">Edit moving video layers</button><button type="button" data-open-library="${selected.id}">Background from library</button>`:''}${selected.overlay||['drawing','word'].includes(selected.kind)?`<label class="show-movement">Movement <select data-movement="${selected.id}">${movementChoices(selected).map(([key,label])=>`<option value="${key}" ${movementOf(selected)===key?'selected':''}>${label}</option>`).join('')}</select></label>`:''}${selected.kind==='clay'?`<button type="button" data-clay-settings="${selected.clay.id}">Clay settings…</button>`:''}${selected.kind==='clip'?`<button type="button" data-clip-settings="${selected.id}">Clip settings…</button><button type="button" data-face-clip="${selected.id}">Put my face on it</button>${selected.params.clip_original?`<button type="button" data-face-original="${selected.id}">Use the original clip</button>`:''}`:''}${selected.kind==='drawing'&&!selected.params.picture?'<small>Choose an existing picture or generate and select one first. Rendering will not invent a replacement.</small>':''}</div>`:''}<label class="show-timeline-seek">Playhead <input type="range" aria-label="Scene playhead" data-timeline-seek min="${scene.start}" max="${scene.end-.04}" step="0.04" value="${scene.start}"><output data-playhead-label>${clock(scene.start)}</output></label>
-      <div class="show-time-row"><span>Video</span><div class="show-time-source" data-scene-seek>Original video · your cut</div></div>
+      <div class="show-time-row show-time-ruler-row"><span>Time</span><div class="show-time-ruler" aria-hidden="true">${timeTicks(scene)}</div></div>
+      <div class="show-time-row"><span>Video</span><div class="show-time-source film" data-scene-seek title="Your video as the edit frames it. Right-click: edit the narrator track (zooms, where they aim, camera moves, cuts)"><img class="show-time-film" data-scene-film alt="" draggable="false"><b>Your video · right-click to edit zooms</b></div></div>
       <div class="show-time-row"><span>Audio</span><div class="show-time-source audio" data-scene-seek>Original voice · linked to video</div></div>
 
       <div class="show-time-row"><span>Speech captions <button type="button" class="show-caption-switch" data-captions-on="${review.captions_enabled?'0':'1'}" title="Subtitles of everything you say, at the bottom. Off unless you want them.">${review.captions_enabled?'On · turn off':'Off · turn on'}</button></span><div class="show-time-track show-caption-track">${(review.captions_enabled?scene.captions||[]:[]).map(cue=>`<button type="button" class="show-caption-time" data-caption-at="${Math.max(scene.start,cue.start)}" style="left:${pct(Math.max(scene.start,cue.start))}%;width:${Math.max(.2,pct(Math.min(scene.end,cue.end))-pct(Math.max(scene.start,cue.start)))}%" title="${escape(cue.lines.join(' '))} · click to edit on the video">${escape(cue.lines.join(' '))}</button>`).join('')}</div></div>
@@ -579,6 +581,29 @@
     };
     syncPlayback();
     box.onkeydown=event=>{const clip=event.target.closest('[data-time-clip]');if(clip && event.key==='Enter'){event.preventDefault();locateEffect(timelineItem(clip.dataset.timeClip));}};
+    timelineScale(scene);
+    if(!timelineSized&&window.ResizeObserver){timelineSized=new ResizeObserver(()=>{const current=currentScene();if(current)timelineScale(current);});timelineSized.observe(box);}
+  }
+  // Time marks over the scene: a tick every quarter second, a labelled one every second (or
+  // every 2 / 5 s in a long scene), and faint second lines across every row.
+  let timelineSized=null,filmVersion=0;
+  function timeTicks(scene){
+    const duration=scene.end-scene.start,every=duration>40?5:duration>20?2:1,out=[];
+    for(let t=Math.ceil(scene.start*4)/4;t<=scene.end+1e-6;t+=.25){
+      const whole=Math.abs(t-Math.round(t))<1e-6,label=whole&&Math.round(t)%every===0;
+      out.push(`<i class="${whole?'major':''}" style="left:${100*(t-scene.start)/duration}%">${label?`<small>${Math.floor(Math.round(t)/60)}:${String(Math.round(t)%60).padStart(2,'0')}</small>`:''}</i>`);
+    }
+    return out.join('');
+  }
+  // The pictures of the scene under the video row, framed as the edit frames them.
+  function timelineScale(scene){
+    const box=$('#showTimeline'),source=box?.querySelector('.show-time-source.film');if(!source)return;
+    const width=source.clientWidth,duration=scene.end-scene.start;if(!width||!duration)return;
+    const second=width/duration;
+    box.style.setProperty('--second',`${second}px`);box.style.setProperty('--second-offset',`${(Math.ceil(scene.start)-scene.start)*second}px`);
+    const img=source.querySelector('[data-scene-film]'),count=Math.max(2,Math.min(40,Math.round(width/(40*16/9))));
+    const url=`/api/v1/show/filmstrip?start=${scene.start.toFixed(3)}&end=${scene.end.toFixed(3)}&count=${count}&h=40&v=${filmVersion}`;
+    if(img&&img.getAttribute('src')!==url)img.src=url;
   }
   // A clip's speed: 100 % normal, down to 10 % (slow motion), up to 200 %. The same seconds of
   // the clip play slower or faster, so its bar gets longer or shorter.
@@ -1819,7 +1844,7 @@
       { label: `Add at ${clock(picked.start)}`, submenu: () => addItems(scene, picked, x, y) },
       { label: "Effects in this scene", disabled: !effects.length, submenu: () => effects.map((item) => ({ label: `${KIND_LABELS[item.kind] || item.kind} · ${name(item)}${item.status === "discarded" ? " (removed)" : ""}`, submenu: () => effectItems(scene, item) })) },
       { label: "Speech captions", submenu: [{ label: "On", checked: !!review.captions_enabled, action: () => setCaptions(true) }, { label: "Off", checked: !review.captions_enabled, action: () => setCaptions(false) }] },
-      { label: "Cuts and audio", submenu: [{label:"Sound mixer…",action:()=>ShowAudio.open()}, { label: "Add a close-up…", action: () => addHere(x, y, "cutaway") }, { label: "Open the video / audio cutting desk…", action: () => { window.location.href = "/show-studio/"; } }] },
+      { label: "Cuts and audio", submenu: [{label:"Edit narrator track (zooms, aim, camera moves)…",action:()=>window.ShowNarrator?.open(editedPlayhead())},{label:"Sound mixer…",action:()=>ShowAudio.open()}, { label: "Add a close-up…", action: () => addHere(x, y, "cutaway") }, { label: "Open the video / audio cutting desk…", action: () => { window.location.href = "/show-studio/"; } }] },
       { separator: true },
       { label: "Preview", hint: "Space on the timeline", action: () => requestScenePreview(scene) },
     ], { host: menuHost() });
@@ -2691,6 +2716,16 @@
     const scene = currentScene();
     if (!scene || !event.target.closest("#showStage, [data-show-id], [data-cutout-id], [data-time-clip], [data-track], [data-locate-effect], [data-scene-seek]")) return;
     event.preventDefault();
+    const row=event.target.closest(".show-time-source");
+    if(row){
+      // The talking video's own rows: its framing is edited in the narrator track.
+      const bounds=row.getBoundingClientRect(),at=scene.start+Math.max(0,Math.min(1,(event.clientX-bounds.left)/bounds.width))*(scene.end-scene.start);
+      ShowMenu.open(event.clientX,event.clientY,[
+        {label:"Edit narrator track…",hint:"zooms · aim · camera moves · cuts",action:()=>window.ShowNarrator?.open(at)},
+        {label:"Sound mixer…",action:()=>ShowAudio.open()},
+      ],{host:menuHost()});
+      return;
+    }
     const barId=event.target.closest("[data-time-clip]")?.dataset.timeClip || event.target.closest("[data-track]")?.dataset.track || event.target.closest("[data-locate-effect]")?.dataset.locateEffect;
     if(barId){timelineMenu(event.clientX,event.clientY,barId);return;}
     const ownId=event.target.closest("[data-cutout-id]")?.dataset.cutoutId || event.target.closest("[data-show-id]")?.dataset.showId || event.target.closest("[data-live-effect]")?.dataset.liveEffect;
@@ -3062,6 +3097,19 @@
         <nav class="show-lib-tabs" data-lib-tabs></nav><div class="show-lib-body" data-lib-body></div>`;
       document.body.append(libraryDialog);
       libraryDialog.addEventListener("click", (event) => onLibraryClick(event).catch((error) => showToast(error.message, true)));
+      // A video plays (silently) while the pointer is over it, so you see what it is before placing it.
+      libraryDialog.addEventListener("pointerover", (event) => {
+        const video = event.target.closest?.("video[data-hover-play]");
+        if (!video || video.contains(event.relatedTarget)) return;
+        if (video.preload === "none") video.preload = "auto";
+        video.dataset.hovering = "1"; video.play().catch(() => {});
+      });
+      libraryDialog.addEventListener("pointerout", (event) => {
+        const video = event.target.closest?.("video[data-hover-play]");
+        if (!video || video.contains(event.relatedTarget) || !video.dataset.hovering) return;
+        delete video.dataset.hovering; video.pause();
+        try { video.currentTime = 0; } catch {}
+      });
       libraryDialog.addEventListener("toggle", (event) => {
         if (event.target.matches?.("[data-lib-group]")) libraryOpenGroups.set(event.target.dataset.libGroup, event.target.open);
       }, true);
@@ -3080,10 +3128,10 @@
 
   function libraryCard(item) {
     const scene = currentScene();
-    if(item.effect)return `<figure class="show-lib-card"><figcaption><b>${escape(item.name)}</b></figcaption><button type="button" data-lib-effect="${escape(item.effect)}" ${scene?'':'disabled'}>Add to scene…</button></figure>`;
+    if(item.effect)return `<figure class="show-lib-card fx-card" title="Point at it to see what it does">${effectDemo(item.effect)}<figcaption><b>${escape(item.name)}</b></figcaption><button type="button" data-lib-effect="${escape(item.effect)}" ${scene?'':'disabled'}>Add to scene…</button></figure>`;
     if(item.media_kind) {
       const id=encodeURIComponent(item.id), url=`/api/v1/show/video-library/${id}/media`;
-      return `<figure class="show-lib-card">${item.media_kind==='video'?`<video controls preload="none" poster="/api/v1/show/video-library/${id}/thumbnail" src="${url}" aria-label="Preview ${escape(item.name)}"></video>`:`<audio controls preload="none" src="${url}" aria-label="Preview ${escape(item.name)}"></audio>`}<figcaption><b>${escape(item.name)}</b><small>${item.saved_edit?'Saved edit · ':''}${item.face_swapped?'Face-swapped · ':''}${item.transparent?'Cutout · ':''}${Number(item.duration).toFixed(1)} s</small></figcaption><button type="button" data-lib-media="${escape(item.id)}" ${scene?'':'disabled'}>${libraryWords?'Place on selected words':'Place at playhead'}</button><button type="button" data-lib-media="${escape(item.id)}" data-lib-edit ${scene?'':'disabled'}>Place &amp; edit…</button></figure>`;
+      return `<figure class="show-lib-card">${item.media_kind==='video'?`<video controls muted data-hover-play preload="none" poster="/api/v1/show/video-library/${id}/thumbnail" src="${url}" aria-label="Preview ${escape(item.name)}"></video>`:`<audio controls preload="none" src="${url}" aria-label="Preview ${escape(item.name)}"></audio>`}<figcaption><b>${escape(item.name)}</b><small>${item.saved_edit?'Saved edit · ':''}${item.face_swapped?'Face-swapped · ':''}${item.transparent?'Cutout · ':''}${Number(item.duration).toFixed(1)} s</small></figcaption><button type="button" data-lib-media="${escape(item.id)}" ${scene?'':'disabled'}>${libraryWords?'Place on selected words':'Place at playhead'}</button><button type="button" data-lib-media="${escape(item.id)}" data-lib-edit ${scene?'':'disabled'}>Place &amp; edit…</button></figure>`;
     }
     const index = libraryAll.indexOf(item);
     const where = item.section === "other" ? `from ${item.project}` : item.section === "recurring" ? `Recurring · ${item.shelf}` : (item.origin || "Your library");
@@ -3104,6 +3152,25 @@
         ${item.retired ? "" : shelfControl}
         ${item.section === "other" ? "" : `<button type="button" class="icon-button small" data-lib-hide="${index}">${item.retired ? "Show again" : "Hide"}</button>`}
       </div></figure>`;
+  }
+
+  // What an effect does, shown on a picture of your video when the pointer is over its card.
+  function effectDemo(effect){
+    const kind=effect.startsWith('texture_')?'texture':effect,texture=kind==='texture'?effect.slice(8):'';
+    const sprinkle=(n,cls)=>Array.from({length:n},(_,i)=>`<i class="${cls}" style="left:${(i*37+11)%92+4}%;animation-delay:${(i*0.23)%1.6}s"></i>`).join('');
+    const layer={
+      drawing:'<svg viewBox="0 0 160 90" class="fx-sketch"><path d="M104 18c16-6 33 6 28 21s-29 19-39 6 2-22 11-27zM96 52l-10 14M112 50l12 12"/></svg>',
+      original_eyes:'<i class="fx-ring" style="left:45%;top:33%"></i><i class="fx-ring" style="left:56%;top:33%"></i>',
+      original_mouth:'<i class="fx-ring wide" style="left:50.5%;top:48%"></i>',
+      clay:'<i class="fx-clay"></i>',
+      math:'<span class="fx-float" style="left:14%">E=mc²</span><span class="fx-float" style="left:68%;animation-delay:.5s">∑x²</span><span class="fx-float" style="left:40%;animation-delay:1s">π≈3.14</span>',
+      word:'<b class="fx-word">WOW!</b>',
+      captions:'<span class="fx-caption">and that is what I meant</span>',
+      original_part:'<i class="fx-part"></i>',
+      video_reference:'<i class="fx-clip">▶</i>',
+      texture:sprinkle(12,'fx-p'),
+    }[kind]||'';
+    return `<div class="fx-demo fx-${escape(kind)} ${texture?'tx-'+escape(texture):''}" aria-hidden="true"><img src="/api/v1/show/frame?t=${Math.max(0,editedPlayhead()||0).toFixed(1)}" alt="" loading="lazy" onerror="this.hidden=true">${layer}</div>`;
   }
 
   function drawLibrary() {
@@ -3412,6 +3479,7 @@
   });
 
   document.addEventListener('click',event=>{if(event.target.closest?.('[data-add-audio]'))MusicLibrary.open(true);});
+  document.addEventListener('click',event=>{if(event.target.closest?.('[data-open-narrator]'))window.ShowNarrator?.open(editedPlayhead());});
   window.ShowReview = {
     audioTarget(){const scene=currentScene();if(!scene)return null;const picked=pickedWords||pickedHere(scene);return {project_id:review.project_id,scene_id:scene.id,at:picked.start,duration:Math.max(.04,picked.end-picked.start),text:picked.text};},
     addAudioLink(){const scene=currentScene();if(scene)ShowReferences.openAudio(scene,pickedWords||pickedHere(scene),review.project_id);},
@@ -3435,6 +3503,15 @@
       if(preview)await requestScenePreview(scene);
     },
     active:()=>!!review && !$('#showReviewBox')?.hidden,
+    // The narrator track changed the framing of these scenes: their previews are made again.
+    narratorChanged(ids){
+      filmVersion++;
+      for(const scene of scenes()){if(!ids.includes(scene.id))continue;scene.preview={status:'none'};dirtyScenes.add(scene.id);if(scene.decision==='accepted')scene.decision='modified';}
+      const scene=currentScene();if(!scene)return;
+      if(ids.includes(scene.id))invalidateLocal(scene);
+      renderScene();
+      showToast(`Narrator track saved: ${ids.length} scene${ids.length===1?'':'s'} will be previewed again with the new framing.`);
+    },
     transport:action=>action==='play'?playScene():stepVideo(action==='previousFrame'?-1:1),
     async clipUpdated(item){const i=review.proposals.findIndex(p=>p.id===item.id);if(i>=0)review.proposals[i]=item;selectedEffect=item.id;await markModified(item.id);invalidateLocal(currentScene());renderScene();await requestScenePreview(currentScene());},
     // A character made in the studio from a "character speaks" card takes that effect's place: it is

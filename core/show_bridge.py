@@ -26,7 +26,6 @@ from typing import Any, Callable
 
 STUDIO_W, STUDIO_H = 1280, 720
 STUDIO_FPS = 25.0
-FACE_HEIGHT = 0.38            # the render's default vertical focus (core.show_render)
 # Where each section of the pilot starts in the original video (Studio's ShowSource:
 # "Previous workshop · 7:46–8:30" and "Beginning · 0:00–1:28").
 SECTION_STARTS = {"workshop": 466.0, "opening": 0.0}
@@ -73,18 +72,12 @@ def edited_to_source(plan: dict[str, Any], seconds: float) -> float | None:
 
 def window_at(plan: dict[str, Any], seconds: float) -> tuple[float, float, float]:
     """(x0, y0, width) of the source picture an output frame shows, as shares,
-    exactly as core.show_render's zoompan crops it."""
+    exactly as core.show_render's zoompan crops it (camera moves included)."""
+    from core.show_camera import camera_at, window
     fps = float(plan.get("fps") or 30)
-    n = int(round(seconds * fps))
-    for shot, first, length in _shots(plan):
-        if first <= n < first + length:
-            start = float(shot.get("zoom") or 1.0)
-            end = float(shot.get("zoom_end") or start)
-            zoom = start + (end - start) / max(1, length - 1) * (n - first)
-            w = 1.0 / zoom
-            cx, cy = shot.get("focus") or (0.5, FACE_HEIGHT)
-            return (min(max(cx - w / 2, 0.0), 1.0 - w), min(max(cy - w / 2, 0.0), 1.0 - w), w)
-    return (0.0, 0.0, 1.0)
+    if not plan.get("shots"):
+        return (0.0, 0.0, 1.0)
+    return window(*camera_at(plan, int(round(seconds * fps))))
 
 
 def to_output(point: tuple[float, float], window: tuple[float, float, float], width: int, height: int) -> tuple[float, float, float]:

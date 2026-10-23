@@ -207,21 +207,16 @@ def steam_on_screen(plan: dict[str, Any], item: dict[str, Any]) -> list[dict[str
 
 def face_on_screen(plan: dict[str, Any], at: float) -> tuple[float, float] | None:
     """Where the host's face is in the edited picture at ``at`` (shares), or None."""
+    from core.show_camera import camera_at, window
     fps = int(plan.get("fps") or 30)
-    offset = 0.0
+    n, first = int(round(at * fps)), 0
     for shot in plan["shots"]:
-        length = (shot["end_frame"] - shot["start_frame"]) / fps
-        if at < offset + length:
+        length = shot["end_frame"] - shot["start_frame"]
+        if n < first + length:
             if not shot.get("face"):
                 return None
-            share = (at - offset) / max(1e-6, length)
-            zoom = float(shot.get("zoom") or 1.0)
-            zoom += (float(shot.get("zoom_end") or zoom) - zoom) * share
-            cx, cy = shot.get("focus") or DEFAULT_FOCUS
-            window = 1.0 / zoom
-            x0 = min(max(cx - window / 2, 0.0), 1.0 - window)
-            y0 = min(max(cy - window / 2, 0.0), 1.0 - window)
+            x0, y0, w = window(*camera_at(plan, n))
             fx, fy = shot["face"]
-            return (fx - x0) / window, (fy - y0) / window
-        offset += length
+            return (fx - x0) / w, (fy - y0) / w
+        first += length
     return None

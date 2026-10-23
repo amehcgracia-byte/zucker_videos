@@ -206,6 +206,12 @@ def _transcribe_and_plan(project, path: Path, *, style_name: str, language: str 
         raise RuntimeError("Nothing was left after removing pauses: is there speech in this video?")
     progress(first + int((last - first) * 0.65), "Finding your face to frame close shots")
     apply_focus(plan, face_track(path, ffmpeg, cancel=cancel))
+    from core.show_camera import default_moves
+    from core.show_reframe import reaim
+    # Every close shot looked at again, its zoom aimed at the face actually in it.
+    reaim(plan, path, cancel=cancel, progress=lambda share: progress(
+        first + int((last - first) * (0.66 + 0.06 * share)), "Aiming every close-up at your face"))
+    default_moves(plan, style.glide_every)
     (project.artifacts_dir / "show_plan.json").write_text(json.dumps(plan, ensure_ascii=False, indent=1), encoding="utf-8")
     cancel()
     return plan
@@ -627,14 +633,14 @@ def _cut_once(source: Path, part: dict[str, Any], cut: Path, cuts: Path, name: s
 
 def window_plan(plan: dict[str, Any], start: float, end: float) -> dict[str, Any]:
     """The part of the edit between ``start`` and ``end`` (edited seconds) as a plan of its own."""
+    from core.show_camera import resolved, trim
     fps = int(plan.get("fps") or 30)
     shots, offset = [], 0.0
-    for shot in plan["shots"]:
+    for shot in resolved(plan):                      # camera moves kept as on the whole edit
         length = (shot["end_frame"] - shot["start_frame"]) / fps
         a, b = max(start, offset), min(end, offset + length)
         if b - a >= 1.0 / fps:
-            first = shot["start_frame"] + int(round((a - offset) * fps))
-            shots.append({**shot, "start_frame": first, "end_frame": first + max(1, int(round((b - a) * fps)))})
+            shots.append(trim(shot, int(round((a - offset) * fps)), max(1, int(round((b - a) * fps)))))
         offset += length
     cutaways = [{**cut, "at": round(cut["at"] - start, 3)} for cut in plan.get("cutaways") or [] if start - cut["duration"] < cut["at"] < end]
     return {**plan, "shots": shots, "cutaways": cutaways, "_edited_offset":float(plan.get("_edited_offset",0))+start}

@@ -41,12 +41,13 @@ class ShowStyle:
     push_every: int = 5          # every Nth long shot slowly pushes in...
     reveal_every: int = 9        # ...and every Mth starts close and opens up
     move_min_sec: float = 2.0    # only shots this long move
+    glide_every: int = 2         # where the picture runs on, every Nth change of framing is a camera move, not a cut
     retake_window: float = 25.0  # how far apart two takes of a phrase can be
     fps: int = 30
 
 
 CHOE = ShowStyle()
-CALM = ShowStyle(max_pause=0.6, target_shot=3.5, min_shot=1.5, max_shot=7.0, zooms=(1.0, 1.15, 1.35), reveal_every=0)
+CALM = ShowStyle(max_pause=0.6, target_shot=3.5, min_shot=1.5, max_shot=7.0, zooms=(1.0, 1.15, 1.35), reveal_every=0, glide_every=1)
 STYLES = {"choe": CHOE, "calm": CALM}
 
 
