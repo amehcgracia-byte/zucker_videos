@@ -1624,7 +1624,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             # The other videos and photos of the project are its close-ups.
             resources = [path for path in registered if path != source] + [str(path) for path in body.get("show_photos") or [] if isinstance(path, str)]
             try:
-                job = state.wizard.start_show(state.project, source, style if style in {"choe", "calm"} else "choe", language,
+                job = state.wizard.start_show(state.project, source, style if style in {"choe", "calm", "fast", "normal", "storytelling", "podcast"} else "choe", language,
                                               gags if gags in {"claude", "keywords", "off"} else "claude",
                                               review=bool(body.get("show_review", True)), resources=resources)
             except RuntimeError as exc:
