@@ -146,6 +146,8 @@ def build_prompt(words: list[dict[str, Any]], library: list[dict[str, Any]], *, 
 
 
 def claude_cli() -> str | None:
+    if os.environ.get("MONTARA_LOCAL_DIRECTOR") == "1":
+        return None
     for candidate in (shutil.which("claude"), str(Path.home() / ".local" / "bin" / "claude"), "/opt/homebrew/bin/claude", "/usr/local/bin/claude"):
         if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
             return candidate

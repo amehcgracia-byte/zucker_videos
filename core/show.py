@@ -651,6 +651,10 @@ def render_reviewed_show(project, *, progress: Callable[[int, str], None], cance
                         summary={"approved": len(show_proposals.approved(items)), "close_ups": len(cutaways),
                                  "characters": sum(1 for item in layer if item.get("insert")), "pictures": len(pictures)},
                         studio=studio_report, effects=show_effects)
+    from core import show_caption_layout
+    if show_caption_layout.enabled(project):
+        progress(97,"Writing your chosen subtitles on the video")
+        burn_captions(project,destination,ffmpeg)
     progress(100, "Show ready")
     return destination, manifest
 
@@ -877,7 +881,10 @@ def _scene_preview_inputs(project, scene_id: str, width: int, height: int, only_
     from core.gags import drawing_engine
     local_art_recipe = [drawing_engine(), gag_paint.NEGATIVE, {key: vars(style) for key, style in gag_paint.STYLES.items()}] if any(
         item["kind"] == "drawing" and not item["params"].get("picture") for item in live) else None
-    signature = hashlib.sha1(json.dumps(["scene-preview-v10-clean-cuts", plan, live, overlays, _picture_recipe_hashes([live, overlays]), start, end, width, height, studio_fingerprint(project.folder),
+    source_file=Path(plan['source'])
+    source_stat=source_file.stat() if source_file.is_file() else None
+    source_version=[source_stat.st_size,source_stat.st_mtime_ns] if source_stat else None
+    signature = hashlib.sha1(json.dumps(["scene-preview-v11-source-version", source_version, plan, live, overlays, _picture_recipe_hashes([live, overlays]), start, end, width, height, studio_fingerprint(project.folder),
                                          local_art_recipe], sort_keys=True, default=str).encode()).hexdigest()[:12]
     folder = project.cache_dir / "show_previews"
     return plan, live, overlays, start, end, folder, left_out, folder / f"{scene_id}-{signature}.mp4"

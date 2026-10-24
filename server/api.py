@@ -1617,6 +1617,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 return error_response("bad_request", "Save the project location first", 400)
             videos = [str(path) for path in body.get("videos") or [] if isinstance(path, str)]
             style = str(body.get("show_style") or "choe")
+            if "captions_english" in body:
+                state.project.data.setdefault('settings',{}).setdefault('wizard',{})['captions_english']=bool(body['captions_english'])
+            state.project.data.setdefault('settings',{}).setdefault('wizard',{}).setdefault('show',{})['style']=style
+            state.project.save()
             podcast = style == "podcast"
             if podcast:
                 # The cameras and microphones of the podcast setup make the program first; the
@@ -2236,8 +2240,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except (OSError,ValueError,KeyError):resume_scene=document.get('resume_scene')
         return jsonify({**document, "resume_scene":resume_scene, "proposals": _with_shown(project, stored["proposals"]), "resources": stored.get("resources") or [], "source": stored.get("source"),
                         "project_logo": str(logo) if logo.is_file() else None,
-                        "caption_revision": caption_layout["revision"], "captions_enabled": captions_on, "project_id": str(project.folder),
-                        "plan": {"edited_duration": plan["edited_duration"], "fps": plan.get("fps") or 30},
+                        "caption_revision": caption_layout["revision"], "captions_enabled": captions_on, "caption_defaults":caption_layout.get("defaults",{}), "project_id": str(project.folder),
+                        "plan": {"edited_duration": plan["edited_duration"], "fps": plan.get("fps") or 30,"style":plan.get("style")},
                         "source_url": f"/api/v1/show/source?path={quote(str(plan.get('source') or ''))}",
                         "saved_render": ({k: v for k, v in saved.items() if k != "path"} if (saved := _saved_show_render(project)) else None)})
 
@@ -2246,7 +2250,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         """Turn the speech captions on or off for this Show (off unless the person asks)."""
         from core import show_caption_layout
         project = _require_project(state)
-        data = show_caption_layout.set_enabled(project, (request.get_json(silent=True) or {}).get("enabled"))
+        body=request.get_json(silent=True) or {}
+        if body.get('project_id') and body['project_id']!=str(project.folder):return error_response('stale_project','Reopen this video before changing subtitles',409)
+        before=show_caption_layout.enabled(project)
+        data = show_caption_layout.set_enabled(project, body.get("enabled"))
+        from core.show_review_history import record
+        record(project,'captions.visibility.changed',before,data['enabled'])
         return jsonify({"enabled": data["enabled"], "revision": data["revision"]})
 
     @app.patch("/api/v1/show/captions/<cue_id>")
@@ -2267,7 +2276,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             data = show_caption_layout.save(project, cue_id, body.get('changes') or {}, body.get('revision', -1), cues)
         except (ValueError, TypeError) as exc:
             return error_response('invalid_caption', str(exc), 409 if 'another window' in str(exc) else 400)
-        return jsonify({'revision': data['revision'], 'cue': next(c for c in show_caption_layout.apply(edited_captions(plan, plan.get('style') or 'choe'), data) if c['id'] == cue_id)})
+        current=next(c for c in show_caption_layout.apply(edited_captions(plan, plan.get('style') or 'choe'), data) if c['id']==cue_id)
+        from core.show_review_history import record
+        record(project,'captions.cue.corrected',next(c for c in cues if c['id']==cue_id),current,evidence={'cue_id':cue_id})
+        return jsonify({'revision':data['revision'],'cue':current})
 
     @app.get("/api/v1/show/studio-effects")
     def api_show_studio_effects() -> Response:
@@ -3219,6 +3231,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 scene_previews.pop(key, None)
         return jsonify({"restored": history_id, **about})
 
+    from server.show_program_review import register_program_review
+    def _invalidate_program_review(project):
+        from core import show_scenes
+        path=_scene_files(project)
+        if path.is_file():
+            for scene in show_scenes.load(path).get('scenes',[]):_invalidate_scene(project,scene['id'])
+    register_program_review(app,lambda:_require_project(state),_invalidate_program_review)
+
     # ---- Storytelling: the narration and the pictures it is told over --------------------
     @app.get("/api/v1/show/story")
     def api_show_story() -> Response:
@@ -3241,7 +3261,11 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if missing:
             return error_response("invalid_story", f"Not on disk: {', '.join(missing[:3])}", 400)
         wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
-        wizard["storytelling"] = {**(wizard.get("storytelling") or {}), "narration": narration or None, "clips": clips}
+        if body.get('manual_plan'):
+            from core.show_story_manual import validate
+            try:validate(body['manual_plan'],clips)
+            except (ValueError,KeyError,TypeError) as exc:return error_response('invalid_story',str(exc),400)
+        wizard["storytelling"] = {**(wizard.get("storytelling") or {}), "narration": narration or None, "clips": clips, "manual_plan":body.get("manual_plan")}
         project.save()
         return jsonify({"narration": narration or None, "clips": clips})
 
@@ -3290,8 +3314,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("invalid_podcast", "Up to 12 people and 16 cameras", 400)
         old = show_podcast.load_setup(project)
         atomic_write_json(show_podcast.setup_path(project), {**{k: v for k, v in old.items() if k not in ("people", "cameras")},
-                                                            "people": people, "cameras": cameras})
-        return jsonify({"people": people, "cameras": cameras})
+                                                            "people": people, "cameras": cameras, "render_width": min(1920,max(320,int(body.get("render_width") or 1920))), "render_height": min(1080,max(180,int(body.get("render_height") or 1080)))})
+        return jsonify({"people": people, "cameras": cameras, "render_width": min(1920,max(320,int(body.get("render_width") or 1920))), "render_height": min(1080,max(180,int(body.get("render_height") or 1080)))})
 
     @app.post("/api/v1/show/podcast/seats")
     def api_show_podcast_seats() -> Response:
@@ -3320,14 +3344,19 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         try:
             yaw, pitch = float(request.args.get("yaw") or 0), float(request.args.get("pitch") or 0)
             at = max(0.0, float(request.args.get("t") or 30))
+            fov=float(request.args.get("fov") or 70)
+            preset="planet" if request.args.get("projection")=="planet" else ""
+            if not all(math.isfinite(x) for x in (yaw,pitch,at,fov)) or not 20<=fov<=(300 if preset else 120):raise ValueError('Invalid viewpoint')
         except ValueError:
             return error_response("bad_request", "yaw and pitch are degrees", 400)
         folder = project.cache_dir / "podcast_views"
         folder.mkdir(parents=True, exist_ok=True)
-        target = folder / f"{hashlib.sha1(f'{path}|{yaw:.1f}|{pitch:.1f}|{at:.1f}'.encode()).hexdigest()[:16]}.jpg"
+        target = folder / f"{hashlib.sha1(f'{path}|{yaw:.1f}|{pitch:.1f}|{fov:.1f}|{preset}|{at:.1f}'.encode()).hexdigest()[:16]}.jpg"
         if not target.is_file():
             projection = "raw_insv" if path.suffix.lower() == ".insv" else "equirect"
-            view = spherical_view_filter(projection, yaw, pitch, 70.0, width=320, height=180)
+            camera=next(c for c in load_setup(project)['cameras'] if c['path']==str(path))
+            at=max(0.0,min(at+float(camera.get('offset') or 0),float(camera.get('duration') or 1e9)-.04))
+            view = spherical_view_filter(projection, yaw, pitch, fov, preset, width=320, height=180) if camera['kind']=='360' else 'scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2'
             subprocess.run([str(tool_status().get("ffmpeg_path") or "ffmpeg"), "-v", "error", "-y", "-nostdin", "-ss", f"{at:.2f}",
                             "-i", str(path), "-frames:v", "1", "-vf", view, str(target)], capture_output=True, check=False)
         if not target.is_file():

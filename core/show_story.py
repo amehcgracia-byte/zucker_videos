@@ -93,7 +93,7 @@ def _piece(resource: dict[str, Any], interval: dict[str, Any], length: float, ou
         command = [ffmpeg, "-v", "error", "-y", "-nostdin", "-ss", f"{start:.3f}", "-i", str(resource["path"]), "-an",
                    "-frames:v", str(frames),
                    "-vf", f"setpts=PTS/{speed:.4f},{fit},fps={fps},tpad=stop_mode=clone:stop_duration={length + 1:.2f},format=yuv420p"]
-    subprocess.run([*command, "-r", str(fps), "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", str(output)],
+    subprocess.run([*command, "-r", str(fps), "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-threads", "2", str(output)],
                    check=True, capture_output=True)
     return output
 
@@ -167,6 +167,9 @@ def build(project, *, progress: Callable[[int, str], None], cancel: Callable[[],
     material = [Path(p) for p in chosen.get("clips") or [] if Path(p).is_file()]
     if not material:
         raise RuntimeError("Add the pictures and clips the story is told over")
+    if chosen.get('manual_plan'):
+        from core.show_story_manual import build as build_reviewed
+        return build_reviewed(project,chosen['manual_plan'],narration,material,progress,cancel)
     progress(2, "Listening to the narration (local Whisper)")
     # Heard the way the Show hears its talk, so the Show finds it already heard (Whisper's cache).
     from core.show import DISFLUENT_PROMPT

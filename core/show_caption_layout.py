@@ -49,7 +49,7 @@ def apply(cues, layout):
     result = []
     for cue in cues:
         key = hashlib.sha256(json.dumps([cue['lines'], cue['start'], cue['end']], ensure_ascii=False).encode()).hexdigest()[:20]
-        override = {**cue.get('style_override', {}), **layout.get('cues', {}).get(key, {})}
+        override = {**cue.get('style_override', {}), **layout.get('defaults', {}), **layout.get('cues', {}).get(key, {})}
         text = override.pop('text', None)
         changed = {'lines': [text], 'words': _words(text, cue['start'], cue['end']), 'heard': ' '.join(cue['lines'])} if text else {}
         result.append({**cue, **changed, 'id': key, 'style_override': override})
@@ -62,38 +62,7 @@ def save(project, key, changes, revision, cues):
         raise ValueError('Captions changed in another window; reopen the scene and try again')
     if key not in {cue['id'] for cue in cues}:
         raise ValueError('That caption is no longer in this edit')
-    allowed = {'horizontal': (0, 100), 'vertical': (0, 100), 'size': (12, 400)}
-    values, cleared = {}, []
-    for name, value in changes.items():
-        if name == 'text':
-            text = ' '.join(str(value or '').split())
-            if len(text) > 240:
-                raise ValueError('A caption holds 240 letters at most')
-            if text:
-                values['text'] = text
-            else:
-                cleared.append('text')                  # back to the words that were heard
-            continue
-        if name == 'font':
-            if value not in FONTS:
-                raise ValueError('Choose one of the caption typefaces')
-            values['font'] = value
-            continue
-        if name == 'color':
-            if not isinstance(value, str) or len(value) != 7 or not value.startswith('#') or any(c not in '0123456789abcdefABCDEF' for c in value[1:]):
-                raise ValueError('A caption colour is #rrggbb')
-            values['color'] = value.lower()
-            continue
-        if name == 'italic':
-            values['italic'] = bool(value)
-            continue
-        if name not in allowed or isinstance(value, bool):
-            raise ValueError('Choose caption words, typeface, colour, position or size')
-        number = float(value)
-        lo, hi = allowed[name]
-        if not math.isfinite(number) or not lo <= number <= hi:
-            raise ValueError(f'Caption {name} must be between {lo} and {hi}')
-        values[name] = number
+    values, cleared = validate_changes(changes)
     kept = {name: value for name, value in data['cues'].get(key, {}).items() if name not in cleared}
     data['cues'][key] = {**kept, **values}
     data['revision'] += 1
@@ -145,3 +114,52 @@ def with_insertions(cues, spans):
                 part['lines'] = [' '.join(word['text'] for word in words)]
             result.append(part)
     return result
+
+
+def validate_changes(changes):
+    allowed = {'horizontal': (0, 100), 'vertical': (0, 100), 'size': (12, 400)}
+    values, cleared = {}, []
+    for name, value in changes.items():
+        if name == 'text':
+            text = ' '.join(str(value or '').split())
+            if len(text) > 240:
+                raise ValueError('A caption holds 240 letters at most')
+            if text:
+                values['text'] = text
+            else:
+                cleared.append('text')                  # back to the words that were heard
+            continue
+        if name == 'fun_effect':
+            if value not in ('none','pop'):raise ValueError('Choose clean or pop captions')
+            values['fun_effect']=value
+            continue
+        if name == 'font':
+            if value not in FONTS:
+                raise ValueError('Choose one of the caption typefaces')
+            values['font'] = value
+            continue
+        if name == 'color':
+            if not isinstance(value, str) or len(value) != 7 or not value.startswith('#') or any(c not in '0123456789abcdefABCDEF' for c in value[1:]):
+                raise ValueError('A caption colour is #rrggbb')
+            values['color'] = value.lower()
+            continue
+        if name == 'italic':
+            values['italic'] = bool(value)
+            continue
+        if name not in allowed or isinstance(value, bool):
+            raise ValueError('Choose caption words, typeface, colour, position or size')
+        number = float(value)
+        lo, hi = allowed[name]
+        if not math.isfinite(number) or not lo <= number <= hi:
+            raise ValueError(f'Caption {name} must be between {lo} and {hi}')
+        values[name] = number
+    return values, cleared
+
+
+def save_defaults(project, changes, revision):
+    data=load(project)
+    if int(revision)!=data['revision']:raise ValueError('Captions changed in another window; reopen this scene')
+    values, cleared=validate_changes(changes)
+    values.pop('text',None)
+    data['defaults']={**data.get('defaults',{}),**values};data['revision']+=1
+    atomic_write_json(path(project),data);return data

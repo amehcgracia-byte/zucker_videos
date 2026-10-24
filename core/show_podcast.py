@@ -474,7 +474,7 @@ def render(setup: dict[str, Any], shots: list[dict[str, Any]], audio: np.ndarray
     for index, shot in enumerate(shots):
         if cancel:
             cancel()
-        view = every[shot["view"]]
+        view = View(**shot["override"]) if shot.get("override") else every[shot["view"]]
         camera = cameras[view.camera]
         first = round(shot["start"] * fps)
         frames = max(1, round(shot["end"] * fps) - first)
@@ -483,7 +483,7 @@ def render(setup: dict[str, Any], shots: list[dict[str, Any]], audio: np.ndarray
         subprocess.run([ffmpeg, "-v", "error", "-y", "-nostdin", "-ss", f"{max(0.0, at):.3f}", "-i", str(camera["path"]),
                         "-frames:v", str(frames), "-an",
                         "-vf", f"{view_filter(view, camera, width, height)},fps={fps},format=yuv420p",
-                        "-r", str(fps), "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", str(piece)],
+                        "-r", str(fps), "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-threads", "2", str(piece)],
                        check=True, capture_output=True)
         pieces.append(piece)
         if progress:
@@ -797,6 +797,7 @@ def build(project, *, progress: Callable[[int, str], None], cancel: Callable[[],
     from core.project import atomic_write_json
     ffmpeg = str(tool_status().get("ffmpeg_path") or "ffmpeg")
     setup = load_setup(project)
+    width=int(setup.get("render_width") or width);height=int(setup.get("render_height") or height)
     people, cameras = setup.get("people") or [], setup.get("cameras") or []
     if len(people) < 1 or not all(Path(str(p.get("mic") or "")).is_file() for p in people):
         raise RuntimeError("Add one microphone track for each person")
@@ -820,6 +821,8 @@ def build(project, *, progress: Callable[[int, str], None], cancel: Callable[[],
     turn_list = turns(speaking, db)
     progress(20, f"Choosing the cameras: {len(turn_list)} turns of conversation")
     shots = plan(turn_list, cameras, len(people), duration)
+    from core.show_review_history import record
+    record(project,"podcast.planned",after={"turns":[{"start":t.start,"end":t.end,"speaker":t.speaker,"together":t.together} for t in turn_list],"shots":shots},method="local-audio-and-seat-map",evidence={"external_llm":False,"associations":cameras})
     progress(24, "Mixing the microphones (each levelled, quiet while its person is silent)")
     audio = mix(mics, [float(p["offset"]) for p in people], speaking, duration, ffmpeg, cancel=cancel)
     folder = project.assets_dir / "podcast" if hasattr(project, "assets_dir") else project.folder / "assets" / "podcast"
@@ -835,7 +838,7 @@ def build(project, *, progress: Callable[[int, str], None], cancel: Callable[[],
     every = views(cameras, len(people))
     names = [str(p.get("name") or f"Person {i + 1}") for i, p in enumerate(people)]
     atomic_write_json(setup_path(project), {**setup, "people": people, "cameras": cameras, "duration": round(duration, 3),
-        "program": str(program), "mix": str(mp3),
+        "program": str(program), "mix": str(mp3), "render_width":width,"render_height":height,"revision":0,"dirty":False,
         "turns": [{"start": t.start, "end": t.end, "speaker": t.speaker, "together": t.together} for t in turn_list],
         "shots": [{**shot, "camera": every[shot["view"]].camera, "kind": every[shot["view"]].kind,
                    "shows": [names[p] for p in every[shot["view"]].people]} for shot in shots]})
