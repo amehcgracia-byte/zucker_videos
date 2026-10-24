@@ -450,13 +450,15 @@ def _smooth(target: np.ndarray, rate: int) -> np.ndarray:
 
 # ---- The program ---------------------------------------------------------------------------
 
-def view_filter(view: View, camera: dict[str, Any], width: int, height: int) -> str:
+def view_filter(view: View, camera: dict[str, Any], width: int, height: int, framing=None) -> str:
     if camera.get("kind") == "360":
         from core.spherical_view import spherical_view_filter
         projection = "raw_insv" if str(camera["path"]).lower().endswith(".insv") else "equirect"
         return spherical_view_filter(projection, view.yaw or 0.0, view.pitch, view.fov, "planet" if view.projection == "planet" else "",
                                      width=width, height=height)
-    return f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1"
+    from core.flat_framing import filtergraph
+    prefix=filtergraph(framing)+"," if framing else ""
+    return prefix+f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1"
 
 
 def render(setup: dict[str, Any], shots: list[dict[str, Any]], audio: np.ndarray, output: Path, ffmpeg: str, *,
@@ -482,7 +484,7 @@ def render(setup: dict[str, Any], shots: list[dict[str, Any]], audio: np.ndarray
         at = first / fps + float(camera.get("offset") or 0.0)
         subprocess.run([ffmpeg, "-v", "error", "-y", "-nostdin", "-ss", f"{max(0.0, at):.3f}", "-i", str(camera["path"]),
                         "-frames:v", str(frames), "-an",
-                        "-vf", f"{view_filter(view, camera, width, height)},fps={fps},format=yuv420p",
+                        "-vf", f"{view_filter(view, camera, width, height, shot.get('flat_framing'))},fps={fps},format=yuv420p",
                         "-r", str(fps), "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-threads", "2", str(piece)],
                        check=True, capture_output=True)
         pieces.append(piece)

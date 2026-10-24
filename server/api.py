@@ -3354,12 +3354,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("bad_request", "yaw and pitch are degrees", 400)
         folder = project.cache_dir / "podcast_views"
         folder.mkdir(parents=True, exist_ok=True)
-        target = folder / f"{hashlib.sha1(f'{path}|{yaw:.1f}|{pitch:.1f}|{fov:.1f}|{preset}|{at:.1f}'.encode()).hexdigest()[:16]}.jpg"
+        target = folder / f"{hashlib.sha1(f'{path}|{yaw:.1f}|{pitch:.1f}|{fov:.1f}|{preset}|{at:.1f}|flat-015|{path.stat().st_mtime_ns}'.encode()).hexdigest()[:16]}.jpg"
         if not target.is_file():
             projection = "raw_insv" if path.suffix.lower() == ".insv" else "equirect"
             camera=next(c for c in load_setup(project)['cameras'] if c['path']==str(path))
             at=max(0.0,min(at+float(camera.get('offset') or 0),float(camera.get('duration') or 1e9)-.04))
-            view = spherical_view_filter(projection, yaw, pitch, fov, preset, width=320, height=180) if camera['kind']=='360' else 'scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2'
+            view = spherical_view_filter(projection, yaw, pitch, fov, preset, width=320, height=180) if camera['kind']=='360' else 'scale=640:-2'
             subprocess.run([str(tool_status().get("ffmpeg_path") or "ffmpeg"), "-v", "error", "-y", "-nostdin", "-ss", f"{at:.2f}",
                             "-i", str(path), "-frames:v", "1", "-vf", view, str(target)], capture_output=True, check=False)
         if not target.is_file():
@@ -6172,6 +6172,24 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         edit["camera_subjects"] = dict(assignments)
         project.save()
         return jsonify({"camera_subjects": edit["camera_subjects"]})
+
+    @app.post("/api/v1/settings/camera-types")
+    def api_camera_types():
+        project=_require_project(state);body=_json_body();types=body.get('camera_types')
+        if body.get('project_id')!=str(project.folder):return error_response('stale_project','Reopen these videos',409)
+        sources={str(r['path']):r for r in project.data.get('inputs',{}).get('videos',[])}
+        if not isinstance(types,dict) or any(k not in sources or v not in ('360','fixed','moving') for k,v in types.items()):return error_response('bad_request','Choose registered cameras and valid camera types',400)
+        if any(Path(k).suffix.lower()=='.insv' and v!='360' for k,v in types.items()):return error_response('bad_request','Raw 360 recordings must stay 360 cameras',400)
+        edit=project.data.setdefault('settings',{}).setdefault('edit',{});old=edit.get('camera_types') or {}
+        if types==old:return jsonify(camera_types=types)
+        if state.wizard.status().get('status') in ('running','cancelling'):return error_response('wizard_busy','Wait for the current edit before changing camera types',409)
+        changed_projection=any((v=='360')!=((sources[k].get('probe') or {}).get('projection') in ('equirect','raw_insv') or sources[k].get('projection') in ('equirect','raw_insv')) for k,v in types.items())
+        edit['camera_types']=types;edit['camera_roles']={k:('fixed_rear' if v=='fixed' else 'handheld') for k,v in types.items() if v!='360'}
+        if changed_projection:
+            from core.camera_types import apply
+            for record in sources.values():apply(record,types)
+            for stage in project.data.get('stages',{}).values():stage.update(status='pending',fingerprint=None)
+        project.save();return jsonify(camera_types=types)
 
     @app.post("/api/v1/settings/camera-roles")
     def api_camera_roles() -> Response:

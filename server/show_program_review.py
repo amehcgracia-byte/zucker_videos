@@ -36,6 +36,9 @@ def register_program_review(app, project, invalidate):
                     view['yaw']=float(body.get('yaw',view['yaw'] or 0));view['pitch']=float(body.get('pitch',view['pitch']));view['fov']=float(body.get('fov',view['fov'] or 70));view['projection']='flat'
                     if not all(math.isfinite(view[k]) for k in ('yaw','pitch','fov')) or not -180<=view['yaw']<=180 or not -85<=view['pitch']<=85 or not 20<=view['fov']<=120:raise ValueError('Choose a finite viewpoint within the camera range')
                 before=dict(shots[index]);shots[index]={**before,'view':view_index,'override':view,'camera':view['camera'],'kind':view['kind'],'shows':[data['people'][i]['name'] for i in view['people']],'manual':True}
+                if camera['kind']!='360':
+                    from core.flat_framing import validate
+                    shots[index]['flat_framing']=validate(body.get('flat_framing') or {'zoom':1,'x':.5,'y':.5})
                 data.update(shots=shots,revision=int(data.get('revision',0))+1,dirty=True)
                 atomic_write_json(podcast.setup_path(p),data)
                 history.record(p,'podcast.camera.corrected',before,shots[index],evidence={'shot':index,'reason':str(body.get('reason') or 'Camera/viewpoint corrected in the preview')[:500]})

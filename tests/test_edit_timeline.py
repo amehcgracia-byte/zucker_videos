@@ -90,7 +90,7 @@ def test_music_camera_selection_is_scoped_and_persisted(tmp_path,monkeypatch):
  monkeypatch.setattr(cut,'load_coverage',lambda _:{'sources':sources,'platform':'reel'})
  s={'clip_path':sources[0]['path'],'source_path':sources[0]['path'],'filename':'red','clip_start_sec':1,'master_start_sec':0,'duration_sec':2}
  atomic_write_json(p.artifacts_dir/'edit_plan.json',{'platform':'reel','segments':[s]});c=create_app(str(p.folder),dev=True).test_client();doc=c.get('/api/v1/edit/shot?index=0').json
- assert [v['label'] for v in doc['choices']]==['red','blue']
+ assert len(doc['choices'])==2 and all('Moving' in v['label'] for v in doc['choices'])
  body={'project_id':str(p.folder),'revision':doc['revision'],'index':0,'choice':1};r=c.patch('/api/v1/edit/shot',json=body);assert r.status_code==200,r.json
  saved=json.loads((p.artifacts_dir/'edit_plan.json').read_text())['segments'][0];assert saved['filename']=='blue' and saved['duration_sec']==2 and saved['master_start_sec']==0
  assert c.patch('/api/v1/edit/shot',json=body).status_code==409

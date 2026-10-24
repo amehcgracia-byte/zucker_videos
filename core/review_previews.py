@@ -47,7 +47,7 @@ def preview_path(project: Project, index: int, segment: dict[str, Any]) -> Path:
         "version": PREVIEW_VERSION, "source": source, "mtime": mtime,
         "clip_start": round(float(segment.get("clip_start_sec") or 0.0), 3),
         "duration": round(float(segment.get("duration_sec") or 0.0), 3),
-        "shot": segment.get("spherical_shot") or {}, "motion": segment.get("motion") or {},
+        "shot": segment.get("spherical_shot") or {}, "motion": segment.get("motion") or {}, "flat_framing":segment.get("flat_framing"),
     }, sort_keys=True, default=str)
     key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
     return preview_root(project) / f"preview-{index:04d}-{key}.mp4"
@@ -105,7 +105,8 @@ def _render_flat(project: Project, segment: dict[str, Any], output: Path, ffmpeg
         base = export._base_video_filter("youtube")
         if motion and "zoompan=" in motion:
             base = base.replace("1920:1080", "3840:2160")
-        steps = [base, f"fps={int(export.TARGET_EXPORT_FPS)}", motion,
+        from core.flat_framing import filtergraph
+        steps = [filtergraph(segment["flat_framing"]) if segment.get("flat_framing") else None, base, f"fps={int(export.TARGET_EXPORT_FPS)}", motion,
                  f"scale={PREVIEW_WIDTH}:{PREVIEW_HEIGHT}", f"fps={PREVIEW_FPS}"]
         video_filter = ",".join(step for step in steps if step)
     command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",

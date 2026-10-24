@@ -205,6 +205,9 @@ def _thumbnail_filter(segment: dict[str, Any], color_profile: dict[str, Any] | N
         correction = ""
     shot = segment.get("spherical_shot") or {}
     if not shot:
+        if segment.get("flat_framing"):
+            from core.flat_framing import filtergraph
+            return correction+filtergraph(segment["flat_framing"])+",scale=360:202:force_original_aspect_ratio=increase,crop=360:202,setsar=1,format=yuvj420p"
         motion = segment.get("motion") or {}
         if motion.get("type") == "ken_burns":
             try:
@@ -839,7 +842,7 @@ def _thumbnail_asset(root: Path, index: int, segment: dict[str, Any]) -> tuple[s
     timestamp = float(segment.get("clip_start_sec") or 0.0) + max(0.1, float(segment.get("duration_sec") or 0.1)) / 2.0
     from core.storage import cache_mtime_ns
     source_mtime = cache_mtime_ns(Path(source)) if Path(source).exists() else 0
-    pose = json.dumps(_review_pose_for_cache(segment), sort_keys=True)
+    pose = json.dumps({**_review_pose_for_cache(segment),**({"flat_framing":segment["flat_framing"]} if segment.get("flat_framing") else {})}, sort_keys=True)
     key = hashlib.sha256(f"{source}|{source_mtime}|{timestamp:.4f}|{pose}".encode()).hexdigest()[:20]
     return source, timestamp, root / f"shot-{index:04d}-{key}.jpg"
 
@@ -887,6 +890,7 @@ def review_items(
     progress_callback: ProgressCallback | None = None,
 ) -> list[dict[str, Any]]:
     """Return review items, optionally rendering only selected missing thumbnails."""
+    from core.camera_types import kind as camera_kind
     segments = _review_segments(project)
     signature = "assets-v2"
     root = project.cache_dir / "shot_review" / signature
@@ -945,6 +949,7 @@ def review_items(
         }
         items.append({
             "index": index,
+            "camera_type": camera_kind(project,segment),
             "thumbnail": f"/api/v1/wizard/review/thumbnail/{signature}/{output.name}" if output.name and output.exists() else None,
             "thumbnail_status": thumbnail_state,
             "thumbnail_asset": output.name,

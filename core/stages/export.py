@@ -3362,6 +3362,7 @@ def _reel_letterbox_filter(project: Project, segment: dict[str, Any], platform: 
 
 
 def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> str | None:
+    if segment.get("flat_framing"):return None
     motion = segment.get("motion") or {}
     motion_type = motion.get("type")
     if motion_type == "ken_burns":
@@ -3951,12 +3952,15 @@ def _segment_filtergraph(
     filters = []
     if source_filter:
         filters.append(source_filter)
+    if segment and segment.get("flat_framing") and not segment.get("spherical_shot"):
+        from core.flat_framing import filtergraph
+        filters.append(filtergraph(segment["flat_framing"]))
     base_filter = _base_video_filter(platform)
     if motion_filter and "zoompan=" in motion_filter and platform in {"youtube", "reel_horizontal"}:
         # Preserve native 4K detail until the animated crop; downscaling to
         # 1080p and enlarging again made the moving cut unnecessarily soft.
         base_filter = base_filter.replace("1920:1080", "3840:2160")
-    if platform == "reel" and not reel_letterbox_filter and segment and segment.get("reel_subject_center") and not motion_filter:
+    if platform == "reel" and not reel_letterbox_filter and segment and segment.get("reel_subject_center") and not segment.get("flat_framing") and not motion_filter:
         center = segment["reel_subject_center"]
         cx = max(0.0, min(1.0, float(center.get("x") or 0.5)))
         cy = max(0.0, min(1.0, float(center.get("y") or 0.5)))
@@ -3970,7 +3974,7 @@ def _segment_filtergraph(
         post_filters.extend(_text_filters(platform, duration, overlay_config))
     post_filters.extend([f"tpad=stop_mode=clone:stop_duration={1.0 / TARGET_EXPORT_FPS:.6f}", "format=yuv420p"])
     if reel_letterbox_filter:
-        pre_filters = [source_filter, _color_filter(color_profile)]
+        pre_filters = [source_filter, filtergraph(segment["flat_framing"]) if segment and segment.get("flat_framing") and not segment.get("spherical_shot") else None, _color_filter(color_profile)]
         prefix = ",".join(item for item in pre_filters if item)
         graph = f"[0:v]{prefix + ',' if prefix else ''}{reel_letterbox_filter}[reel_letterboxed];"
         graph += f"[reel_letterboxed]{','.join(item for item in post_filters if item)}[base]"
@@ -4169,6 +4173,7 @@ def cached_segment_path(
     recipe = stable_fingerprint(
         {
             "cache_key": source["cache_key"],
+            **({"flat_framing":segment["flat_framing"]} if segment.get("flat_framing") else {}),
             "source_path": source["source_path"],
             "clip_start_sec": round(float(segment.get("clip_start_sec") or 0.0), 3),
             "duration_sec": round(float(segment.get("duration_sec") or 0.0), 3),
@@ -4220,6 +4225,7 @@ def _segment_cache_stamp_payload(segment: dict[str, Any]) -> dict[str, Any]:
     recipe = _spherical_motion_cache_recipe()
     return {
         "schema": 1,
+        **({"flat_framing":segment["flat_framing"]} if segment.get("flat_framing") else {}),
         "export_segment_recipe": EXPORT_SEGMENT_RECIPE_VERSION,
         "spherical_motion_recipe_version": SPHERICAL_MOTION_RECIPE_VERSION,
         "spherical_motion_recipe_hash": stable_fingerprint(recipe),

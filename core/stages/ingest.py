@@ -35,6 +35,7 @@ class IngestStage(Stage):
                 "videos": project.data["inputs"].get("videos", []),
                 "settings": project.data["settings"].get(self.name, {}),
                 "mode": platform,
+                "camera_types":project.data["settings"].get("edit",{}).get("camera_types",{}),
                 # Detection sampling/threshold changes invalidate the global
                 # presence cache and must trigger a fresh ingest pass.
                 "operator_avoidance_version": OPERATOR_AVOIDANCE_VERSION,
@@ -67,6 +68,8 @@ class IngestStage(Stage):
             metadata = ffprobe(path)
             validation = validate_camera_video_metadata(metadata)
             record["probe"] = validation.summary
+            from core.camera_types import apply
+            apply(record,project.data.get("settings",{}).get("edit",{}).get("camera_types",{}))
             if is_raw_360_path(path):
                 record["projection"] = "raw_insv"
                 record["raw_360"] = True
