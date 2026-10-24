@@ -151,6 +151,9 @@ PLIST="$APP_BUNDLE/Contents/Info.plist"
 
 /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string Record spoken phrases for editable Reel captions." "$PLIST" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription Record spoken phrases for editable Reel captions." "$PLIST"
+# No App Nap: hidden behind another window, the app ran at the lowest priority (hours for a transcription).
+/usr/libexec/PlistBuddy -c "Add :NSAppSleepDisabled bool true" "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Set :NSAppSleepDisabled true" "$PLIST"
 
 codesign --force --deep -s - "$APP_BUNDLE"
 

@@ -130,10 +130,29 @@ def _enable_native_drop(window) -> None:
         logging.getLogger(__name__).exception("Native drop unavailable; using streamed imports")
 
 
+_FULL_SPEED = None
+
+
+def keep_full_speed() -> None:
+    """Tell macOS the app works for the person: without it, App Nap ran it at the lowest
+    priority whenever its window was hidden or behind another (a 30-minute transcription took
+    over five hours). The Mac may still sleep when idle."""
+    global _FULL_SPEED
+    if sys.platform != "darwin" or _FULL_SPEED is not None:
+        return
+    try:
+        import Foundation
+        _FULL_SPEED = Foundation.NSProcessInfo.processInfo().beginActivityWithOptions_reason_(
+            Foundation.NSActivityUserInitiatedAllowingIdleSystemSleep, "Editing and rendering videos")
+    except Exception:  # never stops the app from starting
+        _FULL_SPEED = False
+
+
 def main() -> None:
     """Run Zucker Editor in desktop or dev-server mode."""
     multiprocessing.freeze_support()
     args = parse_args()
+    keep_full_speed()
     if not (args.dev or args.selftest or args.webgl_probe or args.operator_avoidance_probe) and not storage_ready():
         import webview
         bridge = DesktopApi()
