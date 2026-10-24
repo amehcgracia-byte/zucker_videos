@@ -91,7 +91,19 @@ def translate_to_english(project, path: Path, plan: dict[str, Any], *, model_nam
         plan.pop("english_words", None)
         return
     if progress:
-        progress(0, f"Translating what is said ({language}) for English captions")
+        progress(0, f"Translating what is said ({language}) for English captions (your Claude)")
+    from core.show_translate import phrases_of, translate_phrases
+    try:
+        heard = json.loads((project.artifacts_dir / "show_transcript.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        heard = {}
+    translated = translate_phrases(phrases_of(heard), language)
+    if translated:
+        plan["english_words"] = translated
+        return
+    # Without Claude: Whisper translates (as long again as the first listening).
+    if progress:
+        progress(0, f"Translating what is said ({language}) for English captions (local Whisper)")
     noise = plan.get("noise_report") or {}
     audio = Path(noise["path"]) if noise.get("path") and Path(noise["path"]).is_file() else path
     result = transcribe_sources([{"path": str(audio), "filename": path.name, "language_hint": language}],
@@ -231,8 +243,12 @@ def _transcribe_and_plan(project, path: Path, *, style_name: str, language: str 
         try:noise_report=prepare_noise(project,path,ffmpeg=ffmpeg,cancel=cancel)
         except (OSError,ValueError,subprocess.SubprocessError) as exc:noise_report={'status':'unavailable','error':str(exc)[-200:]}
     progress(first, "Listening to every word (local Whisper)")
+    listen = Path(str(noise_report.get("path") or path))
+    narration = Path(str((project.data.get("settings", {}).get("wizard", {}).get("storytelling") or {}).get("narration") or ""))
+    if style_name == "storytelling" and narration.is_file():
+        listen = narration                  # the program's sound is the narration: heard once, when the story was made
     transcript = transcribe_sources(
-        [{"path": str(noise_report.get("path") or path), "filename": path.name, **({"language_hint": language} if language else {})}],
+        [{"path": str(listen), "filename": path.name, **({"language_hint": language} if language else {})}],
         project.artifacts_dir / "show_transcript.json",
         progress_callback=lambda value, detail: progress(first + int(value * (last - first) * 0.6 / 100), detail or "Transcribing"),
         model_name=model_name,

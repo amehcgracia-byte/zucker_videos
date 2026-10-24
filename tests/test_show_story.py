@@ -47,3 +47,12 @@ def test_the_program_puts_each_picture_under_the_voice(tmp_path):
     assert (frames[10, ..., 0] > frames[10, ..., 2]).mean() > 0.9           # the red clip (slowed, then held) first...
     assert (frames[80, ..., 0] > frames[80, ..., 2]).mean() > 0.9
     assert (frames[150, ..., 2] > frames[150, ..., 0]).mean() > 0.9         # ...then the photo
+
+
+def test_the_same_clip_never_shows_twice_in_a_row(monkeypatch):
+    resources = [{"intervals": [{"start": 0, "end": 3}, {"start": 3, "end": 6}]}, {"intervals": [{"start": 0, "end": 3}]}]
+    monkeypatch.setattr("core.show_resources.match", lambda lines, res, top=12: [
+        [{"resource": 0, "interval": 0, "score": 0.3}, {"resource": 0, "interval": 1, "score": 0.29}, {"resource": 1, "interval": 0, "score": 0.1}]
+        for _ in lines])
+    picks = show_story.choose([{"text": "a"}, {"text": "b"}, {"text": "c"}], resources)
+    assert [p[0] for p in picks] == [0, 1, 0]

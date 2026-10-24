@@ -49,17 +49,25 @@ def choose(moments: list[dict[str, Any]], resources: list[dict[str, Any]]) -> li
         return [None for _ in moments]
     ranked = match([moment["text"] or "…" for moment in moments], resources, top=12)
     used: set[tuple[int, int]] = set()
+    shown: set[int] = set()                             # clips already seen (another part of one is still a repeat)
     following = 0
     out: list[tuple[int, int] | None] = []
     for options in ranked:
-        pick = next(((o["resource"], o["interval"]) for o in options if o["score"] > 0.01 and (o["resource"], o["interval"]) not in used), None)
+        previous = out[-1][0] if out and out[-1] else None
+        fresh = [o for o in options if o["score"] > 0.01 and (o["resource"], o["interval"]) not in used and o["resource"] != previous]
+        fresh.sort(key=lambda o: o["resource"] in shown)                       # stable: best unseen clip first
+        pick = (fresh[0]["resource"], fresh[0]["interval"]) if fresh else None
         if pick is None:
-            free = [item for item in pool[following:] + pool[:following] if item not in used] or pool
+            order = pool[following:] + pool[:following]
+            free = ([item for item in order if item not in used and item[0] not in shown and item[0] != previous]
+                    or [item for item in order if item not in used and item[0] != previous] or order)
             pick = free[0]
             following = (pool.index(pick) + 1) % len(pool)
         used.add(pick)
+        shown.add(pick[0])
         if len(used) == len(pool):
             used.clear()                                # everything shown: pictures may come back
+            shown.clear()
         out.append(pick)
     return out
 
@@ -141,15 +149,21 @@ def build(project, *, progress: Callable[[int, str], None], cancel: Callable[[],
     if not material:
         raise RuntimeError("Add the pictures and clips the story is told over")
     progress(2, "Listening to the narration (local Whisper)")
-    transcript = transcribe_sources([{"path": str(narration), "filename": narration.name}], project.artifacts_dir / "story_transcript.json",
-                                    model_name=model_name, vad_filter=True)
+    # Heard the way the Show hears its talk, so the Show finds it already heard (Whisper's cache).
+    from core.show import DISFLUENT_PROMPT
+    transcript = transcribe_sources([{"path": str(narration), "filename": narration.name}], project.artifacts_dir / "show_transcript.json",
+                                    model_name=model_name, vad_filter=True, initial_prompt=DISFLUENT_PROMPT["auto"])
     source = (transcript.get("sources") or [{}])[0]
     language = str(source.get("language") or "")
     words = [{"text": str(w.get("word") or w.get("text") or "").strip(), "start": float(w.get("start_sec", w.get("start", 0.0))),
               "end": float(w.get("end_sec", w.get("end", 0.0)))} for segment in source.get("segments") or [] for w in segment.get("words") or []]
     english = words
     if language and not language.startswith("en"):
-        progress(10, f"Translating the narration ({language}) to match pictures in English")
+        progress(10, f"Translating the narration ({language}) to English (your Claude)")
+        from core.show_translate import phrases_of, translate_phrases
+        english = translate_phrases(phrases_of(transcript), language) or []
+    if language and not language.startswith("en") and not english:
+        progress(10, f"Translating the narration ({language}) to English (local Whisper)")
         translated = transcribe_sources([{"path": str(narration), "filename": narration.name, "language_hint": language}],
                                         project.artifacts_dir / "story_transcript_en.json", model_name=model_name, task="translate", vad_filter=True)
         english = [{"text": str(w.get("word") or w.get("text") or "").strip(), "start": float(w.get("start_sec", w.get("start", 0.0))),

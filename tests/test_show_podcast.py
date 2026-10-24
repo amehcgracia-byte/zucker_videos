@@ -236,3 +236,19 @@ def test_two_people_on_one_camera_do_not_hold_the_same_picture_for_long():
     shots = pod.plan(turns, cameras, 3, 40.0)
     assert max(s["end"] - s["start"] for s in shots) <= 12.0
     assert any(every[s["view"]].kind == "single" for s in shots) and any(every[s["view"]].kind == "pair" for s in shots)
+
+
+def test_english_captions_come_from_claude_translating_the_phrases_heard(tmp_path, monkeypatch):
+    import json
+    from core.project import create_project
+    from core.show import translate_to_english
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path / "data"))
+    project = create_project("Lang", str(tmp_path / "Lang.zuckervid"))
+    (project.artifacts_dir / "show_transcript.json").write_text(json.dumps({"sources": [{"segments": [
+        {"text": "Hola amigos.", "start": 0.0, "end": 1.0}, {"text": "Bienvenidos.", "start": 2.0, "end": 3.0}]}]}))
+    monkeypatch.setattr("core.show_translate._ask", lambda lines, language, timeout=300.0: {"Hola amigos.": "Hello friends.", "Bienvenidos.": "Welcome."} and
+                        [{"Hola amigos.": "Hello friends.", "Bienvenidos.": "Welcome."}[line] for line in lines])
+    plan = {"language": "es"}
+    translate_to_english(project, tmp_path / "x.mp4", plan, model_name="small")
+    assert [w["text"] for w in plan["english_words"]] == ["Hello", "friends.", "Welcome."]
+    assert plan["english_words"][-1]["end"] == pytest.approx(3.0)
