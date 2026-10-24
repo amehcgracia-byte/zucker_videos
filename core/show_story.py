@@ -44,7 +44,11 @@ def choose(moments: list[dict[str, Any]], resources: list[dict[str, Any]]) -> li
     """(resource, interval) for each moment: the best match not used yet; in story order
     (the next unused picture) when the matching has nothing to say."""
     from core.show_resources import match
+    import hashlib
     pool = [(r, i) for r, resource in enumerate(resources) for i, _ in enumerate(resource.get("intervals") or [])]
+    # When nothing stands out: any picture not seen yet, never the order of the files' names
+    # (cut from an edit, they would just repeat it).
+    pool.sort(key=lambda item: hashlib.sha1(f"{resources[item[0]].get('path')}|{item[1]}".encode()).hexdigest())
     if not pool:
         return [None for _ in moments]
     ranked = match([moment["text"] or "…" for moment in moments], resources, top=12)
@@ -94,26 +98,41 @@ def _piece(resource: dict[str, Any], interval: dict[str, Any], length: float, ou
     return output
 
 
-def render(narration: Path, moments: list[dict[str, Any]], picks: list[tuple[int, int] | None], resources: list[dict[str, Any]],
+def _shares(lengths: list[float], total: float, fps: int) -> list[int]:
+    """Frames for each clip of a moment: as much of each as there is, the moment filled."""
+    frames = max(len(lengths), round(total * fps))
+    want = [max(1.0, min(length, total)) for length in lengths]
+    out = [max(1, round(frames * w / sum(want))) for w in want]
+    out[-1] = max(1, frames - sum(out[:-1]))
+    return out
+
+
+def render(narration: Path, moments: list[dict[str, Any]], picks: list[Any], resources: list[dict[str, Any]],
            output: Path, ffmpeg: str, *, width: int = 1920, height: int = 1080, fps: int = 30,
            progress: Callable[[float], None] | None = None, cancel: Callable[[], None] | None = None) -> Path:
-    """The program: each moment's picture, back to back, under the narration."""
+    """The program: each moment's pictures (one, or a few one after the other), back to back,
+    under the narration. ``picks``: per moment a (resource, interval), a list of them, or None."""
     work = output.with_name(f".{output.stem}-pieces")
     work.mkdir(parents=True, exist_ok=True)
     pieces = []
     for index, (moment, pick) in enumerate(zip(moments, picks)):
         if cancel:
             cancel()
-        piece = work / f"{index:05d}.mp4"
-        length = round(moment["end"] * fps) / fps - round(moment["start"] * fps) / fps
-        if pick is None:
+        total = round(moment["end"] * fps) - round(moment["start"] * fps)
+        chosen = [pick] if isinstance(pick, tuple) else list(pick or [])
+        if not chosen:
+            piece = work / f"{index:05d}-0.mp4"
             subprocess.run([ffmpeg, "-v", "error", "-y", "-nostdin", "-f", "lavfi", "-i", f"color=black:s={width}x{height}:r={fps}",
-                            "-frames:v", str(max(1, round(length * fps))), "-c:v", "libx264", "-pix_fmt", "yuv420p", str(piece)],
+                            "-frames:v", str(max(1, total)), "-c:v", "libx264", "-pix_fmt", "yuv420p", str(piece)],
                            check=True, capture_output=True)
+            pieces.append(piece)
         else:
-            resource = resources[pick[0]]
-            _piece(resource, resource["intervals"][pick[1]], length, piece, ffmpeg, width, height, fps)
-        pieces.append(piece)
+            lengths = [max(0.5, float(resources[r]["intervals"][i]["end"]) - float(resources[r]["intervals"][i]["start"]))
+                       if resources[r].get("kind") != "photo" else 4.0 for r, i in chosen]
+            for part, ((r, i), frames) in enumerate(zip(chosen, _shares(lengths, total / fps, fps))):
+                piece = work / f"{index:05d}-{part}.mp4"
+                _piece(resources[r], resources[r]["intervals"][i], frames / fps, piece, ffmpeg, width, height, fps)
+                pieces.append(piece)
         if progress:
             progress((index + 1) / len(moments))
     listing = work / "pieces.txt"
@@ -171,19 +190,43 @@ def build(project, *, progress: Callable[[int, str], None], cancel: Callable[[],
                    for segment in (translated.get("sources") or [{}])[0].get("segments") or [] for w in segment.get("words") or []] or words
     duration = float((ffprobe(str(narration)).get("format") or {}).get("duration") or 0.0)
     moments = beats(english, duration)
+    for moment in moments:                                  # what was said, in its own language
+        moment["original"] = " ".join(w["text"] for w in words if moment["start"] <= (w["start"] + w["end"]) / 2 < moment["end"])
     resources = []
     for index, path in enumerate(material):
         cancel()
         progress(18 + int(20 * index / len(material)), f"Looking at your pictures and clips: {path.name}")
         resources.append(analyze(path, project.cache_dir, ffmpeg, transcribe=False, cancel=cancel))
-    progress(40, f"Choosing a picture for each of {len(moments)} moments of the story")
-    picks = choose(moments, resources)
+    picks: list[Any]
+    catalogue: list[dict[str, str]] = []
+    try:
+        from core import story_editor
+        progress(38, "Your Claude is looking at every clip (once per clip)")
+        catalogue = story_editor.describe(resources, project.cache_dir / "story_catalogue.json",
+                                          progress=lambda share: progress(38 + int(share * 2), f"Your Claude is looking at the clips — {share:.0%}"))
+        progress(40, f"Your Claude is editing the story: pictures for {len(moments)} moments")
+        chosen = story_editor.plan(moments, resources, catalogue, language,
+                                   progress=lambda share: progress(40 + int(share * 2), f"Your Claude is editing the story — {share:.0%}"))
+        longest = lambda r: max(range(len(resources[r]["intervals"])), key=lambda i: float(resources[r]["intervals"][i]["end"]) - float(resources[r]["intervals"][i]["start"]))
+        picks = [[(r, longest(r)) for r in clips if resources[r].get("intervals")] for clips in chosen]
+        if not any(picks):
+            raise story_editor.EditorUnavailable("no pictures chosen")
+        empty = [i for i, p in enumerate(picks) if not p]
+        if empty:                                           # the few Claude left out: picture matching
+            fallback = choose([moments[i] for i in empty], resources)
+            for i, pick in zip(empty, fallback):
+                picks[i] = [pick] if pick else []
+    except Exception as exc:  # no Claude: picture matching (CLIP)
+        progress(40, f"Choosing a picture for each of {len(moments)} moments (picture matching: {str(exc)[:80]})")
+        picks = choose(moments, resources)
     folder = project.folder / "assets" / "story"
     folder.mkdir(parents=True, exist_ok=True)
     program = render(narration, moments, picks, resources, folder / "program.mp4", ffmpeg, width=width, height=height, cancel=cancel,
                      progress=lambda share: progress(42 + int(share * 10), f"Putting the pictures under the voice — {share:.0%}"))
     (project.artifacts_dir / "story_plan.json").write_text(json.dumps({
         "narration": str(narration), "language": language, "program": str(program),
-        "moments": [{**moment, "picture": None if pick is None else {"path": resources[pick[0]]["path"], "interval": pick[1]}}
+        "catalogue": [{"path": resource["path"], **item} for resource, item in zip(resources, catalogue)],
+        "moments": [{**moment, "pictures": [{"path": resources[r]["path"], "interval": i}
+                                            for r, i in ([pick] if isinstance(pick, tuple) else list(pick or []))]}
                     for moment, pick in zip(moments, picks)]}, ensure_ascii=False, indent=1), encoding="utf-8")
     return program
