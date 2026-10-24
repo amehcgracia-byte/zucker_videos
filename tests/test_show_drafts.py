@@ -40,7 +40,7 @@ def test_accepting_a_scene_draws_its_drawing_as_a_draft_to_see_before_approving(
     project, drawing_id, word_id, client = _client(tmp_path, monkeypatch)
     asked = []
     monkeypatch.setattr(gags, "claude_picture", lambda subject, style, seed=3, prompt=None, library_root=None:
-                        asked.append(seed) or Image.new("RGBA", (64, 48), (seed % 255, 80, 40, 255)))
+                        asked.append(seed) or Image.new("RGBA", (64, 48), (len(asked) * 30, 80, 40, 255)))
     monkeypatch.setattr("core.show.preview_scene", lambda *a, **k: (_ for _ in ()).throw(InterruptedError()))   # no video here
     answer = client.post("/api/v1/show/scenes/scene-1/decision", json={"decision": "accepted"}).get_json()
     assert answer["drafts"] == 1

@@ -1,0 +1,29 @@
+# Show — work queue (22 October 2026)
+
+Branch `claude/show-1022`, on top of 2.6.16 (`claude/show-after-44`, PR #45).
+✅ done · 🔜 next · ⏳ queued · ❓ needs a decision.
+
+## The person's list of 22 October
+
+1. ✅ **ChatGPT sign-in not recognised.** The browser said "connected" but Codex never got it (it waits for the browser on a local port). Sign-in now uses Codex's device code (a link and a code typed on the website); the Connectors window notices when it is done.
+2. ✅ **Names.** New downloads/imports start with the video's title or the file's name; the timeline and libraries show titles, file names or words instead of "Video clip" and codes.
+3. ✅ **Cuts are not clean** (the talking video is an earlier export with 238 cuts burned in: old cuts next to new ones now hold a clean frame; close-ups and inserts snap to cuts; close-ups start on whole frames): at a zoom change, a switch to another video or an internet clip, a frame of another video flashes.
+4. ✅ **No duplicates of the same internet video**: download once; the library shows one entry per video (two at most when the time ranges differ).
+5. ✅ **Speed** of videos 10 %–200 % (100 % normal), in Clip settings and the timeline's right-click menu.
+6. ✅ **Space** = play/pause on the video; on the timeline bars = make the preview. "Render effect preview" renamed "Preview".
+7. ✅ (clips and Clay windows/bubbles; ⏳ a few moving frames instead of one) **See videos, Clay and rendered layers on the stage** (a frame, ideally a few moving), with the same box as pictures: move, resize, crop. Clip size/position for clips that are not full frame.
+8. ✅ **"Balance audio levels"** (and the mixer is now a desk of faders) instead of the smart mixer: keep every choice (narrator, clip sound, muted) and only even out loudness, taming sudden peaks (explosions).
+9. ✅ **Remove any plain background automatically** (green, blue, black, any single colour; pick a key colour the subject is not wearing). "Remove green screen" → "Remove background".
+10. ⏳ **Four Show styles** after adding the videos: *Influencer* (fast cuts), *Explainer* (slower cuts), *Storytelling* (a narration with references, photos and clips found for what it tells — to build), *Gamer* (the talking video small, bottom right; other footage full frame).
+11. ❓ **Remove Backstage** from the app to make it smaller, proving nothing in Show depends on it (Show uses some of its transcription/audio code: those parts stay).
+12. ⏳ **Clearer names in the interface** (an ongoing pass; tell me the ones that confuse you).
+
+## Still open from earlier lists
+
+- Narration captions spanning inserted footage: corrected on the integrated Codex branch (dde66199), with cue splitting and live suppression. Targeted tests pass; the complete final montage still needs visual review.
+- "Write the script together" as a back-and-forth with the director (only "follow my idea" exists).
+- The "next, next… lottery" mode (a half-made edit with pictures and voices already generated).
+- The edits made to «La prueba» after 19 October (kanji clips in scene 10) need redoing; the clips are in its library.
+- Freesound originals (only previews download today).
+- Windows: the package passes its earlier self-test; the new source audit stopped on a reproduced concurrent review-cache PermissionError before the UI journeys. Correction tested locally, remote confirmation pending. macOS completed five synthetic UI/render journeys at 7ce5a4ce; native dialogs and private footage remain separate checks.
+- The general fast CI remains red: latest complete run 39915963325 at 7ce5a4ce has 22 failures / 1207 passing. Individual 360 contract review is in progress; do not treat all remaining failures as obsolete. PR #45 is merged; PR #44 remains open. New PRs #46/#47 have been identified, not integrated here.

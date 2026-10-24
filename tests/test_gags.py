@@ -429,3 +429,21 @@ def test_each_place_named_gets_its_own_background_under_the_pictures():
     proposals = show_proposals.from_gags(places)
     assert proposals[0]["kind"] == "background" and proposals[0]["params"]["subject"] == "a kitchen"
     assert show_proposals.check(proposals[0]) == ["a picture of the new background"]              # chosen by you, never invented
+
+
+def test_the_picture_you_chose_wins_over_the_library_name_and_moves_as_you_asked(tmp_path, monkeypatch):
+    from core import gag_library
+    library = tmp_path / "Gag library"
+    library.mkdir()
+    Image.new("RGBA", (60, 40), (20, 140, 200, 255)).save(library / "a big red magnet aa888b.png")   # the director's pick
+    monkeypatch.setattr(gag_library, "library_dir", lambda: library)
+    mine = tmp_path / "my magnet.png"
+    Image.new("RGBA", (50, 50), (203, 24, 76, 255)).save(mine)
+    items, _ = gags.make_items([{"kind": "photo", "query": "a big red magnet aa888b", "picture": str(mine), "at": 1, "duration": 2,
+                                 "action": "up", "image_center": [0.5, 0.5]},
+                                {"kind": "photo", "query": "a big red magnet aa888b", "at": 4, "duration": 2, "action": "swing"}],
+                               tmp_path / "render", allow_generation=False)
+    assert Image.open(items[0]["image"]).getpixel((25, 25))[:3] == (203, 24, 76)       # yours, not the library's
+    assert items[0]["path"] == [[0.0, 0.5, 0.5], [1.0, 0.5, 0.35]]                     # moves up
+    assert items[1]["effect"] == "wobble"                                              # swings
+    assert gag_library.named_picture("magnet") is None                                 # a word is not a name

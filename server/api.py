@@ -92,6 +92,24 @@ _REVIEW_RENDER_LOCK = threading.Lock()
 _REVIEW_RENDERING_KEYS: set[str] = set()
 
 
+def _refresh_composition_base(source: Path, cache: Path, metadata: Path) -> bool:
+    """Return cache-hit status, preserving provenance when resuming the cache itself."""
+    if cache.is_file() and source.samefile(cache):
+        return True
+    source_stat = source.stat()
+    expected = {"source": str(source), "source_size": int(source_stat.st_size),
+                "source_mtime_ns": int(source_stat.st_mtime_ns)}
+    if cache.is_file() and cache.stat().st_size > 0 and metadata.is_file():
+        try:
+            if json.loads(metadata.read_text(encoding="utf-8")) == expected:
+                return True
+        except (OSError, json.JSONDecodeError):
+            pass
+    shutil.copy2(source, cache)
+    metadata.write_text(json.dumps(expected, indent=2) + "\n", encoding="utf-8")
+    return False
+
+
 def _queue_review_thumbnail_render(project: Project, indices: set[int]) -> None:
     """Queue review thumbnails and return before FFmpeg work starts."""
     if not indices:
@@ -529,24 +547,9 @@ class CompositionRunner:
             # compounds the previous final export, but refresh it whenever the
             # mounted export changes.  The old existence-only check silently
             # composed new UI state over a stale edit/export.
-            source_stat = original_base_path.stat()
-            expected_cache_meta = {
-                "source": str(original_base_path),
-                "source_size": int(source_stat.st_size),
-                "source_mtime_ns": int(source_stat.st_mtime_ns),
-            }
-            cache_is_current = False
-            if composition_cache.is_file() and composition_cache.stat().st_size > 0 and composition_cache_meta.is_file():
-                try:
-                    cache_is_current = json.loads(composition_cache_meta.read_text(encoding="utf-8")) == expected_cache_meta
-                except (OSError, json.JSONDecodeError):
-                    cache_is_current = False
-            if not cache_is_current:
-                shutil.copy2(original_base_path, composition_cache)
-                composition_cache_meta.write_text(
-                    json.dumps(expected_cache_meta, indent=2) + "\n",
-                    encoding="utf-8",
-                )
+            cache_is_current = _refresh_composition_base(
+                original_base_path, composition_cache, composition_cache_meta
+            )
             _composition_event(project, job, "cache_miss" if not cache_is_current else "cache_hit", input_path=original_base_path, output_path=composition_cache, duration=None, reason="composition_base_provenance")
             base_path = composition_cache
             output_stem = original_base_path.stem
@@ -2163,13 +2166,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except RuntimeError as exc:
             LOGGER.info("Show review not adopted: %s", exc)
         document = show_scenes.load(path)
-        stored = show_proposals.load(proposals_path)
+        with show_proposals.LOCK:
+            stored = show_proposals.load(proposals_path)
+            if _link_named_photos(project, stored["proposals"]):     # the director's library pictures, shown live too
+                show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
         from core import show_drafts
+        stored = show_drafts.snapshot(project, proposals_path)
         for item in stored["proposals"]:
             item["needs"] = show_proposals.check(item)
-            drafting = show_drafts.state(project, item["id"])
-            if drafting:
-                item["drafting"] = drafting                     # being drawn, or why it could not be
         # Each scene plays at once from the original video, its cuts skipped in the page;
         # the preview with zooms and effects is rendered only when the person asks for it.
         from core.show import edited_words, scene_segments
@@ -2203,7 +2207,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         logo = Path(str(wizard.get("reel_logo_path") or ""))
         try:resume_scene=json.loads((project.artifacts_dir/'show_resume.json').read_text())['scene_id']
         except (OSError,ValueError,KeyError):resume_scene=document.get('resume_scene')
-        return jsonify({**document, "resume_scene":resume_scene, "proposals": stored["proposals"], "resources": stored.get("resources") or [], "source": stored.get("source"),
+        return jsonify({**document, "resume_scene":resume_scene, "proposals": _with_shown(project, stored["proposals"]), "resources": stored.get("resources") or [], "source": stored.get("source"),
                         "project_logo": str(logo) if logo.is_file() else None,
                         "caption_revision": caption_layout["revision"], "captions_enabled": captions_on, "project_id": str(project.folder),
                         "plan": {"edited_duration": plan["edited_duration"], "fps": plan.get("fps") or 30},
@@ -2290,6 +2294,32 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         """The project's clay stories and their placements in the montage (with the
         edited moments each placement reaches)."""
         return jsonify(_clay_state(_require_project(state)))
+
+    @app.get("/api/v1/show/clay/placements/<placement_id>/picture")
+    def api_show_clay_picture(placement_id: str) -> Response:
+        """A Clay placement's picture (its first pose, or at story second ``t``), to see and place
+        it on the stage."""
+        import numpy as np
+        from PIL import Image
+        from core.show_clay import ClayStore, STORE
+        project = _require_project(state)
+        if not (project.folder / "show_studio" / STORE).is_file():
+            return error_response("not_found", "This Show has no clay", 404)
+        store = ClayStore(project.folder)
+        placement = next((p for p in store.load().get("placements") or [] if p.get("id") == placement_id), None)
+        if placement is None:
+            return error_response("not_found", "That clay placement is not in this Show", 404)
+        try:
+            story = store.load_story(str(placement.get("story") or ""))
+            width = int(min(960, max(160, int(request.args.get("w", 480)))))
+            t = float(request.args.get("t", float(placement.get("start") or 0) + 0.2))
+            picture = np.asarray(story.picture(t, width, width * 9 // 16)).astype(np.uint8)
+        except (ValueError, KeyError, OSError, TypeError) as exc:
+            return error_response("clay_unavailable", str(exc)[:300], 404)
+        output = io.BytesIO()
+        Image.fromarray(picture).save(output, "PNG")
+        output.seek(0)
+        return send_file(output, mimetype="image/png", max_age=600)
 
     @app.post("/api/v1/show/references/open")
     def api_show_reference_open() -> Response:
@@ -2405,25 +2435,55 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             except (ValueError,TypeError):return error_response('invalid_duration','Choose a positive timeline duration',400)
         tools = tool_status()
         try:
-            clip = show_clips.download(project, reference, str(tools.get("ffmpeg_path") or "ffmpeg"))
+            offset = 0.0
+            reused = None if body.get("audio_only") else show_clips.reuse(project, reference)
+            if reused:                                     # already downloaded: the same file, from the right second
+                clip, offset = reused
+            else:
+                download=show_clips.download_audio if body.get("audio_only") else show_clips.download
+                clip = download(project, reference, str(tools.get("ffmpeg_path") or "ffmpeg"))
             length = show_clips.length(clip, str(tools.get("ffprobe_path") or "ffprobe"))
+            if reused:
+                length = round(min(length - offset, float(reference["end"]) - float(reference["start"])), 3)
         except ValueError as exc:
             return error_response("invalid_reference", str(exc), 400)
         except (RuntimeError, OSError, subprocess.CalledProcessError) as exc:
             return error_response("clip_download_failed", str(exc)[:700], 502)
         proposals_path, _ = _show_review_files(project)
         stored = show_proposals.load(proposals_path)
-        replace_id=body.get('replace_id')
-        if replace_id and not any(p['id']==replace_id and p['kind']=='clip' for p in stored['proposals']):
+        if body.get('audio_only'):
+            document=show_scenes.load(_scene_files(project))
+            scene=next((s for s in document['scenes'] if s['id']==reference.get('scene_id')),None)
+            if scene is None:return error_response('not_found','Choose a scene for this audio',404)
+            at=max(scene['start'],min(scene['end']-.001,float(reference.get('at',scene['start']))))
+            duration=min(length,float(body.get('duration') or length),scene['end']-at)
+            from core import music_library
+            with clip.open('rb') as audio:
+                library_item=music_library.import_audio(audio,clip.name,{'name':show_clips.media_title(clip,reference.get('title') or reference['url']),'source':'video-link','source_url':reference['url'],'license':'Check source permissions','attribution':reference['url']})
+            item=show_proposals.proposal('jingle',at,duration,reason='Audio from video link',path=str(clip),start=0.,volume=.7,duck=1.,under_voice=True,selected_text=reference.get('selected_text',''),name=library_item['name'])
+            item['status']='approved';stored['proposals'].append(item)
+            stored.setdefault('resources',[]).append({'path':str(clip),'kind':'audio','duration':length,'speech':[],'intervals':[],'origin':'Audio from link'})
+            show_proposals.save(proposals_path,stored['proposals'],**{k:v for k,v in stored.items() if k not in ('proposals','version')})
+            show_scenes.attach(document,item);show_scenes.save(_scene_files(project),document)
+            _effect_changed(project,item['id'])
+            reference.update(audio=str(clip),status='downloaded');atomic_write_json(reference_path,references)
+            return jsonify(reference=reference,proposal=item),201
+        replace_id=body.get('replace_texture') or body.get('replace_id')
+        if body.get('texture'):
+            from core.show_textures import PRESETS
+            if body['texture'] not in PRESETS:return error_response('bad_request','Choose a known texture',400)
+        if replace_id and not any(p['id']==replace_id and p['status']!='discarded' and (p['kind']=='clip' or body.get('replace_texture') and p['kind'] in ('texture','steam')) for p in stored['proposals']):
             return error_response('not_found','That clip is no longer in this scene',404)
         replacing=next((p for p in stored['proposals'] if p['id']==replace_id),None)
         if replacing:
-            replacing['params'].update(clip=str(clip),clip_start=0.,clip_length=length,reference=reference_id,url=reference['url'],source_start=reference['start'])
+            replacing['kind']='clip'
+            replacing['status']='approved'
+            replacing['params'].update(clip=str(clip),clip_start=offset,clip_length=length,reference=reference_id,url=reference['url'],source_start=reference['start'])
         item = replacing or next((entry for entry in stored["proposals"] if entry["kind"] == "clip" and entry["params"].get("reference") == reference_id
                      and entry["status"] != "discarded"), None)
         if item is None:
             item = show_proposals.proposal("clip", float(reference.get("at") or 0.0), length, reason=f"Clip from {reference['url']}",
-                                           clip=str(clip), clip_start=0.0, clip_length=length, reference=reference_id,
+                                           clip=str(clip), clip_start=offset, clip_length=length, reference=reference_id,
                                            url=reference["url"], source_start=reference["start"], selected_text=reference.get("selected_text", ""))
             item["status"] = "approved"          # chosen and downloaded by the person, like a picture they place
             stored["proposals"].append(item)
@@ -2441,20 +2501,23 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 for scene in document["scenes"]:
                     if item["id"] in scene["effects"]:
                         _invalidate_scene(project, scene["id"])
-        from core.show_video_assets import detect_green, remember
-        item['params']['matte']='green' if detect_green(clip) else 'none'
+        item['params']['name']=show_clips.media_title(clip,reference.get('title') or reference['url'])
+        from core.show_video_assets import detect_background, remember
+        # A plain background (green, blue, another strong colour, black) goes automatically.
+        matte,key=detect_background(clip)
+        item['params']['matte']=matte
+        if key:item['params']['key']=key
+        else:item['params'].pop('key',None)
         if body.get('texture'):
             from core.show_textures import PRESETS
             texture=str(body['texture'])
             if texture not in PRESETS:return error_response('bad_request','Choose a known texture',400)
-            prior=next((p for p in stored['proposals'] if p['id']==body.get('replace_texture') and p['kind'] in ('texture','steam')),None)
-            point=(prior or {}).get('params',{}).get('point',[.5,.75])
-            item['params'].update(texture_footage=texture,clip_audio=False,audio_mode='mute',person_scale=.4,
+            point=item['params'].get('point',[.5,.75])
+            item['params'].update(texture_footage=texture,texture=texture,clip_audio=False,audio_mode='mute',
+                                  person_scale=item['params'].get('person_scale',.4),
                                   person_offset=[point[0]-.5,point[1]-1],matte='green-light' if item['params']['matte']=='green' else 'black',
                                   name=PRESETS[texture]+' · filmed texture')
-            if prior:
-                if prior['params'].get('anchor'):item['params']['follow_anchor']=prior['params']['anchor']
-                prior['status']='discarded'
+            if item['params'].get('anchor'):item['params']['follow_anchor']=item['params']['anchor']
 
         item['duration']=float(body.get('duration') or item['duration']) if item['params'].get('texture_footage') else min(float(body.get('duration') or item['duration']),length)
         scene_path=_scene_files(project)
@@ -2508,12 +2571,34 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if item['kind'] not in ('clip','jingle','character') or item['status']=='discarded':continue
             p=item['params'];raw=p.get('clip') or p.get('path') or (p.get('voice') or {}).get('source')
             if not raw:continue
-            tracks.append({'id':item['id'],'kind':item['kind'],'name':p.get('name') or p.get('title') or Path(raw).stem,
+            from core.media_names import clip_name, sidecar_url
+            url=str(p.get('url') or p.get('source_url') or sidecar_url(raw) or '')
+            tracks.append({'id':item['id'],'kind':item['kind'],'name':clip_name({**p,'clip':raw},kind_label={'clip':'Clip','jingle':'Music','character':'Voice'}[item['kind']]),
+                'source':_track_source(item['kind'],url,p),
                 'volume':p.get('audio_volume',1.) if item['kind']=='clip' else p.get('volume',.8 if item['kind']=='jingle' else 1.),
                 'mode':('mute' if p.get('clip_audio') is False else p.get('audio_mode','mix' if p.get('matte','none')!='none' else 'own')) if item['kind']=='clip' else p.get('audio_mode','own') if item['kind']=='character' else 'mix',
-                'under_voice':p.get('under_voice',False),'at':item['at'],'duration':item['duration']})
-        tracks.extend(show_audio.overlay_tracks(project))
+                'under_voice':p.get('under_voice',False),'at':item['at'],'duration':item['duration'],'tamed':bool(p.get('tame_peaks'))})
+        tracks.extend({**track,'source':'voice'} for track in show_audio.overlay_tracks(project))
+        # Each channel says which scene it plays in (S3), so the desk reads in order.
+        try:
+            from core import show_scenes
+            scenes=show_scenes.load(_scene_files(project))['scenes']
+            for track in tracks:
+                index=next((n for n,scene in enumerate(scenes,1) if scene['start']<=track['at']<scene['end']),None)
+                if index:track['scene']=f'S{index}'
+        except (OSError,ValueError,KeyError):
+            pass
+        tracks.sort(key=lambda track:track['at'])
         return jsonify(settings=plan['audio_settings'],words=plan['audio_censor_spans'],noise=plan.get('noise_report') or {'status':'not_analyzed'},tracks=tracks)
+
+    def _track_source(kind,url,params):
+        """What a sound channel is, for its small badge: a video from a link (which site), a file,
+        music, or a voice."""
+        if kind=='character':return 'voice'
+        host=url.split('//',1)[-1].split('/',1)[0].removeprefix('www.').removeprefix('m.') if url else ''
+        site={'youtube.com':'YouTube','youtu.be':'YouTube','tiktok.com':'TikTok','vimeo.com':'Vimeo','instagram.com':'Instagram'}.get(host,host.split('.')[0].capitalize() if host else '')
+        if kind=='jingle':return f'link:{site}' if site else 'music'
+        return f'link:{site}' if site else 'file'
 
     @app.patch('/api/v1/show/audio')
     def api_show_audio_settings():
@@ -2667,15 +2752,56 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         for record in records.values():
             if record.get('media_kind','video')!='video':continue
             params=record.get('params') or {}
-            key=json.dumps([record['path'],record.get('matte','none'),*[params.get(k) for k in ('clip_start','person_style','picture','person_scale','person_offset')]],sort_keys=True)
+            key=('saved:'+record['id']) if record.get('saved_edit') else json.dumps([record['path'],record.get('matte','none'),*[params.get(k) for k in ('clip_start','person_style','picture','person_scale','person_offset')]],sort_keys=True)
             unique.setdefault(key,record)
-        return jsonify(items=list(unique.values()))
+        # One entry per video (two at most: the complete one and a cut-out), not every saved
+        # copy: the newest of each.
+        from core.show_clips import video_key
+        shown,kept={},[]
+        for record in reversed(list(unique.values())):
+            # Explicitly saved recipes are intentional versions, not download duplicates.
+            # Each keeps its immutable identity, timing and framing in the library.
+            if record.get('saved_edit'):
+                kept.append(record)
+                continue
+            who=video_key(record.get('url') or (record.get('params') or {}).get('url') or '') if (record.get('url') or (record.get('params') or {}).get('url')) else record['path']
+            kind='cutout' if record.get('transparent') else 'complete'
+            if (who,kind) in shown or sum(1 for w,_ in shown if w==who)>=2:continue
+            shown[(who,kind)]=True;kept.append(record)
+        _titles_soon(unique.values())
+        return jsonify(items=[_named_media(record,'Video') for record in reversed(kept)])
+
+    titles_asked: set[str] = set()
+    titles_lock = threading.Lock()
+
+    def _titles_soon(records):
+        """Downloads saved before titles were kept get their video's title in the background
+        (metadata only, once per link); the next listing shows it."""
+        from core.media_names import sidecar_title
+        from core import show_clips
+        wanted: dict[str, list[str]] = {}
+        for record in records:
+            url = record.get('url') or (record.get('params') or {}).get('url')
+            path = str(record.get('path') or '')
+            if url and path and Path(path).is_file() and not sidecar_title(path):
+                wanted.setdefault(url, []).append(path)
+        with titles_lock:
+            wanted = {url: paths for url, paths in wanted.items() if url not in titles_asked}
+            titles_asked.update(wanted)
+        if wanted:
+            threading.Thread(target=show_clips.name_downloads, args=(wanted,), daemon=True, name='zucker-video-titles').start()
+
+    def _named_media(record,label):
+        """A library record with a name people recognise (title, original file, words), never a code."""
+        from core.media_names import clip_name
+        params={**(record.get('params') or {}),'name':record.get('name'),'clip':record.get('path')}
+        return {**record,'name':clip_name(params,kind_label=label)}
 
     @app.get('/api/v1/show/audio-library')
     @_proposals_locked
     def api_show_audio_library():
         records=_show_media_catalog(_require_project(state))
-        return jsonify(items=[r for r in records.values() if r.get('media_kind')=='audio'])
+        return jsonify(items=[_named_media(r,'Audio') for r in records.values() if r.get('media_kind')=='audio'])
 
     media_thumbnail_slots=threading.Semaphore(2)
     @app.get('/api/v1/show/video-library/<asset_id>/thumbnail')
@@ -2699,6 +2825,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not path.is_file() or not path.resolve().is_relative_to(project.folder.resolve()):return error_response('not_found','This media is missing from the project',404)
         return send_file_with_range(str(path))
 
+    @app.post('/api/v1/show/clips/<proposal_id>/save-edit')
+    @_proposals_locked
+    def api_show_clip_save_edit(proposal_id):
+        from core import show_proposals, show_video_assets
+        project=_require_project(state)
+        body=request.get_json(silent=True) or {}
+        if body.get('project_id') and body['project_id']!=str(project.folder):
+            return error_response('stale_project','Reopen the original project before saving this edit',409)
+        item=next((p for p in show_proposals.load(project.artifacts_dir/'show_proposals.json')['proposals']
+                   if p['id']==proposal_id and p['kind']=='clip'),None)
+        if item is None:return error_response('not_found','Choose a video clip in this project',404)
+        source=Path(item['params']['clip']).resolve()
+        if not source.is_file() or not source.is_relative_to(project.folder.resolve()):
+            return error_response('not_found','The source video is missing from this project',404)
+        return jsonify(asset=show_video_assets.save_edit(project,item)),201
+
     @app.post('/api/v1/show/video-library/<asset_id>/place')
     @_proposals_locked
     def api_show_video_library_place(asset_id):
@@ -2712,7 +2854,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         doc=show_scenes.load(_scene_files(project));scene=next((s for s in doc['scenes'] if s['id']==body.get('scene_id')),None)
         if record is None or scene is None:return error_response('not_found','Choose project media and a scene',404)
         try:
-            at=float(body.get('at',scene['start']));duration=float(body.get('duration',3))
+            at=float(body.get('at',scene['start']));duration=float(body.get('duration',record.get('saved_duration',3)))
             if not math.isfinite(at+duration) or duration<=0 or not scene['start']<=at<scene['end']:raise ValueError('Choose words inside this scene')
             params=dict(record.get('params') or (source or {}).get('params') or {'clip':record['path'],'clip_length':record['duration'],'clip_start':0,'matte':record.get('matte','none')})
             duration=min(duration,scene['end']-at,float(record['duration'])-float(params.get('clip_start') or 0))
@@ -2738,6 +2880,104 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if not path.is_file() or not path.is_relative_to(project.folder.resolve()):abort(404)
         return send_file_with_range(str(path))
 
+    @app.get('/api/v1/show/clips/<proposal_id>/frame')
+    def api_show_clip_frame(proposal_id):
+        """The clip's picture at edited time ``t`` (its speed and start counted), as the video
+        will show it: framed like the render and with its background removed (PNG with
+        transparency), to see and place it on the stage."""
+        import hashlib
+        import cv2
+        import numpy as np
+        from PIL import Image
+        from core import show_proposals
+        project = _require_project(state)
+        item = next((p for p in show_proposals.load(project.artifacts_dir / 'show_proposals.json')['proposals'] if p['id'] == proposal_id), None)
+        params = (item or {}).get('params') or {}
+        clip = Path(str(params.get('clip') or ''))
+        if item is None or not clip.is_file() or not clip.resolve().is_relative_to(project.folder.resolve()):
+            return error_response('not_found', 'That clip is not in this Show', 404)
+        try:
+            t = float(request.args.get('t', item['at']))
+            width = int(min(960, max(160, int(request.args.get('w', 480)))))
+        except (TypeError, ValueError):
+            return error_response('bad_request', 'Choose a time and a width', 400)
+        from core.show_inserts import clip_speed
+        local = min(max(0.0, t - float(item['at'])), max(0.0, float(item['duration']) - 0.04))
+        second = round(float(params.get('clip_start') or 0) + local * clip_speed(params), 2)
+        height = width * 9 // 16
+        matte = params.get('matte', 'none')
+        stamp = clip.stat().st_mtime_ns
+        key = hashlib.sha1(json.dumps([str(clip), stamp, second, matte, params.get('key'), width], sort_keys=True, default=str).encode()).hexdigest()[:20]
+        folder = project.cache_dir / 'clip_frames'
+        target = folder / f'{key}.png'
+        if not target.is_file():
+            from core.show_backgrounds import VideoBackground
+            try:
+                video = VideoBackground(clip, width, height, contain=matte in ('none', 'opaque'))
+                try:
+                    rgb = np.asarray(video.at(second)).astype(np.uint8)
+                finally:
+                    video.capture.release()
+            except Exception:
+                # Some files OpenCV cannot seek in: FFmpeg reads that one picture instead.
+                ffmpeg = str(tool_status().get('ffmpeg_path') or 'ffmpeg')
+                fit = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+                decoded = subprocess.run([ffmpeg, '-v', 'error', '-nostdin', '-ss', f'{second:.3f}', '-i', str(clip), '-frames:v', '1', '-vf', fit,
+                                          '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], capture_output=True, timeout=30).stdout
+                if len(decoded) < width * height * 3:
+                    decoded = subprocess.run([ffmpeg, '-v', 'error', '-nostdin', '-sseof', '-0.5', '-i', str(clip), '-frames:v', '1', '-vf', fit,
+                                              '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], capture_output=True, timeout=30).stdout
+                if len(decoded) < width * height * 3:
+                    return error_response('frame_failed', 'Could not read a picture from this clip', 500)
+                rgb = np.frombuffer(decoded[:width * height * 3], np.uint8).reshape(height, width, 3).copy()
+            alpha = np.ones(rgb.shape[:2], np.float32)
+            if matte == 'green':
+                from core.show_video_assets import green_alpha
+                alpha = green_alpha(rgb)
+            elif matte == 'plain' and params.get('key'):
+                from core import plain_key
+                alpha = plain_key.alpha(rgb, params['key'])
+                rgb = plain_key.despill(rgb, alpha, params['key'])
+            elif matte in ('black', 'green-light'):
+                from core.show_video_assets import black_alpha
+                alpha = black_alpha(rgb)
+            elif matte == 'person':
+                try:
+                    from core.show_backgrounds import MASK_SIZE, Segmenter
+                    mask = Segmenter()(cv2.resize(rgb, (640, 360)))
+                    alpha = cv2.resize(mask.astype(np.float32) / 255, (width, height))
+                except Exception:
+                    pass                                  # shown whole when the Mac cannot cut the person out
+            folder.mkdir(parents=True, exist_ok=True)
+            pending = target.with_suffix('.pending.png')
+            Image.fromarray(np.dstack([rgb, np.clip(alpha * 255 + 0.5, 0, 255).astype(np.uint8)]), 'RGBA').save(pending)
+            pending.replace(target)
+        return send_file(str(target), mimetype='image/png', max_age=3600)
+
+    @app.route('/api/v1/show/clips/<proposal_id>/framing', methods=['GET', 'POST'])
+    @_proposals_locked
+    def api_show_clip_framing(proposal_id):
+        """A clip's automatic framing: black edges trimmed and, when one was found safely, its
+        watermark zoomed out of the picture. POST {"keep_watermark": true} keeps the mark."""
+        from core import media_framing, show_proposals
+        project = _require_project(state)
+        path = project.artifacts_dir / 'show_proposals.json'
+        stored = show_proposals.load(path)
+        item = next((p for p in stored['proposals'] if p['id'] == proposal_id and p['kind'] == 'clip'), None)
+        clip = Path(str((item or {}).get('params', {}).get('clip') or ''))
+        if item is None or not clip.is_file() or not clip.resolve().is_relative_to(project.folder.resolve()):
+            return error_response('not_found', 'That clip is not in this Show', 404)
+        if request.method == 'POST':
+            keep = (request.get_json(silent=True) or {}).get('keep_watermark')
+            if not isinstance(keep, bool):
+                return error_response('bad_request', 'Choose whether to keep the watermark', 400)
+            media_framing.set_watermark(clip, keep)
+            item['params']['watermark'] = 'keep' if keep else 'auto'      # previews made with the other choice are not reused
+            show_proposals.save(path, stored['proposals'], **{k: v for k, v in stored.items() if k not in ('proposals', 'version')})
+            _effect_changed(project, proposal_id)
+        info = media_framing.inspect(clip) or {}
+        return jsonify({'watermark': info.get('watermark'), 'crop': {k: info.get(k) for k in ('x', 'y', 'width', 'height')}})
+
     @app.post('/api/v1/show/clips/<proposal_id>/settings')
     @_proposals_locked
     def api_show_clip_settings(proposal_id):
@@ -2752,8 +2992,17 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             start=float(body.get('clip_start',item['params'].get('clip_start') or 0))
             if not math.isfinite(start) or not 0<=start<float(item['params']['clip_length']):raise ValueError('Choose a position inside the downloaded clip')
             matte=body.get('matte',item['params'].get('matte','none'))
-            if matte not in ('auto','none','green','green-light','black','person'):raise ValueError('Choose a background removal mode')
-            if matte=='auto':matte='green' if detect_green(item['params']['clip']) else 'none'
+            if matte not in ('auto','none','green','green-light','black','person','plain'):raise ValueError('Choose a background removal mode')
+            from core.show_video_assets import detect_background
+            key=item['params'].get('key')
+            if matte in ('auto','plain'):
+                found,found_key=detect_background(item['params']['clip'])
+                if matte=='plain' and found=='none':
+                    from core import plain_key                      # asked for: white backgrounds too
+                    found_key=plain_key.find(plain_key.sample_frames(item['params']['clip']),allow_white=True)
+                    found='plain' if found_key else 'none'
+                    if found=='none':raise ValueError('This clip has no plain background to remove; try Cut out the moving person')
+                matte,key=found,found_key
             if matte=='person':
                 from core.show_backgrounds import available
                 if not available():raise ValueError('Moving person cutouts need macOS 12 or later')
@@ -2761,6 +3010,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             audio_mode=body.get('audio_mode',item['params'].get('audio_mode','own'))
             if audio_mode not in ('own','mix','mute'):raise ValueError('Choose mixed, own sound or mute')
             item['params'].update(clip_start=start,matte=matte,audio_mode=audio_mode,clip_audio=body.get('clip_audio',item['params'].get('clip_audio',True)))
+            if matte=='plain' and key:item['params']['key']=key
+            else:item['params'].pop('key',None)
             item['duration']=min(item['duration'],float(item['params']['clip_length'])-start)
             show_proposals.save(path,stored['proposals'],**{k:v for k,v in stored.items() if k not in ('proposals','version')})
             remember(project,item);_effect_changed(project,proposal_id)
@@ -2863,7 +3114,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         remember(project, item)
         show_proposals.save(proposals_path, stored["proposals"], **{k: v for k, v in stored.items() if k not in ("proposals", "version")})
         _effect_changed(project, proposal_id)
-        return jsonify(item)
+        return jsonify(_with_shown(project, [item])[0])
 
     @app.post("/api/v1/show/clay/sample")
     @_proposals_locked
@@ -2917,6 +3168,27 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         from core import show_scenes
         for scene in (show_scenes.load(_scene_files(project)).get('scenes',[]) if _scene_files(project).is_file() else []):_invalidate_scene(project,scene['id'])
         return jsonify(_clay_state(project))
+
+    @app.get("/api/v1/show/history")
+    def api_show_history() -> Response:
+        """Earlier versions of this Show's storyboard (saved before it was made again)."""
+        from core.show import storyboard_history
+        return jsonify({"items": storyboard_history(_require_project(state))})
+
+    @app.post("/api/v1/show/history/<history_id>/restore")
+    @_proposals_locked
+    def api_show_history_restore(history_id: str) -> Response:
+        """Go back to an earlier version; the current one is saved first, so it can come back too."""
+        from core.show import restore_storyboard
+        project = _require_project(state)
+        try:
+            about = restore_storyboard(project, history_id)
+        except KeyError:
+            return error_response("not_found", "That earlier version is not in this project", 404)
+        with scene_lock:
+            for key in [key for key in scene_previews if key.startswith(f"{project.folder}|")]:
+                scene_previews.pop(key, None)
+        return jsonify({"restored": history_id, **about})
 
     @app.post("/api/v1/show/scenes/<scene_id>/decision")
     @_proposals_locked
@@ -3021,7 +3293,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
         show_drafts.forget(project, proposal_id)
         _effect_changed(project, proposal_id)
-        return jsonify(item)
+        return jsonify(_with_shown(project, [item])[0])
 
     def _library_draft(project: Project) -> Callable[[str], dict[str, Any] | None]:
         """For a drawing about to be drawn: a picture you already have with that name, if any."""
@@ -3093,6 +3365,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         library = {item["path"] for item in _show_library_items(project)}
         overlays = []
         for raw in body.get("overlays") or []:
+            if isinstance(raw, dict):
+                raw = {**raw, "asset": str(Path(str(raw.get("asset") or "")).resolve())}
             if not isinstance(raw, dict) or str(raw.get("asset") or "") not in library:
                 return error_response("bad_request", "Pictures must come from the library", 400)
             import uuid
@@ -3103,6 +3377,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 return error_response("bad_request", "Choose valid sticker start and duration", 400)
             if not math.isfinite(at + duration) or at < scene["start"] or duration <= 0 or at + duration > scene["end"] + .001:
                 return error_response("bad_request", "Keep each sticker inside its scene with a positive duration", 400)
+            from core.show_geometry import validate_crop
+            try:
+                crop=validate_crop(raw.get("crop",[0,0,0,0]))
+                pan=[float(v) for v in raw.get("pan",[0,0])]
+                if len(pan)!=2 or not all(math.isfinite(v) and -2<=v<=2 for v in pan):raise ValueError()
+            except (ValueError,TypeError):return error_response("bad_request","Choose valid crop and pan margins",400)
             from core.show_follow import validate_anchor
             try:follow_anchor=validate_anchor(raw.get("follow_anchor"))
             except (ValueError,TypeError):return error_response("bad_request","Mark a valid object rectangle",400)
@@ -3114,14 +3394,22 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 try:release=float(release)
                 except (ValueError,TypeError):return error_response('bad_request','Choose a valid release point',400)
                 if not math.isfinite(release) or release<0:return error_response('bad_request','Choose a valid release point',400)
-            overlays.append({"follow_seconds":release,"follow_anchor":follow_anchor,**({'follow_template':template} if template else {}),"id": str(raw.get("id") or uuid.uuid4().hex)[:80], "asset": str(raw["asset"]), "x": max(-20.0, min(100.0, float(raw.get("x", 12)))),
-                             "y": max(-20.0, min(100.0, float(raw.get("y", 12)))), "width": max(3.0, min(100.0, float(raw.get("width", 23)))),
+            try:
+                placement = {k: float(raw.get(k, default)) for k, default in (("x",12),("y",12),("width",23))}
+                if not all(math.isfinite(v) for v in placement.values()) or placement["width"] <= 0:
+                    raise ValueError("Use a positive size and finite position")
+            except (TypeError, ValueError) as exc:
+                return error_response("bad_request", str(exc), 400)
+            overlays.append({"follow_seconds":release,"follow_anchor":follow_anchor,**({'follow_template':template} if template else {}),"id": str(raw.get("id") or uuid.uuid4().hex)[:80], "asset": str(raw["asset"]), "x": placement["x"],
+                             "y": placement["y"], "width": placement["width"],
                              "at": at, "duration": duration, "selected_text": str(raw.get("selected_text") or "")[:400],
                              "effect": str(raw.get("effect") or "pop"),
                              "audio_mode": raw.get("audio_mode") if raw.get("audio_mode") in ('own','mix','mute','silent') else 'own',
                              "volume": max(0.,min(2.,float(raw.get("volume",1.)))), "under_voice": bool(raw.get("under_voice",False)),
                              "action": str(raw.get("action") or "none"), "intensity": max(0.2, min(3.0, float(raw.get("intensity", 1.0)))),
-                             "stretch": max(0.25, min(4.0, float(raw.get("stretch", 1.0)))), "rotate": max(-180.0, min(180.0, float(raw.get("rotate", 0.0)))),
+                             **({"crop": crop} if "crop" in raw else {}), **({"pan":pan} if "pan" in raw else {}),
+                             "stretch_x": max(.1,min(10.,float(raw.get("stretch_x",1.)))),
+                             "stretch": max(0.1, min(10.0, float(raw.get("stretch", 1.0)))), "rotate": max(-180.0, min(180.0, float(raw.get("rotate", 0.0)))),
                              "flip": bool(raw.get("flip", False)), "opacity": max(0.05, min(1.0, float(raw.get("opacity", 1.0)))),
                              **({"entrance": raw["entrance"]} if raw.get("entrance") in show_scenes.ENTRANCES else {}),
                              **({"voice_mode": "mine"} if raw.get("voice_mode") == "mine" else {}),
@@ -3143,6 +3431,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         app's recurring shelves, the flyer library and Einstein's images. The painters' own
         caches are listed hidden; other projects' libraries are listed apart."""
         from core import show_library
+        from core.media_names import coded, readable
         items = []
         try:
             recurring = show_library.recurring_root()
@@ -3197,6 +3486,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             item.update(origin=origin, retired=not show_library.visible(meta, item["path"], approved, default_hidden=cache),
                         approved=item["path"] in approved)
             item["name"] = meta.get("name") or item["name"]
+            if coded(item["name"]):                      # a code is not a name: what is left, or what it is
+                kind = next((word for word in ("reference", "background", "cutout", "layer", "out", "image") if word in item["name"].lower()), "")
+                item["name"] = readable(item["name"]) or {"out": "Edited picture", "image": "Picture", "layer": "Picture layer"}.get(kind, kind.capitalize() or "Picture")
+                item["name"] = {"cutout": "Cut-out", "reference": "Reference picture", "background": "Background picture"}.get(item["name"].lower(), item["name"])
         listed_paths.update((str(project.folder), item["path"]) for item in items)
         return items
 
@@ -3441,7 +3734,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.post("/api/v1/show/voices")
     def api_show_voice_upload() -> Response:
-        """A recorded or imported voice, kept small (AAC in .m4a, about 1 MB a minute, not WAV's 6)."""
+        """A recorded or imported voice, stored as MP3 without retaining the uploaded container."""
         import uuid
         from core import show_clips
         from core.project import atomic_write_json
@@ -3457,15 +3750,21 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         folder = project.folder / "assets" / "show-voices"
         folder.mkdir(parents=True, exist_ok=True)
         key = uuid.uuid4().hex
-        raw, target = folder / f"{key}.upload", folder / f"{key}.m4a"
+        raw, target = folder / f"{key}.upload", folder / f"{key}.mp3"
         raw.write_bytes(payload)
         try:
             tools = tool_status()
             ffmpeg = str(tools.get("ffmpeg_path") or "ffmpeg")
             subprocess.run([ffmpeg, "-v", "error", "-y", "-i", str(raw), "-map", "0:a:0", "-t", "180", "-vn",
-                            "-ac", "1", "-ar", "48000", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(target)],
+                            "-ac", "1", "-ar", "48000", "-c:a", "libmp3lame", "-b:a", "128k", str(target)],
                            capture_output=True, check=True, timeout=60)
-            duration = show_clips.length(target, str(tools.get("ffprobe_path") or "ffprobe"))
+            probe = str(tools.get("ffprobe_path") or "ffprobe")
+            duration = show_clips.length(target, probe)
+            original_duration = show_clips.length(raw, probe)
+            # MP3 container duration may include encoder padding. The speaking
+            # intervention must retain the input's timing, not add that silence.
+            if duration and original_duration and original_duration > 0:
+                duration = min(duration, original_duration, 180.)
             if not duration or duration <= 0:
                 raise ValueError("The clip has no audio")
             voice = {"source": str(target), "start": 0, "length": duration,
@@ -4021,8 +4320,20 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         folder = project.folder / "assets" / "show-library" / "yours"
         folder.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256(payload).hexdigest()
-        target = next((path for path in sorted(folder.iterdir()) if path.is_file() and path.suffix.lower() in SHOW_PICTURE_SUFFIXES
-                       and hashlib.sha256(path.read_bytes()).hexdigest() == digest), None)
+        from core import show_library
+        catalog = show_library.read_catalog(project.folder)
+        target = None
+        for path in folder.iterdir():
+            if not path.is_file() or path.suffix.lower() not in SHOW_PICTURE_SUFFIXES:
+                continue
+            stat = path.stat(); metadata = catalog.get(str(path.resolve()), {})
+            cached = metadata.get('sha256') if metadata.get('size') == stat.st_size and metadata.get('mtime_ns') == stat.st_mtime_ns else None
+            candidate = cached or hashlib.sha256(path.read_bytes()).hexdigest()
+            if not cached:
+                _catalog_picture(project, path, sha256=candidate, size=stat.st_size, mtime_ns=stat.st_mtime_ns)
+            if candidate == digest:
+                target = path
+                break
         if target is None:
             stem = re.sub(r"[^\w .-]+", "", Path(filename).stem).strip()[:60] or "picture"
             target = unique_destination(folder / f"{stem}{Path(filename).suffix.lower()}")
@@ -4033,7 +4344,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             # Cut out: a real share of it is see-through (not just a few soft corners).
             cut = cut_out or bool(alpha is not None and sum(alpha.point(lambda v: 255 if v < 250 else 0).histogram()[255:]) > 0.01 * width * height)
         name = re.sub(r"[_-]+", " ", target.stem).strip().capitalize()
-        _catalog_picture(project, target, name=name, origin=origin, retired=False, sha256=digest, source=filename)
+        _catalog_picture(project, target, name=name, origin=origin, retired=False, sha256=digest, source=filename, size=target.stat().st_size, mtime_ns=target.stat().st_mtime_ns)
         return {"path": str(target.resolve()), "url": f"/api/v1/show/library/file?path={quote(str(target.resolve()))}",
                 "name": name, "cutout": cut, "width": width, "height": height}
 
@@ -4165,7 +4476,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             style = settings.get('person_style', 'person')
             scale = settings.get('person_scale', 1)
             offset = settings.get('person_offset', [0, 0])
-            if style not in ('person', 'silhouette', 'original') or not isinstance(scale, (int, float)) or not .05 <= scale <= 5.0:
+            if style not in ('person', 'silhouette', 'original') or not isinstance(scale, (int, float)) or not math.isfinite(scale) or scale <= 0:
                 raise ValueError('Choose a valid person style and size')
             if not isinstance(offset, list) or len(offset) != 2 or not all(isinstance(v,(int,float)) and math.isfinite(v) and -10 <= v <= 10 for v in offset):
                 raise ValueError('Choose a valid person position')
@@ -4244,10 +4555,51 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except (UnidentifiedImageError, OSError, SyntaxError):
             return error_response("bad_request", f"{storage.filename} is not a picture this app can read", 400)
         kept = _keep_picture(project, payload, storage.filename, origin="Your picture")
+        if not kept["cutout"]:
+            from core import show_characters
+            mask = show_characters.green_screen_mask(kept["path"])
+            if mask is None:
+                mask = show_characters.plain_screen_mask(kept["path"])     # blue, another strong colour, black
+            if mask is not None:
+                original = kept["path"]
+                with Image.open(original).convert("RGBA") as picture:
+                    import numpy as np
+                    picture.putalpha(Image.fromarray((mask * 255).astype(np.uint8)))
+                    output = io.BytesIO(); picture.save(output, "PNG")
+                kept = _keep_picture(project, output.getvalue(), f"{Path(original).stem} transparent.png", origin="Your picture · background removed", cut_out=True)
+                kept["original"] = original
         if not kept["cutout"] and kept["path"] not in picture_masks:
             from core import show_characters
             picture_masks[kept["path"]] = mask_pool.submit(show_characters.auto_mask, kept["path"])
         return jsonify(kept)
+
+    @app.post("/api/v1/show/library/pictures/edited-copy")
+    def api_show_picture_edited_copy():
+        from PIL import Image
+        from core.show_geometry import validate_crop
+        project=_require_project(state);body=request.get_json(silent=True) or {}
+        raw=str(Path(str(body.get('path') or '')).resolve())
+        if raw not in {item['path'] for item in _show_library_items(project)}:
+            return error_response('bad_request','Choose a picture from this project library',400)
+        try:
+            crop=validate_crop(body.get('crop',[0,0,0,0]));rotation=float(body.get('rotate',0))
+            if not math.isfinite(rotation):raise ValueError('Choose a finite rotation')
+            with Image.open(raw) as source:image=source.convert('RGBA')
+            w,h=image.size;l,t,r,b=crop
+            image=image.crop((round(l*w),round(t*h),round((1-r)*w),round((1-b)*h)))
+            sx,sy=float(body.get('stretch_x',1)),float(body.get('stretch',1))
+            opacity=float(body.get('opacity',1))
+            if not all(math.isfinite(v) for v in (sx,sy,opacity)) or not .1<=sx<=10 or not .1<=sy<=10 or not 0<=opacity<=1:
+                raise ValueError('Choose valid shape and opacity settings')
+            target=(max(1,round(image.width*sx)),max(1,round(image.height*sy)))
+            factor=min(1.,4096/max(target));target=tuple(max(1,round(v*factor)) for v in target)
+            image=image.resize(target,Image.Resampling.LANCZOS)
+            if body.get('flip'):image=image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+            image.putalpha(image.getchannel('A').point(lambda a:round(a*opacity)))
+            image=image.rotate(-rotation,resample=Image.Resampling.BICUBIC,expand=True)
+            out=io.BytesIO();image.save(out,format='PNG')
+            return jsonify(_keep_picture(project,out.getvalue(),Path(raw).stem+'-edited.png',origin='Your edited picture',cut_out=True)),201
+        except (ValueError,TypeError,OSError) as exc:return error_response('bad_request',str(exc),400)
 
     @app.post("/api/v1/show/library/pictures/cutout")
     def api_show_library_cutout() -> Response:
@@ -4261,7 +4613,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         waiting = picture_masks.pop(raw, None)
         mask, method = waiting.result() if waiting is not None else show_characters.auto_mask(raw)
         try:
-            picture, _box = show_characters.cutout(raw, mask)
+            if (request.get_json(silent=True) or {}).get("keep_canvas"):
+                from PIL import Image
+                import numpy as np
+                picture = Image.open(raw).convert("RGBA")
+                original_alpha = np.asarray(picture)[..., 3] / 255.
+                picture.putalpha(Image.fromarray((np.minimum(mask, original_alpha) * 255).astype(np.uint8)))
+            else:
+                picture, _box = show_characters.cutout(raw, mask)
         except ValueError as exc:
             return error_response("cutout_failed", str(exc), 422)
         buffer = io.BytesIO()
@@ -4285,7 +4644,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.get("/api/v1/show/library/file")
     def api_show_library_file() -> Response:
         project = _require_project(state)
-        raw = str(request.args.get("path") or "")
+        raw = str(Path(str(request.args.get("path") or "")).resolve())
         if (str(project.folder), raw) not in listed_paths:
             known = {item["path"] for item in _show_library_items(project)}
             if raw not in known and raw not in {item["path"] for item in _other_library_items(project)}:
@@ -4302,6 +4661,71 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         response.headers["Content-Disposition"] = "attachment; filename=show-storyboard.json"
         return response
 
+    def _with_shown(project: Project, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Copies of the effects with params.shown = [x, y, width]: where the render draws each
+        picture, so the live view puts it in the same place (not saved)."""
+        from PIL import Image
+        from core.gags import placement
+        try:
+            shots = json.loads((project.artifacts_dir / "show_plan.json").read_text(encoding="utf-8")).get("shots") or []
+        except (OSError, ValueError):
+            shots = []
+        face = "right" if sum((shot.get("focus") or [0.5])[0] for shot in shots) / max(1, len(shots)) >= 0.5 else "left"
+        out = []
+        from core.media_names import clip_name, coded
+        labels = {"clip": "Clip", "jingle": "Audio", "background": "Background", "steam": "Texture"}
+        library_names = None
+        for item in items:
+            params = item.get("params") or {}
+            if item.get("kind") in labels and (not params.get("name") or coded(str(params.get("name")))):
+                # The timeline shows what each clip is (its title, the file it came from, its words),
+                # not "Video clip" on every row.
+                if library_names is None:
+                    try:
+                        from core import show_video_assets           # read only: the names given at import
+                        library_names = {str(record.get("path")): record.get("name") for record in show_video_assets.catalog(project).values()
+                                         if record.get("name") and not coded(str(record.get("name")))}
+                    except Exception:
+                        library_names = {}
+                media = str(params.get("clip") or params.get("source") or params.get("path") or "")
+                name = library_names.get(media) or clip_name(params, kind_label=labels[item["kind"]])
+                if name == labels[item["kind"]]:
+                    at = float(item.get("at") or 0)
+                    name = f"{name} at {int(at // 60)}:{int(at % 60):02d}"
+                params = {**params, "name": name}
+                item = {**item, "params": params}
+            if item.get("kind") in ("drawing", "word") and params.get("picture"):
+                try:
+                    with Image.open(params["picture"]) as picture:
+                        size = picture.size
+                    item = {**item, "params": {**params, "shown": list(placement(params, size, face))}}
+                except (OSError, ValueError):
+                    pass
+            out.append(item)
+        return out
+
+    def _link_named_photos(project: Project, proposals: list[dict[str, Any]]) -> bool:
+        """A library picture the director named ("photo") gets its file linked, once, like a
+        picture you chose: the live view then shows it where the render puts it, and it can be
+        moved, resized or replaced. Only an exact name is linked (never a look-alike)."""
+        from core.gag_library import named_picture
+        changed = False
+        for item in proposals:
+            params = item["params"]
+            if item["kind"] != "drawing" or params.get("kind") != "photo" or params.get("picture") or item["status"] == "discarded":
+                continue
+            found = named_picture(str(params.get("query") or ""))
+            if found is None:
+                continue
+            try:
+                chosen = _bring_into_project(project, str(found.resolve()))
+                path, sha = chosen["path"], chosen.get("sha256") or ""
+            except (KeyError, OSError):
+                path, sha = str(found.resolve()), ""
+            params.update(picture=path, picture_sha256=sha, image_engine=f"Your library · {found.stem}")
+            changed = True
+        return changed
+
     @app.get("/api/v1/show/review")
     def api_show_review() -> Response:
         from core import show_proposals
@@ -4313,10 +4737,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             state.wizard.adopt_show_review(project)
         except RuntimeError as exc:
             LOGGER.info("Show review not adopted: %s", exc)
-        stored = show_proposals.load(proposals_path)
+        with show_proposals.LOCK:
+            stored = show_proposals.load(proposals_path)
+            if _link_named_photos(project, stored["proposals"]):
+                show_proposals.save(proposals_path, stored["proposals"], **{key: value for key, value in stored.items() if key not in ("proposals", "version")})
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
         for item in stored["proposals"]:
             item["needs"] = show_proposals.check(item)
+        stored = {**stored, "proposals": _with_shown(project, stored["proposals"])}
         return jsonify({**stored, "plan": {"edited_duration": plan["edited_duration"], "cuts": plan["cuts"], "source": plan["source"],
                                            "framing": plan.get("framing"), "language": plan.get("language")}})
 
@@ -4328,15 +4756,25 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         proposals_path, _ = _show_review_files(project)
         body = request.get_json(silent=True) or {}
         stored = show_proposals.load(proposals_path)
-        allowed = {"status", "at", "duration", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action", "clip_audio", "audio_mode",
+        allowed = {"status", "at", "duration", "start", "source", "source_start", "zoom", "focus", "still_time", "zoom_sec", "region", "action", "clip_audio", "audio_mode",
                    "amount", "offset", "voice", "hold", "subject", "text", "style", "position", "size", "effect", "warp", "point", "anchor", "scale",
                    "density", "strength", "rise", "colour", "texture", "font", "bold", "italic",
-                   "entrance", "prompt", "picture", "selected_text", "image_center", "intensity", "follow_anchor", "follow_template", "follow_seconds", "follow_place", "person_scale", "person_offset", "brightness", "saturation", "hue"}
+                   "entrance", "prompt", "picture", "selected_text", "image_center", "intensity", "speed", "follow_anchor", "follow_template", "follow_seconds", "follow_place", "person_scale", "person_offset", "brightness", "saturation", "hue", "crop", "pan", "stretch", "stretch_x", "rotate"}
         changes = {key: value for key, value in body.items() if key in allowed}
         # All storyboard tools share the edited clock. Reject impossible placements
         # instead of silently accepting an image beyond its owning scene.
         try:
             current = next(p for p in stored["proposals"] if p["id"] == proposal_id)
+            if 'start' in changes and (current['kind']!='jingle' or not math.isfinite(float(changes['start'])) or float(changes['start'])<0):raise ValueError('Choose a valid audio source position')
+            if 'crop' in changes:
+                from core.show_geometry import validate_crop
+                changes['crop']=validate_crop(changes['crop'])
+            if 'pan' in changes:
+                v=changes['pan']
+                if not isinstance(v,list) or len(v)!=2 or not all(math.isfinite(float(x)) and -2<=float(x)<=2 for x in v):raise ValueError('Choose a valid image pan')
+            if 'rotate' in changes and (not math.isfinite(float(changes['rotate'])) or not -180<=float(changes['rotate'])<=180):raise ValueError('Choose a valid rotation')
+            for name in ('stretch','stretch_x'):
+                if name in changes and (not math.isfinite(float(changes[name])) or not .1<=float(changes[name])<=10):raise ValueError('Choose a valid image stretch')
             if 'follow_template' in changes:
                 path=Path(str(changes['follow_template']))
                 if not path.is_file() or not path.resolve().is_relative_to((project.folder/'assets/tracking').resolve()):raise ValueError('Choose a saved tracking template from this project')
@@ -4347,7 +4785,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if 'follow_anchor' in changes:
                 from core.show_follow import validate_anchor
                 changes['follow_anchor']=validate_anchor(changes['follow_anchor'])
-            for field,lo,hi in [('brightness',0.,3.),('saturation',0.,3.),('hue',-180.,180.),('person_scale',.05,5.)]:
+            for field,lo,hi in [('brightness',0.,3.),('saturation',0.,3.),('hue',-180.,180.),('person_scale',.0001,float('inf'))]:
                 if field in changes and (not math.isfinite(float(changes[field])) or not lo<=float(changes[field])<=hi):raise ValueError('Choose a valid '+field)
             if 'person_offset' in changes:
                 v=changes['person_offset']
@@ -4387,6 +4825,24 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 raise ValueError("Bold and italic are on or off")
             if "audio_mode" in changes and changes["audio_mode"] not in ("own","mix","mute"):
                 raise ValueError("Choose mixed, own sound or mute")
+            if "speed" in changes:
+                speed = changes["speed"]
+                if current["kind"] != "clip" or not (isinstance(speed, (int, float)) and not isinstance(speed, bool) and 0.1 <= speed <= 2.0):
+                    raise ValueError("Choose a speed between 10 % and 200 % for a video clip")
+                # The same seconds of the clip, faster or slower: its bar gets shorter or longer.
+                old_speed = float(current["params"].get("speed") or 1.0)
+                if "duration" not in changes and current["duration"] > 0:
+                    changes["duration"] = round(current["duration"] * old_speed / float(speed), 3)
+                    scene_path = _scene_files(project)
+                    if scene_path.is_file():
+                        from core import show_scenes
+                        owner = next((s for s in show_scenes.load(scene_path)["scenes"] if proposal_id in s["effects"]), None)
+                        if owner:
+                            changes["duration"] = round(min(changes["duration"], owner["end"] - float(changes.get("at", current["at"]))), 3)
+            if "action" in changes and current["kind"] in ("drawing", "word"):
+                from core.show_scenes import ACTIONS
+                if changes["action"] not in ACTIONS or changes["action"] in ("talk", "look", "path"):
+                    raise ValueError("Choose one of the movements")
             if "clip_audio" in changes and not isinstance(changes["clip_audio"], bool):
                 raise ValueError("Choose whether the clip plays its own sound")
             if "selected_text" in changes and (not isinstance(changes["selected_text"], str) or len(changes["selected_text"]) > 400):
@@ -4405,6 +4861,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         try:
             if current['kind']=='clip' and ('duration' in changes or 'at' in changes):
                 maximum=float(current['params']['clip_length'])-float(current['params'].get('clip_start') or 0)
+                maximum/=float(changes.get('speed',current['params'].get('speed') or 1.))       # slow motion makes the same footage last longer
                 if not current['params'].get('texture_footage') and float(changes.get('duration',current['duration']))>maximum+.001:raise ValueError('This extends past the downloaded clip; reopen Clip settings to choose more source footage')
             item = show_proposals.update(stored["proposals"], proposal_id, **changes)
         except KeyError:
@@ -4416,7 +4873,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             from core.show_video_assets import remember
             remember(project,item)
         _effect_changed(project, proposal_id)
-        return jsonify(item)
+        return jsonify(_with_shown(project, [item])[0])
 
     @app.post("/api/v1/show/review/<proposal_id>/piece")
     @_proposals_locked

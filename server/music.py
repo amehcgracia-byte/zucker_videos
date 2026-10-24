@@ -62,6 +62,31 @@ def register_music_routes(app,state):
             metadata={k:v for k,v in r.items() if k not in ('preview','download','id')};metadata['origin_id']=r['id']
             return jsonify(music_library.import_audio(io.BytesIO(data),r['name']+'.mp3',metadata)),201
         except Exception as exc:return fail(exc)
+    @app.post('/api/v1/music/place/<track_id>')
+    def place(track_id):
+        from core import show_scenes,show_proposals
+        try:
+            p=current();body=request.get_json(silent=True) or {}
+            with show_proposals.LOCK:
+                scene_path=p.artifacts_dir/'show_scenes.json';doc=show_scenes.load(scene_path)
+                scene=next((s for s in doc['scenes'] if s['id']==body.get('scene_id')),None)
+                if scene is None:raise ValueError('Open a Show scene first')
+                import math
+                at=float(body.get('at',scene['start']));duration=float(body.get('duration',3))
+                if not math.isfinite(at+duration) or at<scene['start'] or duration<=0 or at>=scene['end']:raise ValueError('Place this audio inside the current scene')
+                track=music_library.project_tracks(p,[track_id])[track_id]
+                duration=min(duration,float(track['duration']),scene['end']-at)
+                item=show_proposals.proposal('jingle',at,duration,reason='Chosen from music library',path=track['path'],start=0.,volume=.7,duck=1.,under_voice=True,name=track['name'],selected_text=str(body.get('text',''))[:200])
+                item['status']='approved'
+                path=p.artifacts_dir/'show_proposals.json';stored=show_proposals.load(path);stored['proposals'].append(item)
+                stored.setdefault('resources',[]).append({'path':track['path'],'kind':'audio','duration':track['duration'],'speech':[],'intervals':[],'origin':'Music library'})
+                show_proposals.save(path,stored['proposals'],**{k:v for k,v in stored.items() if k not in ('proposals','version')})
+                show_scenes.attach(doc,item);scene['decision']='modified';scene.pop('preview',None);show_scenes.save(scene_path,doc)
+                credits=p.folder/'credits.txt';line=track.get('attribution') or track['name']+' — '+track.get('license','User supplied')
+                old=credits.read_text() if credits.is_file() else ''
+                if line not in old:credits.write_text(old.rstrip()+'\n'+line+'\n')
+            return jsonify(proposal=item,reference={'scene_id':scene['id'],'selected_text':body.get('text','')}),201
+        except (ValueError,TypeError,KeyError) as exc:return fail(exc)
     @app.get('/api/v1/music/plan')
     def get_plan():
         try:

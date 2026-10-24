@@ -507,9 +507,12 @@ def test_wizard_start_after_relaunch_starts_existing_project_from_scratch(tmp_pa
     assert response.get_json()["project_path"] == str(folder.resolve())
 
 
-def test_wizard_prepare_adopts_matching_project_from_disk_without_suffix_copy(tmp_path, monkeypatch):
+def test_wizard_prepare_starts_new_run_without_reusing_a_matching_project(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     projects_root = tmp_path / "ZuckerVideos" / "Projects"
+    # Saved storage preferences can point outside HOME. Discovery in this test
+    # must use its fixture root, never the developer's real project library.
+    monkeypatch.setattr("server.projects.project_locations", lambda: [projects_root])
     folder = projects_root / "Jam.zuckervid"
     project = create_project("Jam", str(folder))
     master = tmp_path / "master.wav"
@@ -531,6 +534,14 @@ def test_wizard_prepare_adopts_matching_project_from_disk_without_suffix_copy(tm
     project.data["stages"]["sync"]["outputs"] = {"sync_map": str(sync_map)}
     project.save()
 
+    from server.wizard import WizardJob
+    def prepare_new(runner, **options):
+        assert runner._prepared_project is None
+        assert options['master_path'] == str(master)
+        assert options['video_paths'] == [str(video)]
+        return WizardJob(id='fixture-run', status='running')
+    monkeypatch.setattr('server.wizard.WizardRunner.prepare', prepare_new)
+
     app = create_app()
     client = app.test_client()
 
@@ -538,8 +549,9 @@ def test_wizard_prepare_adopts_matching_project_from_disk_without_suffix_copy(tm
 
     assert response.status_code == 202
     payload = response.get_json()
-    assert payload["status"] == "waiting_choice"
-    assert payload["project_path"] == str(folder.resolve())
+    assert payload["status"] == "running"
+    assert payload["project_path"] is None
+    assert load_project(str(folder)).data["stages"]["sync"]["status"] == "done"
     assert not (projects_root / "Jam-2.zuckervid").exists()
 
 

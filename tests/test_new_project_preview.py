@@ -20,7 +20,7 @@ def test_new_project_registers_inputs_before_360_preview():
 def test_build_version_is_current():
     import re
     from core.build_info import APP_VERSION
-    assert re.fullmatch(r"\d+\.\d+\.\d", APP_VERSION)
+    assert re.fullmatch(r"\d+\.\d+\.\d+", APP_VERSION)
 
 
 def test_retry_after_failure_keeps_the_cut_so_rendered_segments_are_reused():
