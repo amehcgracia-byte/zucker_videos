@@ -95,7 +95,7 @@ def _review_segment(project: Project, segment: dict[str, Any]) -> dict[str, Any]
     shot_type = str(shot.get("shot_id") or shot.get("type") or "")
     source_path = str(segment.get("source_path") or segment.get("spherical_source_path") or segment.get("clip_path") or "").strip()
     saved = _current_spherical_landmarks(project, source_path).get(shot_type)
-    if not saved or not shot:
+    if segment.get("manual_view") or not saved or not shot:
         return dict(segment)
     effective = dict(shot)
     for field in ("yaw", "pitch", "fov", "roll", "projection_preset", "projection_control", "weight"):

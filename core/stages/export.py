@@ -2077,6 +2077,9 @@ def _apply_saved_spherical_landmarks(project: Project, segments: list[dict[str, 
     result: list[dict[str, Any]] = []
     for segment in segments:
         current = dict(segment)
+        if current.get("manual_view"):
+            result.append(current)
+            continue
         shot = dict(current.get("spherical_shot") or {})
         shot_type = str(shot.get("shot_id") or shot.get("type") or "").strip()
         # Authoring profiles are keyed by the registered/original source path.

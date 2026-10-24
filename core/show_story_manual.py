@@ -32,7 +32,7 @@ def render_plan(project, plan, progress=lambda *args:None, cancel=lambda:None):
             index=by_path[picture['path']];resource=resources[index]
             start=float(picture.get('start',0));end=float(picture.get('end',resource['duration']))
             if not math.isfinite(start+end) or start<0 or end<=start or end>resource['duration']+.12:raise ValueError('Story source interval is outside its clip')
-            resource['intervals'].append({'start':start,'end':min(end,resource['duration'])});chosen.append((index,len(resource['intervals'])-1))
+            resource['intervals'].append({'start':start,'end':min(end,resource['duration']),**{k:picture[k] for k in ('pad_before','pad_after','keep_speed') if k in picture}});chosen.append((index,len(resource['intervals'])-1))
         picks.append(chosen)
     out=Path(plan['program']);out.parent.mkdir(parents=True,exist_ok=True)
     return show_story.render(Path(plan['narration']),plan['moments'],picks,resources,out,ffmpeg,width=int(plan.get('render_width') or 1280),height=int(plan.get('render_height') or 720),progress=lambda share:progress(20+int(share*32),'Rendering the reviewed Story plan'),cancel=cancel)

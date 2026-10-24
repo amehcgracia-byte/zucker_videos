@@ -7,7 +7,9 @@ from flask import jsonify,request
 def register_program_review(app, project, invalidate):
     from core import show_podcast as podcast, show_review_history as history
     from core.project import atomic_write_json
-    jobs={};lock=threading.RLock()
+    from server.edit_timeline import LOCK
+    jobs={};lock=LOCK
+    app.config["MONTARA_PROGRAM_BUSY"]=lambda p,kind:jobs.get(str(p.folder)+("story" if kind=="story" else ""),{}).get("status")=="running"
     def snapshot(p):
         data=podcast.load_setup(p)
         return {**data,'revision':int(data.get('revision',0)),'views':[asdict(v) for v in podcast.views(data.get('cameras') or [],len(data.get('people') or []))],'project_id':str(p.folder)}

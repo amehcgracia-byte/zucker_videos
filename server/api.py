@@ -3238,6 +3238,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if path.is_file():
             for scene in show_scenes.load(path).get('scenes',[]):_invalidate_scene(project,scene['id'])
     register_program_review(app,lambda:_require_project(state),_invalidate_program_review)
+    from server.edit_timeline import register_edit_timeline
+    register_edit_timeline(app,lambda:_require_project(state),_invalidate_program_review)
+    app.config["MONTARA_EDIT_BUSY"]=lambda:state.wizard.status().get("status") in {"running","cancelling"}
 
     # ---- Storytelling: the narration and the pictures it is told over --------------------
     @app.get("/api/v1/show/story")
@@ -3417,6 +3420,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("stale_project", "Reopen the narrator track in the current project", 409)
         _, plan_path = _show_review_files(project)
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        if body.get("revision") is not None:
+            from server.edit_timeline import revision
+            if body["revision"] != revision(plan):return error_response("stale_edit", "The edit changed; reopen this shot", 409)
         before = json.loads(json.dumps(plan))
         undo = project.artifacts_dir / "show_plan_undo.json"
         op = str(body.get("op") or "")

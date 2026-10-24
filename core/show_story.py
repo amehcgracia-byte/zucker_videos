@@ -90,9 +90,14 @@ def _piece(resource: dict[str, Any], interval: dict[str, Any], length: float, ou
         start, end = float(interval["start"]), float(interval["end"])
         available = max(0.2, end - start)
         speed = max(SLOWEST, min(1.0, available / length))
-        command = [ffmpeg, "-v", "error", "-y", "-nostdin", "-ss", f"{start:.3f}", "-i", str(resource["path"]), "-an",
-                   "-frames:v", str(frames),
-                   "-vf", f"setpts=PTS/{speed:.4f},{fit},fps={fps},tpad=stop_mode=clone:stop_duration={length + 1:.2f},format=yuv420p"]
+        if interval.get('keep_speed'):
+            # Boundary rolls preserve interview lips/audio. Missing handles hold the edge frame.
+            before=max(0.,float(interval.get('pad_before',0)))
+            command=[ffmpeg,"-v","error","-y","-nostdin","-ss",f"{start:.6f}","-i",str(resource['path']),"-an","-frames:v",str(frames),"-vf",f"trim=duration={end-start:.6f},setpts=PTS-STARTPTS,{fit},fps={fps},tpad=start_mode=clone:start_duration={before:.6f}:stop_mode=clone:stop_duration={length+1:.6f},format=yuv420p"]
+        else:
+            command = [ffmpeg, "-v", "error", "-y", "-nostdin", "-ss", f"{start:.3f}", "-i", str(resource["path"]), "-an",
+                       "-frames:v", str(frames),
+                       "-vf", f"setpts=PTS/{speed:.4f},{fit},fps={fps},tpad=stop_mode=clone:stop_duration={length + 1:.2f},format=yuv420p"]
     subprocess.run([*command, "-r", str(fps), "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-threads", "2", str(output)],
                    check=True, capture_output=True)
     return output
