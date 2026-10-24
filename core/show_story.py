@@ -192,6 +192,10 @@ def build(project, *, progress: Callable[[int, str], None], cancel: Callable[[],
     moments = beats(english, duration)
     for moment in moments:                                  # what was said, in its own language
         moment["original"] = " ".join(w["text"] for w in words if moment["start"] <= (w["start"] + w["end"]) / 2 < moment["end"])
+    import hashlib
+    # In an order unrelated to the files' names: material cut from an edit is numbered in that
+    # edit's order, and the editor must decide from what the clips show, not from their numbers.
+    material.sort(key=lambda path: hashlib.sha1(str(path).encode()).hexdigest())
     resources = []
     for index, path in enumerate(material):
         cancel()
