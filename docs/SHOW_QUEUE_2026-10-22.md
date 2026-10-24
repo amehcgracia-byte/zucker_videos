@@ -25,5 +25,5 @@ Branch `claude/show-1022`, on top of 2.6.16 (`claude/show-after-44`, PR #45).
 - The "next, next… lottery" mode (a half-made edit with pictures and voices already generated).
 - The edits made to «La prueba» after 19 October (kanji clips in scene 10) need redoing; the clips are in its library.
 - Freesound originals (only previews download today).
-- Windows: the package passes its self-test; the interface was not walked through on Windows.
-- The general fast CI remains red: latest complete run 39717899980 at 1cefcf6d has 24 failures / 1201 passing. Slow tests: 16 passing. Individual 360 contract review is in progress; do not treat all remaining failures as obsolete. PR #45 is merged; PR #44 remains open.
+- Windows: the package passes its earlier self-test; the new source audit stopped on a reproduced concurrent review-cache PermissionError before the UI journeys. Correction tested locally, remote confirmation pending. macOS completed five synthetic UI/render journeys at 7ce5a4ce; native dialogs and private footage remain separate checks.
+- The general fast CI remains red: latest complete run 39915963325 at 7ce5a4ce has 22 failures / 1207 passing. Individual 360 contract review is in progress; do not treat all remaining failures as obsolete. PR #45 is merged; PR #44 remains open. New PRs #46/#47 have been identified, not integrated here.
