@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -112,7 +113,7 @@ def render(narration: Path, moments: list[dict[str, Any]], picks: list[Any], res
            progress: Callable[[float], None] | None = None, cancel: Callable[[], None] | None = None) -> Path:
     """The program: each moment's pictures (one, or a few one after the other), back to back,
     under the narration. ``picks``: per moment a (resource, interval), a list of them, or None."""
-    work = output.with_name(f".{output.stem}-pieces")
+    work = output.with_name(f".{output.stem}-pieces-{uuid.uuid4().hex[:8]}")  # its own: two makings never share pieces
     work.mkdir(parents=True, exist_ok=True)
     pieces = []
     for index, (moment, pick) in enumerate(zip(moments, picks)):
@@ -221,7 +222,8 @@ def build(project, *, progress: Callable[[int, str], None], cancel: Callable[[],
             for i, pick in zip(empty, fallback):
                 picks[i] = [pick] if pick else []
     except Exception as exc:  # no Claude: picture matching (CLIP)
-        progress(40, f"Choosing a picture for each of {len(moments)} moments (picture matching: {str(exc)[:80]})")
+        reason = ("your Claude reached its usage limit" if "limit" in str(exc).lower() else str(exc)[:80])
+        progress(40, f"Choosing a picture for each of {len(moments)} moments by picture matching ({reason})")
         picks = choose(moments, resources)
     folder = project.folder / "assets" / "story"
     folder.mkdir(parents=True, exist_ok=True)

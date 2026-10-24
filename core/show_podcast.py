@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import math
 import subprocess
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -468,7 +469,7 @@ def render(setup: dict[str, Any], shots: list[dict[str, Any]], audio: np.ndarray
     from core.ffmpeg import h264_args
     cameras = setup["cameras"]
     every = views(cameras, len(setup["people"]))
-    work = output.with_name(f".{output.stem}-shots")
+    work = output.with_name(f".{output.stem}-shots-{uuid.uuid4().hex[:8]}")  # its own: two makings never share pieces
     work.mkdir(parents=True, exist_ok=True)
     pieces: list[Path] = []
     for index, shot in enumerate(shots):
