@@ -38,6 +38,9 @@ jobs:
           python -m playwright install chromium
       - name: Test updated scoring, damaged media and UI contracts
         run: python -m pytest -q tests/test_filter_escaping.py tests/test_probe_store.py tests/test_captions.py tests/test_caption_paths.py tests/test_settings_handoff.py tests/test_shot_quality_speed.py tests/test_media_integrity.py tests/test_new_project_preview.py tests/test_reel_framing.py tests/test_review_hardware_decode.py tests/test_desktop_logging.py tests/test_export.py::test_reel_scale_overlay_expression_runs_with_ffmpeg --junitxml=qa-results/regressions.xml
+      - name: Verify Show tracking, layers, audio, captions and Clay
+        if: ${{ !cancelled() }}
+        run: python -m pytest -q tests/test_show_follow_controls.py tests/test_show_follow_selection.py tests/test_show_backgrounds.py tests/test_show_pixel_layers.py tests/test_show_audio.py tests/test_show_audio_entry.py tests/test_show_caption_layout.py tests/test_show_clay.py tests/test_show_library_editor.py tests/test_show_preview_transport.py --junitxml=qa-results/show-regressions.xml
       - name: Exercise youtube through the UI
         if: ${{ !cancelled() }}
         id: journey_youtube
@@ -120,5 +123,7 @@ jobs:
         if: always()
         with:
           name: application-audit-${{ matrix.os }}-regressions
-          path: qa-results/regressions.xml
+          path: |
+            qa-results/regressions.xml
+            qa-results/show-regressions.xml
           retention-days: 7
