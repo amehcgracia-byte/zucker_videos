@@ -4,7 +4,7 @@ import subprocess
 
 
 def test_follow_selection_pauses_and_records_its_owner():
-    source=Path('web/show_review.js').read_text()
+    source=Path('web/show_review.js').read_text(encoding="utf-8")
     start=source.index('  document.addEventListener("pointerdown", (event) => {',source.index('  function steamSave('))
     end=source.index('  document.addEventListener("pointermove"',start)
     handler=source[start:end]

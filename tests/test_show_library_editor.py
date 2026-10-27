@@ -4,7 +4,7 @@ import subprocess
 
 
 def test_library_media_editor_targets_saved_piece_and_preserves_selected_timing():
-    source = Path('web/show_review.js').read_text()
+    source = Path('web/show_review.js').read_text(encoding="utf-8")
     handler = source[source.index('  async function placeLibraryMedia('):source.index('  async function addLibraryFiles(')]
     program = r'''
 const assert=require('node:assert/strict');
@@ -32,7 +32,7 @@ assert.equal(added.id,'persisted');assert.equal(closed,2);
 
 
 def test_library_picture_editor_receives_persisted_overlay_only():
-    source=Path('web/show_review.js').read_text()
+    source=Path('web/show_review.js').read_text(encoding="utf-8")
     handler=source[source.index('  async function addToScene('):source.index('  // The Show editing desk')]
     program=r'''
 const assert=require('node:assert/strict');

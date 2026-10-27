@@ -4,7 +4,7 @@ import subprocess
 
 
 def test_loading_effects_does_not_treat_the_old_sources_pause_as_a_user_pause():
-    script=Path('web/show_review.js').read_text()
+    script=Path('web/show_review.js').read_text(encoding="utf-8")
     play=script[script.index('  function playScene()'):script.index('  function stepVideo(')]
     pause=script[script.index('  $("#showStageVideo").addEventListener("pause"'):script.index('  // Seconds into the scene\'s edit')]
     program='''
@@ -29,7 +29,7 @@ assert.deepEqual(switches,[true,false]);
 
 
 def test_background_preview_updates_live_view_but_discards_responses_from_before_an_edit():
-    script=Path('web/show_review.js').read_text()
+    script=Path('web/show_review.js').read_text(encoding="utf-8")
     refresh=script[script.index('  async function refreshLivePreview('):script.index('  function showScenePicture(')]
     program='''
 const assert=require('node:assert/strict');
@@ -55,7 +55,7 @@ assert.equal(scene.preview.url,'new.mp4','stale response cannot replace current 
 def test_a_ready_preview_reaches_the_current_scene_after_the_board_was_reloaded():
     # refreshBoard replaces the scene objects; the editor's watcher must not keep writing on the
     # old copy, or Play scene (which reads the current scene) never sees the effects as ready.
-    script=Path('web/show_review.js').read_text()
+    script=Path('web/show_review.js').read_text(encoding="utf-8")
     watch=script[script.index('  async function watchEditorEffects('):script.index('  $("#showStageVideo").addEventListener("pause"')]
     program='''
 const assert=require('node:assert/strict');
@@ -76,7 +76,7 @@ watchEditorEffects(old).then(()=>{
 
 
 def test_failed_preview_request_keeps_saved_edits_and_source_playback_available():
-    script=Path('web/show_review.js').read_text()
+    script=Path('web/show_review.js').read_text(encoding="utf-8")
     request=script[script.index('  async function requestScenePreview('):script.index('  async function decideScene(')]
     program="""
 const assert=require('node:assert/strict');
@@ -95,7 +95,7 @@ assert.match(label.textContent,/edits are saved/);assert.match(label.textContent
 
 
 def test_cold_source_does_not_pause_before_metadata_has_arrived():
-    script=Path('web/show_review.js').read_text()
+    script=Path('web/show_review.js').read_text(encoding="utf-8")
     play=script[script.index('  function playQuick('):script.index('  // ---- The scene editor plays')]
     program="""
 const assert=require('node:assert/strict');
@@ -120,7 +120,7 @@ video.currentTime=6;frame();assert.equal(pauses,1,'real end still pauses');
 
 
 def test_clay_preview_uses_scene_composition_instead_of_a_nonexistent_proposal():
-    script=Path('web/show_review.js').read_text()
+    script=Path('web/show_review.js').read_text(encoding="utf-8")
     start=script.index('        const item=timelineItem(target.dataset.showPreview);')
     branch=script[start:script.index('        target.disabled=true;',start)]
     program='''

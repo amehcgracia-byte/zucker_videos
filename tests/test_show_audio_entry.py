@@ -4,10 +4,10 @@ import subprocess
 
 
 def test_common_audio_editor_opens_mixer_and_focuses_the_selected_track():
-    review=Path('web/show_review.js').read_text()
+    review=Path('web/show_review.js').read_text(encoding="utf-8")
     start=review.index('  function editMedia(item) {')
     dispatch=review[start:review.index('    selectedEffect=item.id;',start)]+'\n}'
-    audio=Path('web/show_audio.js').read_text()
+    audio=Path('web/show_audio.js').read_text(encoding="utf-8")
     start=audio.index('  async function open(')
     opening=audio[start:audio.index('  async function save(',start)]
     program=r'''
