@@ -2186,7 +2186,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         caption_cues = show_caption_layout.apply(edited_captions(plan, plan.get("style") or "choe"), caption_layout) if plan.get("words") and captions_on else []
         from core.show import scene_preview_notes, scene_preview_ready
         reference_path = project.artifacts_dir / "show_references.json"
-        references = json.loads(reference_path.read_text()) if reference_path.is_file() else []
+        references = json.loads(reference_path.read_text(encoding="utf-8")) if reference_path.is_file() else []
         with scene_lock:
             for scene in document["scenes"]:
                 made = scene_preview_ready(project, scene["id"])
@@ -2196,7 +2196,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                                     else known if known.get("status") in ("queued", "rendering", "failed") else {"status": "none"})
                 if made:
                     try:
-                        scene['preview']['inserted'] = json.loads(made.with_suffix('.json').read_text()).get('inserted') or []
+                        scene['preview']['inserted'] = json.loads(made.with_suffix('.json').read_text(encoding="utf-8")).get('inserted') or []
                     except (OSError, ValueError):
                         scene['preview']['inserted'] = []
                 scene["segments"] = scene_segments(plan, float(scene["start"]), float(scene["end"])) if plan.get("shots") else []
@@ -2205,7 +2205,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 scene["references"] = [ref for ref in references if ref.get("scene_id") == scene["id"]]
         wizard = project.data.get("settings", {}).get("wizard", {})
         logo = Path(str(wizard.get("reel_logo_path") or ""))
-        try:resume_scene=json.loads((project.artifacts_dir/'show_resume.json').read_text())['scene_id']
+        try:resume_scene=json.loads((project.artifacts_dir/'show_resume.json').read_text(encoding="utf-8"))['scene_id']
         except (OSError,ValueError,KeyError):resume_scene=document.get('resume_scene')
         return jsonify({**document, "resume_scene":resume_scene, "proposals": _with_shown(project, stored["proposals"]), "resources": stored.get("resources") or [], "source": stored.get("source"),
                         "project_logo": str(logo) if logo.is_file() else None,
@@ -2234,7 +2234,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         _, plan_path = _show_review_files(project)
         if not plan_path.is_file():
             return error_response('not_ready', 'Prepare a Show first', 409)
-        plan = json.loads(plan_path.read_text())
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
         try:
             cues = show_caption_layout.apply(edited_captions(plan, plan.get('style') or 'choe'), show_caption_layout.load(project))
             data = show_caption_layout.save(project, cue_id, body.get('changes') or {}, body.get('revision', -1), cues)
@@ -2424,7 +2424,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         from core.project import atomic_write_json
         project = _require_project(state)
         reference_path = project.artifacts_dir / "show_references.json"
-        references = json.loads(reference_path.read_text()) if reference_path.is_file() else []
+        references = json.loads(reference_path.read_text(encoding="utf-8")) if reference_path.is_file() else []
         reference = next((item for item in references if item.get("id") == reference_id), None)
         if reference is None:
             return error_response("not_found", "That video reference is not in this project", 404)
@@ -2563,7 +2563,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_show_audio():
         from core import show_audio,show_proposals
         project=_require_project(state);path=project.artifacts_dir/'show_plan.json'
-        plan=json.loads(path.read_text()) if path.is_file() else {'shots':[],'words':[]}
+        plan=json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {'shots':[],'words':[]}
         plan=show_audio.attach(project,plan)
         stored=show_proposals.load(project.artifacts_dir/'show_proposals.json')
         tracks=[]
@@ -2682,12 +2682,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 ffmpeg=str(tool_status().get('ffmpeg_path') or 'ffmpeg')
                 if mode=='balance':result=show_audio.balance(project,ffmpeg,progress=lambda value:job.update(progress=value))
                 else:
-                    path=project.artifacts_dir/'show_plan.json';plan=json.loads(path.read_text())
+                    path=project.artifacts_dir/'show_plan.json';plan=json.loads(path.read_text(encoding="utf-8"))
                     source=plan['source'];result=show_audio.prepare_noise(project,Path(source),ffmpeg=ffmpeg)
                     from core import show_proposals
                     from core.project import atomic_write_json
                     with show_proposals.LOCK:
-                        plan=json.loads(path.read_text())
+                        plan=json.loads(path.read_text(encoding="utf-8"))
                         if plan.get('source')!=source:raise ValueError('The source changed during noise analysis. Analyze the new video again.')
                         plan['noise_report']=result;atomic_write_json(path,plan)
                 _audio_changed(project);job.update(status='done',progress=1,result=result)
@@ -3132,7 +3132,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if not scene or not scene["start"] <= at < end <= scene["end"]:
                 raise ValueError("Choose words inside this scene")
             _, plan_path = _show_review_files(project)
-            plan = json.loads(plan_path.read_text())
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
             root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
             place_bundled_sample(project, plan, at, end, str(body.get("mode") or "bubble"), root)
             _invalidate_scene(project, scene["id"])
@@ -3152,7 +3152,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         try:
             placements = []
             _, clay_plan_path = _show_review_files(project)
-            clay_plan=json.loads(clay_plan_path.read_text()) if clay_plan_path.is_file() else {}
+            clay_plan=json.loads(clay_plan_path.read_text(encoding="utf-8")) if clay_plan_path.is_file() else {}
             edit_length=float(clay_plan.get('edited_duration') or sum((s['end_frame']-s['start_frame'])/float(clay_plan.get('fps') or 30) for s in clay_plan.get('shots',[])))
             for raw in body.get("placements") or []:
                 if 'timeline_at' in raw and edit_length and float(raw['timeline_at'])+float(raw.get('timeline_duration',0))>edit_length+.02:
@@ -3233,7 +3233,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response('not_found','Choose a scene in this project',404)
         from core.project import atomic_write_json
         resume_path=project.artifacts_dir/'show_resume.json'
-        try:resume=json.loads(resume_path.read_text())
+        try:resume=json.loads(resume_path.read_text(encoding="utf-8"))
         except (OSError,ValueError):resume={}
         atomic_write_json(resume_path,{**resume,'scene_id':scene_id})
         return jsonify(scene_id=scene_id)
@@ -3455,7 +3455,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if ai_root.is_dir():
             for picture in ai_root.glob("*/image.png"):
                 try:
-                    meta = json.loads((picture.parent / "request.json").read_text())
+                    meta = json.loads((picture.parent / "request.json").read_text(encoding="utf-8"))
                     if meta.get("status") == "ready":
                         claude = meta.get("provider") == "claude"
                         items.append({"name": meta.get("direction", "Einstein image")[:80], "path": str(picture.resolve()),
@@ -3727,7 +3727,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     def _show_voices(project: Project) -> list[dict[str, Any]]:
         try:
-            return [item for item in json.loads((project.folder / "assets" / "show-voices" / "voices.json").read_text())
+            return [item for item in json.loads((project.folder / "assets" / "show-voices" / "voices.json").read_text(encoding="utf-8"))
                     if Path(item["source"]).is_file()]
         except (OSError, ValueError, KeyError, TypeError):
             return []
@@ -3919,7 +3919,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             picture.save(target)
             catalog_path = folder / "catalog.json"
             try:
-                catalog = json.loads(catalog_path.read_text())
+                catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 catalog = {}
             catalog[str(target)] = {"name": str(body.get("name") or source.get("name") or "Photo cutout"),
@@ -4365,7 +4365,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def api_video_layer_editor(proposal_id):
         project = _require_project(state)
         _video_layer_item(project, proposal_id)
-        html = (root/'tools/qa/video-layers/index.html').read_text()
+        html = (root/'tools/qa/video-layers/index.html').read_text(encoding="utf-8")
         prefix = '/api/v1/show/video-layers/'+proposal_id
         html = html.replace('/sample.json', prefix+'/sample').replace('/media/', prefix+'/media/')
         html = html.replace('INTERACTIVE SAMPLE', 'PROJECT VIDEO LAYERS').replace('Eight-second local sample', 'Two-second interactive preview')
@@ -4384,7 +4384,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     def _layer_job(project,item,*,retry=False):
         import hashlib
         plan=project.artifacts_dir/'show_plan.json'
-        source=Path(item['params'].get('clip') or json.loads(plan.read_text()).get('source') or '')
+        source=Path(item['params'].get('clip') or json.loads(plan.read_text(encoding="utf-8")).get('source') or '')
         stamp=[source.stat().st_size,source.stat().st_mtime_ns] if source.is_file() else None
         identity=json.dumps([stamp,str(project.folder),item['id'],item['at'],item['duration'],item['params'].get('clip'),item['params'].get('clip_start'),
                              plan.stat().st_mtime_ns],sort_keys=True)
@@ -4417,7 +4417,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         sample=job['result']
         return jsonify({**{k:v for k,v in sample.items() if k not in ('host','alpha')},
                         'maskWidth':384,'maskHeight':216,'columns':10,'status':'ready',
-                        'backgrounds':json.loads((root/'tools/qa/show-backgrounds/manifest.json').read_text()),
+                        'backgrounds':json.loads((root/'tools/qa/show-backgrounds/manifest.json').read_text(encoding="utf-8")),
                         'placement':item['params'],'current_video':Path(item['params'].get('picture') or '').suffix.lower() in show_backgrounds.VIDEO_SUFFIXES})
 
     @app.get('/api/v1/show/video-layers/<proposal_id>/media/<name>')
@@ -4434,7 +4434,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             if not path.is_file() or not path.resolve().is_relative_to(project.folder.resolve()):
                 abort(404)
         else:
-            choices = {p['file'] for p in json.loads((root/'tools/qa/show-backgrounds/manifest.json').read_text())}
+            choices = {p['file'] for p in json.loads((root/'tools/qa/show-backgrounds/manifest.json').read_text(encoding="utf-8"))}
             if name not in choices:
                 abort(404)
             path = root/'tools/qa/show-backgrounds'/name
@@ -4508,7 +4508,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 if chosen is None:raise ValueError('Choose an available library background')
                 target=Path(raw) if chosen['media_kind']=='video' else Path(_bring_into_project(project,raw)['path'])
             elif settings.get('preset'):
-                choices = {p['file'] for p in json.loads((root/'tools/qa/show-backgrounds/manifest.json').read_text())}
+                choices = {p['file'] for p in json.loads((root/'tools/qa/show-backgrounds/manifest.json').read_text(encoding="utf-8"))}
                 if settings['preset'] not in choices:
                     raise ValueError('Choose a supplied background')
                 folder = project.folder/'assets/show-library/Backgrounds'
@@ -5028,7 +5028,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             resume_path=project.artifacts_dir/'show_resume.json'
             if resume_path.is_file():
                 from core.project import atomic_write_json
-                try:resume=json.loads(resume_path.read_text())
+                try:resume=json.loads(resume_path.read_text(encoding="utf-8"))
                 except (OSError,ValueError):resume={}
                 atomic_write_json(resume_path,{**resume,'reopen_review':False})
         except RuntimeError as exc:
@@ -6178,7 +6178,7 @@ def _remember_project(project: Project) -> None:
 def _project_wizard_status(project: Project) -> dict[str, Any]:
     stages = project.data.get("stages") or {}
     logs_path = str(project.cache_dir / "logs")
-    try:resume=json.loads((project.artifacts_dir/'show_resume.json').read_text())
+    try:resume=json.loads((project.artifacts_dir/'show_resume.json').read_text(encoding="utf-8"))
     except (OSError,ValueError):resume={}
     if resume.get('reopen_review') and (project.artifacts_dir/'show_scenes.json').is_file():
         return {'id':'project','status':'waiting_show_review','stage':'show_review','progress':60,

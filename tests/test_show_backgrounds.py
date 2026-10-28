@@ -3,6 +3,7 @@ behind the person (never over them), and the effect in the storyboard and the AP
 import json
 import shutil
 import subprocess
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -151,8 +152,16 @@ def test_project_layer_editor_saves_the_original_preset_and_placement(tmp_path, 
     client = api_module.create_app(project_path=str(project.folder)).test_client()
     made = client.post('/api/v1/show/review/add',json={'kind':'background','at':1,'duration':4}).get_json()
     url = '/api/v1/show/video-layers/'+made['id']
+    # Emulate a Windows default code page even on UTF-8 development machines.
+    # The HTML and project JSON are UTF-8, independently of the OS locale.
+    original_read_text = Path.read_text
+    def locale_read_text(path, encoding=None, errors=None):
+        return original_read_text(path, encoding=encoding or 'cp1252', errors=errors)
+    monkeypatch.setattr(Path, 'read_text', locale_read_text)
     page = client.get(url+'/editor')
     assert page.status_code == 200 and b'Use in scene' in page.data and b'show_video_layers.js' in page.data
+    assert 'Loading your moving cutout…' in page.get_data(as_text=True)
+    assert 'Spain · bullring' in page.get_data(as_text=True)
     saved = client.post(url+'/save',data={'settings':json.dumps({'preset':'space.png','person_style':'silhouette','person_scale':.7,'person_offset':[-.2,0]})})
     assert saved.status_code == 200, saved.get_json()
     item = saved.get_json()
