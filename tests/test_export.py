@@ -2198,3 +2198,33 @@ def test_final_audio_verifier_still_rejects_silence_gap_at_join(tmp_path, monkey
             tmp_path / "final.mp4", [{"duration_sec": 5.0}, {"duration_sec": 5.0}], master, 0.0,
             timeline_offset=10.0, audio_delay=10.0, duration=600.0, content_start=10.0, content_end=590.0,
         )
+
+
+def _cadence_clip(path: Path, seconds: float, extra_filter: str = "") -> Path:
+    video_filter = "format=yuv420p" + (f",{extra_filter}" if extra_filter else "")
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=size=160x90:rate=30:duration={seconds}",
+         "-vf", video_filter, "-fps_mode", "passthrough", "-c:v", "libx264", "-preset", "ultrafast", str(path)],
+        check=True, capture_output=True, text=True,
+    )
+    return path
+
+
+@pytest.mark.parametrize("seconds", [12.0, 28.6, 40.2, 75.0])
+def test_regular_video_cadence_passes_whatever_the_length(tmp_path: Path, seconds: float) -> None:
+    """Sample windows closer than one window apart must not be read as a gap."""
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not installed")
+    clip = _cadence_clip(tmp_path / f"regular-{seconds}.mp4", seconds)
+    _verify_video_cadence(clip, "regular final", start=0.0, duration=seconds)
+
+
+def test_real_frame_gap_is_still_rejected(tmp_path: Path) -> None:
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not installed")
+    # A 0.6 s hole in the first sampled window (frames from 1 s on are pushed later).
+    clip = _cadence_clip(tmp_path / "gap.mp4", 20.0, "setpts='if(gte(N,30),PTS+0.6/TB,PTS)'")
+    from core.ffmpeg import FFmpegError
+
+    with pytest.raises(FFmpegError, match="Irregular video cadence"):
+        _verify_video_cadence(clip, "gap final", start=0.0, duration=20.6)
