@@ -82,3 +82,13 @@ def test_wide_shots_from_different_cameras_are_not_counted_as_repeats():
     assert plan["subject_unavoidable_repeats"] == 0
     paths = [segment["source_path"] for segment in plan["segments"]]
     assert all(a != b for a, b in zip(paths, paths[1:]))
+
+
+def test_generic_camera_types_set_the_steadiness_role():
+    from core.shot_quality import _source_role as quality_role
+    from core.stages.edit import _with_camera_roles
+
+    coverage = {"sources": [{"path": "/tmp/phone.mp4", "source_path": "/tmp/phone.mp4"},
+                            {"path": "/tmp/IMG_1.mov", "source_path": "/tmp/IMG_1.mov"}]}
+    declared = _with_camera_roles(coverage, {"camera_types": {"/tmp/phone.mp4": "fixed", "/tmp/IMG_1.mov": "moving"}})
+    assert [quality_role(s) for s in declared["sources"]] == ["fixed_rear", "handheld"]

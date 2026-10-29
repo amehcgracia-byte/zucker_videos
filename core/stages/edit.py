@@ -451,8 +451,14 @@ def _with_camera_roles(coverage: dict[str, Any], edit_settings: dict[str, Any]) 
 
     Filenames cannot tell a phone on a tripod from a handheld camera; the
     declared role decides which cameras get steadiness scoring and motion."""
-    roles = edit_settings.get("camera_roles") if isinstance(edit_settings, dict) else None
-    if not isinstance(roles, dict) or not roles:
+    if not isinstance(edit_settings, dict):
+        return coverage
+    # Montara saves generic camera types (fixed / moving / 360); older callers save roles.
+    roles = {path: {"fixed": "fixed_rear", "moving": "handheld"}[kind]
+             for path, kind in (edit_settings.get("camera_types") or {}).items() if kind in {"fixed", "moving"}}
+    roles.update({path: role for path, role in (edit_settings.get("camera_roles") or {}).items()
+                  if role in {"fixed_rear", "handheld"} and path not in roles})
+    if not roles:
         return coverage
     sources = []
     for source in coverage.get("sources") or []:
