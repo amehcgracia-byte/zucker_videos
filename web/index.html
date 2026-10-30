@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Zucker Editor</title>
     <link rel="icon" href="/logo_editor_green.png?v=editor-ui-4" />
-    <link rel="stylesheet" href="/styles.css?v=editor-ui-34" />
+    <link rel="stylesheet" href="/styles.css?v=editor-ui-37" />
     <script src="/theme.js?v=editor-ui-4"></script>
   </head>
   <body>
@@ -362,7 +362,7 @@
         </div>
         <div id="showReviewBox" class="review-box show-review" hidden>
           <details class="review-ready-notice show-workspace-help"><summary><strong>Your show, scene by scene</strong> · How it works</summary><span>Each scene plays at once as you cut it and explains what it proposes: accept it, modify it or leave it without effect; not every moment needs decorating. To add something of your own, select words in “What you say” and right-click them. Ask for “Preview with effects” to see a scene with its zooms and drawings. Nothing else is rendered until the last step.</span></details>
-          <div id="showProgress" class="show-progress" aria-live="polite"><span></span><progress max="1" value="0"></progress></div>
+          <div id="showProgress" class="show-progress" aria-live="polite"><span></span><progress max="1" value="0"></progress><button type="button" class="icon-button small" data-show-history>Earlier versions…</button></div>
           <nav id="showSteps" class="show-steps" aria-label="Show storyboard"></nav>
           <div class="show-board">
             <div class="show-stage-wrap"><div class="show-stage" id="showStage">
@@ -522,14 +522,16 @@
     <script src="/show_edit_queue.js?v=1"></script>
     <script src="/show_clock.js?v=1"></script>
     <script src="/show_live_captions.js?v=2"></script>
-    <script src="/show_references.js?v=7"></script>
+    <script src="/show_references.js?v=10"></script>
     <script src="/show_menu.js?v=6"></script>
-    <script src="/connectors.js?v=2"></script>
+    <script src="/connectors.js?v=3"></script>
     <script src="/music_library.js?v=1"></script>
     <script src="/show_idea.js?v=1"></script>
     <script src="/show_clay_editor.js?v=1"></script>
-    <script src="/show_review.js?v=68"></script>
-    <script src="/show_audio.js?v=1"></script>
+    <script src="/show_geometry.js"></script>
+    <script src="/show_media_preview.js"></script>
+  <script src="/show_review.js?v=75"></script>
+    <script src="/show_audio.js?v=3"></script>
     <script src="/show_einstein.js?v=9"></script>
     <script src="/show_characters.js?v=14"></script>
     <script src="/show_voice.js?v=1"></script>

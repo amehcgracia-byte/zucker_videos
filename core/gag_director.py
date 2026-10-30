@@ -78,7 +78,10 @@ SYSTEM = (
 BRIEF = """Plan the visual gags for this edited talk.
 {idea_block}
 Rules:
-- About one gag every 6 to 9 seconds; more around jokes, punchlines, exclamations and things the host names; none in the first 1.5 s.
+- Build an editorial sequence, not a slideshow of pictures. Use the host as the visual anchor, leave pauses and alternate close-ups, a reference clip, a background change, formulas, and a small drawing where each actually supports the words.
+- Reuse a matching library picture before asking for a new drawing. Preserve the approved character identity and do not replace it with a generic lookalike.
+- References are reviewable drafts. Never pretend footage has been downloaded, a face tracked or a clay story generated before the corresponding tool succeeds. Only return kinds supported by this schema.
+- Choose meaningful moments rather than filling a quota. Keep natural stretches with no effects, especially through explanations. Concentrate changes around jokes, punchlines and revealing reactions; none in the first 1.5 s.
 - Never two pictures on screen at once: each starts after the previous one ends (a warp may run under a picture).
 - Drawings and characters are drawn one by one and take time: at most one of them every {drawing_gap} seconds, on the strongest moments. Between them use shouted words, formulas and warps.
 - The host's face is on the {face_side} of the frame: put pictures on the {free_side} side ("{free_side}", "top-{free_side}", "bottom-{free_side}"), small ones only on the other side.
@@ -90,10 +93,10 @@ Rules:
 - "texture_reference": stock-footage overlay, only when the host mentions or shows something relevant. "query" is smoke, water, rain, fire, electricity, snow or leaves. These are contextual drafts, not a claim of automatic object location.
 - "word": one to three words, shouted, in the language of the talk.
 - "photo": only for a picture listed in the library below ("query" = its name).
-- "math": hand-written formulas orbit the host's head for 3-5 s when they think, explain, philosophise or talk about time, numbers or ideas. At most one every 45 s.
-- "background": when the host names a place where they are, were or could be (the kitchen, outside, the beach, their atelier…), that place appears behind them while they keep talking, from the moment they name it, 3-8 s. "subject" = the place in a few English words ("a kitchen", "outside in a garden", "an artist's atelier"). Every place named gets its own background, even several in a row; it runs under the pictures and never covers the host.
+- "math": dense, serious white mathematical notation surrounds the host's head for 3-5 s when they think, explain, philosophise or talk about time, numbers or ideas. At most one every 45 s.
+- "background": when the host names a place where they are, were or could be (the kitchen, outside, the beach, their atelier…), that place appears behind them while they keep talking, from the moment they name it, 3-8 s. "subject" = the place in a few English words ("a kitchen", "outside in a garden", "an artist's atelier"). A place name alone is not a reason to change the background. Propose it only when that visual supports the story or joke; avoid consecutive replacements. It runs under the pictures and never covers the host.
 - "warp": the whole picture bends for 2-4 s when the talk invites it ("stretch" for stretching/pulling/long things, "swirl" for spirals/dizzy/crazy/time, "wave" for shaking/moving/drunk/dreams). At most one every 40 s.
-- "style": mix them all, never the same style twice in a row: {styles}.
+- "style": use rough human pencil, marker or crayon for drawings; uneven strokes, simple shapes, imperfect handwriting. Avoid polished anime, glossy clip-art or sticker packs. Available styles: {styles}.
 - "effect": vary them; entrances (pop, spin, drop, rise, fly_left, fly_right) or loops (pulse, jelly, bounce, wobble, shake, blink).
 - "size": words and drawings 0.18-0.3, characters 0.25-0.32.
 
