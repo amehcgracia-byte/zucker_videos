@@ -134,8 +134,22 @@ def analyze_handheld_director_quality(project: Project, sources: list[dict[str, 
     return output
 
 
+def _quality_media_path(source: dict[str, Any]) -> Path:
+    """The file to score: the normalized media ("path") when it exists, else the original.
+
+    Coverage clips carry both. The normalized copy is the timeline the editor cuts on and is
+    much lighter than a 4K/HEVC original (iPhone, Sony): scoring the original decoded the
+    whole camera file for a few seconds of edit (JÚPITER FOCUS, 2026-11-01: 15-25x slower
+    extraction). Scores are taken on 320 px frames, so the smaller copy rates the same."""
+    for key in ("path", "source_path"):
+        value = source.get(key)
+        if value and Path(str(value)).expanduser().exists():
+            return Path(str(value)).expanduser()
+    return Path(str(source.get("path") or source.get("source_path") or "")).expanduser()
+
+
 def _analyze_source_quality(project: Project, source: dict[str, Any], report: Callable[[float], None] | None = None) -> dict[str, Any]:
-    path = Path(str(source.get("source_path") or source.get("path") or "")).expanduser()
+    path = _quality_media_path(source)
     if not path.exists():
         return {"error": "source missing", "windows": [], "summary": {}}
     from core.storage import cache_file_signature
