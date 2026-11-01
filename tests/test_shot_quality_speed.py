@@ -132,3 +132,17 @@ def test_large_decoder_error_output_cannot_block_jpeg_pipe(tmp_path, monkeypatch
             if child.poll() is None: child.kill()
             child.wait()
         thread.join(timeout=5)
+
+
+def test_scoring_reads_the_normalized_media_not_the_heavy_original(tmp_path, monkeypatch, project):
+    """Coverage clips name both files; the light normalized copy is the one decoded."""
+    original, proxy = _clip(tmp_path / "IMG_0044.MOV", 12, 4.0), _clip(tmp_path / "IMG_0044-proxy.mp4", 12, 4.0)
+    decoded = []
+    real = shot_quality._extract_quality_frames
+    monkeypatch.setattr(shot_quality, "_extract_quality_frames", lambda ffmpeg, path, *rest: decoded.append(path) or real(ffmpeg, path, *rest))
+    source = {"path": str(proxy), "source_path": str(original), "filename": original.name, "duration_sec": 4.0, "camera_role": "handheld"}
+    scored = shot_quality.analyze_handheld_director_quality(project, [source])
+    assert decoded == [proxy] and scored[0]["director_quality"].get("windows")
+    # Without a normalized copy on disk the original is still scored.
+    source = {"path": str(tmp_path / "missing.mp4"), "source_path": str(original), "filename": original.name, "duration_sec": 4.0}
+    assert shot_quality._quality_media_path(source) == original
