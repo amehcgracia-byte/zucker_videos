@@ -168,7 +168,7 @@ def register_edit_timeline(app,project,invalidate):
                 source=str(raw.get('source_path') or raw.get('clip_path') or '')
                 index=keys.get(source)
                 if index is None:raise ValueError('This edit contains a source without a registered original')
-                item={k:raw[k] for k in ('clip_start_sec','duration_sec','master_start_sec','spherical_shot','motion','flat_framing','projection','manual_view','insv_fov','reel_framing') if k in raw}
+                item={k:raw[k] for k in ('clip_start_sec','duration_sec','master_start_sec','spherical_shot','motion','flat_framing','projection','manual_view','insv_fov') if k in raw}
                 item['source']=index
                 light=light_settings(p,raw)
                 if light is not None:item['video_light']=light

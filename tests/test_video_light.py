@@ -58,7 +58,7 @@ def test_light_api_scopes_camera_vs_shot_and_validates_before_saving(tmp_path,mo
  monkeypatch.setenv('ZUCKER_DATA_ROOT',str(tmp_path/'state'))
  p=create_project('Lighting',str(tmp_path/'edit.zuckervid'));ff,v=make_video(tmp_path)
  p.data['inputs']['videos']=[{'path':str(v),'probe':{'width':320,'height':180,'duration':1}}];p.save()
- s={'clip_path':str(v),'source_path':str(v),'clip_start_sec':0,'duration_sec':.4,'master_start_sec':0}
+ s={'clip_path':str(v),'source_path':str(v),'clip_start_sec':0,'duration_sec':.4,'master_start_sec':0,'reel_framing':{'source_path':'analysis-only'}}
  atomic_write_json(p.artifacts_dir/'edit_plan.json',{'platform':'youtube','segments':[s,{**s,'master_start_sec':.4,'clip_start_sec':.4}]})
  monkeypatch.setattr(cut,'load_coverage',lambda _: {'sources':[]})
  c=create_app(str(p.folder),dev=True).test_client()
@@ -84,6 +84,7 @@ def test_light_api_scopes_camera_vs_shot_and_validates_before_saving(tmp_path,mo
  recipe=c.get('/api/v1/edit/native-recipe',query_string={'project_id':str(p.folder)})
  assert recipe.status_code==200,recipe.json
  assert len(recipe.json['sources'])==1 and len(recipe.json['segments'])==2
+ assert all('reel_framing' not in s for s in recipe.json['segments'])
  assert all(s['source']==0 and s['video_light']==spec for s in recipe.json['segments'])
  assert c.get('/api/v1/edit/native-recipe',query_string={'project_id':'wrong'}).status_code==409
  assert c.get('/api/v1/edit/native-source/0',query_string={'project_id':str(p.folder),'revision':'old'}).status_code==409
