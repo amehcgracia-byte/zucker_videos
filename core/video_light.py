@@ -34,7 +34,7 @@ def profile(project, segment, measured, target_high=80.0):
     high = float(measured.get('luma_high') or luma*2)
     anchor = min(.55, max(.04, (high-16)/219))
     target = anchor
-    if spec['auto'] and 2 < luma < 65 and high > 25:
+    if 2 < luma < 65 and high > 25:
         target = min(.65, anchor+.18, max(anchor, (target_high-16)/219))
     return {'video_light': spec, 'light_anchor': anchor, 'light_target': target, 'light_recipe': VERSION}
 

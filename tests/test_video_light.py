@@ -111,3 +111,12 @@ def test_very_dark_anchor_cannot_blow_out_middle_tones():
  assert next(y for x,y in points if x==.35)<.65
  assert next(y for x,y in points if x==.65)<.85
  assert points[0]==(0.,0.) and points[-1]==(1.,1.)
+
+
+def test_auto_anchor_survives_first_shot_auto_off(tmp_path,monkeypatch):
+ monkeypatch.setenv('ZUCKER_DATA_ROOT',str(tmp_path/'state'))
+ p=create_project('Mixed auto',str(tmp_path/'edit.zuckervid'))
+ s={'clip_path':'camera.mp4','video_light':{'auto':False,'light':0,'shadows':0}}
+ color=profile(p,s,{'luma':35,'luma_high':57})
+ assert not filtergraph(color)
+ assert filtergraph(color,{'auto':True,'light':0,'shadows':0})

@@ -907,7 +907,7 @@ def review_items(
     # Keep the default review path cheap: color profiling belongs to final
     # export and is optional for a thumbnail. A status-only request must not
     # launch/inspect the complete plan just to report missing URLs.
-    if render_missing and (apply_color_profile or project.data.get('settings', {}).get('edit', {}).get('video_light', {}).get('enabled')):
+    if render_missing and (apply_color_profile or any(segment.get('video_light') is not None for segment in segments)):
         from core.stages.export import _color_profiles_for_segments
         color_profiles = _color_profiles_for_segments(project, segments, [])
     else:
