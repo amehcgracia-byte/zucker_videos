@@ -359,6 +359,9 @@ def _exposure_score(gray: np.ndarray) -> float:
 
 
 def _source_role(source: dict[str, Any]) -> str:
+    explicit = str(source.get("camera_role") or "").strip().lower()
+    if explicit in {"360", "fixed_rear", "handheld"}:
+        return explicit
     projection = str(source.get("projection") or "").lower()
     filename = str(source.get("filename") or source.get("path") or source.get("source_path") or "").lower()
     if projection in {"equirect", "raw_insv"} or filename.endswith(".insv") or "360" in filename:
