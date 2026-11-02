@@ -139,6 +139,71 @@ def register_edit_timeline(app,project,invalidate):
             except (OSError,ValueError):continue
             seen.add(key);out.append(candidate)
         return out
+    @app.post('/api/v1/settings/video-light')
+    def configure_video_light():
+        body=request.get_json(silent=True) or {}
+        try:
+            with LOCK:
+                p=project()
+                if body.get('project_id')!=str(p.folder):return jsonify(error={'message':'Reopen this project'}),409
+                if not isinstance(body.get('enabled'),bool):raise ValueError('Choose automatic light on or off')
+                if app.config.get('MONTARA_EDIT_BUSY',lambda:False)():return jsonify(error={'message':'Wait for the current render'}),409
+                p.data.setdefault('settings',{}).setdefault('edit',{}).setdefault('video_light',{})['enabled']=body['enabled']
+                p.save();invalidate(p)
+                return jsonify(enabled=body['enabled'])
+        except (OSError,ValueError,TypeError) as e:return jsonify(error={'message':str(e)}),400
+
+    @app.get('/api/v1/edit/native-recipe')
+    def native_recipe():
+        try:
+            p,_,data=load('music')
+            if request.args.get('project_id')!=str(p.folder):return jsonify(error={'message':'Reopen this project'}),409
+            if (data.get('platform') or p.data.get('settings',{}).get('wizard',{}).get('platform'))!='youtube':raise ValueError('Native export is currently available for Stage')
+            records=p.data.get('inputs',{}).get('videos',[])
+            keys={str(r['path']):i for i,r in enumerate(records)}
+            keys.update({str(r.get('normalized',{}).get('path')):i for i,r in enumerate(records) if r.get('normalized',{}).get('path')})
+            segments=[]
+            from core.video_light import settings as light_settings
+            for raw in data.get('segments') or []:
+                source=str(raw.get('source_path') or raw.get('clip_path') or '')
+                index=keys.get(source)
+                if index is None:raise ValueError('This edit contains a source without a registered original')
+                item={k:raw[k] for k in ('clip_start_sec','duration_sec','master_start_sec','spherical_shot','motion','flat_framing','projection','manual_view','insv_fov','reel_framing') if k in raw}
+                item['source']=index
+                light=light_settings(p,raw)
+                if light is not None:item['video_light']=light
+                segments.append(item)
+            import subprocess,os
+            sha=os.environ.get('MONTARA_ENGINE_SHA') or subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),'rev-parse','HEAD'],text=True).strip()
+            return jsonify(version=1,engine=sha,revision=revision(data),platform='youtube',sources=[{'key':i,'path':r['path']} for i,r in enumerate(records) if i in {s['source'] for s in segments}],segments=segments)
+        except (OSError,ValueError,KeyError) as e:return jsonify(error={'message':str(e)}),400
+
+    @app.get('/api/v1/edit/native-source/<int:index>')
+    def native_source(index):
+        from flask import send_file
+        try:
+            p,_,data=load('music')
+            if request.args.get('project_id')!=str(p.folder):return jsonify(error={'message':'Reopen this project'}),409
+            if request.args.get('revision')!=revision(data):return jsonify(error={'message':'The edit changed. Retry the export.'}),409
+            records=p.data.get('inputs',{}).get('videos',[])
+            if not 0<=index<len(records):raise ValueError('Choose a camera source')
+            target=Path(records[index]['path'])
+            if target.name.lower().endswith('.small.mp4'):raise ValueError('Reconnect the original on your computer')
+            return send_file(target,conditional=True)
+        except (OSError,ValueError,KeyError) as e:return jsonify(error={'message':str(e)}),400
+
+    @app.get('/api/v1/edit/native-master')
+    def native_master():
+        from flask import send_file
+        try:
+            p,_,data=load('music')
+            if request.args.get('project_id')!=str(p.folder):return jsonify(error={'message':'Reopen this project'}),409
+            if request.args.get('revision')!=revision(data):return jsonify(error={'message':'The edit changed. Retry the export.'}),409
+            target=Path(p.data.get('inputs',{}).get('master',{}).get('path') or '')
+            if not target.is_file():raise ValueError('The master is unavailable')
+            return send_file(target,conditional=True)
+        except (OSError,ValueError,KeyError) as e:return jsonify(error={'message':str(e)}),400
+
     @app.get('/api/v1/edit/shot')
     def get_music_shot():
         try:
@@ -150,7 +215,8 @@ def register_edit_timeline(app,project,invalidate):
             def label(c):
                 number=next((j+1 for j,r in enumerate(records) if r.get('path')==c.get('source_path')),None)
                 return ('Camera '+str(number).zfill(2)+' · ' if number is not None else '')+{'360':'360','fixed':'Fixed','moving':'Moving'}[camera_kind(p,c)]+(' · '+str(c['spherical_shot'].get('label') or 'View') if c.get('spherical_shot') else '')
-            return jsonify(project_id=str(p.folder),revision=revision(data),pose=data['segments'][i].get('spherical_shot') or {},framing=data['segments'][i].get('flat_framing') or {'zoom':1,'x':.5,'y':.5},choices=[{'label':label(c),'spherical':bool(c.get('spherical_shot'))} for c in choices])
+            from core.video_light import settings as light_settings, DEFAULT
+            return jsonify(project_id=str(p.folder),revision=revision(data),platform=data.get('platform') or p.data.get('settings',{}).get('wizard',{}).get('platform'),pose=data['segments'][i].get('spherical_shot') or {},framing=data['segments'][i].get('flat_framing') or {'zoom':1,'x':.5,'y':.5},light=light_settings(p,choices[0]) or {**DEFAULT,'auto':False},choices=[{'label':label(c),'spherical':bool(c.get('spherical_shot')),'light':light_settings(p,c) or {**DEFAULT,'auto':False}} for c in choices])
         except (OSError,ValueError,KeyError,IndexError) as e:return jsonify(error={'message':str(e)}),400
     @app.patch('/api/v1/edit/shot')
     def patch_music_shot():
@@ -175,6 +241,20 @@ def register_edit_timeline(app,project,invalidate):
                 else:
                     from core.flat_framing import validate
                     s['flat_framing']=validate(body.get('flat_framing') or {'zoom':1,'x':.5,'y':.5})
+                if 'video_light' in body:
+                    from core.video_light import validate as validate_light
+                    light=validate_light(body['video_light'])
+                    if body.get('light_scope','shot') not in ('camera','shot'):raise ValueError('Choose camera or shot lighting')
+                    if body.get('light_scope')=='camera':
+                        key=str(s.get('source_path') or s.get('clip_path') or '')
+                        config=p.data.setdefault('settings',{}).setdefault('edit',{}).setdefault('video_light',{})
+                        config.setdefault('cameras',{})[key]=light
+                        # Camera-wide changes replace previous shot exceptions on this camera.
+                        for item in data['segments']:
+                            if str(item.get('source_path') or item.get('clip_path') or '')==key:item.pop('video_light',None)
+                        s.pop('video_light',None)
+                        p.save()
+                    else:s['video_light']=light
                 from core.stages.edit import _camera_id
                 s['camera_id']=_camera_id(s);data['segments'][i]=s
                 for key in ('camera_usage','spherical_shot_usage'):data.pop(key,None)
@@ -197,6 +277,15 @@ def register_edit_timeline(app,project,invalidate):
             source=next(Path(shot[k]) for k in ('source_path','clip_path','proxy_path') if shot.get(k) and Path(shot[k]).is_file())
             at=float(shot.get('clip_start_sec') or 0)+float(shot['duration_sec'])/2
             f=str(tool_status().get('ffmpeg_path') or 'ffmpeg')
-            image=subprocess.check_output([f,'-v','error','-nostdin','-ss',str(at),'-i',str(source),'-frames:v','1','-vf','scale=640:-2','-f','image2pipe','-vcodec','mjpeg','-threads','1','-'],timeout=30)
+            filters=[]
+            if request.args.get('original')!='1':
+                from core.video_light import resolved_profile, validate as validate_light
+                from core.stages.export import _color_filter
+                if request.args.get('light'):
+                    shot={**shot,'video_light':validate_light(json.loads(request.args['light']))}
+                color=resolved_profile(p,shot)
+                if color:filters.append(_color_filter(color))
+            filters.append('scale=640:-2')
+            image=subprocess.check_output([f,'-v' ,'error','-nostdin','-ss',str(at),'-i',str(source),'-frames:v','1','-vf',','.join(filters),'-f','image2pipe','-vcodec','mjpeg','-threads','1','-'],timeout=30)
             return send_file(io.BytesIO(image),mimetype='image/jpeg')
         except (OSError,ValueError,KeyError,IndexError,StopIteration,subprocess.SubprocessError) as e:return jsonify(error={'message':'Could not load this camera frame'}),400
