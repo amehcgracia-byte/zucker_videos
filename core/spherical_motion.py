@@ -141,10 +141,13 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
                             progress: Callable | None = None, *,
                             pose_sampler: Callable | None = None,
                             hardware_decode: bool = True, remap_backend: str = "cpu",
+                            cpu_interpolation: str = "cubic",
                             output_size: tuple[int, int] = (1920, 1080), fps: int = 30,
                             decode_size: tuple[int, int] | None = None) -> None:
     """Export defaults to 1080p30 from full-resolution frames; review previews
     pass a small output, a lower rate and a reduced ``decode_size``."""
+    if cpu_interpolation not in ("cubic", "linear"):
+        raise ValueError("cpu_interpolation must be cubic or linear")
     pixel_format = None
     if hardware_decode and sys.platform == "darwin":
         try:
@@ -157,13 +160,14 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
         try:
             _run_reprojected_command(command, source, source_size, start, frame_count, shot,
                 progress, pose_sampler=pose_sampler, decoder_pixel_format=pixel_format, remap_backend=remap_backend,
-                output_size=output_size, fps=fps, decode_size=decode_size)
+                output_size=output_size, fps=fps, decode_size=decode_size,
+                cpu_interpolation=cpu_interpolation)
             return
         except HardwareDecodeError as exc:
             LOGGER.warning("360 hardware decoder failed; retrying with CPU: %s", exc)
     _run_reprojected_command(command, source, source_size, start, frame_count, shot,
         progress, pose_sampler=pose_sampler, remap_backend=remap_backend, output_size=output_size, fps=fps,
-        decode_size=decode_size)
+        decode_size=decode_size, cpu_interpolation=cpu_interpolation)
 
 
 def _run_reprojected_command(command: list[str], source: str, source_size: tuple[int, int],
@@ -171,6 +175,7 @@ def _run_reprojected_command(command: list[str], source: str, source_size: tuple
                             progress: Callable | None = None, *,
                             pose_sampler: Callable | None = None,
                             decoder_pixel_format: str | None = None, remap_backend: str = "cpu",
+                            cpu_interpolation: str = "cubic",
                             output_size: tuple[int, int] = (1920, 1080), fps: int = 30,
                             decode_size: tuple[int, int] | None = None) -> None:
     """Pipe atomic reprojected BGR frames directly into the final encoder graph."""
@@ -249,7 +254,9 @@ def _run_reprojected_command(command: list[str], source: str, source_size: tuple
                     from core.metal_remap import try_remap
                     metal_done = try_remap(frame, maps, pixels)
                 if not metal_done:
-                    cv2.remap(frame, *maps, interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_WRAP, dst=pixels)
+                    cv2.remap(frame, *maps,
+                              interpolation=(cv2.INTER_LINEAR if cpu_interpolation == "linear" else cv2.INTER_CUBIC),
+                              borderMode=cv2.BORDER_WRAP, dst=pixels)
                 blocked[0] = encoder
                 encoder.stdin.write(memoryview(pixels).cast("B"))
                 guard.touch()
