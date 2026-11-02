@@ -162,7 +162,8 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
                             hardware_decode: bool = True, remap_backend: str = "cpu",
                             cpu_interpolation: str = "cubic",
                             output_size: tuple[int, int] = (1920, 1080), fps: int = 30,
-                            decode_size: tuple[int, int] | None = None) -> None:
+                            decode_size: tuple[int, int] | None = None,
+                            fast_wrap: bool = False) -> None:
     """Export defaults to 1080p30 from full-resolution frames; review previews
     pass a small output, a lower rate and a reduced ``decode_size``."""
     if cpu_interpolation not in ("cubic", "linear"):
@@ -180,13 +181,13 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
             _run_reprojected_command(command, source, source_size, start, frame_count, shot,
                 progress, pose_sampler=pose_sampler, decoder_pixel_format=pixel_format, remap_backend=remap_backend,
                 output_size=output_size, fps=fps, decode_size=decode_size,
-                cpu_interpolation=cpu_interpolation)
+                cpu_interpolation=cpu_interpolation, fast_wrap=fast_wrap)
             return
         except HardwareDecodeError as exc:
             LOGGER.warning("360 hardware decoder failed; retrying with CPU: %s", exc)
     _run_reprojected_command(command, source, source_size, start, frame_count, shot,
         progress, pose_sampler=pose_sampler, remap_backend=remap_backend, output_size=output_size, fps=fps,
-        decode_size=decode_size, cpu_interpolation=cpu_interpolation)
+        decode_size=decode_size, cpu_interpolation=cpu_interpolation, fast_wrap=fast_wrap)
 
 
 def _run_reprojected_command(command: list[str], source: str, source_size: tuple[int, int],
@@ -196,7 +197,8 @@ def _run_reprojected_command(command: list[str], source: str, source_size: tuple
                             decoder_pixel_format: str | None = None, remap_backend: str = "cpu",
                             cpu_interpolation: str = "cubic",
                             output_size: tuple[int, int] = (1920, 1080), fps: int = 30,
-                            decode_size: tuple[int, int] | None = None) -> None:
+                            decode_size: tuple[int, int] | None = None,
+                            fast_wrap: bool = False) -> None:
     """Pipe atomic reprojected BGR frames directly into the final encoder graph."""
     ffmpeg = command[0]; sw, sh = decode_size or source_size; ow, oh = output_size
     if frame_count <= 0:
@@ -266,7 +268,7 @@ def _run_reprojected_command(command: list[str], source: str, source_size: tuple
                 blocked[0] = None  # reprojection is active in Python, not waiting on a child
                 pose = pose_sampler(index / fps) if pose_sampler else motion_pose(shot, duration, index / fps)
                 if maps is None or pose != previous_pose:
-                    maps = reproject_maps((sw, sh), (ow, oh), shot, pose)
+                    maps = reproject_maps((sw, sh), (ow, oh), shot, pose, fast_wrap=fast_wrap)
                     previous_pose = pose
                 metal_done = False
                 if remap_backend == "metal":
