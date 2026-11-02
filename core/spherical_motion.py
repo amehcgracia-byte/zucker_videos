@@ -64,8 +64,24 @@ def _projection_grid(width: int, height: int) -> tuple[np.ndarray, np.ndarray]:
     return grid[0], grid[1]
 
 
+def _fast_wrap_x_inplace(mx: np.ndarray, sw: int) -> None:
+    """Fast path for longitude maps; retain modulo for general cases."""
+    lo = float(mx.min())
+    hi = float(mx.max())
+
+    if not (math.isfinite(lo) and math.isfinite(hi)):
+        mx %= sw
+    elif 0 <= lo and hi < sw:
+        return
+    elif -sw <= lo and hi < 2 * sw:
+        np.subtract(mx, sw, out=mx, where=mx >= sw)
+        np.add(mx, sw, out=mx, where=mx < 0)
+    else:
+        mx %= sw
+
+
 def reproject_maps(source_size: tuple[int, int], output_size: tuple[int, int], shot: dict[str, Any],
-                   pose: tuple[float, float, float] | None = None, *, exact: bool = False) -> tuple[np.ndarray, np.ndarray]:
+                   pose: tuple[float, float, float] | None = None, *, exact: bool = False, fast_wrap: bool = False) -> tuple[np.ndarray, np.ndarray]:
     """Return continuous longitude/latitude maps; unwrap before interpolation."""
     sw, sh = source_size; width, height = output_size
     yaw, pitch, fov = pose or (float(shot.get("yaw") or 0), float(shot.get("pitch") or 0), float(shot.get("fov") or 82))
@@ -109,7 +125,10 @@ def reproject_maps(source_size: tuple[int, int], output_size: tuple[int, int], s
     if (mw, mh) != (width, height):
         mx = cv2.resize(mx, (width, height), interpolation=cv2.INTER_CUBIC)
         my = cv2.resize(my, (width, height), interpolation=cv2.INTER_CUBIC)
-    mx %= sw
+    if fast_wrap:
+        _fast_wrap_x_inplace(mx, sw)
+    else:
+        mx %= sw
     np.clip(my, 0, sh - 1, out=my)
     return mx, my
 
