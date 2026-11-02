@@ -45,6 +45,10 @@ def test_auto_lifts_dark_reference_and_preview_matches_export(tmp_path,monkeypat
  assert c[:,:50].mean()<4
  assert abs(c[:,315:].mean()-a[:,315:].mean())<12
  assert abs(b[:,100:220].mean()-c[:,100:220].mean())<5
+ from core.shot_review import review_items
+ rendered=review_items(p,render_missing=True)
+ polled=review_items(p,render_missing=False)
+ assert rendered[0]['thumbnail'] and rendered[0]['thumbnail']==polled[0]['thumbnail']
  old=review_previews.preview_path(p,0,s)
  p.data['settings']['edit']['video_light']['cameras']={str(v):{'auto':False,'light':-.2,'shadows':0}}
  assert old!=review_previews.preview_path(p,0,s)

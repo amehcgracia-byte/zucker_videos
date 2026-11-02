@@ -911,7 +911,16 @@ def review_items(
         from core.stages.export import _color_profiles_for_segments
         color_profiles = _color_profiles_for_segments(project, segments, [])
     else:
+        # Status-only polling must use the same cache identity as the worker,
+        # without launching new measurements. Otherwise corrected thumbnails
+        # exist on disk but the page waits forever for a different raw key.
         color_profiles = {}
+        if apply_color_profile or any(segment.get('video_light') is not None for segment in segments):
+            try:
+                cached = json.loads((project.cache_dir / 'color_profiles.json').read_text())
+                color_profiles = cached.get('corrections') or {}
+            except (OSError, ValueError, TypeError):
+                pass
     pending = []
     for index, segment in enumerate(segments):
         source, timestamp, output = _thumbnail_asset(root, index, segment, color_profiles.get(str(segment.get("clip_path")), {}))
