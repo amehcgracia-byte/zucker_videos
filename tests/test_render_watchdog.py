@@ -98,7 +98,9 @@ def test_retry_budget_is_shared_with_later_repair_of_same_segment(tmp_path):
     assert calls==[False,True,False]
 
 @pytest.mark.parametrize('spherical',[False,True])
-def test_real_renderer_retry_keeps_recipe_and_forces_cpu_encoder_and_decoder(tmp_path,monkeypatch,spherical):
+@pytest.mark.parametrize('host',['darwin','linux'])
+def test_real_renderer_retry_keeps_recipe_and_forces_cpu_encoder_and_decoder(tmp_path,monkeypatch,spherical,host):
+    monkeypatch.setattr(export.sys,'platform',host)
     project=SimpleNamespace(data={'settings':{'export':{'spherical_remap_backend':'metal'}}},artifacts_dir=tmp_path)
     segment={'duration_sec':1,'clip_start_sec':13.731,'source_path':'source.mp4'}
     if spherical:segment['spherical_shot']={'type':'singer','movement':'pan_left','runtime_motion_enabled':True,'yaw':10,'pitch':0,'fov':80}
@@ -118,7 +120,7 @@ def test_real_renderer_retry_keeps_recipe_and_forces_cpu_encoder_and_decoder(tmp
     export._render_segment(project,segment,'master.wav',tmp_path/'segment-0001.mp4','youtube',18000000)
     assert len(calls)==2
     first,second=calls
-    assert first[0][first[0].index('-c:v')+1]=='h264_videotoolbox'
+    assert first[0][first[0].index('-c:v')+1]==('h264_videotoolbox' if host=='darwin' else 'libx264')
     assert second[0][second[0].index('-c:v')+1]=='libx264'
     assert first[0][:first[0].index('-c:v')]==second[0][:second[0].index('-c:v')]
     assert second[0][second[0].index('-b:v')+1]=='18000000'
