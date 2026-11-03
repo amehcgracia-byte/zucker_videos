@@ -1085,6 +1085,7 @@ def test_paired_flat_fov_uses_projection_math_for_16x9():
 
 
 def test_render_segment_falls_back_to_proxy_when_original_decode_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.stages.export.sys.platform", "darwin")
     project = create_project("Fallback", str(tmp_path / "Fallback.zuckervid"))
     source = tmp_path / "source.mov"
     proxy = tmp_path / "proxy.mp4"

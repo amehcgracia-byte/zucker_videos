@@ -2471,19 +2471,7 @@ def _render_segment(
             command_recorder.append(command)
         render(command)
         return rendered_from
-    try:
-        command = command_base + hardware + [str(output_path)]
-        if command_recorder is not None:
-            command_recorder.append(command)
-        render(command)
-        return rendered_from
-    except SegmentInactivityError:
-        raise
-    except FFmpegError as exc:
-        if output_path.exists():
-            output_path.unlink()
-        if progress_callback:
-            progress_callback(0, t("hardware_fallback"))
+    def software_fallback(hardware_error=None):
         try:
             command = command_base + software + [str(output_path)]
             if command_recorder is not None:
@@ -2497,7 +2485,9 @@ def _render_segment(
                 output_path.unlink()
             proxy_path = source.get("proxy_path")
             if native_motion or not proxy_path or proxy_path == source["source_path"]:
-                raise FFmpegError(f"{fallback_exc}\nFallback after h264_videotoolbox failed with: {exc}") from fallback_exc
+                if hardware_error is None:
+                    raise
+                raise FFmpegError(f"{fallback_exc}\nFallback after h264_videotoolbox failed with: {hardware_error}") from fallback_exc
             if warnings is not None:
                 warnings.append(f"Original render failed for {Path(str(source['source_path'])).name}; using proxy fallback")
             return _render_proxy_segment(
@@ -2527,6 +2517,25 @@ def _render_segment(
                     command_path=output_path.with_suffix(".sendcmd.txt"),
                 ) if _spherical_shot(segment) else None,
             )
+
+    # VideoToolbox is an Apple encoder. Linux/Windows must not launch a
+    # predictably failing FFmpeg process for every shot. Keep real Mac fallback.
+    if sys.platform != "darwin":
+        return software_fallback()
+    try:
+        command = command_base + hardware + [str(output_path)]
+        if command_recorder is not None:
+            command_recorder.append(command)
+        render(command)
+        return rendered_from
+    except SegmentInactivityError:
+        raise
+    except FFmpegError as exc:
+        if output_path.exists():
+            output_path.unlink()
+        if progress_callback:
+            progress_callback(0, t("hardware_fallback"))
+        return software_fallback(exc)
 
 
 
