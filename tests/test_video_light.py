@@ -125,3 +125,19 @@ def test_auto_anchor_survives_first_shot_auto_off(tmp_path,monkeypatch):
  color=profile(p,s,{'luma':35,'luma_high':57})
  assert not filtergraph(color)
  assert filtergraph(color,{'auto':True,'light':0,'shadows':0})
+
+
+def test_360_polling_uses_the_same_profile_as_preview(tmp_path,monkeypatch):
+ from core.shot_review import review_items
+ monkeypatch.setenv('ZUCKER_DATA_ROOT',str(tmp_path/'state'))
+ p=create_project('Sphere cache',str(tmp_path/'edit.zuckervid'));ff,v=make_video(tmp_path)
+ p.data['inputs']['videos']=[{'path':str(v),'camera_role':'360','probe':{'width':320,'height':180,'duration':1,'projection':'equirect'}}]
+ p.data['settings']['edit']['video_light']={'enabled':True}
+ p.data['settings']['spherical_landmarks']={'keys':{'yaw':45,'pitch':0,'fov':85,'enabled':True}}
+ s={'clip_path':str(v),'source_path':str(v),'clip_start_sec':0,'duration_sec':1,'master_start_sec':0,'projection':'equirect','spherical_shot':{'type':'keys','shot_id':'keys','yaw':0,'pitch':0,'fov':95}}
+ atomic_write_json(p.artifacts_dir/'edit_plan.json',{'platform':'youtube','segments':[s]});p.save()
+ rendered=review_items(p,render_missing=True)
+ assert rendered[0]['thumbnail']
+ review_previews.preview_path(p,0,s)
+ polled=review_items(p,render_missing=False)
+ assert rendered[0]['thumbnail']==polled[0]['thumbnail']

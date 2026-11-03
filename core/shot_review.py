@@ -909,7 +909,7 @@ def review_items(
     # launch/inspect the complete plan just to report missing URLs.
     if render_missing and (apply_color_profile or any(segment.get('video_light') is not None for segment in segments)):
         from core.stages.export import _color_profiles_for_segments
-        color_profiles = _color_profiles_for_segments(project, segments, [])
+        color_profiles = _color_profiles_for_segments(project, _plan(project).get("segments") or segments, [])
     else:
         # Status-only polling must use the same cache identity as the worker,
         # without launching new measurements. Otherwise corrected thumbnails
