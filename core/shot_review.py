@@ -1020,28 +1020,14 @@ def review_items(
 
 
 def render_review_thumbnails(project: Project, indices: set[int], max_workers: int = 2) -> None:
-    """Render selected review thumbnails in parallel without blocking HTTP."""
-    selected = sorted({int(index) for index in indices})
-    if not selected:
+    """Refresh missing photos, including shared-profile dependants, off HTTP."""
+    if not indices:
         return
-    workers = max(1, min(int(max_workers), len(selected)))
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="review-thumb") as pool:
-        futures = {
-            pool.submit(
-                review_items,
-                project,
-                render_indices={index},
-                apply_color_profile=False,
-            ): index
-            for index in selected
-        }
-        for future in as_completed(futures):
-            index = futures[future]
-            try:
-                future.result()
-            except Exception as exc:
-                LOGGER.exception("Review thumbnail render failed for index %s", index)
-                mark_review_render_failed(project, {index}, str(exc))
+    # A swap can change the visible 360 colour samples and therefore the
+    # shared camera profile. Compute it once, then materialize every missing
+    # cache identity, not only the swapped slot. Existing photos are reused;
+    # review_items already bounds rendering to two workers.
+    review_items(project, apply_color_profile=False)
 
 
 def set_review_transition_types(project: Project, transitions: dict[str, Any] | list[Any] | None) -> dict[str, Any]:

@@ -141,3 +141,23 @@ def test_360_polling_uses_the_same_profile_as_preview(tmp_path,monkeypatch):
  review_previews.preview_path(p,0,s)
  polled=review_items(p,render_missing=False)
  assert rendered[0]['thumbnail']==polled[0]['thumbnail']
+
+
+def test_thumbnail_refresh_includes_shared_camera_profile_dependants(tmp_path,monkeypatch):
+ from core.shot_review import review_items,render_review_thumbnails
+ monkeypatch.setenv('ZUCKER_DATA_ROOT',str(tmp_path/'state'))
+ p=create_project('Shared camera light',str(tmp_path/'edit.zuckervid'));ff,v=make_video(tmp_path)
+ p.data['inputs']['videos']=[{'path':str(v),'probe':{'width':320,'height':180,'duration':1}}]
+ p.data['settings']['edit']['video_light']={'enabled':True}
+ segments=[{'clip_path':str(v),'source_path':str(v),'clip_start_sec':0,'duration_sec':.4,'master_start_sec':i*.4} for i in range(2)]
+ atomic_write_json(p.artifacts_dir/'edit_plan.json',{'platform':'youtube','segments':segments});p.save()
+ before=review_items(p)
+ assert all(x['thumbnail'] for x in before)
+ # A shared profile can change after editing/swapping one slot. Every photo
+ # that references that profile must become ready, including untouched slots.
+ p.data['settings']['edit']['video_light']['cameras']={str(v):{'auto':True,'light':.2,'shadows':0}}
+ p.save()
+ render_review_thumbnails(p,{0})
+ after=review_items(p,render_missing=False)
+ assert all(x['thumbnail'] for x in after)
+ assert before[1]['thumbnail']!=after[1]['thumbnail']
