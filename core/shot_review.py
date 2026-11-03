@@ -116,7 +116,13 @@ def _review_segment(project: Project, segment: dict[str, Any]) -> dict[str, Any]
 
 
 def _review_segments(project: Project) -> list[dict[str, Any]]:
-    return [_review_segment(project, segment) for segment in (_plan(project).get("segments") or [])]
+    result = [_review_segment(project, segment) for segment in (_plan(project).get("segments") or [])]
+    from core.video_light import settings
+    for segment in result:
+        spec = settings(project, segment)
+        if spec is not None:
+            segment['video_light'] = spec
+    return result
 
 
 
@@ -166,6 +172,8 @@ def _review_pose_for_cache(segment: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         pose["yaw"] = 0.0
     pose["motion"] = segment.get("motion") or {}
+    pose["video_light"] = segment.get("video_light")
+    pose["light_recipe"] = 1
     pose["source_projection"] = segment.get("projection")
     return pose
 
@@ -188,22 +196,12 @@ def _review_signature(segments: list[dict[str, Any]]) -> str:
 
 
 def _thumbnail_filter(segment: dict[str, Any], color_profile: dict[str, Any] | None = None) -> str:
-    color_profile = color_profile or {}
-    if color_profile:
-        # Keep review frames visually consistent with the final render.  The
-        # profile is computed once by export and passed through unchanged.
-        brightness = max(-0.12, min(0.12, float(color_profile.get("brightness_adjust") or 0.0)))
-        saturation = max(0.86, min(1.16, float(color_profile.get("saturation_adjust") or 1.0)))
-        red = max(-0.12, min(0.12, float(color_profile.get("red_balance") or 0.0)))
-        blue = max(-0.12, min(0.12, float(color_profile.get("blue_balance") or 0.0)))
-        correction = (
-            f"eq=brightness={brightness:.4f}:saturation={saturation:.4f},"
-            f"colorbalance=rs={red:.4f}:gs={-red * 0.35:.4f}:bs={-blue:.4f}:"
-            f"rm={red:.4f}:gm={-red * 0.35:.4f}:bm={-blue:.4f},"
-        )
-    else:
-        correction = ""
-    shot = segment.get("spherical_shot") or {}
+    color_profile = dict(color_profile or {})
+    if segment.get('video_light') is not None:
+        color_profile['video_light'] = segment['video_light']
+    from core.stages.export import _color_filter
+    correction = _color_filter(color_profile) + ',' if color_profile else ''
+    shot = segment.get('spherical_shot') or {}
     if not shot:
         if segment.get("flat_framing"):
             from core.flat_framing import filtergraph
@@ -837,12 +835,12 @@ def _render_thumbnail_to_path(project, segment, source, timestamp, output, root,
                 raise ThumbnailRenderError(thumbnail_error) from exc
 
 
-def _thumbnail_asset(root: Path, index: int, segment: dict[str, Any]) -> tuple[str, float, Path]:
+def _thumbnail_asset(root: Path, index: int, segment: dict[str, Any], color_profile=None) -> tuple[str, float, Path]:
     source = _source_for(segment)
     timestamp = float(segment.get("clip_start_sec") or 0.0) + max(0.1, float(segment.get("duration_sec") or 0.1)) / 2.0
     from core.storage import cache_mtime_ns
     source_mtime = cache_mtime_ns(Path(source)) if Path(source).exists() else 0
-    pose = json.dumps({**_review_pose_for_cache(segment),**({"flat_framing":segment["flat_framing"]} if segment.get("flat_framing") else {})}, sort_keys=True)
+    pose = json.dumps({**({"color_profile":color_profile} if color_profile else {}), **_review_pose_for_cache(segment),**({"flat_framing":segment["flat_framing"]} if segment.get("flat_framing") else {})}, sort_keys=True)
     key = hashlib.sha256(f"{source}|{source_mtime}|{timestamp:.4f}|{pose}".encode()).hexdigest()[:20]
     return source, timestamp, root / f"shot-{index:04d}-{key}.jpg"
 
@@ -909,14 +907,23 @@ def review_items(
     # Keep the default review path cheap: color profiling belongs to final
     # export and is optional for a thumbnail. A status-only request must not
     # launch/inspect the complete plan just to report missing URLs.
-    if render_missing and apply_color_profile:
+    if render_missing and (apply_color_profile or any(segment.get('video_light') is not None for segment in segments)):
         from core.stages.export import _color_profiles_for_segments
-        color_profiles = _color_profiles_for_segments(project, segments, [])
+        color_profiles = _color_profiles_for_segments(project, _plan(project).get("segments") or segments, [])
     else:
+        # Status-only polling must use the same cache identity as the worker,
+        # without launching new measurements. Otherwise corrected thumbnails
+        # exist on disk but the page waits forever for a different raw key.
         color_profiles = {}
+        if apply_color_profile or any(segment.get('video_light') is not None for segment in segments):
+            try:
+                cached = json.loads((project.cache_dir / 'color_profiles.json').read_text())
+                color_profiles = cached.get('corrections') or {}
+            except (OSError, ValueError, TypeError):
+                pass
     pending = []
     for index, segment in enumerate(segments):
-        source, timestamp, output = _thumbnail_asset(root, index, segment)
+        source, timestamp, output = _thumbnail_asset(root, index, segment, color_profiles.get(str(segment.get("clip_path")), {}))
         duration = max(0.1, float(segment.get("duration_sec") or 0.1))
         if not output.exists():
             legacy = _legacy_review_assets(str(root.parent)).get(output.name)
@@ -1013,28 +1020,14 @@ def review_items(
 
 
 def render_review_thumbnails(project: Project, indices: set[int], max_workers: int = 2) -> None:
-    """Render selected review thumbnails in parallel without blocking HTTP."""
-    selected = sorted({int(index) for index in indices})
-    if not selected:
+    """Refresh missing photos, including shared-profile dependants, off HTTP."""
+    if not indices:
         return
-    workers = max(1, min(int(max_workers), len(selected)))
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="review-thumb") as pool:
-        futures = {
-            pool.submit(
-                review_items,
-                project,
-                render_indices={index},
-                apply_color_profile=False,
-            ): index
-            for index in selected
-        }
-        for future in as_completed(futures):
-            index = futures[future]
-            try:
-                future.result()
-            except Exception as exc:
-                LOGGER.exception("Review thumbnail render failed for index %s", index)
-                mark_review_render_failed(project, {index}, str(exc))
+    # A swap can change the visible 360 colour samples and therefore the
+    # shared camera profile. Compute it once, then materialize every missing
+    # cache identity, not only the swapped slot. Existing photos are reused;
+    # review_items already bounds rendering to two workers.
+    review_items(project, apply_color_profile=False)
 
 
 def set_review_transition_types(project: Project, transitions: dict[str, Any] | list[Any] | None) -> dict[str, Any]:

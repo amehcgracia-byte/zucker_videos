@@ -96,7 +96,7 @@ SPHERICAL_NORMAL_FOV_MIN = NORMAL_FOV_MIN
 SPHERICAL_NORMAL_FOV_MAX = NORMAL_FOV_MAX
 SPHERICAL_MAX_HOLD_YAW_DEG = 16.0
 INTRO_DURATION = 10.0
-COLOR_PROFILE_VERSION = 6
+COLOR_PROFILE_VERSION = 7
 REEL_LETTERBOX_CACHE_VERSION = 2
 REEL_LETTERBOX_BLUR_SIGMA = 18.0
 # Reel logos are composed after the base export by Overlay & Captions. Keep
@@ -3949,6 +3949,9 @@ def _segment_filtergraph(
     reel_overlay_items: list[dict[str, Any]] | None = None,
     reel_letterbox_filter: str | None = None,
 ) -> str:
+    color_profile = dict(color_profile)
+    if segment and segment.get('video_light') is not None:
+        color_profile['video_light'] = segment['video_light']
     filters = []
     if source_filter:
         filters.append(source_filter)
@@ -4826,11 +4829,15 @@ def _color_filter(color_profile: dict[str, Any]) -> str:
     blue = max(-0.12, min(0.12, float(color_profile.get("blue_balance") or 0.0)))
     # Keep chroma changes deliberately small; the profile is a bridge between
     # cameras, not a replacement for the recorded look.
-    return (
+    base = (
         f"eq=brightness={brightness:.4f}:saturation={saturation:.4f},"
         f"colorbalance=rs={red:.4f}:gs={-red * 0.35:.4f}:bs={-blue:.4f}:"
         f"rm={red:.4f}:gm={-red * 0.35:.4f}:bm={-blue:.4f}"
     )
+
+    from core.video_light import filtergraph as light_filter
+    light = light_filter(color_profile)
+    return base + (',' + light if light else '')
 
 
 def _warn_unused_cameras(clip_fates: list[dict[str, Any]], plan: dict[str, Any], warnings: list[str]) -> None:
@@ -5406,7 +5413,15 @@ def _color_source_key(project: Project, record: dict[str, Any], path: str) -> st
     })[:32]
 
 
+_COLOR_PROFILE_LOCK = threading.RLock()
+
+
 def _color_profiles_for_segments(project: Project, segments: list[dict[str, Any]], warnings: list[str] | None = None, progress_callback: ProgressCallback | None = None) -> dict[str, dict[str, Any]]:
+    with _COLOR_PROFILE_LOCK:
+        return _measured_color_profiles(project, segments, warnings, progress_callback)
+
+
+def _measured_color_profiles(project: Project, segments: list[dict[str, Any]], warnings: list[str] | None = None, progress_callback: ProgressCallback | None = None) -> dict[str, dict[str, Any]]:
     """Measure each camera once and correct toward the fixed camera priority reference."""
     warnings = warnings if warnings is not None else []
     records = list(project.data.get("inputs", {}).get("videos", []))
@@ -5450,9 +5465,19 @@ def _color_profiles_for_segments(project: Project, segments: list[dict[str, Any]
     # Preserve reference exposure; matching must not brighten every camera.
     if not 10 <= float(ref_profile.get("luma") or 0) <= 245:
         warnings.append("The reference camera has extreme brightness; correction of the other cameras is limited.")
+    import statistics
+    # A useful common highlight percentile, independent of manufacturer. Dark
+    # stage backgrounds are never forced to middle grey.
+    light_target = max(80., min(110., statistics.median(float(p.get('luma_high') or float(p.get('luma') or 0)*2) for p in valid)))
     corrected: dict[str, dict[str, Any]] = {}
     for path, profile in measured.items():
         corrected[path] = {} if profile is ref_profile else color_correction_for_profile(profile, reference_for_matching)
+        from core.video_light import profile as light_profile
+        clip_segment = next(item for item in segments if str(item.get("clip_path") or "") == path)
+        light = light_profile(project, clip_segment, profile, light_target)
+        if light:
+            corrected[path]['brightness_adjust'] = 0.0  # recovery and camera colour matching are independent
+            corrected[path].update(light)
     artifact = {
         "version": COLOR_PROFILE_VERSION,
         "reference_priority": list(COLOR_REFERENCE_PRIORITY),
@@ -5463,7 +5488,7 @@ def _color_profiles_for_segments(project: Project, segments: list[dict[str, Any]
     }
     try:
         _color_profile_artifact(project).parent.mkdir(parents=True, exist_ok=True)
-        _color_profile_artifact(project).write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        atomic_write_json(_color_profile_artifact(project), artifact)
     except OSError as exc:
         warnings.append(f"No se pudo guardar el perfil de color del proyecto: {exc}")
     return corrected
@@ -5520,7 +5545,7 @@ def measure_clip_color(path: str, *, samples: list[dict[str, Any]] | None = None
         duration = _media_duration(path)
     except Exception as exc:
         return {}, t("color_skipped", filename=Path(path).name, reason=str(exc))
-    fields: dict[str, list[float]] = {key: [] for key in ("YAVG", "YMIN", "YMAX", "SATAVG", "UAVG", "VAVG")}
+    fields: dict[str, list[float]] = {key: [] for key in ("YAVG", "YLOW", "YHIGH", "YMIN", "YMAX", "SATAVG", "UAVG", "VAVG")}
     for command in color_sample_commands(path, duration, samples=samples):
         try:
             result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=30)
@@ -5537,6 +5562,7 @@ def measure_clip_color(path: str, *, samples: list[dict[str, Any]] | None = None
     return {
         "luma": mean("YAVG"), "saturation": mean("SATAVG"),
         "luma_min": mean("YMIN"), "luma_max": mean("YMAX"),
+        "luma_low": mean("YLOW"), "luma_high": mean("YHIGH"),
         "u_mean": mean("UAVG", 128.0), "v_mean": mean("VAVG", 128.0),
         "black_clip_ratio": sum(1 for value in fields["YMIN"] if value <= 2) / max(1, len(fields["YMIN"])),
         "white_clip_ratio": sum(1 for value in fields["YMAX"] if value >= 253) / max(1, len(fields["YMAX"])),
@@ -5563,7 +5589,7 @@ def color_sample_commands(path: str, duration: float, *, samples: list[dict[str,
                 "-i",
                 path,
                 "-vf",
-                ",".join(part for part in ("fps=2", sample.get("filter"), "scale=320:-2,signalstats,metadata=print") if part),
+                ",".join(part for part in ("fps=2", sample.get("filter"), "scale=320:-2:out_range=tv,signalstats,metadata=print") if part),
                 "-an",
                 "-f",
                 "null",

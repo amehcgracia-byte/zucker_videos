@@ -24,7 +24,7 @@ from core.project import Project
 
 LOGGER = logging.getLogger(__name__)
 
-PREVIEW_VERSION = 1
+PREVIEW_VERSION = 2
 PREVIEW_WIDTH, PREVIEW_HEIGHT = 480, 270
 PREVIEW_FPS = 15
 PREVIEW_SPHERE_WIDTH = 1920
@@ -43,10 +43,13 @@ def preview_path(project: Project, index: int, segment: dict[str, Any]) -> Path:
     from core.storage import cache_mtime_ns
     source = _source_for(segment)
     mtime = cache_mtime_ns(Path(source)) if source and Path(source).exists() else 0
+    from core.video_light import resolved_profile
     identity = json.dumps({
+        "color_profile": resolved_profile(project, segment),
         "version": PREVIEW_VERSION, "source": source, "mtime": mtime,
         "clip_start": round(float(segment.get("clip_start_sec") or 0.0), 3),
         "duration": round(float(segment.get("duration_sec") or 0.0), 3),
+        "video_light": segment.get("video_light"), "light_settings": project.data.get("settings", {}).get("edit", {}).get("video_light"),
         "shot": segment.get("spherical_shot") or {}, "motion": segment.get("motion") or {}, "flat_framing":segment.get("flat_framing"),
     }, sort_keys=True, default=str)
     key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
@@ -90,13 +93,15 @@ def _existing_export_proxy(project: Project, segment: dict[str, Any]) -> str | N
 def _render_flat(project: Project, segment: dict[str, Any], output: Path, ffmpeg: str) -> None:
     from core.shot_review import _source_for, _thumbnail_filter
     from core.stages import export
+    from core.video_light import resolved_profile
+    color = resolved_profile(project, segment)
     source = _source_for(segment)
     duration = max(0.1, float(segment.get("duration_sec") or 0.1))
     if segment.get("spherical_shot"):
         # 360 hold: the review photo's framing, now in motion.
         sphere, _ = _existing_sphere_source(project, segment)
         render_segment = dict(segment, source_path=sphere, clip_path=sphere, projection="equirect")
-        video_filter = _thumbnail_filter(render_segment).replace("w=360:h=202", f"w={PREVIEW_WIDTH}:h={PREVIEW_HEIGHT}")
+        video_filter = _thumbnail_filter(render_segment, color).replace("w=360:h=202", f"w={PREVIEW_WIDTH}:h={PREVIEW_HEIGHT}")
         video_filter = f"{video_filter},fps={PREVIEW_FPS}"
         source = sphere
     else:
@@ -106,7 +111,7 @@ def _render_flat(project: Project, segment: dict[str, Any], output: Path, ffmpeg
         if motion and "zoompan=" in motion:
             base = base.replace("1920:1080", "3840:2160")
         from core.flat_framing import filtergraph
-        steps = [filtergraph(segment["flat_framing"]) if segment.get("flat_framing") else None, base, f"fps={int(export.TARGET_EXPORT_FPS)}", motion,
+        steps = [export._color_filter(color) if color else None, filtergraph(segment["flat_framing"]) if segment.get("flat_framing") else None, base, f"fps={int(export.TARGET_EXPORT_FPS)}", motion,
                  f"scale={PREVIEW_WIDTH}:{PREVIEW_HEIGHT}", f"fps={PREVIEW_FPS}"]
         video_filter = ",".join(step for step in steps if step)
     command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
@@ -129,8 +134,11 @@ def _render_sphere_motion(project: Project, segment: dict[str, Any], output: Pat
     sampler = ((lambda seconds: _v360_motion_at(shot, duration, seconds))
                if (shot.get("type") in {"recorded_move", "planet"} and shot.get("movement") != "planet_to_stage")
                or not shot.get("movement") else None)
+    from core.video_light import resolved_profile
+    from core.stages.export import _color_filter
+    color = resolved_profile(project, segment)
     command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
-               "-s", f"{PREVIEW_WIDTH}x{PREVIEW_HEIGHT}", "-r", str(PREVIEW_FPS), "-i", "pipe:0", *_ENCODE, str(output)]
+               "-s", f"{PREVIEW_WIDTH}x{PREVIEW_HEIGHT}", "-r", str(PREVIEW_FPS), "-i", "pipe:0", *(["-vf", _color_filter(color)] if color else []), *_ENCODE, str(output)]
     # Decode at most PREVIEW_SPHERE_WIDTH wide: plenty for a 480 px view of a
     # narrow lens, and far cheaper to convert than the 4K/6K sphere.
     width = min(size[0], PREVIEW_SPHERE_WIDTH)
