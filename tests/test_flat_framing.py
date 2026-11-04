@@ -82,7 +82,7 @@ def test_manual_crop_moves_out_but_general_moves_in():
  assert 'zoompan=' in close and 'zoompan=' in wide
 
 
-@pytest.mark.parametrize('zoom,grows',[(1.,True),(1.8,False)])
+@pytest.mark.parametrize('zoom,grows',[(1.,True),(1.05,False),(1.8,False)])
 def test_authored_framing_motion_reaches_correct_visual_direction(tmp_path,monkeypatch,zoom,grows):
  import numpy as np
  from core.stages import export

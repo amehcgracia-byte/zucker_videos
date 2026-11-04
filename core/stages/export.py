@@ -3383,7 +3383,7 @@ def _reel_letterbox_filter(project: Project, segment: dict[str, Any], platform: 
 def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> str | None:
     if segment.get("flat_framing"):
         if platform not in {"youtube","reel","reel_horizontal"}:return None
-        close=float(segment['flat_framing'].get('zoom',1))>1.05
+        close=float(segment['flat_framing'].get('zoom',1))>1.001
         # One subtle move within the selected crop; no second random pan.
         return _ken_burns_filter({"type":"ken_burns","movement":"zoom_out_center" if close else "zoom_in_center",
             "zoom_start":1.06 if close else 1.,"zoom_end":1. if close else 1.06,
