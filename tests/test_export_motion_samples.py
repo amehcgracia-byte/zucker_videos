@@ -48,3 +48,26 @@ def test_cancellation_and_decoder_errors_are_not_hidden(monkeypatch):
     monkeypatch.setattr(export.subprocess, 'run', cancelled)
     with pytest.raises(RuntimeError, match='cancelled'):
         export._frame_md5_pair('video.mp4', .2, 1.5)
+
+
+def test_pair_bounds_all_thread_pools_without_relaxing_verification(monkeypatch):
+    calls = []
+    def decode(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, '0, 0, 0, 1, 10, first\n1, 0, 0, 1, 10, second\n', '')
+    monkeypatch.setattr(export.subprocess, 'run', decode)
+    assert export._frame_md5_pair('video.mp4', .2, 1.5) == ('first', 'second')
+    command, options = calls[0]
+    for flag in ('-threads', '-filter_complex_threads', '-threads:v:0', '-threads:v:1'):
+        assert command[command.index(flag) + 1] == '1'
+    assert command.index('-threads') < command.index('-i')
+    assert options['timeout'] == 20
+    assert '-filter_complex' in command and '-f' in command
+
+
+def test_concurrent_pairs_retain_exact_seek_hashes(moving_video):
+    from concurrent.futures import ThreadPoolExecutor
+    expected = (export._frame_md5(moving_video, .123), export._frame_md5(moving_video, 1.987))
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        actual = list(pool.map(lambda _: export._frame_md5_pair(moving_video, .123, 1.987), range(4)))
+    assert actual == [expected] * 4
