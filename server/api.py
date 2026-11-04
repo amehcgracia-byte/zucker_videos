@@ -1815,9 +1815,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                     for item in items
                     if item.get("thumbnail_status") == "missing"
                 }
-                _queue_review_thumbnail_render(project, pending)
                 if state.wizard.status().get("status") == "waiting_review":
                     review_previews.PREFETCH.start(project)
+                else:
+                    _queue_review_thumbnail_render(project, pending)
             return jsonify({
                 "items": items,
                 "platform": project.data.get("settings", {}).get("wizard", {}).get("platform"),
@@ -1962,14 +1963,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             result = replace_slots(project, rejected)
             replaced = {int(value) for value in result.get("replaced", [])}
             if replaced:
-                def render_replaced_thumbnails() -> None:
-                    render_review_thumbnails(project, replaced, max_workers=2)
-
-                threading.Thread(
-                    target=render_replaced_thumbnails,
-                    name="review-thumbnail-render",
-                    daemon=True,
-                ).start()
+                if state.wizard.status().get('status') == 'waiting_review':
+                    review_previews.PREFETCH.start(project)
+                else:
+                    _queue_review_thumbnail_render(project, replaced)
             return jsonify(result)
         except Exception:
             LOGGER.exception("Review replacement failed for %s", project.folder)
@@ -5829,6 +5826,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.post("/api/v1/wizard/cancel")
     def api_wizard_cancel() -> Response:
+        review_previews.PREFETCH.stop()
         if state.composition.cancel():
             return jsonify({"ok": True, "status": "cancelling"})
         cancelled = state.wizard.cancel()

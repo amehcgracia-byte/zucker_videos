@@ -7,6 +7,7 @@ from core.project import atomic_write_json
 from core.show_review_history import record
 
 LOCK = threading.RLock()
+_FRAME_LOCKS = [threading.Lock() for _ in range(16)]
 MIN = .2
 
 @lru_cache(maxsize=256)
@@ -216,7 +217,7 @@ def register_edit_timeline(app,project,invalidate):
                 number=next((j+1 for j,r in enumerate(records) if r.get('path')==c.get('source_path')),None)
                 return ('Camera '+str(number).zfill(2)+' · ' if number is not None else '')+{'360':'360','fixed':'Fixed','moving':'Moving'}[camera_kind(p,c)]+(' · '+str(c['spherical_shot'].get('label') or 'View') if c.get('spherical_shot') else '')
             from core.video_light import settings as light_settings, DEFAULT
-            return jsonify(project_id=str(p.folder),revision=revision(data),platform=data.get('platform') or p.data.get('settings',{}).get('wizard',{}).get('platform'),pose=data['segments'][i].get('spherical_shot') or {},framing=data['segments'][i].get('flat_framing') or {'zoom':1,'x':.5,'y':.5},light=light_settings(p,choices[0]) or {**DEFAULT,'auto':False},choices=[{'label':label(c),'spherical':bool(c.get('spherical_shot')),'light':light_settings(p,c) or {**DEFAULT,'auto':False}} for c in choices])
+            return jsonify(reel_contain=p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix' or (p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix_vertical_horizontal' and data['segments'][i].get('reel_mix_treatment')=='horizontal'),project_id=str(p.folder),revision=revision(data),platform=data.get('platform') or p.data.get('settings',{}).get('wizard',{}).get('platform'),pose=data['segments'][i].get('spherical_shot') or {},framing=data['segments'][i].get('flat_framing') or {'zoom':1,'x':.5,'y':.5},light=light_settings(p,choices[0]) or {**DEFAULT,'auto':False},choices=[{'label':label(c),'spherical':bool(c.get('spherical_shot')),'light':light_settings(p,c) or {**DEFAULT,'auto':False}} for c in choices])
         except (OSError,ValueError,KeyError,IndexError) as e:return jsonify(error={'message':str(e)}),400
     @app.patch('/api/v1/edit/shot')
     def patch_music_shot():
@@ -230,6 +231,7 @@ def register_edit_timeline(app,project,invalidate):
                 if not 0<=i<len(data['segments']):raise ValueError('Choose an existing shot')
                 choices=music_choices(p,data,i)
                 if not 0<=choice<len(choices):raise ValueError('Choose one of this shot’s cameras')
+                if not isinstance(body.get('apply_to_source',False),bool):raise ValueError('Choose whether to apply to the source video')
                 before=data['segments'][i];s=copy.deepcopy(choices[choice])
                 if s.get('spherical_shot'):
                     pose=s['spherical_shot']
@@ -257,6 +259,15 @@ def register_edit_timeline(app,project,invalidate):
                     else:s['video_light']=light
                 from core.stages.edit import _camera_id
                 s['camera_id']=_camera_id(s);data['segments'][i]=s
+                if body.get('apply_to_source'):
+                    # Same file, not same manufacturer/camera id or filename.
+                    source=Path(str(s.get('source_path') or s.get('clip_path') or '')).resolve()
+                    for item in data['segments']:
+                        other=Path(str(item.get('source_path') or item.get('clip_path') or '')).resolve()
+                        if other != source:continue
+                        for key in ('flat_framing','spherical_shot','manual_view','video_light'):
+                            if key in s:item[key]=copy.deepcopy(s[key])
+                            else:item.pop(key,None)
                 for key in ('camera_usage','spherical_shot_usage'):data.pop(key,None)
                 atomic_write_json(path,data)
                 record(p,'music.camera.corrected',before,s,evidence={'shot':i})
@@ -274,7 +285,8 @@ def register_edit_timeline(app,project,invalidate):
             i=int(request.args['index']);choice=int(request.args.get('choice',0))
             if i<0 or choice<0:raise ValueError('Choose a camera shot')
             shot=music_choices(p,data,i)[choice]
-            source=next(Path(shot[k]) for k in ('source_path','clip_path','proxy_path') if shot.get(k) and Path(shot[k]).is_file())
+            from core.shot_review import _source_for, _spherical_analysis_source
+            source=Path(_spherical_analysis_source(p,shot) if shot.get('spherical_shot') else _source_for(shot))
             at=float(shot.get('clip_start_sec') or 0)+float(shot['duration_sec'])/2
             f=str(tool_status().get('ffmpeg_path') or 'ffmpeg')
             filters=[]
@@ -286,6 +298,14 @@ def register_edit_timeline(app,project,invalidate):
                 color=resolved_profile(p,shot)
                 if color:filters.append(_color_filter(color))
             filters.append('scale=640:-2')
-            image=subprocess.check_output([f,'-v' ,'error','-nostdin','-ss',str(at),'-i',str(source),'-frames:v','1','-vf',','.join(filters),'-f','image2pipe','-vcodec','mjpeg','-threads','1','-'],timeout=30)
-            return send_file(io.BytesIO(image),mimetype='image/jpeg')
+            stat=source.stat()
+            key=hashlib.sha256(json.dumps([str(source),stat.st_size,stat.st_mtime_ns,at,filters]).encode()).hexdigest()
+            target=p.cache_dir/'camera_frames'/f'{key}.jpg'
+            with _FRAME_LOCKS[int(key[:8],16)%len(_FRAME_LOCKS)]:
+                if not target.is_file():
+                    image=subprocess.check_output([f,'-v' ,'error','-nostdin','-ss',str(at),'-i',str(source),'-frames:v','1','-vf',','.join(filters),'-f','image2pipe','-vcodec','mjpeg','-threads','1','-'],timeout=30)
+                    target.parent.mkdir(parents=True,exist_ok=True)
+                    temporary=target.with_suffix('.tmp')
+                    temporary.write_bytes(image);temporary.replace(target)
+            return send_file(target,mimetype='image/jpeg')
         except (OSError,ValueError,KeyError,IndexError,StopIteration,subprocess.SubprocessError) as e:return jsonify(error={'message':'Could not load this camera frame'}),400

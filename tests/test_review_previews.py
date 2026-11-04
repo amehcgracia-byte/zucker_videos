@@ -103,3 +103,62 @@ def test_frontend_previews_on_hover_only():
     assert 'data-preview="${escapeHtml(item.preview || "")}"' in source
     assert "function startReviewPreview(button)" in source and "function stopReviewPreview()" in source
     assert 'video.removeAttribute("src")' in source
+
+
+def test_status_identity_never_measures_light(project, tmp_path, monkeypatch):
+    from core import video_light
+    project.data['settings']['edit']['video_light'] = {'enabled': True}
+    monkeypatch.setattr(video_light, 'resolved_profile', lambda *a: pytest.fail('status measured cameras'))
+    segment = {'source_path': str(tmp_path/'camera.mp4'), 'duration_sec': 6}
+    assert review_previews.preview_path(project, 0, segment).suffix == '.mp4'
+
+
+def test_prefetch_finishes_groups_of_three_before_next_thumbnails(project, monkeypatch):
+    import threading
+    from core import shot_review
+    segments = [{'duration_sec': 1, 'slot': i} for i in range(7)]
+    calls = []
+    monkeypatch.setattr(shot_review, '_review_segments', lambda p: segments)
+    monkeypatch.setattr(shot_review, 'render_review_thumbnails', lambda p, indices, **kw: calls.append(('photos', sorted(indices))))
+    monkeypatch.setattr(review_previews, 'render_preview', lambda p, index, s: calls.append(('preview', index)))
+    review_previews._Prefetcher._run(project, threading.Event())
+    assert calls == [('photos', [0,1,2]), ('preview', 0), ('preview', 1), ('preview', 2),
+                     ('photos', [3,4,5]), ('preview', 3), ('preview', 4), ('preview', 5),
+                     ('photos', [6]), ('preview', 6)]
+
+
+def test_resolved_light_single_flight_and_plan_invalidation(project, tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from core import video_light
+    from core.stages import export
+    from core.project import atomic_write_json
+    project.data['settings']['edit']['video_light'] = {'enabled': True}
+    segment = {'clip_path': str(tmp_path/'camera.mp4'), 'duration_sec': 1}
+    atomic_write_json(project.artifacts_dir/'edit_plan.json', {'segments': [segment]})
+    calls = []
+    monkeypatch.setattr(export, '_color_profiles_for_segments', lambda *a: calls.append(1) or {segment['clip_path']: {'light_anchor': .2}})
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: video_light.resolved_profile(project, segment), range(20)))
+    assert len(calls) == 1 and all(r['light_anchor'] == .2 for r in results)
+    segment['duration_sec'] = 2
+    atomic_write_json(project.artifacts_dir/'edit_plan.json', {'segments': [segment]})
+    video_light.resolved_profile(project, segment)
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize('layout,treatment',[('9:16',None),('mix',None),('mix_vertical_horizontal','horizontal'),('mix_vertical_horizontal','vertical')])
+def test_reel_preview_uses_vertical_export_canvas_and_thumbnail(project,tmp_path,layout,treatment):
+    from core.project import atomic_write_json
+    from core.shot_review import review_items
+    source=_video(tmp_path/'wide.mp4','640x360',1)
+    project.data['settings'].setdefault('wizard',{}).update(platform='reel',reel_aspect=layout)
+    segment={'source_path':source,'clip_path':source,'clip_start_sec':0,'duration_sec':.6,
+             'master_start_sec':0,'reel_mix_treatment':treatment,'flat_framing':{'zoom':1.2,'x':.8,'y':.5}}
+    atomic_write_json(project.artifacts_dir/'edit_plan.json',{'platform':'reel','segments':[segment]})
+    items=review_items(project)
+    assert items[0]['thumbnail'] and items[0]['preview_ready']
+    from core.shot_review import _review_segments
+    output=review_previews.preview_path(project,0,_review_segments(project)[0])
+    info=_probe(output)
+    assert (int(info['width']),int(info['height']))==(270,480)
+    assert output.is_file()
