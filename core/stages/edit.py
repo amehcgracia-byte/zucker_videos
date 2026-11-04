@@ -55,7 +55,7 @@ MOTION_WEIGHTS = {name: 1.0 for name in MOTION_CATALOG}
 # authored speed, and a new very-slow option keeps close-ups composed.
 MOTION_SPEEDS = (("very_slow", 0.50), ("slow", 0.72), ("fast", 1.0))
 IPHONE_CROP_TOP_LIMIT = 0.80
-YOUTUBE_CAMERA_SELECTION_VERSION = 24  # v24: skip a handheld camera while it moves when a steady camera covers the moment
+YOUTUBE_CAMERA_SELECTION_VERSION = 25  # v24: skip a handheld camera while it moves when a steady camera covers the moment
 # Legacy diagnostic threshold retained in project settings/manifests. The
 # production policy now stops close-up filler as soon as one alternative
 # physical camera covers the same synced window.
@@ -232,6 +232,17 @@ class EditStage(Stage):
             plan = _simple_plan(coverage, project.data.get("settings", {}), recorded_moves=recorded_moves)
             beats = {"stage": self.name, "platform": platform, "beats_sec": [], "bars_sec": [], "sections_sec": [], "tempo": None, "placeholder_short_form": platform != "360"}
         else:
+            if project.data.get('settings', {}).get('edit', {}).get('performer_rotation'):
+                from core.stage_performers import detect
+                configured = project.data['settings']['edit'].get('performers_by_source') or {}
+                for source in coverage.get('sources') or []:
+                    if _source_role(source) != 'fixed_rear':
+                        continue
+                    def checkpoint(sample):
+                        progress_callback(46 + sample, 'Finding musicians in the fixed camera')
+                    people = (project.data['settings']['edit'].get('performer_regions') or {}).get(str(source.get('source_path') or source.get('path'))) or detect(project, source, coverage.get('window') or {}, checkpoint)
+                    roles = configured.get(str(source.get('source_path') or source.get('path'))) or {}
+                    source['stage_performers'] = [{**p, 'role': roles.get(p['id'], 'unknown')} for p in people]
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, t("choosing_cameras"))
             events = beats.get("instrument_highlights") or []
@@ -966,6 +977,8 @@ def _youtube_multicam_plan(
     subject_seconds: dict[str, float] = {}
     subject_fallbacks = 0
     fixed_rear_motion_index = 0
+    performer_indices = {}
+    performer_histories = {}
     usage_counts: dict[str, int] = {}
     operator_samples_cache: dict[str, list[dict[str, Any]]] = {}
     selection_stats = _selection_stats_template(sources, start, end)
@@ -1326,6 +1339,13 @@ def _youtube_multicam_plan(
         del recent_subjects[:-4]
         if subject:
             subject_seconds[subject] = subject_seconds.get(subject, 0.0) + segment_end - segment_start
+        if edit_settings.get('performer_rotation') and _source_role(source) == 'fixed_rear' and source.get('stage_performers'):
+            from core.stage_performers import apply as apply_performers
+            identity = str(source.get('source_path') or source.get('path'))
+            index = performer_indices.get(identity, 0)
+            apply_performers(segment, source['stage_performers'], index,
+                             performer_histories.setdefault(identity, []), edit_settings.get('instrument_activity'))
+            performer_indices[identity] = index + 1
         segments.append(segment)
         if shot_ready:
             shot_ready(len(segments) - 1, segment)

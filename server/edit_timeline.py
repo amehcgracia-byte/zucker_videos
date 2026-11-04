@@ -129,7 +129,7 @@ def register_edit_timeline(app,project,invalidate):
             path=c.get('path') or c.get('clip_path') or c.get('source_path')
             if not path:continue
             candidate={**s,'clip_path':path,'source_path':c.get('source_path') or path,'filename':c.get('filename') or Path(path).name,'clip_start_sec':float(s['master_start_sec'])-float(c.get('offset_sec') or 0) if platform=='youtube' else float(c.get('clip_start_sec') or 0),'clip_offset_sec':float(c.get('offset_sec') or 0)}
-            for key in ('proxy_path','spherical_source_path','spherical_shot','reel_framing','projection','flat_framing'):
+            for key in ('proxy_path','spherical_source_path','spherical_shot','reel_framing','projection','flat_framing','stage_performers','performer_view','performer_evidence'):
                 candidate.pop(key,None)
                 if c.get(key) is not None:candidate[key]=c[key]
             if candidate.get('projection') in ('equirect','raw_insv') and not candidate.get('spherical_shot'):candidate['spherical_shot']={'type':'manual','yaw':0,'pitch':0,'fov':95,'projection_preset':'normal'}
@@ -205,6 +205,30 @@ def register_edit_timeline(app,project,invalidate):
             return send_file(target,conditional=True)
         except (OSError,ValueError,KeyError) as e:return jsonify(error={'message':str(e)}),400
 
+    @app.post('/api/v1/settings/stage-performers')
+    def set_stage_performers():
+        body=request.get_json(silent=True) or {}
+        try:
+            from core.stage_performers import validate_activity
+            with LOCK:
+                p=project()
+                if p is None or body.get('project_id')!=str(p.folder):
+                    return jsonify(error={'message':'Reopen this project'}),409
+                if app.config.get('MONTARA_EDIT_BUSY',lambda:False)():
+                    return jsonify(error={'message':'Wait for the current render'}),409
+                activity=validate_activity(body.get('activity'))
+                master=str((p.data.get('inputs',{}).get('master') or {}).get('path') or '')
+                if activity and body.get('master')!=master:
+                    return jsonify(error={'message':'Activity belongs to another song'}),409
+                edit=p.data.setdefault('settings',{}).setdefault('edit',{})
+                edit['performer_rotation']=True
+                if activity:edit['instrument_activity']=activity
+                else:edit.pop('instrument_activity',None)
+                p.save()
+                return jsonify(enabled=True,activity=bool(activity))
+        except (OSError,ValueError,TypeError,AttributeError) as e:
+            return jsonify(error={'message':str(e)}),400
+
     @app.get('/api/v1/edit/shot')
     def get_music_shot():
         try:
@@ -217,7 +241,7 @@ def register_edit_timeline(app,project,invalidate):
                 number=next((j+1 for j,r in enumerate(records) if r.get('path')==c.get('source_path')),None)
                 return ('Camera '+str(number).zfill(2)+' · ' if number is not None else '')+{'360':'360','fixed':'Fixed','moving':'Moving'}[camera_kind(p,c)]+(' · '+str(c['spherical_shot'].get('label') or 'View') if c.get('spherical_shot') else '')
             from core.video_light import settings as light_settings, DEFAULT
-            return jsonify(reel_contain=p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix' or (p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix_vertical_horizontal' and data['segments'][i].get('reel_mix_treatment')=='horizontal'),project_id=str(p.folder),revision=revision(data),platform=data.get('platform') or p.data.get('settings',{}).get('wizard',{}).get('platform'),pose=data['segments'][i].get('spherical_shot') or {},framing=data['segments'][i].get('flat_framing') or {'zoom':1,'x':.5,'y':.5},light=light_settings(p,choices[0]) or {**DEFAULT,'auto':False},choices=[{'label':label(c),'spherical':bool(c.get('spherical_shot')),'light':light_settings(p,c) or {**DEFAULT,'auto':False}} for c in choices])
+            return jsonify(performers=data['segments'][i].get('stage_performers') or [],performer_view=data['segments'][i].get('performer_view'),performer_evidence=data['segments'][i].get('performer_evidence'),reel_contain=p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix' or (p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix_vertical_horizontal' and data['segments'][i].get('reel_mix_treatment')=='horizontal'),project_id=str(p.folder),revision=revision(data),platform=data.get('platform') or p.data.get('settings',{}).get('wizard',{}).get('platform'),pose=data['segments'][i].get('spherical_shot') or {},framing=data['segments'][i].get('flat_framing') or {'zoom':1,'x':.5,'y':.5},light=light_settings(p,choices[0]) or {**DEFAULT,'auto':False},choices=[{'label':label(c),'spherical':bool(c.get('spherical_shot')),'kind':camera_kind(p,c),'light':light_settings(p,c) or {**DEFAULT,'auto':False}} for c in choices])
         except (OSError,ValueError,KeyError,IndexError) as e:return jsonify(error={'message':str(e)}),400
     @app.patch('/api/v1/edit/shot')
     def patch_music_shot():
@@ -247,6 +271,7 @@ def register_edit_timeline(app,project,invalidate):
                 elif component!='light':
                     from core.flat_framing import validate
                     s['flat_framing']=validate(body.get('flat_framing') or {'zoom':1,'x':.5,'y':.5})
+                    s['manual_view']=True
                 if 'video_light' in body:
                     from core.video_light import validate as validate_light
                     light=validate_light(body['video_light'])
@@ -273,6 +298,35 @@ def register_edit_timeline(app,project,invalidate):
                         for key in keys:
                             if key in s:item[key]=copy.deepcopy(s[key])
                             else:item.pop(key,None)
+                if body.get('performer_roles') is not None or body.get('remember_musician'):
+                    from core.stage_performers import ROLES, role, apply as apply_performers
+                    if choice!=0:raise ValueError('Save the camera choice before assigning musicians')
+                    source=str(s.get('source_path') or s.get('clip_path') or '')
+                    people=copy.deepcopy(before.get('stage_performers') or [])
+                    assignments=body.get('performer_roles') or {}
+                    if not isinstance(assignments,dict) or any(k not in {p['id'] for p in people} or v not in ROLES for k,v in assignments.items()):
+                        raise ValueError('Choose detected musicians and supported instruments')
+                    for person in people:person['role']=assignments.get(person['id'],person.get('role','unknown'))
+                    if body.get('remember_musician'):
+                        identity=role(body['remember_musician'])
+                        if identity not in ROLES-{'unknown'} or s.get('spherical_shot'):
+                            raise ValueError('Choose an instrument for this fixed-camera crop')
+                        from core.camera_types import kind
+                        if kind(p,s)!='fixed':raise ValueError('Remember musicians only on a fixed camera')
+                        if len(people)>=8:raise ValueError('At most eight musicians per camera')
+                        people.append({'id':f'custom-{len(people)+1}','role':identity,**s['flat_framing']})
+                    edit=p.data.setdefault('settings',{}).setdefault('edit',{})
+                    # Persist full regions as well as roles, for future reruns.
+                    edit.setdefault('performers_by_source',{})[source]={v['id']:v['role'] for v in people}
+                    edit.setdefault('performer_regions',{})[source]=people
+                    history=[];take=0
+                    for item in data['segments']:
+                        if str(item.get('source_path') or item.get('clip_path') or '')!=source:continue
+                        item['stage_performers']=copy.deepcopy(people)
+                        if not item.get('manual_view'):
+                            apply_performers(item,people,take,history,edit.get('instrument_activity'))
+                        take+=1
+                    p.save()
                 for key in ('camera_usage','spherical_shot_usage'):data.pop(key,None)
                 atomic_write_json(path,data)
                 record(p,'music.camera.corrected',before,s,evidence={'shot':i})
