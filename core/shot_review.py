@@ -116,7 +116,12 @@ def _review_segment(project: Project, segment: dict[str, Any]) -> dict[str, Any]
 
 
 def _review_segments(project: Project) -> list[dict[str, Any]]:
-    result = [_review_segment(project, segment) for segment in (_plan(project).get("segments") or [])]
+    plan = _plan(project)
+    result = [_review_segment(project, segment) for segment in (plan.get("segments") or [])]
+    if (plan.get('platform') or project.data.get('settings', {}).get('wizard', {}).get('platform')) == 'reel':
+        for segment in result:
+            segment['review_canvas'] = 'reel'
+            segment['review_layout'] = project.data.get('settings', {}).get('wizard', {}).get('reel_aspect', '9:16')
     from core.video_light import settings
     for segment in result:
         spec = settings(project, segment)
@@ -811,10 +816,19 @@ def _render_thumbnail_to_path(project, segment, source, timestamp, output, root,
         if not output.exists():
             _set_render_status(root, output.name, {"state": "rendering"})
             temporary_thumbnail = output.with_name(f"{output.stem}.{threading.get_ident()}.tmp.jpg")
+            if segment.get('review_canvas') == 'reel':
+                # The card is taken from the same vertical preview, not a
+                # landscape thumbnail whose crop the editor would have to guess.
+                try:
+                    render_source = str(review_previews.render_preview(project, index=int(output.name.split('-')[1]), segment=segment))
+                except Exception as exc:
+                    _set_render_status(root, output.name, {"state":"failed", "error":"Could not prepare the vertical preview"})
+                    raise ThumbnailRenderError("Could not prepare the vertical preview") from exc
+                timestamp = 0.0
             command = [
                 ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", f"{timestamp:.3f}",
                 "-i", render_source, "-frames:v", "1", "-threads", "1",
-                "-vf", _thumbnail_filter(render_segment, color_profile),
+                "-vf", "scale=270:480" if segment.get("review_canvas") == "reel" else _thumbnail_filter(render_segment, color_profile),
                 "-q:v", "5", "-y", str(temporary_thumbnail),
             ]
             try:
@@ -840,7 +854,7 @@ def _thumbnail_asset(root: Path, index: int, segment: dict[str, Any], color_prof
     timestamp = float(segment.get("clip_start_sec") or 0.0) + max(0.1, float(segment.get("duration_sec") or 0.1)) / 2.0
     from core.storage import cache_mtime_ns
     source_mtime = cache_mtime_ns(Path(source)) if Path(source).exists() else 0
-    pose = json.dumps({**({"color_profile":color_profile} if color_profile else {}), **_review_pose_for_cache(segment),**({"flat_framing":segment["flat_framing"]} if segment.get("flat_framing") else {})}, sort_keys=True)
+    pose = json.dumps({**({"review_canvas":segment.get("review_canvas"),"review_layout":segment.get("review_layout"),"treatment":segment.get("reel_mix_treatment"),"subject_center":segment.get("reel_subject_center")} if segment.get("review_canvas") else {}), **({"color_profile":color_profile} if color_profile else {}), **_review_pose_for_cache(segment),**({"flat_framing":segment["flat_framing"]} if segment.get("flat_framing") else {})}, sort_keys=True)
     key = hashlib.sha256(f"{source}|{source_mtime}|{timestamp:.4f}|{pose}".encode()).hexdigest()[:20]
     return source, timestamp, root / f"shot-{index:04d}-{key}.jpg"
 
@@ -986,7 +1000,8 @@ def review_items(
             nonlocal completed
             index, segment, source, timestamp, output, profile = item
             items[index].update(thumbnail=f"/api/v1/wizard/review/thumbnail/{signature}/{output.name}",
-                                thumbnail_status="ready", thumbnail_error=None)
+                                thumbnail_status="ready", thumbnail_error=None,
+                                preview_ready=review_previews.preview_path(project,index,segment).is_file())
             completed += 1
             if progress_callback:
                 progress_callback(int(100 * completed / max(1, len(items))),

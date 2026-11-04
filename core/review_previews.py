@@ -24,7 +24,7 @@ from core.project import Project
 
 LOGGER = logging.getLogger(__name__)
 
-PREVIEW_VERSION = 3
+PREVIEW_VERSION = 4
 PREVIEW_WIDTH, PREVIEW_HEIGHT = 480, 270
 PREVIEW_FPS = 15
 PREVIEW_SPHERE_WIDTH = 1920
@@ -46,6 +46,8 @@ def preview_path(project: Project, index: int, segment: dict[str, Any]) -> Path:
     # A cache name must never measure cameras or wait for the export colour lock.
     identity = json.dumps({
         "version": PREVIEW_VERSION, "source": source, "mtime": mtime,
+        "canvas": segment.get("review_canvas"), "layout": segment.get("review_layout"),
+        "treatment": segment.get("reel_mix_treatment"), "subject_center": segment.get("reel_subject_center"),
         "clip_start": round(float(segment.get("clip_start_sec") or 0.0), 3),
         "duration": round(float(segment.get("duration_sec") or 0.0), 3),
         "video_light": segment.get("video_light"), "light_settings": project.data.get("settings", {}).get("edit", {}).get("video_light"),
@@ -87,6 +89,38 @@ def _existing_export_proxy(project: Project, segment: dict[str, Any]) -> str | N
     except Exception:
         return None
     return str(target) if target and target.is_file() and target.stat().st_size > 0 else None
+
+
+def _reel_graph(project, segment, color, *, source_filter=None):
+    """Use the export's crop/subject/mix graph at a smaller review resolution."""
+    from core.stages import export
+    duration = max(.1, float(segment.get('duration_sec') or .1))
+    graph = export._segment_filtergraph('reel', duration, {}, color,
+        has_watermark=False, text_enabled=False, segment=segment,
+        source_filter=source_filter, motion_filter=export._motion_filter(segment, 'reel', duration),
+        reel_letterbox_filter=export._reel_letterbox_filter(project, segment, 'reel'))
+    for before, after in [('2160:3840','540:960'),('3840:2160','960:540'),
+                          ('1080:1920','270:480'),('1080x1920','270x480'),
+                          ('1920:1080','480:270'),('1920x1080','480x270'),('w=1920:h=1080','w=480:h=270')]:
+        graph=graph.replace(before,after)
+    return graph[:-3]+f'[review_full];[review_full]fps={PREVIEW_FPS}[v]'
+
+
+def _render_reel(project, segment, output, ffmpeg):
+    from core.shot_review import _source_for
+    from core.stages import export
+    from core.video_light import resolved_profile
+    source_filter=None
+    source=_source_for(segment)
+    if segment.get('spherical_shot'):
+        source, _ = _existing_sphere_source(project, segment)
+        source_filter=export._export_source_filter({'projection':segment.get('projection') or 'equirect'}, segment['spherical_shot'])
+    graph=_reel_graph(project,segment,resolved_profile(project,segment),source_filter=source_filter)
+    duration=min(3.,max(.1,float(segment.get('duration_sec') or .1)))
+    command=[ffmpeg,'-hide_banner','-loglevel','error','-nostdin','-y',
+             '-ss',str(segment.get('clip_start_sec') or 0),'-t',str(duration),'-i',source,
+             '-filter_complex',graph,'-map','[v]',*_ENCODE,str(output)]
+    subprocess.run(command,check=True,capture_output=True,timeout=120)
 
 
 def _render_flat(project: Project, segment: dict[str, Any], output: Path, ffmpeg: str) -> None:
@@ -139,8 +173,9 @@ def _render_sphere_motion(project: Project, segment: dict[str, Any], output: Pat
     from core.video_light import resolved_profile
     from core.stages.export import _color_filter
     color = resolved_profile(project, segment)
+    reel_graph = _reel_graph(project, segment, color) if segment.get("review_canvas") == "reel" else None
     command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
-               "-s", f"{PREVIEW_WIDTH}x{PREVIEW_HEIGHT}", "-r", str(PREVIEW_FPS), "-i", "pipe:0", *(["-vf", _color_filter(color)] if color else []), *_ENCODE, str(output)]
+               "-s", f"{PREVIEW_WIDTH}x{PREVIEW_HEIGHT}", "-r", str(PREVIEW_FPS), "-i", "pipe:0", *(["-filter_complex", reel_graph, "-map", "[v]"] if reel_graph else ["-vf", _color_filter(color)] if color else []), *_ENCODE, str(output)]
     # Decode at most PREVIEW_SPHERE_WIDTH wide: plenty for a 480 px view of a
     # narrow lens, and far cheaper to convert than the 4K/6K sphere.
     width = min(size[0], PREVIEW_SPHERE_WIDTH)
@@ -153,6 +188,8 @@ def _render_sphere_motion(project: Project, segment: dict[str, Any], output: Pat
 def render_preview(project: Project, index: int, segment: dict[str, Any]) -> Path:
     """Render (or reuse) the hover preview for one review slot."""
     output = preview_path(project, index, segment)
+    if output.is_file() and output.stat().st_size > 0:
+        return output
     lock = _LOCKS[int(hashlib.sha256(str(output).encode()).hexdigest()[:8], 16) % len(_LOCKS)]
     with lock:
         if output.is_file() and output.stat().st_size > 0:
@@ -162,6 +199,8 @@ def render_preview(project: Project, index: int, segment: dict[str, Any]) -> Pat
         try:
             if _native_motion(segment):
                 _render_sphere_motion(project, segment, temporary, ffmpeg)
+            elif segment.get("review_canvas") == "reel":
+                _render_reel(project, segment, temporary, ffmpeg)
             else:
                 _render_flat(project, segment, temporary, ffmpeg)
             if not temporary.is_file() or temporary.stat().st_size == 0:

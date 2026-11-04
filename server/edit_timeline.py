@@ -217,7 +217,7 @@ def register_edit_timeline(app,project,invalidate):
                 number=next((j+1 for j,r in enumerate(records) if r.get('path')==c.get('source_path')),None)
                 return ('Camera '+str(number).zfill(2)+' · ' if number is not None else '')+{'360':'360','fixed':'Fixed','moving':'Moving'}[camera_kind(p,c)]+(' · '+str(c['spherical_shot'].get('label') or 'View') if c.get('spherical_shot') else '')
             from core.video_light import settings as light_settings, DEFAULT
-            return jsonify(project_id=str(p.folder),revision=revision(data),platform=data.get('platform') or p.data.get('settings',{}).get('wizard',{}).get('platform'),pose=data['segments'][i].get('spherical_shot') or {},framing=data['segments'][i].get('flat_framing') or {'zoom':1,'x':.5,'y':.5},light=light_settings(p,choices[0]) or {**DEFAULT,'auto':False},choices=[{'label':label(c),'spherical':bool(c.get('spherical_shot')),'light':light_settings(p,c) or {**DEFAULT,'auto':False}} for c in choices])
+            return jsonify(reel_contain=p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix' or (p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix_vertical_horizontal' and data['segments'][i].get('reel_mix_treatment')=='horizontal'),project_id=str(p.folder),revision=revision(data),platform=data.get('platform') or p.data.get('settings',{}).get('wizard',{}).get('platform'),pose=data['segments'][i].get('spherical_shot') or {},framing=data['segments'][i].get('flat_framing') or {'zoom':1,'x':.5,'y':.5},light=light_settings(p,choices[0]) or {**DEFAULT,'auto':False},choices=[{'label':label(c),'spherical':bool(c.get('spherical_shot')),'light':light_settings(p,c) or {**DEFAULT,'auto':False}} for c in choices])
         except (OSError,ValueError,KeyError,IndexError) as e:return jsonify(error={'message':str(e)}),400
     @app.patch('/api/v1/edit/shot')
     def patch_music_shot():
@@ -231,6 +231,7 @@ def register_edit_timeline(app,project,invalidate):
                 if not 0<=i<len(data['segments']):raise ValueError('Choose an existing shot')
                 choices=music_choices(p,data,i)
                 if not 0<=choice<len(choices):raise ValueError('Choose one of this shot’s cameras')
+                if not isinstance(body.get('apply_to_source',False),bool):raise ValueError('Choose whether to apply to the source video')
                 before=data['segments'][i];s=copy.deepcopy(choices[choice])
                 if s.get('spherical_shot'):
                     pose=s['spherical_shot']
@@ -258,6 +259,15 @@ def register_edit_timeline(app,project,invalidate):
                     else:s['video_light']=light
                 from core.stages.edit import _camera_id
                 s['camera_id']=_camera_id(s);data['segments'][i]=s
+                if body.get('apply_to_source'):
+                    # Same file, not same manufacturer/camera id or filename.
+                    source=Path(str(s.get('source_path') or s.get('clip_path') or '')).resolve()
+                    for item in data['segments']:
+                        other=Path(str(item.get('source_path') or item.get('clip_path') or '')).resolve()
+                        if other != source:continue
+                        for key in ('flat_framing','spherical_shot','manual_view','video_light'):
+                            if key in s:item[key]=copy.deepcopy(s[key])
+                            else:item.pop(key,None)
                 for key in ('camera_usage','spherical_shot_usage'):data.pop(key,None)
                 atomic_write_json(path,data)
                 record(p,'music.camera.corrected',before,s,evidence={'shot':i})

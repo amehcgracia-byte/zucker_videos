@@ -161,3 +161,22 @@ def test_thumbnail_refresh_includes_shared_camera_profile_dependants(tmp_path,mo
  after=review_items(p,render_missing=False)
  assert all(x['thumbnail'] for x in after)
  assert before[1]['thumbnail']!=after[1]['thumbnail']
+
+
+def test_apply_whole_source_keeps_other_file_and_camera_unchanged(tmp_path,monkeypatch):
+ monkeypatch.setenv('ZUCKER_DATA_ROOT',str(tmp_path/'state'))
+ p=create_project('Source scope',str(tmp_path/'edit.zuckervid'));ff,a=make_video(tmp_path/'one');_,b=make_video(tmp_path/'two')
+ # Same camera id and filename, different source directories: only one file changes.
+ p.data['inputs']['videos']=[{'path':str(v),'camera_id':'same-camera','probe':{'width':320,'height':180,'duration':1}} for v in (a,b)];p.save()
+ segments=[{'clip_path':str(v),'source_path':str(v),'duration_sec':.3,'clip_start_sec':0,'master_start_sec':i*.3,'camera_id':'same-camera'} for i,v in enumerate((a,b,a))]
+ atomic_write_json(p.artifacts_dir/'edit_plan.json',{'platform':'reel','segments':segments})
+ monkeypatch.setattr(cut,'load_coverage',lambda _: {'sources':[]})
+ c=create_app(str(p.folder),dev=True).test_client();doc=c.get('/api/v1/edit/shot?index=0').json
+ spec={'auto':False,'light':.1,'shadows':.05};framing={'zoom':1.5,'x':.7,'y':.4}
+ response=c.patch('/api/v1/edit/shot',json={'project_id':str(p.folder),'revision':doc['revision'],'index':0,'choice':0,'flat_framing':framing,'video_light':spec,'apply_to_source':True})
+ assert response.status_code==200,response.json
+ saved=json.loads((p.artifacts_dir/'edit_plan.json').read_text())['segments']
+ assert saved[0]['flat_framing']==saved[2]['flat_framing']==framing
+ assert saved[0]['video_light']==saved[2]['video_light']==spec
+ assert saved[1]==segments[1]
+ assert [s['master_start_sec'] for s in saved]==[s['master_start_sec'] for s in segments]
