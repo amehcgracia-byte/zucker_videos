@@ -127,9 +127,54 @@ def load_still(source: str | Path, at: float | None, ffmpeg: str, *, allow_dark:
     return picture
 
 
-def decode_voice(source: str | Path, start: float, length: float, ffmpeg: str) -> np.ndarray:
+def tame_peaks(samples: np.ndarray, ceiling: float = 0.5, rate: int = 48000) -> np.ndarray:
+    """A limiter: sudden loud moments (an explosion, a shout) brought down to ``ceiling``
+    smoothly, the rest untouched (10 ms look, 150 ms release)."""
+    if samples is None or not len(samples):
+        return samples
+    window = max(1, int(rate * 0.01))
+    count = len(samples) // window + (1 if len(samples) % window else 0)
+    padded = np.zeros((count * window, samples.shape[1]), np.float32)
+    padded[:len(samples)] = samples
+    peaks = np.abs(padded).reshape(count, window, -1).max(axis=(1, 2))
+    wanted = np.minimum(1.0, ceiling / np.maximum(peaks, 1e-6))
+    gain, level = np.empty(count, np.float32), 1.0
+    release = 1 - np.exp(-0.01 / 0.15)
+    for index, target in enumerate(wanted):
+        level = target if target < level else level + (target - level) * release
+        gain[index] = level
+    return (padded * np.repeat(gain, window)[:, None])[:len(samples)].astype(np.float32)
+
+
+SPEEDS = (0.1, 2.0)            # a clip's speed: 10 % (slow motion) to 200 %
+
+
+def clip_speed(raw: dict[str, Any]) -> float:
+    try:
+        return min(SPEEDS[1], max(SPEEDS[0], float(raw.get("speed") or 1.0)))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def atempo(speed: float) -> str:
+    """FFmpeg's atempo filters for ``speed`` (each one works between 0.5 and 2)."""
+    parts, left = [], float(speed)
+    while left < 0.5:
+        parts.append("atempo=0.5")
+        left /= 0.5
+    while left > 2.0:
+        parts.append("atempo=2.0")
+        left /= 2.0
+    if abs(left - 1.0) > 1e-6 or not parts:
+        parts.append(f"atempo={left:.6f}")
+    return ",".join(parts)
+
+
+def decode_voice(source: str | Path, start: float, length: float, ffmpeg: str, speed: float = 1.0) -> np.ndarray:
+    """``length`` seconds of ``source`` from ``start``, played at ``speed`` (its pitch kept)."""
+    tempo = ["-af", atempo(speed)] if abs(speed - 1.0) > 1e-6 else []
     raw = subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", str(source),
-                          "-vn", "-ac", "2", "-ar", str(AUDIO_RATE), "-f", "f32le", "-"], capture_output=True, check=True).stdout
+                          "-vn", *tempo, "-ac", "2", "-ar", str(AUDIO_RATE), "-f", "f32le", "-"], capture_output=True, check=True).stdout
     return np.frombuffer(raw, dtype=np.float32).reshape(-1, 2).copy()
 
 
@@ -164,40 +209,106 @@ class Insert:
         return self.frames / self.fps
 
 
+class ClipFrames:
+    """A clip's frames, read from FFmpeg as the render reaches them. Nothing is unpacked to
+    disk first: a 30-second full-HD clip is about 5 GB of raw frames, and a show with many
+    clips filled the disk ("No space left on device"). Reading on is free; going back starts
+    the decoder again. When the clip ends early its last picture holds."""
+
+    def __init__(self, command: list[str], width: int, height: int, count: int, transform=None) -> None:
+        self.command, self.width, self.height, self.count, self.transform = command, width, height, count, transform
+        self.shape = (count, height, width, 3)
+        self.process: subprocess.Popen | None = None
+        self.index, self.last = -1, None
+
+    def __len__(self) -> int:
+        return self.count
+
+    def close(self) -> None:
+        if self.process is not None:
+            if self.process.poll() is None:
+                self.process.kill()
+            self.process.wait()
+            if self.process.stdout:
+                self.process.stdout.close()
+            self.process = None
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def frame(self, index: int) -> np.ndarray:
+        index = min(max(0, int(index)), self.count - 1)
+        if index < self.index or (self.process is None and index > self.index):
+            if index < self.index or self.last is None:
+                self.close()
+                self.index, self.last = -1, None
+                self.process = subprocess.Popen(self.command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        size = self.width * self.height * 3
+        while self.index < index:
+            chunk = self.process.stdout.read(size) if self.process is not None else b""
+            if len(chunk) == size:
+                picture = np.frombuffer(chunk, np.uint8).reshape(self.height, self.width, 3)
+                self.last = self.transform(picture) if self.transform else picture
+            elif self.last is None:
+                self.close()
+                raise ValueError("The clip has no picture to play")
+            self.index += 1
+        if self.index >= self.count - 1:
+            self.close()                                   # played to its end: the decoder is not kept open
+        return self.last
+
+    def __getitem__(self, key):
+        if isinstance(key, tuple):
+            return self.frame(int(key[0]))[key[1:]]
+        return self.frame(int(key))
+
+
 def load_clip(raw: dict[str, Any], width: int, height: int, fps: float, ffmpeg: str) -> Insert:
     """A video clip (``insert`` "clip") played whole with its own sound while the host
     pauses, as a meme cut does: ``source`` from ``clip_start`` for ``clip_length`` seconds,
-    letterboxed into the frame. Its frames wait in a memory-mapped scratch file, not in RAM."""
-    import os
-    import tempfile
+    framed into the picture. Its frames are read while the render plays it (ClipFrames)."""
     source, start, length = str(raw["source"]), float(raw.get("clip_start") or 0.0), float(raw["clip_length"])
     if not Path(source).is_file():
         raise ValueError(f"The clip {Path(source).name} is missing")
-    size = width * height * 3
-    scratch = tempfile.NamedTemporaryFile(prefix="zucker-clip-", suffix=".rgb", delete=False)
+    from core.media_framing import filters
     try:
-        with scratch, subprocess.Popen([ffmpeg, "-v", "error", "-nostdin", "-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", source, "-an",
-                                        "-vf", f"fps={fps},scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                                               f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black",
-                                        "-pix_fmt", "rgb24", "-f", "rawvideo", "-"], stdout=subprocess.PIPE) as decoder:
-            assert decoder.stdout is not None
-            while chunk := decoder.stdout.read(size * 8):
-                scratch.write(chunk)
-        frames = os.path.getsize(scratch.name) // size
-        if frames == 0:
-            raise ValueError(f"The clip {Path(source).name} has no picture to play")
-        clip = np.memmap(scratch.name, dtype=np.uint8, mode="r", shape=(frames, height, width, 3))
+        from core.ffmpeg import ffprobe
+        available = float((ffprobe(source).get("format") or {}).get("duration") or 0) - start
+    except Exception:
+        available = 0.0
+    speed = clip_speed(raw)                                 # 0.5: twice as long, slow motion
+    if 0 < available < length:
+        length = available                                  # a clip shorter than asked plays what it has
+    frame_count = max(1, round(length / speed * fps))
+    # Older FFmpeg framesync can omit the final frame of the blurred-background
+    # composite at EOF. Hold its last decoded picture to the requested boundary.
+    framing = ";".join(filters("0:v", "fitted", source, width, height)+[
+        f"[fitted]{f'setpts=(PTS-STARTPTS)/{speed:.6f},' if speed != 1.0 else ''}fps={fps}:start_time=0,tpad=stop_mode=clone:stop_duration={1/fps:.9f},trim=end_frame={frame_count}[output]"])
+    command = [ffmpeg, "-v", "error", "-nostdin", "-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", source, "-an",
+               "-filter_complex", framing, "-map", "[output]", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
+    from core.show_geometry import PLACEMENT_FIELDS, place_frame
+    transform = (lambda picture: place_frame(picture, raw)) if any(key in raw for key in PLACEMENT_FIELDS) else None
+    first = ClipFrames(command, width, height, frame_count, transform)
+    try:
+        still = np.array(first.frame(0))
+    except ValueError as exc:
+        raise ValueError(f"The clip {Path(source).name} has no picture to play") from exc
     finally:
-        os.unlink(scratch.name)            # the mapping stays readable; nothing is left behind
+        first.close()
+    clip = ClipFrames(command, width, height, frame_count, transform)
     try:
-        voice = decode_voice(source, start, frames / fps, ffmpeg)
+        voice = decode_voice(source, start, frame_count / fps * speed, ffmpeg, speed)
     except subprocess.CalledProcessError:
         voice = None                       # a clip without sound plays silent
-    insert = Insert(at=float(raw["at"]), still=np.asarray(clip[0]), width=width, height=height, fps=fps, zoom=1.0,
-                    zoom_frames=0, hold_frames=frames, voice=voice, entrance="cut")
+    insert = Insert(at=float(raw["at"]), still=still, width=width, height=height, fps=fps, zoom=1.0,
+                    zoom_frames=0, hold_frames=frame_count, voice=voice, entrance="cut")
     if insert.voice is not None:insert.voice*=float(raw.get('audio_volume',1.))
+    if insert.voice is not None and raw.get('tame_peaks'):insert.voice=tame_peaks(insert.voice)
     insert.clip = clip
-    insert.envelope = np.zeros(frames, dtype=np.float32)
+    insert.envelope = np.zeros(frame_count, dtype=np.float32)
     return insert
 
 
@@ -246,6 +357,7 @@ def load_insert(raw: dict[str, Any], width: int, height: int, fps: float, ffmpeg
                 sticker.envelope = speaking
             insert.overlays.append(sticker)
     if insert.voice is not None:insert.voice*=float(raw.get('volume',1.))
+    if insert.voice is not None and raw.get('tame_peaks'):insert.voice=tame_peaks(insert.voice)
     return insert
 
 

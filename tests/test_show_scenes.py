@@ -439,10 +439,16 @@ def test_a_placed_picture_can_be_stretched_turned_mirrored_and_see_through(tmp_p
     assert (item["stretch"], item["rotate"], item["flip"], item["opacity"]) == (2.0, 90, True, 0.5)
     plain = load_sticker({**item, "stretch": 1, "rotate": 0, "flip": False, "opacity": 1}, 1000, 563)
     shaped = load_sticker(item, 1000, 563)
-    h, w = plain.pixels.shape[:2]
-    assert shaped.pixels.shape[0] == pytest.approx(w, abs=3) and shaped.pixels.shape[1] == pytest.approx(2 * h, abs=3)   # stretched, then turned
-    assert shaped.pixels[..., 3].max() == pytest.approx(0.5, abs=0.02)
-    # Mirrored (red to the right), then turned a quarter clockwise like the stage's CSS: red ends at the bottom.
-    rows = shaped.pixels[..., 0].mean(axis=1)
-    assert rows[len(rows) // 2:].mean() > rows[: len(rows) // 2].mean()
+    # Geometry is applied during compositing, keeping the decoded asset bounded.
+    from core.gag_render import draw_sticker
+    shaped.effect = "none"
+    shaped.x = shaped.y = .5
+    canvas = np.zeros((563, 1000, 3), np.uint8)
+    draw_sticker(canvas, shaped, 2.)
+    ys, xs = np.nonzero(canvas[..., 0] > 40)
+    assert len(xs) > 1000
+    assert xs.max()-xs.min() == pytest.approx(200, abs=5)
+    assert ys.max()-ys.min() == pytest.approx(100, abs=5)
+    assert canvas[..., 0].max() == pytest.approx(127, abs=3)
+    assert ys.mean() > 563/2
     assert plain.width_px == pytest.approx(200) and PREPARED_SCALE > 1

@@ -209,6 +209,7 @@ class Background:
     brightness: float = 1.
     saturation: float = 1.
     hue: float = 0.
+    geometry: dict | None = None
 
     def active(self, t: float) -> bool:
         local = t - self.at
@@ -224,8 +225,11 @@ VIDEO_SUFFIXES = {'.mp4', '.mov', '.m4v', '.webm', '.mkv'}
 
 class VideoBackground:
     """Sequential reads; seek only on scrubs, rate changes or loops. Audio stays with the host."""
-    def __init__(self, path, width, height):
+    def __init__(self, path, width, height, contain=False):
         import cv2
+        self.contain = contain
+        from core.media_framing import inspect
+        self.framing = inspect(path) if contain else None
         self.capture = cv2.VideoCapture(str(path))
         self.fps = self.capture.get(cv2.CAP_PROP_FPS)
         self.count = int(self.capture.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -245,6 +249,11 @@ class VideoBackground:
         if not ok:
             raise BackgroundUnavailable('The background video stopped decoding')
         h, w = frame.shape[:2]
+        if self.contain:
+            from core.media_framing import frame as fit_frame
+            self.frame=fit_frame(cv2.cvtColor(frame,cv2.COLOR_BGR2RGB),self.width,self.height,self.framing).astype(np.float32)
+            self.index=index
+            return self.frame
         factor = max(self.width/w, self.height/h)
         frame = cv2.resize(frame, (max(self.width, round(w*factor)), max(self.height, round(h*factor))))
         h, w = frame.shape[:2]
@@ -271,7 +280,7 @@ def load(raw: dict[str, Any], width: int, height: int, fps: float) -> Background
     video = VideoBackground(raw['background'], width, height) if Path(raw['background']).suffix.lower() in VIDEO_SUFFIXES else None
     return Background(float(raw["at"]), float(raw["duration"]), video.at(0) if video else cover(raw["background"], width, height), masks,
                       [list(span) for span in raw.get("hidden") or []], fps, video=video, style=raw.get('person_style', 'person'),
-                      scale=float(raw.get('person_scale', 1)), offset=tuple(raw.get('person_offset') or (0., 0.)),brightness=raw.get('brightness',1),saturation=raw.get('saturation',1),hue=raw.get('hue',0))
+                      scale=float(raw.get('person_scale', 1)), offset=tuple(raw.get('person_offset') or (0., 0.)),brightness=raw.get('brightness',1),saturation=raw.get('saturation',1),hue=raw.get('hue',0), geometry=raw)
 
 
 def _guided(guide: np.ndarray, source: np.ndarray, radius: int, eps: float = 1e-3) -> np.ndarray:
@@ -301,14 +310,10 @@ def apply(frame: np.ndarray, background: Background, t: float) -> None:
     behind = background.video.at(local) if background.video else background.picture
     from core.show_follow import colour
     person = np.full_like(frame, 8) if background.style == 'silhouette' else colour(frame,background.brightness,background.saturation,background.hue)
-    if background.scale != 1 or background.offset != (0., 0.):
-        scale = background.scale
-        matrix = np.array([[scale, 0, width*(1-scale)/2+background.offset[0]*width],
-                           [0, scale, height*(1-scale)+background.offset[1]*height]], np.float32)
-        foreground = cv2.warpAffine(person.astype(np.float32)*mask, matrix, (width, height))
-        mask = cv2.warpAffine(mask, matrix, (width, height))[..., None]
-    else:
-        foreground = person.astype(np.float32)*mask
+    from core.show_geometry import place_frame
+    geometry={**(background.geometry or {}), 'person_scale':background.scale,'person_offset':background.offset}
+    pixels=place_frame(np.concatenate((person.astype(np.float32)*mask,mask),axis=2),geometry)
+    foreground,mask=pixels[...,:3],pixels[...,3:]
     composite = foreground+behind*(1-mask)
     frame[:] = np.clip(composite*fade+frame.astype(np.float32)*(1-fade)+.5, 0, 255).astype(np.uint8)
 
@@ -363,9 +368,12 @@ def editor_sample(project, item, *, ffmpeg='ffmpeg', progress=None):
             light_host=host.with_name(host.stem+'-soft-key.mp4')
             if not light_host.is_file():light_sample(host,light_host,ffmpeg)
             host=light_host
-        if matte in ('green','black','green-light'):
+        if matte in ('green','black','green-light','plain'):
             from core.show_video_assets import green_alpha,black_alpha
-            key=hashlib.sha256((file_digest(host)+matte).encode()).hexdigest()[:24]
+            from core import plain_key
+            plain=item['params'].get('key') if matte=='plain' else None
+            if matte=='plain' and not plain:raise ValueError('Choose how to remove this clip\'s background again (Clip settings)')
+            key=hashlib.sha256((file_digest(host)+matte+json.dumps(plain,sort_keys=True)).encode()).hexdigest()[:24]
             mask_path=folder/('key-'+key+'.npy')
             if not mask_path.is_file():
                 import cv2
@@ -375,7 +383,7 @@ def editor_sample(project, item, *, ffmpeg='ffmpeg', progress=None):
                         ok,bgr=capture.read()
                         if not ok:break
                         rgb=cv2.cvtColor(cv2.resize(bgr,MASK_SIZE),cv2.COLOR_BGR2RGB)
-                        made.append(np.rint((black_alpha(rgb) if matte in ('black','green-light') else green_alpha(rgb))*255).astype(np.uint8))
+                        made.append(np.rint((plain_key.alpha(rgb,plain) if plain else black_alpha(rgb) if matte in ('black','green-light') else green_alpha(rgb))*255).astype(np.uint8))
                 finally:capture.release()
                 if not made:raise ValueError('The texture has no decodable frames')
                 pending=mask_path.with_suffix('.pending.npy');np.save(pending,np.asarray(made));pending.replace(mask_path)

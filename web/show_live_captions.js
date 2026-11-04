@@ -10,7 +10,15 @@
     }
     return time-delay;
   }
-  window.ShowCaptionClock={shift,unshift};
+  function insideInsertion(time, spans=[]) {
+    let delay=0;
+    for(const [at,d] of [...spans].sort((a,b)=>a[0]-b[0])) {
+      if(time>=at+delay && time<at+delay+d)return true;
+      delay+=d;
+    }
+    return false;
+  }
+  window.ShowCaptionClock={shift,unshift,insideInsertion};
   let node, context, dragging=false;
   function ensure(){
     if(node){if(!node.isConnected)document.querySelector('#showStageLayer').append(node);return;}
@@ -62,7 +70,7 @@
   function sync(ctx){
     ensure();if(dragging)return;
     const cue=ctx.scene.captions?.find(c=>c.start<=ctx.at&&ctx.at<c.end);
-    node.hidden=!cue||ctx.saved||ctx.video.hidden||ctx.replaced?.includes(cue.id);
+    node.hidden=!cue||ctx.saved||ctx.inserted||ctx.video.hidden||ctx.replaced?.includes(cue.id);
     context={...ctx,cue};if(!node.hidden)paint(cue,document.querySelector('#showStage').getBoundingClientRect().height);
   }
   window.ShowLiveCaptions={sync};

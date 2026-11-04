@@ -217,12 +217,14 @@ def test_timeline_clay_can_span_source_cuts_and_matches_window_preview(tmp_path,
 def test_clay_draft_is_a_real_review_movie_and_only_approval_places_it(tmp_path, monkeypatch):
     import subprocess
     project, source = _project(tmp_path, monkeypatch)
-    job={'id':'a'*32,'purpose':'clay','status':'generating','direction':'Simón greets a neighbour, pauses, then sits down',
+    job={'id':'a'*32,'purpose':'clay','status':'generating','direction':'Simón greets a neighbour 日本, pauses, then sits down',
          'selected_text':'Everyone comes and says hello','at':1,'duration':1.2}
     folder=project.folder/'assets/show-ai'/job['id'];folder.mkdir(parents=True)
     _sheet(folder/'image.png')
     (project.artifacts_dir/'show_plan.json').write_text(json.dumps(PLAN))
     output=show_clay.prepare_draft(project,job,folder,'ffmpeg')
+    record=json.loads((folder/'story.json').read_text(encoding='utf-8'))
+    assert record['direction']==job['direction']
     meta=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_streams','-of','json',str(output)]))['streams'][0]
     assert int(meta['nb_frames'])==30 and float(meta['duration'])==pytest.approx(1.2)
     assert show_clay.ClayStore(project.folder).load()['placements']==[]

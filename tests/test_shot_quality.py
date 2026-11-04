@@ -4,6 +4,15 @@ from core.shot_quality import director_quality_for_segment, score_director_windo
 from core.stages.edit import _quality_filtered_sources, _selection_stats_template
 
 
+def test_declared_camera_role_overrides_filename_inference():
+    from core.shot_quality import _source_role
+    assert _source_role({"filename": "iphone.mov", "camera_role": "handheld"}) == "handheld"
+    assert _source_role({"filename": "tripod.mp4", "camera_role": "fixed_rear"}) == "fixed_rear"
+    assert _source_role({"filename": "camera.mp4", "camera_role": "360"}) == "360"
+    assert _source_role({"filename": "iphone.mov", "camera_role": "unknown"}) == "fixed_rear"
+    assert _source_role({"filename": "camera.mp4"}) == "handheld"
+
+
 def test_director_score_gates_no_face_and_high_motion_windows():
     good_score, good_reasons = score_director_window({"face_score": 0.8, "motion": 0.08, "sharpness": 0.8, "exposure": 0.8})
     bad_score, bad_reasons = score_director_window({"face_score": 0.0, "motion": 0.9, "sharpness": 0.7, "exposure": 0.8})

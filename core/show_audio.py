@@ -155,7 +155,8 @@ def prepare_noise(project, source, *, ffmpeg, cancel=None):
     return doc
 
 def measure(path, ffmpeg, start=0, length=6):
-    raw=subprocess.run([ffmpeg,'-v','error','-nostdin','-ss',str(start),'-i',str(path),'-t',str(min(6,max(.1,length))),'-vn','-ac','1','-ar','16000','-f','f32le','-'],capture_output=True,check=True,timeout=30).stdout
+    """(typical loudness of the sounding parts, highest peak) over up to 30 s."""
+    raw=subprocess.run([ffmpeg,'-v','error','-nostdin','-ss',str(start),'-i',str(path),'-t',str(min(30,max(.1,length))),'-vn','-ac','1','-ar','16000','-f','f32le','-'],capture_output=True,check=True,timeout=60).stdout
     x=np.frombuffer(raw,dtype='<f4')
     if not len(x):raise ValueError('No audio in this source')
     levels=np.sqrt(np.mean(x[:len(x)//320*320].reshape(-1,320)**2,axis=1)+1e-12)
@@ -181,6 +182,10 @@ def overlay_tracks(project):
 
 
 def balance(project, ffmpeg, progress=None):
+    """Balance the levels of the audio as it is edited: every choice stays (a clip with its own
+    sound, mixed under the narration, muted; the narration), only each source's loudness is
+    evened out and its sudden peaks tamed (a limiter in the render). A clip heard on its own
+    sounds as loud as the narration; one mixed under it, and music, sit lower."""
     from core import show_proposals
     plan=json.loads((project.artifacts_dir/'show_plan.json').read_text())
     settings=load(project);noise=plan.get('noise_report') or {}
@@ -195,10 +200,15 @@ def balance(project, ffmpeg, progress=None):
     for index,item in enumerate(tracks):
         p=item['params'];source=p.get('clip') or p.get('path') or (p.get('voice') or {}).get('source')
         if not source:continue
+        if item['kind']=='clip' and (p.get('clip_audio') is False or p.get('audio_mode')=='mute'):continue      # muted: nothing to level
+        alone=(item['kind']=='clip' and p.get('audio_mode','own')=='own' and p.get('matte','none')=='none') or (item['kind']=='character' and p.get('audio_mode','own')=='own')
+        target=.12 if alone else .07 if item['kind']=='jingle' else .08
         try:
-            rms,peak=measure(source,ffmpeg,(p.get('voice') or {}).get('start',0) if item['kind']=='character' else p.get('clip_start',p.get('start',0)),(p.get('voice') or {}).get('length',item['duration']) if item['kind']=='character' else item['duration'])
-            gain_track=min(2.,(.07 if item['kind']=='jingle' else .10)/max(rms,.001),.9/max(peak,.001))
-            changes[item['id']]={'audio_volume':gain_track,'audio_mode':'mix','clip_audio':True,'under_voice':True} if item['kind']=='clip' else {'volume':gain_track,'duck':1.,'under_voice':True}
+            start=(p.get('voice') or {}).get('start',0) if item['kind']=='character' else p.get('clip_start',p.get('start',0))
+            length=(p.get('voice') or {}).get('length',item['duration']) if item['kind']=='character' else max(item['duration'],1.)
+            rms,peak=measure(source,ffmpeg,start,max(6.,length))
+            level=round(min(4.,target/max(rms,.001)),3)                  # peaks are tamed in the render, not by quietening it all
+            changes[item['id']]={'audio_volume':level,'tame_peaks':True} if item['kind']=='clip' else {'volume':level,'tame_peaks':True}
         except (OSError,ValueError,subprocess.SubprocessError) as exc:failed.append({'id':item['id'],'reason':str(exc)[:120]})
         if progress:progress((index+1)/max(1,len(tracks)))
     # Placed, speaking library characters are not proposal records.
@@ -206,7 +216,7 @@ def balance(project, ffmpeg, progress=None):
     for track in overlay_tracks(project):
         try:
             rms,peak=measure(track['source'],ffmpeg,track['start'],track['duration'])
-            overlay_changes[track['id']]=(track,min(2.,.1/max(rms,.001),.9/max(peak,.001)))
+            overlay_changes[track['id']]=(track,round(min(4.,(.12 if track.get('mode','own')=='own' else .08)/max(rms,.001)),3))
         except (OSError,ValueError,subprocess.SubprocessError) as exc:failed.append({'id':track['id'],'reason':str(exc)[:120]})
     with show_proposals.LOCK:
         stored=show_proposals.load(path)
@@ -226,7 +236,7 @@ def balance(project, ffmpeg, progress=None):
                     before,value=overlay_changes[key]
                     if current.get(key)!=before:
                         failed.append({'id':key,'reason':'This voice changed while balancing; your edit was kept.'});continue
-                    overlay.update(volume=value,under_voice=True);applied+=1
+                    overlay.update(volume=value,tame_peaks=True);applied+=1
             show_scenes.save(scene_path,document)
         if load(project)['revision']==settings['revision']:save(project,{'narration_volume':gain})
         else:failed.append({'id':'narration','reason':'Narration controls changed while balancing; your edit was kept.'})

@@ -114,7 +114,8 @@ def journey(browser, mode, media, output, *, real_media=False):
             page.locator('#reelDuration').fill('20')
         capture('02-settings')
         page.locator('#startWizard').click()
-        deadline=time.monotonic()+900; last=None; actions=set()
+        pipeline_started=time.monotonic()
+        deadline=pipeline_started+900; last=None; actions=set(); phase='preparation'
         while time.monotonic()<deadline:
             status=json_get(url+'/api/v1/wizard/status')
             current=status.get('status')
@@ -124,12 +125,19 @@ def journey(browser, mode, media, output, *, real_media=False):
                 (folder/'status.json').write_text(json.dumps(status,indent=2),encoding='utf-8')
             if current=='waiting_review' and 'review' not in actions:
                 page.locator('#renderReviewedTop').click(timeout=120000); actions.add('review')
+                report['preparation_seconds']=round(time.monotonic()-pipeline_started,3)
+                phase='approved render';deadline=time.monotonic()+900
             if current=='waiting_paper_edit' and 'paper' not in actions:
                 capture('03-paper'); page.locator('#approvePaperEdit').click(timeout=120000); actions.add('paper')
+                report['preparation_seconds']=round(time.monotonic()-pipeline_started,3)
+                phase='approved paper render';deadline=time.monotonic()+900
             if current=='failed': raise RuntimeError(json.dumps(status))
             if current=='done': break
             page.wait_for_timeout(1000)
-        else: raise TimeoutError('Pipeline did not finish in 15 minutes')
+        else:
+            report['last_status']=status
+            raise TimeoutError(f'{phase} did not finish in its 15-minute budget')
+        report['pipeline_seconds']=round(time.monotonic()-pipeline_started,3)
         result=status.get('result') or {}; path=Path(result['path'])
         assert path.is_file() and path.stat().st_size>1000
         probe=json.loads(run(['ffprobe','-v','error','-show_streams','-show_format','-of','json',str(path)]).stdout)

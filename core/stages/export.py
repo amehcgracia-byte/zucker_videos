@@ -4671,6 +4671,9 @@ def _frame_md5_pair(path: Path, first_at: float, second_at: float) -> tuple[str 
     Keep the first seek on the input. The second trim uses its relative offset,
     so FFmpeg retains the same source-frame boundary as two independent seeks.
     Separate output streams make the hashes independent of interleaving order.
+    Bound the decoder, graph and both rawvideo encoders: several segment checks
+    can run alongside rendering, and FFmpeg's automatic thread pools can exhaust
+    Windows runner resources even for a pair of frames.
     """
     first_seek = float(f"{first_at:.3f}")
     second_seek = float(f"{second_at:.3f}")
@@ -4680,9 +4683,11 @@ def _frame_md5_pair(path: Path, first_at: float, second_at: float) -> tuple[str 
              "trim=end_frame=1[b]")
     result = subprocess.run([
         _ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-threads", "1", "-filter_complex_threads", "1",
         "-ss", f"{first_seek:.3f}", "-i", str(path), "-filter_complex", graph,
         "-map", "[a]", "-map", "[b]", "-an",
         "-fps_mode:v:0", "passthrough", "-fps_mode:v:1", "passthrough",
+        "-threads:v:0", "1", "-threads:v:1", "1",
         "-f", "framemd5", "pipe:1",
     ], check=False, capture_output=True, text=True, timeout=20)
     if result.returncode != 0:

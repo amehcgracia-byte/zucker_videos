@@ -106,6 +106,12 @@ assert.equal(clock.shift(2,[[1,3]]),5);
 assert.equal(clock.unshift(2,[[1,3]]),1);
 assert.equal(clock.unshift(5,[[1,3]]),2);
 assert.equal(clock.unshift(9,[[1,3],[3,2]]),4);
+assert.equal(clock.insideInsertion(.9,[[1,3]]),false);
+assert.equal(clock.insideInsertion(1,[[1,3]]),true);
+assert.equal(clock.insideInsertion(3.99,[[1,3]]),true);
+assert.equal(clock.insideInsertion(4,[[1,3]]),false);
+assert.equal(clock.insideInsertion(6.5,[[1,3],[3,2]]),true);
+assert.equal(clock.insideInsertion(8,[[1,3],[3,2]]),false);
 """
     subprocess.run(['node','-e',program],check=True,capture_output=True,text=True)
 
@@ -177,3 +183,21 @@ def test_reference_urls_and_video_intervals_are_validated(board,monkeypatch):
     assert c.post('/api/v1/show/references/open',json={'kind':'video','url':body['url']}).status_code==200
     assert opened==[body['url']]
     assert c.post('/api/v1/show/references/open',json={'kind':'video','url':'file:///etc/passwd'}).status_code==400
+
+
+def test_narration_caption_leaves_inserted_clip_empty_without_losing_words():
+    from core.show_caption_layout import with_insertions
+    cue={'id':'phrase','start':0,'end':2,'lines':['Hello there'],
+         'style_override':{'horizontal':21,'size':123},
+         'words':[{'text':'Hello','start':0,'end':1},{'text':'there','start':1,'end':2}]}
+    parts=with_insertions([cue],[(1,3)])
+    assert [(c['start'],c['end']) for c in parts]==[(0,1),(4,5)]
+    assert [c['lines'] for c in parts]==[['Hello'],['there']]
+    assert all(c['style_override']==cue['style_override'] for c in parts)
+    assert cue['words'][1]['start']==1
+    assert with_insertions([cue],[(0,2)])[0]['start']==2
+    assert with_insertions([cue],[(2,2)])[0]['end']==2
+    multiple=with_insertions([cue],[(.5,1),(1.5,2)])
+    assert [(c['start'],c['end']) for c in multiple]==[(0,.5),(1.5,2.5),(4.5,5)]
+    for c in multiple:
+        assert all(c['start'] <= w['start'] < w['end'] <= c['end'] for w in c['words'])

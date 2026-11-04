@@ -36,6 +36,7 @@ from core.reel_framing import subject_box_for_window
 
 LOGGER = logging.getLogger(__name__)
 _RENDER_STATUS_LOCK = threading.RLock()
+_CANDIDATE_RESERVE_LOCK = threading.RLock()
 SPHERICAL_ANALYSIS_PROXY_VERSION = 1
 
 _REVIEW_SHOT_LABELS = {
@@ -644,6 +645,14 @@ def _write_reserve_json(path: Path, payload: dict[str, Any]) -> None:
 
 def _project_candidate_pool(project: Project, coverage: dict[str, Any], segments: list[dict[str, Any]], segment: dict[str, Any], platform: str, context=None) -> tuple[list[dict[str, Any]], str]:
     """Persist a slot's reserve; clicking/polling never rebuilds the whole plan."""
+    # Windows denies replacement while another request holds the JSON open.
+    # Protect readers as well as writers, including the count -> pool fallback.
+    # This covers metadata only; thumbnail rendering keeps its per-asset locks.
+    with _CANDIDATE_RESERVE_LOCK:
+        return _load_project_candidate_pool(project, coverage, segments, segment, platform, context)
+
+
+def _load_project_candidate_pool(project: Project, coverage: dict[str, Any], segments: list[dict[str, Any]], segment: dict[str, Any], platform: str, context=None) -> tuple[list[dict[str, Any]], str]:
     path = _candidate_reserve_path(project, coverage, segments, segment, platform, context)
     try:
         saved = json.loads(path.read_text(encoding="utf-8"))
@@ -662,11 +671,12 @@ def _project_candidate_pool(project: Project, coverage: dict[str, Any], segments
 def _project_candidate_count(project: Project, coverage: dict[str, Any], segments: list[dict[str, Any]], segment: dict[str, Any], platform: str, context=None) -> tuple[int, str]:
     """Status requests read tiny summaries, never the full source records."""
     path = _candidate_reserve_path(project, coverage, segments, segment, platform, context).with_suffix(".summary.json")
-    try:
-        summary = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        _project_candidate_pool(project, coverage, segments, segment, platform, context)
-        summary = json.loads(path.read_text(encoding="utf-8"))
+    with _CANDIDATE_RESERVE_LOCK:
+        try:
+            summary = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            _project_candidate_pool(project, coverage, segments, segment, platform, context)
+            summary = json.loads(path.read_text(encoding="utf-8"))
     current = _candidate_keys(segment, platform != "reel")
     return sum(not (set(keys) & current) for keys in summary["keys"]), summary["origin"]
 

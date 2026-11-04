@@ -520,7 +520,7 @@ def place_bundled_sample(project, plan: dict, at: float, end: float, mode: str, 
     if duration < .04:
         raise ValueError('Choose at least one frame inside a source shot')
     sample = root / 'assets' / 'clay' / 'simon'
-    record = json.loads((sample / 'story-simon-v1.json').read_text())
+    record = json.loads((sample / 'story-simon-v1.json').read_text(encoding="utf-8"))
     story_duration = float(record['duration'])
     record.update(id='simon-sample-' + uuid.uuid4().hex, source=Path(plan['source']).name, source_start=source,
                   source_end=source + story_duration, duration=story_duration, quote='Reusable sample placed on selected words',
@@ -530,7 +530,7 @@ def place_bundled_sample(project, plan: dict, at: float, end: float, mode: str, 
         temp = Path(temporary)
         for name in {shot['sheet'] for shot in record['shots']}:
             shutil.copyfile(sample / name, temp / name)
-        (temp / 'story.json').write_text(json.dumps(record))
+        (temp / 'story.json').write_text(json.dumps(record), encoding='utf-8')
         data = store.import_story(temp / 'story.json', placements=False)
     placement = check_placement(dict(id=record['id'], story=record['id'], mode=mode, start=0, end=story_duration, timeline_at=at,timeline_duration=duration,
                                      enabled=True, fade=min(.2, duration / 4), **DEFAULTS[mode]), record)
@@ -541,7 +541,7 @@ def place_bundled_sample(project, plan: dict, at: float, end: float, mode: str, 
 def draft_story(project, job: dict, image: Path) -> dict:
     """Six sequential generated poses with explicit held beats, never an implicit loop."""
     duration = float(job['duration'])
-    plan = json.loads((project.artifacts_dir/'show_plan.json').read_text())
+    plan = json.loads((project.artifacts_dir/'show_plan.json').read_text(encoding="utf-8"))
     return dict(version=4,id='clay-'+job['id'],character_id='simon-plant-character',character_version=1,
                 source=Path(plan['source']).name,source_start=0.,source_end=duration,duration=duration,
                 quote=job.get('selected_text',''),direction=job['direction'],
@@ -556,7 +556,7 @@ def prepare_draft(project, job: dict, folder: Path, ffmpeg: str) -> Path:
     from PIL import Image
     image=folder/'image.png'
     record=draft_story(project,job,image)
-    (folder/'story.json').write_text(json.dumps(record,ensure_ascii=False,indent=2))
+    (folder/'story.json').write_text(json.dumps(record,ensure_ascii=False,indent=2), encoding='utf-8')
     with Image.open(image) as im: sheets={image.name:np.asarray(im.convert('RGB'))}
     story=ClayStory(record,sheets)
     output=folder/'preview.mp4';pending=folder/'preview.pending.mp4'

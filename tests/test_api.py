@@ -149,7 +149,9 @@ def test_api_spherical_landmark_save_merges_partial_and_empty_payloads(tmp_path,
     import server.api as api_module
 
     defaults = {
-        "singer": {"yaw": 288.0, "pitch": -27.4, "fov": 94.9, "weight": 5.0},
+        "singer": {"yaw": 288.0, "pitch": -27.4, "fov": 94.9, "weight": 5.0,
+                   "roll": 9.0, "projection_preset": "dewarp", "projection_control": .4,
+                   "subject": "vocals", "enabled": False},
         "audience": {"yaw": 92.0, "pitch": -12.5, "fov": 191.9, "weight": 5.0},
     }
     config = {"spherical_landmarks": defaults}
@@ -168,7 +170,15 @@ def test_api_spherical_landmark_save_merges_partial_and_empty_payloads(tmp_path,
     assert saved["singer"]["pitch"] == defaults["singer"]["pitch"]
     assert saved["singer"]["fov"] == defaults["singer"]["fov"]
     assert saved["singer"]["weight"] == defaults["singer"]["weight"]
-    assert saved["audience"] == defaults["audience"]
+    for key in ("roll", "projection_preset", "projection_control", "subject", "enabled"):
+        assert saved["singer"][key] == defaults["singer"][key]
+    # Old profiles gain the authored-pose fields and the linear perspective
+    # cap. Partial updates must retain those canonical values afterwards.
+    assert saved["audience"] == {
+        "yaw": 92.0, "pitch": -12.5, "fov": 110.0, "weight": 5.0,
+        "roll": 0.0, "projection_preset": "linear", "projection_control": 0.0,
+        "subject": "audience", "enabled": True,
+    }
     assert set(config["spherical_landmarks"]) == set(defaults)
 
     response = client.post("/api/v1/settings/spherical-landmarks", json={"spherical_landmarks": {}})
@@ -507,9 +517,12 @@ def test_wizard_start_after_relaunch_starts_existing_project_from_scratch(tmp_pa
     assert response.get_json()["project_path"] == str(folder.resolve())
 
 
-def test_wizard_prepare_adopts_matching_project_from_disk_without_suffix_copy(tmp_path, monkeypatch):
+def test_wizard_prepare_starts_new_run_without_reusing_a_matching_project(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     projects_root = tmp_path / "ZuckerVideos" / "Projects"
+    # Saved storage preferences can point outside HOME. Discovery in this test
+    # must use its fixture root, never the developer's real project library.
+    monkeypatch.setattr("server.projects.project_locations", lambda: [projects_root])
     folder = projects_root / "Jam.zuckervid"
     project = create_project("Jam", str(folder))
     master = tmp_path / "master.wav"
@@ -531,6 +544,14 @@ def test_wizard_prepare_adopts_matching_project_from_disk_without_suffix_copy(tm
     project.data["stages"]["sync"]["outputs"] = {"sync_map": str(sync_map)}
     project.save()
 
+    from server.wizard import WizardJob
+    def prepare_new(runner, **options):
+        assert runner._prepared_project is None
+        assert options['master_path'] == str(master)
+        assert options['video_paths'] == [str(video)]
+        return WizardJob(id='fixture-run', status='running')
+    monkeypatch.setattr('server.wizard.WizardRunner.prepare', prepare_new)
+
     app = create_app()
     client = app.test_client()
 
@@ -538,8 +559,9 @@ def test_wizard_prepare_adopts_matching_project_from_disk_without_suffix_copy(tm
 
     assert response.status_code == 202
     payload = response.get_json()
-    assert payload["status"] == "waiting_choice"
-    assert payload["project_path"] == str(folder.resolve())
+    assert payload["status"] == "running"
+    assert payload["project_path"] is None
+    assert load_project(str(folder)).data["stages"]["sync"]["status"] == "done"
     assert not (projects_root / "Jam-2.zuckervid").exists()
 
 
@@ -1127,7 +1149,11 @@ def test_spherical_landmarks_accept_comma_decimal_and_normalize_yaw():
         }
     )
 
-    assert result["singer"] == {"yaw": 336.8, "pitch": -28.8, "fov": 74.8, "weight": 1.5}
+    assert result["singer"] == {
+        "yaw": 336.8, "pitch": -28.8, "fov": 74.8, "weight": 1.5,
+        "roll": 0.0, "projection_preset": "linear", "projection_control": 0.0,
+        "subject": "singer", "enabled": True,
+    }
     assert result["right"]["yaw"] == 322.1
     assert result["right"]["weight"] == 0.0
 
@@ -1433,8 +1459,10 @@ def test_spherical_landmark_sanitizer_preserves_saved_values_and_defaults_blanks
     landmarks = _sanitize_spherical_landmarks({"singer": {"yaw": "-23.2", "pitch": "-28.8", "fov": "74.8", "weight": "1"}})
     blank_defaults = _sanitize_spherical_landmarks({"singer": {"yaw": "-23.2", "pitch": "", "fov": "", "weight": ""}})
 
-    assert landmarks["singer"] == {"yaw": 336.8, "pitch": -28.8, "fov": 74.8, "weight": 1.0}
-    assert blank_defaults["singer"] == {"yaw": 336.8, "pitch": 0.0, "fov": 95.0, "weight": 1.0}
+    authored_defaults = {"roll": 0.0, "projection_preset": "linear", "projection_control": 0.0,
+                         "subject": "singer", "enabled": True}
+    assert landmarks["singer"] == {"yaw": 336.8, "pitch": -28.8, "fov": 74.8, "weight": 1.0, **authored_defaults}
+    assert blank_defaults["singer"] == {"yaw": 336.8, "pitch": 0.0, "fov": 95.0, "weight": 1.0, **authored_defaults}
 
 
 def test_camera_role_weight_sanitizer_allows_zero_exclusion():

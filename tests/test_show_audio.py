@@ -198,3 +198,31 @@ def test_recovered_project_reopens_review_without_rewriting_completed_stage_hist
     (p.artifacts_dir/'show_resume.json').write_text(json.dumps({'scene_id':'s1','reopen_review':True}))
     assert _project_wizard_status(p)['status']=='waiting_show_review'
     assert p.data==before
+
+
+def test_balancing_keeps_every_choice_and_only_levels_and_tames_peaks(audio_project, monkeypatch):
+    project, item, client = audio_project
+    stored = show_proposals.load(project.artifacts_dir / 'show_proposals.json')
+    muted = show_proposals.proposal('clip', 1.2, .5, reason='Muted clip', clip=item['params']['clip'], clip_length=2, clip_start=0, clip_audio=False, matte='none')
+    muted['status'] = 'approved'
+    show_proposals.save(project.artifacts_dir / 'show_proposals.json', stored['proposals'] + [muted], source=stored['source'], resources=[])
+    monkeypatch.setattr(show_audio, 'measure', lambda *a, **k: (.03, .9))
+    result = show_audio.balance(project, FFMPEG)
+    saved = {p['id']: p['params'] for p in show_proposals.load(project.artifacts_dir / 'show_proposals.json')['proposals']}
+    own = saved[item['id']]
+    assert own.get('audio_mode', 'own') == 'own' and own.get('clip_audio') is True and not own.get('under_voice')   # its own sound, as chosen
+    assert own['audio_volume'] == 4.0 and own['tame_peaks']                    # quiet clip brought up to the narration, peaks tamed
+    assert saved[muted['id']].get('clip_audio') is False and 'audio_volume' not in saved[muted['id']]   # muted: left alone
+    assert result['balanced'] == 1
+
+
+def test_a_sudden_loud_moment_is_brought_down_and_the_rest_is_untouched():
+    from core.show_inserts import tame_peaks
+    rate = 48000
+    quiet = np.full((rate, 2), .1, np.float32)
+    bang = quiet.copy()
+    bang[rate // 2:rate // 2 + 2400] = .95
+    tamed = tame_peaks(bang, rate=rate)
+    assert np.abs(tamed).max() <= .5 + 1e-6
+    assert np.allclose(tamed[:rate // 4], quiet[:rate // 4])
+    assert np.allclose(tame_peaks(quiet, rate=rate), quiet)

@@ -87,6 +87,7 @@ def import_audio(stream,name,metadata=None):
     if ext not in AUDIO:raise ValueError('Choose an audio file')
     fd,pending=tempfile.mkstemp(prefix='.music-import-',suffix=ext,dir=folder)
     import os
+    converted=Path(pending).with_suffix('.normalized.mp3')
     digest=hashlib.sha256();total=0
     try:
         with os.fdopen(fd,'wb') as out:
@@ -97,14 +98,21 @@ def import_audio(stream,name,metadata=None):
         from core.ffmpeg import ffprobe
         info=ffprobe(pending);duration=float(info.get('format',{}).get('duration') or 0)
         if not any(s.get('codec_type')=='audio' for s in info.get('streams',[])) or not math.isfinite(duration) or duration<=0:raise ValueError('This file has no playable audio')
-        target=folder/(digest.hexdigest()+ext)
+        if ext!='.mp3':
+            from core.audio_import import mp3
+            mp3(pending,converted)
+            digest=hashlib.sha256(converted.read_bytes())
+            Path(pending).unlink();converted.replace(pending)
+        target=folder/(digest.hexdigest()+'.mp3')
         if not target.exists():Path(pending).replace(target)
         meta={**(metadata or {}),'id':digest.hexdigest(),'name':str((metadata or {}).get('name') or Path(name).stem)[:200],
               'source':(metadata or {}).get('source','local'),'duration':duration,'path':str(target),
               'license':(metadata or {}).get('license','User supplied'),'attribution':(metadata or {}).get('attribution','')}
         atomic_write_json(target.with_suffix(target.suffix+'.json'),meta)
         return meta
-    finally:Path(pending).unlink(missing_ok=True)
+    finally:
+        Path(pending).unlink(missing_ok=True)
+        converted.unlink(missing_ok=True)
 
 
 def local(query=''):

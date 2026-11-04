@@ -158,3 +158,42 @@ def test_clip_media_is_range_readable_but_not_arbitrary_files(workshop,tmp_path)
     external=tmp_path/'outside.mp4';external.write_bytes(b'private')
     stored['proposals'][0]['params']['clip']=str(external);show_proposals.save(path,stored['proposals'])
     assert client.get('/api/v1/show/clips/'+clip['id']+'/media').status_code==404
+
+
+def test_filmed_texture_replaces_same_effect_and_keeps_mark_timing_and_template(workshop,monkeypatch):
+    from core import show_clips,show_video_assets
+    project,clip,client=workshop
+    effect=show_proposals.proposal('texture',2,6,reason='Fire on plant',texture='fire',point=[.8,.4],anchor=[.7,.4,.1,.2],follow_template='/marked-template.png')
+    effect['status']='approved'
+    path=project.artifacts_dir/'show_proposals.json'
+    show_proposals.save(path,[effect],source=clip['params']['clip'],resources=[])
+    document=show_scenes.load(project.artifacts_dir/'show_scenes.json');document['scenes'][0]['effects']=[effect['id']];show_scenes.save(project.artifacts_dir/'show_scenes.json',document)
+    reference={'id':'fire','scene_id':'scene-1','url':'https://vimeo.com/123','start':0,'end':30,'at':2}
+    (project.artifacts_dir/'show_references.json').write_text(json.dumps([reference]))
+    monkeypatch.setattr(show_clips,'download',lambda *a:Path(clip['params']['clip']))
+    monkeypatch.setattr(show_clips,'length',lambda *a:3.)
+    monkeypatch.setattr(show_video_assets,'detect_green',lambda *a:True)
+    response=client.post('/api/v1/show/references/video/fire/download',json={'texture':'fire','replace_texture':effect['id'],'duration':6})
+    assert response.status_code==201,response.get_json()
+    result=response.get_json()['proposal']
+    assert result['id']==effect['id'] and result['at']==2 and result['duration']==6
+    assert result['params']['follow_anchor']==effect['params']['anchor']
+    assert result['params']['follow_template']=='/marked-template.png'
+    assert result['params']['person_offset']==pytest.approx([.3,-.6])
+    assert len(show_proposals.load(path)['proposals'])==1
+    assert show_scenes.load(project.artifacts_dir/'show_scenes.json')['scenes'][0]['effects']==[effect['id']]
+    assert show_proposals.render_inputs([result])[1][0]['video_layer']==clip['params']['clip']
+
+
+def test_crop_keeps_retained_pixels_stationary_and_render_geometry_matches_mouse():
+    from core.show_geometry import crop_alpha,validate_crop
+    a=np.ones((10,20,4),np.float32)
+    cropped=crop_alpha(a,[.25,.2,.1,.1])
+    assert not cropped[:2].any() and not cropped[:,:5].any()
+    assert np.array_equal(cropped[2:9,5:18],a[2:9,5:18])
+    with pytest.raises(ValueError):validate_crop([.7,0,.5,0])
+    js=Path('web/show_geometry.js').read_text()
+    import shutil
+    node=shutil.which('node')
+    if node:
+        subprocess.run([node,'-e',"global.window={};"+js+"const g=window.ShowGeometry;const assert=require('assert');assert.deepEqual(g.change({},'left',.2,0,false),{crop:[.2,0,0,0]});assert.equal(g.change({},null,0,0,true,0,Math.PI/2).rotate,90);assert.equal(g.change({},'right',.2,0,true).stretch_x,1.4);"],check=True)

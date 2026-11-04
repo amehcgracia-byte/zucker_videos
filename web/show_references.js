@@ -15,12 +15,14 @@
       <details><summary>Stock texture examples</summary><button type="button" data-stock-texture="electricity">Electricity · green screen</button><button type="button" data-stock-texture="rain">Rain · green screen</button><p>These keep a source link in your project. Download only when you choose to use one.</p></details><form data-ref-video-search><input aria-label="Search reference videos" maxlength="160" placeholder="Movie, scene, person…"><button>Search videos in browser</button></form>
       <label>Video link (YouTube, Vimeo and supported sites)<input data-ref-url type="url" placeholder="https://www.youtube.com/watch?v=…"></label>
       <details><summary>Source position (optional)</summary><div class="show-fields"><label>Start in the online video (seconds)<input data-ref-start type="number" min="0" step="any" value="0"></label></div><input data-ref-end type="hidden" value="30"></details>
-      <div class="show-actions"><button data-ref-watch>Open video in browser</button><button data-ref-save>Save link &amp; interval</button><button data-ref-download class="primary">Download clip &amp; place it</button></div><div data-ref-saved></div><details><summary>Browser session · YouTube access</summary><p>If YouTube asks for verification, open the link in this browser, sign in or solve its check, then retry. Zucker reads that browser’s current session locally for downloads. No cookie file is exported. This is optional and may trigger a system permission prompt.</p><label>Browser session<select data-ref-browser><option value="">No browser session</option><option value="chrome">Chrome</option><option value="safari">Safari</option><option value="firefox">Firefox</option><option value="edge">Edge</option><option value="brave">Brave</option></select></label></details>
+      <div class="show-actions"><button data-ref-watch>Open video in browser</button><button data-ref-save>Save link &amp; interval</button><button data-ref-download class="primary">Download clip &amp; place it</button><button data-ref-audio>Download audio only · MP3</button></div><div data-ref-saved></div><details><summary>Browser session · YouTube access</summary><p>If YouTube asks for verification, open the link in this browser, sign in or solve its check, then retry. Zucker reads that browser’s current session locally for downloads. No cookie file is exported. This is optional and may trigger a system permission prompt.</p><label>Browser session<select data-ref-browser><option value="">No browser session</option><option value="chrome">Chrome</option><option value="safari">Safari</option><option value="firefox">Firefox</option><option value="edge">Edge</option><option value="brave">Brave</option></select></label></details>
       <p>Up to 30 seconds are kept in this project. Drag the timeline edges to choose the length that plays. Supported sites include YouTube, Vimeo, Dailymotion, Twitch, TikTok, Instagram, Reddit, Archive.org, Pexels and Pixabay; availability depends on the site. Use clips you are allowed to publish.</p>
       <div data-clip-settings hidden><h3>Edit this clip</h3><video data-clip-preview controls playsinline preload="metadata" style="width:100%;max-height:260px"></video>
       <p>The playhead chooses the source picture. The effect's timeline edges choose its duration.</p><button data-clip-use-playhead>Start at this picture</button>
-      <label>Background<select data-clip-matte><option value="auto">Detect green screen automatically</option><option value="none">Keep the complete video</option><option value="green">Remove green screen</option><option value="green-light">Soft green · smoke / rain / light</option><option value="black">Remove black · light / smoke footage</option><option value="person">Cut out the moving person (macOS)</option></select></label>
+      <label>Background<select data-clip-matte><option value="auto">Remove a plain background automatically</option><option value="none">Keep the complete video</option><option value="plain">Remove the background (any plain colour, white too)</option><option value="green">Remove the background · green screen</option><option value="green-light">Soft green · smoke / rain / light</option><option value="black">Remove black · light / smoke footage</option><option value="person">Cut out the moving person (macOS)</option></select></label>
+      <label>Speed<select data-clip-speed>${[10,25,50,75,100,125,150,200].map(pct=>`<option value="${pct}">${pct===100?'100 % · normal':pct+' %'+(pct<100?' · slow motion':' · faster')}</option>`).join('')}</select></label>
       <label><input type="checkbox" data-clip-audio> Use the clip's audio</label><label>Sound mode<select data-clip-mode><option value="own">Clip sound · pause narration</option><option value="mix">Mix with narration</option><option value="mute">Mute clip · keep narration</option></select></label><button type="button" data-clip-mixer>Sound mixer…</button><p>Mix with narration keeps both sources playing. Clip sound pauses narration for a full-frame insert; mute keeps only your narration. Use Sound mixer to balance the levels.</p>
+      <p data-clip-watermark></p>
       <button data-clip-save class="primary">Apply clip settings</button><button data-clip-layers>Edit moving person &amp; background…</button></div></section>
       <section data-ref-section="library" hidden><h3>Video library</h3><label><input data-ref-transparent type="checkbox"> Cutouts / transparent backgrounds only</label><div data-ref-video-library></div><p>Original files stay in this project. A cutout is a reusable recipe; it does not duplicate the video.</p></section>
       <section data-ref-section="generate" hidden><h3>Create a video outside the editor</h3><p>No video generator is connected. Describe the shot, copy the prompt to your chosen video generator, then bring back the result. Do not expect ChatGPT image generation to return a video.</p>
@@ -61,8 +63,10 @@
     });
     dialog.querySelector('[data-ref-watch]').onclick=async()=>{try{await api('/show/references/open',{method:'POST',body:JSON.stringify({kind:'video',url:dialog.querySelector('[data-ref-url]').value})});}catch(error){message(error.message);}};
     const saveReference=()=>api('/show/references/video',{method:'POST',body:JSON.stringify({project_id:context.projectId,scene_id:context.scene.id,selected_text:context.picked.text,at:context.picked.start,url:dialog.querySelector('[data-ref-url]').value,start:Number(dialog.querySelector('[data-ref-start]').value),end:Number(dialog.querySelector('[data-ref-start]').value)+30})});
-    dialog.querySelector('[data-ref-download]').onclick=async event=>{event.target.disabled=true;try{await api('/show/download-access',{method:'PATCH',body:JSON.stringify({browser:dialog.querySelector('[data-ref-browser]').value})});const ref=await saveReference();ShowReview.referenceSaved(ref);message('Downloading only the chosen seconds…');
-      const result=await api(`/show/references/video/${encodeURIComponent(ref.id)}/download`,{method:'POST',body:JSON.stringify({texture:context.texture,replace_texture:context.replaceTexture,replace_id:context.clip?.id,duration:context.clip?.duration||Math.max(.2,context.picked.end-context.picked.start)})});dialog.close();if(context.clip)await ShowReview.clipUpdated(result.proposal);else ShowReview.clipAdded(result);}catch(error){message(error.message);}finally{event.target.disabled=false;}};
+    const downloadSelection=async event=>{event.target.disabled=true;try{await api('/show/download-access',{method:'PATCH',body:JSON.stringify({browser:dialog.querySelector('[data-ref-browser]').value})});const ref=await saveReference();ShowReview.referenceSaved(ref);message('Downloading only the chosen seconds…');
+      const result=await api(`/show/references/video/${encodeURIComponent(ref.id)}/download`,{method:'POST',body:JSON.stringify({audio_only:event.target.hasAttribute('data-ref-audio'),texture:context.texture,replace_texture:context.replaceTexture,replace_id:context.clip?.id,duration:context.clip?.duration||Math.max(.2,context.picked.end-context.picked.start)})});dialog.close();if(context.clip && result.proposal.kind!=='jingle')await ShowReview.clipUpdated(result.proposal);else ShowReview.clipAdded(result);}catch(error){message(error.message);}finally{event.target.disabled=false;}};
+    dialog.querySelector('[data-ref-download]').onclick=downloadSelection;
+    dialog.querySelector('[data-ref-audio]').onclick=downloadSelection;
     dialog.querySelector('[data-clip-use-playhead]').onclick=()=>{
       if(context.clip){context.clipStart=dialog.querySelector('[data-clip-preview]').currentTime;message('Source picture selected. Apply clip settings to save it; the timeline still controls length.');}
     };
@@ -107,10 +111,28 @@
     dialog.querySelector('[data-ref-url]').value=item.params.url||'';dialog.querySelector('[data-ref-start]').value=item.params.source_start||0;
     dialog.querySelector('[data-clip-settings]').hidden=false;
     const video=dialog.querySelector('[data-clip-preview]');video.src='/api/v1/show/clips/'+encodeURIComponent(item.id)+'/media';video.onloadedmetadata=()=>video.currentTime=context.clipStart;
+    const speed=dialog.querySelector('[data-clip-speed]');speed.value=String(Math.round((item.params.speed||1)*100));
+    speed.onchange=async()=>{try{await ShowReview.clipSpeed(item.id,Number(speed.value)/100);message(`Speed ${speed.value} %. Its timeline bar now lasts as long as the clip plays.`);}catch(error){message(error.message);}};
     dialog.querySelector('[data-clip-matte]').value=item.params.matte||'none';dialog.querySelector('[data-clip-audio]').checked=item.params.clip_audio!==false;dialog.querySelector('[data-clip-mode]').value=item.params.clip_audio===false?'mute':item.params.audio_mode||'own';
     dialog.querySelector('h2').textContent='Video clip settings';
+    showWatermark(item);
   }
-  window.ShowReferences={open,openClip,openTexture(scene,picked,projectId,texture='smoke',replaceTexture=null){
+  // A watermark found in the clip is zoomed out automatically; the person can keep it instead.
+  async function showWatermark(item,keep=null){
+    const line=dialog.querySelector('[data-clip-watermark]');line.textContent='';
+    try{
+      const info=await api('/show/clips/'+encodeURIComponent(item.id)+'/framing',keep===null?{}:{method:'POST',body:JSON.stringify({keep_watermark:keep})});
+      const mark=info.watermark;
+      if(!mark){line.textContent='No watermark found in this clip.';return;}
+      const where=`${mark.box[1]<.5?'top':'bottom'}-${mark.box[0]<.5?'left':'right'}`;
+      if(!mark.zoom){line.textContent=`A watermark is in the ${where} corner, but hiding it would need too much zoom: it stays.`;return;}
+      line.innerHTML=mark.hidden?`Watermark in the ${where} corner: hidden by zooming ${mark.zoom}×. <button type="button" data-watermark-keep>Show it instead</button>`
+        :`Watermark in the ${where} corner: visible. <button type="button" data-watermark-hide>Hide it (zoom ${mark.zoom}×)</button>`;
+      line.querySelector('button').onclick=()=>showWatermark(item,mark.hidden);
+      if(keep!==null)message(keep?'The watermark stays visible.':'The watermark is zoomed out of the picture. Render the scene preview to see it.');
+    }catch(error){line.textContent=error.message;}
+  }
+  window.ShowReferences={open,openClip,openAudio(scene,picked,projectId){open(scene,picked,projectId,'video');dialog.querySelector('h2').textContent='Add audio from a link';message('Download audio only saves MP3 in this project and your music library.');},openTexture(scene,picked,projectId,texture='smoke',replaceTexture=null){
     open(scene,picked,projectId,'video');context.texture=texture;context.replaceTexture=replaceTexture;
     dialog.querySelector('h2').textContent='Filmed texture · '+texture;
     dialog.querySelector('[data-ref-video-search] input').value=texture+' real footage green screen black background free use';

@@ -68,8 +68,11 @@
     if (target.hasAttribute("data-refresh")) { await show(); return; }
     if (target.dataset.signIn) {
       const switching = /Switch/.test(target.textContent);
-      await call(`/connectors/${target.dataset.signIn}/sign-in`, { method: "POST", body: JSON.stringify({ switch: switching }) });
-      status("A Terminal window opened: sign in there (a browser page may open), then press Check again.");
+      const id = target.dataset.signIn;
+      await call(`/connectors/${id}/sign-in`, { method: "POST", body: JSON.stringify({ switch: switching }) });
+      status(id === "chatgpt" ? "A Terminal window shows a link and a code: open the link, sign in, type the code. This window notices when you are done."
+        : "A Terminal window opened: sign in there (a browser page may open). This window notices when you are done.");
+      waitForSignIn(id);
       return;
     }
     if (target.hasAttribute("data-hf-switch")) { dialog.querySelector(".connector-hf").hidden = false; dialog.querySelector("[data-hf-token]").focus(); return; }
@@ -80,6 +83,21 @@
       try { const result = await call("/connectors/huggingface/token", { method: "POST", body: JSON.stringify({ token: input.value }) }); input.value = ""; await show(); status(`Hugging Face: signed in as ${result.account}.`); }
       finally { target.disabled = false; }
     }
+  }
+  // After opening a sign-in, check every few seconds (for five minutes) instead of asking the
+  // person to press Check again.
+  let waiting = null;
+  function waitForSignIn(id) {
+    clearInterval(waiting);
+    const until = Date.now() + 5 * 60 * 1000;
+    waiting = setInterval(async () => {
+      if (!dialog?.open || Date.now() > until) { clearInterval(waiting); return; }
+      try {
+        const items = (await call("/connectors")).connectors || [];
+        const item = items.find((entry) => entry.id === id);
+        if (item?.signed_in) { clearInterval(waiting); await show(); status(`${item.name}: signed in${item.account ? " as " + item.account : ""}.`); }
+      } catch { /* the next check tries again */ }
+    }, 4000);
   }
   document.addEventListener("click", (event) => { if (event.target instanceof Element && event.target.closest("#connectorsOpen")) show(); });
   window.Connectors = { show };

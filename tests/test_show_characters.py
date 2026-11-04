@@ -161,3 +161,17 @@ def test_photos_and_characters_through_the_api(tmp_path, monkeypatch):
     rigged = client.patch("/api/v1/show/characters", json={"folder": listed[0]["folder"], "voice": [str(video), 0.0, 1.0]}).get_json()
     assert rigged["voice"][2] == 1.0
     assert client.patch("/api/v1/show/characters", json={"folder": str(tmp_path), "voice": None}).status_code == 404
+
+
+def test_green_backing_removes_only_border_connected_green(tmp_path):
+    import numpy as np
+    from PIL import Image
+    from core.show_characters import green_screen_mask
+    pixels=np.zeros((100,100,3),dtype=np.uint8);pixels[:]=[0,230,0]
+    pixels[20:80,20:80]=[230,30,30]
+    pixels[40:60,40:60]=[0,230,0]
+    path=tmp_path/'green.png';Image.fromarray(pixels).save(path)
+    mask=green_screen_mask(path)
+    assert mask[0,0]==0 and mask[30,30]==1 and mask[50,50]==1
+    pixels[:]=[80,120,90];Image.fromarray(pixels).save(path)
+    assert green_screen_mask(path) is None

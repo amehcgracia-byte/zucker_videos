@@ -67,9 +67,15 @@ def test_saved_360_profile_roundtrip_uses_original_source_over_proxy(tmp_path: P
     }]
     result = _apply_saved_spherical_landmarks(project, segments)
     assert result[0]["spherical_shot"] == {
-        "shot_id": "singer", "yaw": 123.0, "pitch": -12.0, "fov": 82.0,
+        "shot_id": "singer", "yaw": 123.0, "pitch": -12.0, "fov": 71.0,
         "type": "singer", "label": "Cantante", "weight": 1.0,
+        "roll": 0.0, "projection_preset": "linear", "projection_control": 0.0,
+        "subject": "singer",
     }
+    # Export overlays the saved original-source pose without rewriting the
+    # stale input plan or substituting the proxy's/global framing.
+    assert segments[0]["spherical_shot"]["yaw"] == 0.0
+    assert segments[0]["spherical_shot"]["fov"] == 95.0
 
 
 
@@ -231,8 +237,10 @@ def test_preview_and_export_share_canonical_360_pose():
     authored = view_parameters(123.0, 80.0, 20.0, 16 / 9, "drummer")
     exported = view_parameters(123.0, effective_pitch(80.0, "drummer"), 20.0, 16 / 9, "drummer")
     assert authored == exported
-    assert authored["pitch"] == 25.0
-    assert authored["h_fov"] == 82.0
+    # Authored poses support +/-45° pitch and a 30° close-up. Automatic
+    # planning has separate constraints; it must not overwrite saved poses.
+    assert authored["pitch"] == 45.0
+    assert authored["h_fov"] == 30.0
 
 
 def test_safe_360_framing_limits_zoom_and_pitch():
@@ -253,8 +261,8 @@ def test_saved_360_landmarks_are_canonicalized_before_persistence():
     result = _sanitize_spherical_landmarks({
         "drummer": {"yaw": 297.542, "pitch": -40.0, "fov": 20.0, "weight": 5.0},
     })
-    assert result["drummer"]["pitch"] == -25.0
-    assert result["drummer"]["fov"] == 82.0
+    assert result["drummer"]["pitch"] == -40.0
+    assert result["drummer"]["fov"] == 30.0
 
 
 def test_360_motion_commands_reach_the_end_of_the_shot():

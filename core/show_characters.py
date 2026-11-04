@@ -109,9 +109,43 @@ def grabcut_mask(photo: str | Path, box: list[float] | None = None) -> np.ndarra
     return np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 1.0, 0.0).astype(np.float32)
 
 
+def green_screen_mask(photo: str | Path) -> np.ndarray | None:
+    """Recognize a saturated green backing touching most of the image border."""
+    rgba = np.asarray(Image.open(photo).convert("RGBA"))
+    rgb = rgba[..., :3].astype(np.float32)
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    green = (g > 90) & (g > r * 1.5 + 15) & (g > b * 1.4 + 15)
+    border = np.concatenate([green[0], green[-1], green[:, 0], green[:, -1]])
+    if border.mean() < .85 or not .15 < green.mean() < .98:
+        return None
+    # Border-connected green only: keep green details enclosed inside the subject.
+    import cv2
+    count, labels = cv2.connectedComponents(green.astype(np.uint8), connectivity=8)
+    touching = np.unique(np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]]))
+    remove = np.isin(labels, touching[touching != 0])
+    return (~remove).astype(np.float32) * (rgba[..., 3] / 255.)
+
+
+def plain_screen_mask(photo: str | Path, *, allow_white: bool = False) -> np.ndarray | None:
+    """A plain background of any strong colour or black (white only when asked), removed where
+    it touches the edges (core.plain_key); None when the photo has none."""
+    from core import plain_key
+    rgba = np.asarray(Image.open(photo).convert("RGBA"))
+    key = plain_key.find([rgba[..., :3]], allow_white=allow_white)
+    if key is None:
+        return None
+    return plain_key.alpha(rgba[..., :3], key) * (rgba[..., 3] / 255.)
+
+
 def auto_mask(photo: str | Path, box: list[float] | None = None) -> tuple[np.ndarray, str]:
     """The subject's mask: macOS subject lifting first (unless a box is given), else GrabCut."""
     if box is None:
+        green = green_screen_mask(photo)
+        if green is not None:
+            return green, "green-screen"
+        plain = plain_screen_mask(photo, allow_white=True)     # asked for: a white background goes too
+        if plain is not None:
+            return plain, "plain-background"
         mask = vision_mask(photo)
         if mask is not None and float((mask > 0.5).mean()) > 0.002:
             return mask, "macos-vision"

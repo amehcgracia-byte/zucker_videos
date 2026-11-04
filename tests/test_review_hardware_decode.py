@@ -112,6 +112,35 @@ def test_simultaneous_preview_requests_render_same_asset_only_once(tmp_path, mon
     assert results[0][0]['thumbnail'] == results[1][0]['thumbnail']
 
 
+def test_simultaneous_cold_reserve_counts_build_metadata_only_once(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    import time
+
+    project = review_project(tmp_path)
+    gate = threading.Barrier(8)
+    calls = []
+
+    def build(*args):
+        calls.append(1)
+        # Keep the first cold build in progress while the other status
+        # requests arrive; they must wait rather than replace the same JSON.
+        time.sleep(.05)
+        return [], "test reserve"
+
+    monkeypatch.setattr(shot_review, "_review_candidate_pool", build)
+
+    def count():
+        gate.wait(timeout=3)
+        return shot_review._project_candidate_count(project, {}, [],
+            dict(master_start_sec=0, duration_sec=1), "reel")
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = [future.result(timeout=5) for future in [pool.submit(count) for _ in range(8)]]
+    assert results == [(0, "test reserve")] * 8
+    assert len(calls) == 1
+
+
 def test_prefetch_starts_before_plan_is_published_and_review_reuses_photos(tmp_path, monkeypatch):
     import json, threading
     from core.stages.base import artifact_path

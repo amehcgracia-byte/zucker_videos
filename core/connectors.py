@@ -87,7 +87,9 @@ def all_status() -> list[dict[str, Any]]:
 
 SIGN_IN = {
     "claude": ("{cli} auth login --claudeai", "{cli} auth logout; {cli} auth login --claudeai"),
-    "chatgpt": ("{cli} login", "{cli} logout; {cli} login"),
+    # A code typed on the website: the sign-in does not depend on the browser coming back to a
+    # local port (with the plain flow the page said "signed in" but Codex never heard of it).
+    "chatgpt": ("{cli} login --device-auth", "{cli} logout; {cli} login --device-auth"),
     "github": ("{cli} auth login", "{cli} auth login; {cli} auth switch"),
 }
 

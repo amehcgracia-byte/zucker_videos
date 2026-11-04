@@ -37,7 +37,7 @@ def test_switching_opens_the_tools_own_sign_in(monkeypatch):
     monkeypatch.setattr(connectors, "_cli", lambda name: f"/bin/{name}")
     monkeypatch.setattr(connectors.subprocess, "run", lambda command, **kw: opened.append(command))
     monkeypatch.setattr(connectors.sys, "platform", "darwin")
-    assert connectors.open_sign_in("chatgpt", switch=True) == "/bin/codex logout; /bin/codex login"
+    assert connectors.open_sign_in("chatgpt", switch=True) == "/bin/codex logout; /bin/codex login --device-auth"
     assert connectors.open_sign_in("claude") == "/bin/claude auth login --claudeai"
     assert opened[0][0] == "osascript" and "Terminal" in opened[0][2]
     with pytest.raises(ValueError):

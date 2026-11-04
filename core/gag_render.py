@@ -77,6 +77,11 @@ class Sticker:
     follow: Any = None
     tracked_offset: tuple = (0.,0.)
     tracked_visible: bool = True
+    crop: Any = None
+    pan: Any = None
+    stretch_x: float = 1.0
+    stretch_y: float = 1.0
+    rotation: float = 0.0
     eyes: Any = None                              # original-pixel layers with one-off glances
 
     def active(self, t: float) -> bool:
@@ -110,27 +115,24 @@ def load_sticker(raw: dict[str, Any], width: int, height: int) -> Sticker:
     target = max(8.0, float(raw.get("width") or 0.25) * width)
     prepared_w = max(8, int(round(target * PREPARED_SCALE)))
     prepared_h = max(8, int(round(image.height * prepared_w / image.width)))
+    # Placement may exceed the frame. Keep the working sprite bounded; affine
+    # compositing samples only its visible region instead of allocating a giant image.
+    reduction = min(1., 2048 / max(prepared_w, prepared_h))
+    prepared_w = max(1, round(prepared_w * reduction))
+    prepared_h = max(1, round(prepared_h * reduction))
     image = image.resize((prepared_w, prepared_h), Image.LANCZOS)
-    if not raw.get("mouth"):
-        # Placed pictures can be stretched, mirrored and turned (a talking one keeps its mouth where it is).
-        stretch = max(0.25, min(4.0, float(raw.get("stretch") or 1.0)))
-        if abs(stretch - 1.0) > 1e-3:
-            image = image.resize((prepared_w, max(8, int(round(prepared_h * stretch)))), Image.LANCZOS)
-        if raw.get("flip"):
-            image = image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-        if float(raw.get("rotate") or 0.0):
-            image = image.rotate(-float(raw["rotate"]), resample=Image.BICUBIC, expand=True)
     pixels = np.asarray(image).astype(np.float32) / 255.0
     pixels[..., 3] *= max(0.0, min(1.0, float(raw.get("opacity", 1.0))))
     pixels[..., :3] *= pixels[..., 3:4]
     box = raw.get("from_box")
     sticker = Sticker(
-        pixels=pixels, at=float(raw["at"]), duration=max(0.3, float(raw["duration"])),
+        pixels=pixels, at=float(raw["at"]), duration=max(0.001, float(raw["duration"])),
         x=float(raw.get("x", 0.5)), y=float(raw.get("y", 0.5)), width_px=target,
         effect=str(raw.get("effect") or "pop"),
         from_box=tuple(float(v) for v in box) if box else None,
         path=[(float(a), float(b), float(c)) for a, b, c in raw.get("path") or []],
-        hops=int(raw.get("hops") or 0),
+        hops=int(raw.get("hops") or 0), crop=raw.get("crop"), pan=raw.get("pan"), stretch_x=float(raw.get("stretch_x",1.)) * (-1 if raw.get("flip") else 1),
+        stretch_y=float(raw.get("stretch",1.)), rotation=float(raw.get("rotate",0.)),
     )
     if sticker.effect == "draw":
         # It draws itself first: Claude's strokes in their order, or (a painted picture) as a crayon colouring it in.
@@ -271,9 +273,9 @@ def draw_sticker(frame: np.ndarray, sticker: Sticker, t: float) -> None:
     cx+=sticker.tracked_offset[0]*width;cy+=sticker.tracked_offset[1]*height
     if sx <= 0.01 or sy <= 0.01:
         return
-    scale = 1.0 / PREPARED_SCALE
     h, w = sticker.pixels.shape[:2]
-    angle = math.radians(rot)
+    scale = sticker.width_px / w
+    angle = math.radians(rot - sticker.rotation)
     cos, sin = math.cos(angle), math.sin(angle)
     # Sprite pixel -> frame pixel: position + R(counter-clockwise on screen) * S * (p - pivot).
     # The pivot (feet, base...) keeps its place while the sprite turns or grows;
@@ -282,8 +284,8 @@ def draw_sticker(frame: np.ndarray, sticker: Sticker, t: float) -> None:
     if sticker.pivot:
         cx += (px - w / 2) * scale
         cy += (py - h / 2) * scale
-    a, b = cos * sx * scale, sin * sy * scale
-    c, d = -sin * sx * scale, cos * sy * scale
+    a, b = cos * sx * scale * sticker.stretch_x, sin * sy * scale * sticker.stretch_y
+    c, d = -sin * sx * scale * sticker.stretch_x, cos * sy * scale * sticker.stretch_y
     corners = np.array([[0, 0], [w, 0], [0, h], [w, h]], dtype=np.float32) - [px, py]
     xs = cx + corners[:, 0] * a + corners[:, 1] * b
     ys = cy + corners[:, 0] * c + corners[:, 1] * d
@@ -294,6 +296,8 @@ def draw_sticker(frame: np.ndarray, sticker: Sticker, t: float) -> None:
     matrix = np.array([[a, b, cx - x0 - (a * px + b * py)],
                        [c, d, cy - y0 - (c * px + d * py)]], dtype=np.float32)
     pixels = drawing_pixels(sticker, t) if sticker.draw_sec else talking_pixels(sticker, t)
+    from core.show_geometry import transform_pixels
+    pixels=transform_pixels(pixels,sticker.crop,sticker.pan)
     layer = cv2.warpAffine(pixels, matrix, (x1 - x0, y1 - y0), flags=cv2.INTER_LINEAR,
                            borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
     region = frame[y0:y1, x0:x1].astype(np.float32) / 255.0
@@ -479,7 +483,8 @@ def _video_info(path: Path) -> tuple[int, int, float, int]:
 def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Path, *, ffmpeg: str = "ffmpeg",
                 progress: Callable[[float], None] | None = None, cancel: Callable[[], None] | None = None,
                 timeline: list[tuple[float, float]] | None = None, drawings: Any = None,
-                preset: str = "veryfast", crf: int = 19, hardware: bool = False) -> Path:
+                preset: str = "veryfast", crf: int = 19, hardware: bool = False,
+                holds: list[tuple[int, int, int]] | None = None) -> Path:
     """Draw ``gags`` on ``video``. Character interventions lengthen it: their
     (at, duration) spans are appended to ``timeline`` for captions to follow.
     ``drawings`` (core.show_bridge.StudioDrawings) are Show Studio's effects,
@@ -615,17 +620,43 @@ def render_gags(video: str | Path, gags: list[dict[str, Any]], output: str | Pat
             reader.start()
             writer.start()
             index = 0
+            # Frames of another shot right at a cut (core.source_cuts.holds) show their clean
+            # neighbour instead: a few recent frames are kept and a few read ahead.
+            shown_instead = {frame: shown for first, last, shown in (holds or []) for frame in range(first, last + 1)}
+            recent: dict[int, bytes] = {}
+            upcoming: dict[int, bytes] = {}
+            read_next = 0
+
+            def pull() -> bytes | None:
+                while True:
+                    try:
+                        return ahead.get(timeout=0.5)
+                    except queue.Empty:
+                        if broken:
+                            raise RuntimeError(f"Gag render failed: the encoder stopped ({broken[0]})")
+                        if not reader.is_alive():
+                            return None
+
+            def frame_at(wanted: int) -> bytes | None:
+                nonlocal read_next
+                while read_next <= wanted:
+                    chunk = pull()
+                    if chunk is None:
+                        return None
+                    upcoming[read_next] = chunk
+                    read_next += 1
+                return upcoming.get(wanted)
+
             while True:
-                try:
-                    raw = ahead.get(timeout=0.5)
-                except queue.Empty:
-                    if broken:
-                        raise RuntimeError(f"Gag render failed: the encoder stopped ({broken[0]})")
-                    if reader.is_alive():
-                        continue
-                    raw = None
+                raw = frame_at(index)
                 if raw is None:
                     break
+                upcoming.pop(index, None)
+                recent[index] = raw
+                recent.pop(index - 16, None)
+                if index in shown_instead:
+                    other = shown_instead[index]
+                    raw = recent.get(other) or frame_at(other) or raw
                 write_inserts(index)
                 t = index / fps
                 live_warps = [warp for warp in warps if warp.active(t)]

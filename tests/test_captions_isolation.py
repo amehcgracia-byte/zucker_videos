@@ -82,4 +82,11 @@ def test_backstage_burns_subtitles_in_a_project_named_with_an_apostrophe(tmp_pat
                            "-filter_complex", graph, "-map", "[vout]", "-map", "[aout]", "-t", f"{duration:.3f}", str(output)], cwd=cache)
     frame = subprocess.run([ffmpeg, "-v", "error", "-ss", "1", "-i", str(output), "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"],
                            check=True, capture_output=True).stdout
-    assert sum(1 for r, g, b in zip(frame[::3], frame[1::3], frame[2::3]) if min(r, g, b) > 210) > 20
+    # Compare against the same static shot after the caption ends. Font fallback
+    # and antialiasing differ by OS: counting nearly pure-white pixels rejected
+    # readable subtitles on Linux, while missing the timing contract entirely.
+    clear = subprocess.run([ffmpeg, "-v", "error", "-ss", "1.9", "-i", str(output), "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"],
+                           check=True, capture_output=True).stdout
+    assert len(frame) == len(clear) == 320 * 240 * 3
+    changed = [max(abs(a-b) for a,b in zip(frame[i:i+3],clear[i:i+3])) for i in range(0,len(frame),3)]
+    assert sum(delta > 30 for delta in changed) > 50

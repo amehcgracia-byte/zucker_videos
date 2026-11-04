@@ -1218,6 +1218,9 @@ def generate_thumbnail(
             "yaw": float(pose.get("yaw") or 0.0) % 360.0,
             "pitch": float(pose.get("pitch") or 0.0),
             "fov": float(pose.get("fov") or 95.0),
+            "roll": float(pose.get("roll") or 0.0),
+            "projection_preset": pose.get("projection_preset"),
+            "projection_control": pose.get("projection_control"),
             "shot_id": pose.get("shot_id") or pose.get("type"),
             "insv_fov": pose.get("insv_fov"),
         })[:16]
@@ -1232,6 +1235,9 @@ def generate_thumbnail(
             insv_fov=float(pose.get("insv_fov") or 190.0),
             width=360,
             height=202,
+            projection_preset=pose.get("projection_preset"),
+            roll=float(pose.get("roll") or 0.0),
+            projection_control=pose.get("projection_control"),
         )
         filter_graph = f"{view_filter},format=yuvj420p"
     else:

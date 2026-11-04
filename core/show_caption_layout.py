@@ -79,3 +79,25 @@ def without_artwork(cues, proposals, applied_ids):
             spans = pieces
         result.extend({**cue, 'start': a, 'end': b} for a, b in spans if b - a > .001)
     return result
+
+
+def with_insertions(cues, spans):
+    """Move narration captions around inserted footage, leaving its clock empty."""
+    from core.show_inserts import shift
+    points = sorted({float(at) for at, duration in spans if duration > 0})
+    result = []
+    for cue in cues:
+        boundaries = [cue['start'], *[at for at in points if cue['start'] < at < cue['end']], cue['end']]
+        for start, end in zip(boundaries, boundaries[1:]):
+            words = []
+            for word in cue.get('words', []):
+                a, b = max(start, word['start']), min(end, word['end'])
+                if b > a:
+                    words.append({**word, 'start': round(shift(a, spans), 3),
+                                  'end': round(shift(b - 1e-6, spans) + 1e-6, 3)})
+            part = {**cue, 'start': round(shift(start, spans), 3),
+                    'end': round(shift(end - 1e-6, spans) + 1e-6, 3), 'words': words}
+            if len(boundaries) > 2 and words:
+                part['lines'] = [' '.join(word['text'] for word in words)]
+            result.append(part)
+    return result

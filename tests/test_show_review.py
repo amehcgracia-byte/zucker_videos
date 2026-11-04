@@ -211,3 +211,24 @@ def test_timeline_pieces_stay_on_their_effect_row_and_a_split_carries_on(tmp_pat
     assert client.post(f"/api/v1/show/review/{character['id']}/piece", json={"at": 5.0, "duration": 0.0, "offset": 1.0}).status_code == 400
     assert client.post(f"/api/v1/show/review/{word['id']}/piece", json={"at": "soon", "duration": 1}).status_code == 400
     assert client.post("/api/v1/show/review/nope/piece", json={"at": 1, "duration": 1}).status_code == 404
+
+
+
+def test_a_library_picture_the_director_named_is_linked_so_the_live_view_shows_it(tmp_path, monkeypatch):
+    from PIL import Image
+    from core import gag_library
+    project, client, word, _ = _review_project(tmp_path, monkeypatch)
+    library = gag_library.library_dir()
+    Image.new("RGBA", (40, 40), (10, 20, 30, 255)).save(library / "a tiny kid with a big afro b53e89.png")
+    named = show_proposals.proposal("drawing", 3.0, 2.0, reason="Director: kid", kind="photo", query="a tiny kid with a big afro b53e89")
+    unknown = show_proposals.proposal("drawing", 5.0, 2.0, reason="Director: x", kind="photo", query="nothing called this")
+    stored = show_proposals.load(project.artifacts_dir / "show_proposals.json")
+    show_proposals.save(project.artifacts_dir / "show_proposals.json", stored["proposals"] + [named, unknown], source=stored["source"], resources=[])
+    review = {item["id"]: item for item in client.get("/api/v1/show/review").get_json()["proposals"]}
+    assert review[named["id"]]["params"]["picture"].endswith(".png") and "b53e89" in review[named["id"]]["params"]["image_engine"]
+    assert not review[unknown["id"]]["params"].get("picture")
+    x, y, width = review[named["id"]]["params"]["shown"]                 # where the render draws it, for the live view
+    assert 0 < x < 1 and 0 < y < 1 and 0 < width <= 0.25
+    moved = client.patch(f"/api/v1/show/review/{word['id']}", json={"action": "jump"})
+    assert moved.status_code == 200 and moved.get_json()["params"]["action"] == "jump"
+    assert client.patch(f"/api/v1/show/review/{word['id']}", json={"action": "fly away"}).status_code == 400

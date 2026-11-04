@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -282,7 +283,18 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             fh.write("\n")
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp_name, path)
+        # Windows briefly denies replacement while a status reader or scanner
+        # holds the destination open. Keep the complete, fsynced temporary
+        # file and retry the atomic operation; never delete/truncate the old
+        # project to work around a sharing violation.
+        for attempt in range(6):
+            try:
+                os.replace(tmp_name, path)
+                break
+            except PermissionError as exc:
+                if getattr(exc, "winerror", None) not in (5, 32, 33) or attempt == 5:
+                    raise
+                time.sleep(.025 * 2 ** attempt)
     except Exception:
         try:
             os.unlink(tmp_name)

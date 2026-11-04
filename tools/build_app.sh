@@ -183,6 +183,11 @@ if actual != expected:
 print(f"Verified packaged build_info git_commit={actual}")
 PY
 
+if [[ "${ZUCKER_BUILD_APP_ONLY:-0}" == "1" ]]; then
+  echo "Verified app ready at $APP_BUNDLE (DMG creation not requested)."
+  exit 0
+fi
+
 mkdir -p "$DMG_ROOT"
 cp -R "$APP_BUNDLE" "$DMG_ROOT/"
 ln -s /Applications "$DMG_ROOT/Applications"

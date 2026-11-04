@@ -43,6 +43,18 @@ def state(project, proposal_id: str) -> dict[str, Any] | None:
         return dict(found) if found else None
 
 
+def snapshot(project, path):
+    """Read picture links and draft status consistently while workers finish."""
+    from core import show_proposals
+    with _state_lock:
+        document = show_proposals.load(path)
+        for item in document["proposals"]:
+            pending = _state.get(_key(project, item["id"]))
+            if pending:
+                item["drafting"] = dict(pending)
+        return document
+
+
 def forget(project, proposal_id: str) -> None:
     """A picture was chosen for it: a failed drawing no longer matters."""
     with _state_lock:

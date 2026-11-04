@@ -86,6 +86,37 @@ def detect_green(path):
     return len(votes) >= 2 and sum(votes) >= 2
 
 
+def detect_background(path):
+    """How a clip's plain background is removed automatically: ("green", None) for a green
+    screen, ("plain", key) for blue, another strong colour or black (core.plain_key), or
+    ("none", None) when it has no plain background."""
+    if detect_green(path):
+        return "green", None
+    from core import plain_key
+    frames = plain_key.sample_frames(path, size=(320, 180))
+    from core.media_framing import active_rectangle
+    bars = active_rectangle(frames)                     # letterbox/pillarbox bars are not a background
+    if bars and (bars[2], bars[3]) != (frames[0].shape[1], frames[0].shape[0]):
+        x, y, w, h = bars
+        frames = [frame[y:y + h, x:x + w] for frame in frames]
+    key = plain_key.find(frames)
+    if key and key["kind"] == "black":
+        # Light, fire, smoke or sparks on black: the light-footage blend. Not a person on a dark
+        # stage (a black jacket touching the edge would go with the background).
+        return ("none", None) if _faces(frames) else ("black", None)
+    return ("plain", key) if key else ("none", None)
+
+
+def _faces(frames):
+    from core.show_framing import face_detectors
+    for rgb in frames:
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        for detector, neighbours in face_detectors():
+            if len(detector.detectMultiScale(gray, 1.1, neighbours, minSize=(18, 18))):
+                return True
+    return False
+
+
 @_catalog_locked
 def remember(project, item):
     """Recipes reference an existing project-owned clip; never duplicate its bytes."""
@@ -107,6 +138,24 @@ def remember(project, item):
         atomic_write_json(path,records)
 
 
+@_catalog_locked
+def save_edit(project, item):
+    """Keep an immutable named recipe without copying the source video bytes."""
+    import copy, hashlib
+    from core.project import atomic_write_json
+    recipe=copy.deepcopy(item)
+    fingerprint=json.dumps({"params":recipe['params'],"duration":recipe['duration']},sort_keys=True,separators=(',',':'))
+    recipe['id']='edit-'+hashlib.sha256(fingerprint.encode()).hexdigest()[:24]
+    remember(project,recipe)
+    path=project.folder/'assets/video-library/catalog.json'
+    records=json.loads(path.read_text())
+    record=records[recipe['id']]
+    record.update(saved_edit=True,saved_duration=float(item['duration']),
+                  name=(item['params'].get('name') or Path(item['params']['clip']).stem)+' · edited')
+    atomic_write_json(path,records)
+    return record
+
+
 class VideoLayer:
     def __init__(self, raw, width, height, fps):
         from core.show_backgrounds import VideoBackground
@@ -114,7 +163,7 @@ class VideoLayer:
         self.follow=Follow(raw["follow_anchor"],width,height,raw.get("follow_template"),raw.get("follow_seconds")) if raw.get("follow_anchor") else None
         self.tracked_offset=(0.,0.);self.tracked_visible=True
         self.raw=raw;self.at=float(raw['at']);self.duration=float(raw['duration']);self.fps=fps
-        self.video=VideoBackground(raw['video_layer'],width,height)
+        self.video=VideoBackground(raw['video_layer'],width,height,contain=raw.get('matte')=='opaque')
         self.masks=np.load(raw['masks'],mmap_mode='r') if raw.get('masks') else None
         if raw.get('matte')=='person' and self.masks is None:
             self.video.capture.release()
@@ -131,12 +180,19 @@ class VideoLayer:
     def apply(self,frame,t):
         if not self.tracked_visible:return
         local=t-self.at
-        rgb=self.video.at(local+float(self.raw.get('clip_start') or 0)).astype(np.uint8)
+        from core.show_inserts import clip_speed
+        rgb=self.video.at(local*clip_speed(self.raw)+float(self.raw.get('clip_start') or 0)).astype(np.uint8)
         if self.raw.get("matte")=="green-light":rgb,_=light_pixels(rgb)
         h,w=frame.shape[:2]
         if self.masks is not None:
             i=min(len(self.masks)-1,max(0,int(round(local*self.fps))))
             mask=cv2.resize(np.asarray(self.masks[i],dtype=np.float32)/255,(w,h))[...,None]
+        elif self.raw.get('matte')=='opaque':
+            mask=np.ones((h,w,1),np.float32)
+        elif self.raw.get('matte')=='plain' and self.raw.get('key'):
+            from core import plain_key
+            matte=plain_key.alpha(rgb,self.raw['key'])
+            rgb=plain_key.despill(rgb,matte,self.raw['key']);mask=matte[...,None]
         else:
             mask=(black_alpha(rgb) if self.raw.get("matte") in ("black","green-light") else green_alpha(rgb))[...,None]
         behind=self.background.at(local) if hasattr(self.background,'at') else self.background
@@ -146,6 +202,10 @@ class VideoLayer:
         screen=self.raw.get('matte') in ('black','green-light') and self.raw.get('person_style')!='silhouette'
         if screen:mask=person.astype(np.float32)/255
         foreground=person.astype(np.float32) if screen else person.astype(np.float32)*mask
+        from core.show_geometry import transform_pixels
+        geometry=np.concatenate((foreground,mask),axis=2)
+        geometry=transform_pixels(geometry,self.raw.get('crop'),self.raw.get('pan'))
+        foreground,mask=geometry[...,:3],geometry[...,3:]
         scale=float(self.raw.get('person_scale',1));offset=self.raw.get('person_offset') or (0.,0.)
         if self.follow and self.raw.get('follow_place'):
             alpha=mask if mask.ndim==2 else mask[...,0]
@@ -157,8 +217,13 @@ class VideoLayer:
             offset=(offset[0]+self.follow.start[0]-(cx*scale+(1-scale)/2),
                     offset[1]+self.follow.start[1]-(cy*scale+1-scale))
         offset=(offset[0]+self.tracked_offset[0],offset[1]+self.tracked_offset[1])
-        if scale!=1 or tuple(offset)!=(0.,0.):
-            matrix=np.array([[scale,0,w*(1-scale)/2+offset[0]*w],[0,scale,h*(1-scale)+offset[1]*h]],np.float32)
+        if scale!=1 or tuple(offset)!=(0.,0.) or self.raw.get('stretch_x',1)!=1 or self.raw.get('stretch',1)!=1 or self.raw.get('rotate',0):
+            sx=scale*float(self.raw.get('stretch_x',1.));sy=scale*float(self.raw.get('stretch',1.))
+            matrix=np.array([[sx,0,w*(1-sx)/2+offset[0]*w],[0,sy,h*(1-scale)+h*(scale-sy)/2+offset[1]*h]],np.float32)
+            if self.raw.get('rotate'):
+                center=(w*(.5+offset[0]),h*(1-scale/2+offset[1]))
+                rotate=cv2.getRotationMatrix2D(center,-float(self.raw['rotate']),1.)
+                matrix=(np.vstack([rotate,[0,0,1]])@np.vstack([matrix,[0,0,1]]))[:2].astype(np.float32)
             foreground=cv2.warpAffine(foreground,matrix,(w,h))
             mask=cv2.warpAffine(mask,matrix,(w,h))
             if mask.ndim==2:mask=mask[...,None]
@@ -191,7 +256,19 @@ def import_media(project, stream, filename, ffprobe, ffmpeg):
         video=next((s for s in meta['streams'] if s['codec_type']=='video' and not s.get('disposition',{}).get('attached_pic')),None)
         audio=next((s for s in meta['streams'] if s['codec_type']=='audio'),None)
         if video is None and audio is None:raise ValueError('No video or audio stream was found')
-        kind='video' if video else 'audio';sha=digest.hexdigest();target=folder/('local-'+sha+ext)
+        if not video and ext!='.mp3':
+            from core.audio_import import mp3
+            converted=pending.with_suffix('.normalized.mp3')
+            try:
+                mp3(pending,converted,ffmpeg)
+                pending.unlink();converted.replace(pending)
+                digest=hashlib.sha256(pending.read_bytes());ext='.mp3'
+            finally:converted.unlink(missing_ok=True)
+        kind='video' if video else 'audio';sha=digest.hexdigest()
+        # Named after the original file, with part of its content code (the same bytes are kept once).
+        from core.media_names import find_coded,unique_file
+        target=folder/('local-'+sha+ext)
+        if not target.exists():target=find_coded(folder,sha[:16],ext) or unique_file(folder,Path(filename).stem,sha[:16],ext)
         if target.exists():pending.unlink()
         else:pending.replace(target)
         preview=target
@@ -203,14 +280,6 @@ def import_media(project, stream, filename, ffprobe, ffmpeg):
                     command=[ffmpeg,'-v','error','-y','-nostdin','-i',str(target),'-map','0:v:0','-map','0:a:0?']
                     command+=['-c:v','copy'] if video['codec_name']=='h264' else ['-c:v','libx264','-crf','18','-preset','fast','-threads','2','-pix_fmt','yuv420p']
                     subprocess.run(command+['-c:a','aac','-movflags','+faststart',str(temp)],check=True,capture_output=True,timeout=180)
-                    temp.replace(preview)
-                finally:temp.unlink(missing_ok=True)
-        if not video and ext not in {'.mp3','.m4a','.wav'}:
-            preview=folder/('preview-'+sha+'.m4a')
-            if not preview.exists():
-                temp=preview.with_name(preview.stem+'.'+uuid.uuid4().hex+'.pending.m4a')
-                try:
-                    subprocess.run([ffmpeg,'-v','error','-y','-nostdin','-i',str(target),'-vn','-c:a','aac','-threads','2',str(temp)],check=True,capture_output=True,timeout=180)
                     temp.replace(preview)
                 finally:temp.unlink(missing_ok=True)
         item={'id':'local-'+sha[:24],'kind':'clip' if video else 'jingle','duration':duration,'params':{
