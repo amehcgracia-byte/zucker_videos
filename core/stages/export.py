@@ -473,7 +473,7 @@ class ExportStage(Stage):
         output_path = _output_path(project, platform, run_id)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         content_duration = _plan_duration(segments)
-        duration = content_duration if platform == "reel" or _branding_none() else content_duration + INTRO_DURATION + OUTRO_DURATION
+        duration = content_duration if platform == "reel" or _branding_none() or _branding_within_content() else content_duration + INTRO_DURATION + OUTRO_DURATION
         bitrate_info = _bitrate_for_duration(duration)
         required_space = _required_export_space_bytes(duration, bitrate_info["video_bitrate"], len(segments))
         _check_export_disk_space(output_path, required_space)
@@ -761,7 +761,9 @@ def _render_plan(
         # Reel overlays are composited as RGBA images below. Do not apply the
         # multicam colour-normalisation profile to them: it was the source of
         # the strong green cast reported on promo exports.
-        color_profiles = {}
+        from core.video_light import resolved_reel_profile
+        color_profiles = {str(segment.get('clip_path') or ''): resolved_reel_profile(project, segment)
+                          for segment in segments if segment.get('video_light') is not None}
     overlay_config = _overlay_config(platform, segments[0])
     if platform in {"reel", "reel_horizontal"}:
         overlay_config["reel_texts"] = list(project.data.get("settings", {}).get("wizard", {}).get("reel_text_overlays") or [])
@@ -780,7 +782,7 @@ def _render_plan(
     phase_times: dict[str, Any] = {}
     export_started = time.perf_counter()
     try:
-        include_bookends = platform not in {"reel", "reel_horizontal"} and not _branding_none()
+        include_bookends = platform not in {"reel", "reel_horizontal"} and not _branding_none() and not _branding_within_content()
         if include_bookends:
             phase_started = time.perf_counter()
             intro_path = temp_dir / "intro.mp4"
@@ -791,6 +793,14 @@ def _render_plan(
             segment_paths.append(intro_path)
             phase_times["intro_sec"] = round(time.perf_counter() - phase_started, 3)
         render_segments = _continuous_spherical_render_segments(segments)
+        if _branding_within_content():
+            elapsed = 0.0
+            render_segments = [dict(item) for item in render_segments]
+            for item in render_segments:
+                length = float(item.get('duration_sec') or 0)
+                if elapsed < 1.4 or elapsed + length > total_duration - 1.4:
+                    item['_brand_window'] = {'offset': elapsed, 'total': total_duration}
+                elapsed += length
         source_prepare_started = time.perf_counter()
         spherical_sources = _spherical_sources_to_prepare(project, render_segments)
         segment_phase_start = 20 if spherical_sources else 10
@@ -2344,7 +2354,7 @@ def _render_segment(
     # Overlay & Captions composition. The historical export watermark belongs
     # to the older base-export path and must not be baked into Reel footage;
     # otherwise "No logo" cannot remove it from Result.
-    watermark = None if platform in {"reel", "reel_horizontal"} else _watermark_path()
+    watermark = None if platform in {"reel", "reel_horizontal"} and not _branding_within_content() else _watermark_path()
     if source.get("paired_path") and not force_proxy:
         force_proxy = True
     if force_proxy:
@@ -2589,8 +2599,8 @@ def _render_segment_job(
                                          label=detail.task["label"], percent=detail.task["percent"])
             progress_callback(min(84, percent), message)
 
-    intro_fade = index == 1
-    outro_fade = index == render_count
+    intro_fade = index == 1 and not _branding_within_content()
+    outro_fade = index == render_count and not _branding_within_content()
     color_profile = color_profile or {}
     segment_path = cached_segment_path(project, segment, platform, video_bitrate, overlay_config, color_profile, intro_fade, outro_fade, False, False)
     source_info = _segment_source_info(project, segment)
@@ -4023,6 +4033,8 @@ def _segment_filtergraph(
         graph += ";" + ";".join(overlay_graph)
         graph += f";[{current_label}]copy[composited]"
         current_label = "composited"
+    if has_watermark and _branding_within_content() and segment and segment.get('_brand_window'):
+        return _sdr_output_graph(_within_content_logo_graph(graph, current_label, platform, duration, segment['_brand_window']))
     if not has_watermark:
         return _sdr_output_graph(f"{graph};[{current_label}]copy[v]")
     margin = 40 if platform == "youtube" else 28
@@ -4191,6 +4203,7 @@ def cached_segment_path(
             "duration_sec": round(float(segment.get("duration_sec") or 0.0), 3),
             "master_start_sec": round(float(segment.get("master_start_sec") or 0.0), 3),
             "platform": platform,
+            **({"content_branding": _content_branding_identity(segment)} if _branding_within_content() else {}),
             "video_bitrate": video_bitrate,
             "overlay": overlay_config,
             "color": color_profile,
@@ -5229,6 +5242,51 @@ def _branding_asset(key: str) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def _branding_within_content() -> bool:
+    return not _branding_none() and _branding().get('bookends') == 'within-content'
+
+
+def _content_branding_identity(segment):
+    if not _branding_within_content():
+        return None
+    asset = _watermark_path()
+    stat = asset.stat() if asset else None
+    return {'version': 1, 'window': segment.get('_brand_window'),
+            'asset': str(asset), 'size': stat.st_size if stat else 0,
+            'mtime': stat.st_mtime_ns if stat else 0, 'mode': _branding().get('mode')}
+
+
+def _within_content_logo_graph(graph, label, platform, duration, window):
+    """Logo over the selected content clock: audio and duration never shift."""
+    width, height = _target_size(platform)
+    offset, total = float(window['offset']), float(window['total'])
+    personal = _personal_logo_path()
+    transparent = bool(personal and _has_real_alpha(personal))
+    # Stock symbol starts on black. A person's opaque picture is kept whole;
+    # genuine alpha stays transparent over the moving video.
+    fraction = .5 if transparent else (1. if personal else .3)
+    fitw, fith = max(2, int(width*fraction)//2*2), max(2, int(height*fraction)//2*2)
+    background = 'black@0' if transparent else 'black'
+    pixel = 'rgba' if transparent else 'rgb24'
+    base = f'scale={fitw}:{fith}:force_original_aspect_ratio=decrease,format={pixel},pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={background},format=rgba,setpts=PTS+{offset:.6f}/TB'
+    intro = offset < 1.4
+    outro = offset + duration > total-1.4
+    outputs = ['brand_wm'] + (['brand_in'] if intro else []) + (['brand_out'] if outro else [])
+    graph += ';[1:v]format=rgba,split='+str(len(outputs))+''.join(f'[{name}]' for name in outputs)
+    graph += f';[brand_wm]scale=-1:{max(24,int(height*.06))},colorchannelmixer=aa=.70[brand_corner]'
+    graph += f';[{label}][brand_corner]overlay=W-w-28:H-h-28:format=auto:enable=\'between(t,{max(0.,1.4-offset):.6f},{max(0.,total-1.4-offset):.6f})\'[brand_base]'
+    current='brand_base'
+    if intro:
+        graph += f';[brand_in]{base},fade=t=out:st=0.7:d=0.7:alpha=1,setpts=PTS-STARTPTS[brand_intro]'
+        graph += f';[{current}][brand_intro]overlay=0:0:format=auto:enable=\'lt(t,{max(0.,1.4-offset):.6f})\'[brand_intro_done]'
+        current='brand_intro_done'
+    if outro:
+        graph += f';[brand_out]{base},fade=t=in:st={max(0.,total-1.4):.6f}:d=0.7:alpha=1,setpts=PTS-STARTPTS[brand_outro]'
+        graph += f';[{current}][brand_outro]overlay=0:0:format=auto:enable=\'gte(t,{max(0.,total-1.4-offset):.6f})\'[brand_outro_done]'
+        current='brand_outro_done'
+    return graph+f';[{current}]copy[v]'
+
+
 def _branding_none() -> bool:
     return str(_branding().get("mode") or "default") == "none"
 
@@ -5336,10 +5394,10 @@ def _has_real_alpha(path: Path) -> bool:
         from PIL import Image
 
         image = Image.open(path).convert("RGBA")
-        alpha = set(image.getchannel("A").getdata())
-        if len(alpha) >= 2 and min(alpha) < 250:
+        low, high = image.getchannel("A").getextrema()
+        if low < 250 and high > 0:
             return True
-        LOGGER.error("Refusing watermark without real alpha transparency: %s", path)
+        LOGGER.debug("Image has no usable alpha transparency: %s", path)
         return False
     except Exception as exc:
         LOGGER.error("Could not validate watermark alpha for %s: %s", path, exc)

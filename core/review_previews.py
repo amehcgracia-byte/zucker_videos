@@ -115,7 +115,8 @@ def _render_reel(project, segment, output, ffmpeg):
     if segment.get('spherical_shot'):
         source, _ = _existing_sphere_source(project, segment)
         source_filter=export._export_source_filter({'projection':segment.get('projection') or 'equirect'}, segment['spherical_shot'])
-    graph=_reel_graph(project,segment,resolved_profile(project,segment),source_filter=source_filter)
+    from core.video_light import resolved_reel_profile
+    graph=_reel_graph(project,segment,resolved_reel_profile(project,segment),source_filter=source_filter)
     duration=min(3.,max(.1,float(segment.get('duration_sec') or .1)))
     command=[ffmpeg,'-hide_banner','-loglevel','error','-nostdin','-y',
              '-ss',str(segment.get('clip_start_sec') or 0),'-t',str(duration),'-i',source,
@@ -173,6 +174,9 @@ def _render_sphere_motion(project: Project, segment: dict[str, Any], output: Pat
     from core.video_light import resolved_profile
     from core.stages.export import _color_filter
     color = resolved_profile(project, segment)
+    if segment.get("review_canvas") == "reel":
+        from core.video_light import resolved_reel_profile
+        color = resolved_reel_profile(project, segment)
     reel_graph = _reel_graph(project, segment, color) if segment.get("review_canvas") == "reel" else None
     command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
                "-s", f"{PREVIEW_WIDTH}x{PREVIEW_HEIGHT}", "-r", str(PREVIEW_FPS), "-i", "pipe:0", *(["-filter_complex", reel_graph, "-map", "[v]"] if reel_graph else ["-vf", _color_filter(color)] if color else []), *_ENCODE, str(output)]

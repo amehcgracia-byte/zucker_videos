@@ -122,3 +122,11 @@ def resolved_profiles(project, segments):
         else:
             _RESOLVED.move_to_end(key)
     return profiles
+
+
+def resolved_reel_profile(project, segment):
+    # Reels keep their authored colours. Only explicit light controls apply;
+    # never match unrelated clips to another camera's white balance.
+    resolved = resolved_profile(project, segment)
+    return {key: value for key, value in resolved.items()
+            if key in {'video_light', 'light_anchor', 'light_target', 'light_recipe'}}
