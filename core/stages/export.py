@@ -75,7 +75,7 @@ TARGET_EXPORT_TIMESCALE = 30_000
 # against the filter's instance name ("v360@sphere"), NOT the bare "@id" suffix.
 # Targeting just "sphere" silently matches nothing, freezing all 360 motion.
 SPHERE_V360_LABEL = "v360@sphere"
-EXPORT_SEGMENT_RECIPE_VERSION = 24
+EXPORT_SEGMENT_RECIPE_VERSION = 25
 # v17 adds byte-level and full-shot attestation to segment sidecars.  A file
 # with a copied/reused sidecar is no longer accepted if its bytes or authored
 # motion fields differ from the current render.
@@ -3381,7 +3381,14 @@ def _reel_letterbox_filter(project: Project, segment: dict[str, Any], platform: 
 
 
 def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> str | None:
-    if segment.get("flat_framing"):return None
+    if segment.get("flat_framing"):
+        if platform not in {"youtube","reel","reel_horizontal"}:return None
+        close=float(segment['flat_framing'].get('zoom',1))>1.05
+        # One subtle move within the selected crop; no second random pan.
+        return _ken_burns_filter({"type":"ken_burns","movement":"zoom_out_center" if close else "zoom_in_center",
+            "zoom_start":1.06 if close else 1.,"zoom_end":1. if close else 1.06,
+            "pan_x_start":.5,"pan_x_end":.5,"pan_y_start":.5,"pan_y_end":.5,
+            "enforce_top_edge":False,"speed_factor":1.,"library_version":1},platform,duration).replace("scale=3840:2160:flags=lanczos,", "")
     motion = segment.get("motion") or {}
     motion_type = motion.get("type")
     if motion_type == "ken_burns":
@@ -3978,7 +3985,7 @@ def _segment_filtergraph(
         from core.flat_framing import filtergraph
         filters.append(filtergraph(segment["flat_framing"]))
     base_filter = _base_video_filter(platform)
-    if motion_filter and "zoompan=" in motion_filter and platform in {"youtube", "reel_horizontal"}:
+    if motion_filter and "zoompan=" in motion_filter and platform in {"youtube", "reel_horizontal"} and not (segment or {}).get("flat_framing"):
         # Preserve native 4K detail until the animated crop; downscaling to
         # 1080p and enlarging again made the moving cut unnecessarily soft.
         base_filter = base_filter.replace("1920:1080", "3840:2160")

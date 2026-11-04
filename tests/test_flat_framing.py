@@ -31,11 +31,12 @@ def test_music_preview_and_export_use_same_crop(tmp_path,monkeypatch):
  from server.edit_timeline import revision
  monkeypatch.setenv('ZUCKER_DATA_ROOT',str(tmp_path/'data'));p=create_project('Flat',str(tmp_path/'Flat.zuckervid'));f,v=source(tmp_path)
  s={'clip_path':str(v),'source_path':str(v),'clip_start_sec':0,'duration_sec':1,'master_start_sec':0,'flat_framing':{'zoom':2,'x':.75,'y':.5},'motion':{'type':'ken_burns','zoom_start':1.2,'zoom_end':1.8}}
- assert export._motion_filter(s,'youtube',1) is None
+ motion=export._motion_filter(s,'youtube',1)
+ assert '1.060000+(1.000000-1.060000)' in motion
  before=review_previews.preview_path(p,0,{**s,'flat_framing':{'zoom':1,'x':.5,'y':.5}});assert before!=review_previews.preview_path(p,0,s)
  assert _thumbnail_asset(tmp_path,0,s)[2]!=_thumbnail_asset(tmp_path,0,{**s,'flat_framing':{'zoom':1,'x':.5,'y':.5}})[2]
  preview=review_previews.render_preview(p,0,s);pixels=pixel_means(f,preview);assert pixels[2]>pixels[0]+180
- graph=export._segment_filtergraph('youtube',1,{}, {},has_watermark=False,text_enabled=False,frame_count=30,segment=s)
+ graph=export._segment_filtergraph('youtube',1,{}, {},has_watermark=False,text_enabled=False,frame_count=30,segment=s,motion_filter=motion)
  out=tmp_path/'export.mp4';subprocess.run([f,'-v','error','-y','-i',str(v),'-filter_complex',graph,'-map','[v]','-frames:v','30','-c:v','libx264','-threads','1',str(out)],check=True);pixels=pixel_means(f,out);assert pixels[2]>pixels[0]+180
 
 def test_fixed_crop_api_is_scoped_saved_and_keeps_other_shots(tmp_path,monkeypatch):
@@ -70,3 +71,31 @@ def test_flat_sources_are_never_offered_as_fake_360_views(tmp_path,monkeypatch):
  monkeypatch.setattr(cut,'load_coverage',lambda _: {})
  monkeypatch.setattr(shot_review,'_review_candidate_pool',lambda *args:([{'path':str(v),'source_path':str(v),'projection':'equirect','spherical_shot':{'type':'singer'}}],'test'))
  c=create_app(str(p.folder),dev=True).test_client();doc=c.get('/api/v1/edit/shot?index=0').json;assert len(doc['choices'])==1 and not doc['choices'][0]['spherical']
+
+
+def test_manual_crop_moves_out_but_general_moves_in():
+ from core.stages.export import _motion_filter
+ close=_motion_filter({'flat_framing':{'zoom':1.8,'x':.3,'y':.5}},'youtube',4)
+ wide=_motion_filter({'flat_framing':{'zoom':1,'x':.5,'y':.5}},'youtube',4)
+ assert '1.060000+(1.000000-1.060000)' in close
+ assert '1.000000+(1.060000-1.000000)' in wide
+ assert 'zoompan=' in close and 'zoompan=' in wide
+
+
+@pytest.mark.parametrize('zoom,grows',[(1.,True),(1.8,False)])
+def test_authored_framing_motion_reaches_correct_visual_direction(tmp_path,monkeypatch,zoom,grows):
+ import numpy as np
+ from core.stages import export
+ from core.ffmpeg import tool_status
+ ff=str(tool_status().get('ffmpeg_path') or 'ffmpeg')
+ source=tmp_path/'target.mp4'
+ subprocess.run([ff,'-v','error','-y','-f','lavfi','-i','color=black:s=320x180:r=30:d=1','-vf','drawbox=x=130:y=60:w=60:h=60:color=white:t=fill','-c:v','libx264','-threads','1',str(source)],check=True)
+ monkeypatch.setattr(export,'_target_size',lambda _: (320,180))
+ monkeypatch.setattr(export,'_base_video_filter',lambda _: 'scale=320:180,setsar=1')
+ s={'flat_framing':{'zoom':zoom,'x':.5,'y':.5}}
+ graph=export._segment_filtergraph('youtube',1,{}, {},has_watermark=False,text_enabled=False,frame_count=30,segment=s,motion_filter=export._motion_filter(s,'youtube',1))
+ raw=subprocess.check_output([ff,'-v','error','-i',str(source),'-filter_complex',graph,'-map','[v]','-frames:v','30','-pix_fmt','gray','-f','rawvideo','-'])
+ frames=np.frombuffer(raw,np.uint8).reshape(-1,180,320)
+ widths=[int((frame[90]>180).sum()) for frame in (frames[0],frames[-1])]
+ assert widths[1]>widths[0] if grows else widths[1]<widths[0]
+ assert frames.shape[0]==30

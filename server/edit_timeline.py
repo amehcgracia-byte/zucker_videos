@@ -232,15 +232,19 @@ def register_edit_timeline(app,project,invalidate):
                 choices=music_choices(p,data,i)
                 if not 0<=choice<len(choices):raise ValueError('Choose one of this shot’s cameras')
                 if not isinstance(body.get('apply_to_source',False),bool):raise ValueError('Choose whether to apply to the source video')
+                component=body.get('edit_component','all')
+                if component not in ('all','framing','light'):raise ValueError('Choose framing or light')
+                if component=='light' and choice!=0:raise ValueError('Choose the camera in Framing first')
+                if component=='framing' and 'video_light' in body:raise ValueError('Save light separately from framing')
                 before=data['segments'][i];s=copy.deepcopy(choices[choice])
-                if s.get('spherical_shot'):
+                if component!='light' and s.get('spherical_shot'):
                     pose=s['spherical_shot']
                     for key,lo,hi in [('yaw',-180,180),('pitch',-85,85),('fov',30,120)]:
                         value=float(body.get(key,pose.get(key) or (95 if key=='fov' else 0)))
                         if not math.isfinite(value) or not lo<=value<=hi:raise ValueError('Choose a valid camera viewpoint')
                         pose[key]=value
                     pose.update(projection_preset='normal',type='manual',shot_id='manual',label='Custom view',runtime_motion_enabled=False);pose.pop('movement',None);s['manual_view']=True
-                else:
+                elif component!='light':
                     from core.flat_framing import validate
                     s['flat_framing']=validate(body.get('flat_framing') or {'zoom':1,'x':.5,'y':.5})
                 if 'video_light' in body:
@@ -265,7 +269,8 @@ def register_edit_timeline(app,project,invalidate):
                     for item in data['segments']:
                         other=Path(str(item.get('source_path') or item.get('clip_path') or '')).resolve()
                         if other != source:continue
-                        for key in ('flat_framing','spherical_shot','manual_view','video_light'):
+                        keys=('video_light',) if component=='light' else ('flat_framing','spherical_shot','manual_view') if component=='framing' else ('flat_framing','spherical_shot','manual_view','video_light')
+                        for key in keys:
                             if key in s:item[key]=copy.deepcopy(s[key])
                             else:item.pop(key,None)
                 for key in ('camera_usage','spherical_shot_usage'):data.pop(key,None)

@@ -24,7 +24,7 @@ from core.project import Project
 
 LOGGER = logging.getLogger(__name__)
 
-PREVIEW_VERSION = 4
+PREVIEW_VERSION = 5
 PREVIEW_WIDTH, PREVIEW_HEIGHT = 480, 270
 PREVIEW_FPS = 15
 PREVIEW_SPHERE_WIDTH = 1920
@@ -142,7 +142,7 @@ def _render_flat(project: Project, segment: dict[str, Any], output: Path, ffmpeg
         # Fixed cameras: the export's base framing and its exact zoom/pan.
         motion = export._motion_filter(segment, "youtube", duration)
         base = export._base_video_filter("youtube")
-        if motion and "zoompan=" in motion:
+        if motion and "zoompan=" in motion and not segment.get("flat_framing"):
             base = base.replace("1920:1080", "3840:2160")
         from core.flat_framing import filtergraph
         steps = [export._color_filter(color) if color else None, filtergraph(segment["flat_framing"]) if segment.get("flat_framing") else None, base, f"fps={int(export.TARGET_EXPORT_FPS)}", motion,
