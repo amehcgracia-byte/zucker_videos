@@ -24,7 +24,7 @@ from core.project import Project
 
 LOGGER = logging.getLogger(__name__)
 
-PREVIEW_VERSION = 2
+PREVIEW_VERSION = 3
 PREVIEW_WIDTH, PREVIEW_HEIGHT = 480, 270
 PREVIEW_FPS = 15
 PREVIEW_SPHERE_WIDTH = 1920
@@ -43,9 +43,8 @@ def preview_path(project: Project, index: int, segment: dict[str, Any]) -> Path:
     from core.storage import cache_mtime_ns
     source = _source_for(segment)
     mtime = cache_mtime_ns(Path(source)) if source and Path(source).exists() else 0
-    from core.video_light import resolved_profile
+    # A cache name must never measure cameras or wait for the export colour lock.
     identity = json.dumps({
-        "color_profile": resolved_profile(project, segment),
         "version": PREVIEW_VERSION, "source": source, "mtime": mtime,
         "clip_start": round(float(segment.get("clip_start_sec") or 0.0), 3),
         "duration": round(float(segment.get("duration_sec") or 0.0), 3),
@@ -96,7 +95,7 @@ def _render_flat(project: Project, segment: dict[str, Any], output: Path, ffmpeg
     from core.video_light import resolved_profile
     color = resolved_profile(project, segment)
     source = _source_for(segment)
-    duration = max(0.1, float(segment.get("duration_sec") or 0.1))
+    duration = min(3.0, max(0.1, float(segment.get("duration_sec") or 0.1)))
     if segment.get("spherical_shot"):
         # 360 hold: the review photo's framing, now in motion.
         sphere, _ = _existing_sphere_source(project, segment)
@@ -114,6 +113,9 @@ def _render_flat(project: Project, segment: dict[str, Any], output: Path, ffmpeg
         steps = [export._color_filter(color) if color else None, filtergraph(segment["flat_framing"]) if segment.get("flat_framing") else None, base, f"fps={int(export.TARGET_EXPORT_FPS)}", motion,
                  f"scale={PREVIEW_WIDTH}:{PREVIEW_HEIGHT}", f"fps={PREVIEW_FPS}"]
         video_filter = ",".join(step for step in steps if step)
+        # Preserve the export movement, at preview geometry rather than 4K.
+        video_filter = (video_filter.replace("3840:2160", "960:540")
+                        .replace("1920:1080", "480:270").replace("1920x1080", "480x270"))
     command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
                "-ss", f"{float(segment.get('clip_start_sec') or 0.0):.3f}", "-t", f"{duration:.3f}",
                "-i", source, "-vf", video_filter, *_ENCODE, str(output)]
@@ -128,7 +130,7 @@ def _render_sphere_motion(project: Project, segment: dict[str, Any], output: Pat
     source, size = _existing_sphere_source(project, segment)
     if not size:
         raise RuntimeError(f"Could not read the 360 source {source}")
-    duration = max(0.1, float(segment.get("duration_sec") or 0.1))
+    duration = min(3.0, max(0.1, float(segment.get("duration_sec") or 0.1)))
     frames = max(1, int(round(duration * PREVIEW_FPS)))
     # Same pose sampler choice as the export renderer.
     sampler = ((lambda seconds: _v360_motion_at(shot, duration, seconds))
@@ -165,6 +167,10 @@ def render_preview(project: Project, index: int, segment: dict[str, Any]) -> Pat
             if not temporary.is_file() or temporary.stat().st_size == 0:
                 raise RuntimeError("FFmpeg completed without producing a preview")
             os.replace(temporary, output)
+            output.with_suffix(".error.json").unlink(missing_ok=True)
+        except Exception as exc:
+            output.with_suffix(".error.json").write_text(json.dumps({"error": str(exc)[-300:]}))
+            raise
         finally:
             temporary.unlink(missing_ok=True)
     return output
@@ -181,7 +187,8 @@ class _Prefetcher:
 
     def start(self, project: Project) -> None:
         with self._lock:
-            folder = str(project.folder)
+            from core.shot_review import _review_segments, _review_signature
+            folder = str(project.folder) + ":" + _review_signature(_review_segments(project))
             if self._thread and self._thread.is_alive() and self._project_folder == folder:
                 return
             self.stop_locked()
@@ -206,21 +213,22 @@ class _Prefetcher:
             segments = _review_segments(project)
         except Exception:
             return
-        # Let the review photos finish first; they are what the user sees.
-        thumbnails = Path(project.cache_dir) / "shot_review" / "assets-v2"
-        for _ in range(600):
+        # Finish each group before starting the next. No all-photo barrier and
+        # no second producer racing the hover requests.
+        from core.shot_review import render_review_thumbnails
+        for first in range(0, len(segments), 3):
             if stop.is_set():
                 return
-            if all(_thumbnail_asset(thumbnails, index, segment)[2].exists() for index, segment in enumerate(segments)):
-                break
-            stop.wait(1.0)
-        for index, segment in enumerate(segments):
-            if stop.is_set():
-                return
-            try:
-                render_preview(project, index, segment)
-            except Exception as exc:  # A missing preview falls back to the photo.
-                LOGGER.info("Review preview %s not prefetched: %s", index, exc)
+            indices = set(range(first, min(first + 3, len(segments))))
+            render_review_thumbnails(project, indices, batch_only=True)
+            for index in sorted(indices):
+                if stop.is_set():
+                    return
+                try:
+                    render_preview(project, index, segments[index])
+                except Exception as exc:
+                    LOGGER.info("Review preview %s not prefetched: %s", index, exc)
+
 
 
 PREFETCH = _Prefetcher()

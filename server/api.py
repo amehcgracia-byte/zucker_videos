@@ -1815,9 +1815,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                     for item in items
                     if item.get("thumbnail_status") == "missing"
                 }
-                _queue_review_thumbnail_render(project, pending)
                 if state.wizard.status().get("status") == "waiting_review":
                     review_previews.PREFETCH.start(project)
+                else:
+                    _queue_review_thumbnail_render(project, pending)
             return jsonify({
                 "items": items,
                 "platform": project.data.get("settings", {}).get("wizard", {}).get("platform"),

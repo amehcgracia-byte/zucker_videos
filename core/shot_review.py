@@ -908,8 +908,8 @@ def review_items(
     # export and is optional for a thumbnail. A status-only request must not
     # launch/inspect the complete plan just to report missing URLs.
     if render_missing and (apply_color_profile or any(segment.get('video_light') is not None for segment in segments)):
-        from core.stages.export import _color_profiles_for_segments
-        color_profiles = _color_profiles_for_segments(project, _plan(project).get("segments") or segments, [])
+        from core.video_light import resolved_profiles
+        color_profiles = resolved_profiles(project, _plan(project).get("segments") or segments)
     else:
         # Status-only polling must use the same cache identity as the worker,
         # without launching new measurements. Otherwise corrected thumbnails
@@ -971,6 +971,8 @@ def review_items(
             "candidate_pool_origin": pool_origin,
             "transition_type": str(segment.get("transition_type") or "auto"),
             "subject_safe": _candidate_has_subject(segment, segment),
+            "preview_ready": review_previews.preview_path(project, index, segment).is_file(),
+            "preview_error": review_previews.preview_path(project, index, segment).with_suffix(".error.json").is_file(),
             "keep": True,
             "no_alternative": index in unavailable,
             "preview": f"/api/v1/wizard/review/preview/{index}?v={review_previews.preview_path(project, index, segment).stem[-8:]}",
@@ -1019,7 +1021,7 @@ def review_items(
     return items
 
 
-def render_review_thumbnails(project: Project, indices: set[int], max_workers: int = 2) -> None:
+def render_review_thumbnails(project: Project, indices: set[int], max_workers: int = 2, *, batch_only: bool = False) -> None:
     """Refresh missing photos, including shared-profile dependants, off HTTP."""
     if not indices:
         return
@@ -1027,7 +1029,7 @@ def render_review_thumbnails(project: Project, indices: set[int], max_workers: i
     # shared camera profile. Compute it once, then materialize every missing
     # cache identity, not only the swapped slot. Existing photos are reused;
     # review_items already bounds rendering to two workers.
-    review_items(project, apply_color_profile=False)
+    review_items(project, render_indices=indices if batch_only else None, apply_color_profile=False)
 
 
 def set_review_transition_types(project: Project, transitions: dict[str, Any] | list[Any] | None) -> dict[str, Any]:

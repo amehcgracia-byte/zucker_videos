@@ -7,6 +7,7 @@ from core.project import atomic_write_json
 from core.show_review_history import record
 
 LOCK = threading.RLock()
+_FRAME_LOCKS = [threading.Lock() for _ in range(16)]
 MIN = .2
 
 @lru_cache(maxsize=256)
@@ -274,7 +275,8 @@ def register_edit_timeline(app,project,invalidate):
             i=int(request.args['index']);choice=int(request.args.get('choice',0))
             if i<0 or choice<0:raise ValueError('Choose a camera shot')
             shot=music_choices(p,data,i)[choice]
-            source=next(Path(shot[k]) for k in ('source_path','clip_path','proxy_path') if shot.get(k) and Path(shot[k]).is_file())
+            from core.shot_review import _source_for, _spherical_analysis_source
+            source=Path(_spherical_analysis_source(p,shot) if shot.get('spherical_shot') else _source_for(shot))
             at=float(shot.get('clip_start_sec') or 0)+float(shot['duration_sec'])/2
             f=str(tool_status().get('ffmpeg_path') or 'ffmpeg')
             filters=[]
@@ -286,6 +288,14 @@ def register_edit_timeline(app,project,invalidate):
                 color=resolved_profile(p,shot)
                 if color:filters.append(_color_filter(color))
             filters.append('scale=640:-2')
-            image=subprocess.check_output([f,'-v' ,'error','-nostdin','-ss',str(at),'-i',str(source),'-frames:v','1','-vf',','.join(filters),'-f','image2pipe','-vcodec','mjpeg','-threads','1','-'],timeout=30)
-            return send_file(io.BytesIO(image),mimetype='image/jpeg')
+            stat=source.stat()
+            key=hashlib.sha256(json.dumps([str(source),stat.st_size,stat.st_mtime_ns,at,filters]).encode()).hexdigest()
+            target=p.cache_dir/'camera_frames'/f'{key}.jpg'
+            with _FRAME_LOCKS[int(key[:8],16)%len(_FRAME_LOCKS)]:
+                if not target.is_file():
+                    image=subprocess.check_output([f,'-v' ,'error','-nostdin','-ss',str(at),'-i',str(source),'-frames:v','1','-vf',','.join(filters),'-f','image2pipe','-vcodec','mjpeg','-threads','1','-'],timeout=30)
+                    target.parent.mkdir(parents=True,exist_ok=True)
+                    temporary=target.with_suffix('.tmp')
+                    temporary.write_bytes(image);temporary.replace(target)
+            return send_file(target,mimetype='image/jpeg')
         except (OSError,ValueError,KeyError,IndexError,StopIteration,subprocess.SubprocessError) as e:return jsonify(error={'message':'Could not load this camera frame'}),400

@@ -103,3 +103,44 @@ def test_frontend_previews_on_hover_only():
     assert 'data-preview="${escapeHtml(item.preview || "")}"' in source
     assert "function startReviewPreview(button)" in source and "function stopReviewPreview()" in source
     assert 'video.removeAttribute("src")' in source
+
+
+def test_status_identity_never_measures_light(project, tmp_path, monkeypatch):
+    from core import video_light
+    project.data['settings']['edit']['video_light'] = {'enabled': True}
+    monkeypatch.setattr(video_light, 'resolved_profile', lambda *a: pytest.fail('status measured cameras'))
+    segment = {'source_path': str(tmp_path/'camera.mp4'), 'duration_sec': 6}
+    assert review_previews.preview_path(project, 0, segment).suffix == '.mp4'
+
+
+def test_prefetch_finishes_groups_of_three_before_next_thumbnails(project, monkeypatch):
+    import threading
+    from core import shot_review
+    segments = [{'duration_sec': 1, 'slot': i} for i in range(7)]
+    calls = []
+    monkeypatch.setattr(shot_review, '_review_segments', lambda p: segments)
+    monkeypatch.setattr(shot_review, 'render_review_thumbnails', lambda p, indices, **kw: calls.append(('photos', sorted(indices))))
+    monkeypatch.setattr(review_previews, 'render_preview', lambda p, index, s: calls.append(('preview', index)))
+    review_previews._Prefetcher._run(project, threading.Event())
+    assert calls == [('photos', [0,1,2]), ('preview', 0), ('preview', 1), ('preview', 2),
+                     ('photos', [3,4,5]), ('preview', 3), ('preview', 4), ('preview', 5),
+                     ('photos', [6]), ('preview', 6)]
+
+
+def test_resolved_light_single_flight_and_plan_invalidation(project, tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from core import video_light
+    from core.stages import export
+    from core.project import atomic_write_json
+    project.data['settings']['edit']['video_light'] = {'enabled': True}
+    segment = {'clip_path': str(tmp_path/'camera.mp4'), 'duration_sec': 1}
+    atomic_write_json(project.artifacts_dir/'edit_plan.json', {'segments': [segment]})
+    calls = []
+    monkeypatch.setattr(export, '_color_profiles_for_segments', lambda *a: calls.append(1) or {segment['clip_path']: {'light_anchor': .2}})
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: video_light.resolved_profile(project, segment), range(20)))
+    assert len(calls) == 1 and all(r['light_anchor'] == .2 for r in results)
+    segment['duration_sec'] = 2
+    atomic_write_json(project.artifacts_dir/'edit_plan.json', {'segments': [segment]})
+    video_light.resolved_profile(project, segment)
+    assert len(calls) == 2

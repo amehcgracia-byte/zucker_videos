@@ -1,5 +1,10 @@
 """Bounded SDR shadow recovery shared by review and final export."""
 import math
+import threading
+from collections import OrderedDict
+
+_RESOLVED_LOCK = threading.RLock()
+_RESOLVED = OrderedDict()
 
 VERSION = 1
 DEFAULT = {'auto': True, 'light': 0.0, 'shadows': 0.0}
@@ -84,7 +89,36 @@ def resolved_profile(project, segment):
         segments = json.loads((project.artifacts_dir/'edit_plan.json').read_text()).get('segments') or [segment]
     except (OSError, ValueError):
         segments = [segment]
-    profiles = _color_profiles_for_segments(project, segments, [])
+    profiles = resolved_profiles(project, segments)
     result = dict(profiles.get(str(segment.get('clip_path') or ''), {}))
     result['video_light'] = settings(project, segment)
     return result
+
+
+def resolved_profiles(project, segments):
+    import json
+    from core.stages.export import _color_profiles_for_segments
+    # A camera measurement is shared by every card and editor in this plan.
+    # Include source revisions so replacing a file never reuses its old light.
+    from pathlib import Path
+    sources = []
+    for path in sorted({str(s.get('source_path') or s.get('clip_path') or '') for s in segments}):
+        try:
+            st = Path(path).stat()
+            sources.append((path, st.st_size, st.st_mtime_ns))
+        except OSError:
+            sources.append((path, None, None))
+    key = json.dumps([str(project.folder), segments, sources,
+                      project.data.get('inputs', {}),
+                      project.data.get('settings', {}).get('edit', {}).get('video_light')],
+                     sort_keys=True, default=str)
+    with _RESOLVED_LOCK:
+        profiles = _RESOLVED.get(key)
+        if profiles is None:
+            profiles = _color_profiles_for_segments(project, segments, [])
+            _RESOLVED[key] = profiles
+            while len(_RESOLVED) > 16:
+                _RESOLVED.popitem(last=False)
+        else:
+            _RESOLVED.move_to_end(key)
+    return profiles
