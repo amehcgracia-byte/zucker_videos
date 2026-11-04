@@ -118,3 +118,25 @@ def test_multicam_plan_uses_people_before_notifying_thumbnails(monkeypatch):
     assert any(s.get('flat_framing',{}).get('x')==.2 for s in seen)
     assert any(s.get('performer_view')=='general' for s in seen)
     assert all(s.get('stage_performers') for s in seen)
+
+
+def test_swap_never_reuses_one_cameras_person_coordinates_on_another(tmp_path,monkeypatch):
+    from core import shot_review
+    from core.project import create_project,atomic_write_json
+    p=create_project('Swap',str(tmp_path/'Swap.zuckervid'))
+    a,b=str(tmp_path/'fixed.mp4'),str(tmp_path/'moving.mp4')
+    segments=[{'source_path':a,'clip_path':a,'master_start_sec':i,'clip_start_sec':i,'duration_sec':1,
+               'flat_framing':{'zoom':1.8,'x':.2,'y':.5},'performer_view':'person-1','stage_performers':people()}
+              for i in range(2)]
+    atomic_write_json(p.artifacts_dir/'edit_plan.json',{'platform':'youtube','segments':segments})
+    monkeypatch.setattr(shot_review,'load_coverage',lambda _: {'platform':'youtube'})
+    monkeypatch.setattr(shot_review,'_project_candidate_pool',lambda *args,**kwargs:([{'path':b,'source_path':b,'clip_start_sec':0,'offset_sec':0}],'test'))
+    monkeypatch.setattr(shot_review,'_candidate_covers_slot',lambda *args,**kwargs:True)
+    monkeypatch.setattr(shot_review,'_candidate_has_subject',lambda *args,**kwargs:True)
+    monkeypatch.setattr(shot_review,'review_items',lambda *args,**kwargs:[])
+    result=shot_review.replace_slots(p,[0])
+    assert result['replaced']==[0]
+    saved=json.loads((p.artifacts_dir/'edit_plan.json').read_text())['segments']
+    assert saved[0]['source_path']==b
+    assert 'flat_framing' not in saved[0] and 'stage_performers' not in saved[0]
+    assert saved[1]['flat_framing']==segments[1]['flat_framing']

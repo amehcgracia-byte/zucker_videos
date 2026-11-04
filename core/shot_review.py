@@ -1194,6 +1194,11 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         new_segment = dict(segment)
         new_segment["clip_path"] = candidate.get("path") or candidate.get("clip_path") or candidate.get("source_path")
         new_segment["source_path"] = candidate.get("source_path") or new_segment["clip_path"]
+        if segment.get('performer_view') and new_segment['source_path'] != segment.get('source_path'):
+            # A person's coordinates belong to one stationary source, not the next camera.
+            for field in ('flat_framing','stage_performers','performer_view','performer_evidence','manual_view','motion'):
+                new_segment.pop(field,None)
+                if candidate.get(field) is not None:new_segment[field]=candidate[field]
         new_segment["filename"] = candidate.get("filename") or Path(str(new_segment["clip_path"])).name
         new_segment["camera_id"] = _camera_id({
             "source_path": new_segment["source_path"],
