@@ -48,7 +48,9 @@ def review_project(tmp_path):
     project = create_project('Parallel review',str(tmp_path/'review.zuckervid'))
     segments = [{'clip_path':str(source),'source_path':str(source),'clip_start_sec':i,
                  'master_start_sec':i,'duration_sec':1,'filename':source.name} for i in range(3)]
-    artifact_path(project,'edit_plan.json').write_text(json.dumps({'platform':'reel','segments':segments}))
+    # Decoder/thumbnail tests use the landscape still path. Reel cards are
+    # extracted from their rendered vertical preview (tested in test_review_previews).
+    artifact_path(project,'edit_plan.json').write_text(json.dumps({'platform':'youtube','segments':segments}))
     artifact_path(project,'coverage.json').write_text(json.dumps({'sources':[{'path':str(source)}]}))
     return project
 
