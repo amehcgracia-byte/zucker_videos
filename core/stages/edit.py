@@ -55,7 +55,7 @@ MOTION_WEIGHTS = {name: 1.0 for name in MOTION_CATALOG}
 # authored speed, and a new very-slow option keeps close-ups composed.
 MOTION_SPEEDS = (("very_slow", 0.50), ("slow", 0.72), ("fast", 1.0))
 IPHONE_CROP_TOP_LIMIT = 0.80
-YOUTUBE_CAMERA_SELECTION_VERSION = 26  # v24: skip a handheld camera while it moves when a steady camera covers the moment
+YOUTUBE_CAMERA_SELECTION_VERSION = 27  # prefer usable smiling moments without overriding coverage and camera balance
 # Legacy diagnostic threshold retained in project settings/manifests. The
 # production policy now stops close-up filler as soon as one alternative
 # physical camera covers the same synced window.
@@ -394,9 +394,9 @@ def _with_director_quality(project: Project, coverage: dict[str, Any], progress_
     sources = coverage.get("sources") or []
     if not sources:
         return coverage
-    progress_callback(45, "Scoring Sony director camera")
+    progress_callback(45, "Finding usable shots and smiles")
     scored = analyze_handheld_director_quality(
-        project, sources, lambda fraction, detail: progress_callback(45 + int(5 * fraction), f"Scoring Sony director camera {detail}"))
+        project, sources, lambda fraction, detail: progress_callback(45 + int(5 * fraction), f"Finding usable shots and smiles {detail}"))
     scored = analyze_non_music_sources(project, scored)
     return {**coverage, "sources": scored}
 
@@ -2079,6 +2079,8 @@ def _quality_filtered_sources(
 ) -> list[dict[str, Any]]:
     filtered = []
     for source in sources:
+        from core.shot_quality import smile_for_segment
+        source = {**source, 'smile_segment_score': smile_for_segment(source, start, end)}
         if _source_role(source) != "handheld":
             filtered.append(source)
             continue
@@ -2149,7 +2151,7 @@ def _choose_source(
         )
         covered_seconds = max(1.0, float((selection_stats.get(_source_id(source)) or {}).get("covered_seconds") or 0.0))
         director_bonus = float(source.get("director_segment_score") or 1.0) if role == "handheld" else 1.0
-        camera_balance = role_chosen_seconds / target_share - _camera_preference_score(source)
+        camera_balance = role_chosen_seconds / target_share - _camera_preference_score(source) - 2*float(source.get('smile_segment_score') or 0)
         return (camera_balance, chosen_seconds / covered_seconds, usage_counts.get(_source_id(source), 0), -director_bonus, -float(source.get("confidence") or 0.0), _source_id(source))
 
     return sorted(candidates, key=score)[0]
@@ -2223,7 +2225,7 @@ def _choose_source_avoiding_identical_framing(
         projected_share = (camera_chosen_seconds + allocation_segment_seconds) / allocation_window_seconds
         quota_ratio = projected_share / target_share
         return (
-            quota_ratio + (int(stable_fingerprint({"seed": variation_seed, "slot": segment_index, "camera": _camera_id(src)})[:8], 16) / 0xffffffff * .04 if variation_seed else 0),
+            quota_ratio - (.08*float(src.get('smile_segment_score') or 0) if not preferred_camera_ids or _camera_id(src) in preferred_camera_ids else 0) + (int(stable_fingerprint({"seed": variation_seed, "slot": segment_index, "camera": _camera_id(src)})[:8], 16) / 0xffffffff * .04 if variation_seed else 0),
             -singing_bonus,
             role_chosen_seconds / max(0.001, float(role_weights_copy.get(role, 0.3))),
             -battery_bonus,

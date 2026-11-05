@@ -1,4 +1,4 @@
-"""Short silent hover previews for the Frames review.
+"""Short hover previews with compressed master-audio excerpts for Frames review.
 
 Each preview shows the planned shot as it will render: fixed cameras through
 the export's own zoom filter, 360 camera moves through the export's own
@@ -24,7 +24,7 @@ from core.project import Project
 
 LOGGER = logging.getLogger(__name__)
 
-PREVIEW_VERSION = 5
+PREVIEW_VERSION = 6
 PREVIEW_WIDTH, PREVIEW_HEIGHT = 480, 270
 PREVIEW_FPS = 15
 PREVIEW_SPHERE_WIDTH = 1920
@@ -50,11 +50,47 @@ def preview_path(project: Project, index: int, segment: dict[str, Any]) -> Path:
         "treatment": segment.get("reel_mix_treatment"), "subject_center": segment.get("reel_subject_center"),
         "clip_start": round(float(segment.get("clip_start_sec") or 0.0), 3),
         "duration": round(float(segment.get("duration_sec") or 0.0), 3),
+        "master_audio": _audio_identity(project), "master_start": segment.get("master_start_sec", 0),
         "video_light": segment.get("video_light"), "light_settings": project.data.get("settings", {}).get("edit", {}).get("video_light"),
         "shot": segment.get("spherical_shot") or {}, "motion": segment.get("motion") or {}, "flat_framing":segment.get("flat_framing"),
     }, sort_keys=True, default=str)
     key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
     return preview_root(project) / f"preview-{index:04d}-{key}.mp4"
+
+
+def _master_audio(project):
+    value = (project.data.get('inputs', {}).get('master') or {}).get('path')
+    return Path(value) if value and Path(value).is_file() else None
+
+
+def _audio_identity(project):
+    path = _master_audio(project)
+    if path is None:
+        return None
+    stat = path.stat()
+    return [str(path), stat.st_size, stat.st_mtime_ns]
+
+
+def _attach_master_audio(project, segment, video, ffmpeg):
+    """Mux only this short excerpt as AAC; never use the camera microphone."""
+    master = _master_audio(project)
+    if master is None:
+        return
+    duration = min(3., max(.1, float(segment.get('duration_sec') or .1)))
+    start = float(segment.get('master_start_sec') or 0.)
+    temporary = video.with_name(video.stem + '.audio.mp4')
+    filters = ([f'adelay={round(-start*1000)}:all=1'] if start < 0 else [])
+    filters += ['apad', f'atrim=duration={duration:.6f}']
+    try:
+        subprocess.run([ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
+            '-i', str(video), '-ss', str(max(0., start)), '-i', str(master),
+            '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-af', ','.join(filters),
+            '-c:a', 'aac', '-b:a', '96k', '-ac', '2', '-ar', '48000',
+            '-t', str(duration), '-movflags', '+faststart', str(temporary)],
+            check=True, capture_output=True, timeout=30)
+        os.replace(temporary, video)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _native_motion(segment: dict[str, Any]) -> bool:
@@ -207,6 +243,7 @@ def render_preview(project: Project, index: int, segment: dict[str, Any]) -> Pat
                 _render_reel(project, segment, temporary, ffmpeg)
             else:
                 _render_flat(project, segment, temporary, ffmpeg)
+            _attach_master_audio(project, segment, temporary, ffmpeg)
             if not temporary.is_file() or temporary.stat().st_size == 0:
                 raise RuntimeError("FFmpeg completed without producing a preview")
             os.replace(temporary, output)

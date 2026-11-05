@@ -54,6 +54,26 @@ def test_preview_identity_follows_the_planned_shot(project, tmp_path):
     assert len({first, second, third}) == 3
 
 
+def test_preview_plays_correct_master_excerpt_and_retimes_audio_cache(project,tmp_path):
+    import numpy as np
+    source=_video(tmp_path/'camera.mp4','320x180',4)
+    master=tmp_path/'song.wav'
+    subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i','sine=frequency=440:duration=2',
+                    '-f','lavfi','-i','sine=frequency=880:duration=2','-filter_complex',
+                    '[0:a][1:a]concat=n=2:v=0:a=1[a]','-map','[a]',str(master)],check=True)
+    project.data['inputs']['master']={'path':str(master)}
+    segment={'source_path':source,'clip_path':source,'clip_start_sec':.2,'duration_sec':1,'master_start_sec':2.2}
+    output=review_previews.render_preview(project,0,segment)
+    raw=subprocess.check_output(['ffmpeg','-v','error','-i',str(output),'-vn','-ar','8000','-ac','1','-f','f32le','-'])
+    data=np.frombuffer(raw,np.float32)[1600:6400]
+    peak=np.fft.rfftfreq(len(data),1/8000)[np.abs(np.fft.rfft(data)).argmax()]
+    assert abs(peak-880)<5  # camera time .2 would have selected the wrong 440 Hz part
+    assert output != review_previews.preview_path(project,0,{**segment,'master_start_sec':0})
+    original=review_previews.preview_path(project,0,segment)
+    master.touch()
+    assert original != review_previews.preview_path(project,0,segment)
+
+
 def test_moving_360_preview_uses_the_export_reprojection_and_moves(project, tmp_path):
     source = _video(tmp_path / "sphere.mp4", "960x480", 2.0)
     segment = {"source_path": source, "clip_path": source, "projection": "equirect", "clip_start_sec": 0.0,
