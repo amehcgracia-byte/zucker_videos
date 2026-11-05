@@ -20,7 +20,7 @@ from core.project import Project, atomic_write_json
 from core.normalization import global_cache_root
 from core.stages.base import stable_fingerprint
 
-SHOT_QUALITY_VERSION = 1
+SHOT_QUALITY_VERSION = 2
 STABILITY_MIN = 0.42  # below this a window counts as "camera moving"
 MOVING_MIN_SEC = 0.75  # this much movement inside one shot is visible
 SAMPLE_FPS = 2
@@ -52,7 +52,53 @@ def score_director_window(signals: dict[str, float]) -> tuple[float, list[str]]:
         reasons.append("blur")
     if exposure < 0.42:
         reasons.append("exposure")
+    # Expression is an editorial preference, never a repair for unusable footage.
+    if score >= DIRECTOR_SCORE_THRESHOLD and not reasons:
+        score = min(1., score + .08 * max(0., min(1., float(signals.get('smile_score') or 0))))
     return round(score, 4), reasons
+
+
+_EXPRESSION_LOCAL = threading.local()
+
+
+def _smile_score(rgb):
+    """Conservative lower-face smile evidence, not a mood/personality label."""
+    try:
+        import cv2
+        if not hasattr(_EXPRESSION_LOCAL, 'detectors'):
+            root = Path(cv2.data.haarcascades)
+            _EXPRESSION_LOCAL.detectors = (
+                cv2.CascadeClassifier(str(root/'haarcascade_frontalface_alt2.xml')),
+                cv2.CascadeClassifier(str(root/'haarcascade_smile.xml')))
+        face, smile = _EXPRESSION_LOCAL.detectors
+        if face.empty() or smile.empty():
+            return 0.
+        gray = cv2.cvtColor(np.asarray(rgb, dtype=np.uint8), cv2.COLOR_RGB2GRAY)
+        for x,y,w,h in face.detectMultiScale(gray,scaleFactor=1.1,minNeighbors=6,minSize=(24,24)):
+            mouth = gray[y+int(.45*h):y+h,x:x+w]
+            if len(smile.detectMultiScale(mouth,scaleFactor=1.15,minNeighbors=22,
+                                        minSize=(max(8,w//4),max(4,h//12)))):
+                return 1.
+    except (ImportError, AttributeError):
+        return 0.
+    return 0.
+
+
+def smile_for_segment(source, start, end):
+    windows = (source.get('director_quality') or {}).get('windows') or []
+    value = 0.
+    for window in windows:
+        a=float(window.get('master_start_sec') or 0);b=float(window.get('master_end_sec') or a)
+        overlap=max(0.,min(end,b)-max(start,a))
+        signals=window.get('signals') or {}
+        _,reasons=score_director_window(signals)
+        strength=max(0.,min(1.,float(signals.get('smile_score') or 0)))
+        # Both expression samples in a two-second window must agree. A real
+        # short smile still counts inside a longer shot; neutral seconds must
+        # not dilute it away. Tiny boundary overlaps get only a tiny bonus.
+        if overlap and not reasons and strength >= .75:
+            value=max(value,strength*min(1.,overlap))
+    return value
 
 
 def director_quality_for_segment(source: dict[str, Any], master_start: float, master_end: float) -> dict[str, Any]:
@@ -104,10 +150,10 @@ def director_quality_for_segment(source: dict[str, Any], master_start: float, ma
 
 def analyze_handheld_director_quality(project: Project, sources: list[dict[str, Any]], progress: QualityProgress | None = None) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
-    handheld = [source for source in sources if _source_role(source) == "handheld"]
+    handheld = [source for source in sources if _source_role(source) in {"handheld", "fixed_rear"}]
     done = 0
     for source in sources:
-        if _source_role(source) != "handheld":
+        if _source_role(source) not in {"handheld", "fixed_rear"}:
             output.append(source)
             continue
         name = str(source.get("filename") or Path(str(source.get("source_path") or source.get("path") or "")).name)
@@ -277,6 +323,9 @@ def _quality_from_frames(frames: list[Path | bytes], offset_sec: float) -> dict[
         gray = array.mean(axis=2)
         motion = 0.0 if previous is None else float(np.mean(np.abs(gray - previous)) / 255.0)
         previous = gray
+        # Expressions need only one small frame per second; reuse the existing
+        # decode and leave the other 2-fps quality samples alone.
+        smile = _smile_score(array) if index % SAMPLE_FPS == 0 else None
         samples.append(
             {
                 "t": index / 2.0,
@@ -284,6 +333,7 @@ def _quality_from_frames(frames: list[Path | bytes], offset_sec: float) -> dict[
                 "motion": min(1.0, motion * 3.0),
                 "sharpness": _sharpness_score(gray),
                 "exposure": _exposure_score(gray),
+                "smile_score": smile,
             }
         )
     windows = []
@@ -296,6 +346,8 @@ def _quality_from_frames(frames: list[Path | bytes], offset_sec: float) -> dict[
             "motion": float(np.mean([item["motion"] for item in group])),
             "sharpness": float(np.mean([item["sharpness"] for item in group])),
             "exposure": float(np.mean([item["exposure"] for item in group])),
+            "smile_score": (float(np.mean([item['smile_score'] for item in group if item['smile_score'] is not None]))
+                            if sum(item['smile_score'] is not None for item in group) >= 2 else 0.),
         }
         score, reasons = score_director_window(signals)
         clip_start = group[0]["t"]
