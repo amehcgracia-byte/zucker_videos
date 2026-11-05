@@ -127,6 +127,16 @@ def test_auto_anchor_survives_first_shot_auto_off(tmp_path,monkeypatch):
  assert filtergraph(color,{'auto':True,'light':0,'shadows':0})
 
 
+@pytest.mark.parametrize('luma,high',[(16.5,39.75),(30.2,50.1)])
+def test_black_stage_does_not_get_large_noise_amplifying_shadow_lift(tmp_path,luma,high):
+ p=create_project('Dark stage',str(tmp_path/'edit.zuckervid'))
+ p.data['settings']['edit']['video_light']={'enabled':True}
+ color=profile(p,{'clip_path':'fixed.mp4'},{'luma':luma,'luma_high':high},100)
+ assert 0 < color['light_target']-color['light_anchor'] <= .040001
+ points=[tuple(map(float,p.split('/'))) for p in filtergraph(color).split("'")[1].split()]
+ assert next(y for x,y in points if x==.35)<.43
+
+
 def test_360_polling_uses_the_same_profile_as_preview(tmp_path,monkeypatch):
  from core.shot_review import review_items
  monkeypatch.setenv('ZUCKER_DATA_ROOT',str(tmp_path/'state'))

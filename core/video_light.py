@@ -6,7 +6,7 @@ from collections import OrderedDict
 _RESOLVED_LOCK = threading.RLock()
 _RESOLVED = OrderedDict()
 
-VERSION = 1
+VERSION = 2
 DEFAULT = {'auto': True, 'light': 0.0, 'shadows': 0.0}
 
 
@@ -41,6 +41,10 @@ def profile(project, segment, measured, target_high=80.0):
     target = anchor
     if 2 < luma < 65 and high > 25:
         target = min(.65, anchor+.18, max(anchor, (target_high-16)/219))
+        # Mostly black stage views contain little usable shadow detail. A
+        # large lift exposes sensor/codec noise rather than recovering it.
+        if luma < 36 and high < 70:
+            target = min(target, anchor+.04)
     return {'video_light': spec, 'light_anchor': anchor, 'light_target': target, 'light_recipe': VERSION}
 
 
