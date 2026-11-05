@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import statistics
 import threading
 from collections import deque
@@ -259,8 +260,12 @@ def _extract_quality_frames(ffmpeg: str, path: Path, duration: float,
     scores), streamed in memory instead of written to the work disk."""
     gop = _keyframe_interval(path)
     decode = ["-skip_frame", "nokey"] if gop is not None and gop <= KEYFRAME_SAMPLING_MAX_GOP_SEC else []
+    # Bound decoding to the requested source window; otherwise FFmpeg can
+    # scan the entire original even when the editor needs only its first seconds.
+    # Zero/unknown durations preserve the existing full-file behavior.
+    window = ["-t", f"{duration:.6f}"] if math.isfinite(duration) and duration > 0 else []
     command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", *decode, "-i", str(path),
-               "-vf", f"fps={SAMPLE_FPS},scale=320:-1", "-c:v", "mjpeg", "-q:v", "5", "-f", "image2pipe", "pipe:1"]
+               *window, "-vf", f"fps={SAMPLE_FPS},scale=320:-1", "-c:v", "mjpeg", "-q:v", "5", "-f", "image2pipe", "pipe:1"]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     # Drain stderr concurrently: damaged media can fill its pipe before
     # stdout has another JPEG, otherwise both parent and FFmpeg deadlock.
