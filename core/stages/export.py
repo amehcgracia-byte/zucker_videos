@@ -96,7 +96,7 @@ SPHERICAL_NORMAL_FOV_MIN = NORMAL_FOV_MIN
 SPHERICAL_NORMAL_FOV_MAX = NORMAL_FOV_MAX
 SPHERICAL_MAX_HOLD_YAW_DEG = 16.0
 INTRO_DURATION = 10.0
-COLOR_PROFILE_VERSION = 7
+COLOR_PROFILE_VERSION = 8
 REEL_LETTERBOX_CACHE_VERSION = 2
 REEL_LETTERBOX_BLUR_SIGMA = 18.0
 # Reel logos are composed after the base export by Overlay & Captions. Keep
@@ -5663,7 +5663,9 @@ def color_sample_commands(path: str, duration: float, *, samples: list[dict[str,
                 "-i",
                 path,
                 "-vf",
-                ",".join(part for part in ("fps=2", sample.get("filter"), "scale=320:-2:out_range=tv,signalstats,metadata=print") if part),
+                # signalstats code values depend on bit depth (neutral U/V is
+                # 512 at 10 bits). Match cameras in one 8-bit domain.
+                ",".join(part for part in ("fps=2", sample.get("filter"), "scale=320:-2:out_range=tv,format=yuv420p,signalstats,metadata=print") if part),
                 "-an",
                 "-f",
                 "null",

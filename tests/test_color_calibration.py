@@ -1,5 +1,26 @@
 from core.stages import export
 from core.project import create_project
+import subprocess
+
+
+def test_matching_measures_8_and_10_bit_sources_in_the_same_domain(tmp_path):
+    # Identical picture, different storage depths: neutral chroma must not
+    # become four times larger on the 10-bit camera.
+    profiles=[]
+    for pixel_format in ('yuv420p','yuv420p10le'):
+        path=tmp_path/(pixel_format+'.mkv')
+        subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i',
+                        'color=c=0x304050:s=160x90:r=5:d=1',
+                        '-pix_fmt',pixel_format,'-c:v','ffv1','-threads','1',str(path)],check=True)
+        profile,warning=export.measure_clip_color(str(path))
+        assert warning is None
+        profiles.append(profile)
+    for field in ('luma','luma_low','luma_high','saturation','u_mean','v_mean'):
+        assert abs(profiles[0][field]-profiles[1][field])<1.1
+    correction=export.color_correction_for_profile(profiles[0],profiles[1])
+    assert abs(correction['brightness_adjust'])<.002
+    assert abs(correction['red_balance'])<.002
+    assert abs(correction['blue_balance'])<.002
 
 
 def test_sony_reference_is_not_brightest_source():
