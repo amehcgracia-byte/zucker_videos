@@ -204,13 +204,12 @@ def _analyze_source_quality(project: Project, source: dict[str, Any], report: Ca
     # The bounded sampling window changes the scores. Never reuse the old
     # full-file cache or a cache created for another requested duration.
     sampling_window = round(duration, 6) if math.isfinite(duration) and duration > 0 else None
-    cache_key = stable_fingerprint(
-        {
-            "recipe": SHOT_QUALITY_VERSION,
-            "sampling_window_sec": sampling_window,
-            **cache_file_signature(path),
-        }
-    )[:24]
+    signature = {"recipe": SHOT_QUALITY_VERSION, **cache_file_signature(path)}
+    # Preserve existing full-file cache keys for unknown durations. Only
+    # bounded windows require a new key to prevent cross-window reuse.
+    if sampling_window is not None:
+        signature["sampling_window_sec"] = sampling_window
+    cache_key = stable_fingerprint(signature)[:24]
     cache_path = global_cache_root() / "shot_quality" / f"{cache_key}.json"
     if cache_path.exists():
         return _retime_quality(json.loads(cache_path.read_text(encoding="utf-8")), float(source.get("offset_sec") or 0.0))
