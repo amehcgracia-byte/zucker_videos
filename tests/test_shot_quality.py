@@ -87,3 +87,34 @@ def test_director_quality_for_segment_averages_overlapping_windows():
 
     assert quality["eligible"] is True
     assert quality["score"] == 0.7
+
+
+def test_quality_extraction_limits_ffmpeg_window_only_when_duration_known(monkeypatch, tmp_path):
+    """Issue Montara #56: -t controls output decoding, not only progress."""
+    import io
+    from unittest.mock import MagicMock
+    import core.shot_quality as quality
+
+    commands = []
+
+    def fake_popen(cmd, **kwargs):
+        commands.append(cmd)
+        process = MagicMock()
+        process.stdout = io.BytesIO(b"")
+        process.stderr = io.BytesIO(b"")
+        process.wait.return_value = 0
+        return process
+
+    monkeypatch.setattr(quality, "_keyframe_interval", lambda _: None)
+    monkeypatch.setattr(quality.subprocess, "Popen", fake_popen)
+    sample = tmp_path / "sample.mp4"
+    for duration in (3.25, 0, float("inf")):
+        frames, error = quality._extract_quality_frames("ffmpeg", sample, duration, None)
+        assert frames == [] and error is None
+
+    limited, unknown, infinite = commands
+    assert limited[limited.index("-i") + 1] == str(sample)
+    assert limited[limited.index("-t") + 1] == "3.250000"
+    assert limited.index("-i") < limited.index("-t") < limited.index("-vf")
+    assert "-t" not in unknown
+    assert "-t" not in infinite
