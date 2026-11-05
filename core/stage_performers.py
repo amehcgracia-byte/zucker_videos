@@ -14,7 +14,7 @@ import statistics
 from core.project import atomic_write_json
 from core.stages.base import stable_fingerprint
 
-VERSION = 7
+VERSION = 8
 ROLES = {'unknown', 'pianist', 'bassist', 'saxophonist', 'guitarist', 'drummer', 'singer'}
 ALIASES = {'keys': 'pianist', 'keys_l': 'pianist', 'keys_r': 'pianist', 'piano': 'pianist',
            'bass': 'bassist', 'sax': 'saxophonist', 'saxophone': 'saxophonist',
@@ -26,6 +26,13 @@ LOGGER = logging.getLogger(__name__)
 def role(value):
     value = str(value).strip().lower()
     return ALIASES.get(value, value)
+
+
+def head_from_face(face):
+    """A face box omits hair and ears; protect the whole head, not only the face."""
+    x1,y1,x2,y2 = face
+    w,h = x2-x1,y2-y1
+    return [max(0.,x1-.12*w),max(0.,y1-.30*h),min(1.,x2+.12*w),min(1.,y2+.12*h)]
 
 
 def subject_crop(person, neighbors):
@@ -165,7 +172,7 @@ def _detect(path, window, offset, checkpoint):
                            if body[0]-.08*bw <= (fx+fw/2)/w <= body[2]+.08*bw
                            and body[1]-.20*bh <= (fy+fh/2)/h <= body[1]+.45*bh]
                 if matches:
-                    head = list(max(matches)[1])
+                    head = head_from_face(max(matches)[1])
                 else:
                     # Body-only evidence can start below the hairline. Extend upward,
                     # not around the torso midpoint that used to cut off heads.

@@ -207,3 +207,10 @@ def test_rendered_closeup_keeps_head_in_every_frame_without_neighbor_heads(tmp_p
         assert len(xs)>500 and ys.min()>3 and ys.max()<176 and xs.min()>3 and xs.max()<316
         assert not ((f[:,:,0]>160)&(f[:,:,1]<70)&(f[:,:,2]<70)).any()
         assert not ((f[:,:,2]>160)&(f[:,:,0]<70)&(f[:,:,1]<70)).any()
+
+
+def test_face_evidence_includes_hair_ears_and_source_edge_clamping():
+    from core.stage_performers import head_from_face
+    x1,y1,x2,y2=head_from_face([.4,.3,.5,.4])
+    assert x1<.4 and y1<=.27 and x2>.5 and y2>.4
+    assert head_from_face([0.,0.,.1,.1])[:2]==[0.,0.]
