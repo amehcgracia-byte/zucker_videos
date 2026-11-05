@@ -4,6 +4,16 @@ from core.shot_quality import director_quality_for_segment, score_director_windo
 from core.stages.edit import _quality_filtered_sources, _selection_stats_template
 
 
+def test_real_bundled_cascade_finds_smile_but_not_empty_frame():
+    from pathlib import Path
+    import numpy as np
+    from PIL import Image
+    from core.shot_quality import _smile_score
+    image=np.asarray(Image.open(Path(__file__).parent/'fixtures/smile/smile.jpg').convert('RGB'))
+    assert _smile_score(image)==1
+    assert _smile_score(np.zeros_like(image))==0
+
+
 def test_smiles_prefer_usable_shots_without_rescuing_blur_or_movement():
     from core.shot_quality import smile_for_segment
     from core.stages.edit import _choose_source
@@ -21,6 +31,11 @@ def test_smiles_prefer_usable_shots_without_rescuing_blur_or_movement():
     assert _choose_source(scored,happy['path'])['path']==neutral['path']  # no repeated camera
     assert smile_for_segment(happy,3,4)==0
     assert smile_for_segment(source('fleeting',.25),0,2)==0
+    assert smile_for_segment(source('one_sample',.5),0,2)==0
+    happy['director_quality']['windows'].append({'master_start_sec':2,'master_end_sec':8,
+                                                'signals':{**good,'smile_score':0}})
+    assert smile_for_segment(happy,0,8)==1  # a short smile inside a long shot still counts
+    assert 0 < smile_for_segment(happy,1.9,8)<.11
 
 
 def test_director_score_gates_no_face_and_high_motion_windows():

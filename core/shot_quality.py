@@ -86,16 +86,19 @@ def _smile_score(rgb):
 
 def smile_for_segment(source, start, end):
     windows = (source.get('director_quality') or {}).get('windows') or []
-    total = value = 0.
+    value = 0.
     for window in windows:
         a=float(window.get('master_start_sec') or 0);b=float(window.get('master_end_sec') or a)
         overlap=max(0.,min(end,b)-max(start,a))
         signals=window.get('signals') or {}
         _,reasons=score_director_window(signals)
-        if overlap and not reasons:
-            total+=overlap;value+=overlap*max(0.,min(1.,float(signals.get('smile_score') or 0)))
-    # A single isolated cascade hit out of four samples is not enough.
-    return value/total if total and value/total >= .5 else 0.
+        strength=max(0.,min(1.,float(signals.get('smile_score') or 0)))
+        # Both expression samples in a two-second window must agree. A real
+        # short smile still counts inside a longer shot; neutral seconds must
+        # not dilute it away. Tiny boundary overlaps get only a tiny bonus.
+        if overlap and not reasons and strength >= .75:
+            value=max(value,strength*min(1.,overlap))
+    return value
 
 
 def director_quality_for_segment(source: dict[str, Any], master_start: float, master_end: float) -> dict[str, Any]:
