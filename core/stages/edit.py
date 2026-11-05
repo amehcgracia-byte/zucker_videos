@@ -55,7 +55,7 @@ MOTION_WEIGHTS = {name: 1.0 for name in MOTION_CATALOG}
 # authored speed, and a new very-slow option keeps close-ups composed.
 MOTION_SPEEDS = (("very_slow", 0.50), ("slow", 0.72), ("fast", 1.0))
 IPHONE_CROP_TOP_LIMIT = 0.80
-YOUTUBE_CAMERA_SELECTION_VERSION = 25  # v24: skip a handheld camera while it moves when a steady camera covers the moment
+YOUTUBE_CAMERA_SELECTION_VERSION = 26  # v24: skip a handheld camera while it moves when a steady camera covers the moment
 # Legacy diagnostic threshold retained in project settings/manifests. The
 # production policy now stops close-up filler as soon as one alternative
 # physical camera covers the same synced window.

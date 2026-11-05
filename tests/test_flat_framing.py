@@ -7,7 +7,7 @@ from core.project import create_project,atomic_write_json
 from server.api import create_app
 from core import show_podcast as pod
 
-@pytest.mark.parametrize('spec',[{'zoom':0},{'zoom':4},{'zoom':float('nan')},{'x':-1},{'y':float('inf')}])
+@pytest.mark.parametrize('spec',[{'zoom':0},{'zoom':7},{'zoom':float('nan')},{'x':-1},{'y':float('inf')}])
 def test_rejects_invalid_framing(spec):
  with pytest.raises(ValueError):validate(spec)
 

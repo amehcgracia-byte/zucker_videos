@@ -140,3 +140,70 @@ def test_swap_never_reuses_one_cameras_person_coordinates_on_another(tmp_path,mo
     assert saved[0]['source_path']==b
     assert 'flat_framing' not in saved[0] and 'stage_performers' not in saved[0]
     assert saved[1]['flat_framing']==segments[1]['flat_framing']
+
+
+def crop_edges(crop, zoom=1.):
+    size=1/crop['zoom'];visible=size/zoom
+    return crop['x']-visible/2,crop['y']-visible/2,crop['x']+visible/2,crop['y']+visible/2
+
+
+def test_head_safe_crop_isolates_one_person_including_motion_and_image_edges():
+    from core.stage_performers import subject_crop
+    band=[{'id':str(i),'body_box':[x-.06,.30,x+.06,.9],
+           'head_box':[x-.025,.30,x+.025,.40]}
+          for i,x in enumerate((.08,.30,.52,.74,.93))]
+    for person in band:
+        crop=subject_crop(person,band)
+        assert crop['zoom']>1.8
+        for motion in (1.,1.06):
+            left,top,right,bottom=crop_edges(crop,motion)
+            hx1,hy1,hx2,hy2=person['head_box']
+            assert left<=hx1 and right>=hx2 and top<hy1 and bottom>hy2
+            assert left>=-1e-6 and top>=-1e-6 and right<=1.000001 and bottom<=1.000001
+        left,top,right,bottom=crop_edges(crop)
+        for other in band:
+            if other is person:continue
+            assert right<=other['body_box'][0] or left>=other['body_box'][2]
+
+
+def test_inseparable_players_keep_whole_head_instead_of_forcing_isolation():
+    from core.stage_performers import subject_crop
+    person={'id':'one','body_box':[.35,.2,.6,.9],'head_box':[.43,.2,.55,.41]}
+    neighbor={'id':'two','body_box':[.46,.2,.76,.9],'head_box':[.50,.2,.64,.40]}
+    c=subject_crop(person,[person,neighbor]);l,t,r,b=crop_edges(c,1.06)
+    assert l<=.43 and r>=.55 and t<.2 and b>.41
+
+
+def test_detection_box_union_and_head_location_replace_body_midpoint():
+    from core.stage_performers import _people
+    cluster={'x':.5,'y':.65,'samples':[{'x':.5,'y':.65,'body':[.43,.25,.57,.95],
+              'head':[.47,.25+delta,.53,.34+delta]} for delta in (0,.01,.02)]}
+    p=_people([cluster])[0];l,t,r,b=crop_edges(p,1.06)
+    assert p['zoom']>3 and t<.25 and b>.36
+    assert p['y']<.65  # no more anchoring a close-up on the torso
+
+
+def test_rendered_closeup_keeps_head_in_every_frame_without_neighbor_heads(tmp_path,monkeypatch):
+    import subprocess
+    import numpy as np
+    from core.stages import export
+    from core.stage_performers import subject_crop
+    # White head belongs to centre musician; red/blue heads belong to neighbors.
+    source=tmp_path/'people.mp4'
+    graph='drawbox=x=48:y=30:w=24:h=20:color=red:t=fill,drawbox=x=148:y=30:w=24:h=20:color=white:t=fill,drawbox=x=248:y=30:w=24:h=20:color=blue:t=fill'
+    subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i','color=black:s=320x180:r=30:d=1','-vf',graph,'-c:v','libx264','-crf','12','-threads','1',str(source)],check=True)
+    band=[{'id':str(i),'head_box':[(x-12)/320,30/180,(x+12)/320,50/180],
+           'body_box':[(x-20)/320,30/180,(x+20)/320,.95]} for i,x in enumerate((60,160,260))]
+    crop=subject_crop(band[1],band);assert crop['zoom']>3
+    segment={'flat_framing':crop}
+    monkeypatch.setattr(export,'_target_size',lambda _: (320,180))
+    monkeypatch.setattr(export,'_base_video_filter',lambda _: 'scale=320:180,setsar=1')
+    filters=export._segment_filtergraph('youtube',1,{}, {},has_watermark=False,text_enabled=False,frame_count=30,segment=segment,motion_filter=export._motion_filter(segment,'youtube',1))
+    raw=subprocess.check_output(['ffmpeg','-v','error','-i',str(source),'-filter_complex',filters,'-map','[v]','-frames:v','30','-pix_fmt','rgb24','-f','rawvideo','-'])
+    frames=np.frombuffer(raw,np.uint8).reshape(-1,180,320,3)
+    for f in frames:
+        white=(f.min(axis=2)>180)
+        ys,xs=np.where(white)
+        assert len(xs)>500 and ys.min()>3 and ys.max()<176 and xs.min()>3 and xs.max()<316
+        assert not ((f[:,:,0]>160)&(f[:,:,1]<70)&(f[:,:,2]<70)).any()
+        assert not ((f[:,:,2]>160)&(f[:,:,0]<70)&(f[:,:,1]<70)).any()

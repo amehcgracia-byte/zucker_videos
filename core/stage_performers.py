@@ -14,7 +14,7 @@ import statistics
 from core.project import atomic_write_json
 from core.stages.base import stable_fingerprint
 
-VERSION = 5
+VERSION = 7
 ROLES = {'unknown', 'pianist', 'bassist', 'saxophonist', 'guitarist', 'drummer', 'singer'}
 ALIASES = {'keys': 'pianist', 'keys_l': 'pianist', 'keys_r': 'pianist', 'piano': 'pianist',
            'bass': 'bassist', 'sax': 'saxophonist', 'saxophone': 'saxophonist',
@@ -28,15 +28,70 @@ def role(value):
     return ALIASES.get(value, value)
 
 
+def subject_crop(person, neighbors):
+    """Fit one head with headroom; exclude adjacent body boxes where feasible.
+
+    Coordinates use the source's normalized axes, as does flat_framing. A
+    landscape crop has the same normalized width and height. Include the
+    tightest 1.06x opening-motion state when checking head visibility.
+    """
+    head = person['head_box']
+    body = person['body_box']
+    hx = (head[0]+head[2])/2
+    # Reserve safety for detector jitter, pixel rounding and the inner 6% move.
+    margin = .006
+    inset = (1-1/1.06)/2
+    minimum = max(1/6, (head[2]-head[0]+2*margin)/(1-2*inset),
+                  (head[3]-head[1]+2*margin)/(1-2*inset))
+    desired = min(1., max(minimum, (body[2]-body[0])*1.12,
+                          (head[3]-head[1])*1.7))
+    left, right = 0., 1.
+    for neighbor in neighbors:
+        if neighbor['id'] == person['id']:
+            continue
+        other = neighbor['body_box']
+        nx = (neighbor['head_box'][0]+neighbor['head_box'][2])/2
+        if nx < hx:
+            left = max(left,other[2]+.005)
+        else:
+            right = min(right,other[0]-.005)
+    size = max(minimum, min(desired, right-left))
+    size = min(1., size)
+    # Round inward for neighbor exclusion, capped by the safe head-fit zoom.
+    zoom = max(1., min(6., math.ceil(1000/size)/1000, math.floor(1000/minimum)/1000))
+    size = 1/zoom
+    def interval(low, high):
+        return max(0., high+margin-size*(1-inset)), min(1-size, low-margin-size*inset)
+    xlo,xhi = interval(head[0],head[2])
+    ylo,yhi = interval(head[1],head[3])
+    isolated_lo, isolated_hi = max(xlo,left), min(xhi,right-size)
+    if isolated_lo <= isolated_hi:
+        xlo,xhi = isolated_lo,isolated_hi
+    # Inseparable overlapping silhouettes: preserve the head instead of cutting it.
+    crop_x = max(xlo,min(xhi,hx-size/2))
+    crop_y = max(ylo,min(yhi,head[1]-.10*size))
+    crop_x=max(0.,min(1-size,crop_x));crop_y=max(0.,min(1-size,crop_y))
+    return {'zoom':zoom,'x':round(crop_x+size/2,6),'y':round(crop_y+size/2,6)}
+
+
 def _people(clusters):
     people = []
     for cluster in sorted(clusters, key=lambda c: c['x']):
         if len(cluster['samples']) < 3:
             continue
-        zoom = max(1.2, min(1.8, 1 / (statistics.median(s[2] for s in cluster['samples']) * 1.5)))
-        people.append({'id': f'person-{len(people)+1}', 'x': round(cluster['x'], 4),
-                       'y': round(cluster['y'], 4), 'zoom': round(zoom, 3), 'role': 'unknown'})
-    return people[:8]
+        samples = cluster['samples']
+        # Union across the five samples protects a head that moves while playing.
+        body = [min(v['body'][0] for v in samples), min(v['body'][1] for v in samples),
+                max(v['body'][2] for v in samples), max(v['body'][3] for v in samples)]
+        heads = [v['head'] for v in samples]
+        head = [min(v[0] for v in heads), min(v[1] for v in heads),
+                max(v[2] for v in heads), max(v[3] for v in heads)]
+        people.append({'id':f'person-{len(people)+1}', 'role':'unknown',
+                       'body_box':body,'head_box':head})
+    people = people[:8]
+    for person in people:
+        person.update(subject_crop(person,people))
+    return people
 
 
 def _detect(path, window, offset, checkpoint):
@@ -103,9 +158,22 @@ def _detect(path, window, offset, checkpoint):
                     i = len(clusters)
                     clusters.append({'x':x, 'y':y, 'samples':[]})
                 c = clusters[i]
-                c['samples'].append((x,y,b['x2']-b['x1']))
-                c['x'] = statistics.median(s[0] for s in c['samples'])
-                c['y'] = statistics.median(s[1] for s in c['samples'])
+                body = [max(0.,min(1.,b[k])) for k in ('x1','y1','x2','y2')]
+                bw,bh = body[2]-body[0],body[3]-body[1]
+                matches = [(float(fw*fh), (fx/w,fy/h,(fx+fw)/w,(fy+fh)/h))
+                           for fx,fy,fw,fh in faces
+                           if body[0]-.08*bw <= (fx+fw/2)/w <= body[2]+.08*bw
+                           and body[1]-.20*bh <= (fy+fh/2)/h <= body[1]+.45*bh]
+                if matches:
+                    head = list(max(matches)[1])
+                else:
+                    # Body-only evidence can start below the hairline. Extend upward,
+                    # not around the torso midpoint that used to cut off heads.
+                    head_top = max(0.,body[1]-.12*bh-.01)
+                    head = [max(0.,x-.25*bw),head_top,min(1.,x+.25*bw),min(1.,body[1]+.23*bh)]
+                c['samples'].append({'x':x,'y':y,'body':body,'head':head})
+                c['x'] = statistics.median(s['x'] for s in c['samples'])
+                c['y'] = statistics.median(s['y'] for s in c['samples'])
                 used.add(i)
     finally:
         cap.release()

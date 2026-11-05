@@ -4,7 +4,7 @@ import math
 def validate(spec):
     if not isinstance(spec,dict):raise ValueError('Choose a camera framing')
     result={k:float(spec.get(k,default)) for k,default in [('zoom',1),('x',.5),('y',.5)]}
-    if not all(math.isfinite(v) for v in result.values()) or not 1<=result['zoom']<=3 or not 0<=result['x']<=1 or not 0<=result['y']<=1:raise ValueError('Keep zoom between 1 and 3 and the focus inside the image')
+    if not all(math.isfinite(v) for v in result.values()) or not 1<=result['zoom']<=6 or not 0<=result['x']<=1 or not 0<=result['y']<=1:raise ValueError('Keep zoom between 1 and 6 and the focus inside the image')
     return result
 
 def filtergraph(spec):
