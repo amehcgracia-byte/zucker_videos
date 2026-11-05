@@ -118,3 +118,33 @@ def test_quality_extraction_limits_ffmpeg_window_only_when_duration_known(monkey
     assert limited.index("-i") < limited.index("-t") < limited.index("-vf")
     assert "-t" not in unknown
     assert "-t" not in infinite
+
+
+def test_quality_cache_separates_distinct_sampling_windows(monkeypatch, tmp_path):
+    """The same media cannot reuse full-file scores for a 2-second window."""
+    from types import SimpleNamespace
+    import core.shot_quality as quality
+
+    media = tmp_path / "video.mp4"
+    media.write_bytes(b"small test fixture")
+    cache = tmp_path / "cache"
+    calls = []
+
+    def fake_extract(_ffmpeg, _path, duration, _report):
+        calls.append(duration)
+        return [], None
+
+    monkeypatch.setattr(quality, "global_cache_root", lambda: cache)
+    monkeypatch.setattr(quality, "tool_status", lambda: {"ffmpeg_path": "ffmpeg"})
+    monkeypatch.setattr(quality, "_extract_quality_frames", fake_extract)
+    monkeypatch.setattr(quality, "_quality_from_frames", lambda _frames, _offset: {"windows": [], "summary": {}})
+    project = SimpleNamespace(cache_dir=tmp_path / "old-project-cache")
+    short = {"path": str(media), "duration_sec": 2}
+    long = {"path": str(media), "duration_sec": 4}
+
+    quality._analyze_source_quality(project, short)
+    quality._analyze_source_quality(project, long)
+    quality._analyze_source_quality(project, short)  # Existing matching cache hit.
+
+    assert calls == [2.0, 4.0]
+    assert len(list((cache / "shot_quality").glob("*.json"))) == 2
