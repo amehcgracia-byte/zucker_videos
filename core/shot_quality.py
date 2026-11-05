@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import statistics
 import threading
 from collections import deque
@@ -199,12 +200,16 @@ def _analyze_source_quality(project: Project, source: dict[str, Any], report: Ca
     if not path.exists():
         return {"error": "source missing", "windows": [], "summary": {}}
     from core.storage import cache_file_signature
-    cache_key = stable_fingerprint(
-        {
-            "recipe": SHOT_QUALITY_VERSION,
-            **cache_file_signature(path),
-        }
-    )[:24]
+    duration = _source_duration(source)
+    # The bounded sampling window changes the scores. Never reuse the old
+    # full-file cache or a cache created for another requested duration.
+    sampling_window = round(duration, 6) if math.isfinite(duration) and duration > 0 else None
+    signature = {"recipe": SHOT_QUALITY_VERSION, **cache_file_signature(path)}
+    # Preserve existing full-file cache keys for unknown durations. Only
+    # bounded windows require a new key to prevent cross-window reuse.
+    if sampling_window is not None:
+        signature["sampling_window_sec"] = sampling_window
+    cache_key = stable_fingerprint(signature)[:24]
     cache_path = global_cache_root() / "shot_quality" / f"{cache_key}.json"
     if cache_path.exists():
         return _retime_quality(json.loads(cache_path.read_text(encoding="utf-8")), float(source.get("offset_sec") or 0.0))
@@ -217,7 +222,6 @@ def _analyze_source_quality(project: Project, source: dict[str, Any], report: Ca
     if not ffmpeg:
         return {"error": "ffmpeg missing", "windows": [], "summary": {}}
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    duration = _source_duration(source)
     frames, error = _extract_quality_frames(str(ffmpeg), path, duration, report)
     if error:
         return {"error": error, "windows": [], "summary": {}}
@@ -259,8 +263,12 @@ def _extract_quality_frames(ffmpeg: str, path: Path, duration: float,
     scores), streamed in memory instead of written to the work disk."""
     gop = _keyframe_interval(path)
     decode = ["-skip_frame", "nokey"] if gop is not None and gop <= KEYFRAME_SAMPLING_MAX_GOP_SEC else []
+    # Bound decoding to the requested source window; otherwise FFmpeg can
+    # scan the entire original even when the editor needs only its first seconds.
+    # Zero/unknown durations preserve the existing full-file behavior.
+    window = ["-t", f"{duration:.6f}"] if math.isfinite(duration) and duration > 0 else []
     command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", *decode, "-i", str(path),
-               "-vf", f"fps={SAMPLE_FPS},scale=320:-1", "-c:v", "mjpeg", "-q:v", "5", "-f", "image2pipe", "pipe:1"]
+               *window, "-vf", f"fps={SAMPLE_FPS},scale=320:-1", "-c:v", "mjpeg", "-q:v", "5", "-f", "image2pipe", "pipe:1"]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     # Drain stderr concurrently: damaged media can fill its pipe before
     # stdout has another JPEG, otherwise both parent and FFmpeg deadlock.
