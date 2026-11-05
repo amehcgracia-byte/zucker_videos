@@ -200,9 +200,14 @@ def _analyze_source_quality(project: Project, source: dict[str, Any], report: Ca
     if not path.exists():
         return {"error": "source missing", "windows": [], "summary": {}}
     from core.storage import cache_file_signature
+    duration = _source_duration(source)
+    # The bounded sampling window changes the scores. Never reuse the old
+    # full-file cache or a cache created for another requested duration.
+    sampling_window = round(duration, 6) if math.isfinite(duration) and duration > 0 else None
     cache_key = stable_fingerprint(
         {
             "recipe": SHOT_QUALITY_VERSION,
+            "sampling_window_sec": sampling_window,
             **cache_file_signature(path),
         }
     )[:24]
@@ -218,7 +223,6 @@ def _analyze_source_quality(project: Project, source: dict[str, Any], report: Ca
     if not ffmpeg:
         return {"error": "ffmpeg missing", "windows": [], "summary": {}}
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    duration = _source_duration(source)
     frames, error = _extract_quality_frames(str(ffmpeg), path, duration, report)
     if error:
         return {"error": error, "windows": [], "summary": {}}
