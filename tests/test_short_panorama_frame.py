@@ -20,5 +20,7 @@ def test_short_sphere_source_frame_is_a_decodable_jpeg(tmp_path, monkeypatch, du
     assert response.mimetype=='image/jpeg' and response.data[:2]==b'\xff\xd8'
     subprocess.run(['ffmpeg','-v','error','-f','image2pipe','-i','pipe:0','-frames:v','1','-f','null','-'],
                    input=response.data,check=True,capture_output=True)
+    exact=c.get('/api/v1/wizard/spherical-preview',query_string={'source':str(source),'time_sec':999})
+    assert exact.status_code==200,exact.get_json(silent=True)
     other=tmp_path/'private.mp4';other.write_bytes(source.read_bytes())
     assert c.get('/api/v1/wizard/spherical-source-frame',query_string={'source':str(other)}).status_code==404

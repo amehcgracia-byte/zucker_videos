@@ -5520,7 +5520,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except (TypeError, ValueError):
             return error_response("bad_request", "Invalid spherical preview parameters", 400)
         try:
-            duration = float(ffprobe(str(requested)).get("format", {}).get("duration") or 0.0)
+            duration = _media_duration(requested)  # audio can extend beyond the last video frame
             if duration > 0.0:
                 time_sec = min(time_sec, max(0.0, duration - 0.05))
         except Exception:
