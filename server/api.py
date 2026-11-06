@@ -5602,9 +5602,12 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if projection == "raw_insv":
             projection_prefix = f"v360=input=dfisheye:output=e:ih_fov={insv_fov:.3f}:iv_fov={insv_fov:.3f}:interp=lanczos,"
         ffmpeg_path = str(load_global_config().get("ffmpeg_path") or "ffmpeg")
+        # Short clips have no frame at the historical fixed 30 s position.
+        duration = _media_duration(requested)
+        source_time = min(30.0, max(0.0, duration / 2.0 - 0.5))
         result = subprocess.run(
             [
-                ffmpeg_path, "-hide_banner", "-loglevel", "error", "-ss", "30", "-i", str(requested),
+                ffmpeg_path, "-hide_banner", "-loglevel", "error", "-ss", str(source_time), "-i", str(requested),
                 "-frames:v", "1",
                 "-vf", f"{projection_prefix}scale=2048:1024:force_original_aspect_ratio=decrease,pad=2048:1024:(ow-iw)/2:(oh-ih)/2",
                 "-q:v", "3", "-f", "mjpeg", "pipe:1",
