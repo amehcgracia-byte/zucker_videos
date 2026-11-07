@@ -2739,6 +2739,8 @@ def _stream_copy_eligible(
     """Return true only where stream copy cannot change visible frames or cadence."""
     if platform != "youtube" or intro_fade or outro_fade or color_profile:
         return False
+    if float(segment.get("playback_speed", 1.0)) != 1.0:
+        return False
     if _watermark_path() is not None or _spherical_shot(segment) or segment.get("motion"):
         return False
     if overlay_config.get("title") or overlay_config.get("band_name") or overlay_config.get("handle"):
@@ -2858,6 +2860,10 @@ def _render_proxy_segment(
     reel_letterbox_filter: str | None = None,
 ) -> str:
     reel_overlay_items = _reel_overlay_items(segment, overlay_config, platform, output_path.parent)
+    speed = float(segment.get("playback_speed", 1.0))
+    if speed != 1.0:
+        retime = f"setpts=(PTS-STARTPTS)/{speed:.6f}"
+        source_filter = f"{retime},{source_filter}" if source_filter else retime
     proxy_filter = _segment_filtergraph(
         platform,
         duration,
