@@ -87,8 +87,12 @@ FORCE_STATIC_360_ISOLATION = False
 # frame before encoding; static v360 remains available for deliberate holds.
 SPHERICAL_EXPORT_MOTION_MODE = "native_remap"
 SPHERICAL_EXPORT_PROXY_VERSION = 1
-SPHERICAL_EXPORT_PROXY_WIDTH = 2560
-SPHERICAL_EXPORT_PROXY_HEIGHT = 1280
+# The Mac's original-quality export can opt in to a sharper 360 intermediate.
+# Preserve the lower-resolution cached profile for existing server deployments.
+# Dimensions are part of the spherical source-cache key, so profiles never mix.
+_MONTARA_HIRES_SPHERICAL = os.environ.get("MONTARA_360_EXPORT_QUALITY") == "high"
+SPHERICAL_EXPORT_PROXY_WIDTH = 3840 if _MONTARA_HIRES_SPHERICAL else 2560
+SPHERICAL_EXPORT_PROXY_HEIGHT = 1920 if _MONTARA_HIRES_SPHERICAL else 1280
 _SPHERICAL_EXPORT_PROXY_LOCK = threading.RLock()
 SPHERICAL_HOLD_COMMAND_COUNT = 8
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
@@ -2400,6 +2404,14 @@ def _render_segment(
     static_shot["runtime_motion_enabled"] = False
     source_filter = EVEN_SDR_FILTER if native_motion else _export_source_filter(
         segment_probe, static_shot if spherical_shot else None, duration=duration, command_path=sendcmd_path)
+    # Retiming applies only to this shot's source frames; the song master stays
+    # on its original timeline and the cut retains its authored duration.
+    speed = float(segment.get("playback_speed", 1.0))
+    if not 0.5 <= speed <= 2.0 or not math.isfinite(speed):
+        raise ValueError("Invalid shot playback speed")
+    if speed != 1.0 and not native_motion:
+        retime = f"setpts=(PTS-STARTPTS)/{speed:.6f}"
+        source_filter = f"{retime},{source_filter}" if source_filter else retime
     reel_overlay_items = _reel_overlay_items(render_segment, overlay_config or {}, platform, output_path.parent)
     filter_complex = _segment_filtergraph(
         platform,
@@ -2468,7 +2480,8 @@ def _render_segment(
             run_reprojected_command(command, str(source["source_path"]),
                 (int(segment_probe["width"]), int(segment_probe["height"])),
                 float(segment["clip_start_sec"]), frame_count, spherical_shot, progress_callback,
-                pose_sampler=sampler, **({"hardware_decode": False} if force_cpu else {}),
+                pose_sampler=sampler, playback_speed=speed,
+                **({"hardware_decode": False} if force_cpu else {}),
                 **({"remap_backend": "metal"} if not force_cpu and project.data.get("settings", {}).get("export", {}).get("spherical_remap_backend", "metal" if sys.platform == "darwin" else "cpu") == "metal" else {}))
         else:
             _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
@@ -2726,6 +2739,8 @@ def _stream_copy_eligible(
     """Return true only where stream copy cannot change visible frames or cadence."""
     if platform != "youtube" or intro_fade or outro_fade or color_profile:
         return False
+    if float(segment.get("playback_speed", 1.0)) != 1.0:
+        return False
     if _watermark_path() is not None or _spherical_shot(segment) or segment.get("motion"):
         return False
     if overlay_config.get("title") or overlay_config.get("band_name") or overlay_config.get("handle"):
@@ -2845,6 +2860,10 @@ def _render_proxy_segment(
     reel_letterbox_filter: str | None = None,
 ) -> str:
     reel_overlay_items = _reel_overlay_items(segment, overlay_config, platform, output_path.parent)
+    speed = float(segment.get("playback_speed", 1.0))
+    if speed != 1.0:
+        retime = f"setpts=(PTS-STARTPTS)/{speed:.6f}"
+        source_filter = f"{retime},{source_filter}" if source_filter else retime
     proxy_filter = _segment_filtergraph(
         platform,
         duration,
@@ -3001,7 +3020,7 @@ def _segment_video_command_base(ffmpeg: str, clip_path: str, segment: dict[str, 
         "-ss",
         f"{float(segment['clip_start_sec']):.3f}",
         "-t",
-        f"{duration:.3f}",
+        f"{duration * float(segment.get('playback_speed', 1.0)):.3f}",
         "-i",
         str(Path(clip_path)),
     ]
@@ -4208,6 +4227,7 @@ def cached_segment_path(
             "source_path": source["source_path"],
             "clip_start_sec": round(float(segment.get("clip_start_sec") or 0.0), 3),
             "duration_sec": round(float(segment.get("duration_sec") or 0.0), 3),
+            "playback_speed": round(float(segment.get("playback_speed", 1.0)), 3),
             "master_start_sec": round(float(segment.get("master_start_sec") or 0.0), 3),
             "platform": platform,
             **({"content_branding": _content_branding_identity(segment)} if _branding_within_content() else {}),
@@ -4259,6 +4279,7 @@ def _segment_cache_stamp_payload(segment: dict[str, Any]) -> dict[str, Any]:
         "schema": 1,
         **({"flat_framing":segment["flat_framing"]} if segment.get("flat_framing") else {}),
         "export_segment_recipe": EXPORT_SEGMENT_RECIPE_VERSION,
+        "playback_speed": round(float(segment.get("playback_speed", 1.0)), 3),
         "spherical_motion_recipe_version": SPHERICAL_MOTION_RECIPE_VERSION,
         "spherical_motion_recipe_hash": stable_fingerprint(recipe),
         "spherical_identity": _spherical_cache_identity(segment),
