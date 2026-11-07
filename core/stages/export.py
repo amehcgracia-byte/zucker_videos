@@ -2404,6 +2404,14 @@ def _render_segment(
     static_shot["runtime_motion_enabled"] = False
     source_filter = EVEN_SDR_FILTER if native_motion else _export_source_filter(
         segment_probe, static_shot if spherical_shot else None, duration=duration, command_path=sendcmd_path)
+    # Retiming applies only to this shot's source frames; the song master stays
+    # on its original timeline and the cut retains its authored duration.
+    speed = float(segment.get("playback_speed", 1.0))
+    if not 0.5 <= speed <= 2.0 or not math.isfinite(speed):
+        raise ValueError("Invalid shot playback speed")
+    if speed != 1.0 and not native_motion:
+        retime = f"setpts=(PTS-STARTPTS)/{speed:.6f}"
+        source_filter = f"{retime},{source_filter}" if source_filter else retime
     reel_overlay_items = _reel_overlay_items(render_segment, overlay_config or {}, platform, output_path.parent)
     filter_complex = _segment_filtergraph(
         platform,
@@ -2472,7 +2480,8 @@ def _render_segment(
             run_reprojected_command(command, str(source["source_path"]),
                 (int(segment_probe["width"]), int(segment_probe["height"])),
                 float(segment["clip_start_sec"]), frame_count, spherical_shot, progress_callback,
-                pose_sampler=sampler, **({"hardware_decode": False} if force_cpu else {}),
+                pose_sampler=sampler, playback_speed=speed,
+                **({"hardware_decode": False} if force_cpu else {}),
                 **({"remap_backend": "metal"} if not force_cpu and project.data.get("settings", {}).get("export", {}).get("spherical_remap_backend", "metal" if sys.platform == "darwin" else "cpu") == "metal" else {}))
         else:
             _run_ffmpeg_progress(command, duration, Path(str(source["source_path"])).name, progress_callback)
@@ -3005,7 +3014,7 @@ def _segment_video_command_base(ffmpeg: str, clip_path: str, segment: dict[str, 
         "-ss",
         f"{float(segment['clip_start_sec']):.3f}",
         "-t",
-        f"{duration:.3f}",
+        f"{duration * float(segment.get('playback_speed', 1.0)):.3f}",
         "-i",
         str(Path(clip_path)),
     ]
