@@ -965,6 +965,8 @@ def _youtube_multicam_plan(
     segments: list[dict[str, Any]] = []
     non_music_fill_history: list[dict[str, Any]] = []
     filler_history: list[dict[str, Any]] = []
+    last_cutaway_end = start
+    cutaway_seconds = 0.0
     gaps: list[dict[str, float]] = []
     previous_source: str | None = None
     previous_camera: str | None = None
@@ -1090,33 +1092,46 @@ def _youtube_multicam_plan(
         if segment_end <= segment_start:
             break
         available = _quality_filtered_sources(_covering_sources(sources, segment_start, segment_end, platform=platform), segment_start, segment_end, selection_stats)
-        if not available:
-            filler = (filler_library.choose_filler(filler_bank, segment_start, segment_end - segment_start,
+        # Authored B-roll may interrupt covered footage, after each available
+        # camera has appeared. Keep the opening/ending and >=90% performance.
+        explicit_windows = [w for w in (filler_bank or {}).get("windows", []) if w.get("user_selected")]
+        seen_sources = {str(s.get("source_path") or s.get("clip_path")) for s in segments if not s.get("filler")}
+        cutaway_due = bool(explicit_windows and available and segment_start - last_cutaway_end >= 30
+                           and segment_end < end - 5 and segment_end - segment_start <= filler_library.MAX_WINDOW_SEC
+                           and cutaway_seconds + segment_end - segment_start <= (end - start) * .1
+                           and all(str(s.get("source_path") or s.get("path")) in seen_sources for s in available))
+        if not available or cutaway_due:
+            selection_bank = {"windows": explicit_windows} if cutaway_due else filler_bank
+            filler = (filler_library.choose_filler(selection_bank, segment_start, segment_end - segment_start,
                                                    filler_history, variation_seed, segment_index)
                       if filler_bank and filler_bank.get("windows") else None)
-            if filler is None:
+            if filler is None and not available:
                 gaps.append({"start_sec": round(segment_start, 3), "end_sec": round(segment_end, 3)})
                 bar_index = next_index
                 continue
-            usable = float(filler["end_sec"]) - float(filler["start_sec"])
-            # Hand back to a camera as soon as one covers the song again.
-            resume = _next_camera_start(sources, segment_start, segment_end, platform)
-            if resume is not None and resume - segment_start >= filler_library.MIN_WINDOW_SEC:
-                usable = min(usable, resume - segment_start)
-            if segment_end - segment_start > usable:
-                # Cut where the filler window ends; the next pass covers the rest.
-                segment_end = _round_to_frame(segment_start + usable)
-                next_index = bisect.bisect_left(bar_times, segment_end)
-                if next_index == len(bar_times) or bar_times[next_index] != segment_end:
-                    bar_times.insert(next_index, segment_end)
-            segment = _filler_plan_segment(filler, segment_start, segment_end, window.get("title") or t("full_video"))
-            segment["variation_seed"] = variation_seed
-            segments.append(segment)
-            if shot_ready:
-                shot_ready(len(segments) - 1, segment)
-            bar_index = next_index
-            segment_index += 1
-            continue
+            if filler is not None:
+                usable = float(filler["end_sec"]) - float(filler["start_sec"])
+                # Hand back to a camera as soon as one covers the song again.
+                resume = _next_camera_start(sources, segment_start, segment_end, platform)
+                if resume is not None and resume - segment_start >= filler_library.MIN_WINDOW_SEC:
+                    usable = min(usable, resume - segment_start)
+                if segment_end - segment_start > usable:
+                    # Cut where the filler window ends; the next pass covers the rest.
+                    segment_end = _round_to_frame(segment_start + usable)
+                    next_index = bisect.bisect_left(bar_times, segment_end)
+                    if next_index == len(bar_times) or bar_times[next_index] != segment_end:
+                        bar_times.insert(next_index, segment_end)
+                segment = _filler_plan_segment(filler, segment_start, segment_end, window.get("title") or t("full_video"))
+                segment["variation_seed"] = variation_seed
+                segments.append(segment)
+                if filler.get("user_selected"):
+                    last_cutaway_end = segment_end
+                    cutaway_seconds += segment_end - segment_start
+                if shot_ready:
+                    shot_ready(len(segments) - 1, segment)
+                bar_index = next_index
+                segment_index += 1
+                continue
         for source in available:
             stats = selection_stats.setdefault(_source_id(source), _selection_stats_for_source(source, start, end))
             stats["eligible_segments"] += 1
