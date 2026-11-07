@@ -6218,21 +6218,26 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.post("/api/v1/settings/fillers")
     def api_fillers() -> Response:
         project = _require_project(state)
-        paths = _json_body().get("fillers")
+        body = _json_body()
+        paths = body.get("fillers")
+        cutaways = body.get("cutaways", [])
         if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
             return error_response("bad_request", "fillers must be a list of registered video paths", 400)
         sources = {str(record.get("path") or "") for record in project.data.get("inputs", {}).get("videos", [])}
         if any(path not in sources for path in paths):
             return error_response("bad_request", "Choose registered videos as filler", 400)
+        if not isinstance(cutaways, list) or not all(isinstance(path, str) and path in paths for path in cutaways):
+            return error_response("bad_request", "cutaways must be a subset of fillers", 400)
         current_edit = project.data.get("settings", {}).get("edit", {})
         current = sorted(set(current_edit.get("fillers") or []))
         subjects = current_edit.get("camera_subjects") or {}
-        if sorted(set(paths)) == current and not any(path in subjects for path in current):
+        if sorted(set(paths)) == current and sorted(set(cutaways)) == sorted(current_edit.get("filler_cutaways") or []) and not any(path in subjects for path in current):
             return jsonify({"fillers": current})
         if state.wizard.status().get("status") in {"running", "cancelling"}:
             return error_response("wizard_busy", "Wait for the current edit before changing filler videos", 409)
         edit = project.data.setdefault("settings", {}).setdefault("edit", {})
         edit["fillers"] = sorted(set(paths))
+        edit["filler_cutaways"] = sorted(set(cutaways))
         subjects = edit.get("camera_subjects") or {}
         for path in edit["fillers"]:
             subjects.pop(path, None)

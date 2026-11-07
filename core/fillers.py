@@ -8,7 +8,9 @@ the edit planner takes a compatible window instead of leaving a gap.
 Compatibility is deliberately conservative. A window that may show rain or
 fire is never used unless the project is confirmed to have it, and day/night
 must not contradict the project. Shots of musicians performing are never
-used: they would not match the music that is playing.
+used: they would not match the music that is playing. Explicitly authored
+cutaways are a separate opt-in: the user chooses those images regardless of
+scene/audio, and no expensive scene tagging is needed for them.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ from core.stages.base import stable_fingerprint
 
 LOGGER = logging.getLogger(__name__)
 
-FILLER_VERSION = 1
+FILLER_VERSION = 2
 SAMPLE_FPS = 1.0
 MIN_WINDOW_SEC = 2.0
 MAX_WINDOW_SEC = 8.0
@@ -52,6 +54,24 @@ def filler_paths(project: Any) -> set[str]:
         return set()
     edit = (project.data.get("settings") or {}).get("edit") or {}
     return {str(path) for path in edit.get("fillers") or []}
+
+
+def cutaway_paths(project: Any) -> set[str]:
+    """Explicit user-selected B-roll does not need sound or scene recognition."""
+    edit = (project.data.get("settings") or {}).get("edit") or {}
+    return filler_paths(project).intersection(str(path) for path in edit.get("filler_cutaways") or [])
+
+
+def cutaway_windows(record: dict[str, Any]) -> list[dict[str, Any]]:
+    duration = _probe_duration(record)
+    if not np.isfinite(duration) or duration < MIN_WINDOW_SEC:
+        return []
+    length = min(MAX_WINDOW_SEC, duration)
+    count = max(1, min(128, int(np.ceil(duration / length))))
+    return [{"start_sec": float(start), "end_sec": min(duration, float(start) + length),
+             "shot": "detail", "shot_confidence": 1.0, "conditions": {},
+             "user_selected": True, "score": 1.0}
+            for start in np.linspace(0, max(0, duration - length), count)]
 
 
 def is_filler_record(project: Any, record: dict[str, Any]) -> bool:
@@ -281,23 +301,26 @@ def build_filler_bank(project: Any, coverage_sources: list[dict[str, Any]]) -> d
     """Analysed filler windows plus the conditions they must match."""
     records = [record for record in (project.data.get("inputs") or {}).get("videos") or [] if is_filler_record(project, record)]
     overrides = condition_overrides(project)
-    bank: dict[str, Any] = {"enabled": bool(records), "model": scene_tags.available(), "windows": [], "rejected": {}}
+    cutaways = cutaway_paths(project)
+    needs_scene_model = any(str(r.get("path")) not in cutaways for r in records)
+    bank: dict[str, Any] = {"enabled": bool(records), "model": scene_tags.available() if needs_scene_model else False, "windows": [], "rejected": {}}
     if not records:
         bank["conditions"] = effective_project_conditions({}, overrides)
         return bank
-    detected = detect_project_conditions(project, coverage_sources)
+    detected = detect_project_conditions(project, coverage_sources) if needs_scene_model else {}
     conditions = effective_project_conditions(detected, overrides)
     bank["conditions"] = conditions
     for record in records:
         if str((record.get("probe") or {}).get("projection") or "").lower() in {"equirect", "raw_insv"}:
             bank["rejected"]["360 filler not supported"] = bank["rejected"].get("360 filler not supported", 0) + 1
             continue
-        analysis = analyze_filler(project, record)
+        explicit = str(record.get("path")) in cutaways
+        analysis = {"windows": cutaway_windows(record)} if explicit else analyze_filler(project, record)
         if not analysis:
             continue
         normalized = record.get("normalized") or {}
         for window in analysis.get("windows") or []:
-            usable, reason = compatibility(window, conditions)
+            usable, reason = (True, "") if explicit else compatibility(window, conditions)
             if not usable:
                 bank["rejected"][reason] = bank["rejected"].get(reason, 0) + 1
                 continue
@@ -337,7 +360,7 @@ def choose_filler(bank: dict[str, Any], master_start: float, needed_sec: float, 
 def warm_filler_analysis(project: Any) -> int:
     """Analyse marked filler videos ahead of the edit (cached); returns how many."""
     records = [record for record in (project.data.get("inputs") or {}).get("videos") or []
-               if is_filler_record(project, record)
+               if is_filler_record(project, record) and str(record.get("path")) not in cutaway_paths(project)
                and str((record.get("probe") or {}).get("projection") or "").lower() not in {"equirect", "raw_insv"}]
     for record in records:
         analyze_filler(project, record)

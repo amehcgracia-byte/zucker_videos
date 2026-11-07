@@ -1,4 +1,5 @@
 from pathlib import Path
+import pytest
 
 from core import fillers, scene_tags
 from core.stages.edit import _youtube_multicam_plan
@@ -157,3 +158,56 @@ def test_frontend_offers_filler_and_scene_controls():
     assert "data-filler-video" in source and 'api("/settings/fillers"' in source
     assert "scene_conditions: sceneConditionsFromForm()" in source
     assert all(f'data-scene="{key}"' in html for key in ("time", "place", "rain", "fire"))
+
+
+def test_explicit_cutaways_need_no_audio_or_scene_model(tmp_path, monkeypatch):
+    class Project:
+        data = {"settings": {"wizard": {"platform": "youtube"}, "edit": {
+            "fillers": ["/broll.mov"], "filler_cutaways": ["/broll.mov"]}},
+            "inputs": {"videos": [{"path": "/broll.mov", "probe": {"duration": 764.5}}]}}
+    monkeypatch.setattr(scene_tags, "available", lambda: pytest.fail("No model initialization for authored B-roll"))
+    monkeypatch.setattr(fillers, "detect_project_conditions", lambda *args: pytest.fail("No scene analysis for authored B-roll"))
+    monkeypatch.setattr(fillers, "analyze_filler", lambda *args: pytest.fail("No full-file analysis for authored B-roll"))
+    bank = fillers.build_filler_bank(Project(), [])
+    assert 1 <= len(bank["windows"]) <= 128
+    assert all(w["user_selected"] and w["source_path"] == "/broll.mov" for w in bank["windows"])
+    assert all(0 <= w["start_sec"] < w["end_sec"] <= 764.5 for w in bank["windows"])
+    assert fillers.warm_filler_analysis(Project()) == 0
+
+
+def test_explicit_cutaways_also_appear_between_covered_shots():
+    coverage = {"platform": "youtube", "window": {"start_sec": 0, "duration_sec": 120},
+                "sources": [{"path": "/camera.mp4", "source_path": "/camera.mp4", "filename": "camera.mp4",
+                             "offset_sec": 0, "duration_sec": 120, "confidence": 20}]}
+    beats = {"bars_sec": list(range(0, 121, 2)), "sections_sec": []}
+    bank = {"windows": [{**_window(0, 8), "user_selected": True}]}
+    plan = _youtube_multicam_plan(coverage, beats, filler_bank=bank)
+    used = [s for s in plan["segments"] if s.get("filler")]
+    assert used and not plan["gaps"]
+    assert sum(s["duration_sec"] for s in used) <= 12.01
+    assert not plan["segments"][0].get("filler") and not plan["segments"][-1].get("filler")
+    assert abs(sum(s["duration_sec"] for s in plan["segments"]) - 120) < .1
+
+
+def test_cutaway_api_rejects_unregistered_and_non_subset_paths(tmp_path, monkeypatch):
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path / "data"))
+    from core.project import create_project, load_project
+    from server.api import create_app
+    project = create_project("Broll", str(tmp_path / "broll.zuckervid"))
+    project.data["inputs"]["videos"] = [{"path": "/broll.mov"}]
+    project.save()
+    client = create_app(project_path=str(project.folder)).test_client()
+    assert client.post("/api/v1/settings/fillers", json={"fillers": ["/broll.mov"], "cutaways": ["/other.mov"]}).status_code == 400
+    assert client.post("/api/v1/settings/fillers", json={"fillers": ["/broll.mov"], "cutaways": ["/broll.mov"]}).status_code == 200
+    assert load_project(str(project.folder)).data["settings"]["edit"]["filler_cutaways"] == ["/broll.mov"]
+
+
+def test_cutaway_edit_fingerprint_does_not_initialize_scene_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path / "data"))
+    from core.project import create_project
+    from core.stages.edit import EditStage
+    project = create_project("Authored", str(tmp_path / "authored.zuckervid"))
+    project.data["settings"]["edit"]["fillers"] = ["/broll.mov"]
+    project.data["settings"]["edit"]["filler_cutaways"] = ["/broll.mov"]
+    monkeypatch.setattr(scene_tags, "available", lambda: pytest.fail("No scene model for authored B-roll fingerprint"))
+    assert EditStage().inputs_fingerprint(project)
