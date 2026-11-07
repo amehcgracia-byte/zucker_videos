@@ -2229,3 +2229,32 @@ def test_real_frame_gap_is_still_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(FFmpegError, match="Irregular video cadence"):
         _verify_video_cadence(clip, "gap final", start=0.0, duration=20.6)
+
+
+def test_shot_speed_changes_source_duration_but_not_output_cadence():
+    from core.stages.export import _segment_video_command_base, _segment_frame_count
+    shot = {"clip_start_sec": 9.0, "duration_sec": 4.0, "playback_speed": 1.5}
+    args = _segment_video_command_base("ffmpeg", "/tmp/clip.mp4", shot, shot["duration_sec"])
+    assert args[args.index("-ss") + 1] == "9.000"
+    assert args[args.index("-t") + 1] == "6.000"
+    assert _segment_frame_count(shot) == 120
+
+
+def test_native_360_sampler_receives_isolated_shot_speed(monkeypatch):
+    from core import spherical_motion as spherical
+    received = []
+    monkeypatch.setattr(spherical, "_run_reprojected_command", lambda *args, **kwargs: received.append(kwargs))
+    spherical.run_reprojected_command(
+        ["ffmpeg"], "/tmp/source.mp4", (3840, 1920), 10.0, 30, {},
+        hardware_decode=False, playback_speed=0.5,
+    )
+    assert len(received) == 1
+    assert received[0]["playback_speed"] == 0.5
+
+
+def test_360_quality_profile_defaults_to_server_safe_resolution():
+    from core import stages
+    from core.stages import export
+    assert (export.SPHERICAL_EXPORT_PROXY_WIDTH, export.SPHERICAL_EXPORT_PROXY_HEIGHT) in (
+        (2560, 1280), (3840, 1920)
+    )
