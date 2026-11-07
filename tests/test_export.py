@@ -2258,3 +2258,23 @@ def test_360_quality_profile_defaults_to_server_safe_resolution():
     assert (export.SPHERICAL_EXPORT_PROXY_WIDTH, export.SPHERICAL_EXPORT_PROXY_HEIGHT) in (
         (2560, 1280), (3840, 1920)
     )
+
+
+def test_shot_speed_has_distinct_cache_key_and_attestation(tmp_path):
+    from core.stages.export import cached_segment_path, _segment_cache_stamp_payload
+    from core.project import create_project, file_record
+    project=create_project("Speed cache",str(tmp_path/"speed.zuckervid"))
+    source=tmp_path/"source.mp4"
+    source.write_bytes(b"source")
+    record=file_record(str(source))
+    record["probe"]={"valid_video":True,"projection":"flat"}
+    record["cache_key"]="speed-source"
+    project.data["inputs"]["videos"]=[record]
+    segment={"clip_path":str(source),"source_path":str(source),"clip_start_sec":0,
+             "master_start_sec":0,"duration_sec":3}
+    at_normal=cached_segment_path(project,segment,"youtube",4_000_000,{}, {},False,False)
+    at_half=cached_segment_path(project,{**segment,"playback_speed":0.5},"youtube",4_000_000,{}, {},False,False)
+    at_double=cached_segment_path(project,{**segment,"playback_speed":2.0},"youtube",4_000_000,{}, {},False,False)
+    assert len({at_normal,at_half,at_double})==3
+    assert _segment_cache_stamp_payload(segment)["playback_speed"]==1.0
+    assert _segment_cache_stamp_payload({**segment,"playback_speed":2.0})["playback_speed"]==2.0
