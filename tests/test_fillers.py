@@ -165,6 +165,7 @@ def test_explicit_cutaways_need_no_audio_or_scene_model(tmp_path, monkeypatch):
         data = {"settings": {"wizard": {"platform": "youtube"}, "edit": {
             "fillers": ["/broll.mov"], "filler_cutaways": ["/broll.mov"]}},
             "inputs": {"videos": [{"path": "/broll.mov", "probe": {"duration": 764.5}}]}}
+    monkeypatch.setattr(scene_tags, "available", lambda: pytest.fail("No model initialization for authored B-roll"))
     monkeypatch.setattr(fillers, "detect_project_conditions", lambda *args: pytest.fail("No scene analysis for authored B-roll"))
     monkeypatch.setattr(fillers, "analyze_filler", lambda *args: pytest.fail("No full-file analysis for authored B-roll"))
     bank = fillers.build_filler_bank(Project(), [])
@@ -199,3 +200,14 @@ def test_cutaway_api_rejects_unregistered_and_non_subset_paths(tmp_path, monkeyp
     assert client.post("/api/v1/settings/fillers", json={"fillers": ["/broll.mov"], "cutaways": ["/other.mov"]}).status_code == 400
     assert client.post("/api/v1/settings/fillers", json={"fillers": ["/broll.mov"], "cutaways": ["/broll.mov"]}).status_code == 200
     assert load_project(str(project.folder)).data["settings"]["edit"]["filler_cutaways"] == ["/broll.mov"]
+
+
+def test_cutaway_edit_fingerprint_does_not_initialize_scene_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path / "data"))
+    from core.project import create_project
+    from core.stages.edit import EditStage
+    project = create_project("Authored", str(tmp_path / "authored.zuckervid"))
+    project.data["settings"]["edit"]["fillers"] = ["/broll.mov"]
+    project.data["settings"]["edit"]["filler_cutaways"] = ["/broll.mov"]
+    monkeypatch.setattr(scene_tags, "available", lambda: pytest.fail("No scene model for authored B-roll fingerprint"))
+    assert EditStage().inputs_fingerprint(project)

@@ -301,12 +301,13 @@ def build_filler_bank(project: Any, coverage_sources: list[dict[str, Any]]) -> d
     """Analysed filler windows plus the conditions they must match."""
     records = [record for record in (project.data.get("inputs") or {}).get("videos") or [] if is_filler_record(project, record)]
     overrides = condition_overrides(project)
-    bank: dict[str, Any] = {"enabled": bool(records), "model": scene_tags.available(), "windows": [], "rejected": {}}
+    cutaways = cutaway_paths(project)
+    needs_scene_model = any(str(r.get("path")) not in cutaways for r in records)
+    bank: dict[str, Any] = {"enabled": bool(records), "model": scene_tags.available() if needs_scene_model else False, "windows": [], "rejected": {}}
     if not records:
         bank["conditions"] = effective_project_conditions({}, overrides)
         return bank
-    cutaways = cutaway_paths(project)
-    detected = detect_project_conditions(project, coverage_sources) if any(str(r.get("path")) not in cutaways for r in records) else {}
+    detected = detect_project_conditions(project, coverage_sources) if needs_scene_model else {}
     conditions = effective_project_conditions(detected, overrides)
     bank["conditions"] = conditions
     for record in records:

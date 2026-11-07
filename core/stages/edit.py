@@ -192,7 +192,8 @@ class EditStage(Stage):
                 "non_music_version": NON_MUSIC_VERSION,
                 # Filler choice depends on the tagger as well as on settings.
                 "filler_version": filler_library.FILLER_VERSION,
-                "scene_tags": [scene_tags.SCENE_TAGS_VERSION, scene_tags.prompts_fingerprint(), scene_tags.available()],
+                "scene_tags": [scene_tags.SCENE_TAGS_VERSION, scene_tags.prompts_fingerprint(), scene_tags.available()]
+                if filler_library.filler_paths(project) - filler_library.cutaway_paths(project) else None,
                 "algorithm_version": EDIT_PLAN_ALGORITHM_VERSION,
             }
         )
