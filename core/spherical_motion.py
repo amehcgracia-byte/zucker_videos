@@ -142,7 +142,8 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
                             pose_sampler: Callable | None = None,
                             hardware_decode: bool = True, remap_backend: str = "cpu",
                             output_size: tuple[int, int] = (1920, 1080), fps: int = 30,
-                            decode_size: tuple[int, int] | None = None) -> None:
+                            decode_size: tuple[int, int] | None = None,
+                            playback_speed: float = 1.0) -> None:
     """Export defaults to 1080p30 from full-resolution frames; review previews
     pass a small output, a lower rate and a reduced ``decode_size``."""
     pixel_format = None
@@ -157,13 +158,13 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
         try:
             _run_reprojected_command(command, source, source_size, start, frame_count, shot,
                 progress, pose_sampler=pose_sampler, decoder_pixel_format=pixel_format, remap_backend=remap_backend,
-                output_size=output_size, fps=fps, decode_size=decode_size)
+                output_size=output_size, fps=fps, decode_size=decode_size, playback_speed=playback_speed)
             return
         except HardwareDecodeError as exc:
             LOGGER.warning("360 hardware decoder failed; retrying with CPU: %s", exc)
     _run_reprojected_command(command, source, source_size, start, frame_count, shot,
         progress, pose_sampler=pose_sampler, remap_backend=remap_backend, output_size=output_size, fps=fps,
-        decode_size=decode_size)
+        decode_size=decode_size, playback_speed=playback_speed)
 
 
 def _run_reprojected_command(command: list[str], source: str, source_size: tuple[int, int],
@@ -172,7 +173,8 @@ def _run_reprojected_command(command: list[str], source: str, source_size: tuple
                             pose_sampler: Callable | None = None,
                             decoder_pixel_format: str | None = None, remap_backend: str = "cpu",
                             output_size: tuple[int, int] = (1920, 1080), fps: int = 30,
-                            decode_size: tuple[int, int] | None = None) -> None:
+                            decode_size: tuple[int, int] | None = None,
+                            playback_speed: float = 1.0) -> None:
     """Pipe atomic reprojected BGR frames directly into the final encoder graph."""
     ffmpeg = command[0]; sw, sh = decode_size or source_size; ow, oh = output_size
     if frame_count <= 0:
@@ -183,7 +185,12 @@ def _run_reprojected_command(command: list[str], source: str, source_size: tuple
     decoder_options = ['-hwaccel', 'videotoolbox'] if decoder_pixel_format else []
     # Scaling before the BGR conversion keeps a reduced decode cheap.
     scale = f'scale={sw}:{sh},' if decode_size else ''
-    decoder_filter = f'format={decoder_pixel_format},fps={fps},{scale}format=bgr24' if decoder_pixel_format else f'fps={fps},{scale}format=bgr24'
+    if not math.isfinite(playback_speed) or not 0.5 <= playback_speed <= 2.0:
+        raise ValueError("Invalid source playback speed")
+    # Retimestamp decoded frames, then CFR-select exactly the shot's output
+    # frame count. Slower shots repeat frames; faster shots skip frames.
+    speed_filter = f'setpts=(PTS-STARTPTS)/{playback_speed:.6f},' if playback_speed != 1.0 else ''
+    decoder_filter = (f'format={decoder_pixel_format},' if decoder_pixel_format else '') + f'{speed_filter}fps={fps},{scale}format=bgr24'
     decoder_command = [ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-threads', '2', '-ss', str(start), *decoder_options, '-i', source,
                        '-vf', decoder_filter, '-an', '-frames:v', str(frame_count), '-f', 'rawvideo', 'pipe:1']
     stopped = threading.Event(); failures: list[BaseException] = []; completed = [0]; last_frame_at = [time.monotonic()]
