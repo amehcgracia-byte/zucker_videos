@@ -87,8 +87,12 @@ FORCE_STATIC_360_ISOLATION = False
 # frame before encoding; static v360 remains available for deliberate holds.
 SPHERICAL_EXPORT_MOTION_MODE = "native_remap"
 SPHERICAL_EXPORT_PROXY_VERSION = 1
-SPHERICAL_EXPORT_PROXY_WIDTH = 2560
-SPHERICAL_EXPORT_PROXY_HEIGHT = 1280
+# The Mac's original-quality export can opt in to a sharper 360 intermediate.
+# Preserve the lower-resolution cached profile for existing server deployments.
+# Dimensions are part of the spherical source-cache key, so profiles never mix.
+_MONTARA_HIRES_SPHERICAL = os.environ.get("MONTARA_360_EXPORT_QUALITY") == "high"
+SPHERICAL_EXPORT_PROXY_WIDTH = 3840 if _MONTARA_HIRES_SPHERICAL else 2560
+SPHERICAL_EXPORT_PROXY_HEIGHT = 1920 if _MONTARA_HIRES_SPHERICAL else 1280
 _SPHERICAL_EXPORT_PROXY_LOCK = threading.RLock()
 SPHERICAL_HOLD_COMMAND_COUNT = 8
 SPHERICAL_SHORT_SEGMENT_STATIC_SEC = 2.0
