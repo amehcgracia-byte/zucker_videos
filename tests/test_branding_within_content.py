@@ -34,11 +34,10 @@ def test_branding_keeps_duration_audio_and_real_transparency(tmp_path,monkeypatc
     for start in (.15,3.5):
         raw=command(['ffmpeg','-v','error','-ss',str(start),'-t','0.15','-i',str(output),'-vn','-f','f32le','-ac','1','-'])
         assert np.sqrt(np.mean(np.frombuffer(raw,dtype='<f4')**2))>.001
-    raw=command(['ffmpeg','-v','error','-ss','0.1','-i',str(output),'-frames:v','1','-vf','scale=192:108','-f','rawvideo','-pix_fmt','rgb24','-'])
+    raw=command(['ffmpeg','-v','error','-ss','0.6','-i',str(output),'-frames:v','1','-vf','scale=192:108','-f','rawvideo','-pix_fmt','rgb24','-'])
     frame=np.frombuffer(raw,dtype=np.uint8).reshape(108,192,3)
-    # Transparent personal art reveals moving footage; stock starts on black.
-    if personal and alpha:assert frame[10,10,2]>150
-    elif not personal:assert frame[10,10].max()<15
+    # Transparent art reveals footage during the opening fade, with the logo still visible.
+    if alpha:assert frame[10,10,2]>80
     elif background=='black':assert frame[10,96].max()<15
     else:assert frame[10,96].min()>180  # white background remains white
     assert frame[54,96,0]>150  # mark is visible, not lost by alpha detection

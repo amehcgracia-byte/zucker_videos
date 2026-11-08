@@ -96,7 +96,11 @@ def test_legacy_phone_roles_receive_motion_without_changing_quotas():
     assert all(segment['motion']['subject_fallback'] for segment in plan['segments'])
     assert plan['camera_distribution'][0]['role'] == 'handheld'
     moves = [segment['motion']['movement'] for segment in plan['segments']]
-    assert all(a != b for a,b in zip(moves,moves[1:]))
+    # Consecutive views of one physical take now keep a single motion clock;
+    # alternating/restarting zoom at every beat created visible false cuts.
+    assert len(set(moves)) == 1
+    assert all(s['motion']['continuity_duration_sec'] == 20 for s in plan['segments'])
+    assert [s['motion']['continuity_offset_sec'] for s in plan['segments']] == [s['master_start_sec'] for s in plan['segments']]
 
 
 def test_explicit_review_transition_survives_clean_cut_defaults(tmp_path):

@@ -1831,6 +1831,8 @@ def _expand_spherical_render_segments(segments: list[dict[str, Any]]) -> list[di
 
 
 def _continuous_spherical_render_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    from core.shot_continuity import continuous_views
+    segments = continuous_views(segments)
     output: list[dict[str, Any]] = []
     previous_shot: dict[str, Any] | None = None
     for segment in segments:
@@ -3451,7 +3453,8 @@ def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> s
         return _ken_burns_filter({"type":"ken_burns","movement":"zoom_out_center" if close else "zoom_in_center",
             "zoom_start":1.06 if close else 1.,"zoom_end":1. if close else 1.06,
             "pan_x_start":.5,"pan_x_end":.5,"pan_y_start":.5,"pan_y_end":.5,
-            "enforce_top_edge":False,"speed_factor":1.,"library_version":1},platform,duration).replace("scale=3840:2160:flags=lanczos,", "")
+            "enforce_top_edge":False,"speed_factor":1.,"library_version":1,
+            **{k:v for k,v in (segment.get("motion") or {}).items() if k.startswith("continuity_")}},platform,duration).replace("scale=3840:2160:flags=lanczos,", "")
     motion = segment.get("motion") or {}
     motion_type = motion.get("type")
     if motion_type == "ken_burns":
@@ -3483,7 +3486,8 @@ def _ken_burns_filter(motion: dict[str, Any], platform: str, duration: float) ->
     pan_x_end = max(0.0, min(1.0, pan_x_end))
     pan_y_start = max(0.0, min(1.0, float(motion.get("pan_y_start", pan_y))))
     pan_y_end = max(0.0, min(1.0, float(motion.get("pan_y_end", pan_y))))
-    frame_count = max(1, int(round(max(0.1, float(duration)) * TARGET_EXPORT_FPS)))
+    frame_count = max(1, int(round(max(0.1, float(motion.get("continuity_duration_sec") or duration)) * TARGET_EXPORT_FPS)))
+    frame_offset = float(motion.get("continuity_offset_sec") or 0) * TARGET_EXPORT_FPS
     try:
         speed_factor = max(0.25, min(2.0, float(motion.get("speed_factor", 1.0))))
     except (TypeError, ValueError):
@@ -3491,7 +3495,7 @@ def _ken_burns_filter(motion: dict[str, Any], platform: str, duration: float) ->
     # Saturation is intentional: once the endpoint is reached, hold there.
     # It prevents an out-of-bounds crop from wrapping/reversing into a second
     # apparent movement.
-    progress = f"min(1,n/{max(1, frame_count - 1)}*{speed_factor:.6f})"
+    progress = f"min(1,(in+{frame_offset:.6f})/{max(1, frame_count - 1)}*{speed_factor:.6f})"
     if motion.get("easing") == "accelerate":
         progress = f"pow(({progress}),1.8)"
     elif motion.get("library_version"):
@@ -3718,7 +3722,8 @@ def _automatic_drift_degrees(shot: dict[str, Any], axis: str, visible_fov: float
 
 
 def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[float, float, float]:
-    duration = max(0.001, duration)
+    t += float(shot.get("continuity_offset_sec") or 0)
+    duration = max(0.001, float(shot.get("continuity_duration_sec") or duration))
     if FORCE_STATIC_360_ISOLATION:
         return _static_360_pose(shot)
     if "runtime_motion_enabled" in shot and not bool(shot.get("runtime_motion_enabled")):
@@ -5324,9 +5329,23 @@ def _content_branding_identity(segment):
         return None
     asset = _watermark_path()
     stat = asset.stat() if asset else None
-    return {'version': 1, 'window': segment.get('_brand_window'),
+    return {'version': 2, 'window': segment.get('_brand_window'),
             'asset': str(asset), 'size': stat.st_size if stat else 0,
             'mtime': stat.st_mtime_ns if stat else 0, 'mode': _branding().get('mode')}
+
+
+def _logo_matte(asset):
+    """Extend an opaque logo's border; never infer or remove its background."""
+    if not asset or _has_real_alpha(asset):
+        return 'black'
+    from PIL import Image
+    from statistics import median
+    with Image.open(asset) as image:
+        image = image.convert('RGB')
+        w, h = image.size
+        corners = [image.getpixel(point) for point in ((0, 0), (w-1, 0), (0, h-1), (w-1, h-1))]
+    rgb = [int(median(c[i] for c in corners)) for i in range(3)]
+    return '0x' + ''.join(f'{v:02x}' for v in rgb)
 
 
 def _within_content_logo_graph(graph, label, platform, duration, window):
@@ -5334,12 +5353,14 @@ def _within_content_logo_graph(graph, label, platform, duration, window):
     width, height = _target_size(platform)
     offset, total = float(window['offset']), float(window['total'])
     personal = _personal_logo_path()
-    transparent = bool(personal and _has_real_alpha(personal))
+    asset = personal or _watermark_path()
+    transparent = bool(asset and _has_real_alpha(asset))
+    matte = _logo_matte(asset)
     # Stock symbol starts on black. A person's opaque picture is kept whole;
     # genuine alpha stays transparent over the moving video.
-    fraction = .5 if transparent else (1. if personal else .3)
+    fraction = (.5 if transparent else 1.) if personal else .3
     fitw, fith = max(2, int(width*fraction)//2*2), max(2, int(height*fraction)//2*2)
-    background = 'black@0' if transparent else 'black'
+    background = 'black@0' if transparent else matte
     pixel = 'rgba' if transparent else 'rgb24'
     base = f'scale={fitw}:{fith}:force_original_aspect_ratio=decrease,format={pixel},pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={background},format=rgba,setpts=PTS+{offset:.6f}/TB'
     intro = offset < 1.4
@@ -5347,14 +5368,15 @@ def _within_content_logo_graph(graph, label, platform, duration, window):
     outputs = ['brand_wm'] + (['brand_in'] if intro else []) + (['brand_out'] if outro else [])
     graph += ';[1:v]format=rgba,split='+str(len(outputs))+''.join(f'[{name}]' for name in outputs)
     graph += f';[brand_wm]scale=-1:{max(24,int(height*.06))},colorchannelmixer=aa=.70[brand_corner]'
-    graph += f';[{label}][brand_corner]overlay=W-w-28:H-h-28:format=auto:enable=\'between(t,{max(0.,1.4-offset):.6f},{max(0.,total-1.4-offset):.6f})\'[brand_base]'
+    graph += f';[{label}]setpts=PTS+{offset:.6f}/TB,fade=t=in:st=0.15:d=0.7:color={matte},fade=t=out:st={max(0.,total-.85):.6f}:d=0.7:color={matte},setpts=PTS-STARTPTS[brand_footage]'
+    graph += f';[brand_footage][brand_corner]overlay=W-w-28:H-h-28:format=auto:enable=\'between(t,{max(0.,1.4-offset):.6f},{max(0.,total-1.4-offset):.6f})\'[brand_base]'
     current='brand_base'
     if intro:
-        graph += f';[brand_in]{base},fade=t=out:st=0.7:d=0.7:alpha=1,setpts=PTS-STARTPTS[brand_intro]'
+        graph += f';[brand_in]{base},fade=t=in:st=0:d=0.15:alpha=1,fade=t=out:st=0.7:d=0.7:alpha=1,setpts=PTS-STARTPTS[brand_intro]'
         graph += f';[{current}][brand_intro]overlay=0:0:format=auto:enable=\'lt(t,{max(0.,1.4-offset):.6f})\'[brand_intro_done]'
         current='brand_intro_done'
     if outro:
-        graph += f';[brand_out]{base},fade=t=in:st={max(0.,total-1.4):.6f}:d=0.7:alpha=1,setpts=PTS-STARTPTS[brand_outro]'
+        graph += f';[brand_out]{base},fade=t=in:st={max(0.,total-1.4):.6f}:d=0.7:alpha=1,fade=t=out:st={max(0.,total-.15):.6f}:d=0.15:alpha=1,setpts=PTS-STARTPTS[brand_outro]'
         graph += f';[{current}][brand_outro]overlay=0:0:format=auto:enable=\'gte(t,{max(0.,total-1.4-offset):.6f})\'[brand_outro_done]'
         current='brand_outro_done'
     return graph+f';[{current}]copy[v]'

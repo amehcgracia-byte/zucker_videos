@@ -281,3 +281,32 @@ def test_only_shot_of_a_video_is_replaced_from_the_same_video(tmp_path: Path, mo
     assert result["unavailable"] == [0]
     assert result["replacement_diagnostics"][0]["reason"] == "only_shot_of_this_video"
     assert json.loads(artifact_path(project, "edit_plan.json").read_text())["segments"][0]["source_path"] == conteint
+
+
+def test_swap_filler_can_return_to_a_synced_360_camera(tmp_path,monkeypatch):
+    import core.shot_review as review
+    project=create_project('Swap camera',str(tmp_path/'Swap.zuckervid'))
+    project.data['settings']['wizard']={'platform':'youtube'}
+    project.data['settings']['spherical_landmarks']={'full_stage':{'yaw':45,'pitch':-10,'fov':110,'enabled':True}}
+    plan={'platform':'youtube','segments':[{'source_path':'/broll.mp4','clip_path':'/broll.mp4','filename':'broll.mp4','clip_start_sec':0,'master_start_sec':10,'duration_sec':4,'filler':True,'filler_key':'broll-key','confidence':0}]}
+    artifact_path(project,'edit_plan.json').write_text(json.dumps(plan))
+    artifact_path(project,'coverage.json').write_text(json.dumps({'platform':'youtube','sources':[{'path':'/sphere.mp4','source_path':'/sphere.mp4','filename':'sphere.mp4','projection':'equirect','duration_sec':60,'offset_sec':0,'confidence':20}]}))
+    monkeypatch.setattr(review,'review_items',lambda *a,**k:[])
+    result=replace_slots(project,[0]);assert result['replaced']==[0]
+    segment=json.loads(artifact_path(project,'edit_plan.json').read_text())['segments'][0]
+    assert not segment.get('filler') and 'filler_key' not in segment
+    assert segment['source_path']=='/sphere.mp4' and segment['clip_start_sec']==10
+    assert segment['spherical_shot']['yaw']==45
+    assert segment['confidence']==20
+
+
+def test_swap_prefers_another_available_camera_before_same_source_pose(tmp_path,monkeypatch):
+    import core.shot_review as review
+    project=create_project('Other camera',str(tmp_path/'Other.zuckervid'))
+    base={'source_path':'/first.mp4','clip_path':'/first.mp4','filename':'first.mp4','clip_start_sec':0,'master_start_sec':0,'duration_sec':4,'confidence':20}
+    artifact_path(project,'edit_plan.json').write_text(json.dumps({'platform':'youtube','segments':[base,{**base,'clip_start_sec':4,'master_start_sec':4}]}))
+    artifact_path(project,'coverage.json').write_text(json.dumps({'platform':'youtube','sources':[{'path':'/first.mp4','source_path':'/first.mp4','duration_sec':60,'offset_sec':0,'confidence':20},{'path':'/other.mp4','source_path':'/other.mp4','filename':'other.mp4','duration_sec':60,'offset_sec':0,'confidence':20}]}))
+    monkeypatch.setattr(review,'review_items',lambda *a,**k:[])
+    assert replace_slots(project,[0])['replaced']==[0]
+    segment=json.loads(artifact_path(project,'edit_plan.json').read_text())['segments'][0]
+    assert segment['source_path']=='/other.mp4'

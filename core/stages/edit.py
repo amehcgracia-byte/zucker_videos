@@ -116,7 +116,7 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 32
+EDIT_PLAN_ALGORITHM_VERSION = 33
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
@@ -813,6 +813,8 @@ def _reel_promo_plan_pass(
         if shot_ready:
             shot_ready(len(segments) - 1, segment)
     _assign_reel_mix_treatments(segments, sources, wizard)
+    from core.shot_continuity import continuous_views
+    segments = continuous_views(segments)
     _validate_motion_segments(segments)
     return {
         "stage": "edit",
@@ -1097,7 +1099,9 @@ def _youtube_multicam_plan(
         # camera has appeared. Keep the opening/ending and >=90% performance.
         explicit_windows = [w for w in (filler_bank or {}).get("windows", []) if w.get("user_selected")]
         seen_sources = {str(s.get("source_path") or s.get("clip_path")) for s in segments if not s.get("filler")}
-        cutaway_due = bool(explicit_windows and available and segment_start - last_cutaway_end >= 30
+        cutaway_due = bool(explicit_windows and available
+                           and sum(bool(item.get("filler")) for item in segments) < 2
+                           and segment_start - last_cutaway_end >= max(30, (end-start)/3)
                            and segment_end < end - 5 and segment_end - segment_start <= filler_library.MAX_WINDOW_SEC
                            and cutaway_seconds + segment_end - segment_start <= (end - start) * .1
                            and all(str(s.get("source_path") or s.get("path")) in seen_sources for s in available))
@@ -1368,6 +1372,8 @@ def _youtube_multicam_plan(
         bar_index = next_index
         segment_index += 1
 
+    from core.shot_continuity import continuous_views
+    segments = continuous_views(segments)
     _validate_motion_segments(segments)
     warnings = list(coverage.get("warnings") or [])
     if gaps:
