@@ -2120,7 +2120,7 @@ def _apply_saved_spherical_landmarks(project: Project, segments: list[dict[str, 
             shot["fov"] = effective_fov(shot.get("fov", 95.0), shot_type, shot["projection_preset"])
             shot["type"] = shot_type
             shot["shot_id"] = shot_type
-            shot["label"] = labels.get(shot_type, shot.get("label") or shot_type)
+            shot["label"] = str(authored.get("label") or labels.get(shot_type) or shot.get("label") or shot_type)[:40]
             current["spherical_shot"] = shot
         result.append(current)
     return result

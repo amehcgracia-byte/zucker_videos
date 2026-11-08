@@ -6257,22 +6257,35 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             for key in list(incoming):
                 raw_value = raw_landmarks.get(key)
                 if isinstance(raw_value, dict):
-                    incoming[key] = {field: incoming[key][field] for field in ("yaw", "pitch", "fov", "roll", "projection_preset", "projection_control", "weight", "subject", "enabled") if field in raw_value}
+                    incoming[key] = {field: incoming[key][field] for field in ("yaw", "pitch", "fov", "roll", "projection_preset", "projection_control", "weight", "subject", "label", "enabled") if field in raw_value}
         source_path = str(body.get("spherical_source_path") or "").strip()
         source_key = str(Path(source_path).expanduser().resolve()) if source_path else ""
         config = load_global_config()
         global_landmarks = config.get("spherical_landmarks") or {}
         project_settings = project.data.setdefault("settings", {})
         project_landmarks = project_settings.get("spherical_landmarks") or {}
-        landmarks = merge_spherical_landmarks(global_landmarks, project_landmarks)
+        if source_key:
+            profiles = project_settings.setdefault("spherical_landmarks_by_source", {})
+            # Editing camera B must not copy camera A's custom POVs into B.
+            # Legacy defaults may be shared; new custom slots belong only to
+            # their authored source unless explicitly saved on another camera.
+            inherited = merge_spherical_landmarks(global_landmarks, project_landmarks)
+            inherited = {key: value for key, value in inherited.items()
+                         if not re.fullmatch(r"custom_([1-9]|1[0-6])", str(key))}
+            previous = profiles.get(source_key) or profiles.get(source_path) or {}
+            landmarks = merge_spherical_landmarks(inherited, previous)
+        else:
+            landmarks = merge_spherical_landmarks(global_landmarks, project_landmarks)
         landmarks = merge_spherical_landmarks(landmarks, incoming)
         # Re-sanitize the merged profile too: old project/global values may
         # contain pre-2.1.19 pitch/FOV values even when the incoming edit is
         # only a partial landmark update.
         landmarks = _sanitize_spherical_landmarks(landmarks)
-        project_settings["spherical_landmarks"] = landmarks
+        # Keep the legacy global profile limited to shared built-in slots.
+        # Extra POVs live in spherical_landmarks_by_source only.
+        shared_landmarks = {key:value for key,value in landmarks.items() if not re.fullmatch(r"custom_([1-9]|1[0-6])",key)}
+        project_settings["spherical_landmarks"] = shared_landmarks if source_key else landmarks
         if source_key:
-            profiles = project_settings.setdefault("spherical_landmarks_by_source", {})
             profiles[source_key] = dict(landmarks)
             # Keep the original UI path as an alias as well. The desktop
             # picker can return a symlink/bookmark spelling while edit/export
@@ -6282,7 +6295,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             project_settings["spherical_source_path"] = source_key
         project.mark_all_stale_from("edit")
         project.save()
-        config["spherical_landmarks"] = landmarks
+        config["spherical_landmarks"] = shared_landmarks if source_key else landmarks
         save_global_config(config)
         _spherical_event(
             project,
@@ -7034,6 +7047,13 @@ def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, Any]]:
         "audience_stage_wide": {"legacy": "audience_stage_wide_yaw", "fov": 125.0},
         "planet": {"legacy": "planet_yaw", "fov": 150.0},
     }
+    # Additional authored views have stable per-camera keys; never accept
+    # arbitrary keys or oversized maps from an untrusted client.
+    custom_keys = sorted(key for key in raw if isinstance(key, str) and re.fullmatch(r"custom_([1-9]|1[0-6])", key))
+    if len(custom_keys) > 16:
+        custom_keys = custom_keys[:16]
+    for key in custom_keys:
+        defaults[key] = {"legacy": "__unassigned__", "fov": 95.0}
     landmarks: dict[str, dict[str, Any]] = {}
     for key, meta in defaults.items():
         source = raw.get(key)
@@ -7060,7 +7080,8 @@ def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, Any]]:
             "projection_preset": projection_preset,
             "projection_control": projection_control,
             "weight": weight,
-            "subject": str(source.get("subject") or key),
+            "subject": str(source.get("subject") or key)[:40],
+            **({"label": str(source.get("label") or source.get("subject") or key)[:40]} if key.startswith("custom_") else {}),
             "enabled": source.get("enabled", True) is not False,
         }
     return landmarks
