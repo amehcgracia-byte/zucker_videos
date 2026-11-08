@@ -3453,7 +3453,8 @@ def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> s
         return _ken_burns_filter({"type":"ken_burns","movement":"zoom_out_center" if close else "zoom_in_center",
             "zoom_start":1.06 if close else 1.,"zoom_end":1. if close else 1.06,
             "pan_x_start":.5,"pan_x_end":.5,"pan_y_start":.5,"pan_y_end":.5,
-            "enforce_top_edge":False,"speed_factor":1.,"library_version":1},platform,duration).replace("scale=3840:2160:flags=lanczos,", "")
+            "enforce_top_edge":False,"speed_factor":1.,"library_version":1,
+            **{k:v for k,v in (segment.get("motion") or {}).items() if k.startswith("continuity_")}},platform,duration).replace("scale=3840:2160:flags=lanczos,", "")
     motion = segment.get("motion") or {}
     motion_type = motion.get("type")
     if motion_type == "ken_burns":

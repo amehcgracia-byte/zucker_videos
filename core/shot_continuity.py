@@ -15,7 +15,7 @@ def _key(segment):
         return (source, 'sphere', *(shot.get(k) for k in
                 ('type', 'yaw', 'pitch', 'fov', 'roll', 'projection_preset', 'projection_control')))
     motion = segment.get('motion') or {}
-    if motion.get('type') != 'ken_burns':
+    if motion.get('type') != 'ken_burns' and not segment.get('flat_framing'):
         return None
     return (source, 'flat', repr(segment.get('flat_framing')), repr(segment.get('performer_view')),
             *(motion.get(k) for k in ('target_x', 'target_y', 'lock_target')))
@@ -41,7 +41,7 @@ def continuous_views(segments):
         if len(run) < 2 or _key(run[0]) is None:
             continue
         field = 'spherical_shot' if run[0].get('spherical_shot') else 'motion'
-        profile = deepcopy(run[0][field])
+        profile = deepcopy(run[0].get(field) or {})
         duration = sum(float(s['duration_sec']) for s in run)
         offset = 0.
         for segment in run:
