@@ -1541,7 +1541,11 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, Any]
     if not isinstance(raw, dict):
         return {}
     migrated: dict[str, dict[str, Any]] = {}
-    for shot_type, (legacy_key, _label, default_fov) in SPHERICAL_LANDMARKS.items():
+    slots = dict(SPHERICAL_LANDMARKS)
+    for key in raw:
+        if isinstance(key, str) and re.fullmatch(r"custom_([1-9]|1[0-6])", key):
+            slots[key] = ("__unassigned__", str((raw.get(key) or {}).get("label") or key)[:40] if isinstance(raw.get(key), dict) else key, SPHERICAL_DEFAULT_FOV)
+    for shot_type, (legacy_key, _label, default_fov) in slots.items():
         source = raw.get(shot_type)
         if source is None and legacy_key in raw:
             source = {"yaw": raw.get(legacy_key)}
@@ -1560,6 +1564,7 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, Any]
             "projection_control": effective_projection_control(source.get("projection_control")),
             "weight": max(0.0, _landmark_weight(source, "weight", 1.0)),
             "subject": str(source.get("subject") or shot_type),
+            "label": str(source.get("label") or _label)[:40],
             "enabled": source.get("enabled", True) is not False,
         }
     return migrated
@@ -1568,7 +1573,8 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, Any]
 def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabled: bool = False, sweep_speed: float = SPHERICAL_SWEEP_SPEED_DEG_PER_SEC, *, balanced_performers: bool = False) -> list[dict[str, Any]]:
     shots: list[dict[str, Any]] = []
     prepared: list[tuple[str, str, float, dict[str, Any], float]] = []
-    for shot_type in SPHERICAL_SHOT_ORDER:
+    custom_slots = sorted(key for key in landmarks if isinstance(key, str) and re.fullmatch(r"custom_([1-9]|1[0-6])", key))
+    for shot_type in (*SPHERICAL_SHOT_ORDER, *custom_slots):
         # Automatic editing should stay on the stage. A public-only landmark
         # is retained in project settings for manual review, but is never
         # offered as an automatic replacement candidate.
@@ -1577,8 +1583,10 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabl
             # automatic editorial shots: every automatic 360 frame must retain
             # a stage/performer subject.
             continue
-        key, label, default_fov = SPHERICAL_LANDMARKS[shot_type]
+        key, label, default_fov = SPHERICAL_LANDMARKS.get(shot_type, ("__unassigned__", shot_type, SPHERICAL_DEFAULT_FOV))
         data = landmarks.get(shot_type)
+        if data and shot_type in custom_slots:
+            label = str(data.get("label") or shot_type)[:40]
         if data is None and shot_type == "full_stage" and not balanced_performers:
             data = {"yaw": 0.0, "pitch": 0.0, "fov": default_fov, "roll": 0.0, "projection_preset": "linear", "projection_control": 0.0, "weight": 1.0}
         if not data or data.get("enabled") is False:
