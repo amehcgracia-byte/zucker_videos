@@ -59,3 +59,4 @@ def test_short_static_original_is_distinct_from_frozen_moving_camera(tmp_path, m
     assert not export._static_original_window({**slot,'source_path':str(moving_video)})
     assert not export._static_original_window({**slot,'motion':{'kind':'pan'}})
     assert not export._static_original_window({**slot,'duration_sec':60})
+    assert not export._static_original_window({**slot,'clip_start_sec':2,'duration_sec':3})

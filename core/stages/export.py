@@ -2942,9 +2942,21 @@ def _static_original_window(segment: dict[str, Any]) -> bool:
         capture_output=True, text=True, timeout=60)
     if result.returncode:
         return False
-    hashes = [row.rsplit(',', 1)[-1].strip() for row in result.stdout.splitlines()
-              if row and not row.startswith('#')]
-    return len(hashes) >= 2 and len(set(hashes)) == 1
+    rows = [row.split(',') for row in result.stdout.splitlines()
+            if row and not row.startswith('#')]
+    timebase = re.search(r'^#tb 0:\s*(\d+)/(\d+)', result.stdout, re.M)
+    if len(rows) < 2 or not timebase:
+        return False
+    tick = int(timebase[1]) / int(timebase[2])
+    try:
+        decoded_end = (int(rows[-1][2]) + int(rows[-1][3])) * tick
+        frame_duration = int(rows[-1][3]) * tick
+        hashes = {row[-1].strip() for row in rows}
+    except (ValueError, IndexError):
+        return False
+    # A short/truncated source must not pass merely because its few frames are
+    # static while the exporter pads the rest of the requested slot.
+    return decoded_end >= duration - min(.05, frame_duration) and len(hashes) == 1
 
 
 def _verify_or_rebuild_segment(
