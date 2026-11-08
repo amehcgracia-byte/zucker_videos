@@ -2922,6 +2922,31 @@ def _segment_frame_count(segment: dict[str, Any]) -> int:
         return 1
 
 
+def _static_original_window(segment: dict[str, Any]) -> bool:
+    """Allow short still-video assets only after decoding every original frame.
+
+    Output motion checks cannot distinguish a frozen render from a deliberately
+    static logo. Do not waive checks for requested camera movement or long shots.
+    """
+    if segment.get('motion') or segment.get('spherical_shot'):
+        return False
+    duration = float(segment.get('duration_sec') or 0) * float(segment.get('playback_speed', 1))
+    if not 0 < duration <= 30:
+        return False
+    source = str(segment.get('source_path') or segment.get('clip_path') or '')
+    if not source or not Path(source).is_file():
+        return False
+    result = subprocess.run([tool_status()['ffmpeg_path'], '-v', 'error', '-nostdin',
+        '-ss', str(float(segment.get('clip_start_sec') or 0)), '-t', str(duration),
+        '-i', source, '-map', '0:v:0', '-an', '-f', 'framemd5', '-'],
+        capture_output=True, text=True, timeout=60)
+    if result.returncode:
+        return False
+    hashes = [row.rsplit(',', 1)[-1].strip() for row in result.stdout.splitlines()
+              if row and not row.startswith('#')]
+    return len(hashes) >= 2 and len(set(hashes)) == 1
+
+
 def _verify_or_rebuild_segment(
     project: Project,
     segment: dict[str, Any],
@@ -2948,6 +2973,9 @@ def _verify_or_rebuild_segment(
         _verify_moving_segment(segment_path, segment_duration, label, command_line)
         return command_line
     except FFmpegError as first_error:
+        if str(first_error).startswith('Rendered static segment') and _static_original_window(segment):
+            warnings.append('Static original verified for '+label+'; no proxy substitution')
+            return command_line
         segment_path.unlink(missing_ok=True)
         commands = command_recorder if command_recorder is not None else []
         _render_segment(
@@ -4496,13 +4524,14 @@ def _verify_joined_output(path: Path, segments: list[dict[str, Any]], timeline_o
         if duration < 1.0:
             continue
         checked_sources.add(source)
-        _verify_moving_window(
-            path,
-            start,
-            duration,
-            Path(source).name,
-            f"final={path} window_start={start:.3f} window_duration={duration:.3f}",
-        )
+        try:
+            _verify_moving_window(
+                path, start, duration, Path(source).name,
+                f"final={path} window_start={start:.3f} window_duration={duration:.3f}",
+            )
+        except FFmpegError as exc:
+            if not str(exc).startswith('Rendered static segment') or not _static_original_window(segment):
+                raise
 
     boundaries: list[float] = []
     cursor = timeline_offset
