@@ -20,11 +20,13 @@ def optional_fallbacks(project, segments, records):
         if str(slot.get('source_path') or slot.get('clip_path')) not in fillers:
             continue
         alternatives = []
-        # Only use an already authored, static flat camera framing. Do not invent
-        # a view, propagate an insert's grading, or guess a camera's sync offset.
+        # Hold the camera's saved base framing. Automatic Ken Burns may be held
+        # still in this optional slot; required shots and their movement stay intact.
+        # Do not propagate an insert's grading or guess a camera's sync offset.
         for shot in segments:
             path = str(shot.get('source_path') or shot.get('clip_path'))
-            if path in fillers or path not in keys or shot.get('spherical_shot') or shot.get('motion') or shot.get('projection') in ('equirect', 'raw_insv'):
+            motion=shot.get('motion') or {}
+            if path in fillers or path not in keys or shot.get('spherical_shot') or (motion and motion.get('type')!='ken_burns') or shot.get('projection') in ('equirect', 'raw_insv'):
                 continue
             clip = next((c for c in clips.values() if path in (c.get('source_path'), c.get('path'))), None)
             if not clip or any(clip.get(k) for k in ('error', 'no_audio', 'low_confidence', 'unstable_sync')):

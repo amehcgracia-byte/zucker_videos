@@ -43,3 +43,13 @@ def test_fallback_retains_camera_light_instead_of_insert_light(context):
     spec={'auto':False,'light':.2,'shadows':.1}
     p.data['settings']={'edit':{'video_light':{'enabled':True,'cameras':{'camera.mp4':spec}}}}
     assert optional_fallbacks(p,shots,records)['1'][0]['video_light']==spec
+
+
+def test_automatic_flat_camera_motion_can_hold_its_saved_base_framing(context):
+    p,shots,records,clip=context
+    shots[0]['motion']={'type':'ken_burns','movement':'zoom_in','zoom_start':1,'zoom_end':1.2}
+    fallback=optional_fallbacks(p,shots,records)['1'][0]
+    assert fallback['flat_framing']==shots[0]['flat_framing']
+    assert 'motion' not in fallback
+    assert shots[0]['motion']['movement']=='zoom_in'
+    assert fallback['master_start_sec']==15 and fallback['clip_start_sec']==10
