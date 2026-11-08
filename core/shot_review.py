@@ -122,6 +122,8 @@ def _review_segments(project: Project) -> list[dict[str, Any]]:
         for segment in result:
             segment['review_canvas'] = 'reel'
             segment['review_layout'] = project.data.get('settings', {}).get('wizard', {}).get('reel_aspect', '9:16')
+    from core.shot_continuity import continuous_views
+    result = continuous_views(result)
     from core.video_light import settings
     for segment in result:
         spec = settings(project, segment)
@@ -636,7 +638,7 @@ def _candidate_reserve_path(project: Project, coverage: dict[str, Any], segments
     digest = (context or _reserve_context(project, coverage, segments, platform)).copy()
     slot = {key: segment.get(key) for key in ("master_start_sec", "duration_sec", "source_path", "projection")}
     digest.update(json.dumps(slot, sort_keys=True, default=str).encode())
-    digest.update(b', "version": 3}')
+    digest.update(b', "version": 4}')
     return project.cache_dir / "review_candidates" / f"{digest.hexdigest()[:24]}.json"
 
 
@@ -656,6 +658,13 @@ def _project_candidate_pool(project: Project, coverage: dict[str, Any], segments
         pool, origin = saved["candidates"], saved["origin"]
     except (OSError, ValueError, KeyError):
         pool, origin = _review_candidate_pool(coverage, segments, segment, platform)
+        if platform == 'youtube':
+            for candidate in pool:
+                if candidate.get('projection') in {'equirect', 'raw_insv'} and not candidate.get('spherical_shot'):
+                    source = str(candidate.get('source_path') or candidate.get('path') or '')
+                    landmarks = _current_spherical_landmarks(project, source)
+                    pose = landmarks.get('full_stage') or next((p for p in landmarks.values() if p.get('enabled', True)), {})
+                    candidate['spherical_shot'] = {'type':'full_stage', 'yaw':0., 'pitch':0., 'fov':110., 'projection_preset':'linear', **pose}
         _write_reserve_json(path, {"candidates": pool, "origin": origin})
     summary = path.with_suffix(".summary.json")
     if not summary.exists():
@@ -1119,7 +1128,9 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         tried.update(attempts.get(slot_key) or attempts.get(slot) or [])
         tried.update(exclusions.get(slot_key) or exclusions.get(slot) or [])
         tried.update(_candidate_keys(segment, platform != "reel"))
-        if segment.get("filler"):
+        camera_pool, _ = _project_candidate_pool(project, coverage, segments, segment, platform)
+        camera_choices, _ = _replacement_candidates(camera_pool, segment, tried, platform)
+        if segment.get("filler") and not camera_choices:
             # A filler covers a stretch no camera recorded: offer another
             # compatible filler window, never a camera that is not there.
             tried.add(str(segment.get("filler_key") or ""))
@@ -1140,7 +1151,7 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
             continue
         pool, pool_origin = _project_candidate_pool(project, coverage, segments, segment, platform)
         candidates, counts = _replacement_candidates(pool, segment, tried, platform)
-        sole_shot = not any(other_index != index and _same_source_file(other, segment)
+        sole_shot = not segment.get("filler") and not any(other_index != index and _same_source_file(other, segment)
                             for other_index, other in enumerate(segments))
         if sole_shot:
             # Every Drop box video must stay in the edit (coverage guard). The
@@ -1165,6 +1176,9 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
                 "reason": reason, "pool_origin": pool_origin, **counts,
             })
             continue
+        other_sources = [item for item in candidates if not _same_source_file(item[1], segment)]
+        if other_sources:
+            candidates = other_sources
         ordered_candidates = sorted(candidates, key=lambda item: (-item[0], item[2]))
         # Rotate deterministic alternatives instead of returning the same
         # highest-scoring frame on every click.
@@ -1191,7 +1205,9 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
             "source": candidate.get("filename") or candidate.get("path"),
             **counts,
         })
-        new_segment = dict(segment)
+        new_segment = {k:v for k,v in segment.items() if not k.startswith('filler') and k not in {'motion', 'flat_framing', 'performer_view'}}
+        new_segment['confidence'] = candidate.get('confidence', segment.get('confidence'))
+        new_segment['projection'] = candidate.get('projection')
         new_segment["clip_path"] = candidate.get("path") or candidate.get("clip_path") or candidate.get("source_path")
         new_segment["source_path"] = candidate.get("source_path") or new_segment["clip_path"]
         if segment.get('performer_view') and new_segment['source_path'] != segment.get('source_path'):
@@ -1233,6 +1249,8 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         segments[index] = new_segment
         unavailable.discard(index)
         replaced.append(index)
+    from core.shot_continuity import continuous_views
+    segments = continuous_views(segments)
     plan["segments"] = segments
     artifact_path(project, "edit_plan.json").write_text(json.dumps(plan, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     project.data["settings"]["wizard"]["review_attempts"] = attempts

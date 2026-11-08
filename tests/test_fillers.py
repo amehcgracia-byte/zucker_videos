@@ -211,3 +211,11 @@ def test_cutaway_edit_fingerprint_does_not_initialize_scene_model(tmp_path, monk
     project.data["settings"]["edit"]["filler_cutaways"] = ["/broll.mov"]
     monkeypatch.setattr(scene_tags, "available", lambda: pytest.fail("No scene model for authored B-roll fingerprint"))
     assert EditStage().inputs_fingerprint(project)
+
+
+def test_long_performance_has_at_most_two_decorative_cutaways():
+    coverage={'platform':'youtube','window':{'start_sec':0,'duration_sec':900},
+              'sources':[{'path':'/cam.mp4','source_path':'/cam.mp4','filename':'cam.mp4','offset_sec':0,'duration_sec':900,'confidence':20}]}
+    plan=_youtube_multicam_plan(coverage,{'bars_sec':list(range(0,901,2)),'sections_sec':[]},filler_bank={'windows':[{**_window(0,8),'user_selected':True}]})
+    assert 1<=sum(bool(s.get('filler')) for s in plan['segments'])<=2
+    assert not plan['gaps']

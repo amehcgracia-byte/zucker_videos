@@ -19,11 +19,13 @@ from core.ffmpeg import FFmpegError, ffprobe
 from core.storage import working_temporary_file
 from core.spherical_view import view_parameters
 
-RECIPE_VERSION = 4
+RECIPE_VERSION = 5
 MOVEMENTS = ("push_in", "pull_out", "pan_left", "pan_right", "close_hold", "reveal", "settle", "hold")
 
 
 def motion_pose(shot: dict[str, Any], duration: float, seconds: float) -> tuple[float, float, float]:
+    seconds += float(shot.get("continuity_offset_sec") or 0)
+    duration = float(shot.get("continuity_duration_sec") or duration)
     yaw, pitch, fov = (float(shot.get(key) or default) for key, default in (("yaw", 0), ("pitch", 0), ("fov", 82)))
     style = str(shot.get("music_style") or "tranquilo")
     if not shot.get("runtime_motion_enabled") or duration < (1 if style == "frenetico" else 2):
