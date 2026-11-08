@@ -53,3 +53,29 @@ def test_automatic_flat_camera_motion_can_hold_its_saved_base_framing(context):
     assert 'motion' not in fallback
     assert shots[0]['motion']['movement']=='zoom_in'
     assert fallback['master_start_sec']==15 and fallback['clip_start_sec']==10
+
+
+def test_server_missing_optional_materializes_snapshot_without_changing_edit(context,tmp_path):
+    from core.native_export_policy import omit_missing_optional
+    p,shots,records,clip=context
+    camera=tmp_path/'camera.mp4';camera.write_bytes(b'camera')
+    logo=tmp_path/'logo.mp4'
+    shots[0]['source_path']=str(camera);shots[1]['source_path']=str(logo)
+    records[0]['path']=str(logo);records[1]['path']=str(camera)
+    clip['path']=str(camera)
+    p.data['inputs']={'videos':records}
+    import core.fillers as fillers
+    # context fixture supplies names; this integration uses real temporary paths.
+    from unittest.mock import patch
+    with patch.object(fillers,'filler_paths',return_value={str(logo)}):
+        plan={'platform':'youtube','segments':shots}
+        effective=omit_missing_optional(p,plan)
+        assert effective['segments'][1]['source_path']==str(camera)
+        assert effective['segments'][1]['master_start_sec']==15
+        assert effective['segments'][1]['duration_sec']==3
+        assert effective['optional_omissions'][0]['shot']==2
+        assert 'omitted' in effective['warnings'][0]
+        assert plan['segments'][1]['source_path']==str(logo)
+        camera.unlink()
+        with pytest.raises(ValueError,match='no synchronized camera'):
+            omit_missing_optional(p,plan)

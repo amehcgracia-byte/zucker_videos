@@ -409,6 +409,9 @@ class ExportStage(Stage):
         except FileNotFoundError:
             plan = load_coverage(project)
         plan["segments"] = _apply_saved_spherical_landmarks(project, plan.get("segments") or [])
+        if (plan.get('platform') or project.data.get('settings',{}).get('wizard',{}).get('platform')) == 'youtube':
+            from core.native_export_policy import omit_missing_optional
+            plan=omit_missing_optional(project,plan)
         segments = _frame_normalized_segments(plan.get("segments") or [])
         if not segments:
             raise ValueError(t("missing_segments"))
@@ -476,6 +479,8 @@ class ExportStage(Stage):
         run_id = _export_run_id()
         output_path = _output_path(project, platform, run_id)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        effective_plan_path=output_path.with_suffix('.recipe.json')
+        write_artifact_json(effective_plan_path,{**plan,'segments':segments,'inputs':project.data.get('inputs',{})})
         content_duration = _plan_duration(segments)
         duration = content_duration if platform == "reel" or _branding_none() or _branding_within_content() else content_duration + INTRO_DURATION + OUTRO_DURATION
         bitrate_info = _bitrate_for_duration(duration)
@@ -530,6 +535,8 @@ class ExportStage(Stage):
                     else "video-only edit-plan segments plus intro/outro clips; concat; one continuous final master-audio mux"
                 ),
                 "audio_source": audio_source,
+                "effective_plan_path": str(effective_plan_path),
+                "optional_omissions": plan.get('optional_omissions') or [],
                 "warnings": warnings,
                 "max_export_bytes": MAX_EXPORT_BYTES,
                 "target_video_bitrate": bitrate_info["video_bitrate"],
@@ -601,15 +608,11 @@ class ExportStage(Stage):
 
 
 def _missing_project_sources(project: Project, plan: dict[str, Any]) -> list[str]:
-    """Return unique source paths referenced by the project that disappeared."""
+    """Require the master and sources used by this montage, not unused library media."""
     candidates: list[str] = []
     master = project.data.get("inputs", {}).get("master") or {}
     if master.get("path"):
         candidates.append(str(master["path"]))
-    for record in project.data.get("inputs", {}).get("videos", []):
-        path = record.get("path") or record.get("source_path")
-        if path:
-            candidates.append(str(path))
     for segment in plan.get("segments") or []:
         path = segment.get("source_path") or segment.get("clip_path")
         if path:

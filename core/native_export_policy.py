@@ -50,3 +50,33 @@ def optional_fallbacks(project, segments, records):
         if alternatives:
             result[str(index)] = sorted(alternatives, key=lambda s: s['source'])
     return result
+
+
+def omit_missing_optional(project, plan):
+    """Materialize a separate export snapshot; never rewrite the authored edit."""
+    from pathlib import Path
+    from core.fillers import filler_paths
+    optional=filler_paths(project)
+    shots=plan.get('segments') or []
+    missing=[i for i,s in enumerate(shots) if str(s.get('source_path') or s.get('clip_path')) in optional
+             and not Path(str(s.get('source_path') or s.get('clip_path'))).is_file()]
+    if not missing:
+        return plan
+    records=project.data.get('inputs',{}).get('videos',[])
+    alternatives=optional_fallbacks(project,shots,records)
+    result=copy.deepcopy(plan)
+    result['optional_omissions']=[]
+    result['warnings']=list(result.get('warnings') or [])
+    for i in missing:
+        source=str(shots[i].get('source_path') or shots[i].get('clip_path'))
+        candidate=next((c for c in alternatives.get(str(i),[]) if Path(records[c['source']]['path']).is_file()),None)
+        if candidate is None:
+            raise ValueError(f'Shot {i+1}: optional insert {Path(source).name} is unavailable and no synchronized camera covers its interval. Reconnect that insert.')
+        path=str(records[candidate['source']]['path'])
+        replacement={k:copy.deepcopy(v) for k,v in candidate.items() if k!='source'}
+        replacement.update(source_path=path,clip_path=path,filename=Path(path).name)
+        result['segments'][i]=replacement
+        result['optional_omissions'].append({'shot':i+1,'source_path':source,'replacement_path':path,
+                                             'master_start_sec':candidate['master_start_sec'],'duration_sec':candidate['duration_sec']})
+        result['warnings'].append(f'Shot {i+1}: optional insert {Path(source).name} omitted; synchronized camera {Path(path).name} covers the same interval.')
+    return result
