@@ -5,6 +5,7 @@ import math
 
 def optional_fallbacks(project, segments, records):
     from core.fillers import filler_paths
+    from core.video_light import settings as light_settings
     from core.stages.sync import load_sync_map, sync_map_is_current, SyncStage
     fillers = filler_paths(project)
     if not fillers or not sync_map_is_current(project):
@@ -39,6 +40,8 @@ def optional_fallbacks(project, segments, records):
             except (KeyError, TypeError, ValueError):
                 continue
             item = {k: copy.deepcopy(shot[k]) for k in ('flat_framing', 'video_light', 'projection') if k in shot}
+            light=light_settings(project,shot)
+            if light is not None:item['video_light']=copy.deepcopy(light)
             item.update(source=keys[path], clip_start_sec=start, duration_sec=length, master_start_sec=slot['master_start_sec'], playback_speed=1.0)
             if item not in alternatives:
                 alternatives.append(item)

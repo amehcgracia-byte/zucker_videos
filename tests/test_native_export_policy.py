@@ -36,3 +36,10 @@ def test_stale_sync_and_motion_are_not_reused(context):
     p.data['stages']['sync']['fingerprint']='current'
     shots[0]['motion']={'type':'pan'}
     assert optional_fallbacks(p,shots,records)=={}
+
+
+def test_fallback_retains_camera_light_instead_of_insert_light(context):
+    p,shots,records,clip=context
+    spec={'auto':False,'light':.2,'shadows':.1}
+    p.data['settings']={'edit':{'video_light':{'enabled':True,'cameras':{'camera.mp4':spec}}}}
+    assert optional_fallbacks(p,shots,records)['1'][0]['video_light']==spec
