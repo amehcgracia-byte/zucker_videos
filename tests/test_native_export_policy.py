@@ -24,7 +24,7 @@ def test_optional_insert_has_same_clock_synchronized_fallback(context):
     assert 'video_light' not in result['1'][0]
     assert shots[1]['source_path']=='logo.mp4'
 
-@pytest.mark.parametrize('changes',[{'unstable_sync':True},{'low_confidence':True},{'error':'bad'},{'no_audio':True},{'confidence':2},{'offset_sec':20},{'duration_sec':11},{'offset_sec':float('nan')}])
+@pytest.mark.parametrize('changes',[{'unstable_sync':True},{'low_confidence':True},{'error':'bad'},{'no_audio':True},{'confidence':2},{'offset_sec':20},{'duration_sec':11},{'offset_sec':float('nan')},{'offset_ranges':[{'clip_start_sec':0,'clip_end_sec':60,'offset_sec':7}]},{'manual_override_ranges':True}])
 def test_unproven_coverage_is_not_automatic_fallback(context,changes):
     p,shots,records,clip=context;clip.update(changes)
     assert optional_fallbacks(p,shots,records)=={}

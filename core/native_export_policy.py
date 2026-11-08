@@ -29,7 +29,7 @@ def optional_fallbacks(project, segments, records):
             if path in fillers or path not in keys or shot.get('spherical_shot') or (motion and motion.get('type')!='ken_burns') or shot.get('projection') in ('equirect', 'raw_insv'):
                 continue
             clip = next((c for c in clips.values() if path in (c.get('source_path'), c.get('path'))), None)
-            if not clip or any(clip.get(k) for k in ('error', 'no_audio', 'low_confidence', 'unstable_sync')):
+            if not clip or any(clip.get(k) for k in ('error', 'no_audio', 'low_confidence', 'unstable_sync', 'offset_ranges', 'manual_override_ranges')):
                 continue
             try:
                 start = float(slot['master_start_sec']) - float(clip['offset_sec'])
