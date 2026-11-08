@@ -805,7 +805,7 @@ def _render_plan(
             render_segments = [dict(item) for item in render_segments]
             for item in render_segments:
                 length = float(item.get('duration_sec') or 0)
-                if elapsed < 1.4 or elapsed + length > total_duration - 1.4:
+                if elapsed < 2.4 or elapsed + length > total_duration - 2.4:
                     item['_brand_window'] = {'offset': elapsed, 'total': total_duration}
                 elapsed += length
         source_prepare_started = time.perf_counter()
@@ -5363,21 +5363,21 @@ def _within_content_logo_graph(graph, label, platform, duration, window):
     background = 'black@0' if transparent else matte
     pixel = 'rgba' if transparent else 'rgb24'
     base = f'scale={fitw}:{fith}:force_original_aspect_ratio=decrease,format={pixel},pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={background},format=rgba,setpts=PTS+{offset:.6f}/TB'
-    intro = offset < 1.4
-    outro = offset + duration > total-1.4
+    intro = offset < 2.4
+    outro = offset + duration > total-2.4
     outputs = ['brand_wm'] + (['brand_in'] if intro else []) + (['brand_out'] if outro else [])
     graph += ';[1:v]format=rgba,split='+str(len(outputs))+''.join(f'[{name}]' for name in outputs)
     graph += f';[brand_wm]scale=-1:{max(24,int(height*.06))},colorchannelmixer=aa=.70[brand_corner]'
     graph += f';[{label}]setpts=PTS+{offset:.6f}/TB,fade=t=in:st=0.15:d=0.7:color={matte},fade=t=out:st={max(0.,total-.85):.6f}:d=0.7:color={matte},setpts=PTS-STARTPTS[brand_footage]'
-    graph += f';[brand_footage][brand_corner]overlay=W-w-28:H-h-28:format=auto:enable=\'between(t,{max(0.,1.4-offset):.6f},{max(0.,total-1.4-offset):.6f})\'[brand_base]'
+    graph += f';[brand_footage][brand_corner]overlay=W-w-28:H-h-28:format=auto:enable=\'between(t,{max(0.,2.4-offset):.6f},{max(0.,total-2.4-offset):.6f})\'[brand_base]'
     current='brand_base'
     if intro:
-        graph += f';[brand_in]{base},fade=t=in:st=0:d=0.15:alpha=1,fade=t=out:st=0.7:d=0.7:alpha=1,setpts=PTS-STARTPTS[brand_intro]'
-        graph += f';[{current}][brand_intro]overlay=0:0:format=auto:enable=\'lt(t,{max(0.,1.4-offset):.6f})\'[brand_intro_done]'
+        graph += f';[brand_in]{base},fade=t=in:st=0:d=0.25:alpha=1,fade=t=out:st=1.25:d=1.15:alpha=1,setpts=PTS-STARTPTS[brand_intro]'
+        graph += f';[{current}][brand_intro]overlay=0:0:format=auto:enable=\'lt(t,{max(0.,2.4-offset):.6f})\'[brand_intro_done]'
         current='brand_intro_done'
     if outro:
-        graph += f';[brand_out]{base},fade=t=in:st={max(0.,total-1.4):.6f}:d=0.7:alpha=1,fade=t=out:st={max(0.,total-.15):.6f}:d=0.15:alpha=1,setpts=PTS-STARTPTS[brand_outro]'
-        graph += f';[{current}][brand_outro]overlay=0:0:format=auto:enable=\'gte(t,{max(0.,total-1.4-offset):.6f})\'[brand_outro_done]'
+        graph += f';[brand_out]{base},fade=t=in:st={max(0.,total-2.4):.6f}:d=1.15:alpha=1,fade=t=out:st={max(0.,total-.25):.6f}:d=0.25:alpha=1,setpts=PTS-STARTPTS[brand_outro]'
+        graph += f';[{current}][brand_outro]overlay=0:0:format=auto:enable=\'gte(t,{max(0.,total-2.4-offset):.6f})\'[brand_outro_done]'
         current='brand_outro_done'
     return graph+f';[{current}]copy[v]'
 
