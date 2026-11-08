@@ -6281,7 +6281,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         # contain pre-2.1.19 pitch/FOV values even when the incoming edit is
         # only a partial landmark update.
         landmarks = _sanitize_spherical_landmarks(landmarks)
-        project_settings["spherical_landmarks"] = landmarks
+        # Keep the legacy global profile limited to shared built-in slots.
+        # Extra POVs live in spherical_landmarks_by_source only.
+        shared_landmarks = {key:value for key,value in landmarks.items() if not re.fullmatch(r"custom_([1-9]|1[0-6])",key)}
+        project_settings["spherical_landmarks"] = shared_landmarks if source_key else landmarks
         if source_key:
             profiles[source_key] = dict(landmarks)
             # Keep the original UI path as an alias as well. The desktop
@@ -6292,7 +6295,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             project_settings["spherical_source_path"] = source_key
         project.mark_all_stale_from("edit")
         project.save()
-        config["spherical_landmarks"] = landmarks
+        config["spherical_landmarks"] = shared_landmarks if source_key else landmarks
         save_global_config(config)
         _spherical_event(
             project,
