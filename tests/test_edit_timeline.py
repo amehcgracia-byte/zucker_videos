@@ -119,3 +119,31 @@ def test_stage_shot_speed_persists_without_changing_neighbor(tmp_path, monkeypat
     assert saved[0]['playback_speed']==0.5
     assert saved[1]['playback_speed']==1.0
     assert saved[0]['duration_sec']==saved[1]['duration_sec']==2
+
+
+def test_custom_360_view_survives_sanitizer_and_rotation():
+    from server.api import _sanitize_spherical_landmarks
+    from core.stages.edit import migrate_spherical_landmarks, _available_spherical_shots
+    raw={"full_stage":{"yaw":0,"subject":"general","enabled":True},
+         "custom_1":{"yaw":72,"pitch":-5,"fov":94,"label":"Trumpet solo",
+                     "subject":"general","enabled":True,"weight":1},
+         "custom_2":{"yaw":125,"pitch":10,"fov":80,"label":"Extra guitar",
+                     "subject":"guitarist","enabled":True,"weight":1}}
+    saved=_sanitize_spherical_landmarks(raw)
+    assert saved["custom_1"]["label"]=="Trumpet solo"
+    assert saved["custom_2"]["label"]=="Extra guitar"
+    shots=_available_spherical_shots(migrate_spherical_landmarks(saved))
+    custom={shot["shot_id"]:shot for shot in shots if shot["shot_id"].startswith("custom_")}
+    assert custom["custom_1"]["label"]=="Trumpet solo"
+    assert custom["custom_1"]["yaw"]==72.0
+    assert custom["custom_2"]["subject"]=="guitarist"
+
+
+def test_untrusted_custom_viewpoint_keys_are_not_saved():
+    from server.api import _sanitize_spherical_landmarks
+    saved=_sanitize_spherical_landmarks({"custom_1":{"yaw":20},
+                                         "custom_17":{"yaw":30},
+                                         "../../escape":{"yaw":40}})
+    assert "custom_1" in saved
+    assert "custom_17" not in saved
+    assert "../../escape" not in saved
