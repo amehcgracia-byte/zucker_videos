@@ -409,6 +409,9 @@ class ExportStage(Stage):
         except FileNotFoundError:
             plan = load_coverage(project)
         plan["segments"] = _apply_saved_spherical_landmarks(project, plan.get("segments") or [])
+        if (plan.get('platform') or project.data.get('settings',{}).get('wizard',{}).get('platform')) == 'youtube':
+            from core.native_export_policy import omit_missing_optional
+            plan=omit_missing_optional(project,plan)
         segments = _frame_normalized_segments(plan.get("segments") or [])
         if not segments:
             raise ValueError(t("missing_segments"))
@@ -476,6 +479,8 @@ class ExportStage(Stage):
         run_id = _export_run_id()
         output_path = _output_path(project, platform, run_id)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        effective_plan_path=output_path.with_suffix('.recipe.json')
+        write_artifact_json(effective_plan_path,{**plan,'segments':segments,'inputs':project.data.get('inputs',{})})
         content_duration = _plan_duration(segments)
         duration = content_duration if platform == "reel" or _branding_none() or _branding_within_content() else content_duration + INTRO_DURATION + OUTRO_DURATION
         bitrate_info = _bitrate_for_duration(duration)
@@ -530,6 +535,8 @@ class ExportStage(Stage):
                     else "video-only edit-plan segments plus intro/outro clips; concat; one continuous final master-audio mux"
                 ),
                 "audio_source": audio_source,
+                "effective_plan_path": str(effective_plan_path),
+                "optional_omissions": plan.get('optional_omissions') or [],
                 "warnings": warnings,
                 "max_export_bytes": MAX_EXPORT_BYTES,
                 "target_video_bitrate": bitrate_info["video_bitrate"],
@@ -601,15 +608,11 @@ class ExportStage(Stage):
 
 
 def _missing_project_sources(project: Project, plan: dict[str, Any]) -> list[str]:
-    """Return unique source paths referenced by the project that disappeared."""
+    """Require the master and sources used by this montage, not unused library media."""
     candidates: list[str] = []
     master = project.data.get("inputs", {}).get("master") or {}
     if master.get("path"):
         candidates.append(str(master["path"]))
-    for record in project.data.get("inputs", {}).get("videos", []):
-        path = record.get("path") or record.get("source_path")
-        if path:
-            candidates.append(str(path))
     for segment in plan.get("segments") or []:
         path = segment.get("source_path") or segment.get("clip_path")
         if path:
@@ -2922,6 +2925,43 @@ def _segment_frame_count(segment: dict[str, Any]) -> int:
         return 1
 
 
+def _static_original_window(segment: dict[str, Any]) -> bool:
+    """Allow short still-video assets only after decoding every original frame.
+
+    Output motion checks cannot distinguish a frozen render from a deliberately
+    static logo. Do not waive checks for requested camera movement or long shots.
+    """
+    if segment.get('motion') or segment.get('spherical_shot'):
+        return False
+    duration = float(segment.get('duration_sec') or 0) * float(segment.get('playback_speed', 1))
+    if not 0 < duration <= 30:
+        return False
+    source = str(segment.get('source_path') or segment.get('clip_path') or '')
+    if not source or not Path(source).is_file():
+        return False
+    result = subprocess.run([tool_status()['ffmpeg_path'], '-v', 'error', '-nostdin',
+        '-ss', str(float(segment.get('clip_start_sec') or 0)), '-t', str(duration),
+        '-i', source, '-map', '0:v:0', '-an', '-f', 'framemd5', '-'],
+        capture_output=True, text=True, timeout=60)
+    if result.returncode:
+        return False
+    rows = [row.split(',') for row in result.stdout.splitlines()
+            if row and not row.startswith('#')]
+    timebase = re.search(r'^#tb 0:\s*(\d+)/(\d+)', result.stdout, re.M)
+    if len(rows) < 2 or not timebase:
+        return False
+    tick = int(timebase[1]) / int(timebase[2])
+    try:
+        decoded_end = (int(rows[-1][2]) + int(rows[-1][3])) * tick
+        frame_duration = int(rows[-1][3]) * tick
+        hashes = {row[-1].strip() for row in rows}
+    except (ValueError, IndexError):
+        return False
+    # A short/truncated source must not pass merely because its few frames are
+    # static while the exporter pads the rest of the requested slot.
+    return decoded_end >= duration - min(.05, frame_duration) and len(hashes) == 1
+
+
 def _verify_or_rebuild_segment(
     project: Project,
     segment: dict[str, Any],
@@ -2948,6 +2988,9 @@ def _verify_or_rebuild_segment(
         _verify_moving_segment(segment_path, segment_duration, label, command_line)
         return command_line
     except FFmpegError as first_error:
+        if str(first_error).startswith('Rendered static segment') and _static_original_window(segment):
+            warnings.append('Static original verified for '+label+'; no proxy substitution')
+            return command_line
         segment_path.unlink(missing_ok=True)
         commands = command_recorder if command_recorder is not None else []
         _render_segment(
@@ -4496,13 +4539,14 @@ def _verify_joined_output(path: Path, segments: list[dict[str, Any]], timeline_o
         if duration < 1.0:
             continue
         checked_sources.add(source)
-        _verify_moving_window(
-            path,
-            start,
-            duration,
-            Path(source).name,
-            f"final={path} window_start={start:.3f} window_duration={duration:.3f}",
-        )
+        try:
+            _verify_moving_window(
+                path, start, duration, Path(source).name,
+                f"final={path} window_start={start:.3f} window_duration={duration:.3f}",
+            )
+        except FFmpegError as exc:
+            if not str(exc).startswith('Rendered static segment') or not _static_original_window(segment):
+                raise
 
     boundaries: list[float] = []
     cursor = timeline_offset

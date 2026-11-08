@@ -2278,3 +2278,14 @@ def test_shot_speed_has_distinct_cache_key_and_attestation(tmp_path):
     assert len({at_normal,at_half,at_double})==3
     assert _segment_cache_stamp_payload(segment)["playback_speed"]==1.0
     assert _segment_cache_stamp_payload({**segment,"playback_speed":2.0})["playback_speed"]==2.0
+
+
+def test_unused_missing_library_source_does_not_block_montage(tmp_path):
+    project=create_project('used only',str(tmp_path/'edit.zuckervid'))
+    used=tmp_path/'used.mp4';used.write_bytes(b'video')
+    master=tmp_path/'master.wav';master.write_bytes(b'audio')
+    project.data['inputs']['master']={'path':str(master)}
+    project.data['inputs']['videos']=[{'path':str(used)},{'path':str(tmp_path/'unused.mp4')}]
+    assert _missing_project_sources(project,{'segments':[{'source_path':str(used)}]})==[]
+    master.unlink()
+    assert _missing_project_sources(project,{'segments':[{'source_path':str(used)}]})==[str(master)]
