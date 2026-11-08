@@ -7078,7 +7078,7 @@ def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, Any]]:
             "projection_control": projection_control,
             "weight": weight,
             "subject": str(source.get("subject") or key)[:40],
-            "label": str(source.get("label") or source.get("subject") or key)[:40],
+            **({"label": str(source.get("label") or source.get("subject") or key)[:40]} if key.startswith("custom_") else {}),
             "enabled": source.get("enabled", True) is not False,
         }
     return landmarks
