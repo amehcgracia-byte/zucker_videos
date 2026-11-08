@@ -108,3 +108,13 @@ def test_native_recipe_recovers_saved_insert_provenance_without_rebuilding(tmp_p
     assert len(response.json['segments'])==80
     assert response.json['fallbacks']=={}
     assert (p.artifacts_dir/'edit_plan.json').read_bytes()==before
+
+
+
+def test_optional_provenance_uses_registered_original_and_normalized_identity():
+    from core.native_export_policy import optional_paths
+    p=SimpleNamespace(data={'inputs':{'videos':[{'path':'original.mp4','normalized':{'path':'preview.mp4'}}]}})
+    assert optional_paths(p,[{'clip_path':'preview.mp4','filler':True}])=={'original.mp4','preview.mp4'}
+    assert optional_paths(p,[{'clip_path':'preview.mp4','filler':True},{'source_path':'original.mp4'}])==set()
+    p.data['settings']={'edit':{'fillers':['original.mp4']}}
+    assert optional_paths(p,[{'clip_path':'preview.mp4'}])=={'original.mp4','preview.mp4'}

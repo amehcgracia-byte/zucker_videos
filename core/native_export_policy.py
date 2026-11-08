@@ -10,10 +10,25 @@ def optional_paths(project, segments):
     Mixed uses remain required unless the user explicitly classified the source.
     """
     from core.fillers import filler_paths
-    paths = {str(s.get('source_path') or s.get('clip_path')) for s in segments}
-    return filler_paths(project) | {p for p in paths if all(
-        s.get('filler') is True for s in segments
-        if str(s.get('source_path') or s.get('clip_path')) == p)}
+    aliases={}
+    for record in project.data.get('inputs',{}).get('videos',[]):
+        original=str(record.get('path') or '')
+        if original:
+            aliases[original]=original
+            normalized=str((record.get('normalized') or {}).get('path') or '')
+            if normalized:aliases[normalized]=original
+    def canonical(path):
+        return aliases.get(str(path),str(path))
+    by_source={}
+    for shot in segments:
+        path=str(shot.get('source_path') or shot.get('clip_path') or '')
+        by_source.setdefault(canonical(path),[]).append(shot)
+    selected={canonical(p) for p in filler_paths(project)} | {
+        path for path,shots in by_source.items() if all(s.get('filler') is True for s in shots)}
+    # Original/normalized aliases are authoritative registered identities. A
+    # required appearance through either alias prevents inferred optionality.
+    return selected | {path for path,original in aliases.items() if original in selected}
+
 
 
 def optional_fallbacks(project, segments, records):
