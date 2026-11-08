@@ -94,3 +94,56 @@ def test_music_camera_selection_is_scoped_and_persisted(tmp_path,monkeypatch):
  body={'project_id':str(p.folder),'revision':doc['revision'],'index':0,'choice':1};r=c.patch('/api/v1/edit/shot',json=body);assert r.status_code==200,r.json
  saved=json.loads((p.artifacts_dir/'edit_plan.json').read_text())['segments'][0];assert saved['filename']=='blue' and saved['duration_sec']==2 and saved['master_start_sec']==0
  assert c.patch('/api/v1/edit/shot',json=body).status_code==409
+
+
+def test_stage_shot_speed_persists_without_changing_neighbor(tmp_path, monkeypatch):
+    import server.edit_timeline as module
+    from core.stages import cut
+    monkeypatch.setenv('ZUCKER_DATA_ROOT',str(tmp_path/'data'))
+    monkeypatch.setattr(module,'duration',lambda _:20)
+    p=create_project('Isolated speed',str(tmp_path/'Isolated speed.zuckervid'))
+    path=str(tmp_path/'camera.mp4')
+    sources=[{'path':path,'source_path':path,'filename':'camera','duration_sec':20,'clip_start_sec':0}]
+    monkeypatch.setattr(cut,'load_coverage',lambda _:{'sources':sources,'platform':'youtube'})
+    s1={'clip_path':path,'source_path':path,'filename':'camera','clip_start_sec':0,'master_start_sec':0,'duration_sec':2}
+    s2={**s1,'clip_start_sec':2,'master_start_sec':2,'playback_speed':1.0}
+    atomic_write_json(p.artifacts_dir/'edit_plan.json',{'platform':'youtube','segments':[s1,s2]})
+    c=create_app(str(p.folder),dev=True).test_client()
+    doc=c.get('/api/v1/edit/shot?index=0').json
+    assert doc['playback_speed']==1.0
+    payload={'project_id':str(p.folder),'revision':doc['revision'],'index':0,
+             'choice':0,'playback_speed':0.5,'edit_component':'framing'}
+    response=c.patch('/api/v1/edit/shot',json=payload)
+    assert response.status_code==200,response.json
+    saved=json.loads((p.artifacts_dir/'edit_plan.json').read_text())['segments']
+    assert saved[0]['playback_speed']==0.5
+    assert saved[1]['playback_speed']==1.0
+    assert saved[0]['duration_sec']==saved[1]['duration_sec']==2
+
+
+def test_custom_360_view_survives_sanitizer_and_rotation():
+    from server.api import _sanitize_spherical_landmarks
+    from core.stages.edit import migrate_spherical_landmarks, _available_spherical_shots
+    raw={"full_stage":{"yaw":0,"subject":"general","enabled":True},
+         "custom_1":{"yaw":72,"pitch":-5,"fov":94,"label":"Trumpet solo",
+                     "subject":"general","enabled":True,"weight":1},
+         "custom_2":{"yaw":125,"pitch":10,"fov":80,"label":"Extra guitar",
+                     "subject":"guitarist","enabled":True,"weight":1}}
+    saved=_sanitize_spherical_landmarks(raw)
+    assert saved["custom_1"]["label"]=="Trumpet solo"
+    assert saved["custom_2"]["label"]=="Extra guitar"
+    shots=_available_spherical_shots(migrate_spherical_landmarks(saved))
+    custom={shot["shot_id"]:shot for shot in shots if shot["shot_id"].startswith("custom_")}
+    assert custom["custom_1"]["label"]=="Trumpet solo"
+    assert custom["custom_1"]["yaw"]==72.0
+    assert custom["custom_2"]["subject"]=="guitarist"
+
+
+def test_untrusted_custom_viewpoint_keys_are_not_saved():
+    from server.api import _sanitize_spherical_landmarks
+    saved=_sanitize_spherical_landmarks({"custom_1":{"yaw":20},
+                                         "custom_17":{"yaw":30},
+                                         "../../escape":{"yaw":40}})
+    assert "custom_1" in saved
+    assert "custom_17" not in saved
+    assert "../../escape" not in saved

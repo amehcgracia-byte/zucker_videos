@@ -116,7 +116,7 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 32
+EDIT_PLAN_ALGORITHM_VERSION = 33
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
@@ -192,7 +192,8 @@ class EditStage(Stage):
                 "non_music_version": NON_MUSIC_VERSION,
                 # Filler choice depends on the tagger as well as on settings.
                 "filler_version": filler_library.FILLER_VERSION,
-                "scene_tags": [scene_tags.SCENE_TAGS_VERSION, scene_tags.prompts_fingerprint(), scene_tags.available()],
+                "scene_tags": [scene_tags.SCENE_TAGS_VERSION, scene_tags.prompts_fingerprint(), scene_tags.available()]
+                if filler_library.filler_paths(project) - filler_library.cutaway_paths(project) else None,
                 "algorithm_version": EDIT_PLAN_ALGORITHM_VERSION,
             }
         )
@@ -812,6 +813,8 @@ def _reel_promo_plan_pass(
         if shot_ready:
             shot_ready(len(segments) - 1, segment)
     _assign_reel_mix_treatments(segments, sources, wizard)
+    from core.shot_continuity import continuous_views
+    segments = continuous_views(segments)
     _validate_motion_segments(segments)
     return {
         "stage": "edit",
@@ -965,6 +968,8 @@ def _youtube_multicam_plan(
     segments: list[dict[str, Any]] = []
     non_music_fill_history: list[dict[str, Any]] = []
     filler_history: list[dict[str, Any]] = []
+    last_cutaway_end = start
+    cutaway_seconds = 0.0
     gaps: list[dict[str, float]] = []
     previous_source: str | None = None
     previous_camera: str | None = None
@@ -1090,33 +1095,48 @@ def _youtube_multicam_plan(
         if segment_end <= segment_start:
             break
         available = _quality_filtered_sources(_covering_sources(sources, segment_start, segment_end, platform=platform), segment_start, segment_end, selection_stats)
-        if not available:
-            filler = (filler_library.choose_filler(filler_bank, segment_start, segment_end - segment_start,
+        # Authored B-roll may interrupt covered footage, after each available
+        # camera has appeared. Keep the opening/ending and >=90% performance.
+        explicit_windows = [w for w in (filler_bank or {}).get("windows", []) if w.get("user_selected")]
+        seen_sources = {str(s.get("source_path") or s.get("clip_path")) for s in segments if not s.get("filler")}
+        cutaway_due = bool(explicit_windows and available
+                           and sum(bool(item.get("filler")) for item in segments) < 2
+                           and segment_start - last_cutaway_end >= max(30, (end-start)/3)
+                           and segment_end < end - 5 and segment_end - segment_start <= filler_library.MAX_WINDOW_SEC
+                           and cutaway_seconds + segment_end - segment_start <= (end - start) * .1
+                           and all(str(s.get("source_path") or s.get("path")) in seen_sources for s in available))
+        if not available or cutaway_due:
+            selection_bank = {"windows": explicit_windows} if cutaway_due else filler_bank
+            filler = (filler_library.choose_filler(selection_bank, segment_start, segment_end - segment_start,
                                                    filler_history, variation_seed, segment_index)
                       if filler_bank and filler_bank.get("windows") else None)
-            if filler is None:
+            if filler is None and not available:
                 gaps.append({"start_sec": round(segment_start, 3), "end_sec": round(segment_end, 3)})
                 bar_index = next_index
                 continue
-            usable = float(filler["end_sec"]) - float(filler["start_sec"])
-            # Hand back to a camera as soon as one covers the song again.
-            resume = _next_camera_start(sources, segment_start, segment_end, platform)
-            if resume is not None and resume - segment_start >= filler_library.MIN_WINDOW_SEC:
-                usable = min(usable, resume - segment_start)
-            if segment_end - segment_start > usable:
-                # Cut where the filler window ends; the next pass covers the rest.
-                segment_end = _round_to_frame(segment_start + usable)
-                next_index = bisect.bisect_left(bar_times, segment_end)
-                if next_index == len(bar_times) or bar_times[next_index] != segment_end:
-                    bar_times.insert(next_index, segment_end)
-            segment = _filler_plan_segment(filler, segment_start, segment_end, window.get("title") or t("full_video"))
-            segment["variation_seed"] = variation_seed
-            segments.append(segment)
-            if shot_ready:
-                shot_ready(len(segments) - 1, segment)
-            bar_index = next_index
-            segment_index += 1
-            continue
+            if filler is not None:
+                usable = float(filler["end_sec"]) - float(filler["start_sec"])
+                # Hand back to a camera as soon as one covers the song again.
+                resume = _next_camera_start(sources, segment_start, segment_end, platform)
+                if resume is not None and resume - segment_start >= filler_library.MIN_WINDOW_SEC:
+                    usable = min(usable, resume - segment_start)
+                if segment_end - segment_start > usable:
+                    # Cut where the filler window ends; the next pass covers the rest.
+                    segment_end = _round_to_frame(segment_start + usable)
+                    next_index = bisect.bisect_left(bar_times, segment_end)
+                    if next_index == len(bar_times) or bar_times[next_index] != segment_end:
+                        bar_times.insert(next_index, segment_end)
+                segment = _filler_plan_segment(filler, segment_start, segment_end, window.get("title") or t("full_video"))
+                segment["variation_seed"] = variation_seed
+                segments.append(segment)
+                if filler.get("user_selected"):
+                    last_cutaway_end = segment_end
+                    cutaway_seconds += segment_end - segment_start
+                if shot_ready:
+                    shot_ready(len(segments) - 1, segment)
+                bar_index = next_index
+                segment_index += 1
+                continue
         for source in available:
             stats = selection_stats.setdefault(_source_id(source), _selection_stats_for_source(source, start, end))
             stats["eligible_segments"] += 1
@@ -1352,6 +1372,8 @@ def _youtube_multicam_plan(
         bar_index = next_index
         segment_index += 1
 
+    from core.shot_continuity import continuous_views
+    segments = continuous_views(segments)
     _validate_motion_segments(segments)
     warnings = list(coverage.get("warnings") or [])
     if gaps:
@@ -1525,7 +1547,11 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, Any]
     if not isinstance(raw, dict):
         return {}
     migrated: dict[str, dict[str, Any]] = {}
-    for shot_type, (legacy_key, _label, default_fov) in SPHERICAL_LANDMARKS.items():
+    slots = dict(SPHERICAL_LANDMARKS)
+    for key in raw:
+        if isinstance(key, str) and re.fullmatch(r"custom_([1-9]|1[0-6])", key):
+            slots[key] = ("__unassigned__", str((raw.get(key) or {}).get("label") or key)[:40] if isinstance(raw.get(key), dict) else key, SPHERICAL_DEFAULT_FOV)
+    for shot_type, (legacy_key, _label, default_fov) in slots.items():
         source = raw.get(shot_type)
         if source is None and legacy_key in raw:
             source = {"yaw": raw.get(legacy_key)}
@@ -1544,6 +1570,7 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, Any]
             "projection_control": effective_projection_control(source.get("projection_control")),
             "weight": max(0.0, _landmark_weight(source, "weight", 1.0)),
             "subject": str(source.get("subject") or shot_type),
+            **({"label": str(source.get("label") or _label)[:40]} if shot_type.startswith("custom_") else {}),
             "enabled": source.get("enabled", True) is not False,
         }
     return migrated
@@ -1552,7 +1579,8 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, Any]
 def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabled: bool = False, sweep_speed: float = SPHERICAL_SWEEP_SPEED_DEG_PER_SEC, *, balanced_performers: bool = False) -> list[dict[str, Any]]:
     shots: list[dict[str, Any]] = []
     prepared: list[tuple[str, str, float, dict[str, Any], float]] = []
-    for shot_type in SPHERICAL_SHOT_ORDER:
+    custom_slots = sorted(key for key in landmarks if isinstance(key, str) and re.fullmatch(r"custom_([1-9]|1[0-6])", key))
+    for shot_type in (*SPHERICAL_SHOT_ORDER, *custom_slots):
         # Automatic editing should stay on the stage. A public-only landmark
         # is retained in project settings for manual review, but is never
         # offered as an automatic replacement candidate.
@@ -1561,8 +1589,10 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabl
             # automatic editorial shots: every automatic 360 frame must retain
             # a stage/performer subject.
             continue
-        key, label, default_fov = SPHERICAL_LANDMARKS[shot_type]
+        key, label, default_fov = SPHERICAL_LANDMARKS.get(shot_type, ("__unassigned__", shot_type, SPHERICAL_DEFAULT_FOV))
         data = landmarks.get(shot_type)
+        if data and shot_type in custom_slots:
+            label = str(data.get("label") or shot_type)[:40]
         if data is None and shot_type == "full_stage" and not balanced_performers:
             data = {"yaw": 0.0, "pitch": 0.0, "fov": default_fov, "roll": 0.0, "projection_preset": "linear", "projection_control": 0.0, "weight": 1.0}
         if not data or data.get("enabled") is False:
