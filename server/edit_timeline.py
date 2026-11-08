@@ -176,11 +176,10 @@ def register_edit_timeline(app,project,invalidate):
                 segments.append(item)
             import subprocess,os
             sha=os.environ.get('MONTARA_ENGINE_SHA') or subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),'rev-parse','HEAD'],text=True).strip()
-            from core.native_export_policy import optional_fallbacks
-            from core.fillers import filler_paths
+            from core.native_export_policy import optional_fallbacks, optional_paths
             fallbacks=optional_fallbacks(p,data.get('segments') or [],records)
             used={s['source'] for s in segments} | {s['source'] for choices in fallbacks.values() for s in choices}
-            optional=filler_paths(p)
+            optional=optional_paths(p,data.get("segments") or [])
             return jsonify(version=1,engine=sha,revision=revision(data),platform='youtube',sources=[{'key':i,'path':r['path'],'optional':str(r['path']) in optional,'role':'insert' if str(r['path']) in optional else 'camera'} for i,r in enumerate(records) if i in used],segments=segments,fallbacks=fallbacks)
         except (OSError,ValueError,KeyError) as e:return jsonify(error={'message':str(e)}),400
 
