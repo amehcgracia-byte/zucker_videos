@@ -1564,7 +1564,7 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, Any]
             "projection_control": effective_projection_control(source.get("projection_control")),
             "weight": max(0.0, _landmark_weight(source, "weight", 1.0)),
             "subject": str(source.get("subject") or shot_type),
-            "label": str(source.get("label") or _label)[:40],
+            **({"label": str(source.get("label") or _label)[:40]} if shot_type.startswith("custom_") else {}),
             "enabled": source.get("enabled", True) is not False,
         }
     return migrated
