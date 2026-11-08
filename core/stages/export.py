@@ -3495,7 +3495,7 @@ def _ken_burns_filter(motion: dict[str, Any], platform: str, duration: float) ->
     # Saturation is intentional: once the endpoint is reached, hold there.
     # It prevents an out-of-bounds crop from wrapping/reversing into a second
     # apparent movement.
-    progress = f"min(1,(n+{frame_offset:.6f})/{max(1, frame_count - 1)}*{speed_factor:.6f})"
+    progress = f"min(1,(in+{frame_offset:.6f})/{max(1, frame_count - 1)}*{speed_factor:.6f})"
     if motion.get("easing") == "accelerate":
         progress = f"pow(({progress}),1.8)"
     elif motion.get("library_version"):

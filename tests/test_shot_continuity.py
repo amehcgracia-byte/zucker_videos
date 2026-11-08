@@ -56,5 +56,5 @@ def test_same_manually_aimed_flat_crop_does_not_restart_zoom():
                'flat_framing':{'zoom':2,'x':.6,'y':.4}} for i in range(2)]
     result=continuous_views(segments)
     assert result[1]['motion']['continuity_offset_sec']==4
-    assert 'n+120.000000' in _motion_filter(result[1],'youtube',4)
-    assert 'n+0.000000' in _motion_filter(result[0],'youtube',4)
+    assert 'in+120.000000' in _motion_filter(result[1],'youtube',4)
+    assert 'in+0.000000' in _motion_filter(result[0],'youtube',4)
