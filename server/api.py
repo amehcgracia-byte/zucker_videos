@@ -6257,7 +6257,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             for key in list(incoming):
                 raw_value = raw_landmarks.get(key)
                 if isinstance(raw_value, dict):
-                    incoming[key] = {field: incoming[key][field] for field in ("yaw", "pitch", "fov", "roll", "projection_preset", "projection_control", "weight", "subject", "enabled") if field in raw_value}
+                    incoming[key] = {field: incoming[key][field] for field in ("yaw", "pitch", "fov", "roll", "projection_preset", "projection_control", "weight", "subject", "label", "enabled") if field in raw_value}
         source_path = str(body.get("spherical_source_path") or "").strip()
         source_key = str(Path(source_path).expanduser().resolve()) if source_path else ""
         config = load_global_config()
@@ -7034,6 +7034,13 @@ def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, Any]]:
         "audience_stage_wide": {"legacy": "audience_stage_wide_yaw", "fov": 125.0},
         "planet": {"legacy": "planet_yaw", "fov": 150.0},
     }
+    # Additional authored views have stable per-camera keys; never accept
+    # arbitrary keys or oversized maps from an untrusted client.
+    custom_keys = sorted(key for key in raw if isinstance(key, str) and re.fullmatch(r"custom_([1-9]|1[0-6])", key))
+    if len(custom_keys) > 16:
+        custom_keys = custom_keys[:16]
+    for key in custom_keys:
+        defaults[key] = {"legacy": "__unassigned__", "fov": 95.0}
     landmarks: dict[str, dict[str, Any]] = {}
     for key, meta in defaults.items():
         source = raw.get(key)
@@ -7060,7 +7067,8 @@ def _sanitize_spherical_landmarks(raw: Any) -> dict[str, dict[str, Any]]:
             "projection_preset": projection_preset,
             "projection_control": projection_control,
             "weight": weight,
-            "subject": str(source.get("subject") or key),
+            "subject": str(source.get("subject") or key)[:40],
+            "label": str(source.get("label") or source.get("subject") or key)[:40],
             "enabled": source.get("enabled", True) is not False,
         }
     return landmarks
