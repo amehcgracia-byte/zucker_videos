@@ -6257,7 +6257,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             for key in list(incoming):
                 raw_value = raw_landmarks.get(key)
                 if isinstance(raw_value, dict):
-                    incoming[key] = {field: incoming[key][field] for field in ("yaw", "pitch", "fov", "roll", "projection_preset", "projection_control", "weight", "subject", "label", "enabled") if field in raw_value}
+                    incoming[key] = {field: incoming[key][field] for field in ("yaw", "pitch", "fov", "roll", "projection_preset", "projection_control", "weight", "subject", "label", "enabled") if field in raw_value and field in incoming[key]}
         source_path = str(body.get("spherical_source_path") or "").strip()
         source_key = str(Path(source_path).expanduser().resolve()) if source_path else ""
         config = load_global_config()
