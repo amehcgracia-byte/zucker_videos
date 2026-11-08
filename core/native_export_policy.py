@@ -1,13 +1,40 @@
-"""Conservative fallbacks for optional inserts; never close gaps on the master clock."""
+"""Optional inserts preserve the master clock, including when no camera covers a gap."""
 import copy
 import math
 
 
-def optional_fallbacks(project, segments, records):
+def optional_paths(project, segments):
+    """Recover authored filler provenance even when old library settings changed.
+
+    A filename or repetition pattern is never evidence that a camera is optional.
+    Mixed uses remain required unless the user explicitly classified the source.
+    """
     from core.fillers import filler_paths
+    aliases={}
+    for record in project.data.get('inputs',{}).get('videos',[]):
+        original=str(record.get('path') or '')
+        if original:
+            aliases[original]=original
+            normalized=str((record.get('normalized') or {}).get('path') or '')
+            if normalized:aliases[normalized]=original
+    def canonical(path):
+        return aliases.get(str(path),str(path))
+    by_source={}
+    for shot in segments:
+        path=str(shot.get('source_path') or shot.get('clip_path') or '')
+        by_source.setdefault(canonical(path),[]).append(shot)
+    selected={canonical(p) for p in filler_paths(project)} | {
+        path for path,shots in by_source.items() if all(s.get('filler') is True for s in shots)}
+    # Original/normalized aliases are authoritative registered identities. A
+    # required appearance through either alias prevents inferred optionality.
+    return selected | {path for path,original in aliases.items() if original in selected}
+
+
+
+def optional_fallbacks(project, segments, records):
     from core.video_light import settings as light_settings
     from core.stages.sync import load_sync_map, sync_map_is_current, SyncStage
-    fillers = filler_paths(project)
+    fillers = optional_paths(project, segments)
     if not fillers or not sync_map_is_current(project):
         return {}
     state=project.data.get('stages',{}).get('sync',{})
@@ -55,8 +82,7 @@ def optional_fallbacks(project, segments, records):
 def omit_missing_optional(project, plan):
     """Materialize a separate export snapshot; never rewrite the authored edit."""
     from pathlib import Path
-    from core.fillers import filler_paths
-    optional=filler_paths(project)
+    optional=optional_paths(project, plan.get("segments") or [])
     shots=plan.get('segments') or []
     missing=[i for i,s in enumerate(shots) if str(s.get('source_path') or s.get('clip_path')) in optional
              and not Path(str(s.get('source_path') or s.get('clip_path'))).is_file()]
@@ -71,12 +97,53 @@ def omit_missing_optional(project, plan):
         source=str(shots[i].get('source_path') or shots[i].get('clip_path'))
         candidate=next((c for c in alternatives.get(str(i),[]) if Path(records[c['source']]['path']).is_file()),None)
         if candidate is None:
-            raise ValueError(f'Shot {i+1}: optional insert {Path(source).name} is unavailable and no synchronized camera covers its interval. Reconnect that insert.')
-        path=str(records[candidate['source']]['path'])
-        replacement={k:copy.deepcopy(v) for k,v in candidate.items() if k!='source'}
-        replacement.update(source_path=path,clip_path=path,filename=Path(path).name)
+            replacement={'placeholder':'black', 'master_start_sec':shots[i]['master_start_sec'],
+                         'duration_sec':shots[i]['duration_sec'], 'clip_start_sec':0, 'playback_speed':1.0}
+            path=None
+        else:
+            path=str(records[candidate['source']]['path'])
+            replacement={k:copy.deepcopy(v) for k,v in candidate.items() if k!='source'}
+            replacement.update(source_path=path,clip_path=path,filename=Path(path).name)
         result['segments'][i]=replacement
         result['optional_omissions'].append({'shot':i+1,'source_path':source,'replacement_path':path,
-                                             'master_start_sec':candidate['master_start_sec'],'duration_sec':candidate['duration_sec']})
-        result['warnings'].append(f'Shot {i+1}: optional insert {Path(source).name} omitted; synchronized camera {Path(path).name} covers the same interval.')
+                                             'placeholder':replacement.get('placeholder'),
+                                             'master_start_sec':shots[i]['master_start_sec'],'duration_sec':shots[i]['duration_sec']})
+    for source in sorted({row['source_path'] for row in result['optional_omissions']}):
+        rows=[row for row in result['optional_omissions'] if row['source_path']==source]
+        black=sum(row['placeholder']=='black' for row in rows)
+        detail=f'{black} interval(s) use black. ' if black else ''
+        if len(rows)>black:detail+='Verified synchronized cameras cover the other intervals. '
+        result['warnings'].append(f"Optional insert {Path(source).name} omitted in {len(rows)} shot(s). "
+                                  +detail+"Duration and master audio are unchanged.")
+    return result
+
+
+def materialize_placeholders(project, plan):
+    """Generate a lossless neutral visual; no proxy, arbitrary path or sync guess.
+
+    Only the export snapshot changes. Original authored slots remain on disk.
+    """
+    from pathlib import Path
+    import subprocess
+    from core.ffmpeg import tool_status, ffprobe
+    from core.media_validation import validate_camera_video_metadata
+    result=copy.deepcopy(plan)
+    for shot in result.get('segments', []):
+        if 'placeholder' not in shot:
+            continue
+        duration=float(shot['duration_sec'])
+        if shot['placeholder']!='black' or not math.isfinite(duration) or not 1/60<=duration<=21600:
+            raise ValueError('Invalid optional insert placeholder')
+        # Frame-aligned length covers fractional slots without truncation.
+        frames=math.ceil(duration*30)+1
+        root=Path(project.cache_dir)/'optional-placeholders';root.mkdir(parents=True,exist_ok=True)
+        path=root/f'black-v1-{frames}.mkv'
+        if not path.is_file():
+            temporary=path.with_suffix('.tmp.mkv')
+            subprocess.run([tool_status()['ffmpeg_path'],'-v','error','-y','-f','lavfi','-i',
+                'color=c=black:s=1920x1080:r=30','-frames:v',str(frames),'-an','-c:v','ffv1',
+                '-threads','1',str(temporary)],check=True,capture_output=True)
+            temporary.replace(path)
+        shot.update(source_path=str(path),clip_path=str(path),clip_start_sec=0,playback_speed=1.0,
+                    probe=validate_camera_video_metadata(ffprobe(str(path))).summary)
     return result

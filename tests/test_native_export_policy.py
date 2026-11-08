@@ -77,5 +77,44 @@ def test_server_missing_optional_materializes_snapshot_without_changing_edit(con
         assert 'omitted' in effective['warnings'][0]
         assert plan['segments'][1]['source_path']==str(logo)
         camera.unlink()
-        with pytest.raises(ValueError,match='no synchronized camera'):
-            omit_missing_optional(p,plan)
+        missing=omit_missing_optional(p,plan)
+        assert missing['segments'][1]['placeholder']=='black'
+        assert missing['segments'][0]==shots[0]
+
+def test_legacy_filler_provenance_recovers_optional_role_without_filename_guess():
+    from core.native_export_policy import optional_paths
+    p=SimpleNamespace(data={})
+    shots=[{'source_path':'logo.small.mp4','filler':True}]*16
+    assert optional_paths(p,shots)=={'logo.small.mp4'}
+    assert optional_paths(p,shots+[{'source_path':'logo.small.mp4'}])==set()
+    assert optional_paths(p,[{'source_path':'logo.small.mp4'}]*16)==set()
+
+
+def test_native_recipe_recovers_saved_insert_provenance_without_rebuilding(tmp_path,monkeypatch):
+    from core.project import create_project,atomic_write_json
+    from server.api import create_app
+    monkeypatch.setenv('ZUCKER_DATA_ROOT',str(tmp_path/'data'))
+    p=create_project('Existing montage',str(tmp_path/'edit.zuckervid'))
+    p.data['settings']['wizard']={'platform':'youtube'}
+    p.data['inputs']['videos']=[{'path':'Tuneup short logo vid.small.mp4'},{'path':'camera.mp4'}]
+    shots=[{'source_path':'Tuneup short logo vid.small.mp4' if (i+1)%5==0 else 'camera.mp4',
+            'filler':(i+1)%5==0,'master_start_sec':i,'clip_start_sec':0,'duration_sec':1} for i in range(80)]
+    atomic_write_json(p.artifacts_dir/'edit_plan.json',{'platform':'youtube','segments':shots})
+    before=(p.artifacts_dir/'edit_plan.json').read_bytes();p.save()
+    response=create_app(str(p.folder),dev=True).test_client().get('/api/v1/edit/native-recipe',query_string={'project_id':str(p.folder)})
+    assert response.status_code==200,response.json
+    assert response.json['sources'][0]['optional'] is True
+    assert response.json['sources'][1]['optional'] is False
+    assert len(response.json['segments'])==80
+    assert response.json['fallbacks']=={}
+    assert (p.artifacts_dir/'edit_plan.json').read_bytes()==before
+
+
+
+def test_optional_provenance_uses_registered_original_and_normalized_identity():
+    from core.native_export_policy import optional_paths
+    p=SimpleNamespace(data={'inputs':{'videos':[{'path':'original.mp4','normalized':{'path':'preview.mp4'}}]}})
+    assert optional_paths(p,[{'clip_path':'preview.mp4','filler':True}])=={'original.mp4','preview.mp4'}
+    assert optional_paths(p,[{'clip_path':'preview.mp4','filler':True},{'source_path':'original.mp4'}])==set()
+    p.data['settings']={'edit':{'fillers':['original.mp4']}}
+    assert optional_paths(p,[{'clip_path':'preview.mp4'}])=={'original.mp4','preview.mp4'}

@@ -410,8 +410,8 @@ class ExportStage(Stage):
             plan = load_coverage(project)
         plan["segments"] = _apply_saved_spherical_landmarks(project, plan.get("segments") or [])
         if (plan.get('platform') or project.data.get('settings',{}).get('wizard',{}).get('platform')) == 'youtube':
-            from core.native_export_policy import omit_missing_optional
-            plan=omit_missing_optional(project,plan)
+            from core.native_export_policy import omit_missing_optional, materialize_placeholders
+            plan=materialize_placeholders(project,omit_missing_optional(project,plan))
         segments = _frame_normalized_segments(plan.get("segments") or [])
         if not segments:
             raise ValueError(t("missing_segments"))
@@ -2934,7 +2934,7 @@ def _static_original_window(segment: dict[str, Any]) -> bool:
     if segment.get('motion') or segment.get('spherical_shot'):
         return False
     duration = float(segment.get('duration_sec') or 0) * float(segment.get('playback_speed', 1))
-    if not 0 < duration <= 30:
+    if not 0 < duration <= 21600 or (duration > 30 and segment.get('placeholder') != 'black'):
         return False
     source = str(segment.get('source_path') or segment.get('clip_path') or '')
     if not source or not Path(source).is_file():
@@ -2989,7 +2989,8 @@ def _verify_or_rebuild_segment(
         return command_line
     except FFmpegError as first_error:
         if str(first_error).startswith('Rendered static segment') and _static_original_window(segment):
-            warnings.append('Static original verified for '+label+'; no proxy substitution')
+            if segment.get('placeholder') != 'black':
+                warnings.append('Static original verified for '+label+'; no proxy substitution')
             return command_line
         segment_path.unlink(missing_ok=True)
         commands = command_recorder if command_recorder is not None else []
@@ -5557,7 +5558,7 @@ _COLOR_PROFILE_LOCK = threading.RLock()
 
 def _color_profiles_for_segments(project: Project, segments: list[dict[str, Any]], warnings: list[str] | None = None, progress_callback: ProgressCallback | None = None) -> dict[str, dict[str, Any]]:
     with _COLOR_PROFILE_LOCK:
-        return _measured_color_profiles(project, segments, warnings, progress_callback)
+        return _measured_color_profiles(project, [s for s in segments if s.get("placeholder") != "black"], warnings, progress_callback)
 
 
 def _measured_color_profiles(project: Project, segments: list[dict[str, Any]], warnings: list[str] | None = None, progress_callback: ProgressCallback | None = None) -> dict[str, dict[str, Any]]:
