@@ -79,3 +79,27 @@ def test_cross_volume_publish_and_other_errors(tmp_path, monkeypatch):
         export._publish_rendered_segment(source, destination)
     assert source.read_bytes() == b'next'
     assert destination.read_bytes() == b'complete'
+
+
+def test_concat_segment_is_hard_linked_without_copy(tmp_path, monkeypatch):
+    cache, concat = tmp_path / 'cache.mp4', tmp_path / 'concat.mp4'
+    cache.write_bytes(b'attested segment')
+    monkeypatch.setattr(export.shutil, 'copy2', lambda *_: pytest.fail('same-volume segment copied'))
+    assert export._link_or_copy_segment(cache, concat)
+    assert concat.stat().st_ino == cache.stat().st_ino
+    # A later cache publish replaces the inode; the linked export input is untouched.
+    replacement = tmp_path / 'rerender.mp4'
+    replacement.write_bytes(b'new render')
+    export._publish_rendered_segment(replacement, cache)
+    assert concat.read_bytes() == b'attested segment'
+
+
+def test_concat_segment_falls_back_to_copy_across_volumes(tmp_path, monkeypatch):
+    cache, concat = tmp_path / 'cache.mp4', tmp_path / 'concat.mp4'
+    cache.write_bytes(b'attested segment')
+    def different_volume(*_):
+        raise OSError(errno.EXDEV, 'different disk')
+    monkeypatch.setattr(export.os, 'link', different_volume)
+    assert not export._link_or_copy_segment(cache, concat)
+    assert concat.read_bytes() == b'attested segment'
+    assert concat.stat().st_ino != cache.stat().st_ino

@@ -1,0 +1,113 @@
+name: Application journey audit
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/crossplatform-ui-audit']
+permissions:
+  contents: read
+jobs:
+  journeys:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install media tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ffmpeg-full
+          echo "$(brew --prefix ffmpeg-full)/bin" >> "$GITHUB_PATH"
+      - name: Install media tools (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install ffmpeg --no-progress -y
+          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg installation failed' }
+          $bin = (Get-ChildItem 'C:\ProgramData\chocolatey\lib\ffmpeg*' -Recurse -Filter ffmpeg.exe | Select-Object -First 1).DirectoryName
+          Add-Content $env:GITHUB_PATH $bin
+      - name: Install app and browser
+        run: |
+          python -m pip install -r requirements.txt playwright
+          python -m playwright install chromium
+      - name: Test updated scoring, damaged media and UI contracts
+        run: python -m pytest -q tests/test_filter_escaping.py tests/test_probe_store.py tests/test_captions.py tests/test_caption_paths.py tests/test_settings_handoff.py tests/test_shot_quality_speed.py tests/test_media_integrity.py tests/test_new_project_preview.py tests/test_reel_framing.py tests/test_review_hardware_decode.py tests/test_desktop_logging.py tests/test_export.py::test_reel_scale_overlay_expression_runs_with_ffmpeg --junitxml=qa-results/regressions.xml
+      - name: Exercise youtube through the UI
+        id: journey_youtube
+        continue-on-error: true
+        env:
+          PYTHONUNBUFFERED: '1'
+        run: python tools/qa/application_journeys.py --mode youtube --output qa-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: application-audit-${{ matrix.os }}-youtube
+          path: qa-results/youtube
+          retention-days: 7
+      - name: Exercise reel through the UI
+        id: journey_reel
+        continue-on-error: true
+        env:
+          PYTHONUNBUFFERED: '1'
+        run: python tools/qa/application_journeys.py --mode reel --output qa-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: application-audit-${{ matrix.os }}-reel
+          path: qa-results/reel
+          retention-days: 7
+      - name: Exercise medley through the UI
+        id: journey_medley
+        continue-on-error: true
+        env:
+          PYTHONUNBUFFERED: '1'
+        run: python tools/qa/application_journeys.py --mode medley --output qa-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: application-audit-${{ matrix.os }}-medley
+          path: qa-results/medley
+          retention-days: 7
+      - name: Exercise 360 through the UI
+        id: journey_360
+        continue-on-error: true
+        env:
+          PYTHONUNBUFFERED: '1'
+        run: python tools/qa/application_journeys.py --mode 360 --output qa-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: application-audit-${{ matrix.os }}-360
+          path: qa-results/360
+          retention-days: 7
+      - name: Exercise backstage through the UI
+        id: journey_backstage
+        continue-on-error: true
+        env:
+          PYTHONUNBUFFERED: '1'
+        run: python tools/qa/application_journeys.py --mode backstage --output qa-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: application-audit-${{ matrix.os }}-backstage
+          path: qa-results/backstage
+          retention-days: 7
+      - name: Require every journey to pass
+        if: always()
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+          failures = []
+          for mode in ['youtube', 'reel', 'medley', '360', 'backstage']:
+              path = Path('qa-results') / mode / 'report.json'
+              report = json.loads(path.read_text()) if path.exists() else {}
+              if not report.get('passed'):
+                  failures.append(mode)
+          assert not failures, f'Journeys failed or missing: {failures}'

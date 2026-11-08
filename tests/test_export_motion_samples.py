@@ -48,3 +48,15 @@ def test_cancellation_and_decoder_errors_are_not_hidden(monkeypatch):
     monkeypatch.setattr(export.subprocess, 'run', cancelled)
     with pytest.raises(RuntimeError, match='cancelled'):
         export._frame_md5_pair('video.mp4', .2, 1.5)
+
+
+def test_short_static_original_is_distinct_from_frozen_moving_camera(tmp_path, moving_video):
+    path=tmp_path/'logo.mp4'
+    subprocess.run([tool_status()['ffmpeg_path'],'-v','error','-y','-f','lavfi',
+        '-i','color=blue:size=160x90:rate=30:duration=3','-c:v','libx264','-threads','1',str(path)],check=True)
+    slot={'source_path':str(path),'clip_start_sec':0,'duration_sec':2}
+    assert export._static_original_window(slot)
+    assert not export._static_original_window({**slot,'source_path':str(moving_video)})
+    assert not export._static_original_window({**slot,'motion':{'kind':'pan'}})
+    assert not export._static_original_window({**slot,'duration_sec':60})
+    assert not export._static_original_window({**slot,'clip_start_sec':2,'duration_sec':3})

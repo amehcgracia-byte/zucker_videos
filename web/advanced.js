@@ -130,6 +130,7 @@ async function refreshCacheStatus() {
 }
 
 async function freeCache() {
+  if (!window.confirm("Remove unused prepared media from the global cache? Original videos and project edits stay. Removed previews may need preparing again.")) return;
   const result = await api("/cache/free", { method: "POST", body: "{}" });
   renderCacheStatus({ ...result, size_bytes: result.after_bytes, counts: (await api("/cache/status")).counts });
   showToast(`Freed cache: ${formatBytes(result.deleted_bytes || 0)} across ${result.deleted_files || 0} files`);

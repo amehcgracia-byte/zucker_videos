@@ -1,0 +1,21 @@
+name: Stage logo overlap checks
+on:
+  pull_request:
+    paths:
+      - 'core/stages/export.py'
+      - 'tests/test_stage_logo_overlap.py'
+      - '.github/workflows/stage-logo-overlap.yml'
+  push:
+    branches: [fix/stage-slower-logo-crossfade-nov2026]
+jobs:
+  logo-overlap:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m py_compile core/stages/export.py
+      - run: python -m unittest discover -s tests -p 'test_stage_logo_overlap.py' -v

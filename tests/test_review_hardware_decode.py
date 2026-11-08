@@ -48,7 +48,9 @@ def review_project(tmp_path):
     project = create_project('Parallel review',str(tmp_path/'review.zuckervid'))
     segments = [{'clip_path':str(source),'source_path':str(source),'clip_start_sec':i,
                  'master_start_sec':i,'duration_sec':1,'filename':source.name} for i in range(3)]
-    artifact_path(project,'edit_plan.json').write_text(json.dumps({'platform':'reel','segments':segments}))
+    # Decoder/thumbnail tests use the landscape still path. Reel cards are
+    # extracted from their rendered vertical preview (tested in test_review_previews).
+    artifact_path(project,'edit_plan.json').write_text(json.dumps({'platform':'youtube','segments':segments}))
     artifact_path(project,'coverage.json').write_text(json.dumps({'sources':[{'path':str(source)}]}))
     return project
 
@@ -74,6 +76,20 @@ def test_review_uses_two_workers_and_preserves_card_order(tmp_path, monkeypatch)
     assert [row['index'] for row in rows] == [0,1,2]
     assert all(row['thumbnail_status']=='ready' and row['thumbnail'] for row in rows)
     assert progress == sorted(progress) and progress[-1] == 100
+
+
+def test_distinct_review_assets_do_not_share_locks_and_idle_locks_are_released(tmp_path, monkeypatch):
+    import gc
+    import weakref
+    locks = weakref.WeakValueDictionary()
+    monkeypatch.setattr(shot_review, '_THUMBNAIL_LOCKS', locks)
+    active = [shot_review._thumbnail_lock(tmp_path / f'frame-{i}.jpg') for i in range(128)]
+    assert len({id(lock) for lock in active}) == 128
+    assert shot_review._thumbnail_lock(tmp_path / 'frame-0.jpg') is active[0]
+    assert shot_review._thumbnail_lock(tmp_path / 'sub/../frame-0.jpg') is active[0]
+    del active
+    gc.collect()
+    assert not locks
 
 
 def test_simultaneous_preview_requests_render_same_asset_only_once(tmp_path, monkeypatch):
@@ -149,8 +165,8 @@ def test_prefetch_closes_workers_after_render_failure(tmp_path, monkeypatch):
     prefetch = shot_review.ReviewFramePrefetch(project)
     try:
         prefetch.submit(0, segment)
-        with pytest.raises(shot_review.ThumbnailRenderError):
-            prefetch.finish()
+        # A failed photo is recorded for its card; it does not stop the edit.
+        prefetch.finish()
     finally:
         prefetch.close()
     with pytest.raises(RuntimeError):

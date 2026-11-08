@@ -1,0 +1,135 @@
+[
+  {
+    "id": "bill-gates",
+    "title": "Bill Gates",
+    "file": "bill-gates-original.jpg",
+    "source": "https://commons.wikimedia.org/wiki/File:Bill_Gates_2018.jpg",
+    "author": "HHS Photo / Christopher Smith",
+    "license": "US federal government public domain",
+    "origin": "Original reference photograph; head clipped at render time",
+    "aliases": [
+      "bill gates",
+      "gates"
+    ],
+    "polygon": [
+      [
+        0.256776,
+        0.32992
+      ],
+      [
+        0.221113,
+        0.250284
+      ],
+      [
+        0.252496,
+        0.16496
+      ],
+      [
+        0.340942,
+        0.100114
+      ],
+      [
+        0.499287,
+        0.07281
+      ],
+      [
+        0.631954,
+        0.105802
+      ],
+      [
+        0.704708,
+        0.171786
+      ],
+      [
+        0.74893,
+        0.267349
+      ],
+      [
+        0.758916,
+        0.331058
+      ],
+      [
+        0.740371,
+        0.432309
+      ],
+      [
+        0.710414,
+        0.500569
+      ],
+      [
+        0.694722,
+        0.571104
+      ],
+      [
+        0.627675,
+        0.624573
+      ],
+      [
+        0.517832,
+        0.657565
+      ],
+      [
+        0.415121,
+        0.632537
+      ],
+      [
+        0.339515,
+        0.589306
+      ],
+      [
+        0.292439,
+        0.523322
+      ],
+      [
+        0.256776,
+        0.47554
+      ],
+      [
+        0.235378,
+        0.399317
+      ]
+    ],
+    "mouth": [
+      0.3780313837375178,
+      0.5142207053469852,
+      0.2710413694721826,
+      0.12514220705346984
+    ]
+  },
+  {
+    "id": "stained-glass",
+    "title": "Stained glass",
+    "file": "stained-glass.png",
+    "source": "",
+    "origin": "AI-generated original face mask",
+    "aliases": [
+      "stained glass",
+      "vidriera",
+      "glass"
+    ],
+    "polygon": [
+      [
+        0,
+        0
+      ],
+      [
+        1,
+        0
+      ],
+      [
+        1,
+        1
+      ],
+      [
+        0,
+        1
+      ]
+    ],
+    "mouth": [
+      0.32,
+      0.62,
+      0.36,
+      0.2
+    ]
+  }
+]

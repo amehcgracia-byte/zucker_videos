@@ -1085,6 +1085,7 @@ def test_paired_flat_fov_uses_projection_math_for_16x9():
 
 
 def test_render_segment_falls_back_to_proxy_when_original_decode_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr("core.stages.export.sys.platform", "darwin")
     project = create_project("Fallback", str(tmp_path / "Fallback.zuckervid"))
     source = tmp_path / "source.mov"
     proxy = tmp_path / "proxy.mp4"
@@ -1993,7 +1994,9 @@ def test_reel_scale_overlay_expression_runs_with_ffmpeg(tmp_path: Path) -> None:
         }],
     )
     source = ["-f", "lavfi", "-i", "color=c=blue:s=320x240:r=30:d=0.5"]
-    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", *source, "-loop", "1", "-i", str(overlay), "-filter_complex", graph, "-map", "[v]", "-t", "0.5", "-f", "null", "-"]
+    # Match the export runner's libavfilter scheduling workaround (7db05b5).
+    # The dynamic scale/pad graph can crash FFmpeg when filters run in parallel.
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", *source, "-loop", "1", "-i", str(overlay), "-filter_threads", "1", "-filter_complex_threads", "1", "-filter_complex", graph, "-map", "[v]", "-t", "0.5", "-f", "null", "-"]
     result = subprocess.run(command, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
@@ -2136,3 +2139,153 @@ def test_render_failure_stops_active_and_queued_segments(tmp_path, monkeypatch):
     assert info.value.segment_index == 1
     assert stopped.is_set()
     assert sorted(calls) == [1, 2]
+
+
+def _envelope_rms(envelope, start: float, duration: float) -> float:
+    steps = 400
+    values = [envelope(start + duration * (index + 0.5) / steps) for index in range(steps)]
+    return (sum(value * value for value in values) / steps) ** 0.5
+
+
+def _patch_final_audio_probe(monkeypatch, master: str, master_envelope, final_envelope) -> None:
+    monkeypatch.setattr("core.stages.export._probe_streams", lambda _path: {"streams": [{"codec_type": "audio"}]})
+    monkeypatch.setattr("core.stages.export._media_duration", lambda _path: 600.0)
+    monkeypatch.setattr(
+        "core.stages.export._audio_rms",
+        lambda path, start, duration: _envelope_rms(master_envelope if str(path) == master else final_envelope, start, duration),
+    )
+
+
+def test_final_audio_verifier_allows_musical_attack_on_cut(tmp_path, monkeypatch):
+    # Regression: a drum hit landing on a beat-aligned cut plus ~15 ms of
+    # decoder skew between the AAC final and the MP3 master (master ratio
+    # ~5.8, final ~11.7) was rejected as a
+    # "level jump" by 60 ms RMS windows (real export, join 27.167s).
+    boundary = 27.167
+    audio_start = 248.755
+
+    def attack(timeline: float) -> float:
+        if boundary - 0.018 <= timeline < boundary + 0.023:
+            return 0.20
+        return 0.008 if timeline < boundary else 0.012
+
+    def master_envelope(t: float) -> float:
+        return attack(t - audio_start + 10.0)
+
+    def final_envelope(t: float) -> float:
+        return attack(t - 0.010)
+
+    master = str(tmp_path / "master.mp3")
+    _patch_final_audio_probe(monkeypatch, master, master_envelope, final_envelope)
+    segments = [{"duration_sec": 5.067}, {"duration_sec": 6.7}, {"duration_sec": 5.4}, {"duration_sec": 4.0}]
+    _verify_final_audio(
+        tmp_path / "final.mp4", segments, master, audio_start,
+        timeline_offset=10.0, audio_delay=10.0, duration=600.0, content_start=10.0, content_end=590.0,
+    )
+
+
+def test_final_audio_verifier_still_rejects_silence_gap_at_join(tmp_path, monkeypatch):
+    from core.ffmpeg import FFmpegError
+
+    boundary = 15.0
+    master = str(tmp_path / "master.wav")
+    _patch_final_audio_probe(
+        monkeypatch, master,
+        lambda _t: 0.1,
+        lambda t: 0.0 if boundary <= t < boundary + 0.5 else 0.1,
+    )
+    with pytest.raises(FFmpegError, match="silence gap"):
+        _verify_final_audio(
+            tmp_path / "final.mp4", [{"duration_sec": 5.0}, {"duration_sec": 5.0}], master, 0.0,
+            timeline_offset=10.0, audio_delay=10.0, duration=600.0, content_start=10.0, content_end=590.0,
+        )
+
+
+def _cadence_clip(path: Path, seconds: float, extra_filter: str = "") -> Path:
+    video_filter = "format=yuv420p" + (f",{extra_filter}" if extra_filter else "")
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=size=160x90:rate=30:duration={seconds}",
+         "-vf", video_filter, "-fps_mode", "passthrough", "-c:v", "libx264", "-preset", "ultrafast", str(path)],
+        check=True, capture_output=True, text=True,
+    )
+    return path
+
+
+@pytest.mark.parametrize("seconds", [12.0, 28.6, 40.2, 75.0])
+def test_regular_video_cadence_passes_whatever_the_length(tmp_path: Path, seconds: float) -> None:
+    """Sample windows closer than one window apart must not be read as a gap."""
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not installed")
+    clip = _cadence_clip(tmp_path / f"regular-{seconds}.mp4", seconds)
+    _verify_video_cadence(clip, "regular final", start=0.0, duration=seconds)
+
+
+def test_real_frame_gap_is_still_rejected(tmp_path: Path) -> None:
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe not installed")
+    # A 0.6 s hole in the first sampled window (frames from 1 s on are pushed later).
+    clip = _cadence_clip(tmp_path / "gap.mp4", 20.0, "setpts='if(gte(N,30),PTS+0.6/TB,PTS)'")
+    from core.ffmpeg import FFmpegError
+
+    with pytest.raises(FFmpegError, match="Irregular video cadence"):
+        _verify_video_cadence(clip, "gap final", start=0.0, duration=20.6)
+
+
+def test_shot_speed_changes_source_duration_but_not_output_cadence():
+    from core.stages.export import _segment_video_command_base, _segment_frame_count
+    shot = {"clip_start_sec": 9.0, "duration_sec": 4.0, "playback_speed": 1.5}
+    args = _segment_video_command_base("ffmpeg", "/tmp/clip.mp4", shot, shot["duration_sec"])
+    assert args[args.index("-ss") + 1] == "9.000"
+    assert args[args.index("-t") + 1] == "6.000"
+    assert _segment_frame_count(shot) == 120
+
+
+def test_native_360_sampler_receives_isolated_shot_speed(monkeypatch):
+    from core import spherical_motion as spherical
+    received = []
+    monkeypatch.setattr(spherical, "_run_reprojected_command", lambda *args, **kwargs: received.append(kwargs))
+    spherical.run_reprojected_command(
+        ["ffmpeg"], "/tmp/source.mp4", (3840, 1920), 10.0, 30, {},
+        hardware_decode=False, playback_speed=0.5,
+    )
+    assert len(received) == 1
+    assert received[0]["playback_speed"] == 0.5
+
+
+def test_360_quality_profile_defaults_to_server_safe_resolution():
+    from core import stages
+    from core.stages import export
+    assert (export.SPHERICAL_EXPORT_PROXY_WIDTH, export.SPHERICAL_EXPORT_PROXY_HEIGHT) in (
+        (2560, 1280), (3840, 1920)
+    )
+
+
+def test_shot_speed_has_distinct_cache_key_and_attestation(tmp_path):
+    from core.stages.export import cached_segment_path, _segment_cache_stamp_payload
+    from core.project import create_project, file_record
+    project=create_project("Speed cache",str(tmp_path/"speed.zuckervid"))
+    source=tmp_path/"source.mp4"
+    source.write_bytes(b"source")
+    record=file_record(str(source))
+    record["probe"]={"valid_video":True,"projection":"flat"}
+    record["cache_key"]="speed-source"
+    project.data["inputs"]["videos"]=[record]
+    segment={"clip_path":str(source),"source_path":str(source),"clip_start_sec":0,
+             "master_start_sec":0,"duration_sec":3}
+    at_normal=cached_segment_path(project,segment,"youtube",4_000_000,{}, {},False,False)
+    at_half=cached_segment_path(project,{**segment,"playback_speed":0.5},"youtube",4_000_000,{}, {},False,False)
+    at_double=cached_segment_path(project,{**segment,"playback_speed":2.0},"youtube",4_000_000,{}, {},False,False)
+    assert len({at_normal,at_half,at_double})==3
+    assert _segment_cache_stamp_payload(segment)["playback_speed"]==1.0
+    assert _segment_cache_stamp_payload({**segment,"playback_speed":2.0})["playback_speed"]==2.0
+
+
+def test_unused_missing_library_source_does_not_block_montage(tmp_path):
+    project=create_project('used only',str(tmp_path/'edit.zuckervid'))
+    used=tmp_path/'used.mp4';used.write_bytes(b'video')
+    master=tmp_path/'master.wav';master.write_bytes(b'audio')
+    project.data['inputs']['master']={'path':str(master)}
+    project.data['inputs']['videos']=[{'path':str(used)},{'path':str(tmp_path/'unused.mp4')}]
+    assert _missing_project_sources(project,{'segments':[{'source_path':str(used)}]})==[]
+    master.unlink()
+    assert _missing_project_sources(project,{'segments':[{'source_path':str(used)}]})==[str(master)]

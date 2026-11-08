@@ -95,6 +95,22 @@ def analyze_reel_framing_record(
 def analyze_reel_framing_records(records: list[dict[str, Any]], progress_callback: Any = None) -> None:
     """Populate Reel-only framing profiles on ingest records."""
     for index, record in enumerate(records):
+        callback_failure = None
+
+        def report_progress(percent, message):
+            nonlocal callback_failure
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(
+                    96 + int((index + percent / 100.0) / max(1, len(records)) * 4),
+                    ProgressDetail(message, task_id=f"framing-{index}",
+                                   label=f"Analysing subjects in {Path(str(record.get('path') or 'clip')).name}", percent=percent),
+                )
+            except Exception as error:
+                callback_failure = error
+                raise
+
         try:
             projection = str((record.get("probe") or {}).get("projection") or record.get("projection") or "")
             role = role_for_record(projection, Path(str(record.get("path") or "")).name)
@@ -104,15 +120,15 @@ def analyze_reel_framing_records(records: list[dict[str, Any]], progress_callbac
                 continue
             profile = analyze_reel_framing_record(
                 record,
-                lambda percent, message: progress_callback(
-                    96 + int((index + percent / 100.0) / max(1, len(records)) * 4),
-                    ProgressDetail(message, task_id=f"framing-{index}",
-                                   label=f"Analysing subjects in {Path(str(record.get('path') or 'clip')).name}", percent=percent),
-                ) if progress_callback else None,
+                report_progress if progress_callback else None,
             )
             if profile is not None:
                 record["reel_framing"] = profile
         except Exception:
+            if callback_failure is not None:
+                # Cancellation belongs to the caller, not the optional
+                # detector fallback. Stop before analysing the next source.
+                raise callback_failure
             # Framing is a quality improvement, never a reason to make a Reel
             # impossible to export. Edit will use a centered full-frame fallback.
             LOGGER.warning("Reel framing analysis failed for %s", record.get("path"), exc_info=True)
@@ -139,6 +155,8 @@ def _analyze_video(path: str, role: str, record: dict[str, Any], progress_callba
     try:
         cascade_path = str(Path(cv2.data.haarcascades) / "haarcascade_frontalface_alt2.xml")
         face_cascade = cv2.CascadeClassifier(cascade_path)
+        if face_cascade.empty():          # OpenCV's data missing: no faces rather than a failed render
+            face_cascade = None
     except Exception:
         face_cascade = None
     try:

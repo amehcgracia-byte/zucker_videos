@@ -38,6 +38,8 @@ if missing:
 PY
 
 "$PYTHON" tools/make_icon.py
+# CLIP image encoder for filler scene tagging (not in git): pinned + SHA-256 verified.
+bash "$ROOT/tools/fetch_clip_model.sh"
 bash "$ROOT/tools/build_metal.sh"
 # Preserve existing user/local build products, including the hand-edited spec.
 BUILD_BACKUP="$ROOT/build/previous-$(date +%Y%m%d-%H%M%S)"
@@ -75,6 +77,8 @@ PY
   --workpath "$BUILD" \
   --specpath "$BUILD" \
   --add-data "$ROOT/web:web" \
+  --add-data "$ROOT/assets/clay:assets/clay" \
+  --add-data "$ROOT/assets/fonts:assets/fonts" \
   --add-data "$ROOT/assets/intro_card_watermark.png:assets" \
   --add-data "$ROOT/assets/models:assets/models" \
   --add-data "$ROOT/captions/presets.json:captions" \
@@ -87,10 +91,17 @@ PY
   --add-data "/System/Library/Fonts/Supplemental/BigCaslon.ttf:assets/fonts" \
   --add-data "$BUILD_INFO:." \
   --add-data "$ROOT/README_APP.md:." \
+  --add-data "$ROOT/tools/qa/show_pilot_editor.html:tools/qa" \
+  --add-data "$ROOT/tools/qa/show_*.js:tools/qa" \
+  --add-data "$ROOT/tools/qa/video-layers:tools/qa/video-layers" \
+  --add-data "$ROOT/tools/qa/show-backgrounds:tools/qa/show-backgrounds" \
+  --add-data "$ROOT/tools/qa/show-masks:tools/qa/show-masks" \
+  --add-data "$ROOT/tools/qa/show-elements:tools/qa/show-elements" \
   --collect-submodules demucs \
   --collect-data demucs \
   --hidden-import torchaudio \
   --collect-data faster_whisper \
+  --collect-data cv2 \
   --collect-data whisper \
   --collect-data onnxruntime \
   --collect-data tokenizers \
@@ -105,10 +116,17 @@ PY
   --hidden-import faster_whisper \
   --collect-submodules faster_whisper \
   --hidden-import onnxruntime \
+  --hidden-import keyring.backends.macOS \
   --hidden-import tokenizers \
   --hidden-import ctranslate2 \
   --collect-submodules server \
   --collect-submodules core \
+  --collect-submodules yt_dlp \
+  --hidden-import certifi \
+  --collect-submodules diffusers \
+  --copy-metadata diffusers \
+  --hidden-import transformers \
+  --collect-submodules transformers.models.clip \
   --exclude-module pytest \
   --exclude-module tests \
   --exclude-module scipy.tests \
@@ -130,6 +148,12 @@ PLIST="$APP_BUNDLE/Contents/Info.plist"
   || /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $VERSION" "$PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $VERSION" "$PLIST"
+
+/usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string Record spoken phrases for editable Reel captions." "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription Record spoken phrases for editable Reel captions." "$PLIST"
+# No App Nap: hidden behind another window, the app ran at the lowest priority (hours for a transcription).
+/usr/libexec/PlistBuddy -c "Add :NSAppSleepDisabled bool true" "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Set :NSAppSleepDisabled true" "$PLIST"
 
 codesign --force --deep -s - "$APP_BUNDLE"
 
@@ -161,6 +185,11 @@ if actual != expected:
     raise SystemExit(f"Packaged build_info commit {actual!r} does not match HEAD {expected!r}")
 print(f"Verified packaged build_info git_commit={actual}")
 PY
+
+if [[ "${ZUCKER_BUILD_APP_ONLY:-0}" == "1" ]]; then
+  echo "Verified app ready at $APP_BUNDLE (DMG creation not requested)."
+  exit 0
+fi
 
 mkdir -p "$DMG_ROOT"
 cp -R "$APP_BUNDLE" "$DMG_ROOT/"

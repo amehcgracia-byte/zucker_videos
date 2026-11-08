@@ -35,6 +35,7 @@ class IngestStage(Stage):
                 "videos": project.data["inputs"].get("videos", []),
                 "settings": project.data["settings"].get(self.name, {}),
                 "mode": platform,
+                "camera_types":project.data["settings"].get("edit",{}).get("camera_types",{}),
                 # Detection sampling/threshold changes invalidate the global
                 # presence cache and must trigger a fresh ingest pass.
                 "operator_avoidance_version": OPERATOR_AVOIDANCE_VERSION,
@@ -67,6 +68,8 @@ class IngestStage(Stage):
             metadata = ffprobe(path)
             validation = validate_camera_video_metadata(metadata)
             record["probe"] = validation.summary
+            from core.camera_types import apply
+            apply(record,project.data.get("settings",{}).get("edit",{}).get("camera_types",{}))
             if is_raw_360_path(path):
                 record["projection"] = "raw_insv"
                 record["raw_360"] = True
@@ -79,11 +82,11 @@ class IngestStage(Stage):
                 width = record["probe"].get("width")
                 height = record["probe"].get("height")
                 record["projection_warning"] = (
-                    f"No se detectó vídeo 360/equirectangular: {width}×{height} "
-                    f"({(float(width) / float(height)):.3f}:1). Se tratará como cámara plana; "
-                    "si debía ser 360, expórtalo cosido desde Insta360 Studio."
+                    f"No 360/equirectangular video detected: {width}×{height} "
+                    f"({(float(width) / float(height)):.3f}:1). It will be treated as a flat camera; "
+                    "if it should be 360, export it stitched from Insta360 Studio."
                     if width and height else
-                    "No se detectó proyección 360/equirectangular; se tratará como cámara plana."
+                    "No 360/equirectangular projection detected; it will be treated as a flat camera."
                 )
             # Persist the resolved role at ingest. Downstream stages must not
             # have to re-infer a 360 source from a normalized proxy filename.

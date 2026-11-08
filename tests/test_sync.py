@@ -344,3 +344,22 @@ def write_wav(path: Path, audio: np.ndarray, sample_rate: int) -> None:
         fh.setsampwidth(2)
         fh.setframerate(sample_rate)
         fh.writeframes(pcm.tobytes())
+
+
+def test_sync_retries_strong_but_unstable_peak_and_prefers_verified_lower_score(tmp_path, monkeypatch):
+    import core.stages.sync as sync
+    project=create_project('Verified',str(tmp_path/'Verified.zuckervid'))
+    path=tmp_path/'clip.mp4';path.write_bytes(b'clip')
+    record={'path':str(path)}
+    onset=np.ones(100,dtype=np.float32);spectral=np.arange(100,dtype=np.float32)
+    monkeypatch.setattr(sync,'media_duration',lambda path:20.)
+    monkeypatch.setattr(sync,'load_or_compute_clip_envelope',lambda *a:(onset,'audio.wav'))
+    monkeypatch.setattr(sync,'load_or_compute_master_spectral_envelope',lambda *a:spectral)
+    monkeypatch.setattr(sync,'load_or_compute_clip_spectral_envelope',lambda *a:(spectral,'audio.wav'))
+    monkeypatch.setattr(sync,'recover_offset',lambda master,clip:(677.,20.) if master is onset else (-23.64,9.3))
+    monkeypatch.setattr(sync,'verify_sync_stability',lambda master,clip,offset:{'checked':True,'unstable_sync':master is onset})
+    monkeypatch.setattr(sync,'load_or_compute_master_percussive_envelope',lambda *a:pytest.fail('Verified spectral match must not run expensive HPSS'))
+    result=sync.sync_clip(project,record,onset,6.)
+    assert result['sync_method']=='spectral_flux'
+    assert result['offset_sec']==-23.64 and not result['low_confidence']
+    assert len(result['sync_alternatives'])==2

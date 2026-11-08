@@ -47,7 +47,7 @@ def test_review_thumbnails_are_cached_and_replacement_marks_unavailable(tmp_path
     assert result["items"][0]["no_alternative"] is True
 
 
-def test_review_thumbnail_render_failure_is_propagated_and_visible(tmp_path: Path) -> None:
+def test_review_thumbnail_render_failure_is_visible_without_stopping_review(tmp_path: Path) -> None:
     clip = tmp_path / "broken.mp4"
     clip.write_bytes(b"not media")
     project = create_project("Review failure", str(tmp_path / "Review failure.zuckervid"))
@@ -56,8 +56,8 @@ def test_review_thumbnail_render_failure_is_propagated_and_visible(tmp_path: Pat
         "duration_sec": 1.0, "filename": clip.name,
     }]}), encoding="utf-8")
 
-    with pytest.raises(ThumbnailRenderError):
-        review_items(project)
+    rendered = review_items(project)[0]
+    assert rendered["thumbnail_status"] == "failed" and rendered["thumbnail_error"]
 
     failed = review_items(project, render_missing=False)[0]
     assert failed["thumbnail"] is None
@@ -249,3 +249,64 @@ def test_changing_another_card_keeps_persisted_reserve(tmp_path):
     assert _candidate_reserve_path(project,{},[first,other],first,'youtube') == before
     other['duration_sec']=4
     assert _candidate_reserve_path(project,{},[first,other],first,'youtube') != before
+
+
+def test_only_shot_of_a_video_is_replaced_from_the_same_video(tmp_path: Path, monkeypatch) -> None:
+    # Regression: "Other frame" on Conteint.mp4's only Reel shot picked a
+    # 360ZZSession window, Conteint left the edit and export was blocked by
+    # the Drop box coverage guard.
+    from core import shot_review
+    project = create_project("Sole shot", str(tmp_path / "Sole shot.zuckervid"))
+    conteint, flamenco = str(tmp_path / "Conteint.mp4"), str(tmp_path / "Flamenco.mp4")
+    segments = [
+        {"clip_path": conteint, "source_path": conteint, "filename": "Conteint.mp4", "clip_start_sec": 6.0, "master_start_sec": 0.0, "duration_sec": 1.0},
+        {"clip_path": flamenco, "source_path": flamenco, "filename": "Flamenco.mp4", "clip_start_sec": 3.0, "master_start_sec": 1.0, "duration_sec": 1.0},
+    ]
+    artifact_path(project, "edit_plan.json").write_text(json.dumps({"platform": "reel", "segments": segments}), encoding="utf-8")
+    pool = [{"path": flamenco, "source_path": flamenco, "clip_start_sec": 20.0, "shot_quality_score": 9.0},
+            {"path": conteint, "source_path": conteint, "clip_start_sec": 40.0, "shot_quality_score": 1.0}]
+    monkeypatch.setattr(shot_review, "_project_candidate_pool", lambda *args, **kwargs: (pool, "test"))
+    monkeypatch.setattr(shot_review, "load_coverage", lambda project: {"platform": "reel"})
+    monkeypatch.setattr(shot_review, "_candidate_has_subject", lambda candidate, segment: candidate["path"] == flamenco)
+    monkeypatch.setattr(shot_review, "review_items", lambda *args, **kwargs: [])
+
+    result = replace_slots(project, [0])
+
+    replaced = json.loads(artifact_path(project, "edit_plan.json").read_text())["segments"][0]
+    assert result["replaced"] == [0]
+    assert replaced["source_path"] == conteint and replaced["clip_start_sec"] == 40.0
+
+    # No other window of that video left: say so instead of dropping the video.
+    result = replace_slots(project, [0])
+    assert result["unavailable"] == [0]
+    assert result["replacement_diagnostics"][0]["reason"] == "only_shot_of_this_video"
+    assert json.loads(artifact_path(project, "edit_plan.json").read_text())["segments"][0]["source_path"] == conteint
+
+
+def test_swap_filler_can_return_to_a_synced_360_camera(tmp_path,monkeypatch):
+    import core.shot_review as review
+    project=create_project('Swap camera',str(tmp_path/'Swap.zuckervid'))
+    project.data['settings']['wizard']={'platform':'youtube'}
+    project.data['settings']['spherical_landmarks']={'full_stage':{'yaw':45,'pitch':-10,'fov':110,'enabled':True}}
+    plan={'platform':'youtube','segments':[{'source_path':'/broll.mp4','clip_path':'/broll.mp4','filename':'broll.mp4','clip_start_sec':0,'master_start_sec':10,'duration_sec':4,'filler':True,'filler_key':'broll-key','confidence':0}]}
+    artifact_path(project,'edit_plan.json').write_text(json.dumps(plan))
+    artifact_path(project,'coverage.json').write_text(json.dumps({'platform':'youtube','sources':[{'path':'/sphere.mp4','source_path':'/sphere.mp4','filename':'sphere.mp4','projection':'equirect','duration_sec':60,'offset_sec':0,'confidence':20}]}))
+    monkeypatch.setattr(review,'review_items',lambda *a,**k:[])
+    result=replace_slots(project,[0]);assert result['replaced']==[0]
+    segment=json.loads(artifact_path(project,'edit_plan.json').read_text())['segments'][0]
+    assert not segment.get('filler') and 'filler_key' not in segment
+    assert segment['source_path']=='/sphere.mp4' and segment['clip_start_sec']==10
+    assert segment['spherical_shot']['yaw']==45
+    assert segment['confidence']==20
+
+
+def test_swap_prefers_another_available_camera_before_same_source_pose(tmp_path,monkeypatch):
+    import core.shot_review as review
+    project=create_project('Other camera',str(tmp_path/'Other.zuckervid'))
+    base={'source_path':'/first.mp4','clip_path':'/first.mp4','filename':'first.mp4','clip_start_sec':0,'master_start_sec':0,'duration_sec':4,'confidence':20}
+    artifact_path(project,'edit_plan.json').write_text(json.dumps({'platform':'youtube','segments':[base,{**base,'clip_start_sec':4,'master_start_sec':4}]}))
+    artifact_path(project,'coverage.json').write_text(json.dumps({'platform':'youtube','sources':[{'path':'/first.mp4','source_path':'/first.mp4','duration_sec':60,'offset_sec':0,'confidence':20},{'path':'/other.mp4','source_path':'/other.mp4','filename':'other.mp4','duration_sec':60,'offset_sec':0,'confidence':20}]}))
+    monkeypatch.setattr(review,'review_items',lambda *a,**k:[])
+    assert replace_slots(project,[0])['replaced']==[0]
+    segment=json.loads(artifact_path(project,'edit_plan.json').read_text())['segments'][0]
+    assert segment['source_path']=='/other.mp4'

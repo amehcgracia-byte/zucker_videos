@@ -12,10 +12,12 @@ import sys
 import subprocess
 import tempfile
 import threading
+import weakref
 from pathlib import Path
 from typing import Any
 
 from core.project import Project
+from core import review_previews
 from core.ffmpeg import locate_executable
 from core.spherical_view import spherical_view_filter
 from core.spherical_view import (
@@ -93,7 +95,7 @@ def _review_segment(project: Project, segment: dict[str, Any]) -> dict[str, Any]
     shot_type = str(shot.get("shot_id") or shot.get("type") or "")
     source_path = str(segment.get("source_path") or segment.get("spherical_source_path") or segment.get("clip_path") or "").strip()
     saved = _current_spherical_landmarks(project, source_path).get(shot_type)
-    if not saved or not shot:
+    if segment.get("manual_view") or not saved or not shot:
         return dict(segment)
     effective = dict(shot)
     for field in ("yaw", "pitch", "fov", "roll", "projection_preset", "projection_control", "weight"):
@@ -114,7 +116,20 @@ def _review_segment(project: Project, segment: dict[str, Any]) -> dict[str, Any]
 
 
 def _review_segments(project: Project) -> list[dict[str, Any]]:
-    return [_review_segment(project, segment) for segment in (_plan(project).get("segments") or [])]
+    plan = _plan(project)
+    result = [_review_segment(project, segment) for segment in (plan.get("segments") or [])]
+    if (plan.get('platform') or project.data.get('settings', {}).get('wizard', {}).get('platform')) == 'reel':
+        for segment in result:
+            segment['review_canvas'] = 'reel'
+            segment['review_layout'] = project.data.get('settings', {}).get('wizard', {}).get('reel_aspect', '9:16')
+    from core.shot_continuity import continuous_views
+    result = continuous_views(result)
+    from core.video_light import settings
+    for segment in result:
+        spec = settings(project, segment)
+        if spec is not None:
+            segment['video_light'] = spec
+    return result
 
 
 
@@ -164,6 +179,8 @@ def _review_pose_for_cache(segment: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         pose["yaw"] = 0.0
     pose["motion"] = segment.get("motion") or {}
+    pose["video_light"] = segment.get("video_light")
+    pose["light_recipe"] = 1
     pose["source_projection"] = segment.get("projection")
     return pose
 
@@ -186,23 +203,16 @@ def _review_signature(segments: list[dict[str, Any]]) -> str:
 
 
 def _thumbnail_filter(segment: dict[str, Any], color_profile: dict[str, Any] | None = None) -> str:
-    color_profile = color_profile or {}
-    if color_profile:
-        # Keep review frames visually consistent with the final render.  The
-        # profile is computed once by export and passed through unchanged.
-        brightness = max(-0.12, min(0.12, float(color_profile.get("brightness_adjust") or 0.0)))
-        saturation = max(0.86, min(1.16, float(color_profile.get("saturation_adjust") or 1.0)))
-        red = max(-0.12, min(0.12, float(color_profile.get("red_balance") or 0.0)))
-        blue = max(-0.12, min(0.12, float(color_profile.get("blue_balance") or 0.0)))
-        correction = (
-            f"eq=brightness={brightness:.4f}:saturation={saturation:.4f},"
-            f"colorbalance=rs={red:.4f}:gs={-red * 0.35:.4f}:bs={-blue:.4f}:"
-            f"rm={red:.4f}:gm={-red * 0.35:.4f}:bm={-blue:.4f},"
-        )
-    else:
-        correction = ""
-    shot = segment.get("spherical_shot") or {}
+    color_profile = dict(color_profile or {})
+    if segment.get('video_light') is not None:
+        color_profile['video_light'] = segment['video_light']
+    from core.stages.export import _color_filter
+    correction = _color_filter(color_profile) + ',' if color_profile else ''
+    shot = segment.get('spherical_shot') or {}
     if not shot:
+        if segment.get("flat_framing"):
+            from core.flat_framing import filtergraph
+            return correction+filtergraph(segment["flat_framing"])+",scale=360:202:force_original_aspect_ratio=increase,crop=360:202,setsar=1,format=yuvj420p"
         motion = segment.get("motion") or {}
         if motion.get("type") == "ken_burns":
             try:
@@ -282,14 +292,18 @@ def _candidate_key(candidate: dict[str, Any]) -> str:
     return f"{path}|{start:.6f}{_spherical_pose_suffix(candidate)}"
 
 
-def _candidate_keys(candidate: dict[str, Any]) -> set[str]:
-    """Return current and legacy spellings of a candidate identity."""
+def _candidate_keys(candidate: dict[str, Any], synced: bool = True) -> set[str]:
+    """Return current and legacy spellings of a candidate identity.
+
+    In synced edits a coverage camera is identified by its sync offset, so
+    the offset spellings are part of the identity. An unsynchronised Reel has
+    offset 0 everywhere: counting it made every window of a file look
+    "already tried", so Other frame always jumped to a different file.
+    """
     path = candidate.get("path") or candidate.get("clip_path") or candidate.get("source_path") or ""
-    starts = {
-        candidate.get("clip_start_sec"),
-        candidate.get("offset_sec"),
-        candidate.get("clip_offset_sec"),
-    }
+    starts = {candidate.get("clip_start_sec")}
+    if synced or candidate.get("clip_start_sec") is None:
+        starts |= {candidate.get("offset_sec"), candidate.get("clip_offset_sec")}
     keys = set()
     pose_suffix = _spherical_pose_suffix(candidate)
     for raw_start in starts:
@@ -478,6 +492,16 @@ def _path_aliases(raw: Any) -> set[str]:
     return aliases
 
 
+def _same_source_file(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Same Drop box file (proxy aliases included); unlike _same_source_identity,
+    two files from one camera folder are different videos here."""
+    left_paths, right_paths = set(), set()
+    for key in ("path", "clip_path", "source_path", "proxy_path"):
+        left_paths.update(_path_aliases(left.get(key)))
+        right_paths.update(_path_aliases(right.get(key)))
+    return bool(left_paths & right_paths)
+
+
 def _same_source_identity(left: dict[str, Any], right: dict[str, Any]) -> bool:
     """Match a camera even when coverage uses its proxy path."""
     left_paths = set()
@@ -614,7 +638,7 @@ def _candidate_reserve_path(project: Project, coverage: dict[str, Any], segments
     digest = (context or _reserve_context(project, coverage, segments, platform)).copy()
     slot = {key: segment.get(key) for key in ("master_start_sec", "duration_sec", "source_path", "projection")}
     digest.update(json.dumps(slot, sort_keys=True, default=str).encode())
-    digest.update(b', "version": 3}')
+    digest.update(b', "version": 4}')
     return project.cache_dir / "review_candidates" / f"{digest.hexdigest()[:24]}.json"
 
 
@@ -634,10 +658,17 @@ def _project_candidate_pool(project: Project, coverage: dict[str, Any], segments
         pool, origin = saved["candidates"], saved["origin"]
     except (OSError, ValueError, KeyError):
         pool, origin = _review_candidate_pool(coverage, segments, segment, platform)
+        if platform == 'youtube':
+            for candidate in pool:
+                if candidate.get('projection') in {'equirect', 'raw_insv'} and not candidate.get('spherical_shot'):
+                    source = str(candidate.get('source_path') or candidate.get('path') or '')
+                    landmarks = _current_spherical_landmarks(project, source)
+                    pose = landmarks.get('full_stage') or next((p for p in landmarks.values() if p.get('enabled', True)), {})
+                    candidate['spherical_shot'] = {'type':'full_stage', 'yaw':0., 'pitch':0., 'fov':110., 'projection_preset':'linear', **pose}
         _write_reserve_json(path, {"candidates": pool, "origin": origin})
     summary = path.with_suffix(".summary.json")
     if not summary.exists():
-        eligible = [_candidate_keys(candidate) for candidate in pool
+        eligible = [_candidate_keys(candidate, platform != "reel") for candidate in pool
                     if _candidate_covers_slot(candidate, segment, platform) and _candidate_has_subject(candidate, segment)]
         _write_reserve_json(summary, {"keys": [sorted(keys) for keys in eligible], "origin": origin})
     return pool, origin
@@ -651,7 +682,7 @@ def _project_candidate_count(project: Project, coverage: dict[str, Any], segment
     except (OSError, ValueError):
         _project_candidate_pool(project, coverage, segments, segment, platform, context)
         summary = json.loads(path.read_text(encoding="utf-8"))
-    current = _candidate_keys(segment)
+    current = _candidate_keys(segment, platform != "reel")
     return sum(not (set(keys) & current) for keys in summary["keys"]), summary["origin"]
 
 
@@ -709,6 +740,7 @@ def _replacement_candidates(
     segment: dict[str, Any],
     tried: set[str],
     platform: str,
+    require_subject: bool = True,
 ) -> tuple[list[tuple[float, dict[str, Any], str]], dict[str, int]]:
     """Return eligible candidates and counts used in Replace diagnostics.
 
@@ -725,9 +757,9 @@ def _replacement_candidates(
         if not _candidate_covers_slot(candidate, segment, platform):
             continue
         counts["covers_slot"] += 1
-        if not _candidate_has_subject(candidate, segment):
+        if require_subject and not _candidate_has_subject(candidate, segment):
             continue
-        if _candidate_keys(candidate) & tried:
+        if _candidate_keys(candidate, platform != "reel") & tried:
             continue
         counts["unused"] += 1
         candidates.append((float(candidate.get("shot_quality_score") or candidate.get("motion_score") or 0.0), candidate, _candidate_key(candidate)))
@@ -757,13 +789,27 @@ def _run_thumbnail_command(command: list[str]) -> None:
     subprocess.run(command, check=True, capture_output=True, text=True, timeout=45)
 
 
-_THUMBNAIL_LOCKS = [threading.Lock() for _ in range(64)]
+_THUMBNAIL_LOCKS = weakref.WeakValueDictionary()
+_THUMBNAIL_LOCKS_GUARD = threading.Lock()
+
+
+def _thumbnail_lock(output):
+    # Unrelated assets must not share a hash stripe: with two workers a stripe
+    # collision serialises both renders. Waiting/active callers own strong
+    # references, and idle locks disappear instead of accumulating forever.
+    key = str(Path(output).resolve())
+    with _THUMBNAIL_LOCKS_GUARD:
+        lock = _THUMBNAIL_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _THUMBNAIL_LOCKS[key] = lock
+        return lock
 
 
 def _render_thumbnail_to_path(project, segment, source, timestamp, output, root, ffmpeg, color_profile):
     # API preview requests and the foreground pipeline can target the same
     # asset. Check again after acquiring its bounded, process-local lock.
-    with _THUMBNAIL_LOCKS[int(hashlib.sha256(str(output).encode()).hexdigest()[:8], 16) % len(_THUMBNAIL_LOCKS)]:
+    with _thumbnail_lock(output):
         if output.is_file() and output.stat().st_size > 0:
             return
         render_source = source
@@ -779,10 +825,19 @@ def _render_thumbnail_to_path(project, segment, source, timestamp, output, root,
         if not output.exists():
             _set_render_status(root, output.name, {"state": "rendering"})
             temporary_thumbnail = output.with_name(f"{output.stem}.{threading.get_ident()}.tmp.jpg")
+            if segment.get('review_canvas') == 'reel':
+                # The card is taken from the same vertical preview, not a
+                # landscape thumbnail whose crop the editor would have to guess.
+                try:
+                    render_source = str(review_previews.render_preview(project, index=int(output.name.split('-')[1]), segment=segment))
+                except Exception as exc:
+                    _set_render_status(root, output.name, {"state":"failed", "error":"Could not prepare the vertical preview"})
+                    raise ThumbnailRenderError("Could not prepare the vertical preview") from exc
+                timestamp = 0.0
             command = [
                 ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", f"{timestamp:.3f}",
                 "-i", render_source, "-frames:v", "1", "-threads", "1",
-                "-vf", _thumbnail_filter(render_segment, color_profile),
+                "-vf", "scale=270:480" if segment.get("review_canvas") == "reel" else _thumbnail_filter(render_segment, color_profile),
                 "-q:v", "5", "-y", str(temporary_thumbnail),
             ]
             try:
@@ -794,19 +849,21 @@ def _render_thumbnail_to_path(project, segment, source, timestamp, output, root,
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, ThumbnailRenderError) as exc:
                 temporary_thumbnail.unlink(missing_ok=True)
                 detail = getattr(exc, "stderr", None) or str(exc)
-                thumbnail_error = str(detail).strip() or "FFmpeg failed to render the thumbnail"
+                from core.media_integrity import DAMAGE_MESSAGE, looks_like_damage
+                thumbnail_error = (DAMAGE_MESSAGE if looks_like_damage(str(detail))
+                                   else str(detail).strip()[-600:] or "FFmpeg failed to render the thumbnail")
                 _set_render_status(root, output.name, {"state": "failed", "error": thumbnail_error})
                 if isinstance(exc, ThumbnailRenderError):
                     raise
                 raise ThumbnailRenderError(thumbnail_error) from exc
 
 
-def _thumbnail_asset(root: Path, index: int, segment: dict[str, Any]) -> tuple[str, float, Path]:
+def _thumbnail_asset(root: Path, index: int, segment: dict[str, Any], color_profile=None) -> tuple[str, float, Path]:
     source = _source_for(segment)
     timestamp = float(segment.get("clip_start_sec") or 0.0) + max(0.1, float(segment.get("duration_sec") or 0.1)) / 2.0
     from core.storage import cache_mtime_ns
     source_mtime = cache_mtime_ns(Path(source)) if Path(source).exists() else 0
-    pose = json.dumps(_review_pose_for_cache(segment), sort_keys=True)
+    pose = json.dumps({**({"review_canvas":segment.get("review_canvas"),"review_layout":segment.get("review_layout"),"treatment":segment.get("reel_mix_treatment"),"subject_center":segment.get("reel_subject_center")} if segment.get("review_canvas") else {}), **({"color_profile":color_profile} if color_profile else {}), **_review_pose_for_cache(segment),**({"flat_framing":segment["flat_framing"]} if segment.get("flat_framing") else {})}, sort_keys=True)
     key = hashlib.sha256(f"{source}|{source_mtime}|{timestamp:.4f}|{pose}".encode()).hexdigest()[:20]
     return source, timestamp, root / f"shot-{index:04d}-{key}.jpg"
 
@@ -829,7 +886,12 @@ class ReviewFramePrefetch:
 
     def finish(self, progress_callback: ProgressCallback | None = None) -> None:
         for completed, future in enumerate(as_completed(self.futures), 1):
-            future.result()
+            try:
+                future.result()
+            except ThumbnailRenderError as exc:
+                # Recorded as failed in the render status; the card offers
+                # Other frame. One unreadable shot must not stop the edit.
+                LOGGER.warning("Review photo prefetch failed: %s", str(exc)[:300])
             if progress_callback:
                 progress_callback(int(100 * completed / max(1, len(self.futures))),
                                   f"Review photos ready: {completed}/{len(self.futures)}")
@@ -849,6 +911,7 @@ def review_items(
     progress_callback: ProgressCallback | None = None,
 ) -> list[dict[str, Any]]:
     """Return review items, optionally rendering only selected missing thumbnails."""
+    from core.camera_types import kind as camera_kind
     segments = _review_segments(project)
     signature = "assets-v2"
     root = project.cache_dir / "shot_review" / signature
@@ -867,14 +930,23 @@ def review_items(
     # Keep the default review path cheap: color profiling belongs to final
     # export and is optional for a thumbnail. A status-only request must not
     # launch/inspect the complete plan just to report missing URLs.
-    if render_missing and apply_color_profile:
-        from core.stages.export import _color_profiles_for_segments
-        color_profiles = _color_profiles_for_segments(project, segments, [])
+    if render_missing and (apply_color_profile or any(segment.get('video_light') is not None for segment in segments)):
+        from core.video_light import resolved_profiles
+        color_profiles = resolved_profiles(project, _plan(project).get("segments") or segments)
     else:
+        # Status-only polling must use the same cache identity as the worker,
+        # without launching new measurements. Otherwise corrected thumbnails
+        # exist on disk but the page waits forever for a different raw key.
         color_profiles = {}
+        if apply_color_profile or any(segment.get('video_light') is not None for segment in segments):
+            try:
+                cached = json.loads((project.cache_dir / 'color_profiles.json').read_text())
+                color_profiles = cached.get('corrections') or {}
+            except (OSError, ValueError, TypeError):
+                pass
     pending = []
     for index, segment in enumerate(segments):
-        source, timestamp, output = _thumbnail_asset(root, index, segment)
+        source, timestamp, output = _thumbnail_asset(root, index, segment, color_profiles.get(str(segment.get("clip_path")), {}))
         duration = max(0.1, float(segment.get("duration_sec") or 0.1))
         if not output.exists():
             legacy = _legacy_review_assets(str(root.parent)).get(output.name)
@@ -907,6 +979,7 @@ def review_items(
         }
         items.append({
             "index": index,
+            "camera_type": camera_kind(project,segment),
             "thumbnail": f"/api/v1/wizard/review/thumbnail/{signature}/{output.name}" if output.name and output.exists() else None,
             "thumbnail_status": thumbnail_state,
             "thumbnail_asset": output.name,
@@ -921,8 +994,14 @@ def review_items(
             "candidate_pool_origin": pool_origin,
             "transition_type": str(segment.get("transition_type") or "auto"),
             "subject_safe": _candidate_has_subject(segment, segment),
+            "preview_ready": review_previews.preview_path(project, index, segment).is_file(),
+            "preview_error": review_previews.preview_path(project, index, segment).with_suffix(".error.json").is_file(),
             "keep": True,
             "no_alternative": index in unavailable,
+            "preview": f"/api/v1/wizard/review/preview/{index}?v={review_previews.preview_path(project, index, segment).stem[-8:]}",
+            "filler": bool(segment.get("filler")),
+            "filler_shot": segment.get("filler_shot"),
+            "filler_conditions": segment.get("filler_conditions") or {},
         })
     if pending:
         completed = len(items) - len(pending)
@@ -930,7 +1009,8 @@ def review_items(
             nonlocal completed
             index, segment, source, timestamp, output, profile = item
             items[index].update(thumbnail=f"/api/v1/wizard/review/thumbnail/{signature}/{output.name}",
-                                thumbnail_status="ready", thumbnail_error=None)
+                                thumbnail_status="ready", thumbnail_error=None,
+                                preview_ready=review_previews.preview_path(project,index,segment).is_file())
             completed += 1
             if progress_callback:
                 progress_callback(int(100 * completed / max(1, len(items))),
@@ -940,17 +1020,22 @@ def review_items(
                               f"Preparing {len(pending)} review thumbnails")
         def render_one(item):
             index, segment, source, timestamp, output, profile = item
-            _render_thumbnail_to_path(project, segment, source, timestamp, output, root, ffmpeg, profile)
+            try:
+                _render_thumbnail_to_path(project, segment, source, timestamp, output, root, ffmpeg, profile)
+                return True
+            except ThumbnailRenderError as exc:
+                items[index].update(thumbnail_status="failed", thumbnail_error=str(exc)[-600:])
+                return False
         if len(pending) == 1:
-            render_one(pending[0])
-            publish_ready(pending[0])
+            if render_one(pending[0]):
+                publish_ready(pending[0])
         else:
             with ThreadPoolExecutor(max_workers=2, thread_name_prefix="review-frame") as pool:
                 futures = {pool.submit(render_one, item):item for item in pending}
                 try:
                     for future in as_completed(futures):
-                        future.result()
-                        publish_ready(futures[future])
+                        if future.result():
+                            publish_ready(futures[future])
                 except BaseException:
                     for future in futures:
                         future.cancel()
@@ -960,29 +1045,15 @@ def review_items(
     return items
 
 
-def render_review_thumbnails(project: Project, indices: set[int], max_workers: int = 2) -> None:
-    """Render selected review thumbnails in parallel without blocking HTTP."""
-    selected = sorted({int(index) for index in indices})
-    if not selected:
+def render_review_thumbnails(project: Project, indices: set[int], max_workers: int = 2, *, batch_only: bool = False) -> None:
+    """Refresh missing photos, including shared-profile dependants, off HTTP."""
+    if not indices:
         return
-    workers = max(1, min(int(max_workers), len(selected)))
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="review-thumb") as pool:
-        futures = {
-            pool.submit(
-                review_items,
-                project,
-                render_indices={index},
-                apply_color_profile=False,
-            ): index
-            for index in selected
-        }
-        for future in as_completed(futures):
-            index = futures[future]
-            try:
-                future.result()
-            except Exception as exc:
-                LOGGER.exception("Review thumbnail render failed for index %s", index)
-                mark_review_render_failed(project, {index}, str(exc))
+    # A swap can change the visible 360 colour samples and therefore the
+    # shared camera profile. Compute it once, then materialize every missing
+    # cache identity, not only the swapped slot. Existing photos are reused;
+    # review_items already bounds rendering to two workers.
+    review_items(project, render_indices=indices if batch_only else None, apply_color_profile=False)
 
 
 def set_review_transition_types(project: Project, transitions: dict[str, Any] | list[Any] | None) -> dict[str, Any]:
@@ -1005,6 +1076,29 @@ def set_review_transition_types(project: Project, transitions: dict[str, Any] | 
     project.mark_all_stale_from("export")
     project.save()
     return plan
+
+
+def _alternative_filler(project: Project, coverage: dict[str, Any], segment: dict[str, Any], tried: set[str],
+                        index: int, seed: str) -> dict[str, Any] | None:
+    """Another compatible filler window at least as long as the reviewed slot."""
+    from core import fillers
+    from core.stages.edit import _filler_plan_segment
+    bank = fillers.build_filler_bank(project, coverage.get("sources") or [])
+    duration = float(segment.get("duration_sec") or 0.0)
+    windows = [
+        window for window in bank.get("windows") or []
+        if f"{window['source_path']}|{float(window['start_sec']):.3f}" not in tried
+        and float(window["end_sec"]) - float(window["start_sec"]) >= duration - 1e-3
+    ]
+    master_start = float(segment.get("master_start_sec") or 0.0)
+    choice = fillers.choose_filler({"windows": windows}, master_start, duration, [], seed, index + len(tried))
+    if choice is None:
+        return None
+    replacement = {**segment, **_filler_plan_segment(choice, master_start, master_start + duration,
+                                                     str(segment.get("title") or ""))}
+    for stale_key in ("proxy_path", "spherical_source_path", "spherical_shot", "reel_framing", "motion"):
+        replacement.pop(stale_key, None)
+    return replacement
 
 
 def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
@@ -1033,12 +1127,46 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         slot_key = str(slot)
         tried.update(attempts.get(slot_key) or attempts.get(slot) or [])
         tried.update(exclusions.get(slot_key) or exclusions.get(slot) or [])
-        tried.update(_candidate_keys(segment))
+        tried.update(_candidate_keys(segment, platform != "reel"))
+        camera_pool, _ = _project_candidate_pool(project, coverage, segments, segment, platform)
+        camera_choices, _ = _replacement_candidates(camera_pool, segment, tried, platform)
+        if segment.get("filler") and not camera_choices:
+            # A filler covers a stretch no camera recorded: offer another
+            # compatible filler window, never a camera that is not there.
+            tried.add(str(segment.get("filler_key") or ""))
+            alternative = _alternative_filler(project, coverage, segment, tried, index, str(wizard.get("variation_seed") or ""))
+            if alternative is None:
+                unavailable.add(index)
+                diagnostics.append({"index": index, "status": "unavailable", "current": segment.get("filler_key"),
+                                    "reason": "no_other_compatible_filler"})
+                continue
+            tried.add(str(alternative["filler_key"]))
+            exclusions[slot_key] = sorted(tried)
+            attempts[slot_key] = sorted(tried)
+            segments[index] = alternative
+            unavailable.discard(index)
+            replaced.append(index)
+            diagnostics.append({"index": index, "status": "replaced", "current": segment.get("filler_key"),
+                                "candidate": alternative["filler_key"], "source": alternative.get("filename")})
+            continue
         pool, pool_origin = _project_candidate_pool(project, coverage, segments, segment, platform)
         candidates, counts = _replacement_candidates(pool, segment, tried, platform)
+        sole_shot = not segment.get("filler") and not any(other_index != index and _same_source_file(other, segment)
+                            for other_index, other in enumerate(segments))
+        if sole_shot:
+            # Every Drop box video must stay in the edit (coverage guard). The
+            # only shot of a video may move to another moment, never to another
+            # camera: replacing Conteint.mp4's only shot with a second
+            # 360ZZSession shot blocked a real Reel export at step 6.
+            candidates = [item for item in candidates if _same_source_file(item[1], segment)]
+            if not candidates:
+                candidates, _ = _replacement_candidates(
+                    [item for item in pool if _same_source_file(item, segment)], segment, tried, platform,
+                    require_subject=False)
         if not candidates:
             unavailable.add(index)
-            reason = "pool_empty" if counts["pool"] == 0 else "no_unused_candidate_covers_slot"
+            reason = ("only_shot_of_this_video" if sole_shot else
+                      "pool_empty" if counts["pool"] == 0 else "no_unused_candidate_covers_slot")
             LOGGER.info(
                 "Review replace slot=%s unavailable current=%s pool_origin=%s counts=%s",
                 index, _candidate_key(segment), pool_origin, counts,
@@ -1048,6 +1176,9 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
                 "reason": reason, "pool_origin": pool_origin, **counts,
             })
             continue
+        other_sources = [item for item in candidates if not _same_source_file(item[1], segment)]
+        if other_sources:
+            candidates = other_sources
         ordered_candidates = sorted(candidates, key=lambda item: (-item[0], item[2]))
         # Rotate deterministic alternatives instead of returning the same
         # highest-scoring frame on every click.
@@ -1074,9 +1205,16 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
             "source": candidate.get("filename") or candidate.get("path"),
             **counts,
         })
-        new_segment = dict(segment)
+        new_segment = {k:v for k,v in segment.items() if not k.startswith('filler') and k not in {'motion', 'flat_framing', 'performer_view'}}
+        new_segment['confidence'] = candidate.get('confidence', segment.get('confidence'))
+        new_segment['projection'] = candidate.get('projection')
         new_segment["clip_path"] = candidate.get("path") or candidate.get("clip_path") or candidate.get("source_path")
         new_segment["source_path"] = candidate.get("source_path") or new_segment["clip_path"]
+        if segment.get('performer_view') and new_segment['source_path'] != segment.get('source_path'):
+            # A person's coordinates belong to one stationary source, not the next camera.
+            for field in ('flat_framing','stage_performers','performer_view','performer_evidence','manual_view','motion'):
+                new_segment.pop(field,None)
+                if candidate.get(field) is not None:new_segment[field]=candidate[field]
         new_segment["filename"] = candidate.get("filename") or Path(str(new_segment["clip_path"])).name
         new_segment["camera_id"] = _camera_id({
             "source_path": new_segment["source_path"],
@@ -1111,6 +1249,8 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         segments[index] = new_segment
         unavailable.discard(index)
         replaced.append(index)
+    from core.shot_continuity import continuous_views
+    segments = continuous_views(segments)
     plan["segments"] = segments
     artifact_path(project, "edit_plan.json").write_text(json.dumps(plan, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     project.data["settings"]["wizard"]["review_attempts"] = attempts
