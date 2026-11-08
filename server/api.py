@@ -6264,7 +6264,18 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         global_landmarks = config.get("spherical_landmarks") or {}
         project_settings = project.data.setdefault("settings", {})
         project_landmarks = project_settings.get("spherical_landmarks") or {}
-        landmarks = merge_spherical_landmarks(global_landmarks, project_landmarks)
+        if source_key:
+            profiles = project_settings.setdefault("spherical_landmarks_by_source", {})
+            # Editing camera B must not copy camera A's custom POVs into B.
+            # Legacy defaults may be shared; new custom slots belong only to
+            # their authored source unless explicitly saved on another camera.
+            inherited = merge_spherical_landmarks(global_landmarks, project_landmarks)
+            inherited = {key: value for key, value in inherited.items()
+                         if not re.fullmatch(r"custom_([1-9]|1[0-6])", str(key))}
+            previous = profiles.get(source_key) or profiles.get(source_path) or {}
+            landmarks = merge_spherical_landmarks(inherited, previous)
+        else:
+            landmarks = merge_spherical_landmarks(global_landmarks, project_landmarks)
         landmarks = merge_spherical_landmarks(landmarks, incoming)
         # Re-sanitize the merged profile too: old project/global values may
         # contain pre-2.1.19 pitch/FOV values even when the incoming edit is
@@ -6272,7 +6283,6 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         landmarks = _sanitize_spherical_landmarks(landmarks)
         project_settings["spherical_landmarks"] = landmarks
         if source_key:
-            profiles = project_settings.setdefault("spherical_landmarks_by_source", {})
             profiles[source_key] = dict(landmarks)
             # Keep the original UI path as an alias as well. The desktop
             # picker can return a symlink/bookmark spelling while edit/export
