@@ -169,7 +169,7 @@ def register_edit_timeline(app,project,invalidate):
                 source=str(raw.get('source_path') or raw.get('clip_path') or '')
                 index=keys.get(source)
                 if index is None:raise ValueError('This edit contains a source without a registered original')
-                item={k:raw[k] for k in ('clip_start_sec','duration_sec','master_start_sec','playback_speed','spherical_shot','motion','flat_framing','projection','manual_view','insv_fov') if k in raw}
+                item={k:raw[k] for k in ('clip_start_sec','duration_sec','master_start_sec','playback_speed','spherical_shot','motion','motion_enabled','flat_framing','projection','manual_view','insv_fov') if k in raw}
                 item['source']=index
                 light=light_settings(p,raw)
                 if light is not None:item['video_light']=light
@@ -245,7 +245,7 @@ def register_edit_timeline(app,project,invalidate):
                 number=next((j+1 for j,r in enumerate(records) if r.get('path')==c.get('source_path')),None)
                 return ('Camera '+str(number).zfill(2)+' · ' if number is not None else '')+{'360':'360','fixed':'Fixed','moving':'Moving'}[camera_kind(p,c)]+(' · '+str(c['spherical_shot'].get('label') or 'View') if c.get('spherical_shot') else '')
             from core.video_light import settings as light_settings, DEFAULT
-            return jsonify(performers=data['segments'][i].get('stage_performers') or [],performer_view=data['segments'][i].get('performer_view'),performer_evidence=data['segments'][i].get('performer_evidence'),playback_speed=float(data['segments'][i].get('playback_speed',1.0)),reel_contain=p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix' or (p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix_vertical_horizontal' and data['segments'][i].get('reel_mix_treatment')=='horizontal'),project_id=str(p.folder),revision=revision(data),platform=data.get('platform') or p.data.get('settings',{}).get('wizard',{}).get('platform'),pose=data['segments'][i].get('spherical_shot') or {},framing=data['segments'][i].get('flat_framing') or {'zoom':1,'x':.5,'y':.5},light=light_settings(p,choices[0]) or {**DEFAULT,'auto':False},choices=[{'label':label(c),'spherical':bool(c.get('spherical_shot')),'kind':camera_kind(p,c),'light':light_settings(p,c) or {**DEFAULT,'auto':False}} for c in choices])
+            return jsonify(performers=data['segments'][i].get('stage_performers') or [],performer_view=data['segments'][i].get('performer_view'),performer_evidence=data['segments'][i].get('performer_evidence'),playback_speed=float(data['segments'][i].get('playback_speed',1.0)),movement=bool(data['segments'][i].get('motion_enabled',True)),reel_contain=p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix' or (p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix_vertical_horizontal' and data['segments'][i].get('reel_mix_treatment')=='horizontal'),project_id=str(p.folder),revision=revision(data),platform=data.get('platform') or p.data.get('settings',{}).get('wizard',{}).get('platform'),pose=data['segments'][i].get('spherical_shot') or {},framing=data['segments'][i].get('flat_framing') or {'zoom':1,'x':.5,'y':.5},light=light_settings(p,choices[0]) or {**DEFAULT,'auto':False},choices=[{'label':label(c),'spherical':bool(c.get('spherical_shot')),'kind':camera_kind(p,c),'light':light_settings(p,c) or {**DEFAULT,'auto':False}} for c in choices])
         except (OSError,ValueError,KeyError,IndexError) as e:return jsonify(error={'message':str(e)}),400
     @app.patch('/api/v1/edit/shot')
     def patch_music_shot():
@@ -268,13 +268,23 @@ def register_edit_timeline(app,project,invalidate):
                 playback_speed=float(body.get('playback_speed',before.get('playback_speed',1.0)))
                 if not math.isfinite(playback_speed) or not .5<=playback_speed<=2.0:raise ValueError('Choose a shot speed between 0.5x and 2x')
                 s['playback_speed']=round(playback_speed,3)
+                movement=body.get('movement',before.get('motion_enabled',True))
+                if not isinstance(movement,bool):raise ValueError('Movement must be a checkbox value')
+                s['motion_enabled']=movement
+                if s.get('spherical_shot') and not movement:
+                    s['spherical_shot']['runtime_motion_enabled']=False
                 if component!='light' and s.get('spherical_shot'):
                     pose=s['spherical_shot']
                     for key,lo,hi in [('yaw',-180,180),('pitch',-85,85),('fov',30,120)]:
                         value=float(body.get(key,pose.get(key) or (95 if key=='fov' else 0)))
                         if not math.isfinite(value) or not lo<=value<=hi:raise ValueError('Choose a valid camera viewpoint')
                         pose[key]=value
-                    pose.update(projection_preset='normal',type='manual',shot_id='manual',label='Custom view',runtime_motion_enabled=False);pose.pop('movement',None);s['manual_view']=True
+                    pose.update(projection_preset='normal',type='manual',shot_id='manual',label='Custom view',runtime_motion_enabled=movement);pose.pop('movement',None)
+                    if movement:
+                        pose['hold_motion_rate_deg_per_sec'] = (0.3 if i % 2 else -0.3)
+                    else:
+                        pose.pop('hold_motion_rate_deg_per_sec',None)
+                    s['manual_view']=True
                 elif component!='light':
                     from core.flat_framing import validate
                     s['flat_framing']=validate(body.get('flat_framing') or {'zoom':1,'x':.5,'y':.5})

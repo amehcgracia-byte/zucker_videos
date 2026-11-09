@@ -3446,6 +3446,8 @@ def _reel_letterbox_filter(project: Project, segment: dict[str, Any], platform: 
 
 
 def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> str | None:
+    if segment.get('motion_enabled') is False:
+        return None
     if segment.get("flat_framing"):
         if platform not in {"youtube","reel","reel_horizontal"}:return None
         close=float(segment['flat_framing'].get('zoom',1))>1.001
