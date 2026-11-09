@@ -261,8 +261,12 @@ def register_edit_timeline(app,project,invalidate):
                 if not 0<=choice<len(choices):raise ValueError('Choose one of this shot’s cameras')
                 if not isinstance(body.get('apply_to_source',False),bool):raise ValueError('Choose whether to apply to the source video')
                 component=body.get('edit_component','all')
-                if component not in ('all','framing','light'):raise ValueError('Choose framing or light')
+                if component not in ('all','framing','light','movement'):raise ValueError('Choose framing, light or movement')
                 if component=='light' and choice!=0:raise ValueError('Choose the camera in Framing first')
+                if component == 'movement' and (choice != 0 or body.get('apply_to_source') or any(
+                    key in body for key in ('video_light', 'performer_roles', 'remember_musician')
+                )):
+                    raise ValueError('Movement applies only to this shot')
                 if component=='framing' and 'video_light' in body:raise ValueError('Save light separately from framing')
                 before=data['segments'][i];s=copy.deepcopy(choices[choice])
                 playback_speed=float(body.get('playback_speed',before.get('playback_speed',1.0)))
@@ -275,9 +279,10 @@ def register_edit_timeline(app,project,invalidate):
                     for field in ('motion', 'spherical_shot'):
                         for key in ('continuity_duration_sec', 'continuity_offset_sec'):
                             (s.get(field) or {}).pop(key, None)
-                if s.get('spherical_shot') and not movement:
-                    s['spherical_shot']['runtime_motion_enabled']=False
-                if component!='light' and s.get('spherical_shot'):
+                if s.get('spherical_shot'):
+                    if component == 'movement' or not movement:
+                        s['spherical_shot']['runtime_motion_enabled']=movement
+                if component in ('all','framing') and s.get('spherical_shot'):
                     pose=s['spherical_shot']
                     for key,lo,hi in [('yaw',-180,180),('pitch',-85,85),('fov',30,120)]:
                         value=float(body.get(key,pose.get(key) or (95 if key=='fov' else 0)))
@@ -289,7 +294,7 @@ def register_edit_timeline(app,project,invalidate):
                     else:
                         pose.pop('hold_motion_rate_deg_per_sec',None)
                     s['manual_view']=True
-                elif component!='light':
+                elif component in ('all','framing'):
                     from core.flat_framing import validate
                     s['flat_framing']=validate(body.get('flat_framing') or {'zoom':1,'x':.5,'y':.5})
                     s['manual_view']=True

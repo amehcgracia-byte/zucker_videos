@@ -26,7 +26,7 @@ def continuous_views(segments, *, preserve_authored=False):
     output = deepcopy(segments)
     # Stage plans already carry their motion clocks. A manual crop must
     # neither inherit its neighbour's clock nor re-time the neighbouring run.
-    if preserve_authored and any(segment.get('manual_view') for segment in output):
+    if preserve_authored and any(segment.get('manual_view') or 'motion_enabled' in segment for segment in output):
         return output
     for segment in output:
         for field in ('spherical_shot', 'motion'):
