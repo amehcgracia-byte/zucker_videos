@@ -279,7 +279,12 @@ def register_edit_timeline(app,project,invalidate):
                         value=float(body.get(key,pose.get(key) or (95 if key=='fov' else 0)))
                         if not math.isfinite(value) or not lo<=value<=hi:raise ValueError('Choose a valid camera viewpoint')
                         pose[key]=value
-                    pose.update(projection_preset='normal',type='manual',shot_id='manual',label='Custom view',runtime_motion_enabled=False);pose.pop('movement',None);s['manual_view']=True
+                    pose.update(projection_preset='normal',type='manual',shot_id='manual',label='Custom view',runtime_motion_enabled=movement);pose.pop('movement',None)
+                    if movement:
+                        pose['hold_motion_rate_deg_per_sec'] = (0.3 if i % 2 else -0.3)
+                    else:
+                        pose.pop('hold_motion_rate_deg_per_sec',None)
+                    s['manual_view']=True
                 elif component!='light':
                     from core.flat_framing import validate
                     s['flat_framing']=validate(body.get('flat_framing') or {'zoom':1,'x':.5,'y':.5})
