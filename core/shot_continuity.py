@@ -5,7 +5,7 @@ VERSION = 1
 
 
 def _key(segment):
-    if segment.get('filler'):
+    if segment.get('filler') or segment.get('motion_enabled') is False:
         return None
     source = segment.get('source_path') or segment.get('clip_path')
     shot = segment.get('spherical_shot') or {}
@@ -21,9 +21,13 @@ def _key(segment):
             *(motion.get(k) for k in ('target_x', 'target_y', 'lock_target')))
 
 
-def continuous_views(segments):
+def continuous_views(segments, *, preserve_authored=False):
     """Keep the editable cut boundaries, but never restart an identical view."""
     output = deepcopy(segments)
+    # Stage plans already carry their motion clocks. A manual crop must
+    # neither inherit its neighbour's clock nor re-time the neighbouring run.
+    if preserve_authored and any(segment.get('manual_view') for segment in output):
+        return output
     for segment in output:
         for field in ('spherical_shot', 'motion'):
             for key in ('continuity_duration_sec', 'continuity_offset_sec'):

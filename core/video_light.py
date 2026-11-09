@@ -83,6 +83,24 @@ def filtergraph(color, override=None):
     return "curves=master='" + ' '.join(points) + "'"
 
 
+def cached_review_profiles(project):
+    """Read the published camera profile without resampling the edited views."""
+    import json
+    try:
+        return json.loads((project.cache_dir / 'color_profiles.json').read_text()).get('corrections') or {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def stage_review_profile(project, segment):
+    spec = settings(project, segment)
+    if spec is None:
+        return {}
+    result = dict(cached_review_profiles(project).get(str(segment.get('clip_path') or ''), {}))
+    result['video_light'] = spec
+    return result
+
+
 def resolved_profile(project, segment):
     """Use the final export's measurement and camera matching for review too."""
     if settings(project, segment) is None:

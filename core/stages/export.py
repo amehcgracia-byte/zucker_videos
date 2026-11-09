@@ -799,7 +799,7 @@ def _render_plan(
             )
             segment_paths.append(intro_path)
             phase_times["intro_sec"] = round(time.perf_counter() - phase_started, 3)
-        render_segments = _continuous_spherical_render_segments(segments)
+        render_segments = _continuous_spherical_render_segments(segments, preserve_authored=platform == "youtube")
         if _branding_within_content():
             elapsed = 0.0
             render_segments = [dict(item) for item in render_segments]
@@ -1830,9 +1830,9 @@ def _expand_spherical_render_segments(segments: list[dict[str, Any]]) -> list[di
     return expanded
 
 
-def _continuous_spherical_render_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _continuous_spherical_render_segments(segments: list[dict[str, Any]], *, preserve_authored=False) -> list[dict[str, Any]]:
     from core.shot_continuity import continuous_views
-    segments = continuous_views(segments)
+    segments = continuous_views(segments, preserve_authored=preserve_authored)
     output: list[dict[str, Any]] = []
     previous_shot: dict[str, Any] | None = None
     for segment in segments:

@@ -271,6 +271,10 @@ def register_edit_timeline(app,project,invalidate):
                 movement=body.get('movement',before.get('motion_enabled',True))
                 if not isinstance(movement,bool):raise ValueError('Movement must be a checkbox value')
                 s['motion_enabled']=movement
+                if component != 'light':
+                    for field in ('motion', 'spherical_shot'):
+                        for key in ('continuity_duration_sec', 'continuity_offset_sec'):
+                            (s.get(field) or {}).pop(key, None)
                 if s.get('spherical_shot') and not movement:
                     s['spherical_shot']['runtime_motion_enabled']=False
                 if component!='light' and s.get('spherical_shot'):

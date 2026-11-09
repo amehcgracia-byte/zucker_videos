@@ -1798,6 +1798,14 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         except OSError as exc:
             return error_response("input_file_error", str(exc), 400)
 
+    def can_prepare_review(project):
+        status = state.wizard.status().get("status")
+        if (state.composition.status(project) or {}).get("status") in {"running", "cancelling"}:
+            return False
+        if status == "idle":
+            status = _project_wizard_status(project).get("status")
+        return status == "waiting_review"
+
     @app.get("/api/v1/wizard/review")
     def api_wizard_review() -> Response:
         project = state.project or _active_wizard_project(state)
@@ -1815,8 +1823,15 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                     for item in items
                     if item.get("thumbnail_status") == "missing"
                 }
-                if state.wizard.status().get("status") == "waiting_review":
-                    review_previews.PREFETCH.start(project)
+                if can_prepare_review(project):
+                    missing = pending | {
+                        item["index"] for item in items
+                        if not item["preview_ready"] and not item["preview_error"]
+                        and item["thumbnail_status"] != "failed"
+                    }
+                    if missing:
+                        review_previews.PREFETCH.start(project, priority=request.args.get("shot", type=int),
+                                                       indices=missing)
                 else:
                     _queue_review_thumbnail_render(project, pending)
             return jsonify({
@@ -2000,7 +2015,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return error_response("not_found", "No such review shot", 404)
         path = review_previews.preview_path(project, index, segments[index])
         if not path.is_file():
-            if state.wizard.status().get("status") != "waiting_review":
+            if not can_prepare_review(project):
                 return error_response("wizard_busy", "Previews are made while reviewing shots", 409)
             try:
                 path = review_previews.render_preview(project, index, segments[index])

@@ -123,7 +123,8 @@ def _review_segments(project: Project) -> list[dict[str, Any]]:
             segment['review_canvas'] = 'reel'
             segment['review_layout'] = project.data.get('settings', {}).get('wizard', {}).get('reel_aspect', '9:16')
     from core.shot_continuity import continuous_views
-    result = continuous_views(result)
+    stage = (plan.get('platform') or project.data.get('settings', {}).get('wizard', {}).get('platform')) == 'youtube'
+    result = continuous_views(result, preserve_authored=stage)
     from core.video_light import settings
     for segment in result:
         spec = settings(project, segment)
@@ -930,20 +931,14 @@ def review_items(
     # Keep the default review path cheap: color profiling belongs to final
     # export and is optional for a thumbnail. A status-only request must not
     # launch/inspect the complete plan just to report missing URLs.
-    if render_missing and (apply_color_profile or any(segment.get('video_light') is not None for segment in segments)):
-        from core.video_light import resolved_profiles
-        color_profiles = resolved_profiles(project, _plan(project).get("segments") or segments)
-    else:
-        # Status-only polling must use the same cache identity as the worker,
-        # without launching new measurements. Otherwise corrected thumbnails
-        # exist on disk but the page waits forever for a different raw key.
-        color_profiles = {}
-        if apply_color_profile or any(segment.get('video_light') is not None for segment in segments):
-            try:
-                cached = json.loads((project.cache_dir / 'color_profiles.json').read_text())
-                color_profiles = cached.get('corrections') or {}
-            except (OSError, ValueError, TypeError):
-                pass
+    color_profiles = {}
+    if apply_color_profile or any(segment.get('video_light') is not None for segment in segments):
+        if render_missing and (apply_color_profile or platform != 'youtube'):
+            from core.video_light import resolved_profiles
+            color_profiles = resolved_profiles(project, _plan(project).get("segments") or segments)
+        else:
+            from core.video_light import cached_review_profiles
+            color_profiles = cached_review_profiles(project)
     pending = []
     for index, segment in enumerate(segments):
         source, timestamp, output = _thumbnail_asset(root, index, segment, color_profiles.get(str(segment.get("clip_path")), {}))

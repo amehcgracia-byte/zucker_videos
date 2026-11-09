@@ -54,6 +54,10 @@ def preview_path(project: Project, index: int, segment: dict[str, Any]) -> Path:
         "video_light": segment.get("video_light"), "light_settings": project.data.get("settings", {}).get("edit", {}).get("video_light"),
         "shot": segment.get("spherical_shot") or {}, "motion": segment.get("motion") or {}, "flat_framing":segment.get("flat_framing"),
     }, sort_keys=True, default=str)
+    # Preserve legacy cache keys for unchanged shots. Explicitly stationary
+    # shots have different render inputs.
+    if segment.get("motion_enabled") is False:
+        identity += ":stationary"
     key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
     return preview_root(project) / f"preview-{index:04d}-{key}.mp4"
 
@@ -97,7 +101,7 @@ def _native_motion(segment: dict[str, Any]) -> bool:
     """The export's own rule for frame-by-frame 360 reprojection."""
     from core.stages.export import _shot_requires_runtime_motion
     shot = segment.get("spherical_shot") or {}
-    return bool(shot and str(segment.get("projection") or "equirect").lower() == "equirect"
+    return bool(segment.get("motion_enabled") is not False and shot and str(segment.get("projection") or "equirect").lower() == "equirect"
                 and shot.get("runtime_motion_enabled", True)
                 and (shot.get("movement") or _shot_requires_runtime_motion(shot)))
 
@@ -163,14 +167,16 @@ def _render_reel(project, segment, output, ffmpeg):
 def _render_flat(project: Project, segment: dict[str, Any], output: Path, ffmpeg: str) -> None:
     from core.shot_review import _source_for, _thumbnail_filter
     from core.stages import export
-    from core.video_light import resolved_profile
-    color = resolved_profile(project, segment)
+    from core.video_light import stage_review_profile
+    color = stage_review_profile(project, segment)
     source = _source_for(segment)
     duration = min(3.0, max(0.1, float(segment.get("duration_sec") or 0.1)))
     if segment.get("spherical_shot"):
         # 360 hold: the review photo's framing, now in motion.
         sphere, _ = _existing_sphere_source(project, segment)
-        render_segment = dict(segment, source_path=sphere, clip_path=sphere, projection="equirect")
+        render_segment = dict(segment, source_path=sphere, clip_path=sphere)
+        if sphere != source:
+            render_segment["projection"] = "equirect"
         video_filter = _thumbnail_filter(render_segment, color).replace("w=360:h=202", f"w={PREVIEW_WIDTH}:h={PREVIEW_HEIGHT}")
         video_filter = f"{video_filter},fps={PREVIEW_FPS}"
         source = sphere
@@ -190,8 +196,7 @@ def _render_flat(project: Project, segment: dict[str, Any], output: Path, ffmpeg
     command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
                "-ss", f"{float(segment.get('clip_start_sec') or 0.0):.3f}", "-t", f"{duration:.3f}",
                "-i", source, "-vf", video_filter, *_ENCODE, str(output)]
-    subprocess.run(command, check=True, capture_output=True, timeout=300,
-                   preexec_fn=(lambda: os.nice(10)) if os.name == "posix" else None)
+    subprocess.run(command, check=True, capture_output=True, timeout=120)
 
 
 def _render_sphere_motion(project: Project, segment: dict[str, Any], output: Path, ffmpeg: str) -> None:
@@ -207,12 +212,10 @@ def _render_sphere_motion(project: Project, segment: dict[str, Any], output: Pat
     sampler = ((lambda seconds: _v360_motion_at(shot, duration, seconds))
                if (shot.get("type") in {"recorded_move", "planet"} and shot.get("movement") != "planet_to_stage")
                or not shot.get("movement") else None)
-    from core.video_light import resolved_profile
+    from core.video_light import resolved_reel_profile, stage_review_profile
     from core.stages.export import _color_filter
-    color = resolved_profile(project, segment)
-    if segment.get("review_canvas") == "reel":
-        from core.video_light import resolved_reel_profile
-        color = resolved_reel_profile(project, segment)
+    color = (resolved_reel_profile(project, segment) if segment.get("review_canvas") == "reel"
+             else stage_review_profile(project, segment))
     reel_graph = _reel_graph(project, segment, color) if segment.get("review_canvas") == "reel" else None
     command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
                "-s", f"{PREVIEW_WIDTH}x{PREVIEW_HEIGHT}", "-r", str(PREVIEW_FPS), "-i", "pipe:0", *(["-filter_complex", reel_graph, "-map", "[v]"] if reel_graph else ["-vf", _color_filter(color)] if color else []), *_ENCODE, str(output)]
@@ -265,7 +268,8 @@ class _Prefetcher:
         self._thread: threading.Thread | None = None
         self._project_folder: str | None = None
 
-    def start(self, project: Project) -> None:
+    def start(self, project: Project, priority: int | None = None,
+              indices: set[int] | None = None) -> None:
         with self._lock:
             from core.shot_review import _review_segments, _review_signature
             folder = str(project.folder) + ":" + _review_signature(_review_segments(project))
@@ -274,7 +278,7 @@ class _Prefetcher:
             self.stop_locked()
             self._stop = threading.Event()
             self._project_folder = folder
-            self._thread = threading.Thread(target=self._run, args=(project, self._stop), daemon=True,
+            self._thread = threading.Thread(target=self._run, args=(project, self._stop, priority, indices), daemon=True,
                                             name="review-preview-prefetch")
             self._thread.start()
 
@@ -287,8 +291,9 @@ class _Prefetcher:
         self._thread = None
 
     @staticmethod
-    def _run(project: Project, stop: threading.Event) -> None:
-        from core.shot_review import _review_segments, _thumbnail_asset
+    def _run(project: Project, stop: threading.Event, priority: int | None = None,
+              indices: set[int] | None = None) -> None:
+        from core.shot_review import _review_segments
         try:
             segments = _review_segments(project)
         except Exception:
@@ -296,11 +301,19 @@ class _Prefetcher:
         # Finish each group before starting the next. No all-photo barrier and
         # no second producer racing the hover requests.
         from core.shot_review import render_review_thumbnails
-        for first in range(0, len(segments), 3):
+        ordered = list(range(len(segments))) if indices is None else sorted(indices & set(range(len(segments))))
+        groups = []
+        if priority in ordered:
+            ordered.remove(priority)
+            groups.append({priority})
+        groups.extend(set(ordered[first:first + 3]) for first in range(0, len(ordered), 3))
+        for indices in groups:
             if stop.is_set():
                 return
-            indices = set(range(first, min(first + 3, len(segments))))
-            render_review_thumbnails(project, indices, batch_only=True)
+            try:
+                render_review_thumbnails(project, indices, batch_only=True)
+            except Exception:
+                LOGGER.exception("Could not prepare review thumbnails %s", sorted(indices))
             for index in sorted(indices):
                 if stop.is_set():
                     return
