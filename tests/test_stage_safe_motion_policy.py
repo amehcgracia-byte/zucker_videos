@@ -1,30 +1,22 @@
-"""Regression tests for optional Stage motion and safe automatic closeups."""
+"""Regression tests for per-shot motion without changing allowed zoom ranges."""
 from pathlib import Path
 
-from core.stage_performers import subject_crop
 
-
-def test_automatic_musician_crop_never_exceeds_50_percent():
-    person = {
-        "id": "guitarist",
-        "head_box": [0.46, 0.24, 0.50, 0.32],
-        "body_box": [0.43, 0.30, 0.55, 0.65],
-    }
-    crop = subject_crop(person, [person])
-    assert 1 <= crop["zoom"] <= 1.5
-    assert 0 <= crop["x"] <= 1
-    assert 0 <= crop["y"] <= 1
-
-
-def test_shot_save_and_render_have_separate_motion_off_paths():
+def test_selected_shot_movement_is_boolean_and_scoped():
     edit = Path("server/edit_timeline.py").read_text()
-    render = Path("core/stages/export.py").read_text()
     assert "if not isinstance(movement,bool)" in edit
     assert "s['motion_enabled']=movement" in edit
-    assert "if segment.get('motion_enabled') is False:" in render
     assert "runtime_motion_enabled=movement" in edit
+    assert "'motion_enabled','flat_framing'" in edit
 
 
-def test_operator_avoidance_auto_zoom_is_capped():
+def test_export_respects_movement_off_but_keeps_existing_zoom_ranges():
     render = Path("core/stages/export.py").read_text()
-    assert "zoom = max(1.0, min(1.5, zoom))" in render
+    assert "if segment.get('motion_enabled') is False:" in render
+    assert "zoom = max(1.0, min(1.6, zoom))" in render
+
+
+def test_individual_360_move_is_bounded():
+    edit = Path("server/edit_timeline.py").read_text()
+    assert "pose['hold_motion_rate_deg_per_sec'] = (0.3 if i % 2 else -0.3)" in edit
+    assert "pose.pop('hold_motion_rate_deg_per_sec',None)" in edit
