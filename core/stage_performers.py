@@ -65,8 +65,7 @@ def subject_crop(person, neighbors):
     size = max(minimum, min(desired, right-left))
     size = min(1., size)
     # Round inward for neighbor exclusion, capped by the safe head-fit zoom.
-    # Automatic Stage person crops must not magnify the source by more than 50%.
-    zoom = max(1., min(1.5, math.ceil(1000/size)/1000, math.floor(1000/minimum)/1000))
+    zoom = max(1., min(6., math.ceil(1000/size)/1000, math.floor(1000/minimum)/1000))
     size = 1/zoom
     def interval(low, high):
         return max(0., high+margin-size*(1-inset)), min(1-size, low-margin-size*inset)
