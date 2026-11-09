@@ -3550,7 +3550,7 @@ def _zoom_crop_filter(motion: dict[str, Any], platform: str) -> str | None:
         pan_y = 0.5
     except (TypeError, ValueError):
         return None
-    zoom = max(1.0, min(1.5, zoom))
+    zoom = max(1.0, min(1.6, zoom))
     pan_x = max(0.0, min(1.0, pan_x))
     pan_y = max(0.0, min(1.0, pan_y))
     scaled_width = f"ceil({width}*{zoom:.6f}/2)*2"
