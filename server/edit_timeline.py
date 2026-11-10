@@ -332,12 +332,20 @@ def register_edit_timeline(app,project,invalidate):
                     pose=s['spherical_shot']
                     authored_pose = {key:float(pose.get(key) or (95 if key=='fov' else 0))
                                      for key in ('yaw','pitch','fov')}
-                    for key,lo,hi in [('yaw',-180,180),('pitch',-85,85),('fov',30,120)]:
+                    # Stored 360 views may use 0..360 degrees even though
+                    # the editor slider displays -180..180. Both describe
+                    # the SAME view; do not mistake 200° for a custom angle.
+                    for key,lo,hi in [('yaw',-360,360),('pitch',-85,85),('fov',30,120)]:
                         value=float(body.get(key,pose.get(key) or (95 if key=='fov' else 0)))
                         if not math.isfinite(value) or not lo<=value<=hi:raise ValueError('Choose a valid camera viewpoint')
                         pose[key]=value
-                    changed_pose=any(abs(float(pose[key])-authored_pose[key])>0.001
-                                     for key in ('yaw','pitch','fov'))
+                    changed_pose=(
+                        abs((float(pose['yaw'])-authored_pose['yaw']+180)%360-180)>0.001
+                        or any(abs(float(pose[key])-authored_pose[key])>0.001
+                               for key in ('pitch','fov')))
+                    if not changed_pose:
+                        # Preserve the exact authored representation and label.
+                        pose['yaw']=authored_pose['yaw']
                     # Selecting an existing singer/pianist/other 360 preset is
                     # NOT a custom camera pose. Preserve its authored yaw,
                     # pitch, FOV, type and instrument label as selected.
