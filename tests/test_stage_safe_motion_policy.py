@@ -6,7 +6,7 @@ def test_selected_shot_movement_is_boolean_and_scoped():
     edit = Path("server/edit_timeline.py").read_text()
     assert "if not isinstance(movement,bool)" in edit
     assert "s['motion_enabled']=movement" in edit
-    assert "runtime_motion_enabled=movement" in edit
+    assert "pose['runtime_motion_enabled']=movement" in edit
     assert "'motion_enabled','flat_framing'" in edit
 
 
