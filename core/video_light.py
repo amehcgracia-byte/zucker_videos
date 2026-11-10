@@ -108,12 +108,16 @@ def stable_stage_review_profiles(project):
             sources.append((str(path), None, None))
     key = hashlib.sha256(json.dumps(sorted(sources)).encode()).hexdigest()[:24]
     target = project.cache_dir / ('stage-review-light-' + key + '.json')
-    try:
-        return json.loads(target.read_text())['corrections']
-    except (OSError, ValueError, KeyError, TypeError):
-        profiles = cached_review_profiles(project)
-        atomic_write_json(target, {'corrections': profiles})
-        return profiles
+    with _RESOLVED_LOCK:
+        try:
+            profiles = json.loads(target.read_text())['corrections']
+            if not isinstance(profiles, dict):
+                raise ValueError('Invalid cached review grade')
+            return profiles
+        except (OSError, ValueError, KeyError, TypeError):
+            profiles = cached_review_profiles(project)
+            atomic_write_json(target, {'corrections': profiles})
+            return profiles
 
 
 def stage_review_profile(project, segment):
