@@ -21,8 +21,8 @@ from core.stages.base import stable_fingerprint
 
 LOGGER = logging.getLogger(__name__)
 
-CACHE_VERSION = 4
-OPERATOR_AVOIDANCE_VERSION = 4
+CACHE_VERSION = 5
+OPERATOR_AVOIDANCE_VERSION = 5
 
 # Sample the clip at ~2fps: dense enough to catch the operator stepping into
 # frame, cheap enough not to meaningfully slow ingest.
@@ -187,6 +187,11 @@ def _detect_clip_presence(path: str, progress_callback: Any = None) -> list[dict
                         sample["subject_area_fraction"] = round(subject["area_fraction"], 4)
                         sample["subject_cx"] = round(subject["cx"], 4)
                         sample["subject_cy"] = round(subject["cy"], 4)
+                        # Keep the full source-space bounds for face/headroom-
+                        # safe framing, not only a person-centre anchor.
+                        for axis in ("x1", "y1", "x2", "y2"):
+                            if axis in subject:
+                                sample["subject_" + axis] = round(subject[axis], 4)
                     samples.append(sample)
                 if progress_callback and frame_total:
                     progress_callback(min(99, int(index / frame_total * 100)), "Scanning for camera operator")
@@ -221,6 +226,10 @@ def _detect_frame(net: Any, frame: Any) -> list[dict[str, float]]:
                 "area_fraction": area_fraction,
                 "cx": (x1 + x2) / 2 / width,
                 "cy": (y1 + y2) / 2 / height,
+                "x1": max(0.0, min(1.0, x1 / width)),
+                "y1": max(0.0, min(1.0, y1 / height)),
+                "x2": max(0.0, min(1.0, x2 / width)),
+                "y2": max(0.0, min(1.0, y2 / height)),
                 "confidence": confidence,
             }
         )
