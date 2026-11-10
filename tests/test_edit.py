@@ -1055,3 +1055,14 @@ def test_shot_prefetch_is_notified_incrementally_without_changing_plan(platform)
     assert [segment['clip_start_sec'] for index, segment in notified] == [s['clip_start_sec'] for s in result['segments']]
     if platform == 'youtube':
         assert 'choose' in order[order.index('photo-0') + 1:], 'First photo precedes later camera decisions'
+
+
+def test_filename_with_trailing_space_is_one_camera():
+    # Regression: "Watching you .mp4" failed with camera_id='watching you',
+    # render_source_camera='watching you ' (real Reel project).
+    from core.stages.edit import _camera_id, validate_plan_camera_source_consistency
+    path = "/Volumes/RAWVideos/ZZSesions/2026/Juni/ZZS22.06.26/edited/video/Watching you .mp4"
+    camera = _camera_id({"source_path": path, "filename": "Watching you .mp4", "projection": None})
+    assert camera == "watching you"
+    validate_plan_camera_source_consistency({"segments": [
+        {"source_path": path, "clip_path": path, "filename": "Watching you .mp4", "camera_id": camera}]})

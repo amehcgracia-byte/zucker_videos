@@ -150,6 +150,12 @@ def whisper_model_path(name: str) -> str:
     folder = data_root() / 'Cache' / 'WhisperModels' / name.replace('/', '--')
     if all((folder / file).is_file() for file in ('model.bin','config.json','tokenizer.json')) and any(folder.glob('vocabulary.*')):
         return str(folder)
+    # Reuse an installed shared model before allocating another project-data copy.
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        return download_model(name,local_files_only=True,cache_dir=HF_HUB_CACHE)
+    except Exception:
+        pass
     return download_model(name, output_dir=str(folder), cache_dir=str(data_root()/'Cache'/'huggingface'/'hub'))
 
 

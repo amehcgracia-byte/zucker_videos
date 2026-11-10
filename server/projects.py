@@ -9,6 +9,7 @@ from typing import Any
 from core.project import Project, ProjectError, load_project
 from server.inbox import app_home, load_global_config
 from core.storage import project_locations, require_available, media_signature
+from core.trash import move_to_trash
 
 
 def projects_root() -> Path:
@@ -18,15 +19,33 @@ def projects_root() -> Path:
     return root
 
 
+# project.json path -> (mtime_ns, size, summary). Large project files on an
+# external disk made the project shelf take seconds to appear; only projects
+# whose file changed are read again, and listing never writes folders.
+_SUMMARY_CACHE: dict[Path, tuple[int, int, dict[str, Any]]] = {}
+
+
 def list_projects() -> list[dict[str, Any]]:
     """Return lightweight metadata for existing wizard projects."""
     projects: list[dict[str, Any]] = []
     for project_json in sorted({file.resolve() for root in project_locations() for file in root.glob("*.zuckervid/project.json")}):
         try:
-            project = load_project(str(project_json.parent))
-        except ProjectError:
+            stat = project_json.stat()
+        except OSError:
             continue
-        projects.append(project_summary(project))
+        cached = _SUMMARY_CACHE.get(project_json)
+        if cached and cached[:2] == (stat.st_mtime_ns, stat.st_size):
+            summary = dict(cached[2])
+            # The export may have been moved or deleted without a project save.
+            if summary.get("export_path") and not Path(summary["export_path"]).exists():
+                summary.update({"has_export": False, "export_path": None})
+        else:
+            try:
+                summary = project_summary(load_project(str(project_json.parent), ensure_dirs=False))
+            except (ProjectError, OSError, ValueError):
+                continue
+            _SUMMARY_CACHE[project_json] = (stat.st_mtime_ns, stat.st_size, dict(summary))
+        projects.append(summary)
     return sorted(projects, key=lambda item: item.get("modified_at") or "", reverse=True)
 
 
@@ -61,9 +80,12 @@ def find_project_by_inputs(master: str, songs: str | None, videos: list[str]) ->
             project = load_project(str(project_json.parent))
         except ProjectError:
             continue
-        if project.refresh_input_records():
-            project.save()
+        # Refreshed in memory only: looking for a match must not rewrite
+        # (and mark stale) every other project, e.g. one on an unplugged drive.
+        refreshed = project.refresh_input_records(missing_invalidates=False)
         if project_input_signature(project) == wanted:
+            if refreshed:
+                project.save()
             return project
     return None
 
@@ -95,7 +117,11 @@ def input_signature(master: str, songs: str | None, videos: list[str]) -> dict[s
 
 
 def delete_project_folder(project_path: str, keep_exports: bool = False) -> dict[str, Any]:
-    """Delete one project folder, optionally moving exports out first."""
+    """Retire a project recoverably, optionally keeping exports in their shelf.
+
+    Never fall back to recursive deletion if Trash access or a move fails: the
+    project may contain the only remaining copy of the user's recordings.
+    """
     folder = Path(project_path).expanduser().resolve()
     allowed = {root.resolve() for root in project_locations()}
     if folder.parent not in allowed or folder.suffix != ".zuckervid":
@@ -110,8 +136,10 @@ def delete_project_folder(project_path: str, keep_exports: bool = False) -> dict
                 target = destination / export.name
                 shutil.move(str(export), str(target))
                 kept_exports.append(str(target))
-    shutil.rmtree(folder)
-    return {"deleted": str(folder), "kept_exports": kept_exports}
+    destination = move_to_trash(folder)
+    if destination is None:
+        raise ValueError("The project could not be moved to Trash")
+    return {"deleted": str(folder), "kept_exports": kept_exports, "trash_path": str(destination)}
 
 
 def project_status(project: Project) -> str:

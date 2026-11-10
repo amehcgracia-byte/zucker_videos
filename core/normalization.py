@@ -448,7 +448,11 @@ def migrate_project_normalization_cache(project: Project) -> bool:
             continue
         key = cache_key_for_signature(source, signature)
         destination = global_proxy_path(key)
-        migrated = _migrate_legacy_normalized(project, record, destination, signature)
+        # Opening a project only renames on the same disk; a copy between
+        # disks (a proxy left in another data root) waits for the preparation
+        # job, which reports progress, instead of freezing the open for ~10 s
+        # per proxy.
+        migrated = _migrate_legacy_normalized(project, record, destination, signature, allow_copy=False)
         if migrated:
             changed = True
         if destination.exists() or migrated:
@@ -735,7 +739,7 @@ def _legacy_normalized_path(project: Project, record: dict[str, Any]) -> Path:
     return project.cache_dir / "normalized" / f"{clip_id}.mp4"
 
 
-def _migrate_legacy_normalized(project: Project, record: dict[str, Any], destination: Path, signature: dict[str, Any]) -> bool:
+def _migrate_legacy_normalized(project: Project, record: dict[str, Any], destination: Path, signature: dict[str, Any], *, allow_copy: bool = True) -> bool:
     """Move a matching per-project normalized file into the global cache."""
     normalized = record.get("normalized") or {}
     if normalized.get("normalization_version") != NORMALIZATION_VERSION or normalized.get("kind") != "proxy":
@@ -757,6 +761,8 @@ def _migrate_legacy_normalized(project: Project, record: dict[str, Any], destina
             continue
         destination.parent.mkdir(parents=True, exist_ok=True)
         if not destination.exists():
+            if not allow_copy and not _same_disk(candidate, destination.parent):
+                continue
             try:
                 shutil.move(str(candidate), str(destination))
             except OSError:
@@ -774,6 +780,13 @@ def _migrate_legacy_normalized(project: Project, record: dict[str, Any], destina
         }
         return True
     return False
+
+
+def _same_disk(first: Path, second: Path) -> bool:
+    try:
+        return first.stat().st_dev == second.stat().st_dev
+    except OSError:
+        return False
 
 
 def _directory_size(root: Path) -> int:

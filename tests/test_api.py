@@ -54,7 +54,8 @@ def test_new_project_uses_global_spherical_landmarks_when_form_is_blank(tmp_path
     assert config["spherical_landmarks"] == defaults
 
 
-def test_caption_auto_read_uses_registered_project_audio_and_returns_editable_text(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform", ["reel", "backstage"])
+def test_caption_auto_read_uses_registered_project_audio_and_returns_editable_text(tmp_path, monkeypatch, platform):
     import server.api as api_module
 
     audio = tmp_path / "project-song.wav"
@@ -62,6 +63,7 @@ def test_caption_auto_read_uses_registered_project_audio_and_returns_editable_te
     folder = tmp_path / "AutoRead.zuckervid"
     project = create_project("Auto Read", str(folder))
     project.data["settings"].setdefault("wizard", {})["master_path"] = str(audio)
+    project.data["settings"]["wizard"]["platform"] = platform
     project.save()
 
     observed = {}
@@ -98,7 +100,8 @@ def test_caption_auto_read_uses_registered_project_audio_and_returns_editable_te
     assert "initial_prompt" not in observed["kwargs"]
 
 
-def test_caption_auto_read_returns_timestamped_cues_and_selects_large_for_short_audio(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform", ["reel", "backstage"])
+def test_caption_auto_read_returns_timestamped_cues_and_selects_large_for_short_audio(tmp_path, monkeypatch, platform):
     import server.api as api_module
 
     audio = tmp_path / "short.wav"
@@ -106,6 +109,7 @@ def test_caption_auto_read_returns_timestamped_cues_and_selects_large_for_short_
     folder = tmp_path / "AutoReadCues.zuckervid"
     project = create_project("Auto Read cues", str(folder))
     project.data["settings"].setdefault("wizard", {})["master_path"] = str(audio)
+    project.data["settings"]["wizard"]["platform"] = platform
     project.save()
     observed = {}
 
@@ -503,9 +507,12 @@ def test_wizard_start_after_relaunch_starts_existing_project_from_scratch(tmp_pa
     assert response.get_json()["project_path"] == str(folder.resolve())
 
 
-def test_wizard_prepare_adopts_matching_project_from_disk_without_suffix_copy(tmp_path, monkeypatch):
+def test_wizard_prepare_starts_new_run_without_reusing_a_matching_project(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     projects_root = tmp_path / "ZuckerVideos" / "Projects"
+    # Saved storage preferences can point outside HOME. Discovery in this test
+    # must use its fixture root, never the developer's real project library.
+    monkeypatch.setattr("server.projects.project_locations", lambda: [projects_root])
     folder = projects_root / "Jam.zuckervid"
     project = create_project("Jam", str(folder))
     master = tmp_path / "master.wav"
@@ -527,6 +534,14 @@ def test_wizard_prepare_adopts_matching_project_from_disk_without_suffix_copy(tm
     project.data["stages"]["sync"]["outputs"] = {"sync_map": str(sync_map)}
     project.save()
 
+    from server.wizard import WizardJob
+    def prepare_new(runner, **options):
+        assert runner._prepared_project is None
+        assert options['master_path'] == str(master)
+        assert options['video_paths'] == [str(video)]
+        return WizardJob(id='fixture-run', status='running')
+    monkeypatch.setattr('server.wizard.WizardRunner.prepare', prepare_new)
+
     app = create_app()
     client = app.test_client()
 
@@ -534,8 +549,9 @@ def test_wizard_prepare_adopts_matching_project_from_disk_without_suffix_copy(tm
 
     assert response.status_code == 202
     payload = response.get_json()
-    assert payload["status"] == "waiting_choice"
-    assert payload["project_path"] == str(folder.resolve())
+    assert payload["status"] == "running"
+    assert payload["project_path"] is None
+    assert load_project(str(folder)).data["stages"]["sync"]["status"] == "done"
     assert not (projects_root / "Jam-2.zuckervid").exists()
 
 
@@ -705,7 +721,7 @@ def test_wizard_orchestration_exports_tiny_media(tmp_path, monkeypatch):
             "sine=frequency=440:duration=3",
             "-vf",
             "select='not(eq(mod(n,5),0))'",
-            "-vsync",
+            "-fps_mode",
             "vfr",
             "-c:v",
             "libx264",
@@ -858,7 +874,7 @@ def test_wizard_cancel_stops_a_running_job(tmp_path, monkeypatch):
             "sine=frequency=440:duration=3",
             "-vf",
             "select='not(eq(mod(n,5),0))'",
-            "-vsync",
+            "-fps_mode",
             "vfr",
             "-c:v",
             "libx264",
@@ -1174,7 +1190,14 @@ def test_missing_video_is_dropped_on_project_refresh(tmp_path, monkeypatch):
 
     assert [Path(record["path"]).name for record in payload["inputs"]["videos"]] == ["a.mp4", "b.mp4"]
     assert payload["inputs"]["videos"][1]["missing"] is True
-    assert payload["stages"]["ingest"]["status"] == "stale"
+    # Noting a missing file (unplugged drive, moved file) keeps finished work;
+    # the next run plans the stages again (see the engine test below).
+    assert payload["stages"]["ingest"]["status"] == "done"
+    project = load_project(str(folder))
+    assert project.refresh_input_records() is False  # already noted
+    video_b.write_bytes(b"bb")  # back, but a different file
+    assert project.refresh_input_records() is True
+    assert project.data["stages"]["ingest"]["status"] == "stale"
 
 
 def test_ingest_demotes_registered_invalid_clip(tmp_path, monkeypatch):

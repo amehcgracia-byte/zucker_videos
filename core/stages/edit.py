@@ -18,6 +18,8 @@ from core.messages import t
 from core.operator_avoidance import OPERATOR_AVOIDANCE_VERSION, avoidance_for_segment, load_cached_operator_presence
 from core.reel_framing import REEL_FRAMING_VERSION, subject_box_for_window
 from core.non_music import NON_MUSIC_VERSION, analyze_non_music_sources
+from core import fillers as filler_library
+from core import scene_tags
 from core.project import Project
 from core.spherical_view import effective_fov, effective_pitch, effective_projection_control, effective_roll, normalize_projection_preset
 from core.shot_quality import DIRECTOR_SCORE_THRESHOLD, SHOT_QUALITY_VERSION, analyze_handheld_director_quality, director_quality_for_segment
@@ -46,14 +48,14 @@ REEL_MAX_CUT_SEC = 2.0
 REEL_DEFAULT_CUT_TARGET_SEC = 1.75
 REEL_DEFAULT_CUTS_PER_SOURCE = 1.0
 REEL_SINGLE_SOURCE_MIX_INTERVAL_SEC = 5.0
-REEL_PLAN_VERSION = 5
+REEL_PLAN_VERSION = 8  # v8: subject rotation, never the same person in consecutive shots (v7: avoid unreadable stretches)
 MOTION_CATALOG = CATALOG
 MOTION_WEIGHTS = {name: 1.0 for name in MOTION_CATALOG}
 # The previous 1.32x fast setting was too abrupt.  Normal is now the fastest
 # authored speed, and a new very-slow option keeps close-ups composed.
 MOTION_SPEEDS = (("very_slow", 0.50), ("slow", 0.72), ("fast", 1.0))
 IPHONE_CROP_TOP_LIMIT = 0.80
-YOUTUBE_CAMERA_SELECTION_VERSION = 23
+YOUTUBE_CAMERA_SELECTION_VERSION = 27  # prefer usable smiling moments without overriding coverage and camera balance
 # Legacy diagnostic threshold retained in project settings/manifests. The
 # production policy now stops close-up filler as soon as one alternative
 # physical camera covers the same synced window.
@@ -114,7 +116,7 @@ SPHERICAL_LANDMARKS = {
     "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
-EDIT_PLAN_ALGORITHM_VERSION = 32
+EDIT_PLAN_ALGORITHM_VERSION = 33
 # Editorial targets for the measured 360 landmarks.  The remaining 20% is
 # assigned to every other available landmark in equal relative shares.
 DEFAULT_SPHERICAL_TARGET_WEIGHTS = {
@@ -188,6 +190,10 @@ class EditStage(Stage):
                     "360": SPHERICAL_MOTION_PLAN_VERSION if platform == "360" else None,
                 },
                 "non_music_version": NON_MUSIC_VERSION,
+                # Filler choice depends on the tagger as well as on settings.
+                "filler_version": filler_library.FILLER_VERSION,
+                "scene_tags": [scene_tags.SCENE_TAGS_VERSION, scene_tags.prompts_fingerprint(), scene_tags.available()]
+                if filler_library.filler_paths(project) - filler_library.cutaway_paths(project) else None,
                 "algorithm_version": EDIT_PLAN_ALGORITHM_VERSION,
             }
         )
@@ -202,7 +208,7 @@ class EditStage(Stage):
     def run(self, project: Project, progress_callback: ProgressCallback) -> dict[str, Any]:
         """Write the edit plan consumed by export."""
         progress_callback(10, t("analyzing_rhythm"))
-        coverage = load_coverage(project)
+        coverage = _with_camera_roles(load_coverage(project), project.data.get("settings", {}).get(self.name, {}))
         platform = str(coverage.get("platform") or "youtube")
         # 360 direction is fixed automatic configuration. Director takes are
         # no longer part of the product and must never affect a new plan.
@@ -215,18 +221,38 @@ class EditStage(Stage):
         if real_multicam:
             coverage = _with_director_quality(project, coverage, progress_callback)
         if platform == "reel":
+            progress_callback(40, "Scoring Reel source shots (cached when available)")
+            coverage = {**coverage, "sources": analyze_handheld_director_quality(
+                project, coverage.get("sources") or [],
+                lambda fraction, detail: progress_callback(40 + int(14 * fraction), f"Scoring Reel source shots {detail}"))}
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, t("choosing_cameras"))
-            plan = _reel_promo_plan(coverage, beats, project.data.get("settings", {}), shot_ready=getattr(self, "shot_ready", None))
+            plan = _reel_promo_plan(coverage, beats, project.data.get("settings", {}), shot_ready=getattr(self, "shot_ready", None),
+                                    progress_callback=progress_callback)
         elif not real_multicam:
             plan = _simple_plan(coverage, project.data.get("settings", {}), recorded_moves=recorded_moves)
             beats = {"stage": self.name, "platform": platform, "beats_sec": [], "bars_sec": [], "sections_sec": [], "tempo": None, "placeholder_short_form": platform != "360"}
         else:
+            if project.data.get('settings', {}).get('edit', {}).get('performer_rotation'):
+                from core.stage_performers import detect
+                configured = project.data['settings']['edit'].get('performers_by_source') or {}
+                for source in coverage.get('sources') or []:
+                    if _source_role(source) != 'fixed_rear':
+                        continue
+                    def checkpoint(sample):
+                        progress_callback(46 + sample, 'Finding musicians in the fixed camera')
+                    people = (project.data['settings']['edit'].get('performer_regions') or {}).get(str(source.get('source_path') or source.get('path'))) or detect(project, source, coverage.get('window') or {}, checkpoint)
+                    roles = configured.get(str(source.get('source_path') or source.get('path'))) or {}
+                    source['stage_performers'] = [{**p, 'role': roles.get(p['id'], 'unknown')} for p in people]
             beats = _load_or_analyze_beats(project, coverage, progress_callback)
             progress_callback(55, t("choosing_cameras"))
             events = beats.get("instrument_highlights") or []
+            filler_bank = None
+            if filler_library.filler_paths(project):
+                progress_callback(52, "Analysing filler footage")
+                filler_bank = filler_library.build_filler_bank(project, coverage.get("sources") or [])
             coverage = {**coverage, "musical_highlights": beats.get("musical_highlights") or [], "instrument_highlights": events, "singing_segments": [event for event in events if event.get("instrument") == "singer"]}
-            plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}), recorded_moves=recorded_moves, progress_callback=progress_callback, shot_ready=getattr(self, "shot_ready", None))
+            plan = _youtube_multicam_plan(coverage, beats, project.data.get("settings", {}), recorded_moves=recorded_moves, progress_callback=progress_callback, shot_ready=getattr(self, "shot_ready", None), filler_bank=filler_bank)
         write_artifact_json(artifact_path(project, "beats.json"), beats)
         plan["edit_plan_algorithm_version"] = EDIT_PLAN_ALGORITHM_VERSION
         validate_plan_camera_source_consistency(plan)
@@ -369,10 +395,188 @@ def _with_director_quality(project: Project, coverage: dict[str, Any], progress_
     sources = coverage.get("sources") or []
     if not sources:
         return coverage
-    progress_callback(50, "Scoring Sony director camera")
-    scored = analyze_handheld_director_quality(project, sources)
+    progress_callback(45, "Finding usable shots and smiles")
+    scored = analyze_handheld_director_quality(
+        project, sources, lambda fraction, detail: progress_callback(45 + int(5 * fraction), f"Finding usable shots and smiles {detail}"))
     scored = analyze_non_music_sources(project, scored)
     return {**coverage, "sources": scored}
+
+
+def _reel_quality_start(source, duration, used, fallback, blocked=()):
+    """Choose a complete source window; avoid reusing the same highlight.
+
+    ``blocked`` spans (unreadable stretches) exclude any window that would
+    decode through them, including the reference frames just before it.
+    """
+    limit = max(0.0, float(source.get("duration_sec") or duration) - duration)
+    windows = (source.get("director_quality") or {}).get("windows") or []
+    candidates = sorted({min(limit, max(0.0, float(w.get("clip_start_sec") or 0))) for w in windows})
+    candidates = [start for start in candidates if not _overlaps_blocked(start, duration, blocked)]
+    if not candidates:
+        return min(limit, fallback)
+    offset = float(source.get("offset_sec") or 0)
+    def rank(start):
+        # Unknown/unmeasured tails must not receive the default perfect score.
+        measured = sum(max(0.0, min(start+duration, float(w.get("clip_end_sec") or 0)) - max(start, float(w.get("clip_start_sec") or 0))) for w in windows)
+        quality = director_quality_for_segment(source, start+offset, start+duration+offset)
+        overlap = max([0.0] + [max(0.0, min(start+duration, end)-max(start, begin))/duration for begin,end in used])
+        return (measured >= duration * .95, float(quality["score"]) - .65*overlap, -abs(start-fallback))
+    return max(candidates, key=rank)
+
+
+def _overlaps_blocked(start: float, duration: float, blocked) -> bool:
+    from core.media_integrity import REFERENCE_PREROLL_SEC
+    return any(start - REFERENCE_PREROLL_SEC < end and start + duration > begin for begin, end in blocked)
+
+
+def _readable_reel_start(source: dict[str, Any], duration: float, used: list, start: float,
+                         blocked: list, attempts: int = 8) -> tuple[float, bool]:
+    """Move a Reel shot off unreadable (zero-filled) stretches of its file.
+
+    Returns the start and whether damage was found. A shot inside damage
+    cannot be decoded: its review photo and its export segment would fail.
+    """
+    from core.media_integrity import damaged_spans
+    path = str(source.get("source_path") or source.get("path") or "")
+    limit = max(0.0, float(source.get("duration_sec") or duration) - duration)
+    found = False
+    for _ in range(attempts):
+        spans = damaged_spans(path, start, start + duration)
+        if not spans:
+            return start, found
+        found = True
+        # Block from the first damaged frame through the next second: damage
+        # comes in runs and the check above only reads this window.
+        blocked.extend((begin, end + 1.0) for begin, end in spans)
+        candidate = _reel_quality_start(source, duration, used, start, blocked)
+        if _overlaps_blocked(candidate, duration, blocked):
+            candidate = next((step / 2.0 for step in range(int(limit * 2) + 1)
+                              if not _overlaps_blocked(step / 2.0, duration, blocked)), None)
+        if candidate is None:
+            return start, found
+        start = candidate
+    return start, found
+
+
+def _with_camera_roles(coverage: dict[str, Any], edit_settings: dict[str, Any]) -> dict[str, Any]:
+    """Apply camera roles the person declared (tripod = fixed_rear, handheld).
+
+    Filenames cannot tell a phone on a tripod from a handheld camera; the
+    declared role decides which cameras get steadiness scoring and motion."""
+    if not isinstance(edit_settings, dict):
+        return coverage
+    # Montara saves generic camera types (fixed / moving / 360); older callers save roles.
+    roles = {path: {"fixed": "fixed_rear", "moving": "handheld"}[kind]
+             for path, kind in (edit_settings.get("camera_types") or {}).items() if kind in {"fixed", "moving"}}
+    roles.update({path: role for path, role in (edit_settings.get("camera_roles") or {}).items()
+                  if role in {"fixed_rear", "handheld"} and path not in roles})
+    if not roles:
+        return coverage
+    sources = []
+    for source in coverage.get("sources") or []:
+        source = dict(source)
+        if _source_role(source) != "360":
+            for identity in (str(source.get("source_path") or ""), str(source.get("path") or ""), str(source.get("filename") or "")):
+                role = roles.get(identity)
+                if role in {"fixed_rear", "handheld"}:
+                    source["camera_role"] = role
+                    break
+        sources.append(source)
+    return {**coverage, "sources": sources}
+
+
+def _with_camera_subjects(sources: list[dict[str, Any]], assignments: dict[str, str]) -> list[dict[str, Any]]:
+    """Attach the person's camera subject assignments (keyed by path or camera id)."""
+    result = []
+    for source in sources:
+        source = dict(source)
+        for identity in (_camera_id(source), str(source.get("source_path") or ""),
+                         str(source.get("path") or ""), str(source.get("filename") or "")):
+            if identity in assignments:
+                source["camera_subject"] = assignments[identity]
+                break
+        result.append(source)
+    return result
+
+
+def _reel_identity(source: dict[str, Any], shot: dict[str, Any] | None = None) -> str:
+    """Who a Reel shot shows. Named performers keep one identity across all
+    cameras and 360 views; wide shots share "general"; a clip without any
+    subject information is its own identity (its source)."""
+    subject = _editorial_subject(source, shot)
+    if subject:
+        return subject
+    raw = str((shot or {}).get("subject") or (shot or {}).get("type") or source.get("camera_subject") or "").strip().lower()
+    if raw in {"general", "full_stage", "audience_stage_wide", "planet", "recorded_move"}:
+        return "general"
+    return f"source:{_source_id(source)}"
+
+
+def _reel_shot_options(sources: list[dict[str, Any]], spherical_shots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every distinct shot the Reel can cut to: one per flat camera, one per enabled 360 view."""
+    options = []
+    for order, source in enumerate(sources):
+        if _source_role(source) == "360" and spherical_shots:
+            for shot in spherical_shots:
+                options.append({"source": source, "shot": shot, "order": order,
+                                "identity": _reel_identity(source, shot), "key": f"{_source_id(source)}|{shot.get('type')}"})
+        else:
+            options.append({"source": source, "shot": None, "order": order,
+                            "identity": _reel_identity(source), "key": _source_id(source)})
+    return options
+
+
+class _ReelSubjectRotation:
+    """Deterministic shot picker for the unsynchronised Reel.
+
+    1. every source is used once before any source repeats (keeps the old
+       guarantee that each dropped camera contributes);
+    2. the same identity never appears in two consecutive shots while any
+       other identity is available;
+    3. otherwise the identity with the least screen time goes next, so the
+       whole band shares the Reel evenly; between equals, a different
+       source than the previous shot wins.
+    """
+
+    def __init__(self, options: list[dict[str, Any]]) -> None:
+        self.options = options
+        self.identity_seconds: dict[str, float] = {}
+        self.source_uses: dict[str, int] = {}
+        self.option_uses: dict[str, int] = {}
+        self.previous: dict[str, Any] | None = None
+        self.forced_repeats = 0
+
+    def next(self, duration: float) -> dict[str, Any]:
+        previous = self.previous
+        def repeats(option) -> bool:
+            # A named person never twice in a row. Wide shots ("general") may
+            # follow each other only from a different camera or 360 view.
+            if previous is None or option["identity"] != previous["identity"]:
+                return False
+            return option["identity"] != "general" or option["key"] == previous["key"]
+        pool = [o for o in self.options if not repeats(o)]
+        if not pool:
+            pool = self.options
+            self.forced_repeats += 1
+        previous_source = _source_id(previous["source"]) if previous else None
+        def rank(option):
+            source_id = _source_id(option["source"])
+            return (self.source_uses.get(source_id, 0) > 0,
+                    round(self.identity_seconds.get(option["identity"], 0.0), 6),
+                    source_id == previous_source,
+                    self.option_uses.get(option["key"], 0),
+                    self.source_uses.get(source_id, 0),
+                    option["order"])
+        chosen = min(pool, key=rank)
+        source_id = _source_id(chosen["source"])
+        self.identity_seconds[chosen["identity"]] = self.identity_seconds.get(chosen["identity"], 0.0) + duration
+        self.source_uses[source_id] = self.source_uses.get(source_id, 0) + 1
+        self.option_uses[chosen["key"]] = self.option_uses.get(chosen["key"], 0) + 1
+        self.previous = chosen
+        return chosen
+
+    def seconds_by_identity(self) -> dict[str, float]:
+        return {key: round(value, 3) for key, value in sorted(self.identity_seconds.items())}
 
 
 def _reel_promo_plan(
@@ -380,6 +584,47 @@ def _reel_promo_plan(
     beats: dict[str, Any],
     settings: dict[str, Any] | None = None,
     shot_ready=None,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    """Plan once, check every chosen window for damage in parallel, then plan
+    again with those results cached. The plan is deterministic, so the second
+    pass only differs (and only re-checks) where a window was unreadable.
+    Checking 74 windows one by one on a USB disk took ~90 s; in parallel the
+    whole Reel plan stays well under half a minute."""
+    draft = _reel_promo_plan_pass(coverage, beats, settings, None, check_damage=False)
+    _prefetch_damage_checks(draft.get("segments") or [], progress_callback)
+    return _reel_promo_plan_pass(coverage, beats, settings, shot_ready, check_damage=True)
+
+
+def _prefetch_damage_checks(segments: list[dict[str, Any]], progress_callback: ProgressCallback | None = None,
+                            workers: int = 4) -> None:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from core.media_integrity import damaged_spans
+    windows = sorted({(str(segment.get("source_path") or segment.get("clip_path") or ""),
+                       float(segment.get("clip_start_sec") or 0.0),
+                       float(segment.get("clip_start_sec") or 0.0) + float(segment.get("duration_sec") or 0.0))
+                      for segment in segments if not segment.get("spherical_shot")})
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="reel-integrity") as pool:
+        futures = [pool.submit(damaged_spans, *window) for window in windows]
+        try:
+            for done, future in enumerate(as_completed(futures), 1):
+                future.result()
+                if progress_callback and (done % 10 == 0 or done == len(futures)):
+                    progress_callback(55 + int(5 * done / max(1, len(futures))),
+                                      f"Checking shots for damaged frames {done}/{len(futures)}")
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            raise
+
+
+def _reel_promo_plan_pass(
+    coverage: dict[str, Any],
+    beats: dict[str, Any],
+    settings: dict[str, Any] | None,
+    shot_ready,
+    *,
+    check_damage: bool,
 ) -> dict[str, Any]:
     """Build an unsynchronised, beat-cut promo plan.
 
@@ -492,20 +737,35 @@ def _reel_promo_plan(
 
     landmarks = migrate_spherical_landmarks(settings.get("spherical_landmarks") or {})
     spherical_shots = _available_spherical_shots(landmarks, sweep_enabled=False)
+    edit_settings = settings.get("edit") if isinstance(settings.get("edit"), dict) else {}
+    sources = _with_camera_subjects(sources, edit_settings.get("camera_subjects") or {})
+    shot_options = _reel_shot_options(sources, spherical_shots)
+    rotation = _ReelSubjectRotation(shot_options)
     segments: list[dict[str, Any]] = []
-    previous_source = None
+    used_highlights = {}
+    # Unreadable stretches found per source while placing shots.
+    damaged_by_source: dict[str, list] = {}
+    damaged_sources: set[str] = set()
     fixed_index = 0
     for index, (master_start, master_end) in enumerate(zip(boundaries, boundaries[1:])):
         seg_duration = max(0.1, master_end - master_start)
-        source = sources[index % len(sources)]
-        # With more than one source, the round-robin index guarantees that a
-        # source is not repeated until all other sources have had a turn.
-        if len(sources) > 1 and _source_id(source) == previous_source:
-            source = sources[(index + 1) % len(sources)]
-        previous_source = _source_id(source)
+        # Every source gets a turn first; after that the person (subject) with
+        # the least screen time is next, and the same person is never shown in
+        # two consecutive shots, even from different cameras or 360 views.
+        option = rotation.next(seg_duration)
+        source = option["source"]
         source_duration = max(seg_duration, float(source.get("duration_sec") or seg_duration))
         # Deterministic spread over each source, independent of master time.
         clip_start = max(0.0, ((index * 1.37) % max(0.1, source_duration - seg_duration))) if source_duration > seg_duration else 0.0
+        used = used_highlights.setdefault(_source_id(source), [])
+        blocked = damaged_by_source.setdefault(_source_id(source), [])
+        clip_start = _reel_quality_start(source, seg_duration, used, clip_start, blocked)
+        damage_found = False
+        if check_damage:
+            clip_start, damage_found = _readable_reel_start(source, seg_duration, used, clip_start, blocked)
+        if damage_found:
+            damaged_sources.add(str(source.get("filename") or Path(str(source.get("path") or "video")).name))
+        used.append((clip_start, clip_start + seg_duration))
         segment = {
             "title": window.get("title") or t("full_video"),
             "clip_path": source.get("path") or source.get("clip_path"),
@@ -519,8 +779,9 @@ def _reel_promo_plan(
             "camera_id": _camera_id(source),
         }
         role = _source_role(source)
+        segment["editorial_subject"] = option["identity"]
         if role == "360":
-            shot = dict(spherical_shots[index % len(spherical_shots)]) if spherical_shots else {
+            shot = dict(option["shot"]) if option.get("shot") else {
                 "type": "promo_360", "label": "360 promo", "yaw": 0.0, "pitch": 0.0, "fov": 95.0, "weight": 1.0,
             }
             segment["spherical_shot"] = _spherical_motion_profile(shot, index, enabled=False, hold_motion="none")
@@ -552,6 +813,8 @@ def _reel_promo_plan(
         if shot_ready:
             shot_ready(len(segments) - 1, segment)
     _assign_reel_mix_treatments(segments, sources, wizard)
+    from core.shot_continuity import continuous_views
+    segments = continuous_views(segments)
     _validate_motion_segments(segments)
     return {
         "stage": "edit",
@@ -568,7 +831,13 @@ def _reel_promo_plan(
         "master_window_start_sec": round(start, 6),
         "master_window_end_sec": round(end, 6),
         "real_edit_logic": "reel unsynchronised promo: independent dynamic source selection on master beats",
-        "warnings": coverage.get("warnings") or [],
+        "subject_distribution_seconds": rotation.seconds_by_identity(),
+        "subject_unavoidable_repeats": rotation.forced_repeats,
+        "warnings": list(coverage.get("warnings") or []) + [
+            f"{name} has damaged (unreadable) stretches; its shots were taken from the readable parts."
+            for name in sorted(damaged_sources)
+        ],
+        "damaged_sources": sorted(damaged_sources),
         "excluded_clips": coverage.get("excluded_clips") or [],
         "clip_diagnostics": coverage.get("clip_diagnostics") or [],
         "camera_usage": _camera_usage(segments),
@@ -671,6 +940,7 @@ def _youtube_multicam_plan(
     recorded_moves: list[dict[str, Any]] | None = None,
     progress_callback: ProgressCallback | None = None,
     shot_ready=None,
+    filler_bank: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     platform = str(coverage.get("platform") or "youtube")
     window = coverage.get("window") or {}
@@ -697,6 +967,9 @@ def _youtube_multicam_plan(
         sources = coverage["segments"]
     segments: list[dict[str, Any]] = []
     non_music_fill_history: list[dict[str, Any]] = []
+    filler_history: list[dict[str, Any]] = []
+    last_cutaway_end = start
+    cutaway_seconds = 0.0
     gaps: list[dict[str, float]] = []
     previous_source: str | None = None
     previous_camera: str | None = None
@@ -709,6 +982,8 @@ def _youtube_multicam_plan(
     subject_seconds: dict[str, float] = {}
     subject_fallbacks = 0
     fixed_rear_motion_index = 0
+    performer_indices = {}
+    performer_histories = {}
     usage_counts: dict[str, int] = {}
     operator_samples_cache: dict[str, list[dict[str, Any]]] = {}
     selection_stats = _selection_stats_template(sources, start, end)
@@ -820,10 +1095,48 @@ def _youtube_multicam_plan(
         if segment_end <= segment_start:
             break
         available = _quality_filtered_sources(_covering_sources(sources, segment_start, segment_end, platform=platform), segment_start, segment_end, selection_stats)
-        if not available:
-            gaps.append({"start_sec": round(segment_start, 3), "end_sec": round(segment_end, 3)})
-            bar_index = next_index
-            continue
+        # Authored B-roll may interrupt covered footage, after each available
+        # camera has appeared. Keep the opening/ending and >=90% performance.
+        explicit_windows = [w for w in (filler_bank or {}).get("windows", []) if w.get("user_selected")]
+        seen_sources = {str(s.get("source_path") or s.get("clip_path")) for s in segments if not s.get("filler")}
+        cutaway_due = bool(explicit_windows and available
+                           and sum(bool(item.get("filler")) for item in segments) < 2
+                           and segment_start - last_cutaway_end >= max(30, (end-start)/3)
+                           and segment_end < end - 5 and segment_end - segment_start <= filler_library.MAX_WINDOW_SEC
+                           and cutaway_seconds + segment_end - segment_start <= (end - start) * .1
+                           and all(str(s.get("source_path") or s.get("path")) in seen_sources for s in available))
+        if not available or cutaway_due:
+            selection_bank = {"windows": explicit_windows} if cutaway_due else filler_bank
+            filler = (filler_library.choose_filler(selection_bank, segment_start, segment_end - segment_start,
+                                                   filler_history, variation_seed, segment_index)
+                      if filler_bank and filler_bank.get("windows") else None)
+            if filler is None and not available:
+                gaps.append({"start_sec": round(segment_start, 3), "end_sec": round(segment_end, 3)})
+                bar_index = next_index
+                continue
+            if filler is not None:
+                usable = float(filler["end_sec"]) - float(filler["start_sec"])
+                # Hand back to a camera as soon as one covers the song again.
+                resume = _next_camera_start(sources, segment_start, segment_end, platform)
+                if resume is not None and resume - segment_start >= filler_library.MIN_WINDOW_SEC:
+                    usable = min(usable, resume - segment_start)
+                if segment_end - segment_start > usable:
+                    # Cut where the filler window ends; the next pass covers the rest.
+                    segment_end = _round_to_frame(segment_start + usable)
+                    next_index = bisect.bisect_left(bar_times, segment_end)
+                    if next_index == len(bar_times) or bar_times[next_index] != segment_end:
+                        bar_times.insert(next_index, segment_end)
+                segment = _filler_plan_segment(filler, segment_start, segment_end, window.get("title") or t("full_video"))
+                segment["variation_seed"] = variation_seed
+                segments.append(segment)
+                if filler.get("user_selected"):
+                    last_cutaway_end = segment_end
+                    cutaway_seconds += segment_end - segment_start
+                if shot_ready:
+                    shot_ready(len(segments) - 1, segment)
+                bar_index = next_index
+                segment_index += 1
+                continue
         for source in available:
             stats = selection_stats.setdefault(_source_id(source), _selection_stats_for_source(source, start, end))
             stats["eligible_segments"] += 1
@@ -1046,12 +1359,21 @@ def _youtube_multicam_plan(
         del recent_subjects[:-4]
         if subject:
             subject_seconds[subject] = subject_seconds.get(subject, 0.0) + segment_end - segment_start
+        if edit_settings.get('performer_rotation') and _source_role(source) == 'fixed_rear' and source.get('stage_performers'):
+            from core.stage_performers import apply as apply_performers
+            identity = str(source.get('source_path') or source.get('path'))
+            index = performer_indices.get(identity, 0)
+            apply_performers(segment, source['stage_performers'], index,
+                             performer_histories.setdefault(identity, []), edit_settings.get('instrument_activity'))
+            performer_indices[identity] = index + 1
         segments.append(segment)
         if shot_ready:
             shot_ready(len(segments) - 1, segment)
         bar_index = next_index
         segment_index += 1
 
+    from core.shot_continuity import continuous_views
+    segments = continuous_views(segments)
     _validate_motion_segments(segments)
     warnings = list(coverage.get("warnings") or [])
     if gaps:
@@ -1100,6 +1422,7 @@ def _youtube_multicam_plan(
             if int(source.get("non_music_audio_rejected") or 0) > 0
         },
         "gaps": gaps,
+        "fillers": _filler_plan_summary(filler_bank, segments),
         "cut_count": max(0, len(segments) - 1),
         "camera_usage": usage,
         "spherical_shot_usage": _spherical_shot_usage(segments),
@@ -1224,7 +1547,11 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, Any]
     if not isinstance(raw, dict):
         return {}
     migrated: dict[str, dict[str, Any]] = {}
-    for shot_type, (legacy_key, _label, default_fov) in SPHERICAL_LANDMARKS.items():
+    slots = dict(SPHERICAL_LANDMARKS)
+    for key in raw:
+        if isinstance(key, str) and re.fullmatch(r"custom_([1-9]|1[0-6])", key):
+            slots[key] = ("__unassigned__", str((raw.get(key) or {}).get("label") or key)[:40] if isinstance(raw.get(key), dict) else key, SPHERICAL_DEFAULT_FOV)
+    for shot_type, (legacy_key, _label, default_fov) in slots.items():
         source = raw.get(shot_type)
         if source is None and legacy_key in raw:
             source = {"yaw": raw.get(legacy_key)}
@@ -1243,6 +1570,7 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, Any]
             "projection_control": effective_projection_control(source.get("projection_control")),
             "weight": max(0.0, _landmark_weight(source, "weight", 1.0)),
             "subject": str(source.get("subject") or shot_type),
+            **({"label": str(source.get("label") or _label)[:40]} if shot_type.startswith("custom_") else {}),
             "enabled": source.get("enabled", True) is not False,
         }
     return migrated
@@ -1251,7 +1579,8 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, Any]
 def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabled: bool = False, sweep_speed: float = SPHERICAL_SWEEP_SPEED_DEG_PER_SEC, *, balanced_performers: bool = False) -> list[dict[str, Any]]:
     shots: list[dict[str, Any]] = []
     prepared: list[tuple[str, str, float, dict[str, Any], float]] = []
-    for shot_type in SPHERICAL_SHOT_ORDER:
+    custom_slots = sorted(key for key in landmarks if isinstance(key, str) and re.fullmatch(r"custom_([1-9]|1[0-6])", key))
+    for shot_type in (*SPHERICAL_SHOT_ORDER, *custom_slots):
         # Automatic editing should stay on the stage. A public-only landmark
         # is retained in project settings for manual review, but is never
         # offered as an automatic replacement candidate.
@@ -1260,8 +1589,10 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabl
             # automatic editorial shots: every automatic 360 frame must retain
             # a stage/performer subject.
             continue
-        key, label, default_fov = SPHERICAL_LANDMARKS[shot_type]
+        key, label, default_fov = SPHERICAL_LANDMARKS.get(shot_type, ("__unassigned__", shot_type, SPHERICAL_DEFAULT_FOV))
         data = landmarks.get(shot_type)
+        if data and shot_type in custom_slots:
+            label = str(data.get("label") or shot_type)[:40]
         if data is None and shot_type == "full_stage" and not balanced_performers:
             data = {"yaw": 0.0, "pitch": 0.0, "fov": default_fov, "roll": 0.0, "projection_preset": "linear", "projection_control": 0.0, "weight": 1.0}
         if not data or data.get("enabled") is False:
@@ -1749,6 +2080,17 @@ def _short_form_segments_from_best_coverage(coverage: dict[str, Any]) -> list[di
     ]
 
 
+def _next_camera_start(sources: list[dict[str, Any]], start: float, end: float, platform: str = "youtube") -> float | None:
+    """Earliest time inside (start, end) from which some camera covers up to ``end``."""
+    starts = [
+        range_start
+        for source in sources
+        for range_start, range_end, _offset in _clip_master_ranges(source, platform)
+        if start < range_start < end and range_end >= end
+    ]
+    return min(starts) if starts else None
+
+
 def _covering_sources(
     sources: list[dict[str, Any]], start: float, end: float, *, platform: str = "youtube"
 ) -> list[dict[str, Any]]:
@@ -1767,6 +2109,8 @@ def _quality_filtered_sources(
 ) -> list[dict[str, Any]]:
     filtered = []
     for source in sources:
+        from core.shot_quality import smile_for_segment
+        source = {**source, 'smile_segment_score': smile_for_segment(source, start, end)}
         if _source_role(source) != "handheld":
             filtered.append(source)
             continue
@@ -1794,7 +2138,18 @@ def _quality_filtered_sources(
         # Quality is a soft preference, not a camera-wide veto. A dominant
         # camera must still participate when it has usable synced coverage;
         # its score and rejected-window reasons remain in diagnostics.
-        filtered.append({**source, "director_segment_score": quality.get("score")})
+        filtered.append({**source, "director_segment_score": quality.get("score"),
+                         "director_segment_moving": bool(quality.get("moving"))})
+    # The one hard rule: never cut to a handheld camera while it is moving
+    # (pans, re-framing, walking) when another camera covers the moment
+    # steadily. Only this slot is skipped; the camera keeps its other slots.
+    steady = [source for source in filtered if not source.get("director_segment_moving")]
+    if steady and len(steady) < len(filtered):
+        for source in filtered:
+            if source.get("director_segment_moving"):
+                stats = selection_stats.setdefault(_source_id(source), _selection_stats_for_source(source, start, end))
+                stats["camera_moving_skipped"] = int(stats.get("camera_moving_skipped") or 0) + 1
+        filtered = steady
     return filtered
 
 
@@ -1826,7 +2181,7 @@ def _choose_source(
         )
         covered_seconds = max(1.0, float((selection_stats.get(_source_id(source)) or {}).get("covered_seconds") or 0.0))
         director_bonus = float(source.get("director_segment_score") or 1.0) if role == "handheld" else 1.0
-        camera_balance = role_chosen_seconds / target_share - _camera_preference_score(source)
+        camera_balance = role_chosen_seconds / target_share - _camera_preference_score(source) - 2*float(source.get('smile_segment_score') or 0)
         return (camera_balance, chosen_seconds / covered_seconds, usage_counts.get(_source_id(source), 0), -director_bonus, -float(source.get("confidence") or 0.0), _source_id(source))
 
     return sorted(candidates, key=score)[0]
@@ -1900,7 +2255,7 @@ def _choose_source_avoiding_identical_framing(
         projected_share = (camera_chosen_seconds + allocation_segment_seconds) / allocation_window_seconds
         quota_ratio = projected_share / target_share
         return (
-            quota_ratio + (int(stable_fingerprint({"seed": variation_seed, "slot": segment_index, "camera": _camera_id(src)})[:8], 16) / 0xffffffff * .04 if variation_seed else 0),
+            quota_ratio - (.08*float(src.get('smile_segment_score') or 0) if not preferred_camera_ids or _camera_id(src) in preferred_camera_ids else 0) + (int(stable_fingerprint({"seed": variation_seed, "slot": segment_index, "camera": _camera_id(src)})[:8], 16) / 0xffffffff * .04 if variation_seed else 0),
             -singing_bonus,
             role_chosen_seconds / max(0.001, float(role_weights_copy.get(role, 0.3))),
             -battery_bonus,
@@ -2005,6 +2360,48 @@ def _framing_nearly_identical(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return role_a == role_b
 
 
+def _filler_plan_segment(window: dict[str, Any], start: float, end: float, title: str) -> dict[str, Any]:
+    """A plan segment showing an unsynced filler window over the music."""
+    start = _round_to_frame(start)
+    end = max(start + 1.0 / EDIT_FPS, _round_to_frame(end))
+    conditions = window.get("conditions") or {}
+    return {
+        "title": title,
+        "clip_path": window["clip_path"],
+        "source_path": window["source_path"],
+        "clip_start_sec": float(window["start_sec"]),
+        "master_start_sec": start,
+        "duration_sec": max(1.0 / EDIT_FPS, end - start),
+        "clip_offset_sec": start - float(window["start_sec"]),
+        "confidence": 0.0,
+        "filename": window["filename"],
+        "projection": None,
+        "camera_id": _camera_id({"source_path": window["source_path"], "filename": window["filename"], "projection": None}),
+        "available_camera_ids": [],
+        "camera_alternative_available": False,
+        "editorial_subject": str(window.get("shot") or "filler"),
+        "filler": True,
+        "filler_shot": window.get("shot"),
+        "filler_conditions": {key: conditions.get(key) for key in ("time", "place", "rain", "fire")},
+        "filler_score": window.get("score"),
+        "filler_key": window.get("key"),
+    }
+
+
+def _filler_plan_summary(bank: dict[str, Any] | None, segments: list[dict[str, Any]]) -> dict[str, Any]:
+    if not bank:
+        return {"enabled": False}
+    return {
+        "enabled": bool(bank.get("enabled")),
+        "model": bool(bank.get("model")),
+        "conditions": bank.get("conditions") or {},
+        "compatible_windows": len(bank.get("windows") or []),
+        "rejected_windows": bank.get("rejected") or {},
+        "used_segments": sum(1 for segment in segments if segment.get("filler")),
+        "used_seconds": round(sum(float(segment.get("duration_sec") or 0.0) for segment in segments if segment.get("filler")), 3),
+    }
+
+
 def _segment_from_source(
     source: dict[str, Any], start: float, end: float, title: str, *, platform: str = "youtube"
 ) -> dict[str, Any]:
@@ -2098,7 +2495,9 @@ def _editorial_subject(source: dict[str, Any], shot: dict[str, Any] | None = Non
               or source.get("camera_subject") or source.get("subject") or "").strip().lower()
     aliases = {"bateria": "drummer", "batería": "drummer", "drums": "drummer",
                "cantante": "singer", "voz": "singer", "pianista": "pianist",
-               "keys": "pianist", "guitarrista": "guitarist", "bajista": "bassist"}
+               "keys": "pianist", "guitarrista": "guitarist", "bajista": "bassist",
+               "drum": "drummer", "drummer": "drummer", "piano": "pianist", "keyboard": "pianist",
+               "guitar": "guitarist", "bass": "bassist", "vocals": "singer", "vocal": "singer"}
     raw = aliases.get(raw, raw)
     return "" if raw in {"", "unknown", "general", "full_stage", "audience_stage_wide", "planet", "recorded_move"} else raw
 
@@ -2743,7 +3142,7 @@ def validate_plan_camera_source_consistency(plan: dict[str, Any]) -> None:
         # the invariant applies whenever a camera_id is present.
         if not camera_id:
             continue
-        render_camera = _camera_id_from_render_path(segment)
+        render_camera = _camera_id_from_render_path(segment).strip().lower()
         if camera_id != render_camera:
             raise ValueError(
                 f"Edit plan camera/source mismatch at segment {index}: "
@@ -2799,7 +3198,9 @@ def _camera_id(source: dict[str, Any]) -> str:
         return family
     if role == "360":
         return "360"
-    return path.stem.lower() or _source_id(source).lower()
+    # "Watching you .mp4" names the camera "watching you", like every other
+    # branch above, which already strips: the plan check compared the two.
+    return path.stem.strip().lower() or _source_id(source).strip().lower()
 
 
 def _camera_family(value: str) -> str:

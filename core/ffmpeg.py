@@ -122,8 +122,70 @@ def ffprobe(path: str) -> dict[str, Any]:
         raise FFmpegError("ffprobe is missing. Install it with: brew install ffmpeg")
     source = Path(path).resolve()
     stat = source.stat()
-    signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-    return copy.deepcopy(_cached_ffprobe(str(source), str(status["ffprobe_path"]), signature))
+    stored_key = (str(source), str(status["ffprobe_path"]), stat.st_size, stat.st_mtime_ns)
+    stored = _stored_probe(stored_key)
+    if stored is None:
+        signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        stored = _cached_ffprobe(str(source), str(status["ffprobe_path"]), signature)
+        _store_probe(stored_key, stored)
+    return copy.deepcopy(stored)
+
+
+# Probes of unchanged files survive restarts: opening a project re-validated
+# every camera file with ffprobe, seconds on an external disk. Kept on the
+# local disk (not the data root, which may be that external disk), keyed by
+# path, size and modification time; tests keep to the in-process cache.
+_PROBE_MEMORY: dict[tuple, dict[str, Any]] = {}
+
+
+def _probe_store_dir() -> Path | None:
+    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("ZUCKER_NO_PROBE_STORE"):
+        return None
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "ZuckerEditor" / "probes"
+    if os.name == "nt":
+        return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "ZuckerEditor" / "probes"
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "zucker-editor" / "probes"
+
+
+def _probe_store_file(key: tuple) -> Path | None:
+    directory = _probe_store_dir()
+    if directory is None:
+        return None
+    import hashlib
+    return directory / f"{hashlib.sha1(json.dumps(key).encode('utf-8')).hexdigest()}.json"
+
+
+def _stored_probe(key: tuple) -> dict[str, Any] | None:
+    path = _probe_store_file(key)
+    if path is None:
+        return None
+    if key in _PROBE_MEMORY:
+        return _PROBE_MEMORY[key]
+    try:
+        probe = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(probe, dict):
+        return None
+    _PROBE_MEMORY[key] = probe
+    return probe
+
+
+def _store_probe(key: tuple, probe: dict[str, Any]) -> None:
+    path = _probe_store_file(key)
+    if path is None:
+        return
+    if len(_PROBE_MEMORY) > 2048:
+        _PROBE_MEMORY.clear()
+    _PROBE_MEMORY[key] = probe
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pending = path.with_suffix(f".{os.getpid()}.tmp")
+        pending.write_text(json.dumps(probe), encoding="utf-8")
+        pending.replace(path)
+    except OSError:
+        pass
 
 
 @lru_cache(maxsize=256)
@@ -152,6 +214,28 @@ def _cached_ffprobe(path: str, executable: str, signature: tuple) -> dict[str, A
     if result.returncode != 0:
         raise FFmpegError(result.stderr.strip() or f"ffprobe failed for {path}")
     return json.loads(result.stdout or "{}")
+
+
+def filter_option_value(value: str) -> str:
+    """A literal option value inside an FFmpeg filtergraph, unquoted.
+
+    Escaped twice, as FFmpeg parses twice: once per option (\\ ' :) and once
+    per graph (\\ ' [ ] , ;). Quoting instead cannot hold an apostrophe:
+    "Don't Stop" ended the quote early and the whole graph failed to parse.
+    """
+    value = str(value).replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
+    for character in "\\'[],;":
+        value = value.replace(character, "\\" + character)
+    return value
+
+
+def muxer_args_for(destination: str | Path) -> list[str]:
+    """Explicit muxer for a temporary output whose name hides the real suffix.
+
+    Atomic publishes render to ``.<name>.<hex>.part``; FFmpeg cannot infer a
+    container from ``.part`` and refuses to open the output at all.
+    """
+    return ["-f", "mov" if Path(destination).suffix.lower() == ".mov" else "mp4"]
 
 
 def extract_audio(video_path: str, output_path: str) -> None:
@@ -183,3 +267,28 @@ def extract_audio(video_path: str, output_path: str) -> None:
         raise FFmpegError(f"ffmpeg audio extraction timed out after {MEDIA_COMMAND_TIMEOUT_SEC}s for {video_path}") from exc
     if result.returncode != 0:
         raise FFmpegError(result.stderr.strip() or f"ffmpeg failed for {video_path}")
+
+
+@lru_cache(maxsize=4)
+def hardware_h264(ffmpeg: str) -> bool:
+    """Whether this FFmpeg encodes H.264 on the Mac's own hardware (tried once on a
+    tiny test picture; anything else answers no)."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        # A real picture size and pixel format: it refuses tiny RGB test pictures.
+        trial = subprocess.run([ffmpeg, "-v", "error", "-nostdin", "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=30:duration=0.3",
+                                "-pix_fmt", "yuv420p", "-c:v", "h264_videotoolbox", "-b:v", "4M", "-f", "null", "-"], capture_output=True, timeout=30)
+        return trial.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def h264_args(ffmpeg: str, *, preset: str, crf: int, width: int, height: int, fps: float = 30.0, hardware: bool = False) -> list[str]:
+    """Encoder arguments: the Mac's hardware encoder for a final render when it is
+    there (several times faster, at a generous bitrate), else libx264."""
+    if hardware and hardware_h264(ffmpeg):
+        rate = max(4_000_000, int(width * height * fps * 0.14))          # ~8.7 Mb/s at 1080p30
+        return ["-c:v", "h264_videotoolbox", "-b:v", str(rate), "-maxrate", str(int(rate * 1.5)),
+                "-bufsize", str(rate * 2), "-profile:v", "high", "-pix_fmt", "yuv420p"]
+    return ["-c:v", "libx264", "-preset", preset, "-crf", str(crf)]

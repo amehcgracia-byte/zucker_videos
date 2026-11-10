@@ -161,22 +161,33 @@ class Project:
         self.mark_all_stale_from("ingest")
         self.save()
 
-    def refresh_input_records(self) -> bool:
-        """Refresh input size/mtime values and return True if any input changed."""
+    def refresh_input_records(self, *, missing_invalidates: bool = True) -> bool:
+        """Refresh input size/mtime values and return True if any input changed.
+
+        Before a run, a file that went missing (or came back) makes its stages
+        stale so they are planned again. Screens that only read the project
+        pass ``missing_invalidates=False``: an unplugged drive or a moved file
+        is noted without demoting a finished, exported project.
+        """
         changed = False
         earliest_stale_stage: str | None = None
+        records = []
         master = self.data["inputs"].get("master")
-        if master and _refresh_record(master):
-            changed = True
-            earliest_stale_stage = _earliest_stage(earliest_stale_stage, "sync")
+        if master:
+            records.append((master, "sync"))
         songs = self.data["inputs"].get("songs")
-        if songs and _refresh_record(songs):
+        if songs:
+            records.append((songs, "cut"))
+        records.extend((record, "ingest") for record in self.data["inputs"].get("videos", []))
+        for record, stage in records:
+            was_missing = bool(record.get("missing", False))
+            if not _refresh_record(record):
+                continue
             changed = True
-            earliest_stale_stage = _earliest_stage(earliest_stale_stage, "cut")
-        for record in self.data["inputs"].get("videos", []):
-            if _refresh_record(record):
-                changed = True
-                earliest_stale_stage = _earliest_stage(earliest_stale_stage, "ingest")
+            presence_only = was_missing != bool(record.get("missing", False)) and not record.get("_identity_changed")
+            if missing_invalidates or not presence_only:
+                earliest_stale_stage = _earliest_stage(earliest_stale_stage, stage)
+            record.pop("_identity_changed", None)
         if earliest_stale_stage:
             self.mark_all_stale_from(earliest_stale_stage)
         return changed
@@ -203,7 +214,10 @@ def _refresh_record(record: dict[str, Any]) -> bool:
     signature = media_signature(path)
     new_size = signature["size"]
     new_mtime = signature["mtime"]
-    changed = record.get("size") != new_size or record.get("mtime") != new_mtime or record.get("missing", False)
+    identity_changed = record.get("size") != new_size or record.get("mtime") != new_mtime
+    changed = identity_changed or record.get("missing", False)
+    if identity_changed:
+        record["_identity_changed"] = True
     record["size"] = new_size
     record["mtime"] = new_mtime
     record["missing"] = False
@@ -228,8 +242,8 @@ def create_project(name: str, folder: str) -> Project:
     return project
 
 
-def load_project(folder: str) -> Project:
-    """Load an existing project folder."""
+def load_project(folder: str, *, ensure_dirs: bool = True) -> Project:
+    """Load an existing project folder (read-only when ``ensure_dirs`` is off)."""
     root = Path(folder).expanduser().resolve()
     path = root / "project.json"
     if not path.exists():
@@ -238,7 +252,8 @@ def load_project(folder: str) -> Project:
         data = json.load(fh)
     validate_project_document(data)
     project = Project(root, data)
-    project.ensure_dirs()
+    if ensure_dirs:
+        project.ensure_dirs()
     return project
 
 

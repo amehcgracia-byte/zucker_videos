@@ -156,6 +156,9 @@ def spherical_view_filter(
     aspect_ratio: float = 16.0 / 9.0,
     width: int = 360,
     height: int = 202,
+    projection_preset: str | None = None,
+    roll: float = 0.0,
+    projection_control: object = None,
 ) -> str:
     """Build the canonical per-shot v360 filter used by views and audits.
 
@@ -165,7 +168,11 @@ def spherical_view_filter(
     the flat-vs-stereographic projection choice.
     """
     source_projection = str(projection or "").lower()
-    view = view_parameters(yaw, pitch, fov, aspect_ratio, shot_type)
+    view = view_parameters(
+        yaw, pitch, fov, aspect_ratio, shot_type,
+        projection_preset=projection_preset, roll=roll,
+        projection_control=projection_control,
+    )
     if source_projection == "raw_insv":
         prefix = (
             f"v360=input=dfisheye:output=e:ih_fov={float(insv_fov):.3f}:"
@@ -178,6 +185,7 @@ def spherical_view_filter(
     return (
         f"{prefix}v360=input=equirect:output={view['projection']}:"
         f"yaw={float(view['yaw']):.3f}:pitch={float(view['pitch']):.3f}:"
+        f"roll={float(view['roll']):.3f}:"
         f"h_fov={float(view['h_fov']):.3f}:v_fov={float(view['v_fov']):.3f}:"
         f"w={int(width)}:h={int(height)}:interp=lanczos"
     )

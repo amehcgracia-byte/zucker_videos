@@ -17,7 +17,8 @@ import time
 from pathlib import Path
 from core.storage import data_root, configure_working_storage
 
-from core.desktop_menu import build_desktop_menu, hide_external_services
+from core.desktop_menu import build_desktop_menu, hide_external_services, apply_menu_mode
+from core.desktop_text import enable_native_text_menu, enable_named_microphone_permission
 from core.build_info import startup_label
 from server.api import create_app
 from server.inbox import load_global_config, save_global_config
@@ -28,6 +29,11 @@ APP_NAME = "Zucker Editor"
 
 class DesktopApi:
     """pywebview JavaScript bridge for native desktop-only actions."""
+
+    def set_edit_mode(self, mode: str | None = None) -> None:
+        import webview
+        if webview.windows:
+            apply_menu_mode(webview.windows[0], mode)
 
     def pick_master(self) -> list[str]:
         """Open a native file dialog for master audio."""
@@ -70,10 +76,14 @@ class DesktopApi:
         return str(parent)
 
     def reveal_in_finder(self, path: str | None = None) -> bool:
-        """Reveal a path in Finder."""
-        target = Path(path or load_global_config()["inbox_path"]).expanduser()
-        subprocess.run(["open", "-R", str(target)], check=False)
-        return True
+        """Reveal a path using the operating system, and report real launch failures."""
+        target = Path(path or load_global_config()["inbox_path"]).expanduser().resolve()
+        if not target.exists():return False
+        command = (["open", "-R", str(target)] if sys.platform=="darwin" else
+                   ["explorer", "/select,"+str(target)] if sys.platform=="win32" else
+                   ["xdg-open", str(target if target.is_dir() else target.parent)])
+        try:return subprocess.run(command,check=False).returncode==0
+        except OSError:return False
 
 
 def find_free_port() -> int:
@@ -107,7 +117,7 @@ def parse_args() -> argparse.Namespace:
 def _enable_native_drop(window) -> None:
     """Use pywebview's native paths so desktop drops never copy source media."""
     try:
-        zone = window.dom.get_element("#dropZone")
+        zone = window.dom.get_element("body")
         if zone is None:
             return
         def dropped(event):
@@ -120,23 +130,44 @@ def _enable_native_drop(window) -> None:
         logging.getLogger(__name__).exception("Native drop unavailable; using streamed imports")
 
 
+_FULL_SPEED = None
+
+
+def keep_full_speed() -> None:
+    """Tell macOS the app works for the person: without it, App Nap ran it at the lowest
+    priority whenever its window was hidden or behind another (a 30-minute transcription took
+    over five hours). The Mac may still sleep when idle."""
+    global _FULL_SPEED
+    if sys.platform != "darwin" or _FULL_SPEED is not None:
+        return
+    try:
+        import Foundation
+        _FULL_SPEED = Foundation.NSProcessInfo.processInfo().beginActivityWithOptions_reason_(
+            Foundation.NSActivityUserInitiatedAllowingIdleSystemSleep, "Editing and rendering videos")
+    except Exception:  # never stops the app from starting
+        _FULL_SPEED = False
+
+
 def main() -> None:
     """Run Zucker Editor in desktop or dev-server mode."""
     multiprocessing.freeze_support()
     args = parse_args()
+    keep_full_speed()
     if not (args.dev or args.selftest or args.webgl_probe or args.operator_avoidance_probe) and not storage_ready():
         import webview
         bridge = DesktopApi()
         bridge._storage_selected = lambda: _start_desktop_server(args)
-        html = """<!doctype html><html lang="es"><meta charset="utf-8">
+        html = """<!doctype html><html lang="en"><meta charset="utf-8">
         <style>body{font:18px system-ui;max-width:650px;margin:70px auto;padding:20px}button{font:inherit;padding:14px;border-radius:12px}#error{color:#a22}</style>
-        <h1>Elige dónde guardar tu trabajo</h1>
-        <p>Vídeos importados, cachés y proyectos se guardarán en esta ubicación. Puedes elegir tu disco externo.</p>
-        <button id="choose" onclick="choose()">Seleccionar ubicación</button><p id="error"></p>
+        <h1>Choose where to save your work</h1>
+        <p>Imported videos, caches and projects will be saved in this location. You can choose your external drive.</p>
+        <button id="choose" onclick="choose()">Choose location</button><p id="error"></p>
         <script>async function choose(){const b=document.getElementById('choose');b.disabled=true;try{const url=await window.pywebview.api.choose_storage();if(url)location.href=url;}catch(e){document.getElementById('error').textContent=e.message;}finally{b.disabled=false;}}document.getElementById('choose').disabled=true;window.addEventListener('pywebviewready',()=>document.getElementById('choose').disabled=false);</script></html>"""
-        window = webview.create_window(APP_NAME, html=html, width=850, height=540, js_api=bridge)
+        window = webview.create_window(APP_NAME, html=html, width=850, height=540, js_api=bridge, text_select=True)
         window.events.loaded += lambda: _enable_native_drop(window)
         window.events.loaded += hide_external_services
+        window.events.loaded += lambda: enable_native_text_menu(window)
+        window.events.loaded += lambda: enable_named_microphone_permission(window)
         webview.start(menu=build_desktop_menu(window))
         return
     _configure_logging()
@@ -176,7 +207,7 @@ def main() -> None:
     server.start()
     js_api = DesktopApi()
     logging.getLogger(__name__).info("js_api bridge attached: yes")
-    window = webview.create_window(APP_NAME, url, width=1200, height=820, js_api=js_api, background_color="#ffffff")
+    window = webview.create_window(APP_NAME, url, width=1200, height=820, js_api=js_api, background_color="#ffffff", text_select=True)
 
     def on_loaded() -> None:
         config = load_global_config()
@@ -189,6 +220,8 @@ def main() -> None:
     window.events.loaded += on_loaded
     window.events.loaded += lambda: _enable_native_drop(window)
     window.events.loaded += hide_external_services
+    window.events.loaded += lambda: enable_native_text_menu(window)
+    window.events.loaded += lambda: enable_named_microphone_permission(window)
     webview.start(menu=build_desktop_menu(window))
 
 
@@ -208,9 +241,36 @@ def _start_desktop_server(args: argparse.Namespace) -> str:
     raise RuntimeError("The application server could not start.")
 
 
+def _windows_ui_selftest() -> bool:
+    """Open the actual Windows backend and execute JavaScript, then close it."""
+    import webview
+    loaded = threading.Event()
+    result = []
+    window = webview.create_window("Zucker Editor startup test", html="<html><body>Startup test</body></html>", hidden=True)
+    window.events.loaded += loaded.set
+
+    def probe():
+        try:
+            if loaded.wait(30):
+                result.append(window.evaluate_js("6 * 7") == 42)
+        finally:
+            window.destroy()
+
+    webview.start(probe, gui="edgechromium")
+    if result != [True]:
+        raise RuntimeError("Windows UI did not load or execute JavaScript")
+    return True
+
+
 def _run_selftest() -> int:
     """Initialize the packaged app and exercise bundle-sensitive invariants."""
     try:
+        windows_ui = None
+        if sys.platform == "win32":
+            # The media/API test alone missed failures in Python.Runtime.dll.
+            # Import the real backend used by first-launch and normal windows.
+            import webview.platforms.winforms
+            windows_ui = _windows_ui_selftest()
         app = create_app(project_path=None, dev=False)
         with app.test_client() as client:
             response = client.get("/")
@@ -229,6 +289,17 @@ def _run_selftest() -> int:
         if os.environ.get("ZUCKER_SELFTEST_REQUIRE_METAL") == "1" and not metal_exact:
             raise RuntimeError("Packaged Metal remap is missing or differs from OpenCV")
 
+        from core import show_backgrounds, show_textures
+        resource_root = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
+        for relative in ('tools/qa/video-layers/index.html', 'web/show_video_layers.js',
+                         'tools/qa/show-backgrounds/bullring.png', 'tools/qa/show-backgrounds/space.png',
+                         'tools/qa/show-backgrounds/laboratory.png', 'tools/qa/show-backgrounds/landscape.png'):
+            if not (resource_root / relative).is_file():
+                raise RuntimeError('Missing video-layer editor resource: '+relative)
+        if sys.platform == 'darwin' and not show_backgrounds.available():
+            raise RuntimeError('The packaged app cannot load person segmentation')
+        if len(show_textures.PRESETS) != 10:
+            raise RuntimeError('The texture library is incomplete')
         card = _intro_card_path()
         if card is None:
             raise RuntimeError("intro_card_watermark.png is not present in the packaged assets")
@@ -297,6 +368,22 @@ def _run_selftest() -> int:
                 if not transcription.get("sources"):
                     raise RuntimeError("Packaged transcription returned no source")
                 selftest_transcription = True
+        # Filler scene tagging must load the bundled CLIP encoder and labels and
+        # tell a black frame from daylight; a silent fallback would hide a
+        # broken package.
+        import numpy as np
+        from core import scene_tags
+        from core.show_video_assets import green_alpha
+        if not np.allclose(green_alpha(np.full((2,2,3),[0,255,0],np.uint8)),0):
+            raise RuntimeError('Packaged green-screen compositor is unavailable')
+        scene_tagging = False
+        if scene_tags.available():
+            dark, bright = scene_tags.analyze_frames([np.zeros((256, 256, 3), np.uint8),
+                                                      np.full((256, 256, 3), (135, 190, 235), np.uint8)])
+            scene_tagging = bool(dark.get("model") and dark["time"].get("night", 0) > dark["time"].get("day", 0)
+                                 and bright["time"].get("day", 0) > bright["time"].get("night", 0))
+        if not scene_tagging:
+            raise RuntimeError("Packaged scene tagging (CLIP) is unavailable or not distinguishing night from day")
         backstage_result = None
         backstage_project = os.environ.get("ZUCKER_SELFTEST_BACKSTAGE_PROJECT")
         if backstage_project:
@@ -323,6 +410,8 @@ def _run_selftest() -> int:
             "transcription": selftest_transcription,
             "instrument_model_loaded": instrument_model_loaded,
             "metal_remap_exact": metal_exact,
+            "scene_tagging": scene_tagging,
+            "windows_ui": windows_ui,
             "backstage_export": backstage_result,
         }, sort_keys=True))
         return 0
@@ -463,10 +552,17 @@ def _configure_logging() -> None:
     from logging.handlers import RotatingFileHandler
     log_dir = data_root() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    handlers = [RotatingFileHandler(log_dir / "app.log", maxBytes=5*1024*1024, backupCount=2, encoding="utf-8")]
+    # PyInstaller's Windows GUI executable has no stderr. A StreamHandler(None)
+    # captures that None permanently, even if the selftest redirects it later.
+    # Keep all diagnostics in the rotating file, and mirror to a console only
+    # when a real stream exists.
+    if sys.stderr is not None:
+        handlers.insert(0, logging.StreamHandler(sys.stderr))
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        handlers=[logging.StreamHandler(sys.stderr), RotatingFileHandler(log_dir / "app.log", maxBytes=5*1024*1024, backupCount=2, encoding="utf-8")],
+        handlers=handlers,
         force=True,
     )
 

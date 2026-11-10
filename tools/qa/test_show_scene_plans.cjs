@@ -1,0 +1,11 @@
+const assert=require('node:assert/strict');
+const {planScene,plansFromCaptions}=require('./show_scene_plans.js');
+const assets=[{id:'bullring'},{id:'space'}];
+assert.equal(planScene({text:'A spiral in time',assets}).background,null);
+const spain=planScene({text:'A spiral',context:'Spanish',start:21,end:24,assets});
+assert.equal(spain.background,'bullring');assert.equal(spain.evidenceSource,'user context');assert.equal(spain.quote,'A spiral');assert.equal(spain.assetStatus,'available');
+assert.equal(planScene({text:'My feelings are inside me'}).look,'paint');
+assert.equal(planScene({text:'Just a conversation'}).effect,null);
+assert.equal(planScene({text:'Spain'}).assetStatus,'needs asset');
+assert.deepEqual(plansFromCaptions([{start:1,end:2,text:'The future'},{start:3,end:5,text:'is here'},{start:9,end:10,text:'a circle'}],assets).map(p=>[p.start,p.end,p.effect]),[[1,5,'cutout'],[9,10,'finger']]);
+console.log('PASS: context evidence stays separate, missing assets are requested, unmatched scenes stay open and transcript ranges survive');

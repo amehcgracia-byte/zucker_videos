@@ -23,12 +23,13 @@ from core.normalization import global_cache_root, global_clip_audio_path, global
 from core.project import Project, atomic_write_json, load_project
 from core.spherical_view import spherical_view_filter
 from core.stages.base import ProgressCallback, Stage, artifact_path, file_signature, stable_fingerprint, write_artifact_json
+from core.fillers import filler_paths
 
 SYNC_SAMPLE_RATE = 22050
 SYNC_HOP_LENGTH = 512
 PREVIEW_SECONDS = 10.0
 HPSS_SYNC_VERSION = 1
-SYNC_ALGORITHM_VERSION = 5
+SYNC_ALGORITHM_VERSION = 6
 
 
 class SyncStage(Stage):
@@ -45,6 +46,7 @@ class SyncStage(Stage):
                 "master": project.data["inputs"].get("master"),
                 "videos": project.data["inputs"].get("videos", []),
                 "settings": project.data["settings"].get(self.name, {}),
+                "fillers": sorted(filler_paths(project)),
                 "algorithm": {"sr": SYNC_SAMPLE_RATE, "hop": SYNC_HOP_LENGTH, "version": SYNC_ALGORITHM_VERSION, "hpss": HPSS_SYNC_VERSION, "verify_tolerance_sec": 0.150},
             }
         )
@@ -66,7 +68,9 @@ class SyncStage(Stage):
         master_duration = media_duration(master_record["path"])
         clips: dict[str, Any] = {}
         all_videos = project.data["inputs"].get("videos", [])
-        videos = [record for record in all_videos if record_is_usable_camera_video(record)]
+        # Filler footage is unsynced by definition; it never becomes a camera.
+        fillers = filler_paths(project)
+        videos = [record for record in all_videos if record_is_usable_camera_video(record) and str(record.get("path") or "") not in fillers]
         threshold = sync_confidence_threshold(project)
         total = max(1, len(videos))
 
@@ -453,32 +457,33 @@ def sync_clip(project: Project, record: dict[str, Any], master_env: np.ndarray, 
 
     offset_sec, confidence = recover_offset(master_env, clip_env)
     sync_method = "onset"
-    alternatives: list[dict[str, Any]] = [{"method": sync_method, "offset_sec": offset_sec, "confidence": confidence}]
-    if confidence < threshold:
-        spectral_master = load_or_compute_master_spectral_envelope(project)
-        spectral_clip, _ = load_or_compute_clip_spectral_envelope(project, record)
-        if spectral_clip is not None and spectral_master.size and spectral_clip.size:
-            fallback_offset, fallback_confidence = recover_offset(spectral_master, spectral_clip)
-            if fallback_confidence > confidence:
-                offset_sec = fallback_offset
-                confidence = fallback_confidence
-                clip_env = spectral_clip
-                master_env = spectral_master
-                sync_method = "spectral_flux"
-            alternatives.append({"method": "spectral_flux", "offset_sec": fallback_offset, "confidence": fallback_confidence})
-    if confidence < threshold:
-        percussive_master = load_or_compute_master_percussive_envelope(project)
-        percussive_clip, _ = load_or_compute_clip_percussive_envelope(project, record)
-        if percussive_clip is not None and percussive_master.size and percussive_clip.size:
-            percussive_offset, percussive_confidence = recover_offset(percussive_master, percussive_clip)
-            alternatives.append({"method": "hpss_percussive", "offset_sec": percussive_offset, "confidence": percussive_confidence})
-            if percussive_confidence > confidence:
-                offset_sec = percussive_offset
-                confidence = percussive_confidence
-                clip_env = percussive_clip
-                master_env = percussive_master
-                sync_method = "hpss_percussive"
     verification = verify_sync_stability(master_env, clip_env, offset_sec)
+    alternatives: list[dict[str, Any]] = [{"method": sync_method, "offset_sec": offset_sec,
+                                          "confidence": confidence, "verification": verification}]
+
+    def proven(score, evidence):
+        return score >= threshold and not evidence.get("unstable_sync")
+
+    # A strong but contradictory peak is not a usable result. Try the bounded
+    # spectral comparison before accepting failure; prefer verified evidence
+    # over a higher raw score from repeated musical rhythms.
+    for method, master_loader, clip_loader in (
+        ("spectral_flux", load_or_compute_master_spectral_envelope, load_or_compute_clip_spectral_envelope),
+        ("hpss_percussive", load_or_compute_master_percussive_envelope, load_or_compute_clip_percussive_envelope),
+    ):
+        if proven(confidence, verification):
+            break
+        alternate_master = master_loader(project)
+        alternate_clip, _ = clip_loader(project, record)
+        if alternate_clip is None or not alternate_master.size or not alternate_clip.size:
+            continue
+        candidate_offset, candidate_confidence = recover_offset(alternate_master, alternate_clip)
+        candidate_verification = verify_sync_stability(alternate_master, alternate_clip, candidate_offset)
+        alternatives.append({"method": method, "offset_sec": candidate_offset,
+                             "confidence": candidate_confidence, "verification": candidate_verification})
+        if proven(candidate_confidence, candidate_verification) or candidate_confidence > confidence:
+            offset_sec, confidence = candidate_offset, candidate_confidence
+            verification, sync_method = candidate_verification, method
     unstable = bool(verification.get("unstable_sync"))
     return {
         **base,
@@ -1214,6 +1219,9 @@ def generate_thumbnail(
             "yaw": float(pose.get("yaw") or 0.0) % 360.0,
             "pitch": float(pose.get("pitch") or 0.0),
             "fov": float(pose.get("fov") or 95.0),
+            "roll": float(pose.get("roll") or 0.0),
+            "projection_preset": pose.get("projection_preset"),
+            "projection_control": pose.get("projection_control"),
             "shot_id": pose.get("shot_id") or pose.get("type"),
             "insv_fov": pose.get("insv_fov"),
         })[:16]
@@ -1228,6 +1236,9 @@ def generate_thumbnail(
             insv_fov=float(pose.get("insv_fov") or 190.0),
             width=360,
             height=202,
+            projection_preset=pose.get("projection_preset"),
+            roll=float(pose.get("roll") or 0.0),
+            projection_control=pose.get("projection_control"),
         )
         filter_graph = f"{view_filter},format=yuvj420p"
     else:
