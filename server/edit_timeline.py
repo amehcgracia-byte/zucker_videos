@@ -129,7 +129,7 @@ def register_edit_timeline(app,project,invalidate):
             path=c.get('path') or c.get('clip_path') or c.get('source_path')
             if not path:continue
             candidate={**s,'clip_path':path,'source_path':c.get('source_path') or path,'filename':c.get('filename') or Path(path).name,'clip_start_sec':float(s['master_start_sec'])-float(c.get('offset_sec') or 0) if platform=='youtube' else float(c.get('clip_start_sec') or 0),'clip_offset_sec':float(c.get('offset_sec') or 0)}
-            for key in ('proxy_path','spherical_source_path','spherical_shot','reel_framing','projection','flat_framing','stage_performers','performer_view','performer_evidence'):
+            for key in ('proxy_path','spherical_source_path','spherical_shot','reel_framing','projection','flat_framing','stage_performers','performer_view','performer_evidence','motion','manual_view','performer_view_name','motion_enabled'):
                 candidate.pop(key,None)
                 if c.get(key) is not None:candidate[key]=c[key]
             if candidate.get('projection') in ('equirect','raw_insv') and not candidate.get('spherical_shot'):candidate['spherical_shot']={'type':'manual','yaw':0,'pitch':0,'fov':95,'projection_preset':'normal'}
@@ -302,6 +302,9 @@ def register_edit_timeline(app,project,invalidate):
                 s['playback_speed']=round(playback_speed,3)
                 movement=body.get('movement',before.get('motion_enabled',True))
                 if not isinstance(movement,bool):raise ValueError('Movement must be a checkbox value')
+                # Switching camera never reuses the previous camera's animated
+                # pose. Preserve the selected candidate's motion state unless
+                # the user explicitly changed the Movement checkbox.
                 s['motion_enabled']=movement
                 if component != 'light':
                     for field in ('motion', 'spherical_shot'):
