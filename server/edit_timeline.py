@@ -353,6 +353,23 @@ def register_edit_timeline(app,project,invalidate):
                 s['camera_id']=_camera_id(s);data['segments'][i]=s
                 if body.get('performer_roles') is not None:
                     raise ValueError('Use Mark as musician to save an individual view')
+                if body.get('selected_musician_view'):
+                    name = str(body['selected_musician_view']).strip()
+                    source = str(s.get('source_path') or s.get('clip_path') or '')
+                    saved = (p.data.get('settings',{}).get('edit',{})
+                             .get('saved_musician_views',{}).get(source,{})
+                             .get(name))
+                    if not isinstance(saved,dict):
+                        raise ValueError('This saved musician view is unavailable on the selected camera')
+                    # Restore that view in ONE shot, using its authored pose,
+                    # not the previous camera's 360 orientation or crop.
+                    for key in ('spherical_shot','flat_framing'):
+                        s.pop(key,None)
+                        if saved.get(key) is not None:
+                            s[key] = copy.deepcopy(saved[key])
+                    s['manual_view'] = True
+                    s['performer_view_name'] = name
+                    s['motion_enabled'] = saved.get('motion_enabled') is True
                 if body.get('remember_musician'):
                     name=str(body['remember_musician']).strip()
                     if not 1<=len(name)<=40 or any(ord(ch)<32 or ch in '<>' for ch in name):
@@ -365,6 +382,7 @@ def register_edit_timeline(app,project,invalidate):
                         'source_path': source,
                         'spherical_shot': copy.deepcopy(s.get('spherical_shot')),
                         'flat_framing': copy.deepcopy(s.get('flat_framing')),
+                        'motion_enabled': bool(s.get('motion_enabled')),
                     }
                     settings=p.data.setdefault('settings',{}).setdefault('edit',{})
                     views=settings.setdefault('saved_musician_views',{})
