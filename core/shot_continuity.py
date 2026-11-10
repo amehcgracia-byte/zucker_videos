@@ -24,32 +24,28 @@ def _key(segment):
 def continuous_views(segments, *, preserve_authored=False):
     """Keep the editable cut boundaries, but never restart an identical view."""
     output = deepcopy(segments)
-    # Never switch the continuity policy for the entire edit just because
-    # one shot has a manual crop or a Movimiento checkbox. That invalidates
-    # untouched shots' cache keys and queues hundreds of unnecessary previews.
-    def authored(segment):
-        return preserve_authored and (bool(segment.get('manual_view')) or 'motion_enabled' in segment)
-
-    def eligible_key(segment):
-        return None if authored(segment) else _key(segment)
+    # Stage's saved plan is the source of truth for continuity and framing.
+    # Recalculating a shared clock on review can change unrelated shots as
+    # soon as one is manually edited, invalidating hundreds of previews.
+    # Stage render and review must use the exact authored segment clocks.
+    if preserve_authored:
+        return output
 
     for segment in output:
-        if authored(segment):
-            continue
         for field in ('spherical_shot', 'motion'):
             for key in ('continuity_duration_sec', 'continuity_offset_sec'):
                 (segment.get(field) or {}).pop(key, None)
     runs = []
     for segment in output:
-        key = eligible_key(segment)
+        key = _key(segment)
         previous = runs[-1][-1] if runs else None
         contiguous = previous and abs(float(previous.get('clip_start_sec', 0)) + float(previous.get('duration_sec', 0)) - float(segment.get('clip_start_sec', 0))) < .04 and abs(float(previous.get('master_start_sec', 0)) + float(previous.get('duration_sec', 0)) - float(segment.get('master_start_sec', 0))) < .04
-        if key is not None and contiguous and key == eligible_key(previous):
+        if key is not None and contiguous and key == _key(previous):
             runs[-1].append(segment)
         else:
             runs.append([segment])
     for run in runs:
-        if len(run) < 2 or eligible_key(run[0]) is None:
+        if len(run) < 2 or _key(run[0]) is None:
             continue
         field = 'spherical_shot' if run[0].get('spherical_shot') else 'motion'
         profile = deepcopy(run[0].get(field) or {})
