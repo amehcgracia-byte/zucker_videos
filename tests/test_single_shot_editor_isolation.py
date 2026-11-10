@@ -51,6 +51,20 @@ def test_editing_and_remembering_one_musician_changes_only_selected_shot(tmp_pat
     assert len(guitar)==1
     assert guitar[0]["flat_framing"]["x"]==.6
     assert doc2["performers"]==baseline[3]["stage_performers"]
+    use=client.patch("/api/v1/edit/shot",json={
+        "project_id":str(p.folder),"revision":doc2["revision"],
+        "index":3,"choice":0,"edit_component":"framing",
+        "flat_framing":{"zoom":1,"x":.5,"y":.5},
+        "selected_musician_view":"Guitar","movement":False,
+        "apply_to_source":False})
+    assert use.status_code==200,use.json
+    reused=json.loads(document.read_text())["segments"]
+    assert reused[3]["flat_framing"]==reused[2]["flat_framing"]
+    assert reused[3]["performer_view_name"]=="Guitar"
+    assert reused[3]["motion_enabled"] is False
+    assert reused[0]==baseline[0] and reused[1]==baseline[1]
+    assert reused[4:]==baseline[4:]
+    doc2=client.get("/api/v1/edit/shot?index=3").json
     reject=client.patch("/api/v1/edit/shot",json={
         "project_id":str(p.folder),"revision":doc2["revision"],
         "index":3,"choice":0,"edit_component":"framing",
