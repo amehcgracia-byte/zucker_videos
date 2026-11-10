@@ -786,7 +786,9 @@ def _reel_promo_plan_pass(
             }
             segment["spherical_shot"] = _spherical_motion_profile(shot, index, enabled=False, hold_motion="none")
         elif _flat_motion_camera(source) and bool(wizard.get("fixed_rear_motion", True)):
-            target_x, target_y = _tracked_flat_target(source, clip_start, seg_duration, {})
+            reel_samples: dict[str, list[dict[str, Any]]] = {}
+            target_x, target_y = _tracked_flat_target(source, clip_start, seg_duration, reel_samples)
+            subject_box = _visible_fixed_subject_box(source, clip_start, seg_duration, reel_samples, (target_x, target_y))
             segment["motion"] = _ken_burns_motion(
                 fixed_index,
                 target_x,
@@ -796,6 +798,7 @@ def _reel_promo_plan_pass(
                 variation_seed=stable_fingerprint({"window": window, "sources": [_source_id(item) for item in sources]}),
                 previous_movement=next((item["motion"]["movement"] for item in reversed(segments) if item.get("motion")), ""),
                 subject_confidence=_reel_framing_confidence(source, clip_start, seg_duration),
+                subject_box=subject_box,
             )
             segment["camera_motion_target"] = {
                 "x": round(target_x, 4),
@@ -1335,6 +1338,9 @@ def _youtube_multicam_plan(
             samples = operator_samples_cache.get(str(source.get("path") or source.get("source_path") or ""), [])
             confidence = _fixed_subject_confidence(source, samples, float(segment.get("clip_start_sec") or 0.0), segment_end - segment_start)
             previous_motion = next((item["motion"]["movement"] for item in reversed(segments) if (item.get("motion") or {}).get("type") == "ken_burns"), "")
+            subject_box = _visible_fixed_subject_box(
+                source, float(segment.get("clip_start_sec") or 0.0),
+                segment_end - segment_start, operator_samples_cache, (target_x, target_y))
             segment["motion"] = _ken_burns_motion(
                 fixed_rear_motion_index, target_x, target_y,
                 allow_static=False,
@@ -1342,6 +1348,7 @@ def _youtube_multicam_plan(
                 variation_seed=variation_seed,
                 previous_movement=previous_motion, subject_confidence=confidence,
                 gentle=bool(alternative_camera_ids), style=direction["group"],
+                subject_box=subject_box,
             )
             segment["fixed_camera_zoom_policy"] = "gentle_subject_motion_sufficient_coverage" if alternative_camera_ids else "safe_subject_motion_low_coverage"
             fixed_rear_motion_index += 1
@@ -2716,6 +2723,46 @@ def _fixed_subject_confidence(source: dict[str, Any], samples: list[dict[str, An
     return 1.0 if reliable else 0.0
 
 
+def _visible_fixed_subject_box(
+    source: dict[str, Any],
+    clip_start_sec: float,
+    duration_sec: float,
+    samples_cache: dict[str, list[dict[str, Any]]],
+    target: tuple[float, float],
+) -> dict[str, float] | None:
+    """Return a conservative union of reliable source-space subject bounds.
+
+    The MobileNet operator cache may only contain legacy centres. In that case
+    auto-framing uses the conservative no-box zoom ceiling. Never invent a
+    person rectangle from an area or turn a centre into headroom evidence.
+    """
+    path = str(source.get("path") or source.get("source_path") or "")
+    if path not in samples_cache:
+        samples_cache[path] = load_cached_operator_presence(path) if path else []
+    bounds = []
+    for sample in samples_cache[path]:
+        if not (clip_start_sec - .5 <= float(sample.get("t") or 0) <= clip_start_sec + duration_sec + .5):
+            continue
+        if float(sample.get("subject_area_fraction") or 0) < .01:
+            continue
+        if (abs(float(sample.get("subject_cx") or -1) - target[0]) > .20
+                or abs(float(sample.get("subject_cy") or -1) - target[1]) > .20):
+            continue
+        try:
+            v = [float(sample["subject_" + k]) for k in ("x1", "y1", "x2", "y2")]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not all(math.isfinite(n) for n in v) or not (0 <= v[0] < v[2] <= 1 and 0 <= v[1] < v[3] <= 1):
+            continue
+        bounds.append(v)
+    if not bounds:
+        return None
+    return dict(zip(("x1", "y1", "x2", "y2"), (
+        min(v[0] for v in bounds), min(v[1] for v in bounds),
+        max(v[2] for v in bounds), max(v[3] for v in bounds),
+    )))
+
+
 def _visible_iphone_target(
     source: dict[str, Any],
     clip_start_sec: float,
@@ -3063,11 +3110,13 @@ def _ken_burns_motion(
     allow_static: bool = True, force_full_zoom: bool = False, force_close: bool = False,
     duration: float = 4.0, variation_seed: str = "", previous_movement: str = "",
     subject_confidence: float = 1.0, gentle: bool = False, style: str = "tranquilo",
+    subject_box: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     return fixed_camera_motion(
         index, target_x, target_y, duration=duration, seed=variation_seed,
         previous=previous_movement, confidence=subject_confidence, allow_static=allow_static,
         preferred="full_zoom_in" if force_full_zoom else "", gentle=gentle, style=style,
+        subject_box=subject_box,
     )
 
 
