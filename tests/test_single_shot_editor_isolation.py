@@ -137,3 +137,36 @@ def test_one_shot_edit_rejects_camera_wide_light(tmp_path,monkeypatch):
         "apply_to_source":False})
     assert r.status_code==400
     assert json.loads(path.read_text())["segments"]==shots
+
+
+def test_swap_one_shot_preserves_other_shots_and_their_continuity_metadata(tmp_path,monkeypatch):
+    from core import shot_review
+    p=create_project("Swap isolated",str(tmp_path/"Swap.zuckervid"))
+    first="/fixed.mp4"
+    second="/other.mp4"
+    old=[{
+        "source_path":first,"clip_path":first,"clip_start_sec":i*4,
+        "master_start_sec":i*4,"duration_sec":4,
+        "spherical_shot":{"type":"manual","yaw":float(10+i*5),"pitch":-5.0,
+                          "fov":90.0,"continuity_duration_sec":16.0,
+                          "continuity_offset_sec":i*4.0},
+        "manual_view":True,
+    } for i in range(4)]
+    path=p.artifacts_dir/"edit_plan.json"
+    atomic_write_json(path,{"platform":"youtube","segments":old})
+    monkeypatch.setattr(shot_review,"load_coverage",lambda _:{
+        "platform":"youtube","sources":[]})
+    monkeypatch.setattr(shot_review,"_project_candidate_pool",lambda *a,**k:([
+        {"path":second,"source_path":second,"clip_start_sec":4,
+         "offset_sec":0,"duration_sec":100,"confidence":10}], "test"))
+    monkeypatch.setattr(shot_review,"_replacement_candidates",
+        lambda pool,segment,tried,platform,**k:(
+            [(10.,pool[0],"alternate")] if "alternate" not in tried else [],
+            {"pool":1}))
+    monkeypatch.setattr(shot_review,"review_items",lambda *a,**k:[])
+    result=shot_review.replace_slots(p,[1])
+    assert result["replaced"]==[1]
+    saved=json.loads(path.read_text())["segments"]
+    assert saved[1]["source_path"]==second
+    for index in (0,2,3):
+        assert saved[index]==old[index],f"Shot {index} changed after replacing shot 1"
