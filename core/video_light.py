@@ -92,11 +92,35 @@ def cached_review_profiles(project):
         return {}
 
 
+def stable_stage_review_profiles(project):
+    """Keep a late camera measurement from invalidating untouched shot images."""
+    import hashlib
+    import json
+    from pathlib import Path
+    from core.project import atomic_write_json
+    sources = []
+    for record in project.data.get('inputs', {}).get('videos', []):
+        path = Path(record['path'])
+        try:
+            stat = path.stat()
+            sources.append((str(path), stat.st_size, stat.st_mtime_ns))
+        except OSError:
+            sources.append((str(path), None, None))
+    key = hashlib.sha256(json.dumps(sorted(sources)).encode()).hexdigest()[:24]
+    target = project.cache_dir / ('stage-review-light-' + key + '.json')
+    try:
+        return json.loads(target.read_text())['corrections']
+    except (OSError, ValueError, KeyError, TypeError):
+        profiles = cached_review_profiles(project)
+        atomic_write_json(target, {'corrections': profiles})
+        return profiles
+
+
 def stage_review_profile(project, segment):
     spec = settings(project, segment)
     if spec is None:
         return {}
-    result = dict(cached_review_profiles(project).get(str(segment.get('clip_path') or ''), {}))
+    result = dict(stable_stage_review_profiles(project).get(str(segment.get('clip_path') or ''), {}))
     result['video_light'] = spec
     return result
 

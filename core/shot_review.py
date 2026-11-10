@@ -937,8 +937,8 @@ def review_items(
             from core.video_light import resolved_profiles
             color_profiles = resolved_profiles(project, _plan(project).get("segments") or segments)
         else:
-            from core.video_light import cached_review_profiles
-            color_profiles = cached_review_profiles(project)
+            from core.video_light import cached_review_profiles, stable_stage_review_profiles
+            color_profiles = (stable_stage_review_profiles(project) if platform == 'youtube' else cached_review_profiles(project))
     pending = []
     for index, segment in enumerate(segments):
         source, timestamp, output = _thumbnail_asset(root, index, segment, color_profiles.get(str(segment.get("clip_path")), {}))
