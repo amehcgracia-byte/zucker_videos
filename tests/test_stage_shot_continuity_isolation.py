@@ -88,7 +88,7 @@ def test_shot_checkbox_is_based_on_actual_motion_not_default_true():
     from pathlib import Path
     source = Path('server/edit_timeline.py').read_text()
     assert "movement=movement_active" in source
-    assert "elif segment.get('flat_framing')" in source
+    assert "if shot.get('flat_framing')" in source
     assert "elif segment.get('spherical_shot')" in source
     assert "from core.stages.export import _shot_requires_runtime_motion" in source
     assert "movement=bool(data['segments'][i].get('motion_enabled',True))" not in source
