@@ -101,3 +101,39 @@ def test_switching_camera_discards_old_camera_specific_motion(tmp_path, monkeypa
     assert actual[1]["source_path"]==str(b)
     assert actual[1].get("motion") is None
     assert actual[1]["motion_enabled"] is False
+
+
+def test_automatic_movement_varies_per_shot_but_never_rerolls_on_edit():
+    from core.stages.edit import _default_shot_motion_enabled
+    for seed in ("Tune Up", "Show A", "alternate musician"):
+        shots=[_default_shot_motion_enabled(seed,i,"fixed-one") for i in range(35)]
+        assert 5 <= sum(shots) <= 30
+        assert any(a != b for a,b in zip(shots,shots[1:]))
+        assert shots==[_default_shot_motion_enabled(seed,i,"fixed-one") for i in range(35)]
+
+
+def test_one_shot_edit_rejects_camera_wide_light(tmp_path,monkeypatch):
+    import core.stages.cut as cut
+    import server.edit_timeline as timeline
+    from server.api import create_app
+    monkeypatch.setenv("ZUCKER_DATA_ROOT",str(tmp_path/"data"))
+    p=create_project("Light safety",str(tmp_path/"Light.zuckervid"))
+    video=tmp_path/"fixed.mp4";video.touch()
+    p.data["inputs"]["videos"]=[{"path":str(video),"probe":{}}]
+    p.data["settings"]["edit"]["camera_types"]={str(video):"fixed"}
+    p.save()
+    shots=[{"source_path":str(video),"clip_path":str(video),"clip_start_sec":i,
+            "master_start_sec":i,"duration_sec":1} for i in range(3)]
+    path=p.artifacts_dir/"edit_plan.json"
+    atomic_write_json(path,{"platform":"youtube","segments":shots})
+    monkeypatch.setattr(cut,"load_coverage",lambda _:{"sources":[]})
+    monkeypatch.setattr(timeline,"duration",lambda _:100)
+    client=create_app(str(p.folder),dev=True).test_client()
+    doc=client.get("/api/v1/edit/shot?index=0").json
+    r=client.patch("/api/v1/edit/shot",json={
+        "project_id":str(p.folder),"revision":doc["revision"],
+        "index":0,"choice":0,"edit_component":"light","light_scope":"camera",
+        "video_light":{"auto":False,"light":0,"shadows":0},
+        "apply_to_source":False})
+    assert r.status_code==400
+    assert json.loads(path.read_text())["segments"]==shots
