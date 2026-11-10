@@ -39,15 +39,15 @@ _RENDER_STATUS_LOCK = threading.RLock()
 SPHERICAL_ANALYSIS_PROXY_VERSION = 1
 
 _REVIEW_SHOT_LABELS = {
-    "singer": "Cantante",
-    "full_stage": "Escenario completo",
-    "audience": "Publico",
-    "left": "Lado izquierdo",
-    "right": "Lado derecho",
-    "audience_stage_wide": "Publico y escenario",
-    "drummer": "Bateria",
-    "pianist": "Pianista",
-    "planet": "Planeta",
+    "singer": "Singer",
+    "full_stage": "Full stage",
+    "audience": "Audience",
+    "left": "Stage left",
+    "right": "Stage right",
+    "audience_stage_wide": "Audience and stage",
+    "drummer": "Drums",
+    "pianist": "Piano",
+    "planet": "Planet",
 }
 
 
@@ -1100,6 +1100,12 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
     """Replace rejected slots with unused source/moment candidates."""
     plan = _plan(project)
     segments = plan.get("segments") or []
+    # A reviewed plan is already distributed. Track every other shot so a
+    # Replace action can NEVER silently reschedule or reframe neighbours.
+    untouched_shots = {
+        i: json.dumps(s, sort_keys=True)
+        for i, s in enumerate(segments) if i not in set(rejected)
+    }
     coverage = load_coverage(project)
     wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
     platform = str(coverage.get("platform") or wizard.get("platform") or plan.get("platform") or "generic")
@@ -1245,7 +1251,12 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         unavailable.discard(index)
         replaced.append(index)
     from core.shot_continuity import continuous_views
-    segments = continuous_views(segments)
+    # Continuity is calculated when the plan is authored. Recomputing it here
+    # rewrote the *other* saved frames after each single-shot camera swap.
+    segments = continuous_views(segments, preserve_authored=True)
+    if any(json.dumps(segments[i], sort_keys=True) != original
+           for i, original in untouched_shots.items()):
+        raise ValueError('Replacing one shot attempted to modify another shot')
     plan["segments"] = segments
     artifact_path(project, "edit_plan.json").write_text(json.dumps(plan, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     project.data["settings"]["wizard"]["review_attempts"] = attempts
