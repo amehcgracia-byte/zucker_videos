@@ -932,6 +932,9 @@ def review_items(
     # export and is optional for a thumbnail. A status-only request must not
     # launch/inspect the complete plan just to report missing URLs.
     color_profiles = {}
+    if platform == 'youtube':
+        from core.video_light import stable_stage_review_profiles
+        color_profiles = stable_stage_review_profiles(project)
     if apply_color_profile or any(segment.get('video_light') is not None for segment in segments):
         if render_missing and (apply_color_profile or platform != 'youtube'):
             from core.video_light import resolved_profiles
