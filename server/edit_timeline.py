@@ -359,10 +359,9 @@ def register_edit_timeline(app,project,invalidate):
                 if body.get('performer_roles') is not None:
                     raise ValueError('Use Mark as musician to save an individual view')
                 if body.get('remember_musician'):
-                    from core.stage_performers import ROLES, role
-                    name=role(body['remember_musician'])
-                    if name not in ROLES-{'unknown'}:
-                        raise ValueError('Choose a valid musician name')
+                    name=str(body['remember_musician']).strip()
+                    if not 1<=len(name)<=40 or any(ch in name for ch in '<>\\n\\r\\t'):
+                        raise ValueError('Enter a musician name (up to 40 characters)')
                     source=str(s.get('source_path') or s.get('clip_path') or '')
                     # A named reusable view is metadata, not a new edit-plan
                     # distribution. It never changes any other shot.
