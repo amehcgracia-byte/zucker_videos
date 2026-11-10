@@ -789,6 +789,9 @@ def _reel_promo_plan_pass(
             reel_samples: dict[str, list[dict[str, Any]]] = {}
             target_x, target_y = _tracked_flat_target(source, clip_start, seg_duration, reel_samples)
             subject_box = _visible_fixed_subject_box(source, clip_start, seg_duration, reel_samples, (target_x, target_y))
+            auto_movement = _default_shot_motion_enabled(
+                stable_fingerprint({"window": window, "sources": [_source_id(item) for item in sources]}),
+                index, _source_id(source))
             segment["motion"] = _ken_burns_motion(
                 fixed_index,
                 target_x,
@@ -800,6 +803,7 @@ def _reel_promo_plan_pass(
                 subject_confidence=_reel_framing_confidence(source, clip_start, seg_duration),
                 subject_box=subject_box,
             )
+            segment["motion_enabled"] = auto_movement
             segment["camera_motion_target"] = {
                 "x": round(target_x, 4),
                 "y": round(target_y, 4),
@@ -1327,9 +1331,12 @@ def _youtube_multicam_plan(
                         shot.update(type="planet", label="Planeta → escenario", projection_preset="tiny_planet", pitch=-90., fov=270.,
                                     movement="planet_to_stage", reveal_target=target)
                         last_planet_sec = segment_start
+                auto_movement = bool(spherical_motion) and _default_shot_motion_enabled(
+                    variation_seed, segment_index, _source_id(source))
                 segment["spherical_shot"] = _spherical_motion_profile(
                     shot or {}, sum(1 for item in segments if item.get("spherical_shot")),
-                    enabled=spherical_motion, hold_motion=hold_motion, style=direction["group"], seed=variation_seed)
+                    enabled=auto_movement, hold_motion=hold_motion, style=direction["group"], seed=variation_seed)
+                segment["motion_enabled"] = auto_movement
         elif fixed_rear_motion and _flat_motion_camera(source):
             # Every fixed-camera cut receives a crop motion. The source role,
             # not the filename, is authoritative: files such as ZZ24.7 .mov
@@ -1341,6 +1348,8 @@ def _youtube_multicam_plan(
             subject_box = _visible_fixed_subject_box(
                 source, float(segment.get("clip_start_sec") or 0.0),
                 segment_end - segment_start, operator_samples_cache, (target_x, target_y))
+            auto_movement = _default_shot_motion_enabled(
+                variation_seed, segment_index, _source_id(source))
             segment["motion"] = _ken_burns_motion(
                 fixed_rear_motion_index, target_x, target_y,
                 allow_static=False,
@@ -1350,6 +1359,7 @@ def _youtube_multicam_plan(
                 gentle=bool(alternative_camera_ids), style=direction["group"],
                 subject_box=subject_box,
             )
+            segment["motion_enabled"] = auto_movement
             segment["fixed_camera_zoom_policy"] = "gentle_subject_motion_sufficient_coverage" if alternative_camera_ids else "safe_subject_motion_low_coverage"
             fixed_rear_motion_index += 1
         _apply_operator_avoidance(segment, source, operator_samples_cache)
@@ -3103,6 +3113,16 @@ def _gentle_fixed_camera_motion(
         "enforce_top_edge": False,
         "zoom_path_fraction": FIXED_CAMERA_GENTLE_ZOOM_FRACTION,
     }
+
+
+def _default_shot_motion_enabled(variation_seed: str, index: int, camera: str) -> bool:
+    """Stable per-shot variety; most generated shots start without motion.
+
+    Motion is a plan decision made ONCE during initial generation, never
+    rerandomized when the user opens, edits, or switches a camera.
+    """
+    key = stable_fingerprint({"motion_variety_v1": variation_seed, "index": index, "camera": camera})
+    return int(key[:8], 16) % 7 in (1, 3, 6)
 
 
 def _ken_burns_motion(
