@@ -50,3 +50,12 @@ def test_movement_checkbox_respects_an_existing_flat_crop():
     fixed={'source_path':'fixed.mp4','flat_framing':{'zoom':1.15,'x':.5,'y':.5}}
     assert 'zoompan=' in _motion_filter({**fixed,'motion_enabled':True},'youtube',5.)
     assert _motion_filter({**fixed,'motion_enabled':False},'youtube',5.) is None
+
+
+def test_stage_review_never_rederives_continuity_for_legacy_group():
+    segments=[shot(0,30),shot(1,30),shot(2,30)]
+    stage=continuous_views(segments,preserve_authored=True)
+    assert stage==segments
+    assert all('continuity_duration_sec' not in segment['spherical_shot'] for segment in stage)
+    nonstage=continuous_views(segments,preserve_authored=False)
+    assert nonstage[0]['spherical_shot']['continuity_duration_sec']==12.0
