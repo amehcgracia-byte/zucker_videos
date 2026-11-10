@@ -68,3 +68,27 @@ def test_360_movement_checkbox_can_create_missing_animation_recipe():
     assert "if not _shot_requires_runtime_motion(pose):" in route
     assert "pose['hold_motion_rate_deg_per_sec']=0.3 if i%2 else -0.3" in route
     assert "pose['runtime_motion_enabled']=movement" in route
+
+
+def test_fixed_camera_zoom_is_visibly_14_percent_and_can_be_turned_off():
+    from core.stages.export import _motion_filter
+    import re
+    default = {'source_path': 'fixed.mp4', 'motion_enabled': True}
+    animated = _motion_filter(default, 'youtube', 6.)
+    assert animated is not None and 'zoompan=' in animated
+    assert '1.140000' in animated
+    assert _motion_filter({**default, 'motion_enabled': False}, 'youtube', 6.) is None
+    cropped = {'source_path': 'fixed.mp4', 'flat_framing': {'x': .5, 'y': .5, 'zoom': 1.3}}
+    moving = _motion_filter(cropped, 'youtube', 6.)
+    assert moving is not None and '1.140000' in moving
+    assert _motion_filter({**cropped, 'motion_enabled': False}, 'youtube', 6.) is None
+
+
+def test_shot_checkbox_is_based_on_actual_motion_not_default_true():
+    from pathlib import Path
+    source = Path('server/edit_timeline.py').read_text()
+    assert "movement=movement_active" in source
+    assert "elif segment.get('flat_framing')" in source
+    assert "elif segment.get('spherical_shot')" in source
+    assert "from core.stages.export import _shot_requires_runtime_motion" in source
+    assert "movement=bool(data['segments'][i].get('motion_enabled',True))" not in source
