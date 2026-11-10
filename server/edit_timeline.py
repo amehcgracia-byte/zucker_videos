@@ -246,31 +246,35 @@ def register_edit_timeline(app,project,invalidate):
                 return ('Camera '+str(number).zfill(2)+' · ' if number is not None else '')+{'360':'360','fixed':'Fixed','moving':'Moving'}[camera_kind(p,c)]+(' · '+str(c['spherical_shot'].get('label') or 'View') if c.get('spherical_shot') else '')
             from core.video_light import settings as light_settings, DEFAULT
             from core.stages.export import _shot_requires_runtime_motion
-            # Report the motion that the renderer will ACTUALLY produce,
-            # not a default-True UI flag. Legacy fixed crops already get a
-            # gentle animated zoom; uncropped fixed views do not.
+            # The checkbox describes visible animation, not the mere presence
+            # of a recipe or a stale true flag. A full-static Ken Burns recipe
+            # MUST NOT be shown as moving.
+            def effective_motion(shot):
+                if shot.get('motion_enabled') is False:
+                    return False
+                if shot.get('spherical_shot'):
+                    return _shot_requires_runtime_motion(shot['spherical_shot'])
+                if shot.get('flat_framing'):
+                    return True  # legacy/export applies its 14% crop motion
+                motion=shot.get('motion') or {}
+                if motion.get('type')=='ken_burns':
+                    return any(abs(float(motion.get(b,default))-float(motion.get(a,default)))>.01
+                               for a,b,default in (
+                                   ('zoom_start','zoom_end',1.),
+                                   ('pan_x_start','pan_x_end',.5),
+                                   ('pan_y_start','pan_y_end',.5)))
+                if motion.get('type')=='zoom_crop':
+                    return False
+                # Export has an explicit-True safety animation for flat shots
+                # that did not have any motion recipe before.
+                return shot.get('motion_enabled') is True
             segment = data['segments'][i]
-            if 'motion_enabled' in segment:
-                movement_active = segment['motion_enabled'] is True
-            elif segment.get('spherical_shot'):
-                from core.stages.export import _shot_requires_runtime_motion
-                movement_active = _shot_requires_runtime_motion(segment['spherical_shot'])
-            elif segment.get('flat_framing'):
-                movement_active = True
-            else:
-                motion = segment.get('motion') or {}
-                movement_active = (
-                    motion.get('type') == 'ken_burns' and (
-                        abs(float(motion.get('zoom_end', 1.0)) - float(motion.get('zoom_start', 1.0))) > 0.001
-                        or abs(float(motion.get('pan_x_end', 0.5)) - float(motion.get('pan_x_start', 0.5))) > 0.001
-                        or abs(float(motion.get('pan_y_end', 0.5)) - float(motion.get('pan_y_start', 0.5))) > 0.001
-                    )
-                )
+            movement_active = effective_motion(segment)
             saved_views=p.data.get('settings',{}).get('edit',{}).get('saved_musician_views') or {}
             return jsonify(saved_views=[
                 {'name':name,'source_path':source,'spherical_shot':view.get('spherical_shot'),'flat_framing':view.get('flat_framing'),'motion_enabled':view.get('motion_enabled') is True}
                 for source,names in saved_views.items() for name,view in names.items()
-            ],performers=data['segments'][i].get('stage_performers') or [],performer_view=data['segments'][i].get('performer_view'),performer_evidence=data['segments'][i].get('performer_evidence'),playback_speed=float(data['segments'][i].get('playback_speed',1.0)),movement=movement_active,reel_contain=p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix' or (p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix_vertical_horizontal' and data['segments'][i].get('reel_mix_treatment')=='horizontal'),project_id=str(p.folder),revision=revision(data),platform=data.get('platform') or p.data.get('settings',{}).get('wizard',{}).get('platform'),pose=data['segments'][i].get('spherical_shot') or {},framing=data['segments'][i].get('flat_framing') or {'zoom':1,'x':.5,'y':.5},light=light_settings(p,choices[0]) or {**DEFAULT,'auto':False},choices=[{'label':label(c),'spherical':bool(c.get('spherical_shot')),'kind':camera_kind(p,c),'source_path':str(c.get('source_path') or c.get('clip_path') or ''),'pose':c.get('spherical_shot') or {},'framing':c.get('flat_framing') or {'zoom':1,'x':.5,'y':.5},'movement':(bool(c['motion_enabled']) if 'motion_enabled' in c else (bool(_shot_requires_runtime_motion(c.get('spherical_shot') or {})) if c.get('spherical_shot') else bool(c.get('motion') or c.get('flat_framing')))),'light':light_settings(p,c) or {**DEFAULT,'auto':False}} for c in choices])
+            ],performers=data['segments'][i].get('stage_performers') or [],performer_view=data['segments'][i].get('performer_view'),performer_evidence=data['segments'][i].get('performer_evidence'),playback_speed=float(data['segments'][i].get('playback_speed',1.0)),movement=movement_active,reel_contain=p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix' or (p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix_vertical_horizontal' and data['segments'][i].get('reel_mix_treatment')=='horizontal'),project_id=str(p.folder),revision=revision(data),platform=data.get('platform') or p.data.get('settings',{}).get('wizard',{}).get('platform'),pose=data['segments'][i].get('spherical_shot') or {},framing=data['segments'][i].get('flat_framing') or {'zoom':1,'x':.5,'y':.5},light=light_settings(p,choices[0]) or {**DEFAULT,'auto':False},choices=[{'label':label(c),'spherical':bool(c.get('spherical_shot')),'kind':camera_kind(p,c),'source_path':str(c.get('source_path') or c.get('clip_path') or ''),'pose':c.get('spherical_shot') or {},'framing':c.get('flat_framing') or {'zoom':1,'x':.5,'y':.5},'movement':effective_motion(c),'light':light_settings(p,c) or {**DEFAULT,'auto':False}} for c in choices])
         except (OSError,ValueError,KeyError,IndexError) as e:return jsonify(error={'message':str(e)}),400
     @app.patch('/api/v1/edit/shot')
     def patch_music_shot():
@@ -307,6 +311,19 @@ def register_edit_timeline(app,project,invalidate):
                 # pose. Preserve the selected candidate's motion state unless
                 # the user explicitly changed the Movement checkbox.
                 s['motion_enabled']=movement
+                if (component == 'movement' and movement
+                        and not s.get('spherical_shot') and not s.get('flat_framing')):
+                    motion=s.get('motion') or {}
+                    def changes(a,b,default):
+                        return abs(float(motion.get(a,default))-float(motion.get(b,default)))>.01
+                    visible=(motion.get('type')=='ken_burns' and (
+                        changes('zoom_start','zoom_end',1.)
+                        or changes('pan_x_start','pan_x_end',.5)
+                        or changes('pan_y_start','pan_y_end',.5)))
+                    if not visible:
+                        # A manual checkbox must always produce a visible move
+                        # even if the generated plan had a still/fallback recipe.
+                        s.pop('motion',None)
                 if component != 'light':
                     for field in ('motion', 'spherical_shot'):
                         for key in ('continuity_duration_sec', 'continuity_offset_sec'):
