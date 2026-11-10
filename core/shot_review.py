@@ -39,15 +39,15 @@ _RENDER_STATUS_LOCK = threading.RLock()
 SPHERICAL_ANALYSIS_PROXY_VERSION = 1
 
 _REVIEW_SHOT_LABELS = {
-    "singer": "Cantante",
-    "full_stage": "Escenario completo",
-    "audience": "Publico",
-    "left": "Lado izquierdo",
-    "right": "Lado derecho",
-    "audience_stage_wide": "Publico y escenario",
-    "drummer": "Bateria",
-    "pianist": "Pianista",
-    "planet": "Planeta",
+    "singer": "Singer",
+    "full_stage": "Full stage",
+    "audience": "Audience",
+    "left": "Stage left",
+    "right": "Stage right",
+    "audience_stage_wide": "Audience and stage",
+    "drummer": "Drums",
+    "pianist": "Piano",
+    "planet": "Planet",
 }
 
 
@@ -448,7 +448,7 @@ def _spherical_review_poses(segment: dict[str, Any], segments: list[dict[str, An
             variant.update({
                 "type": f"review_local_{anchor_index + 1:02d}_{variant_index + 1:02d}",
                 "shot_id": f"review_local_{anchor_index + 1:02d}_{variant_index + 1:02d}",
-                "label": "Encuadre alternativo cercano",
+                "label": "Nearby alternative angle",
                 "yaw": (base_yaw + yaw_delta) % 360.0,
                 "pitch": base_pitch + pitch_delta,
                 "fov": base_fov + fov_delta,
@@ -932,13 +932,16 @@ def review_items(
     # export and is optional for a thumbnail. A status-only request must not
     # launch/inspect the complete plan just to report missing URLs.
     color_profiles = {}
+    if platform == 'youtube':
+        from core.video_light import stable_stage_review_profiles
+        color_profiles = stable_stage_review_profiles(project)
     if apply_color_profile or any(segment.get('video_light') is not None for segment in segments):
         if render_missing and (apply_color_profile or platform != 'youtube'):
             from core.video_light import resolved_profiles
             color_profiles = resolved_profiles(project, _plan(project).get("segments") or segments)
         else:
-            from core.video_light import cached_review_profiles
-            color_profiles = cached_review_profiles(project)
+            from core.video_light import cached_review_profiles, stable_stage_review_profiles
+            color_profiles = (stable_stage_review_profiles(project) if platform == 'youtube' else cached_review_profiles(project))
     pending = []
     for index, segment in enumerate(segments):
         source, timestamp, output = _thumbnail_asset(root, index, segment, color_profiles.get(str(segment.get("clip_path")), {}))
@@ -1100,6 +1103,12 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
     """Replace rejected slots with unused source/moment candidates."""
     plan = _plan(project)
     segments = plan.get("segments") or []
+    # A reviewed plan is already distributed. Track every other shot so a
+    # Replace action can NEVER silently reschedule or reframe neighbours.
+    untouched_shots = {
+        i: json.dumps(s, sort_keys=True)
+        for i, s in enumerate(segments) if i not in set(rejected)
+    }
     coverage = load_coverage(project)
     wizard = project.data.setdefault("settings", {}).setdefault("wizard", {})
     platform = str(coverage.get("platform") or wizard.get("platform") or plan.get("platform") or "generic")
@@ -1245,7 +1254,12 @@ def replace_slots(project: Project, rejected: list[int]) -> dict[str, Any]:
         unavailable.discard(index)
         replaced.append(index)
     from core.shot_continuity import continuous_views
-    segments = continuous_views(segments)
+    # Continuity is calculated when the plan is authored. Recomputing it here
+    # rewrote the *other* saved frames after each single-shot camera swap.
+    segments = continuous_views(segments, preserve_authored=True)
+    if any(json.dumps(segments[i], sort_keys=True) != original
+           for i, original in untouched_shots.items()):
+        raise ValueError('Replacing one shot attempted to modify another shot')
     plan["segments"] = segments
     artifact_path(project, "edit_plan.json").write_text(json.dumps(plan, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     project.data["settings"]["wizard"]["review_attempts"] = attempts

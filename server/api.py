@@ -1816,21 +1816,26 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             # 360 source. Return placeholders immediately and let the browser
             # poll the render-status file as each thumbnail becomes ready.
             render_missing = request.args.get("render", "1") != "0"
+            # When a user edits ONE shot, do not ask the server to rebuild
+            # missing previews for the rest of an already authored edit.
+            target_shot = request.args.get("shot", type=int)
             items = review_items(project, render_missing=False)
             if render_missing:
                 pending = {
                     int(item["index"])
                     for item in items
                     if item.get("thumbnail_status") == "missing"
+                    and (target_shot is None or item["index"] == target_shot)
                 }
                 if can_prepare_review(project):
                     missing = pending | {
                         item["index"] for item in items
                         if not item["preview_ready"] and not item["preview_error"]
                         and item["thumbnail_status"] != "failed"
+                        and (target_shot is None or item["index"] == target_shot)
                     }
                     if missing:
-                        review_previews.PREFETCH.start(project, priority=request.args.get("shot", type=int),
+                        review_previews.PREFETCH.start(project, priority=target_shot,
                                                        indices=missing)
                 else:
                     _queue_review_thumbnail_render(project, pending)
@@ -1970,8 +1975,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         project = state.project or _active_wizard_project(state)
         body = _json_body()
         rejected = body.get("rejected") or []
-        if not project or not isinstance(rejected, list) or not all(isinstance(value, int) for value in rejected):
-            return error_response("bad_request", "rejected must be a list of shot indexes", 400)
+        if not project or not isinstance(rejected, list) or len(rejected) != 1 or not all(type(value) is int for value in rejected):
+            return error_response("bad_request", "Select exactly one shot to replace", 400)
         if state.wizard.status().get("status") in {"running", "cancelling"}:
             return error_response("wizard_busy", "Wait for or cancel the export before changing frames", 409)
         try:
@@ -1979,7 +1984,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             replaced = {int(value) for value in result.get("replaced", [])}
             if replaced:
                 if state.wizard.status().get('status') == 'waiting_review':
-                    review_previews.PREFETCH.start(project)
+                    # A manual change only invalidates its own preview. Never
+                    # restart prefetch for every shot in an authored edit.
+                    review_previews.PREFETCH.start(project, priority=next(iter(replaced)), indices=replaced)
                 else:
                     _queue_review_thumbnail_render(project, replaced)
             return jsonify(result)

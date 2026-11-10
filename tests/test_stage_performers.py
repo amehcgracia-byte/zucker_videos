@@ -94,15 +94,16 @@ def test_settings_and_roles_survive_reload_preserve_manual_crops_and_light(tmp_p
     assert client.post('/api/v1/settings/stage-performers',json={'project_id':str(p.folder),'master':'master.wav','activity':evidence}).status_code==200
     doc=client.get('/api/v1/edit/shot?index=1').json
     assert len(doc['performers'])==3 and doc['choices'][0]['kind']=='fixed'
+    before=json.loads((p.artifacts_dir/'edit_plan.json').read_text())['segments']
     response=client.patch('/api/v1/edit/shot',json={'project_id':str(p.folder),'revision':doc['revision'],
         'index':1,'choice':0,'edit_component':'framing','flat_framing':doc['framing'],
-        'performer_roles':{'2':'saxophonist'}})
+        'remember_musician':'Sax'})
     assert response.status_code==200,response.json
     saved=json.loads((p.artifacts_dir/'edit_plan.json').read_text())['segments']
-    assert saved[6]['flat_framing']==segments[6]['flat_framing']
+    assert saved[1]['performer_view_name']=='Sax'
+    assert all(saved[j]==before[j] for j in range(len(saved)) if j!=1)
     assert all(s['video_light']==segments[0]['video_light'] for s in saved)
-    assert all(s.get('performer_view')!='2' for i,s in enumerate(saved) if i!=6)
-    assert load_project(p.folder).data['settings']['edit']['performer_regions'][str(video)]
+    assert load_project(p.folder).data['settings']['edit']['saved_musician_views'][str(video)]['Sax']['name']=='Sax'
 
 
 def test_multicam_plan_uses_people_before_notifying_thumbnails(monkeypatch):
