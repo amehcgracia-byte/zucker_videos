@@ -3456,15 +3456,16 @@ def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> s
         if platform not in {"youtube", "reel", "reel_horizontal"}:
             return None
         return _ken_burns_filter({"type":"ken_burns", "movement":"zoom_in_center",
-            "zoom_start":1.0, "zoom_end":1.06,
+            "zoom_start":1.0, "zoom_end":1.14,
             "pan_x_start":.5, "pan_x_end":.5, "pan_y_start":.5, "pan_y_end":.5,
             "enforce_top_edge":False, "speed_factor":1., "library_version":1},platform,duration)
     if segment.get("flat_framing"):
         if platform not in {"youtube","reel","reel_horizontal"}:return None
         close=float(segment['flat_framing'].get('zoom',1))>1.001
-        # One subtle move within the selected crop; no second random pan.
+        # One clearly visible but restrained 14% move inside the selected crop;
+        # no second random pan, so camera framing remains stable.
         return _ken_burns_filter({"type":"ken_burns","movement":"zoom_out_center" if close else "zoom_in_center",
-            "zoom_start":1.06 if close else 1.,"zoom_end":1. if close else 1.06,
+            "zoom_start":1.14 if close else 1.,"zoom_end":1. if close else 1.14,
             "pan_x_start":.5,"pan_x_end":.5,"pan_y_start":.5,"pan_y_end":.5,
             "enforce_top_edge":False,"speed_factor":1.,"library_version":1,
             **{k:v for k,v in (segment.get("motion") or {}).items() if k.startswith("continuity_")}},platform,duration).replace("scale=3840:2160:flags=lanczos,", "")
