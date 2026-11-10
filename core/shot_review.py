@@ -448,7 +448,7 @@ def _spherical_review_poses(segment: dict[str, Any], segments: list[dict[str, An
             variant.update({
                 "type": f"review_local_{anchor_index + 1:02d}_{variant_index + 1:02d}",
                 "shot_id": f"review_local_{anchor_index + 1:02d}_{variant_index + 1:02d}",
-                "label": "Encuadre alternativo cercano",
+                "label": "Nearby alternative angle",
                 "yaw": (base_yaw + yaw_delta) % 360.0,
                 "pitch": base_pitch + pitch_delta,
                 "fov": base_fov + fov_delta,
