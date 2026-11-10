@@ -2082,14 +2082,14 @@ def _apply_saved_spherical_landmarks(project: Project, segments: list[dict[str, 
     profiles = settings.get("spherical_landmarks_by_source") or {}
     global_raw = settings.get("spherical_landmarks") or {}
     labels = {
-        "full_stage": "Escenario completo",
-        "singer": "Cantante",
-        "drummer": "Bateria",
-        "left": "Lado izquierdo",
-        "right": "Lado derecho",
-        "audience": "Publico",
-        "audience_stage_wide": "Publico y escenario",
-        "planet": "Planeta",
+        "full_stage": "Full stage",
+        "singer": "Singer",
+        "drummer": "Drums",
+        "left": "Stage left",
+        "right": "Stage right",
+        "audience": "Audience",
+        "audience_stage_wide": "Audience and stage",
+        "planet": "Planet",
     }
     if not global_raw and not profiles:
         return segments
