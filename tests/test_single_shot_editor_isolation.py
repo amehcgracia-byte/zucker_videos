@@ -71,7 +71,7 @@ def test_editing_and_remembering_one_musician_changes_only_selected_shot(tmp_pat
         "flat_framing":{"zoom":1.1,"x":.5,"y":.5},
         "apply_to_source":True})
     assert reject.status_code==400
-    assert json.loads(document.read_text())["segments"][3]==baseline[3]
+    assert json.loads(document.read_text())["segments"][3]==reused[3]
 
 
 def test_switching_camera_discards_old_camera_specific_motion(tmp_path, monkeypatch):
