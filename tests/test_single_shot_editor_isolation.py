@@ -184,3 +184,48 @@ def test_swap_one_shot_preserves_other_shots_and_their_continuity_metadata(tmp_p
     assert saved[1]["source_path"]==second
     for index in (0,2,3):
         assert saved[index]==old[index],f"Shot {index} changed after replacing shot 1"
+
+
+def test_360_pianist_and_drummer_choices_keep_distinct_authored_angles(tmp_path, monkeypatch):
+    import core.stages.cut as cut
+    import core.shot_review as shot_review
+    import server.edit_timeline as timeline
+    from server.api import create_app
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path/"data"))
+    p=create_project("360 instruments",str(tmp_path/"360.zuckervid"))
+    video=tmp_path/"sphere.mp4";video.touch()
+    p.data["inputs"]["videos"]=[{"path":str(video),"projection":"equirect","probe":{"projection":"equirect"}}]
+    p.data["settings"]["edit"]["camera_types"]={str(video):"360"}
+    p.save()
+    shots=[{"source_path":str(video),"clip_path":str(video),"projection":"equirect",
+            "clip_start_sec":i,"master_start_sec":i,"duration_sec":1,
+            "spherical_shot":{"type":"singer","label":"Singer","yaw":20,"pitch":-3,"fov":95}} for i in range(3)]
+    path=p.artifacts_dir/"edit_plan.json"
+    atomic_write_json(path,{"platform":"youtube","segments":shots})
+    monkeypatch.setattr(cut,"load_coverage",lambda _:{"platform":"youtube","sources":[]})
+    monkeypatch.setattr(timeline,"duration",lambda _:100)
+    views=[{"type":"pianist","label":"Piano","yaw":100,"pitch":-8,"fov":90},
+           {"type":"drummer","label":"Drums","yaw":200,"pitch":5,"fov":100}]
+    monkeypatch.setattr(shot_review,"_review_candidate_pool",lambda *a,**k:([
+        {"path":str(video),"source_path":str(video),"projection":"equirect",
+         "clip_start_sec":1,"offset_sec":0,"spherical_shot":view,
+         "filename":video.name} for view in views],"test"))
+    monkeypatch.setattr(shot_review,"_candidate_covers_slot",lambda *a,**k:True)
+    client=create_app(str(p.folder),dev=True).test_client()
+    doc=client.get("/api/v1/edit/shot?index=1").json
+    assert len(doc["choices"])==3
+    assert [c["pose"]["yaw"] for c in doc["choices"]]==[20,100,200]
+    for choice,yaw in [(1,100),(2,200)]:
+        doc=client.get("/api/v1/edit/shot?index=1").json
+        pose=doc["choices"][choice]["pose"]
+        r=client.patch("/api/v1/edit/shot",json={
+            "project_id":str(p.folder),"revision":doc["revision"],
+            "index":1,"choice":choice,"edit_component":"framing",
+            "yaw":pose["yaw"],"pitch":pose["pitch"],"fov":pose["fov"],
+            "movement":False,"apply_to_source":False})
+        assert r.status_code==200,r.json
+        saved=json.loads(path.read_text())["segments"]
+        assert saved[0]==shots[0] and saved[2]==shots[2]
+        assert saved[1]["spherical_shot"]["yaw"]==yaw
+        assert saved[1]["spherical_shot"]["label"]==pose["label"]
+        assert saved[1]["spherical_shot"]["type"]==pose["type"]
