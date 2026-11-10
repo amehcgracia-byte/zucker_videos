@@ -245,6 +245,7 @@ def register_edit_timeline(app,project,invalidate):
                 number=next((j+1 for j,r in enumerate(records) if r.get('path')==c.get('source_path')),None)
                 return ('Camera '+str(number).zfill(2)+' · ' if number is not None else '')+{'360':'360','fixed':'Fixed','moving':'Moving'}[camera_kind(p,c)]+(' · '+str(c['spherical_shot'].get('label') or 'View') if c.get('spherical_shot') else '')
             from core.video_light import settings as light_settings, DEFAULT
+            from core.stages.export import _shot_requires_runtime_motion
             # Report the motion that the renderer will ACTUALLY produce,
             # not a default-True UI flag. Legacy fixed crops already get a
             # gentle animated zoom; uncropped fixed views do not.
@@ -269,7 +270,7 @@ def register_edit_timeline(app,project,invalidate):
             return jsonify(saved_views=[
                 {'name':name,'source_path':source,'spherical_shot':view.get('spherical_shot'),'flat_framing':view.get('flat_framing'),'motion_enabled':view.get('motion_enabled') is True}
                 for source,names in saved_views.items() for name,view in names.items()
-            ],performers=data['segments'][i].get('stage_performers') or [],performer_view=data['segments'][i].get('performer_view'),performer_evidence=data['segments'][i].get('performer_evidence'),playback_speed=float(data['segments'][i].get('playback_speed',1.0)),movement=movement_active,reel_contain=p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix' or (p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix_vertical_horizontal' and data['segments'][i].get('reel_mix_treatment')=='horizontal'),project_id=str(p.folder),revision=revision(data),platform=data.get('platform') or p.data.get('settings',{}).get('wizard',{}).get('platform'),pose=data['segments'][i].get('spherical_shot') or {},framing=data['segments'][i].get('flat_framing') or {'zoom':1,'x':.5,'y':.5},light=light_settings(p,choices[0]) or {**DEFAULT,'auto':False},choices=[{'label':label(c),'spherical':bool(c.get('spherical_shot')),'kind':camera_kind(p,c),'source_path':str(c.get('source_path') or c.get('clip_path') or ''),'pose':c.get('spherical_shot') or {},'framing':c.get('flat_framing') or {'zoom':1,'x':.5,'y':.5},'light':light_settings(p,c) or {**DEFAULT,'auto':False}} for c in choices])
+            ],performers=data['segments'][i].get('stage_performers') or [],performer_view=data['segments'][i].get('performer_view'),performer_evidence=data['segments'][i].get('performer_evidence'),playback_speed=float(data['segments'][i].get('playback_speed',1.0)),movement=movement_active,reel_contain=p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix' or (p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix_vertical_horizontal' and data['segments'][i].get('reel_mix_treatment')=='horizontal'),project_id=str(p.folder),revision=revision(data),platform=data.get('platform') or p.data.get('settings',{}).get('wizard',{}).get('platform'),pose=data['segments'][i].get('spherical_shot') or {},framing=data['segments'][i].get('flat_framing') or {'zoom':1,'x':.5,'y':.5},light=light_settings(p,choices[0]) or {**DEFAULT,'auto':False},choices=[{'label':label(c),'spherical':bool(c.get('spherical_shot')),'kind':camera_kind(p,c),'source_path':str(c.get('source_path') or c.get('clip_path') or ''),'pose':c.get('spherical_shot') or {},'framing':c.get('flat_framing') or {'zoom':1,'x':.5,'y':.5},'movement':(bool(c['motion_enabled']) if 'motion_enabled' in c else (bool(_shot_requires_runtime_motion(c.get('spherical_shot') or {})) if c.get('spherical_shot') else bool(c.get('motion') or c.get('flat_framing')))),'light':light_settings(p,c) or {**DEFAULT,'auto':False}} for c in choices])
         except (OSError,ValueError,KeyError,IndexError) as e:return jsonify(error={'message':str(e)}),400
     @app.patch('/api/v1/edit/shot')
     def patch_music_shot():
@@ -329,15 +330,27 @@ def register_edit_timeline(app,project,invalidate):
                                     pose['hold_motion_rate_deg_per_sec']=0.3 if i%2 else -0.3
                 if component in ('all','framing') and s.get('spherical_shot'):
                     pose=s['spherical_shot']
+                    authored_pose = {key:float(pose.get(key) or (95 if key=='fov' else 0))
+                                     for key in ('yaw','pitch','fov')}
                     for key,lo,hi in [('yaw',-180,180),('pitch',-85,85),('fov',30,120)]:
                         value=float(body.get(key,pose.get(key) or (95 if key=='fov' else 0)))
                         if not math.isfinite(value) or not lo<=value<=hi:raise ValueError('Choose a valid camera viewpoint')
                         pose[key]=value
-                    pose.update(projection_preset='normal',type='manual',shot_id='manual',label='Custom view',runtime_motion_enabled=movement);pose.pop('movement',None)
-                    if movement:
-                        pose['hold_motion_rate_deg_per_sec'] = (0.3 if i % 2 else -0.3)
-                    else:
-                        pose.pop('hold_motion_rate_deg_per_sec',None)
+                    changed_pose=any(abs(float(pose[key])-authored_pose[key])>0.001
+                                     for key in ('yaw','pitch','fov'))
+                    # Selecting an existing singer/pianist/other 360 preset is
+                    # NOT a custom camera pose. Preserve its authored yaw,
+                    # pitch, FOV, type and instrument label as selected.
+                    if changed_pose:
+                        pose.update(projection_preset='normal',type='manual',
+                                    shot_id='manual',label='Custom view')
+                        pose.pop('movement',None)
+                    pose['runtime_motion_enabled']=movement
+                    if changed_pose:
+                        if movement:
+                            pose['hold_motion_rate_deg_per_sec'] = (0.3 if i % 2 else -0.3)
+                        else:
+                            pose.pop('hold_motion_rate_deg_per_sec',None)
                     s['manual_view']=True
                 elif component in ('all','framing'):
                     from core.flat_framing import validate
