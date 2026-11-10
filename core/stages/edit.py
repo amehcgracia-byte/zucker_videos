@@ -803,7 +803,7 @@ def _reel_promo_plan_pass(
                 subject_confidence=_reel_framing_confidence(source, clip_start, seg_duration),
                 subject_box=subject_box,
             )
-            segment["motion_enabled"] = auto_movement
+            segment["motion_enabled"] = bool(auto_movement and _motion_active_axes(segment["motion"]))
             segment["camera_motion_target"] = {
                 "x": round(target_x, 4),
                 "y": round(target_y, 4),
@@ -1359,7 +1359,7 @@ def _youtube_multicam_plan(
                 gentle=bool(alternative_camera_ids), style=direction["group"],
                 subject_box=subject_box,
             )
-            segment["motion_enabled"] = auto_movement
+            segment["motion_enabled"] = bool(auto_movement and _motion_active_axes(segment["motion"]))
             segment["fixed_camera_zoom_policy"] = "gentle_subject_motion_sufficient_coverage" if alternative_camera_ids else "safe_subject_motion_low_coverage"
             fixed_rear_motion_index += 1
         _apply_operator_avoidance(segment, source, operator_samples_cache)
