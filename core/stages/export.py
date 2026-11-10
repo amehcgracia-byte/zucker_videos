@@ -3448,6 +3448,17 @@ def _reel_letterbox_filter(project: Project, segment: dict[str, Any], platform: 
 def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> str | None:
     if segment.get('motion_enabled') is False:
         return None
+    # Explicitly enabling Movimiento must work even when a fixed camera has
+    # never had a manual crop or precomputed motion recipe. Keep legacy shots
+    # unchanged: this fallback only applies to an explicit True checkbox.
+    if (segment.get('motion_enabled') is True and not segment.get("spherical_shot")
+            and not segment.get("flat_framing") and not segment.get("motion")):
+        if platform not in {"youtube", "reel", "reel_horizontal"}:
+            return None
+        return _ken_burns_filter({"type":"ken_burns", "movement":"zoom_in_center",
+            "zoom_start":1.0, "zoom_end":1.06,
+            "pan_x_start":.5, "pan_x_end":.5, "pan_y_start":.5, "pan_y_end":.5,
+            "enforce_top_edge":False, "speed_factor":1., "library_version":1},platform,duration)
     if segment.get("flat_framing"):
         if platform not in {"youtube","reel","reel_horizontal"}:return None
         close=float(segment['flat_framing'].get('zoom',1))>1.001
