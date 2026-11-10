@@ -265,7 +265,11 @@ def register_edit_timeline(app,project,invalidate):
                         or abs(float(motion.get('pan_y_end', 0.5)) - float(motion.get('pan_y_start', 0.5))) > 0.001
                     )
                 )
-            return jsonify(performers=data['segments'][i].get('stage_performers') or [],performer_view=data['segments'][i].get('performer_view'),performer_evidence=data['segments'][i].get('performer_evidence'),playback_speed=float(data['segments'][i].get('playback_speed',1.0)),movement=movement_active,reel_contain=p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix' or (p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix_vertical_horizontal' and data['segments'][i].get('reel_mix_treatment')=='horizontal'),project_id=str(p.folder),revision=revision(data),platform=data.get('platform') or p.data.get('settings',{}).get('wizard',{}).get('platform'),pose=data['segments'][i].get('spherical_shot') or {},framing=data['segments'][i].get('flat_framing') or {'zoom':1,'x':.5,'y':.5},light=light_settings(p,choices[0]) or {**DEFAULT,'auto':False},choices=[{'label':label(c),'spherical':bool(c.get('spherical_shot')),'kind':camera_kind(p,c),'light':light_settings(p,c) or {**DEFAULT,'auto':False}} for c in choices])
+            saved_views=p.data.get('settings',{}).get('edit',{}).get('saved_musician_views') or {}
+            return jsonify(saved_views=[
+                {'name':name,'source_path':source,'spherical_shot':view.get('spherical_shot'),'flat_framing':view.get('flat_framing')}
+                for source,names in saved_views.items() for name,view in names.items()
+            ],performers=data['segments'][i].get('stage_performers') or [],performer_view=data['segments'][i].get('performer_view'),performer_evidence=data['segments'][i].get('performer_evidence'),playback_speed=float(data['segments'][i].get('playback_speed',1.0)),movement=movement_active,reel_contain=p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix' or (p.data.get('settings',{}).get('wizard',{}).get('reel_aspect')=='mix_vertical_horizontal' and data['segments'][i].get('reel_mix_treatment')=='horizontal'),project_id=str(p.folder),revision=revision(data),platform=data.get('platform') or p.data.get('settings',{}).get('wizard',{}).get('platform'),pose=data['segments'][i].get('spherical_shot') or {},framing=data['segments'][i].get('flat_framing') or {'zoom':1,'x':.5,'y':.5},light=light_settings(p,choices[0]) or {**DEFAULT,'auto':False},choices=[{'label':label(c),'spherical':bool(c.get('spherical_shot')),'kind':camera_kind(p,c),'source_path':str(c.get('source_path') or c.get('clip_path') or ''),'pose':c.get('spherical_shot') or {},'framing':c.get('flat_framing') or {'zoom':1,'x':.5,'y':.5},'light':light_settings(p,c) or {**DEFAULT,'auto':False}} for c in choices])
         except (OSError,ValueError,KeyError,IndexError) as e:return jsonify(error={'message':str(e)}),400
     @app.patch('/api/v1/edit/shot')
     def patch_music_shot():
@@ -279,7 +283,8 @@ def register_edit_timeline(app,project,invalidate):
                 if not 0<=i<len(data['segments']):raise ValueError('Choose an existing shot')
                 choices=music_choices(p,data,i)
                 if not 0<=choice<len(choices):raise ValueError('Choose one of this shot’s cameras')
-                if not isinstance(body.get('apply_to_source',False),bool):raise ValueError('Choose whether to apply to the source video')
+                if body.get('apply_to_source') is not False and body.get('apply_to_source') is not None:
+                    raise ValueError('Only one shot can be edited at a time')
                 component=body.get('edit_component','all')
                 if component not in ('all','framing','light','movement'):raise ValueError('Choose framing, light or movement')
                 if component=='light' and choice!=0:raise ValueError('Choose the camera in Framing first')
@@ -288,6 +293,9 @@ def register_edit_timeline(app,project,invalidate):
                 )):
                     raise ValueError('Movement applies only to this shot')
                 if component=='framing' and 'video_light' in body:raise ValueError('Save light separately from framing')
+                # A manually edited shot is an immutable boundary: never
+                # redistribute the initial auto-generated edit from here.
+                untouched_segments = copy.deepcopy(data['segments'])
                 before=data['segments'][i];s=copy.deepcopy(choices[choice])
                 playback_speed=float(body.get('playback_speed',before.get('playback_speed',1.0)))
                 if not math.isfinite(playback_speed) or not .5<=playback_speed<=2.0:raise ValueError('Choose a shot speed between 0.5x and 2x')
@@ -348,46 +356,34 @@ def register_edit_timeline(app,project,invalidate):
                     else:s['video_light']=light
                 from core.stages.edit import _camera_id
                 s['camera_id']=_camera_id(s);data['segments'][i]=s
-                if body.get('apply_to_source'):
-                    # Same file, not same manufacturer/camera id or filename.
-                    source=Path(str(s.get('source_path') or s.get('clip_path') or '')).resolve()
-                    for item in data['segments']:
-                        other=Path(str(item.get('source_path') or item.get('clip_path') or '')).resolve()
-                        if other != source:continue
-                        keys=('video_light',) if component=='light' else ('flat_framing','spherical_shot','manual_view') if component=='framing' else ('flat_framing','spherical_shot','manual_view','video_light')
-                        for key in keys:
-                            if key in s:item[key]=copy.deepcopy(s[key])
-                            else:item.pop(key,None)
-                if body.get('performer_roles') is not None or body.get('remember_musician'):
-                    from core.stage_performers import ROLES, role, apply as apply_performers
-                    if choice!=0:raise ValueError('Save the camera choice before assigning musicians')
+                if body.get('performer_roles') is not None:
+                    raise ValueError('Use Mark as musician to save an individual view')
+                if body.get('remember_musician'):
+                    from core.stage_performers import ROLES, role
+                    name=role(body['remember_musician'])
+                    if name not in ROLES-{'unknown'}:
+                        raise ValueError('Choose a valid musician name')
                     source=str(s.get('source_path') or s.get('clip_path') or '')
-                    people=copy.deepcopy(before.get('stage_performers') or [])
-                    assignments=body.get('performer_roles') or {}
-                    if not isinstance(assignments,dict) or any(k not in {p['id'] for p in people} or v not in ROLES for k,v in assignments.items()):
-                        raise ValueError('Choose detected musicians and supported instruments')
-                    for person in people:person['role']=assignments.get(person['id'],person.get('role','unknown'))
-                    if body.get('remember_musician'):
-                        identity=role(body['remember_musician'])
-                        if identity not in ROLES-{'unknown'} or s.get('spherical_shot'):
-                            raise ValueError('Choose an instrument for this fixed-camera crop')
-                        from core.camera_types import kind
-                        if kind(p,s)!='fixed':raise ValueError('Remember musicians only on a fixed camera')
-                        if len(people)>=8:raise ValueError('At most eight musicians per camera')
-                        people.append({'id':f'custom-{len(people)+1}','role':identity,**s['flat_framing']})
-                    edit=p.data.setdefault('settings',{}).setdefault('edit',{})
-                    # Persist full regions as well as roles, for future reruns.
-                    edit.setdefault('performers_by_source',{})[source]={v['id']:v['role'] for v in people}
-                    edit.setdefault('performer_regions',{})[source]=people
-                    history=[];take=0
-                    for item in data['segments']:
-                        if str(item.get('source_path') or item.get('clip_path') or '')!=source:continue
-                        item['stage_performers']=copy.deepcopy(people)
-                        if not item.get('manual_view'):
-                            apply_performers(item,people,take,history,edit.get('instrument_activity'))
-                        take+=1
+                    # A named reusable view is metadata, not a new edit-plan
+                    # distribution. It never changes any other shot.
+                    remembered = {
+                        'name': name,
+                        'source_path': source,
+                        'spherical_shot': copy.deepcopy(s.get('spherical_shot')),
+                        'flat_framing': copy.deepcopy(s.get('flat_framing')),
+                    }
+                    settings=p.data.setdefault('settings',{}).setdefault('edit',{})
+                    views=settings.setdefault('saved_musician_views',{})
+                    views.setdefault(source,{})[name]=remembered
+                    s['performer_view_name']=name
                     p.save()
+                # Never allow a hidden helper or downstream library to mutate
+                # another saved shot. Single-shot updates are a hard invariant.
+                for j,old in enumerate(untouched_segments):
+                    if j!=i and data['segments'][j]!=old:
+                        raise ValueError('A shot edit attempted to change another shot')
                 for key in ('camera_usage','spherical_shot_usage'):data.pop(key,None)
+                assert all(data['segments'][j] == old for j,old in enumerate(untouched_segments) if j != i)
                 atomic_write_json(path,data)
                 record(p,'music.camera.corrected',before,s,evidence={'shot':i})
                 return jsonify(snapshot(p,'music',data))
