@@ -114,6 +114,12 @@ def fixed_camera_motion(index: int, target_x: float = .5, target_y: float = .5, 
         z0, z1 = min(z0, zoom_limit), min(z1, zoom_limit)
         if abs(z1 - z0) < .004 and zoom_limit > 1.01:
             z0, z1 = 1.0, min(zoom_limit, 1.03)
+        if abs(z1 - z0) < .004:
+            # A subject flush with an edge cannot be safely animated.
+            # Save a valid still plan instead of a phantom zoom recipe.
+            kind = "full_static"
+            lock = False
+            z0 = z1 = 1.0
         if "out" in kind or kind == "subject_release":
             z0, z1 = z1, z0
     elif kind != "full_static":
@@ -163,6 +169,7 @@ def fixed_camera_motion(index: int, target_x: float = .5, target_y: float = .5, 
             # Preserve the family when possible, reduce zoom to keep the body.
             z0 = z1 = 1.0
             x0 = x1 = y0 = y1 = .5
+            kind = "full_static"
     if not lock:
         x0 = bounded_pan(x0, tx, z0, .25, .75)
         x1 = bounded_pan(x1, tx, z1, .25, .75)
