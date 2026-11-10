@@ -1970,8 +1970,8 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         project = state.project or _active_wizard_project(state)
         body = _json_body()
         rejected = body.get("rejected") or []
-        if not project or not isinstance(rejected, list) or not all(isinstance(value, int) for value in rejected):
-            return error_response("bad_request", "rejected must be a list of shot indexes", 400)
+        if not project or not isinstance(rejected, list) or len(rejected) != 1 or not all(type(value) is int for value in rejected):
+            return error_response("bad_request", "Select exactly one shot to replace", 400)
         if state.wizard.status().get("status") in {"running", "cancelling"}:
             return error_response("wizard_busy", "Wait for or cancel the export before changing frames", 409)
         try:
@@ -1979,7 +1979,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             replaced = {int(value) for value in result.get("replaced", [])}
             if replaced:
                 if state.wizard.status().get('status') == 'waiting_review':
-                    review_previews.PREFETCH.start(project)
+                    # A manual change only invalidates its own preview. Never
+                    # restart prefetch for every shot in an authored edit.
+                    review_previews.PREFETCH.start(project, priority=next(iter(replaced)), indices=replaced)
                 else:
                     _queue_review_thumbnail_render(project, replaced)
             return jsonify(result)
