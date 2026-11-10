@@ -281,7 +281,21 @@ def register_edit_timeline(app,project,invalidate):
                             (s.get(field) or {}).pop(key, None)
                 if s.get('spherical_shot'):
                     if component == 'movement' or not movement:
-                        s['spherical_shot']['runtime_motion_enabled']=movement
+                        pose=s['spherical_shot']
+                        pose['runtime_motion_enabled']=movement
+                        # A 360 still view can have no motion recipe at all.
+                        # Re-enabling the checkbox must start a gentle move,
+                        # rather than merely setting a flag with no effect.
+                        if component == 'movement' and movement:
+                            from core.stages.export import _shot_requires_runtime_motion
+                            if not _shot_requires_runtime_motion(pose):
+                                if pose.get('type') == 'planet':
+                                    pose['spin_deg_per_sec']=0.3
+                                else:
+                                    if pose.get('type') == 'recorded_move' and not pose.get('curve'):
+                                        pose['type']='manual'
+                                        pose['shot_id']='manual'
+                                    pose['hold_motion_rate_deg_per_sec']=0.3 if i%2 else -0.3
                 if component in ('all','framing') and s.get('spherical_shot'):
                     pose=s['spherical_shot']
                     for key,lo,hi in [('yaw',-180,180),('pitch',-85,85),('fov',30,120)]:
