@@ -346,17 +346,9 @@ def register_edit_timeline(app,project,invalidate):
                 if 'video_light' in body:
                     from core.video_light import validate as validate_light
                     light=validate_light(body['video_light'])
-                    if body.get('light_scope','shot') not in ('camera','shot'):raise ValueError('Choose camera or shot lighting')
-                    if body.get('light_scope')=='camera':
-                        key=str(s.get('source_path') or s.get('clip_path') or '')
-                        config=p.data.setdefault('settings',{}).setdefault('edit',{}).setdefault('video_light',{})
-                        config.setdefault('cameras',{})[key]=light
-                        # Camera-wide changes replace previous shot exceptions on this camera.
-                        for item in data['segments']:
-                            if str(item.get('source_path') or item.get('clip_path') or '')==key:item.pop('video_light',None)
-                        s.pop('video_light',None)
-                        p.save()
-                    else:s['video_light']=light
+                    if body.get('light_scope','shot') != 'shot':
+                        raise ValueError('Lighting changes apply to this shot only')
+                    s['video_light']=light
                 from core.stages.edit import _camera_id
                 s['camera_id']=_camera_id(s);data['segments'][i]=s
                 if body.get('performer_roles') is not None:
