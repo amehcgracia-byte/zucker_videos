@@ -363,7 +363,7 @@ def register_edit_timeline(app,project,invalidate):
                     raise ValueError('Use Mark as musician to save an individual view')
                 if body.get('remember_musician'):
                     name=str(body['remember_musician']).strip()
-                    if not 1<=len(name)<=40 or any(ch in name for ch in '<>\\n\\r\\t'):
+                    if not 1<=len(name)<=40 or any(ord(ch)<32 or ch in '<>' for ch in name):
                         raise ValueError('Enter a musician name (up to 40 characters)')
                     source=str(s.get('source_path') or s.get('clip_path') or '')
                     # A named reusable view is metadata, not a new edit-plan
