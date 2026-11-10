@@ -106,14 +106,14 @@ SPHERICAL_NORMAL_FOV_MIN = 82.0
 SPHERICAL_NORMAL_FOV_MAX = 165.0
 SPHERICAL_SHOT_ORDER = ("full_stage", "singer", "drummer", "pianist", "left", "right", "audience", "audience_stage_wide", "planet")
 SPHERICAL_LANDMARKS = {
-    "singer": ("singer_yaw", "Cantante", SPHERICAL_DEFAULT_FOV),
-    "drummer": ("drummer_yaw", "Bateria", SPHERICAL_DEFAULT_FOV),
-    "pianist": ("pianist_yaw", "Pianista", SPHERICAL_DEFAULT_FOV),
-    "left": ("left_yaw", "Lado izquierdo", SPHERICAL_DEFAULT_FOV),
-    "right": ("right_yaw", "Lado derecho", SPHERICAL_DEFAULT_FOV),
+    "singer": ("singer_yaw", "Singer", SPHERICAL_DEFAULT_FOV),
+    "drummer": ("drummer_yaw", "Drums", SPHERICAL_DEFAULT_FOV),
+    "pianist": ("pianist_yaw", "Piano", SPHERICAL_DEFAULT_FOV),
+    "left": ("left_yaw", "Stage left", SPHERICAL_DEFAULT_FOV),
+    "right": ("right_yaw", "Stage right", SPHERICAL_DEFAULT_FOV),
     "audience": ("audience_yaw", "Publico", SPHERICAL_DEFAULT_FOV),
-    "full_stage": ("full_stage_yaw", "Escenario completo", SPHERICAL_WIDE_FOV),
-    "audience_stage_wide": ("audience_stage_wide_yaw", "Publico y escenario", SPHERICAL_AUDIENCE_STAGE_FOV),
+    "full_stage": ("full_stage_yaw", "Full stage", SPHERICAL_WIDE_FOV),
+    "audience_stage_wide": ("audience_stage_wide_yaw", "Audience and stage", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
 }
 EDIT_PLAN_ALGORITHM_VERSION = 33
@@ -1328,7 +1328,7 @@ def _youtube_multicam_plan(
                             bar_times.insert(next_index, segment_end)
                         segment.update(_segment_from_source(source, segment_start, segment_end, window.get("title") or t("full_video"), platform=platform))
                         segment["music_direction"]["accent"] = "planet_to_stage"
-                        shot.update(type="planet", label="Planeta → escenario", projection_preset="tiny_planet", pitch=-90., fov=270.,
+                        shot.update(type="planet", label="Planet to stage", projection_preset="tiny_planet", pitch=-90., fov=270.,
                                     movement="planet_to_stage", reveal_target=target)
                         last_planet_sec = segment_start
                 auto_movement = bool(spherical_motion) and _default_shot_motion_enabled(
