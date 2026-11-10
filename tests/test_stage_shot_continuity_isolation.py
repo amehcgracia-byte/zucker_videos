@@ -59,3 +59,12 @@ def test_stage_review_never_rederives_continuity_for_legacy_group():
     assert all('continuity_duration_sec' not in segment['spherical_shot'] for segment in stage)
     nonstage=continuous_views(segments,preserve_authored=False)
     assert nonstage[0]['spherical_shot']['continuity_duration_sec']==12.0
+
+
+def test_360_movement_checkbox_can_create_missing_animation_recipe():
+    from pathlib import Path
+    route = Path('server/edit_timeline.py').read_text()
+    assert "if component == 'movement' and movement:" in route
+    assert "if not _shot_requires_runtime_motion(pose):" in route
+    assert "pose['hold_motion_rate_deg_per_sec']=0.3 if i%2 else -0.3" in route
+    assert "pose['runtime_motion_enabled']=movement" in route
