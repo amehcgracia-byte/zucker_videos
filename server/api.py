@@ -1816,21 +1816,26 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             # 360 source. Return placeholders immediately and let the browser
             # poll the render-status file as each thumbnail becomes ready.
             render_missing = request.args.get("render", "1") != "0"
+            # When a user edits ONE shot, do not ask the server to rebuild
+            # missing previews for the rest of an already authored edit.
+            target_shot = request.args.get("shot", type=int)
             items = review_items(project, render_missing=False)
             if render_missing:
                 pending = {
                     int(item["index"])
                     for item in items
                     if item.get("thumbnail_status") == "missing"
+                    and (target_shot is None or item["index"] == target_shot)
                 }
                 if can_prepare_review(project):
                     missing = pending | {
                         item["index"] for item in items
                         if not item["preview_ready"] and not item["preview_error"]
                         and item["thumbnail_status"] != "failed"
+                        and (target_shot is None or item["index"] == target_shot)
                     }
                     if missing:
-                        review_previews.PREFETCH.start(project, priority=request.args.get("shot", type=int),
+                        review_previews.PREFETCH.start(project, priority=target_shot,
                                                        indices=missing)
                 else:
                     _queue_review_thumbnail_render(project, pending)
