@@ -1,0 +1,103 @@
+"""Manual editing must never silently redistribute the music edit plan."""
+import copy
+import json
+
+from core.project import atomic_write_json, create_project
+
+
+def test_editing_and_remembering_one_musician_changes_only_selected_shot(tmp_path, monkeypatch):
+    import core.stages.cut as cut
+    import server.edit_timeline as timeline
+    from server.api import create_app
+
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path / "data"))
+    p=create_project("One shot",str(tmp_path / "OneShot.zuckervid"))
+    a=tmp_path/"camera-one.mp4";a.touch()
+    b=tmp_path/"camera-two.mp4";b.touch()
+    p.data["inputs"]["videos"]=[{"path":str(a),"probe":{}},{"path":str(b),"probe":{}}]
+    p.data["inputs"]["master"]={"path":"master.wav"}
+    p.data["settings"]["edit"]["camera_types"]={str(a):"fixed",str(b):"fixed"}
+    p.save()
+    shots=[
+        {"source_path":str(a),"clip_path":str(a),"clip_start_sec":i,
+         "master_start_sec":i,"duration_sec":1,
+         "flat_framing":{"zoom":1.2,"x":.4,"y":.45},
+         "manual_view":False,"performer_view":str(i%2),
+         "stage_performers":[{"id":"p1","role":"guitarist","zoom":1.5,"x":.6,"y":.5}]}
+        for i in range(6)
+    ]
+    document=p.artifacts_dir/"edit_plan.json"
+    atomic_write_json(document,{"platform":"youtube","segments":shots})
+    baseline=copy.deepcopy(shots)
+    monkeypatch.setattr(cut,"load_coverage",lambda _: {"sources":[]})
+    monkeypatch.setattr(timeline,"duration",lambda _:100)
+    client=create_app(str(p.folder),dev=True).test_client()
+    doc=client.get("/api/v1/edit/shot?index=2")
+    assert doc.status_code==200,doc.json
+    r=client.patch("/api/v1/edit/shot",json={
+        "project_id":str(p.folder),"revision":doc.json["revision"],
+        "index":2,"choice":0,"edit_component":"framing",
+        "flat_framing":{"zoom":1.17,"x":.6,"y":.40},
+        "remember_musician":"Guitar","apply_to_source":False,
+        "movement":False})
+    assert r.status_code==200,r.json
+    actual=json.loads(document.read_text())["segments"]
+    assert len(actual)==len(baseline)
+    assert all(actual[i]==baseline[i] for i in range(len(shots)) if i!=2)
+    assert actual[2]["flat_framing"]["x"]==.6
+    assert actual[2]["performer_view_name"]=="Guitar"
+    doc2=client.get("/api/v1/edit/shot?index=3").json
+    guitar=[v for v in doc2["saved_views"] if v["name"]=="Guitar"]
+    assert len(guitar)==1
+    assert guitar[0]["flat_framing"]["x"]==.6
+    assert doc2["performers"]==baseline[3]["stage_performers"]
+    reject=client.patch("/api/v1/edit/shot",json={
+        "project_id":str(p.folder),"revision":doc2["revision"],
+        "index":3,"choice":0,"edit_component":"framing",
+        "flat_framing":{"zoom":1.1,"x":.5,"y":.5},
+        "apply_to_source":True})
+    assert reject.status_code==400
+    assert json.loads(document.read_text())["segments"][3]==baseline[3]
+
+
+def test_switching_camera_discards_old_camera_specific_motion(tmp_path, monkeypatch):
+    import core.stages.cut as cut
+    import server.edit_timeline as timeline
+    import core.shot_review as shot_review
+    from server.api import create_app
+
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path / "data"))
+    p=create_project("Switch",str(tmp_path/"Switch.zuckervid"))
+    a=tmp_path/"camera-one.mp4";a.touch()
+    b=tmp_path/"camera-two.mp4";b.touch()
+    p.data["inputs"]["videos"]=[{"path":str(a),"probe":{}},{"path":str(b),"probe":{}}]
+    p.data["settings"]["edit"]["camera_types"]={str(a):"fixed",str(b):"fixed"}
+    p.save()
+    old=[{"source_path":str(a),"clip_path":str(a),"clip_start_sec":i,"master_start_sec":i,
+          "duration_sec":1,"flat_framing":{"zoom":1.4,"x":.25,"y":.45},
+          "motion":{"type":"ken_burns","zoom_start":1.0,"zoom_end":1.25},
+          "manual_view":True} for i in range(3)]
+    document=p.artifacts_dir/"edit_plan.json"
+    atomic_write_json(document,{"platform":"youtube","segments":old})
+    monkeypatch.setattr(cut,"load_coverage",lambda _:{"sources":[]})
+    monkeypatch.setattr(timeline,"duration",lambda _:100)
+    monkeypatch.setattr(shot_review,"_review_candidate_pool",lambda *args,**kwargs:(
+        [{"path":str(b),"source_path":str(b),"clip_start_sec":1,
+          "offset_sec":0,"filename":b.name}], "test"))
+    monkeypatch.setattr(shot_review,"_candidate_covers_slot",lambda *args,**kwargs:True)
+    client=create_app(str(p.folder),dev=True).test_client()
+    doc=client.get("/api/v1/edit/shot?index=1").json
+    assert len(doc["choices"])>=2
+    assert doc["choices"][1]["source_path"]==str(b)
+    assert doc["choices"][1]["framing"]=={"zoom":1,"x":.5,"y":.5}
+    r=client.patch("/api/v1/edit/shot",json={
+        "project_id":str(p.folder),"revision":doc["revision"],
+        "index":1,"choice":1,"edit_component":"framing",
+        "flat_framing":{"zoom":1.12,"x":.55,"y":.50},
+        "movement":False,"apply_to_source":False})
+    assert r.status_code==200,r.json
+    actual=json.loads(document.read_text())["segments"]
+    assert actual[0]==old[0] and actual[2]==old[2]
+    assert actual[1]["source_path"]==str(b)
+    assert actual[1].get("motion") is None
+    assert actual[1]["motion_enabled"] is False
