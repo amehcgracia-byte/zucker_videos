@@ -33,3 +33,20 @@ def test_an_authored_shot_keeps_existing_motion_clock():
     original[1]['spherical_shot']['continuity_offset_sec']=10
     result=continuous_views(original,preserve_authored=True)
     assert result[1] == original[1]
+
+
+def test_movement_checkbox_works_for_fixed_video_without_existing_crop():
+    from core.stages.export import _motion_filter
+    fixed={'source_path':'fixed.mp4','clip_path':'fixed.mp4', 'motion_enabled':True}
+    animated=_motion_filter(fixed,'youtube',5.)
+    assert animated and 'zoompan=' in animated
+    assert _motion_filter({**fixed,'motion_enabled':False},'youtube',5.) is None
+    # Legacy material with no explicit choice stays on its existing policy.
+    assert _motion_filter({'source_path':'fixed.mp4'},'youtube',5.) is None
+
+
+def test_movement_checkbox_respects_an_existing_flat_crop():
+    from core.stages.export import _motion_filter
+    fixed={'source_path':'fixed.mp4','flat_framing':{'zoom':1.15,'x':.5,'y':.5}}
+    assert 'zoompan=' in _motion_filter({**fixed,'motion_enabled':True},'youtube',5.)
+    assert _motion_filter({**fixed,'motion_enabled':False},'youtube',5.) is None
