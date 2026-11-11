@@ -4477,24 +4477,27 @@ def _video_frame_count(path: Path, expected_frames: int | None = None) -> int:
     segments and one longer retry for a machine under parallel CPU load.
     """
     started = time.perf_counter()
-    metadata_result = subprocess.run(
-        [
-            _ffprobe_path(), "-v", "error", "-select_streams", "v:0",
-            "-show_entries", "stream=nb_frames,duration,avg_frame_rate",
-            "-of", "default=noprint_wrappers=1:nokey=1", str(path),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=FRAME_COUNT_METADATA_TIMEOUT_SEC,
-    )
+    metadata_command = [
+        _ffprobe_path(), "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=nb_frames,duration,avg_frame_rate",
+        "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+    ]
     metadata_count: int | None = None
-    if metadata_result.returncode == 0:
-        for raw in (metadata_result.stdout or "").splitlines():
-            raw = raw.strip()
-            if raw.isdigit() and int(raw) > 0:
-                metadata_count = int(raw)
-                break
+    for timeout in (FRAME_COUNT_METADATA_TIMEOUT_SEC, 30):
+        try:
+            metadata_result = subprocess.run(
+                metadata_command, check=False, capture_output=True, text=True, timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            LOGGER.warning("Frame-count metadata probe exceeded %ss; continuing verification", timeout)
+            continue
+        if metadata_result.returncode == 0:
+            for raw in (metadata_result.stdout or "").splitlines():
+                raw = raw.strip()
+                if raw.isdigit() and int(raw) > 0:
+                    metadata_count = int(raw)
+                    break
+        break
     if metadata_count is not None and (expected_frames is None or metadata_count == expected_frames):
         LOGGER.info("frame count verification path=%s method=metadata frames=%s seconds=%.3f", path, metadata_count, time.perf_counter() - started)
         return metadata_count
