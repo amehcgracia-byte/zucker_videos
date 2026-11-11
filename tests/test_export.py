@@ -146,6 +146,22 @@ def test_video_frame_count_uses_container_metadata_first(monkeypatch, tmp_path):
     assert "-count_frames" not in calls[0][0]
 
 
+@pytest.mark.parametrize("metadata_recovers", [True, False])
+def test_video_frame_count_survives_metadata_timeout(monkeypatch, tmp_path, metadata_recovers):
+    calls = []
+    monkeypatch.setattr("core.stages.export._ffprobe_path", lambda: "ffprobe")
+
+    def fake_run(command, **kwargs):
+        calls.append(kwargs["timeout"])
+        if "-count_frames" not in command and (len(calls) == 1 or not metadata_recovers):
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return subprocess.CompletedProcess(command, 0, stdout="270\n", stderr="")
+
+    monkeypatch.setattr("core.stages.export.subprocess.run", fake_run)
+    assert _video_frame_count(tmp_path / "segment.mp4", expected_frames=270) == 270
+    assert calls == ([10, 30] if metadata_recovers else [10, 30, 120])
+
+
 def test_video_frame_count_retries_a_slow_full_decode(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr("core.stages.export._ffprobe_path", lambda: "ffprobe")
