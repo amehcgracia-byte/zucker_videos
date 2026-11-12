@@ -111,7 +111,7 @@ SPHERICAL_LANDMARKS = {
     "pianist": ("pianist_yaw", "Piano", SPHERICAL_DEFAULT_FOV),
     "left": ("left_yaw", "Stage left", SPHERICAL_DEFAULT_FOV),
     "right": ("right_yaw", "Stage right", SPHERICAL_DEFAULT_FOV),
-    "audience": ("audience_yaw", "Publico", SPHERICAL_DEFAULT_FOV),
+    "audience": ("audience_yaw", "Audience", SPHERICAL_DEFAULT_FOV),
     "full_stage": ("full_stage_yaw", "Full stage", SPHERICAL_WIDE_FOV),
     "audience_stage_wide": ("audience_stage_wide_yaw", "Audience and stage", SPHERICAL_AUDIENCE_STAGE_FOV),
     "planet": ("planet_yaw", "Planeta", 150.0),
@@ -1593,7 +1593,7 @@ def migrate_spherical_landmarks(raw: dict[str, Any]) -> dict[str, dict[str, Any]
     return migrated
 
 
-def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabled: bool = False, sweep_speed: float = SPHERICAL_SWEEP_SPEED_DEG_PER_SEC, *, balanced_performers: bool = False) -> list[dict[str, Any]]:
+def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabled: bool = False, sweep_speed: float = SPHERICAL_SWEEP_SPEED_DEG_PER_SEC, *, balanced_performers: bool = False, manual_audience: bool = False) -> list[dict[str, Any]]:
     shots: list[dict[str, Any]] = []
     prepared: list[tuple[str, str, float, dict[str, Any], float]] = []
     custom_slots = sorted(key for key in landmarks if isinstance(key, str) and re.fullmatch(r"custom_([1-9]|1[0-6])", key))
@@ -1601,7 +1601,7 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabl
         # Automatic editing should stay on the stage. A public-only landmark
         # is retained in project settings for manual review, but is never
         # offered as an automatic replacement candidate.
-        if shot_type in {"audience", "audience_stage_wide"}:
+        if shot_type in {"audience", "audience_stage_wide"} and not manual_audience:
             # Public-only landmarks are valid for manual review but are not
             # automatic editorial shots: every automatic 360 frame must retain
             # a stage/performer subject.
@@ -1614,7 +1614,7 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabl
             data = {"yaw": 0.0, "pitch": 0.0, "fov": default_fov, "roll": 0.0, "projection_preset": "linear", "projection_control": 0.0, "weight": 1.0}
         if not data or data.get("enabled") is False:
             continue
-        if balanced_performers and str(data.get("subject") or shot_type) == "audience":
+        if balanced_performers and not manual_audience and str(data.get("subject") or shot_type) == "audience":
             continue
         yaw = _landmark_yaw(data.get("yaw"), None)
         if yaw is None:
@@ -1634,7 +1634,7 @@ def _available_spherical_shots(landmarks: dict[str, dict[str, Any]], sweep_enabl
             continue
         if balanced_performers and shot_type not in {"full_stage", "planet"}:
             weight = 1.0
-        if weight <= 0.0 and not recover_legacy_profile:
+        if weight <= 0.0 and not recover_legacy_profile and not manual_audience:
             continue
         if recover_legacy_profile and weight <= 0.0:
             weight = 1.0

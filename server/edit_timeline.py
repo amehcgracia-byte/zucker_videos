@@ -119,6 +119,28 @@ def register_edit_timeline(app,project,invalidate):
         s=data['segments'][index];platform=data.get('platform') or p.data.get('settings',{}).get('wizard',{}).get('platform') or 'reel'
         try:pool,_=_review_candidate_pool(load_coverage(p),data['segments'],s,platform)
         except (OSError,ValueError,KeyError):pool=[]
+        if platform == 'youtube':
+            from core.stages.edit import _available_spherical_shots, migrate_spherical_landmarks
+            settings = p.data.get('settings', {})
+            profiles = settings.get('spherical_landmarks_by_source') or {}
+            candidates = {}
+            for candidate in pool:
+                source = str(candidate.get('source_path') or candidate.get('path') or '')
+                if source and candidate.get('projection') in ('equirect', 'raw_insv'):
+                    candidates.setdefault(source, candidate)
+            audience = []
+            for source, candidate in candidates.items():
+                profile = profiles.get(source)
+                if profile is None and not profiles and len(candidates) == 1:
+                    profile = settings.get('spherical_landmarks')
+                views = migrate_spherical_landmarks(profile or {})
+                views = {key: view for key, view in views.items()
+                         if key in ('audience', 'audience_stage_wide') or view.get('subject') == 'audience'}
+                if views:
+                    audience.extend({**candidate, 'spherical_shot': pose, 'motion_enabled': False}
+                                    for pose in _available_spherical_shots(views, balanced_performers=True,
+                                                                           manual_audience=True))
+            pool = [*pool, *audience]
         out=[dict(s)];seen={(str(s.get('clip_path')),json.dumps(s.get('spherical_shot'),sort_keys=True))}
         for c in pool:
             if c.get('spherical_shot') and c.get('projection') not in ('equirect','raw_insv'):continue
@@ -245,7 +267,7 @@ def register_edit_timeline(app,project,invalidate):
                 number=next((j+1 for j,r in enumerate(records) if r.get('path')==c.get('source_path')),None)
                 return ('Camera '+str(number).zfill(2)+' · ' if number is not None else '')+{'360':'360','fixed':'Fixed','moving':'Moving'}[camera_kind(p,c)]+(' · '+str(c['spherical_shot'].get('label') or 'View') if c.get('spherical_shot') else '')
             from core.video_light import settings as light_settings, DEFAULT
-            from core.stages.export import _shot_requires_runtime_motion
+            from core.stages.export import _shot_requires_runtime_motion, SPHERICAL_SHORT_SEGMENT_STATIC_SEC
             # The checkbox describes visible animation, not the mere presence
             # of a recipe or a stale true flag. A full-static Ken Burns recipe
             # MUST NOT be shown as moving.
@@ -253,7 +275,10 @@ def register_edit_timeline(app,project,invalidate):
                 if shot.get('motion_enabled') is False:
                     return False
                 if shot.get('spherical_shot'):
-                    return _shot_requires_runtime_motion(shot['spherical_shot'])
+                    pose = shot['spherical_shot']
+                    short_hold = (float(shot['duration_sec']) < SPHERICAL_SHORT_SEGMENT_STATIC_SEC
+                                  and not pose.get('manual_yaw_delta_deg') and pose.get('type') != 'recorded_move')
+                    return not short_hold and _shot_requires_runtime_motion(pose)
                 if shot.get('flat_framing'):
                     return True  # legacy/export applies its 14% crop motion
                 motion=shot.get('motion') or {}
@@ -310,6 +335,7 @@ def register_edit_timeline(app,project,invalidate):
                 # Switching camera never reuses the previous camera's animated
                 # pose. Preserve the selected candidate's motion state unless
                 # the user explicitly changed the Movement checkbox.
+                selected_motion_disabled = s.get('motion_enabled') is False
                 s['motion_enabled']=movement
                 if (component == 'movement' and movement
                         and not s.get('spherical_shot') and not s.get('flat_framing')):
@@ -320,7 +346,7 @@ def register_edit_timeline(app,project,invalidate):
                         changes('zoom_start','zoom_end',1.)
                         or changes('pan_x_start','pan_x_end',.5)
                         or changes('pan_y_start','pan_y_end',.5)))
-                    if not visible:
+                    if selected_motion_disabled or not visible:
                         # A manual checkbox must always produce a visible move
                         # even if the generated plan had a still/fallback recipe.
                         s.pop('motion',None)
@@ -328,23 +354,6 @@ def register_edit_timeline(app,project,invalidate):
                     for field in ('motion', 'spherical_shot'):
                         for key in ('continuity_duration_sec', 'continuity_offset_sec'):
                             (s.get(field) or {}).pop(key, None)
-                if s.get('spherical_shot'):
-                    if component == 'movement' or not movement:
-                        pose=s['spherical_shot']
-                        pose['runtime_motion_enabled']=movement
-                        # A 360 still view can have no motion recipe at all.
-                        # Re-enabling the checkbox must start a gentle move,
-                        # rather than merely setting a flag with no effect.
-                        if component == 'movement' and movement:
-                            from core.stages.export import _shot_requires_runtime_motion
-                            if not _shot_requires_runtime_motion(pose):
-                                if pose.get('type') == 'planet':
-                                    pose['spin_deg_per_sec']=0.3
-                                else:
-                                    if pose.get('type') == 'recorded_move' and not pose.get('curve'):
-                                        pose['type']='manual'
-                                        pose['shot_id']='manual'
-                                    pose['hold_motion_rate_deg_per_sec']=0.3 if i%2 else -0.3
                 if component in ('all','framing') and s.get('spherical_shot'):
                     pose=s['spherical_shot']
                     authored_pose = {key:float(pose.get(key) or (95 if key=='fov' else 0))
@@ -370,12 +379,8 @@ def register_edit_timeline(app,project,invalidate):
                         pose.update(projection_preset='normal',type='manual',
                                     shot_id='manual',label='Custom view')
                         pose.pop('movement',None)
-                    pose['runtime_motion_enabled']=movement
                     if changed_pose:
-                        if movement:
-                            pose['hold_motion_rate_deg_per_sec'] = (0.3 if i % 2 else -0.3)
-                        else:
-                            pose.pop('hold_motion_rate_deg_per_sec',None)
+                        pose.pop('manual_yaw_delta_deg', None)
                     s['manual_view']=True
                 elif component in ('all','framing'):
                     from core.flat_framing import validate
@@ -407,7 +412,20 @@ def register_edit_timeline(app,project,invalidate):
                             s[key] = copy.deepcopy(saved[key])
                     s['manual_view'] = True
                     s['performer_view_name'] = name
-                    s['motion_enabled'] = saved.get('motion_enabled') is True
+                    selected_motion_disabled = saved.get('motion_enabled') is not True
+                if component != 'light' and s.get('spherical_shot'):
+                    from core.stages.export import _shot_requires_runtime_motion, SPHERICAL_SHORT_SEGMENT_STATIC_SEC
+                    pose = s['spherical_shot']
+                    short_hold = (float(s['duration_sec']) < SPHERICAL_SHORT_SEGMENT_STATIC_SEC
+                                  and not pose.get('manual_yaw_delta_deg') and pose.get('type') != 'recorded_move')
+                    was_enabled = not selected_motion_disabled and not short_hold and _shot_requires_runtime_motion(pose)
+                    pose['runtime_motion_enabled'] = movement
+                    if movement and not was_enabled:
+                        # A deliberate checkbox works even on short 360 cuts.
+                        amount = min(8.0, 16.0 * float(s['duration_sec']))
+                        pose['manual_yaw_delta_deg'] = amount if i % 2 else -amount
+                    if not movement:
+                        pose.pop('manual_yaw_delta_deg', None)
                 if body.get('remember_musician'):
                     name=str(body['remember_musician']).strip()
                     if not 1<=len(name)<=40 or any(ord(ch)<32 or ch in '<>' for ch in name):

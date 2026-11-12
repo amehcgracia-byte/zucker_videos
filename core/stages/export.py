@@ -2481,7 +2481,7 @@ def _render_segment(
     command_base.extend(SDR_OUTPUT_ARGS)
     def render(command: list[str]) -> None:
         if native_motion:
-            sampler = (lambda seconds: _v360_motion_at(spherical_shot, duration, seconds)) if (spherical_shot.get("type") in {"recorded_move", "planet"} and spherical_shot.get("movement") != "planet_to_stage") or not spherical_shot.get("movement") else None
+            sampler = (lambda seconds: _v360_motion_at(spherical_shot, duration, seconds)) if spherical_shot.get("manual_yaw_delta_deg") or (spherical_shot.get("type") in {"recorded_move", "planet"} and spherical_shot.get("movement") != "planet_to_stage") or not spherical_shot.get("movement") else None
             run_reprojected_command(command, str(source["source_path"]),
                 (int(segment_probe["width"]), int(segment_probe["height"])),
                 float(segment["clip_start_sec"]), frame_count, spherical_shot, progress_callback,
@@ -3655,6 +3655,8 @@ def _shot_requires_runtime_motion(shot: dict[str, Any] | None) -> bool:
         return False
     if "runtime_motion_enabled" in shot and not bool(shot.get("runtime_motion_enabled")):
         return False
+    if shot.get("manual_yaw_delta_deg"):
+        return True
     if shot.get("type") == "recorded_move":
         return bool(shot.get("curve"))
     if shot.get("type") == "planet":
@@ -3742,6 +3744,12 @@ def _v360_motion_at(shot: dict[str, Any], duration: float, t: float) -> tuple[fl
         return _static_360_pose(shot)
     if "runtime_motion_enabled" in shot and not bool(shot.get("runtime_motion_enabled")):
         return _static_360_pose(shot)
+    if shot.get("manual_yaw_delta_deg"):
+        # Use the same authored move for a short cut, a hover preview and export.
+        fraction = min(1.0, max(0.0, t / min(3.0, duration)))
+        eased = fraction * fraction * (3.0 - 2.0 * fraction)
+        return (_signed_yaw(_shot_yaw(shot) + float(shot["manual_yaw_delta_deg"]) * eased),
+                _shot_float(shot, "pitch", 0.0), _effective_flat_fov(shot))
     if shot.get("type") == "recorded_move":
         safe_curve = limit_yaw_velocity(shot.get("curve") or [])
         interpolated = interpolate_curve(safe_curve, max(0.0, min(duration, t)))

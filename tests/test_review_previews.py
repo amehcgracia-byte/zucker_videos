@@ -182,3 +182,30 @@ def test_reel_preview_uses_vertical_export_canvas_and_thumbnail(project,tmp_path
     info=_probe(output)
     assert (int(info['width']),int(info['height']))==(270,480)
     assert output.is_file()
+
+
+def test_short_manual_pan_moves_a_static_360_source_in_preview_and_export(project, tmp_path):
+    import numpy as np
+    source = tmp_path / "static-sphere.mp4"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                    "testsrc2=size=640x320:rate=30", "-vf", "select=eq(n\\,0),loop=loop=45:size=1:start=0,setpts=N/(30*TB)",
+                    "-frames:v", "42", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source)], check=True)
+    segment = {"source_path": str(source), "clip_path": str(source), "projection": "equirect",
+               "clip_start_sec": 0, "duration_sec": 1, "motion_enabled": True,
+               "spherical_shot": {"type": "audience", "yaw": 20, "pitch": 0, "fov": 90,
+                                  "runtime_motion_enabled": True, "manual_yaw_delta_deg": 8}}
+    from core.project import file_record
+    from core.stages import export
+    record = file_record(str(source))
+    record["probe"] = {"valid_video": True, "projection": "equirect", "video_codec": "h264",
+                       "width": 640, "height": 320, "duration": 1.4, "fps": 30, "bit_depth": 8}
+    project.data["inputs"]["videos"] = [record]
+    preview = review_previews.render_preview(project, 0, segment)
+    rendered = tmp_path / "export.mp4"
+    export._render_segment(project, {**segment, "master_start_sec": 0}, "", rendered,
+                           "youtube", 4_000_000, force_cpu=True)
+    for output in (preview, rendered):
+        raw = subprocess.check_output(["ffmpeg", "-v", "error", "-i", str(output), "-vf", "scale=320:180",
+                                       "-pix_fmt", "gray", "-f", "rawvideo", "-"])
+        frames = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 320 * 180)
+        assert np.abs(frames[0].astype(float) - frames[-1]).mean() > 2, output

@@ -229,3 +229,44 @@ def test_360_pianist_and_drummer_choices_keep_distinct_authored_angles(tmp_path,
         assert saved[1]["spherical_shot"]["yaw"]==yaw
         assert saved[1]["spherical_shot"]["label"]==pose["label"]
         assert saved[1]["spherical_shot"]["type"]==pose["type"]
+
+
+def test_authored_audience_can_move_in_one_short_shot(tmp_path, monkeypatch):
+    from core.stages import cut, export
+    from core import shot_review
+    import server.edit_timeline as timeline
+    from server.api import create_app
+
+    monkeypatch.setenv("ZUCKER_DATA_ROOT", str(tmp_path / "data"))
+    p = create_project("Audience", str(tmp_path / "Audience.zuckervid"))
+    source = tmp_path / "sphere.mp4"
+    source.touch()
+    p.data["inputs"]["videos"] = [{"path": str(source), "projection": "equirect"}]
+    p.data["settings"]["spherical_landmarks_by_source"] = {str(source): {
+        "audience": {"yaw": 120, "pitch": 0, "fov": 90, "enabled": True},
+    }}
+    p.save()
+    coverage = {"path": str(source), "source_path": str(source), "projection": "equirect",
+                "offset_sec": 0, "duration_sec": 50, "confidence": 20}
+    shots = [{**coverage, "clip_path": str(source), "clip_start_sec": i, "master_start_sec": i,
+              "duration_sec": 1, "spherical_shot": {"type": "singer", "yaw": 0, "fov": 90}}
+             for i in range(3)]
+    plan = p.artifacts_dir / "edit_plan.json"
+    atomic_write_json(plan, {"platform": "youtube", "segments": shots})
+    monkeypatch.setattr(cut, "load_coverage", lambda _: {"sources": [coverage]})
+    monkeypatch.setattr(shot_review, "_review_candidate_pool", lambda *args: ([coverage], "test"))
+    monkeypatch.setattr(timeline, "duration", lambda _: 50)
+    client = create_app(str(p.folder), dev=True).test_client()
+    doc = client.get("/api/v1/edit/shot?index=1").json
+    choice = next(i for i, view in enumerate(doc["choices"]) if view["pose"].get("type") == "audience")
+    result = client.patch("/api/v1/edit/shot", json={
+        "project_id": str(p.folder), "revision": doc["revision"], "index": 1,
+        "choice": choice, "edit_component": "framing", "movement": True,
+    })
+    assert result.status_code == 200, result.json
+    saved = json.loads(plan.read_text())["segments"]
+    assert saved[0] == shots[0] and saved[2] == shots[2]
+    pose = saved[1]["spherical_shot"]
+    assert pose["type"] == "audience" and pose["yaw"] == 120
+    assert export._shot_requires_runtime_motion(pose)
+    assert export._v360_motion_at(pose, 1, 1)[0] - export._v360_motion_at(pose, 1, 0)[0] == 8
