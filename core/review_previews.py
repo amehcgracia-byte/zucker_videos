@@ -58,6 +58,8 @@ def preview_path(project: Project, index: int, segment: dict[str, Any]) -> Path:
     # shots have different render inputs.
     if segment.get("motion_enabled") is False:
         identity += ":stationary"
+    elif segment.get("motion_enabled") is True and not (segment.get("motion") or segment.get("flat_framing") or segment.get("spherical_shot")):
+        identity += ":explicit-motion"
     key = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
     return preview_root(project) / f"preview-{index:04d}-{key}.mp4"
 
@@ -182,7 +184,7 @@ def _render_flat(project: Project, segment: dict[str, Any], output: Path, ffmpeg
         source = sphere
     else:
         # Fixed cameras: the export's base framing and its exact zoom/pan.
-        motion = export._motion_filter(segment, "youtube", duration)
+        motion = export._motion_filter(segment, "youtube", float(segment.get("duration_sec") or duration))
         base = export._base_video_filter("youtube")
         if motion and "zoompan=" in motion and not segment.get("flat_framing"):
             base = base.replace("1920:1080", "3840:2160")
@@ -206,11 +208,12 @@ def _render_sphere_motion(project: Project, segment: dict[str, Any], output: Pat
     source, size = _existing_sphere_source(project, segment)
     if not size:
         raise RuntimeError(f"Could not read the 360 source {source}")
-    duration = min(3.0, max(0.1, float(segment.get("duration_sec") or 0.1)))
+    shot_duration = max(0.001, float(segment.get("duration_sec") or 0.1))
+    duration = min(3.0, max(0.1, shot_duration))
     frames = max(1, int(round(duration * PREVIEW_FPS)))
     # Same pose sampler choice as the export renderer.
-    sampler = ((lambda seconds: _v360_motion_at(shot, duration, seconds))
-               if (shot.get("type") in {"recorded_move", "planet"} and shot.get("movement") != "planet_to_stage")
+    sampler = ((lambda seconds: _v360_motion_at(shot, shot_duration, seconds))
+               if shot.get("manual_yaw_delta_deg") or (shot.get("type") in {"recorded_move", "planet"} and shot.get("movement") != "planet_to_stage")
                or not shot.get("movement") else None)
     from core.video_light import resolved_reel_profile, stage_review_profile
     from core.stages.export import _color_filter
