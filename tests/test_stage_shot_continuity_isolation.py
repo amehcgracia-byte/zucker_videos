@@ -61,13 +61,15 @@ def test_stage_review_never_rederives_continuity_for_legacy_group():
     assert nonstage[0]['spherical_shot']['continuity_duration_sec']==12.0
 
 
-def test_360_movement_checkbox_can_create_missing_animation_recipe():
-    from pathlib import Path
-    route = Path('server/edit_timeline.py').read_text()
-    assert "if component == 'movement' and movement:" in route
-    assert "if not _shot_requires_runtime_motion(pose):" in route
-    assert "pose['hold_motion_rate_deg_per_sec']=0.3 if i%2 else -0.3" in route
-    assert "pose['runtime_motion_enabled']=movement" in route
+def test_explicit_short_360_pan_respects_disabled_movement():
+    from core.stages.export import _shot_requires_runtime_motion, _v360_motion_at
+    pose = {"yaw": 20, "pitch": 0, "fov": 90, "manual_yaw_delta_deg": 8,
+            "runtime_motion_enabled": False}
+    assert not _shot_requires_runtime_motion(pose)
+    assert _v360_motion_at(pose, 1, 1)[0] == 20
+    pose["runtime_motion_enabled"] = True
+    assert _shot_requires_runtime_motion(pose)
+    assert _v360_motion_at(pose, 1, 1)[0] == 28
 
 
 def test_fixed_camera_zoom_is_visibly_14_percent_and_can_be_turned_off():
