@@ -64,8 +64,35 @@ def _projection_grid(width: int, height: int) -> tuple[np.ndarray, np.ndarray]:
     return grid[0], grid[1]
 
 
+def _fast_wrap_x_inplace(mx: np.ndarray, sw: int) -> None:
+    """Fast path for longitude maps; retain modulo for general cases."""
+    lo = float(mx.min())
+    hi = float(mx.max())
+
+    if not (math.isfinite(lo) and math.isfinite(hi)):
+        mx %= sw
+    elif 0 <= lo and hi < sw:
+        return
+    elif -sw <= lo and hi < 2 * sw:
+        np.subtract(mx, sw, out=mx, where=mx >= sw)
+        np.add(mx, sw, out=mx, where=mx < 0)
+    else:
+        mx %= sw
+
+
+
+def _smart_unwrap_if_safe(a: np.ndarray, axis: int) -> np.ndarray:
+    """Skip NumPy phase unwrapping only when no correction is needed."""
+    if not np.isfinite(a).all():
+        return np.unwrap(a, axis=axis)
+    jumps = np.diff(a, axis=axis)
+    if np.any(np.abs(jumps) >= np.pi):
+        return np.unwrap(a, axis=axis)
+    return a
+
+
 def reproject_maps(source_size: tuple[int, int], output_size: tuple[int, int], shot: dict[str, Any],
-                   pose: tuple[float, float, float] | None = None, *, exact: bool = False) -> tuple[np.ndarray, np.ndarray]:
+                   pose: tuple[float, float, float] | None = None, *, exact: bool = False, fast_wrap: bool = False, smart_unwrap: bool = False) -> tuple[np.ndarray, np.ndarray]:
     """Return continuous longitude/latitude maps; unwrap before interpolation."""
     sw, sh = source_size; width, height = output_size
     yaw, pitch, fov = pose or (float(shot.get("yaw") or 0), float(shot.get("pitch") or 0), float(shot.get("fov") or 82))
@@ -102,14 +129,22 @@ def reproject_maps(source_size: tuple[int, int], output_size: tuple[int, int], s
     x, y = cr * x - sr * y, sr * x + cr * y
     y, z = cp * y - sp * z, sp * y + cp * z
     x, z = cy * x + sy * z, -sy * x + cy * z
-    longitude = np.unwrap(np.arctan2(x, z), axis=1)
-    longitude = np.unwrap(longitude, axis=0)
+    longitude = np.arctan2(x, z)
+    if smart_unwrap and view['projection'] != 'sg':
+        longitude = _smart_unwrap_if_safe(longitude, axis=1)
+        longitude = _smart_unwrap_if_safe(longitude, axis=0)
+    else:
+        longitude = np.unwrap(longitude, axis=1)
+        longitude = np.unwrap(longitude, axis=0)
     mx = ((longitude / (2 * np.pi) + .5) * sw - .5).astype(np.float32)
     my = ((np.arcsin(np.clip(y, -1, 1)) / np.pi + .5) * sh - .5).astype(np.float32)
     if (mw, mh) != (width, height):
         mx = cv2.resize(mx, (width, height), interpolation=cv2.INTER_CUBIC)
         my = cv2.resize(my, (width, height), interpolation=cv2.INTER_CUBIC)
-    mx %= sw
+    if fast_wrap:
+        _fast_wrap_x_inplace(mx, sw)
+    else:
+        mx %= sw
     np.clip(my, 0, sh - 1, out=my)
     return mx, my
 
@@ -141,10 +176,14 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
                             progress: Callable | None = None, *,
                             pose_sampler: Callable | None = None,
                             hardware_decode: bool = True, remap_backend: str = "cpu",
+                            cpu_interpolation: str = "cubic",
                             output_size: tuple[int, int] = (1920, 1080), fps: int = 30,
-                            decode_size: tuple[int, int] | None = None) -> None:
+                            decode_size: tuple[int, int] | None = None,
+                            fast_wrap: bool = False, smart_unwrap: bool = False) -> None:
     """Export defaults to 1080p30 from full-resolution frames; review previews
     pass a small output, a lower rate and a reduced ``decode_size``."""
+    if cpu_interpolation not in ("cubic", "linear"):
+        raise ValueError("cpu_interpolation must be cubic or linear")
     pixel_format = None
     if hardware_decode and sys.platform == "darwin":
         try:
@@ -157,13 +196,14 @@ def run_reprojected_command(command: list[str], source: str, source_size: tuple[
         try:
             _run_reprojected_command(command, source, source_size, start, frame_count, shot,
                 progress, pose_sampler=pose_sampler, decoder_pixel_format=pixel_format, remap_backend=remap_backend,
-                output_size=output_size, fps=fps, decode_size=decode_size)
+                output_size=output_size, fps=fps, decode_size=decode_size,
+                cpu_interpolation=cpu_interpolation, fast_wrap=fast_wrap, smart_unwrap=smart_unwrap)
             return
         except HardwareDecodeError as exc:
             LOGGER.warning("360 hardware decoder failed; retrying with CPU: %s", exc)
     _run_reprojected_command(command, source, source_size, start, frame_count, shot,
         progress, pose_sampler=pose_sampler, remap_backend=remap_backend, output_size=output_size, fps=fps,
-        decode_size=decode_size)
+        decode_size=decode_size, cpu_interpolation=cpu_interpolation, fast_wrap=fast_wrap, smart_unwrap=smart_unwrap)
 
 
 def _run_reprojected_command(command: list[str], source: str, source_size: tuple[int, int],
@@ -171,8 +211,10 @@ def _run_reprojected_command(command: list[str], source: str, source_size: tuple
                             progress: Callable | None = None, *,
                             pose_sampler: Callable | None = None,
                             decoder_pixel_format: str | None = None, remap_backend: str = "cpu",
+                            cpu_interpolation: str = "cubic",
                             output_size: tuple[int, int] = (1920, 1080), fps: int = 30,
-                            decode_size: tuple[int, int] | None = None) -> None:
+                            decode_size: tuple[int, int] | None = None,
+                            fast_wrap: bool = False, smart_unwrap: bool = False) -> None:
     """Pipe atomic reprojected BGR frames directly into the final encoder graph."""
     ffmpeg = command[0]; sw, sh = decode_size or source_size; ow, oh = output_size
     if frame_count <= 0:
@@ -242,14 +284,16 @@ def _run_reprojected_command(command: list[str], source: str, source_size: tuple
                 blocked[0] = None  # reprojection is active in Python, not waiting on a child
                 pose = pose_sampler(index / fps) if pose_sampler else motion_pose(shot, duration, index / fps)
                 if maps is None or pose != previous_pose:
-                    maps = reproject_maps((sw, sh), (ow, oh), shot, pose)
+                    maps = reproject_maps((sw, sh), (ow, oh), shot, pose, fast_wrap=fast_wrap, smart_unwrap=smart_unwrap)
                     previous_pose = pose
                 metal_done = False
                 if remap_backend == "metal":
                     from core.metal_remap import try_remap
                     metal_done = try_remap(frame, maps, pixels)
                 if not metal_done:
-                    cv2.remap(frame, *maps, interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_WRAP, dst=pixels)
+                    cv2.remap(frame, *maps,
+                              interpolation=(cv2.INTER_LINEAR if cpu_interpolation == "linear" else cv2.INTER_CUBIC),
+                              borderMode=cv2.BORDER_WRAP, dst=pixels)
                 blocked[0] = encoder
                 encoder.stdin.write(memoryview(pixels).cast("B"))
                 guard.touch()
