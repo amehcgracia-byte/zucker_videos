@@ -11,10 +11,11 @@ import math
 from pathlib import Path
 import statistics
 
+from core.flat_framing import FIXED_CROP_MOTION_ZOOM
 from core.project import atomic_write_json
 from core.stages.base import stable_fingerprint
 
-VERSION = 8
+VERSION = 9  # Invalidate cached close-up crops authored for the older 6% motion.
 ROLES = {'unknown', 'pianist', 'bassist', 'saxophonist', 'guitarist', 'drummer', 'singer'}
 ALIASES = {'keys': 'pianist', 'keys_l': 'pianist', 'keys_r': 'pianist', 'piano': 'pianist',
            'bass': 'bassist', 'sax': 'saxophonist', 'saxophone': 'saxophonist',
@@ -40,14 +41,15 @@ def subject_crop(person, neighbors):
 
     Coordinates use the source's normalized axes, as does flat_framing. A
     landscape crop has the same normalized width and height. Include the
-    tightest 1.06x opening-motion state when checking head visibility.
+    tightest 1.14x opening-motion state when checking head visibility.
     """
     head = person['head_box']
     body = person['body_box']
     hx = (head[0]+head[2])/2
-    # Reserve safety for detector jitter, pixel rounding and the inner 6% move.
+    # Reserve safety for detector jitter, pixel rounding and the 14% opening zoom.
+    # The camera move is authored in export._motion_filter; protect its tightest frame.
     margin = .006
-    inset = (1-1/1.06)/2
+    inset = (1-1/FIXED_CROP_MOTION_ZOOM)/2
     minimum = max(1/6, (head[2]-head[0]+2*margin)/(1-2*inset),
                   (head[3]-head[1]+2*margin)/(1-2*inset))
     desired = min(1., max(minimum, (body[2]-body[0])*1.12,
@@ -76,7 +78,9 @@ def subject_crop(person, neighbors):
         xlo,xhi = isolated_lo,isolated_hi
     # Inseparable overlapping silhouettes: preserve the head instead of cutting it.
     crop_x = max(xlo,min(xhi,hx-size/2))
-    crop_y = max(ylo,min(yhi,head[1]-.10*size))
+    # Keep extra vertical headroom for the actual 14% opening move, not only
+    # the static crop. Prefer the upper part of the head safe interval.
+    crop_y = max(ylo,min(yhi,head[1]-.18*size))
     crop_x=max(0.,min(1-size,crop_x));crop_y=max(0.,min(1-size,crop_y))
     return {'zoom':zoom,'x':round(crop_x+size/2,6),'y':round(crop_y+size/2,6)}
 

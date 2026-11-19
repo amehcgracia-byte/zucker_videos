@@ -1,6 +1,10 @@
 """One static crop on ordinary cameras, shared by review and final renders."""
 import math
 
+# A fixed-camera crop animates by 14% in Stage. Performer head safety and
+# the final renderer must share this value so the first frame cannot clip a head.
+FIXED_CROP_MOTION_ZOOM = 1.14
+
 def validate(spec):
     if not isinstance(spec,dict):raise ValueError('Choose a camera framing')
     result={k:float(spec.get(k,default)) for k,default in [('zoom',1),('x',.5),('y',.5)]}

@@ -70,13 +70,25 @@ def test_light_api_scopes_camera_vs_shot_and_validates_before_saving(tmp_path,mo
  r=c.patch('/api/v1/edit/shot',json=body);assert r.status_code==200,r.json
  saved=json.loads((p.artifacts_dir/'edit_plan.json').read_text())
  assert saved['segments'][0]['video_light']==spec and 'video_light' not in saved['segments'][1]
- doc=c.get('/api/v1/edit/shot?index=0').json
- body.update(revision=doc['revision'],light_scope='camera')
- r=c.patch('/api/v1/edit/shot',json=body);assert r.status_code==200,r.json
- assert c.get('/api/v1/edit/shot?index=1').json['light']==spec
+ # A camera-wide edit is explicitly rejected, with no partial write.
  doc=c.get('/api/v1/edit/shot?index=0').json
  before=(p.artifacts_dir/'edit_plan.json').read_bytes()
- body.update(revision=doc['revision'],video_light={'light':float('nan')})
+ body.update(revision=doc['revision'],light_scope='camera')
+ r=c.patch('/api/v1/edit/shot',json=body)
+ assert r.status_code==400 and 'shot only' in r.json['error']['message']
+ assert (p.artifacts_dir/'edit_plan.json').read_bytes()==before
+ assert c.get('/api/v1/edit/shot?index=1').json['light']!=spec
+ # Both shots can still carry different valid light recipes on one source.
+ other_spec={'auto':False,'light':-.1,'shadows':.02}
+ doc=c.get('/api/v1/edit/shot?index=1').json
+ body.update(index=1,revision=doc['revision'],video_light=other_spec)
+ body.pop('light_scope')
+ r=c.patch('/api/v1/edit/shot',json=body);assert r.status_code==200,r.json
+ saved=json.loads((p.artifacts_dir/'edit_plan.json').read_text())['segments']
+ assert [shot['video_light'] for shot in saved]==[spec,other_spec]
+ doc=c.get('/api/v1/edit/shot?index=0').json
+ before=(p.artifacts_dir/'edit_plan.json').read_bytes()
+ body.update(index=0,revision=doc['revision'],video_light={'light':float('nan')})
  assert c.patch('/api/v1/edit/shot',json=body).status_code==400
  assert (p.artifacts_dir/'edit_plan.json').read_bytes()==before
  frame=c.get('/api/v1/edit/shot/frame',query_string={'index':0,'revision':doc['revision'],'light':json.dumps(spec)})
@@ -85,7 +97,8 @@ def test_light_api_scopes_camera_vs_shot_and_validates_before_saving(tmp_path,mo
  assert recipe.status_code==200,recipe.json
  assert len(recipe.json['sources'])==1 and len(recipe.json['segments'])==2
  assert all('reel_framing' not in s for s in recipe.json['segments'])
- assert all(s['source']==0 and s['video_light']==spec for s in recipe.json['segments'])
+ assert [s['source'] for s in recipe.json['segments']]==[0,0]
+ assert [s['video_light'] for s in recipe.json['segments']]==[spec,other_spec]
  assert c.get('/api/v1/edit/native-recipe',query_string={'project_id':'wrong'}).status_code==409
  assert c.get('/api/v1/edit/native-source/0',query_string={'project_id':str(p.folder),'revision':'old'}).status_code==409
  assert c.get('/api/v1/edit/native-source/0',query_string={'project_id':str(p.folder),'revision':recipe.json['revision']}).status_code==200
@@ -183,12 +196,20 @@ def test_apply_whole_source_keeps_other_file_and_camera_unchanged(tmp_path,monke
  monkeypatch.setattr(cut,'load_coverage',lambda _: {'sources':[]})
  c=create_app(str(p.folder),dev=True).test_client();doc=c.get('/api/v1/edit/shot?index=0').json
  spec={'auto':False,'light':.1,'shadows':.05};framing={'zoom':1.5,'x':.7,'y':.4}
- response=c.patch('/api/v1/edit/shot',json={'project_id':str(p.folder),'revision':doc['revision'],'index':0,'choice':0,'flat_framing':framing,'video_light':spec,'apply_to_source':True})
+ body={'project_id':str(p.folder),'revision':doc['revision'],'index':0,'choice':0,
+       'flat_framing':framing,'video_light':spec,'apply_to_source':True}
+ before=(p.artifacts_dir/'edit_plan.json').read_bytes()
+ response=c.patch('/api/v1/edit/shot',json=body)
+ assert response.status_code==400 and 'one shot' in response.json['error']['message']
+ assert (p.artifacts_dir/'edit_plan.json').read_bytes()==before
+ # Saving a single shot must not alter the other file OR another use of this
+ # exact same source and camera later in the timeline.
+ body.pop('apply_to_source')
+ response=c.patch('/api/v1/edit/shot',json=body)
  assert response.status_code==200,response.json
  saved=json.loads((p.artifacts_dir/'edit_plan.json').read_text())['segments']
- assert saved[0]['flat_framing']==saved[2]['flat_framing']==framing
- assert saved[0]['video_light']==saved[2]['video_light']==spec
- assert saved[1]==segments[1]
+ assert saved[0]['flat_framing']==framing and saved[0]['video_light']==spec
+ assert saved[1]==segments[1] and saved[2]==segments[2]
  assert [s['master_start_sec'] for s in saved]==[s['master_start_sec'] for s in segments]
 
 
@@ -202,9 +223,17 @@ def test_apply_framing_preserves_independent_light_per_shot(tmp_path,monkeypatch
  monkeypatch.setattr(cut,'load_coverage',lambda _: {'sources':[]})
  c=create_app(str(p.folder),dev=True).test_client();doc=c.get('/api/v1/edit/shot?index=0').json
  frame={'zoom':1.5,'x':.7,'y':.4}
- response=c.patch('/api/v1/edit/shot',json={'project_id':str(p.folder),'revision':doc['revision'],'index':0,'choice':0,'edit_component':'framing','flat_framing':frame,'apply_to_source':True})
+ body={'project_id':str(p.folder),'revision':doc['revision'],'index':0,'choice':0,
+       'edit_component':'framing','flat_framing':frame,'apply_to_source':True}
+ before=(p.artifacts_dir/'edit_plan.json').read_bytes()
+ response=c.patch('/api/v1/edit/shot',json=body)
+ assert response.status_code==400 and 'one shot' in response.json['error']['message']
+ assert (p.artifacts_dir/'edit_plan.json').read_bytes()==before
+ body.pop('apply_to_source')
+ response=c.patch('/api/v1/edit/shot',json=body)
  assert response.status_code==200,response.json
  saved=json.loads((p.artifacts_dir/'edit_plan.json').read_text())['segments']
  assert [s['video_light'] for s in saved]==lights
- assert all(s['flat_framing']==frame for s in saved)
+ assert saved[0]['flat_framing']==frame and 'flat_framing' not in saved[1]
+ assert saved[1]['source_path']==saved[0]['source_path']
  assert [s['master_start_sec'] for s in saved]==[0,.3]

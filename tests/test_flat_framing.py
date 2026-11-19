@@ -17,8 +17,12 @@ def source(tmp_path):
  subprocess.run([f,'-v','error','-y','-f','lavfi','-i','color=red:s=160x180:r=30:d=1','-f','lavfi','-i','color=blue:s=160x180:r=30:d=1','-filter_complex','[0:v][1:v]hstack','-c:v','libx264','-threads','1',str(v)],check=True)
  return f,v
 
+def frame_pixels(f,v):
+ raw=subprocess.check_output([f,'-v','error','-i',str(v),'-frames:v','1','-vf','scale=160:90','-pix_fmt','rgb24','-f','rawvideo','-'])
+ return np.frombuffer(raw,np.uint8).reshape(90,160,3)
+
 def pixel_means(f,v):
- raw=subprocess.check_output([f,'-v','error','-i',str(v),'-frames:v','1','-vf','scale=160:90','-pix_fmt','rgb24','-f','rawvideo','-']);return np.frombuffer(raw,np.uint8).reshape(90,160,3).mean(axis=(0,1))
+ return frame_pixels(f,v).mean(axis=(0,1))
 
 def test_podcast_fixed_crop_changes_real_pixels(tmp_path):
  f,v=source(tmp_path);setup={'people':[{'name':'One'}],'cameras':[{'path':str(v),'kind':'flat','people':[0]}]};shot={'start':0,'end':1,'view':0,'flat_framing':{'zoom':2,'x':.75,'y':.5}}
@@ -32,12 +36,21 @@ def test_music_preview_and_export_use_same_crop(tmp_path,monkeypatch):
  monkeypatch.setenv('ZUCKER_DATA_ROOT',str(tmp_path/'data'));p=create_project('Flat',str(tmp_path/'Flat.zuckervid'));f,v=source(tmp_path)
  s={'clip_path':str(v),'source_path':str(v),'clip_start_sec':0,'duration_sec':1,'master_start_sec':0,'flat_framing':{'zoom':2,'x':.75,'y':.5},'motion':{'type':'ken_burns','zoom_start':1.2,'zoom_end':1.8}}
  motion=export._motion_filter(s,'youtube',1)
- assert '1.060000+(1.000000-1.060000)' in motion
+ assert '1.140000+(1.000000-1.140000)' in motion
  before=review_previews.preview_path(p,0,{**s,'flat_framing':{'zoom':1,'x':.5,'y':.5}});assert before!=review_previews.preview_path(p,0,s)
  assert _thumbnail_asset(tmp_path,0,s)[2]!=_thumbnail_asset(tmp_path,0,{**s,'flat_framing':{'zoom':1,'x':.5,'y':.5}})[2]
- preview=review_previews.render_preview(p,0,s);pixels=pixel_means(f,preview);assert pixels[2]>pixels[0]+180
+ preview=review_previews.render_preview(p,0,s)
+ preview_pixels=pixel_means(f,preview)
+ assert preview_pixels[2]>preview_pixels[0]+180
  graph=export._segment_filtergraph('youtube',1,{}, {},has_watermark=False,text_enabled=False,frame_count=30,segment=s,motion_filter=motion)
- out=tmp_path/'export.mp4';subprocess.run([f,'-v','error','-y','-i',str(v),'-filter_complex',graph,'-map','[v]','-frames:v','30','-c:v','libx264','-threads','1',str(out)],check=True);pixels=pixel_means(f,out);assert pixels[2]>pixels[0]+180
+ out=tmp_path/'export.mp4';subprocess.run([f,'-v','error','-y','-i',str(v),'-filter_complex',graph,'-map','[v]','-frames:v','30','-c:v','libx264','-threads','1',str(out)],check=True)
+ export_pixels=pixel_means(f,out)
+ assert export_pixels[2]>export_pixels[0]+180
+ # The same first-frame crop must land on the same actual pixels, not
+ # merely yield two blue-looking renders with different camera positions.
+ assert np.allclose(preview_pixels,export_pixels,atol=6)
+ delta=np.abs(frame_pixels(f,preview).astype(np.int16)-frame_pixels(f,out).astype(np.int16))
+ assert delta.mean()<8,delta.mean()
 
 def test_fixed_crop_api_is_scoped_saved_and_keeps_other_shots(tmp_path,monkeypatch):
  from core.stages import cut
@@ -77,8 +90,8 @@ def test_manual_crop_moves_out_but_general_moves_in():
  from core.stages.export import _motion_filter
  close=_motion_filter({'flat_framing':{'zoom':1.8,'x':.3,'y':.5}},'youtube',4)
  wide=_motion_filter({'flat_framing':{'zoom':1,'x':.5,'y':.5}},'youtube',4)
- assert '1.060000+(1.000000-1.060000)' in close
- assert '1.000000+(1.060000-1.000000)' in wide
+ assert '1.140000+(1.000000-1.140000)' in close
+ assert '1.000000+(1.140000-1.000000)' in wide
  assert 'zoompan=' in close and 'zoompan=' in wide
 
 
