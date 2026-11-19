@@ -57,8 +57,15 @@ def test_detector_cache_does_not_decode_again_and_cancel_propagates(tmp_path,mon
     calls=[]
     def run(*args):calls.append(1);return people()
     monkeypatch.setattr(m,'_detect',run)
+    # A detector cache from the old headroom contract must not preserve the
+    # previously clipped crop after a version bump.
+    current_version=m.VERSION
+    monkeypatch.setattr(m,'VERSION',current_version-1)
     assert detect(p,{'path':str(source)},{})==people()
     assert detect(p,{'path':str(source)},{})==people() and len(calls)==1
+    monkeypatch.setattr(m,'VERSION',current_version)
+    assert detect(p,{'path':str(source)},{})==people() and len(calls)==2
+    assert detect(p,{'path':str(source)},{})==people() and len(calls)==2
     def cancel(*args):args[-1](0)
     monkeypatch.setattr(m,'_detect',cancel)
     def checkpoint(_):raise RuntimeError('cancelled')
@@ -156,7 +163,7 @@ def test_head_safe_crop_isolates_one_person_including_motion_and_image_edges():
     for person in band:
         crop=subject_crop(person,band)
         assert crop['zoom']>1.8
-        for motion in (1.,1.06):
+        for motion in (1.,1.14):
             left,top,right,bottom=crop_edges(crop,motion)
             hx1,hy1,hx2,hy2=person['head_box']
             assert left<=hx1 and right>=hx2 and top<hy1 and bottom>hy2
@@ -171,7 +178,7 @@ def test_inseparable_players_keep_whole_head_instead_of_forcing_isolation():
     from core.stage_performers import subject_crop
     person={'id':'one','body_box':[.35,.2,.6,.9],'head_box':[.43,.2,.55,.41]}
     neighbor={'id':'two','body_box':[.46,.2,.76,.9],'head_box':[.50,.2,.64,.40]}
-    c=subject_crop(person,[person,neighbor]);l,t,r,b=crop_edges(c,1.06)
+    c=subject_crop(person,[person,neighbor]);l,t,r,b=crop_edges(c,1.14)
     assert l<=.43 and r>=.55 and t<.2 and b>.41
 
 
@@ -179,7 +186,7 @@ def test_detection_box_union_and_head_location_replace_body_midpoint():
     from core.stage_performers import _people
     cluster={'x':.5,'y':.65,'samples':[{'x':.5,'y':.65,'body':[.43,.25,.57,.95],
               'head':[.47,.25+delta,.53,.34+delta]} for delta in (0,.01,.02)]}
-    p=_people([cluster])[0];l,t,r,b=crop_edges(p,1.06)
+    p=_people([cluster])[0];l,t,r,b=crop_edges(p,1.14)
     assert p['zoom']>3 and t<.25 and b>.36
     assert p['y']<.65  # no more anchoring a close-up on the torso
 
