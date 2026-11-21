@@ -41,7 +41,9 @@ SANE_VIDEO_CODECS = {
     "vp8",
     "mpeg2video",
 }
-MIN_VIDEO_DURATION_SEC = 2.0
+# Short 1–2 s clips are valid insert material even when too brief for
+# reliable concert-audio synchronization. The UI assigns them as fillers.
+MIN_VIDEO_DURATION_SEC = 1.0
 MIN_VIDEO_WIDTH = 320
 MIN_VIDEO_HEIGHT = 240
 
