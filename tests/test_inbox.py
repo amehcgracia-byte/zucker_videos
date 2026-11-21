@@ -181,6 +181,26 @@ def test_classifier_rejects_non_camera_video_files(tmp_path, monkeypatch):
     assert ignored["audio-only.mov"] == "not a camera video"
 
 
+def test_short_camera_clip_is_not_discarded_as_useless(tmp_path, monkeypatch):
+    """A real 1.92 second proxy must remain usable as an optional insert."""
+    short = tmp_path / "C0022.small.mp4"
+    short.write_bytes(b"short camera proxy; ffprobe mocked")
+    monkeypatch.setattr("server.inbox.ffprobe", lambda _: valid_video_probe("1.92"))
+    result = classify_paths([str(short)])
+    assert [item["filename"] for item in result["videos"]] == [short.name]
+    assert result["ignored"] == []
+    assert result["videos"][0]["probe"]["duration"] == 1.92
+
+
+def test_too_short_video_still_rejected(tmp_path, monkeypatch):
+    short = tmp_path / "invalid.mov"
+    short.write_bytes(b"short camera proxy; ffprobe mocked")
+    monkeypatch.setattr("server.inbox.ffprobe", lambda _: valid_video_probe("0.4"))
+    result = classify_paths([str(short)])
+    assert result["videos"] == []
+    assert result["ignored"][0]["note"] == "video too short"
+
+
 def test_classifier_accepts_hevc_mts_and_marks_equirect(tmp_path, monkeypatch):
     mts = tmp_path / "sony.mts"
     sphere = tmp_path / "insta360-export.mp4"
