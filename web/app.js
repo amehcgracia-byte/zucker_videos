@@ -1972,6 +1972,11 @@ function renderProjects(projects) {
           </div>
           ${project.has_export ? `<small>${escapeHtml(S.hasExport || "export")}</small>` : ""}
           <button data-open-project="${escapeHtml(project.path)}">${escapeHtml(S.openProject || "Open")}</button>
+          ${/^[a-f0-9]{64}$/.test(project.project_revision || '') ?           "<button type='button' data-rename-project='" + escapeHtml(project.path) +
+          "' data-name='" + escapeHtml(project.name) + "' data-project-revision='" + project.project_revision +
+          "'>Rename</button><button type='button' data-duplicate-project='" + escapeHtml(project.path) +
+          "' data-name='" + escapeHtml(project.name) + "' data-project-revision='" + project.project_revision +
+          "'>Duplicate as new</button>" : ''}
           <button class="danger" data-delete-project="${escapeHtml(project.path)}" data-has-export="${project.has_export ? "1" : ""}" data-name="${escapeHtml(
         project.name
       )}" data-icon="trash">${escapeHtml(S.deleteProject || "Delete")}</button>
@@ -1979,6 +1984,36 @@ function renderProjects(projects) {
     )
     .join("");
   injectIcons();
+}
+
+// Only shown when the Engine has exposed a guarded SHA256 revision.
+async function renameSavedProject(path, name, projectRevision) {
+  const next = window.prompt('Rename saved project', name);
+  if (next === null) return;
+  if (!next.trim() || next.trim().length > 120)
+    throw new Error('Project title must contain 1-120 characters.');
+  const result = await api('/wizard/projects/rename', {
+    method:'POST', body:JSON.stringify({
+      path, name:next.trim(), project_revision:projectRevision
+    })
+  });
+  if (activeProjectId === path) await openProject(result.path);
+  await loadProjects();
+  showToast('Project renamed.');
+}
+async function duplicateSavedProject(path, name, projectRevision) {
+  const next = window.prompt('Name for an independent project copy', name+' - copy');
+  if (next === null) return;
+  if (!next.trim() || next.trim().length > 120)
+    throw new Error('Project title must contain 1-120 characters.');
+  const result = await api('/wizard/projects/duplicate', {
+    method:'POST', body:JSON.stringify({
+      path, name:next.trim(), project_revision:projectRevision
+    })
+  });
+  await loadProjects();
+  await openProject(result.path);
+  showToast('Independent project copy opened.');
 }
 
 function formatProjectDate(value) {
@@ -4133,6 +4168,18 @@ document.addEventListener("click", (event) => {
   const openButton = target.closest?.("[data-open-project]");
   if (openButton instanceof HTMLElement) {
     openProject(openButton.dataset.openProject).catch((error) => showToast(error.message, true));
+  }
+  const renameButton = target.closest?.("[data-rename-project]");
+  if (renameButton instanceof HTMLElement) {
+    renameSavedProject(renameButton.dataset.renameProject,
+      renameButton.dataset.name,renameButton.dataset.projectRevision)
+      .catch(error => showToast(error.message,true));
+  }
+  const duplicateButton = target.closest?.("[data-duplicate-project]");
+  if (duplicateButton instanceof HTMLElement) {
+    duplicateSavedProject(duplicateButton.dataset.duplicateProject,
+      duplicateButton.dataset.name,duplicateButton.dataset.projectRevision)
+      .catch(error => showToast(error.message,true));
   }
   const deleteButton = target.closest?.("[data-delete-project]");
   if (deleteButton instanceof HTMLElement) {
