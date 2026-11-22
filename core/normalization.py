@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import logging
@@ -148,30 +149,43 @@ def normalize_video_record(project: Project, record: dict[str, Any], progress: P
     filtergraph = normalization_filter(probe, fps=fps, proxy=True)
     if probe.get("projection") == "equirect":
         LOGGER.info("Normalizing equirectangular source %s with probe=%s filter=%s", source, probe, filtergraph)
-    try:
-        LOGGER.info(
-            "Proxy ffmpeg start source=%s destination=%s duration=%.3f fps=%.3f codec=h264_videotoolbox",
-            source, tmp_path, duration, fps,
-        )
+    # VideoToolbox exists only on macOS. Linux (the JM/MAIN VM) previously
+    # spawned a doomed FFmpeg VideoToolbox process for *every uncached proxy*,
+    # then retried with libx264. Avoid that entirely without changing codecs,
+    # bitrate, filters, cache keys, or the macOS hardware-first fallback.
+    # Hardware paths on other operating systems require an explicit, measured
+    # backend; do not auto-select NVENC based on encoder list alone.
+    started = time.perf_counter()
+    # Optional controlled CPU A/B. Default remains FFmpeg's original medium
+    # preset; changing the preset is an explicit canary decision, never an
+    # automatic global quality downgrade. Values are strictly allowlisted.
+    requested_preset = os.environ.get("MONTARA_INGEST_PROXY_PRESET", "medium").strip().lower()
+    software_preset = requested_preset if requested_preset in {"medium", "fast", "veryfast"} else "medium"
+    can_use_videotoolbox = sys.platform == "darwin"
+    if can_use_videotoolbox:
+        try:
+            LOGGER.info("Proxy encode VideoToolbox start source=%s", source)
+            _run_ffmpeg_progress(
+                _normalization_command(source, tmp_path, fps, filtergraph, "h264_videotoolbox", hwaccel=True, paired_source=_paired_source(record)),
+                duration, source.name, progress)
+            encode_path = "hardware"
+        except FFmpegError as exc:
+            LOGGER.warning("Proxy VideoToolbox unavailable, retrying with libx264: source=%s error=%s", source, exc)
+            if tmp_path.exists():
+                tmp_path.unlink()
+            LOGGER.info("Proxy libx264 fallback start source=%s", source)
+            _run_ffmpeg_progress(
+                _normalization_command(source, tmp_path, fps, filtergraph, "libx264", paired_source=_paired_source(record), software_preset=software_preset),
+                duration, source.name, progress)
+            encode_path = "software"
+    else:
+        LOGGER.info("Proxy libx264 direct start source=%s platform=%s", source, sys.platform)
         _run_ffmpeg_progress(
-            _normalization_command(source, tmp_path, fps, filtergraph, "h264_videotoolbox", hwaccel=True, paired_source=_paired_source(record)),
-            duration,
-            source.name,
-            progress,
-        )
-        encode_path = "hardware"
-        LOGGER.info("Proxy generated with hardware decode/encode for %s", source)
-    except FFmpegError as exc:
-        LOGGER.warning("Proxy hardware encode failed source=%s error=%s; retrying software", source, exc)
-        if tmp_path.exists():
-            tmp_path.unlink()
-        LOGGER.info(
-            "Proxy ffmpeg start source=%s destination=%s duration=%.3f fps=%.3f codec=libx264",
-            source, tmp_path, duration, fps,
-        )
-        _run_ffmpeg_progress(_normalization_command(source, tmp_path, fps, filtergraph, "libx264", paired_source=_paired_source(record)), duration, source.name, progress)
+            _normalization_command(source, tmp_path, fps, filtergraph, "libx264", paired_source=_paired_source(record), software_preset=software_preset),
+            duration, source.name, progress)
         encode_path = "software"
-        LOGGER.info("Proxy generated with software fallback for %s", source)
+    LOGGER.info("Proxy FFmpeg conversion finished source=%s encode_path=%s preset=%s elapsed_sec=%.3f",
+                source, encode_path, software_preset if encode_path == "software" else "videotoolbox", time.perf_counter() - started)
     os.replace(tmp_path, destination)
     normalized = {
         "path": str(destination),
@@ -560,6 +574,7 @@ def _normalization_command(
     codec: str = "h264_videotoolbox",
     hwaccel: bool = False,
     paired_source: Path | None = None,
+    software_preset: str = "medium",
 ) -> list[str]:
     status = tool_status()
     ffmpeg = status.get("ffmpeg_path")
@@ -601,6 +616,8 @@ def _normalization_command(
                 filtergraph,
             ]
         )
+    if codec == "libx264" and software_preset in {"fast", "veryfast"}:
+        command.extend(["-preset", software_preset])
     command.extend([
         "-r",
         f"{fps:.3f}",

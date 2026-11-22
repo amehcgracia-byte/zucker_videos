@@ -55,6 +55,8 @@ class IngestStage(Stage):
             raise ValueError("At least one video must be registered before ingest")
 
         total = len(videos)
+        ingest_started = time.perf_counter()
+        probe_started = time.perf_counter()
         platform = str(project.data.get("settings", {}).get("wizard", {}).get("platform") or "")
         passthrough_360 = platform == "360"
         backstage = platform == "backstage"
@@ -101,6 +103,7 @@ class IngestStage(Stage):
                 progress_callback(int(index / total * 90), t("ignoring_file", filename=Path(path).name, reason=validation.reason))
                 continue
             valid_records.append(record)
+        LOGGER.info("Ingest phase=probe completed elapsed_sec=%.3f videos=%d valid=%d", time.perf_counter()-probe_started, total, len(valid_records))
         if sum(int(record.get("size") or 0) for record in valid_records) > 500 * 1024 * 1024 or len(valid_records) > 3:
             progress_callback(25, t("long_videos_note"))
         if backstage:
@@ -128,6 +131,8 @@ class IngestStage(Stage):
             prepare_videos(project, valid_records, progress_callback,
                 analyze_ready=platform in {"reel", "youtube", "instagram", "tiktok"}
                     and not (platform == "reel" and len(valid_records) == 1))
+        LOGGER.info("Ingest stage completed elapsed_sec=%.3f platform=%s total_videos=%d",
+                    time.perf_counter()-ingest_started, platform, total)
         progress_callback(100, "Ingest complete")
         return {}
 
@@ -158,6 +163,7 @@ def prepare_videos(project: Project, records: list[dict[str, Any]], progress_cal
             task_id=f"{phase}-{index}", label=f"{phase.capitalize()}: {labels[index]}", percent=local_percent))
 
     def run_one(index: int, record: dict[str, Any]) -> None:
+        started = time.perf_counter()
         LOGGER.info("Ingest normalization queued index=%d source=%s", index, record.get("path"))
         def clip_progress(percent: int, message: str) -> None:
             set_progress(index, percent * proxy_share / 100)
@@ -166,7 +172,9 @@ def prepare_videos(project: Project, records: list[dict[str, Any]], progress_cal
             normalize_video_record(project, record, clip_progress)
             set_progress(index, proxy_share)
             emit(index, 100)
-            LOGGER.info("Ingest normalization finished index=%d source=%s", index, record.get("path"))
+            LOGGER.info("Ingest normalization finished index=%d elapsed_sec=%.3f proxy_skipped=%s encode_path=%s",
+                        index, time.perf_counter()-started, bool((record.get("normalized") or {}).get("proxy_skipped")),
+                        (record.get("normalized") or {}).get("encode_path", "cache_or_original"))
         except Exception:
             LOGGER.exception("Ingest normalization failed index=%d source=%s", index, record.get("path"))
             raise
