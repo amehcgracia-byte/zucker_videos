@@ -10,6 +10,8 @@ background. Prefetch stops as soon as the final render starts.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+import time
 import hashlib
 import json
 import logging
@@ -307,6 +309,11 @@ class _Prefetcher:
             ordered.remove(priority)
             groups.append({priority})
         groups.extend(set(ordered[first:first + 3]) for first in range(0, len(ordered), 3))
+        # An authored 305-shot concert must not launch 305 MP4 encodes merely
+        # because the Frames screen opened. Background photos are still
+        # prepared, but full motion clips are produced on intentional hover
+        # by HOVER_PREVIEWS. Explicit priority/shot requests remain eligible.
+        eager_video = len(segments) <= 100 or indices is not None
         for indices in groups:
             if stop.is_set():
                 return
@@ -317,6 +324,8 @@ class _Prefetcher:
             for index in sorted(indices):
                 if stop.is_set():
                     return
+                if not eager_video:
+                    continue
                 try:
                     render_preview(project, index, segments[index])
                 except Exception as exc:
@@ -325,3 +334,57 @@ class _Prefetcher:
 
 
 PREFETCH = _Prefetcher()
+
+
+class HoverPreviewQueue:
+    """Single-flight, bounded background producer for interactive previews.
+
+    Request threads never perform FFmpeg work. Identity is the existing
+    shot-local preview path (source/pose/audio/version hash), not just the
+    numeric index; old jobs cannot publish onto a changed shot.
+    """
+
+    def __init__(self, max_waiting: int = 3) -> None:
+        self._guard = threading.Lock()
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hover-preview")
+        self._tasks: dict[str, tuple[Any, float]] = {}
+        self._max_waiting = max_waiting
+
+    def request(self, project: Project, index: int, segment: dict[str, Any],
+                output: Path) -> str:
+        if output.is_file() and output.stat().st_size > 0:
+            return "ready"
+        key = str(output)
+        now = time.monotonic()
+        with self._guard:
+            # Preserve failures briefly to avoid an infinite FFmpeg retry
+            # loop on broken media; finished tasks no longer consume capacity.
+            for path, (future, since) in list(self._tasks.items()):
+                if future.done() and now - since > 45:
+                    del self._tasks[path]
+            existing = self._tasks.get(key)
+            if existing is not None:
+                future, _ = existing
+                if future.cancelled():
+                    return "unavailable"
+                if future.done():
+                    if output.is_file() and output.stat().st_size > 0:
+                        return "ready"
+                    return "unavailable"
+                return "preparing"
+            waiting = sum(not future.done() for future, _ in self._tasks.values())
+            if waiting >= self._max_waiting:
+                return "busy"
+            future = self._pool.submit(render_preview, project, index, segment)
+            self._tasks[key] = (future, now)
+            return "preparing"
+
+    def stop(self) -> None:
+        """Cancel waiting jobs before final render; never delete media."""
+        with self._guard:
+            for future, _ in self._tasks.values():
+                future.cancel()
+            self._tasks.clear()
+
+
+HOVER_PREVIEWS = HoverPreviewQueue()

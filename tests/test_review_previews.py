@@ -109,6 +109,8 @@ def test_proxy_target_matches_the_export_proxy(project, tmp_path, monkeypatch):
 def test_preview_endpoint_never_competes_with_the_render(project, tmp_path, monkeypatch):
     from server import api as api_module
     plan_segment = {"source_path": str(tmp_path / "missing.mp4"), "clip_start_sec": 0.0, "duration_sec": 1.0}
+    (project.artifacts_dir / "edit_plan.json").write_text(
+        json.dumps({"segments":[plan_segment]}), encoding="utf-8")
     monkeypatch.setattr("core.shot_review._review_segments", lambda project: [plan_segment])
     client = api_module.create_app(project_path=str(project.folder)).test_client()
     assert client.get("/api/v1/wizard/review/preview/0").status_code == 409
