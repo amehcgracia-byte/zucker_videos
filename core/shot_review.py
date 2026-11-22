@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import OrderedDict
+import copy
+import time
 from functools import lru_cache
 import hashlib
 import json
@@ -132,6 +135,28 @@ def _review_segments(project: Project) -> list[dict[str, Any]]:
             segment['video_light'] = spec
     return result
 
+
+
+def review_segment_for_index(project: Project, index: int) -> dict[str, Any]:
+    """Resolve a single Stage shot without inspecting/rebuilding 305 others.
+
+    Stage preserves its authored continuity. For Reel and other modes use the
+    full existing algorithm, whose cross-shot continuity is intentional.
+    """
+    plan = _plan(project)
+    segments = plan.get("segments") or []
+    if index < 0 or index >= len(segments):
+        raise IndexError(index)
+    platform = plan.get("platform") or (
+        project.data.get("settings", {}).get("wizard", {}).get("platform"))
+    if platform != "youtube":
+        return _review_segments(project)[index]
+    segment = _review_segment(project, segments[index])
+    from core.video_light import settings
+    profile = settings(project, segment)
+    if profile is not None:
+        segment["video_light"] = profile
+    return segment
 
 
 def _spherical_analysis_source(project: Project, segment: dict[str, Any], progress_callback: ProgressCallback | None = None) -> str:
@@ -910,8 +935,11 @@ def review_items(
     render_indices: set[int] | None = None,
     apply_color_profile: bool = False,
     progress_callback: ProgressCallback | None = None,
+    status_indices: set[int] | None = None,
 ) -> list[dict[str, Any]]:
-    """Return review items, optionally rendering only selected missing thumbnails."""
+    """Return review items, optionally limiting status to selected shot indices."""
+    if status_indices is not None and render_missing:
+        raise ValueError("Partial status cannot generate frames")
     from core.camera_types import kind as camera_kind
     segments = _review_segments(project)
     signature = "assets-v2"
@@ -944,6 +972,8 @@ def review_items(
             color_profiles = (stable_stage_review_profiles(project) if platform == 'youtube' else cached_review_profiles(project))
     pending = []
     for index, segment in enumerate(segments):
+        if status_indices is not None and index not in status_indices:
+            continue
         source, timestamp, output = _thumbnail_asset(root, index, segment, color_profiles.get(str(segment.get("clip_path")), {}))
         duration = max(0.1, float(segment.get("duration_sec") or 0.1))
         if not output.exists():
@@ -1041,6 +1071,62 @@ def review_items(
     if progress_callback:
         progress_callback(100, f"Review thumbnails ready: {len(items)}/{len(segments)}")
     return items
+
+
+# Snapshot cache for status-only review polling. The identity includes every
+# persisted input that changes individual shot identities/status. Directory
+# mtimes change on atomic thumbnail/preview publication. No project data or
+# private path appears in the browser cache key or response headers.
+_REVIEW_STATUS_LOCK = threading.RLock()
+_REVIEW_STATUS_CACHE: OrderedDict[str, tuple[tuple, list[dict[str, Any]]]] = OrderedDict()
+
+
+def _review_status_identity(project: Project) -> tuple:
+    root = project.cache_dir
+    files = (
+        project.json_path,
+        project.artifacts_dir / "edit_plan.json",
+        project.artifacts_dir / "coverage.json",
+        root / "color_profiles.json",
+        root / "shot_review" / "assets-v2" / "render_status.json",
+    )
+    dirs = (
+        root / "review_candidates",
+        root / "shot_review" / "assets-v2",
+        root / "shot_review" / "previews-v1",
+    )
+    def stat_key(path: Path):
+        try:
+            st = path.stat()
+            return st.st_mtime_ns, st.st_size
+        except OSError:
+            return None
+    return tuple(stat_key(path) for path in (*files, *dirs))
+
+
+def cached_review_status(project: Project) -> list[dict[str, Any]]:
+    """Reuse unchanged 305-shot metadata; refresh on edit or media publication.
+
+    This is an optimization ONLY for render=0/whole-project status. A save or
+    swap changes edit_plan mtime. A thumbnail, video preview or render status
+    changes the media/status directory/file identity. Never use for a writer.
+    """
+    key = str(project.folder)
+    identity = _review_status_identity(project)
+    with _REVIEW_STATUS_LOCK:
+        cached = _REVIEW_STATUS_CACHE.get(key)
+        if cached is not None and cached[0] == identity:
+            _REVIEW_STATUS_CACHE.move_to_end(key)
+            return copy.deepcopy(cached[1])
+        items = review_items(project, render_missing=False)
+        # Candidate-summary creation on a cold request may change the folder
+        # mtime; remember the identity AFTER the actual computation.
+        _REVIEW_STATUS_CACHE[key] = (_review_status_identity(project),
+                                     copy.deepcopy(items))
+        _REVIEW_STATUS_CACHE.move_to_end(key)
+        while len(_REVIEW_STATUS_CACHE) > 4:
+            _REVIEW_STATUS_CACHE.popitem(last=False)
+        return items
 
 
 def render_review_thumbnails(project: Project, indices: set[int], max_workers: int = 2, *, batch_only: bool = False) -> None:

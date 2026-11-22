@@ -1819,7 +1819,18 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             # When a user edits ONE shot, do not ask the server to rebuild
             # missing previews for the rest of an already authored edit.
             target_shot = request.args.get("shot", type=int)
-            items = review_items(project, render_missing=False)
+            if target_shot is not None:
+                # Shot-local refresh after Save/Swap: do not read 304 other
+                # thumbnail/preview identities or rewrite all 305 cards.
+                items = review_items(project, render_missing=False,
+                                     status_indices={target_shot})
+                if not items:
+                    return error_response("not_found", "No such review shot", 404)
+            elif not render_missing:
+                from core.shot_review import cached_review_status
+                items = cached_review_status(project)
+            else:
+                items = review_items(project, render_missing=False)
             if render_missing:
                 pending = {
                     int(item["index"])
@@ -1842,6 +1853,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             return jsonify({
                 "items": items,
                 "platform": project.data.get("settings", {}).get("wizard", {}).get("platform"),
+                "partial": target_shot is not None,
             })
         except Exception as exc:
             LOGGER.exception("Review items failed for %s", project.folder)
@@ -2006,6 +2018,7 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                 set_review_transition_types(state.project, body.get("transitions"))
             # Hover previews are a convenience; the final render gets the CPU.
             review_previews.PREFETCH.stop()
+            review_previews.HOVER_PREVIEWS.stop()
             job = state.wizard.render_review(state.project)
             return jsonify(serialize_wizard_job(job)), 202
         except (RuntimeError, ValueError) as exc:
@@ -2016,19 +2029,27 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         project = state.project or _active_wizard_project(state)
         if not project:
             return error_response("not_ready", "No project is active", 404)
-        from core.shot_review import _review_segments
-        segments = _review_segments(project)
-        if index < 0 or index >= len(segments):
+        from core.shot_review import review_segment_for_index
+        try:
+            segment = review_segment_for_index(project, index)
+        except IndexError:
             return error_response("not_found", "No such review shot", 404)
-        path = review_previews.preview_path(project, index, segments[index])
-        if not path.is_file():
+        path = review_previews.preview_path(project, index, segment)
+        if not path.is_file() or path.stat().st_size == 0:
             if not can_prepare_review(project):
                 return error_response("wizard_busy", "Previews are made while reviewing shots", 409)
-            try:
-                path = review_previews.render_preview(project, index, segments[index])
-            except Exception as exc:
-                LOGGER.warning("Review preview %s failed: %s", index, exc)
+            status = review_previews.HOVER_PREVIEWS.request(project, index, segment, path)
+            if status == "unavailable":
                 return error_response("preview_failed", "This shot preview could not be made", 500)
+            if status != "ready":
+                # A heavy 360 render must NEVER hold a private RPC socket open.
+                # Existing browser/media callers poll this same allowlisted
+                # URL until it serves the completed MP4 with Range support.
+                response = jsonify(status=status, retry_after_ms=1000)
+                response.status_code = 202
+                response.headers["Retry-After"] = "1"
+                response.headers["Cache-Control"] = "no-store"
+                return response
         return send_file_with_range(str(path))
 
     @app.get("/api/v1/wizard/review/thumbnail/<signature>/<path:filename>")

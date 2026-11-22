@@ -3308,8 +3308,28 @@ function startReviewPreview(button) {
   video.addEventListener("error", () => { if (reviewPreview?.video === video) stopReviewPreview(); });
   button.classList.add("previewing", "preview-loading");
   button.append(video);
-  video.src = button.dataset.preview;
   reviewPreview = { button, video };
+  // A cold preview returns 202 while the dedicated Engine worker renders
+  // it. Do not attach a JSON 202 response to the HTML video element.
+  const uri=button.dataset.preview;
+  (async()=>{
+    for(let attempt=0;attempt<150;attempt++){
+      if(reviewPreview?.video!==video)return;
+      let response;
+      try{response=await fetch(uri,{cache:"no-store"});}
+      catch{if(reviewPreview?.video===video)stopReviewPreview();return;}
+      if(response.status===202){
+        await response.body?.cancel();
+        await new Promise(resolve=>setTimeout(resolve,1000));
+        continue;
+      }
+      if(!response.ok){if(reviewPreview?.video===video)stopReviewPreview();return;}
+      await response.body?.cancel();
+      if(reviewPreview?.video===video)video.src=uri;
+      return;
+    }
+    if(reviewPreview?.video===video)stopReviewPreview();
+  })();
 }
 
 document.addEventListener("mouseover", (event) => {

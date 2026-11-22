@@ -3446,6 +3446,7 @@ def _reel_letterbox_filter(project: Project, segment: dict[str, Any], platform: 
 
 
 def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> str | None:
+    from core.flat_framing import FIXED_CROP_MOTION_ZOOM
     if segment.get('motion_enabled') is False:
         return None
     # Explicitly enabling Movimiento must work even when a fixed camera has
@@ -3456,7 +3457,7 @@ def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> s
         if platform not in {"youtube", "reel", "reel_horizontal"}:
             return None
         return _ken_burns_filter({"type":"ken_burns", "movement":"zoom_in_center",
-            "zoom_start":1.0, "zoom_end":1.14,
+            "zoom_start":1.0, "zoom_end":FIXED_CROP_MOTION_ZOOM,
             "pan_x_start":.5, "pan_x_end":.5, "pan_y_start":.5, "pan_y_end":.5,
             "enforce_top_edge":False, "speed_factor":1., "library_version":1},platform,duration)
     if segment.get("flat_framing"):
@@ -3464,8 +3465,10 @@ def _motion_filter(segment: dict[str, Any], platform: str, duration: float) -> s
         close=float(segment['flat_framing'].get('zoom',1))>1.001
         # One clearly visible but restrained 14% move inside the selected crop;
         # no second random pan, so camera framing remains stable.
+        # Keep this zoom synchronized with stage_performers.subject_crop.
         return _ken_burns_filter({"type":"ken_burns","movement":"zoom_out_center" if close else "zoom_in_center",
-            "zoom_start":1.14 if close else 1.,"zoom_end":1. if close else 1.14,
+            "zoom_start":FIXED_CROP_MOTION_ZOOM if close else 1.,
+            "zoom_end":1. if close else FIXED_CROP_MOTION_ZOOM,
             "pan_x_start":.5,"pan_x_end":.5,"pan_y_start":.5,"pan_y_end":.5,
             "enforce_top_edge":False,"speed_factor":1.,"library_version":1,
             **{k:v for k,v in (segment.get("motion") or {}).items() if k.startswith("continuity_")}},platform,duration).replace("scale=3840:2160:flags=lanczos,", "")
