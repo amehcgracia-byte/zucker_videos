@@ -1173,6 +1173,9 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
         if reconciled or migrated:
             LOGGER.info("Reconciled registered inputs for %s", state.project.folder)
     app.config["ZUCKER_STATE"] = state
+    # #380: OFF until every writer route (including background jobs) is
+    # instrumented. Candidate endpoints are independently testable while off.
+    app.config["CANONICAL_380_STRICT"] = False
 
     if dev:
         _enable_cors(app)
@@ -1180,6 +1183,23 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.before_request
     def start_request_timing() -> None:
         g.request_started = time.perf_counter()
+
+    @app.before_request
+    def prevent_unreviewed_project_writes_380():
+        if not app.config.get("CANONICAL_380_STRICT"):
+            return None
+        # No bypass through a legacy POST/PATCH handler while the private
+        # worker has a known enrolled strict revision generation.
+        if request.method in {"POST","PUT","PATCH","DELETE"} and request.path not in {
+            "/api/v1/wizard/draft",
+            "/api/v1/wizard/projects/open",
+            "/api/v1/wizard/projects/rename",
+            "/api/v1/wizard/projects/duplicate",
+            "/api/v1/wizard/projects/new",
+        }:
+            return error_response("canonical_write_not_reviewed",
+                                  "This route has not been approved for canonical writes",423)
+        return None
 
     from server.updates import register_update_routes
     register_update_routes(app, state)
@@ -1230,8 +1250,10 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.get("/api/v1/project")
     def api_get_project() -> Response:
         project = _require_project(state)
-        if project.refresh_input_records():
-            project.save()
+        # No hidden GET-triggered write may evade guarded CAS in strict mode.
+        if not app.config.get("CANONICAL_380_STRICT"):
+            if project.refresh_input_records():
+                project.save()
         return jsonify(project.snapshot())
 
     @app.post("/api/v1/project/open")
@@ -2099,6 +2121,46 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
     @app.post("/api/v1/wizard/draft")
     def api_wizard_draft() -> Response:
         body = _json_body()
+        if app.config.get("CANONICAL_380_STRICT"):
+            from server.project_guard_380 import (
+                project_root_guard, verified_project_folder,
+                require_expected_revision, ensure_title_available,
+                project_revision, ProjectConflict380,
+            )
+            from server.projects import projects_root
+            root=projects_root()
+            try:
+                with project_root_guard(root):
+                    selected=body.get("project_id")
+                    if selected:
+                        project_path=verified_project_folder(root,selected)
+                        if (state.project is None or
+                                not same_project_path(selected,str(state.project.folder))):
+                            return error_response(
+                                "project_mismatch","Open this project first",409)
+                        require_expected_revision(
+                            project_path,body.get("expected_revision"))
+                        # Reload under exclusive lock; never apply stale cached
+                        # native state from an earlier request.
+                        state.project=load_project(str(project_path))
+                    else:
+                        if body.get("expected_revision") is not None:
+                            raise ProjectConflict380("New project cannot reuse a revision")
+                        ensure_title_available(root,str(body.get("name") or "Jam"))
+                    response=_api_wizard_draft_body(body,canonical_new=True)
+                    if isinstance(response,tuple):
+                        return response
+                    if response.status_code==200 and state.project is not None:
+                        result=response.get_json()
+                        result["project_revision"]=project_revision(
+                            state.project.folder)
+                        return jsonify(result)
+                    return response
+            except (ProjectConflict380,ProjectError,ValueError,OSError) as exc:
+                return error_response("stale_project",str(exc),409)
+        return _api_wizard_draft_body(body)
+
+    def _api_wizard_draft_body(body, *, canonical_new=False):
         videos = body.get("videos") or []
         audio_paths = body.get("audio_paths")
         if audio_paths is not None and (not isinstance(audio_paths, list) or not all(isinstance(path, str) and Path(path).is_file() for path in audio_paths)):
@@ -2114,7 +2176,13 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
                     return error_response("project_mismatch", "The selected project is no longer open", 409)
                 project = state.project
             else:
-                project = _create_wizard_project(str(body.get("name") or "Jam"))
+                if canonical_new:
+                    from server.project_guard_380 import create_unique_project
+                    from server.projects import projects_root
+                    project = create_unique_project(projects_root(),
+                                                    str(body.get("name") or "Jam"))
+                else:
+                    project = _create_wizard_project(str(body.get("name") or "Jam"))
                 state.project = project
                 # Register immediately, even if a media probe later fails: the
                 # draft remains recoverable and appears in the project list.
@@ -2221,11 +2289,44 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
 
     @app.get("/api/v1/wizard/projects")
     def api_wizard_projects() -> Response:
-        return jsonify({"projects": list_projects()})
+        projects=list_projects()
+        if app.config.get("CANONICAL_380_STRICT"):
+            from server.project_guard_380 import (
+                project_revision, verified_project_folder)
+            from server.projects import projects_root
+            root=projects_root()
+            for project in projects:
+                try:
+                    project["project_revision"]=project_revision(
+                        verified_project_folder(root,project["path"]))
+                except (ProjectError,OSError):
+                    project["project_revision"]=None
+        return jsonify({"projects":projects})
 
     @app.post("/api/v1/wizard/projects/open")
     def api_wizard_project_open() -> Response:
         body = _json_body()
+        if app.config.get("CANONICAL_380_STRICT"):
+            from server.project_guard_380 import (
+                project_root_guard,verified_project_folder,project_revision)
+            from server.projects import projects_root
+            root=projects_root()
+            try:
+                with project_root_guard(root):
+                    folder=verified_project_folder(root,body.get("path"))
+                    response=_api_wizard_project_open_body({"path":str(folder)})
+                    if isinstance(response,tuple):
+                        return response
+                    if response.status_code==200:
+                        data=response.get_json()
+                        data["project_revision"]=project_revision(folder)
+                        return jsonify(data)
+                    return response
+            except (ProjectError,ValueError,OSError) as exc:
+                return error_response("project_not_found",str(exc),409)
+        return _api_wizard_project_open_body(body)
+
+    def _api_wizard_project_open_body(body):
         folder = str(body.get("path") or "").strip()
         if not folder:
             return error_response("bad_request", "path is required", 400)
@@ -2240,13 +2341,55 @@ def create_app(project_path: str | None = None, dev: bool = False) -> Flask:
             _remember_project(state.project)
             # Opening is data loading only. Make it always starts a fresh
             # pipeline over the restored Drop Here inputs.
-            return jsonify(_project_wizard_status(state.project))
+            result=_project_wizard_status(state.project)
+            if app.config.get("CANONICAL_380_STRICT"):
+                from server.project_guard_380 import project_revision
+                result["project_revision"]=project_revision(state.project.folder)
+            return jsonify(result)
         except ProjectError as exc:
             return error_response(
                 "project_unrecoverable",
                 "Este proyecto no se puede recuperar. Los vídeos del Drop Here siguen disponibles; crea un proyecto nuevo.",
                 409,
             )
+
+    @app.post("/api/v1/wizard/projects/rename")
+    def api_wizard_project_rename_380() -> Response:
+        if not app.config.get("CANONICAL_380_STRICT"):
+            return error_response("not_available","Project controls are not activated",404)
+        body=_json_body()
+        if set(body)!={"path","name","project_revision"}:
+            return error_response("bad_request","Require path, name and project revision",400)
+        from server.project_guard_380 import (
+            rename_existing,ProjectConflict380)
+        from server.projects import projects_root
+        try:
+            result=rename_existing(
+                projects_root(),folder=body["path"],
+                title=body["name"],expected_revision=body["project_revision"])
+            if state.project and same_project_path(
+                    result["path"],str(state.project.folder)):
+                state.project=load_project(result["path"])
+            return jsonify(result)
+        except (ProjectError,ProjectConflict380,ValueError,OSError) as exc:
+            return error_response("stale_project",str(exc),409)
+
+    @app.post("/api/v1/wizard/projects/duplicate")
+    def api_wizard_project_duplicate_380() -> Response:
+        if not app.config.get("CANONICAL_380_STRICT"):
+            return error_response("not_available","Project controls are not activated",404)
+        body=_json_body()
+        if set(body)!={"path","name","project_revision"}:
+            return error_response("bad_request","Require path, name and project revision",400)
+        from server.project_guard_380 import (
+            duplicate_existing,ProjectConflict380)
+        from server.projects import projects_root
+        try:
+            return jsonify(duplicate_existing(
+                projects_root(),folder=body["path"],
+                title=body["name"],expected_revision=body["project_revision"])),201
+        except (ProjectError,ProjectConflict380,ValueError,OSError) as exc:
+            return error_response("stale_project",str(exc),409)
 
     @app.post("/api/v1/wizard/projects/delete")
     def api_wizard_project_delete() -> Response:
